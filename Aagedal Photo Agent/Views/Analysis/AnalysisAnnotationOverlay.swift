@@ -188,7 +188,7 @@ struct AnalysisAnnotationOverlay: View {
 
     var body: some View {
         Canvas { context, _ in
-            for annotation in annotations {
+            for annotation in annotations where annotation.id != draft?.id {
                 draw(
                     annotation,
                     selected: annotation.id == selectedAnnotationID,
@@ -196,7 +196,12 @@ struct AnalysisAnnotationOverlay: View {
                 )
             }
             if let draft {
-                draw(draft, selected: false, isDraft: true, context: &context)
+                draw(
+                    draft,
+                    selected: draft.id == selectedAnnotationID,
+                    isDraft: draft.id != selectedAnnotationID,
+                    context: &context
+                )
             }
         }
         .allowsHitTesting(false)
@@ -313,7 +318,7 @@ struct AnalysisAnnotationOverlay: View {
                 geometry: geometry,
                 coordinateMapper: coordinateMapper
             )
-            for point in handles {
+            for (_, point) in handles {
                 let handle = Path(ellipseIn: CGRect(
                     x: point.x - 4,
                     y: point.y - 4,
@@ -328,6 +333,42 @@ struct AnalysisAnnotationOverlay: View {
 }
 
 enum AnalysisAnnotationHitTester {
+    static func editTarget(
+        at point: CGPoint,
+        selectedAnnotationID: UUID?,
+        annotations: [AnalysisAnnotation],
+        geometry: ImageInspectionGeometry,
+        coordinateMapper: AnalysisAnnotationCoordinateMapper
+    ) -> AnalysisAnnotationEditTarget? {
+        if let selectedAnnotationID,
+           let selected = annotations.first(where: { $0.id == selectedAnnotationID }) {
+            let handles = AnalysisAnnotationViewGeometry.controlPoints(
+                for: selected,
+                geometry: geometry,
+                coordinateMapper: coordinateMapper
+            )
+            if let handle = handles.min(by: {
+                hypot(point.x - $0.point.x, point.y - $0.point.y)
+                    < hypot(point.x - $1.point.x, point.y - $1.point.y)
+            }), hypot(point.x - handle.point.x, point.y - handle.point.y) <= 10 {
+                if let controlPoint = handle.controlPoint {
+                    return .resize(annotationID: selected.id, controlPoint: controlPoint)
+                }
+                return .move(annotationID: selected.id)
+            }
+        }
+
+        guard let annotation = annotations.reversed().first(where: {
+            contains(
+                point,
+                annotation: $0,
+                geometry: geometry,
+                coordinateMapper: coordinateMapper
+            )
+        }) else { return nil }
+        return .move(annotationID: annotation.id)
+    }
+
     static func annotationID(
         at point: CGPoint,
         annotations: [AnalysisAnnotation],
@@ -388,6 +429,17 @@ enum AnalysisAnnotationHitTester {
                 coordinateMapper: coordinateMapper
             )
             return hypot(point.x - location.x, point.y - location.y) <= 22
+        }
+    }
+}
+
+enum AnalysisAnnotationEditTarget: Equatable {
+    case move(annotationID: UUID)
+    case resize(annotationID: UUID, controlPoint: AnalysisAnnotationControlPoint)
+
+    var annotationID: UUID {
+        switch self {
+        case .move(let annotationID), .resize(let annotationID, _): annotationID
         }
     }
 }
@@ -469,18 +521,67 @@ private enum AnalysisAnnotationViewGeometry {
         for annotation: AnalysisAnnotation,
         geometry: ImageInspectionGeometry,
         coordinateMapper: AnalysisAnnotationCoordinateMapper
-    ) -> [CGPoint] {
+    ) -> [(controlPoint: AnalysisAnnotationControlPoint?, point: CGPoint)] {
         switch annotation.geometry {
         case .segment(let start, let end):
-            return [start, end].map {
-                viewPoint($0, geometry: geometry, coordinateMapper: coordinateMapper)
-            }
+            return [
+                (
+                    .segmentStart,
+                    viewPoint(start, geometry: geometry, coordinateMapper: coordinateMapper)
+                ),
+                (
+                    .segmentEnd,
+                    viewPoint(end, geometry: geometry, coordinateMapper: coordinateMapper)
+                ),
+            ]
         case .bounds(let bounds):
-            return [bounds.minimum, bounds.maximum].map {
-                viewPoint($0, geometry: geometry, coordinateMapper: coordinateMapper)
-            }
+            let maximumXMinimumY = AnalysisNormalizedPoint(
+                x: bounds.maximum.x,
+                y: bounds.minimum.y
+            )
+            let minimumXMaximumY = AnalysisNormalizedPoint(
+                x: bounds.minimum.x,
+                y: bounds.maximum.y
+            )
+            return [
+                (
+                    .boundsMinimum,
+                    viewPoint(
+                        bounds.minimum,
+                        geometry: geometry,
+                        coordinateMapper: coordinateMapper
+                    )
+                ),
+                (
+                    .boundsMaximumXMinimumY,
+                    viewPoint(
+                        maximumXMinimumY,
+                        geometry: geometry,
+                        coordinateMapper: coordinateMapper
+                    )
+                ),
+                (
+                    .boundsMaximum,
+                    viewPoint(
+                        bounds.maximum,
+                        geometry: geometry,
+                        coordinateMapper: coordinateMapper
+                    )
+                ),
+                (
+                    .boundsMinimumXMaximumY,
+                    viewPoint(
+                        minimumXMaximumY,
+                        geometry: geometry,
+                        coordinateMapper: coordinateMapper
+                    )
+                ),
+            ]
         case .anchor(let point):
-            return [viewPoint(point, geometry: geometry, coordinateMapper: coordinateMapper)]
+            return [(
+                nil,
+                viewPoint(point, geometry: geometry, coordinateMapper: coordinateMapper)
+            )]
         }
     }
 

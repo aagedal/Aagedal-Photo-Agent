@@ -21,6 +21,10 @@ visibility controls.
 Distance annotations can now define a single real-world calibration in millimeters, centimeters,
 meters, inches, or feet; all source-pixel measurements then show the converted value alongside
 their reproducible pixel length, with calibration changes included in photo-surface undo/redo.
+Findings and photo annotations can now be linked many-to-many from finding detail; persistent links
+participate in annotation undo/redo, show counts in both sidebar lists, and focus linked markup.
+The Select tool now moves all annotation kinds and resizes segment, rectangle, and ellipse markup
+from visible handles, committing each completed drag as one undoable source-frame edit.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

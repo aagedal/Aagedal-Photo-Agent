@@ -270,6 +270,7 @@ struct AnalysisCaseTests {
         #expect(reopened.annotations.first?.id == annotation.id)
         #expect(reopened.annotations.first?.geometry == annotation.geometry)
         #expect(reopened.annotations.first?.isVisible == false)
+        #expect(reopened.annotations.first?.findingIDs == ["metadata.orientation-conflict"])
         #expect(
             reopened.annotations.first?.measurementCalibration
                 == annotation.measurementCalibration
@@ -277,6 +278,45 @@ struct AnalysisCaseTests {
         #expect(reopened.annotations.first?.updatedAt == Date(timeIntervalSince1970: 12))
         #expect(reopened.updatedAt == Date(timeIntervalSince1970: 12))
         try reopened.validateForPersistence()
+    }
+
+    @Test("finding links are stable, unique, removable annotation references")
+    func findingLinks() throws {
+        var annotation = AnalysisAnnotation(
+            kind: .rectangle,
+            geometry: .bounds(AnalysisNormalizedBounds(
+                minimum: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+                maximum: AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+            ))
+        )
+
+        let inserted = annotation.setFindingLinked(
+            "metadata.orientation-conflict",
+            isLinked: true
+        )
+        let duplicate = annotation.setFindingLinked(
+            "metadata.orientation-conflict",
+            isLinked: true
+        )
+        #expect(inserted)
+        #expect(!duplicate)
+        #expect(annotation.findingIDs == ["metadata.orientation-conflict"])
+        try annotation.validate()
+
+        let invalid = annotation.setFindingLinked("   ", isLinked: true)
+        let removed = annotation.setFindingLinked(
+            "metadata.orientation-conflict",
+            isLinked: false
+        )
+        let missing = annotation.setFindingLinked(
+            "metadata.orientation-conflict",
+            isLinked: false
+        )
+        #expect(!invalid)
+        #expect(removed)
+        #expect(!missing)
+        #expect(annotation.findingIDs.isEmpty)
+        try annotation.validate()
     }
 
     @Test("annotation validation rejects mismatched, out-of-range, and duplicate geometry")
@@ -359,6 +399,83 @@ struct AnalysisCaseTests {
             start: start,
             end: start
         ) == nil)
+    }
+
+    @Test("select-tool geometry edits move, clamp, and resize annotations")
+    func editsAnnotationGeometry() throws {
+        let originalBounds = AnalysisAnnotationGeometry.bounds(AnalysisNormalizedBounds(
+            minimum: AnalysisNormalizedPoint(x: 0.2, y: 0.3),
+            maximum: AnalysisNormalizedPoint(x: 0.6, y: 0.8)
+        ))
+        let moved = AnalysisAnnotationGeometryEditor.moving(
+            originalBounds,
+            from: AnalysisNormalizedPoint(x: 0.3, y: 0.4),
+            to: AnalysisNormalizedPoint(x: 0.9, y: 0.9)
+        )
+        guard case .bounds(let movedBounds) = moved else {
+            Issue.record("Expected moved bounds geometry")
+            return
+        }
+        #expect(abs(movedBounds.minimum.x - 0.6) < 1e-12)
+        #expect(abs(movedBounds.minimum.y - 0.5) < 1e-12)
+        #expect(movedBounds.maximum == AnalysisNormalizedPoint(x: 1, y: 1))
+
+        let resizedBounds = AnalysisAnnotationGeometryEditor.resizing(
+            originalBounds,
+            controlPoint: .boundsMaximumXMinimumY,
+            to: AnalysisNormalizedPoint(x: 0.9, y: 0.1)
+        )
+        #expect(resizedBounds == .bounds(AnalysisNormalizedBounds(
+            minimum: AnalysisNormalizedPoint(x: 0.2, y: 0.1),
+            maximum: AnalysisNormalizedPoint(x: 0.9, y: 0.8)
+        )))
+
+        let segment = AnalysisAnnotationGeometry.segment(
+            start: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+            end: AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+        )
+        #expect(AnalysisAnnotationGeometryEditor.resizing(
+            segment,
+            controlPoint: .segmentStart,
+            to: AnalysisNormalizedPoint(x: 0.3, y: 0.4)
+        ) == .segment(
+            start: AnalysisNormalizedPoint(x: 0.3, y: 0.4),
+            end: AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+        ))
+        #expect(AnalysisAnnotationGeometryEditor.resizing(
+            segment,
+            controlPoint: .segmentEnd,
+            to: AnalysisNormalizedPoint(x: 0.1, y: 0.2)
+        ) == nil)
+
+        let annotation = AnalysisAnnotation(kind: .line, geometry: segment)
+        let transform = try DisplayImageTransform(
+            sourcePixelWidth: 1_000,
+            sourcePixelHeight: 1_000,
+            exifOrientation: 1
+        )
+        let mapper = AnalysisAnnotationCoordinateMapper(
+            annotationTransform: transform,
+            displayTransform: transform
+        )
+        let viewGeometry = try ImageInspectionGeometry(
+            imagePixelSize: CGSize(width: 1_000, height: 1_000),
+            containerRect: CGRect(x: 0, y: 0, width: 1_000, height: 1_000)
+        )
+        #expect(AnalysisAnnotationHitTester.editTarget(
+            at: CGPoint(x: 100, y: 200),
+            selectedAnnotationID: annotation.id,
+            annotations: [annotation],
+            geometry: viewGeometry,
+            coordinateMapper: mapper
+        ) == .resize(annotationID: annotation.id, controlPoint: .segmentStart))
+        #expect(AnalysisAnnotationHitTester.editTarget(
+            at: CGPoint(x: 450, y: 550),
+            selectedAnnotationID: annotation.id,
+            annotations: [annotation],
+            geometry: viewGeometry,
+            coordinateMapper: mapper
+        ) == .move(annotationID: annotation.id))
     }
 
     @Test("annotation coordinates survive developed crop and straighten round-trips")

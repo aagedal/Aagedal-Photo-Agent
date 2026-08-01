@@ -91,7 +91,7 @@ modifies the source.
 - [x] Add annotation list/layer visibility and keyboard operations.
 - [x] Add source-pixel measurement.
 - [x] Add user-defined calibration segment and unit conversion.
-- [ ] Add linked finding/annotation references.
+- [x] Add linked finding/annotation references.
 - [ ] Test all orientations, view sizes, source changes, and report transforms.
 - [ ] Validate keyboard-only and VoiceOver workflows.
 

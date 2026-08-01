@@ -42,6 +42,12 @@
   removal use the photo annotation transaction history, so delete and undo restore the scale.
 - Added a calibration badge to the annotation layer list and accessible labels for the calibration
   editor, known segment length, and converted overlay summaries.
+- Added a many-to-many finding-link workflow in finding detail. Link and unlink changes persist on
+  annotations, participate in photo-surface undo/redo, show counts beside findings and annotation
+  layers, and let a linked row focus its source-bound markup on the image.
+- Completed the Select tool with direct movement for every annotation kind and handle-based resize
+  for segments, rectangles, and ellipses. Shape movement clamps at source-frame edges, bounds use
+  four corner handles, and each completed drag persists as one undoable edit transaction.
 
 The annotation coordinates describe the original image's display-oriented frame. Rendering,
 hit-testing, developed-preview placement, source-pixel measurement, and report export must all use
@@ -58,7 +64,7 @@ xcodebuild test \
   -only-testing:"Aagedal Photo Agent Tests/AnalysisCaseTests"
 ```
 
-Result: 27 tests passed in 1 suite.
+Result: 29 tests passed in 1 suite.
 
 Coverage includes:
 
@@ -75,9 +81,11 @@ Coverage includes:
 - positive finite calibration validation and rejection of multiple case calibrations;
 - calibrated scale math, preferred-unit formatting, and cross-unit conversion.
 - calibration replacement through photo-surface undo and redo transactions.
+- stable, unique finding-link insertion, removal, validation, and persistence round-trips.
+- source-frame move clamping, segment/bounds resize geometry, and handle/body targeting used by the
+  Select tool.
 
 ## Remaining Phase 4 work
 
-- Add finding-link workflow in the UI.
 - Validate all orientations, representation changes, view sizes, reports, keyboard-only use, and
   VoiceOver.

@@ -295,6 +295,21 @@ struct AnalysisWorkspaceView: View {
                                             .lineLimit(2)
                                             .multilineTextAlignment(.leading)
                                         Spacer(minLength: 0)
+                                        let linkedCount = model.annotations.count(where: {
+                                            $0.findingIDs.contains(finding.id)
+                                        })
+                                        if linkedCount > 0 {
+                                            Label("\(linkedCount)", systemImage: "link")
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                                .labelStyle(.titleAndIcon)
+                                                .accessibilityLabel(
+                                                    "\(linkedCount) linked "
+                                                        + (linkedCount == 1
+                                                            ? "annotation"
+                                                            : "annotations")
+                                                )
+                                        }
                                     }
                                     .contentShape(Rectangle())
                                     .padding(.vertical, 4)
@@ -456,9 +471,25 @@ struct AnalysisWorkspaceView: View {
     private var analysisDetail: some View {
         if let selectedFindingID,
            let finding = model.findings.first(where: { $0.id == selectedFindingID }) {
-            FindingDetailView(finding: finding) { included in
-                model.setFindingIncluded(finding.id, included: included)
-            }
+            FindingDetailView(
+                finding: finding,
+                annotations: model.annotations,
+                isReadOnly: model.sourceChanged,
+                onReportInclusionChanged: { included in
+                    model.setFindingIncluded(finding.id, included: included)
+                },
+                onAnnotationLinkChanged: { annotationID, isLinked in
+                    model.setFindingLink(
+                        findingID: finding.id,
+                        annotationID: annotationID,
+                        isLinked: isLinked
+                    )
+                },
+                onSelectAnnotation: { annotationID in
+                    annotationTool = .select
+                    selectedAnnotationID = annotationID
+                }
+            )
         } else {
             SourceFactsDetailView(
                 facts: model.sourceFacts,
@@ -566,6 +597,19 @@ private struct AnalysisAnnotationList: View {
                                 .lineLimit(1)
                                 .accessibilityLabel(
                                     "Measurement calibration, \(calibration.formattedKnownLength)"
+                                )
+                        }
+
+                        if !annotation.findingIDs.isEmpty {
+                            Label("\(annotation.findingIDs.count)", systemImage: "link")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .labelStyle(.titleAndIcon)
+                                .accessibilityLabel(
+                                    "\(annotation.findingIDs.count) linked "
+                                        + (annotation.findingIDs.count == 1
+                                            ? "finding"
+                                            : "findings")
                                 )
                         }
 
@@ -894,7 +938,11 @@ private struct SourceFactsDetailView: View {
 
 private struct FindingDetailView: View {
     let finding: AnalysisFinding
+    let annotations: [AnalysisAnnotation]
+    let isReadOnly: Bool
     let onReportInclusionChanged: (Bool) -> Void
+    let onAnnotationLinkChanged: (UUID, Bool) -> Void
+    let onSelectAnnotation: (UUID) -> Void
 
     var body: some View {
         ScrollView {
@@ -924,6 +972,8 @@ private struct FindingDetailView: View {
                     }
                 }
 
+                linkedAnnotationsSection
+
                 Divider()
                 Toggle(
                     "Include in report",
@@ -944,6 +994,83 @@ private struct FindingDetailView: View {
             .padding(14)
         }
         .accessibilityLabel("Finding detail: \(finding.title)")
+    }
+
+    private var linkedAnnotations: [(offset: Int, element: AnalysisAnnotation)] {
+        Array(annotations.enumerated()).filter {
+            $0.element.findingIDs.contains(finding.id)
+        }
+    }
+
+    private var linkedAnnotationsSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("LINKED ANNOTATIONS")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if !annotations.isEmpty {
+                    Menu {
+                        ForEach(Array(annotations.enumerated()), id: \.element.id) {
+                            index, annotation in
+                            let isLinked = annotation.findingIDs.contains(finding.id)
+                            Toggle(
+                                annotation.listName(index: index),
+                                isOn: Binding(
+                                    get: { isLinked },
+                                    set: { linked in
+                                        onAnnotationLinkChanged(annotation.id, linked)
+                                    }
+                                )
+                            )
+                        }
+                    } label: {
+                        Label("Manage Links", systemImage: "link.badge.plus")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(isReadOnly)
+                    .help("Link or unlink photo annotations from this finding")
+                }
+            }
+
+            if annotations.isEmpty {
+                Text("Add a photo annotation before linking visual evidence to this finding.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if linkedAnnotations.isEmpty {
+                Text("No photo annotations are linked to this finding.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(linkedAnnotations, id: \.element.id) { index, annotation in
+                    Button {
+                        onSelectAnnotation(annotation.id)
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: annotation.kind.systemImage)
+                                .foregroundStyle(annotation.style.color.swiftUIColor)
+                                .frame(width: 14)
+                            Text(annotation.listName(index: index))
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "scope")
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(
+                        "Select linked annotation \(annotation.listName(index: index))"
+                    )
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Linked photo annotations")
     }
 
     private func detailSection(
@@ -975,6 +1102,13 @@ private extension String {
     }
 }
 
+private struct AnalysisAnnotationEditSession {
+    let target: AnalysisAnnotationEditTarget
+    let original: AnalysisAnnotation
+    let dragStart: AnalysisNormalizedPoint
+    var updated: AnalysisAnnotation
+}
+
 private struct AnalysisSourceThumbnail: View {
     let url: URL?
     let representation: AnalysisSourceRepresentation
@@ -1002,6 +1136,7 @@ private struct AnalysisSourceThumbnail: View {
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDraft: CGRect?
     @State private var annotationDraft: AnalysisAnnotationGestureDraft?
+    @State private var annotationEditSession: AnalysisAnnotationEditSession?
     @State private var pendingLabelAnchor: AnalysisNormalizedPoint?
     @State private var labelText = ""
     @State private var isLabelPromptPresented = false
@@ -1395,6 +1530,9 @@ private struct AnalysisSourceThumbnail: View {
     }
 
     private var draftAnnotation: AnalysisAnnotation? {
+        if let annotationEditSession {
+            return annotationEditSession.updated
+        }
         guard let annotationDraft,
               let geometry = AnalysisAnnotationGeometryBuilder.geometry(
                   for: annotationDraft.kind,
@@ -1415,8 +1553,63 @@ private struct AnalysisSourceThumbnail: View {
         image: NSImage?,
         size: CGSize
     ) -> Bool {
-        guard !annotationsAreReadOnly,
-              let kind = annotationTool.annotationKind else {
+        guard !annotationsAreReadOnly else { return false }
+        if annotationTool == .select {
+            guard let image,
+                  let coordinateMapper,
+                  let geometry = inspectionGeometry(
+                      containing: value.startLocation,
+                      image: image,
+                      containerSize: size
+                  ) else { return false }
+
+            if annotationEditSession == nil {
+                guard let target = AnalysisAnnotationHitTester.editTarget(
+                    at: value.startLocation,
+                    selectedAnnotationID: selectedAnnotationID,
+                    annotations: visibleAnnotations,
+                    geometry: geometry,
+                    coordinateMapper: coordinateMapper
+                ), let original = visibleAnnotations.first(where: {
+                    $0.id == target.annotationID
+                }) else { return false }
+                let dragStart = coordinateMapper.annotationPoint(
+                    from: geometry.clampedNormalizedDisplayPoint(
+                        fromViewPoint: value.startLocation
+                    )
+                )
+                selectedAnnotationID = original.id
+                annotationEditSession = AnalysisAnnotationEditSession(
+                    target: target,
+                    original: original,
+                    dragStart: dragStart,
+                    updated: original
+                )
+            }
+
+            guard var session = annotationEditSession else { return false }
+            let current = coordinateMapper.annotationPoint(
+                from: geometry.clampedNormalizedDisplayPoint(fromViewPoint: value.location)
+            )
+            switch session.target {
+            case .move:
+                session.updated.geometry = AnalysisAnnotationGeometryEditor.moving(
+                    session.original.geometry,
+                    from: session.dragStart,
+                    to: current
+                )
+            case .resize(_, let controlPoint):
+                session.updated.geometry = AnalysisAnnotationGeometryEditor.resizing(
+                    session.original.geometry,
+                    controlPoint: controlPoint,
+                    to: current
+                ) ?? session.original.geometry
+            }
+            annotationEditSession = session
+            return true
+        }
+
+        guard let kind = annotationTool.annotationKind else {
             return false
         }
         guard kind != .label else { return true }
@@ -1460,6 +1653,14 @@ private struct AnalysisSourceThumbnail: View {
         }
 
         if annotationTool == .select {
+            if let annotationEditSession {
+                defer { self.annotationEditSession = nil }
+                selectedAnnotationID = annotationEditSession.original.id
+                if annotationEditSession.updated != annotationEditSession.original {
+                    onSetAnnotation(annotationEditSession.updated)
+                }
+                return true
+            }
             let dragDistance = hypot(
                 value.location.x - value.startLocation.x,
                 value.location.y - value.startLocation.y

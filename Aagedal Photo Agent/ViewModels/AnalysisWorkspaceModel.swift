@@ -281,6 +281,20 @@ final class AnalysisWorkspaceModel {
         analysisRunner.setFindingIncluded(findingID, included: included)
     }
 
+    func setFindingLink(
+        findingID: String,
+        annotationID: UUID,
+        isLinked: Bool
+    ) {
+        guard findings.contains(where: { $0.id == findingID }),
+              var annotation = annotations.first(where: { $0.id == annotationID }),
+              annotation.setFindingLinked(findingID, isLinked: isLinked) else { return }
+        setAnnotation(
+            annotation,
+            actionName: isLinked ? "Link Finding" : "Unlink Finding"
+        )
+    }
+
     func setAnnotation(_ annotation: AnalysisAnnotation) {
         setAnnotation(annotation, actionName: nil)
     }

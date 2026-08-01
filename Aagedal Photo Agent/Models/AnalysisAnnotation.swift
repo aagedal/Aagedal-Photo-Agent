@@ -239,6 +239,28 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
         updatedAt = max(now, createdAt)
     }
 
+    /// Adds or removes one stable analyzer-finding reference.
+    ///
+    /// Finding availability is intentionally not validated here. Analyzer output may be
+    /// temporarily unavailable or replaced by a newer run, while the annotation must preserve
+    /// the source-bound reference for later display and reporting.
+    @discardableResult
+    mutating func setFindingLinked(_ findingID: String, isLinked: Bool) -> Bool {
+        guard !findingID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+
+        if isLinked {
+            guard !findingIDs.contains(findingID) else { return false }
+            findingIDs.append(findingID)
+            return true
+        }
+
+        guard let index = findingIDs.firstIndex(of: findingID) else { return false }
+        findingIDs.remove(at: index)
+        return true
+    }
+
     func validate() throws {
         guard geometry.isValid, geometry.matches(kind) else {
             throw AnalysisAnnotationValidationError.invalidGeometry
@@ -331,6 +353,124 @@ nonisolated enum AnalysisAnnotationGeometryBuilder {
         case .label:
             return .anchor(start)
         }
+    }
+}
+
+nonisolated enum AnalysisAnnotationControlPoint: Equatable, Sendable {
+    case segmentStart
+    case segmentEnd
+    case boundsMinimum
+    case boundsMaximumXMinimumY
+    case boundsMaximum
+    case boundsMinimumXMaximumY
+}
+
+/// Pure source-frame edits used by the Select tool.
+///
+/// Editing the normalized annotation geometry here keeps move and resize behavior independent of
+/// the current preview size, representation, and zoom. The view converts its drag points into this
+/// frame before asking the editor for an updated geometry.
+nonisolated enum AnalysisAnnotationGeometryEditor {
+    static func moving(
+        _ geometry: AnalysisAnnotationGeometry,
+        from start: AnalysisNormalizedPoint,
+        to current: AnalysisNormalizedPoint
+    ) -> AnalysisAnnotationGeometry {
+        let extent = extent(of: geometry)
+        let deltaX = min(max(current.x - start.x, -extent.minimum.x), 1 - extent.maximum.x)
+        let deltaY = min(max(current.y - start.y, -extent.minimum.y), 1 - extent.maximum.y)
+
+        func translated(_ point: AnalysisNormalizedPoint) -> AnalysisNormalizedPoint {
+            AnalysisNormalizedPoint(x: point.x + deltaX, y: point.y + deltaY)
+        }
+
+        switch geometry {
+        case .segment(let segmentStart, let segmentEnd):
+            return .segment(start: translated(segmentStart), end: translated(segmentEnd))
+        case .bounds(let bounds):
+            return .bounds(AnalysisNormalizedBounds(
+                minimum: translated(bounds.minimum),
+                maximum: translated(bounds.maximum)
+            ))
+        case .anchor(let point):
+            return .anchor(translated(point))
+        }
+    }
+
+    static func resizing(
+        _ geometry: AnalysisAnnotationGeometry,
+        controlPoint: AnalysisAnnotationControlPoint,
+        to point: AnalysisNormalizedPoint
+    ) -> AnalysisAnnotationGeometry? {
+        switch (geometry, controlPoint) {
+        case (.segment(_, let end), .segmentStart):
+            guard point != end else { return nil }
+            return .segment(start: point, end: end)
+        case (.segment(let start, _), .segmentEnd):
+            guard point != start else { return nil }
+            return .segment(start: start, end: point)
+
+        case (.bounds(let bounds), .boundsMinimum):
+            return resizedBounds(from: point, to: bounds.maximum)
+        case (.bounds(let bounds), .boundsMaximumXMinimumY):
+            return resizedBounds(
+                from: point,
+                to: AnalysisNormalizedPoint(
+                    x: bounds.minimum.x,
+                    y: bounds.maximum.y
+                )
+            )
+        case (.bounds(let bounds), .boundsMaximum):
+            return resizedBounds(from: bounds.minimum, to: point)
+        case (.bounds(let bounds), .boundsMinimumXMaximumY):
+            return resizedBounds(
+                from: AnalysisNormalizedPoint(
+                    x: bounds.maximum.x,
+                    y: bounds.minimum.y
+                ),
+                to: point
+            )
+        default:
+            return nil
+        }
+    }
+
+    private static func extent(
+        of geometry: AnalysisAnnotationGeometry
+    ) -> AnalysisNormalizedBounds {
+        switch geometry {
+        case .segment(let start, let end):
+            return normalizedBounds(from: start, to: end)
+        case .bounds(let bounds):
+            return bounds
+        case .anchor(let point):
+            return AnalysisNormalizedBounds(minimum: point, maximum: point)
+        }
+    }
+
+    private static func resizedBounds(
+        from first: AnalysisNormalizedPoint,
+        to second: AnalysisNormalizedPoint
+    ) -> AnalysisAnnotationGeometry? {
+        let bounds = normalizedBounds(from: first, to: second)
+        guard bounds.isValid else { return nil }
+        return .bounds(bounds)
+    }
+
+    private static func normalizedBounds(
+        from first: AnalysisNormalizedPoint,
+        to second: AnalysisNormalizedPoint
+    ) -> AnalysisNormalizedBounds {
+        AnalysisNormalizedBounds(
+            minimum: AnalysisNormalizedPoint(
+                x: min(first.x, second.x),
+                y: min(first.y, second.y)
+            ),
+            maximum: AnalysisNormalizedPoint(
+                x: max(first.x, second.x),
+                y: max(first.y, second.y)
+            )
+        )
     }
 }
 
