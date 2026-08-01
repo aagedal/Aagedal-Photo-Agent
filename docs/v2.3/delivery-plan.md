@@ -89,7 +89,7 @@ modifies the source.
 - [x] Add fixed accessible palette and custom color.
 - [x] Add per-surface undo/redo transactions.
 - [x] Add annotation list/layer visibility and keyboard operations.
-- [ ] Add source-pixel measurement.
+- [x] Add source-pixel measurement.
 - [ ] Add user-defined calibration segment and unit conversion.
 - [ ] Add linked finding/annotation references.
 - [ ] Test all orientations, view sizes, source changes, and report transforms.

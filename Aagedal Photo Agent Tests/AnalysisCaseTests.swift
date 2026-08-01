@@ -340,6 +340,97 @@ struct AnalysisCaseTests {
         #expect(abs(Double(displayed.x) - original.x) > 0.01)
     }
 
+    @Test("distance annotations report original source pixels for every EXIF orientation")
+    func sourcePixelDistanceAcrossOrientations() throws {
+        for orientation in DisplayImageTransform.Orientation.allCases {
+            let transform = try DisplayImageTransform(
+                sourcePixelWidth: 4_000,
+                sourcePixelHeight: 3_000,
+                exifOrientation: orientation.rawValue
+            )
+            let sourceStart = CGPoint(x: 400, y: 600)
+            let sourceEnd = CGPoint(x: 1_300, y: 1_800)
+            let displayedStart = transform.displayNormalizedPoint(fromSourcePixel: sourceStart)
+            let displayedEnd = transform.displayNormalizedPoint(fromSourcePixel: sourceEnd)
+            let annotation = AnalysisAnnotation(
+                kind: .distance,
+                geometry: .segment(
+                    start: AnalysisNormalizedPoint(
+                        x: displayedStart.x,
+                        y: displayedStart.y
+                    ),
+                    end: AnalysisNormalizedPoint(
+                        x: displayedEnd.x,
+                        y: displayedEnd.y
+                    )
+                )
+            )
+            let measurement = try #require(AnalysisSourcePixelMeasurement(
+                annotation: annotation,
+                annotationTransform: transform
+            ))
+
+            #expect(abs(measurement.start.x - sourceStart.x) < 1e-9)
+            #expect(abs(measurement.start.y - sourceStart.y) < 1e-9)
+            #expect(abs(measurement.end.x - sourceEnd.x) < 1e-9)
+            #expect(abs(measurement.end.y - sourceEnd.y) < 1e-9)
+            #expect(abs(measurement.length - 1_500) < 1e-9)
+            let localizedLength = Double(1_500).formatted(
+                .number.precision(.fractionLength(0)).grouping(.automatic)
+            )
+            #expect(measurement.formattedLength == localizedLength + " px")
+        }
+    }
+
+    @Test("source-pixel measurement ignores developed crop and preview geometry")
+    func sourcePixelDistanceIsRepresentationIndependent() throws {
+        let annotationTransform = try DisplayImageTransform(
+            sourcePixelWidth: 6_000,
+            sourcePixelHeight: 4_000,
+            exifOrientation: 6
+        )
+        let developedTransform = try DisplayImageTransform(
+            sourcePixelWidth: 6_000,
+            sourcePixelHeight: 4_000,
+            exifOrientation: 6,
+            developedCrop: DisplayImageTransform.DevelopedCrop(
+                sourceNormalizedRect: CGRect(x: 0.1, y: 0.2, width: 0.7, height: 0.6),
+                straightenAngleDegrees: 5
+            )
+        )
+        let mapper = AnalysisAnnotationCoordinateMapper(
+            annotationTransform: annotationTransform,
+            displayTransform: developedTransform
+        )
+        let annotation = AnalysisAnnotation(
+            kind: .distance,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: 0.25, y: 0.25),
+                end: AnalysisNormalizedPoint(x: 0.75, y: 0.25)
+            )
+        )
+        let before = try #require(AnalysisSourcePixelMeasurement(
+            annotation: annotation,
+            annotationTransform: annotationTransform
+        ))
+        guard case .segment(let start, let end) = annotation.geometry else {
+            Issue.record("Expected distance segment")
+            return
+        }
+        let displayedStart = mapper.displayPoint(from: start)
+        let displayedEnd = mapper.displayPoint(from: end)
+
+        #expect(abs(before.length - 2_000) < 1e-9)
+        #expect(hypot(
+            displayedEnd.x - displayedStart.x,
+            displayedEnd.y - displayedStart.y
+        ) != before.length)
+        #expect(AnalysisSourcePixelMeasurement(
+            annotation: AnalysisAnnotation(kind: .line, geometry: annotation.geometry),
+            annotationTransform: annotationTransform
+        ) == nil)
+    }
+
     @Test("photo annotation history undoes, redoes, and discards a branched redo")
     func photoAnnotationUndoRedoTransactions() throws {
         let first = AnalysisAnnotation(

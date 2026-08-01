@@ -32,6 +32,9 @@
   Command-Z / Shift-Command-Z shortcuts. Opening or rebinding a case clears the surface history.
 - Added an ordered, keyboard-selectable case-sidebar layer list with per-annotation visibility,
   grouped Show All / Hide All transactions, Delete-key removal, and accessible state labels.
+- Added source-pixel distance calculation through the shared original-image transform, visible
+  measurement labels on normal and derived panes, and an accessible measurement summary. Values
+  remain independent of preview size, EXIF orientation, Developed crop, straighten, and zoom.
 
 The annotation coordinates describe the original image's display-oriented frame. Rendering,
 hit-testing, developed-preview placement, source-pixel measurement, and report export must all use
@@ -61,10 +64,11 @@ Coverage includes:
 - reverse-drag geometry standardization and collapsed-gesture rejection;
 - persistent-to-developed coordinate round-trips with EXIF orientation, crop, and straighten.
 - bounded undo/redo, redo-branch invalidation, and persistently valid snapshot restoration.
+- source-pixel distance through all eight EXIF orientations and Developed representation changes.
 
 ## Remaining Phase 4 work
 
-- Add source-pixel measurement and user calibration.
+- Add user-defined calibration and unit conversion.
 - Add finding-link workflow in the UI.
 - Validate all orientations, representation changes, view sizes, reports, keyboard-only use, and
   VoiceOver.

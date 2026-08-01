@@ -14,8 +14,10 @@ derived-view rendering integrated into Image Analysis; automated HDR/SDR, alpha,
 and malformed-source validation is complete, while fixture-corpus visual validation remains open.
 Phase 4 has started with normalized, source-bound annotation persistence and schema migrations for
 line, arrow, distance, rectangle, ellipse, and label markup, plus a bounded photo-surface undo/redo
-history with persistent transactions and standard keyboard shortcuts. The case sidebar exposes an
-ordered, keyboard-selectable layer list with per-annotation and grouped visibility controls.
+history with persistent transactions and standard keyboard shortcuts. Source-pixel distance labels
+now resolve through the original-image transform across orientations and Developed crops. The case
+sidebar exposes an ordered, keyboard-selectable layer list with per-annotation and grouped
+visibility controls.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

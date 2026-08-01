@@ -183,7 +183,19 @@ struct AnalysisAnnotationOverlay: View {
         .allowsHitTesting(false)
         .accessibilityElement()
         .accessibilityLabel("Photo annotations")
-        .accessibilityValue("\(annotations.count) visible")
+        .accessibilityValue(accessibilitySummary)
+    }
+
+    private var accessibilitySummary: String {
+        let measurements = annotations.compactMap {
+            AnalysisSourcePixelMeasurement(
+                annotation: $0,
+                annotationTransform: coordinateMapper.annotationTransform
+            )?.formattedLength.replacingOccurrences(of: " px", with: " pixels")
+        }
+        guard !measurements.isEmpty else { return "\(annotations.count) visible" }
+        return "\(annotations.count) visible; source-pixel distances: "
+            + measurements.joined(separator: ", ")
     }
 
     private func draw(
@@ -239,6 +251,39 @@ struct AnalysisAnnotationOverlay: View {
                     .foregroundColor(color),
                 at: CGPoint(x: point.x + 7, y: point.y - 7),
                 anchor: .bottomLeading
+            )
+        }
+
+        if let measurement = AnalysisSourcePixelMeasurement(
+            annotation: annotation,
+            annotationTransform: coordinateMapper.annotationTransform
+        ), case .segment(let start, let end) = annotation.geometry {
+            let first = AnalysisAnnotationViewGeometry.viewPoint(
+                start,
+                geometry: geometry,
+                coordinateMapper: coordinateMapper
+            )
+            let last = AnalysisAnnotationViewGeometry.viewPoint(
+                end,
+                geometry: geometry,
+                coordinateMapper: coordinateMapper
+            )
+            let labelPoint = AnalysisAnnotationViewGeometry.measurementLabelPoint(
+                start: first,
+                end: last,
+                imageRect: geometry.imageRectInView
+            )
+            let label = Text(measurement.formattedLength)
+                .font(.caption2.monospacedDigit().weight(.semibold))
+            context.draw(
+                label.foregroundColor(contrast),
+                at: CGPoint(x: labelPoint.x + 1, y: labelPoint.y + 1),
+                anchor: .center
+            )
+            context.draw(
+                label.foregroundColor(color),
+                at: labelPoint,
+                anchor: .center
             )
         }
 
@@ -425,6 +470,25 @@ private enum AnalysisAnnotationViewGeometry {
         coordinateMapper: AnalysisAnnotationCoordinateMapper
     ) -> CGPoint {
         geometry.viewPoint(fromNormalizedDisplay: coordinateMapper.displayPoint(from: point))
+    }
+
+    static func measurementLabelPoint(
+        start: CGPoint,
+        end: CGPoint,
+        imageRect: CGRect
+    ) -> CGPoint {
+        let midpoint = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        let length = hypot(end.x - start.x, end.y - start.y)
+        guard length > 0 else { return midpoint }
+        let offset: CGFloat = 13
+        let candidate = CGPoint(
+            x: midpoint.x - (end.y - start.y) / length * offset,
+            y: midpoint.y + (end.x - start.x) / length * offset
+        )
+        return CGPoint(
+            x: min(max(candidate.x, imageRect.minX + 28), imageRect.maxX - 28),
+            y: min(max(candidate.y, imageRect.minY + 9), imageRect.maxY - 9)
+        )
     }
 
     private static func addArrowHead(to path: inout Path, start: CGPoint, end: CGPoint) {

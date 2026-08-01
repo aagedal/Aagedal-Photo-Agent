@@ -247,6 +247,60 @@ nonisolated enum AnalysisAnnotationGeometryBuilder {
     }
 }
 
+/// A distance annotation resolved in the original source's pixel-storage frame.
+///
+/// The persisted annotation remains normalized and display-oriented. Resolving both endpoints
+/// through `DisplayImageTransform` prevents preview points, zoom, crop, or EXIF orientation from
+/// being mistaken for source pixels.
+nonisolated struct AnalysisSourcePixelMeasurement: Equatable, Sendable {
+    let start: CGPoint
+    let end: CGPoint
+
+    var deltaX: CGFloat { end.x - start.x }
+    var deltaY: CGFloat { end.y - start.y }
+    var length: CGFloat { hypot(deltaX, deltaY) }
+
+    var formattedLength: String {
+        let formattedNumber: String
+        switch length {
+        case 100...:
+            formattedNumber = Double(length).formatted(
+                .number.precision(.fractionLength(0)).grouping(.automatic)
+            )
+        case 10..<100:
+            formattedNumber = Double(length).formatted(
+                .number.precision(.fractionLength(1)).grouping(.automatic)
+            )
+        default:
+            formattedNumber = Double(length).formatted(
+                .number.precision(.fractionLength(2)).grouping(.automatic)
+            )
+        }
+        return formattedNumber + " px"
+    }
+
+    init?(
+        annotation: AnalysisAnnotation,
+        annotationTransform: DisplayImageTransform
+    ) {
+        guard annotation.kind == .distance,
+              case .segment(let normalizedStart, let normalizedEnd) = annotation.geometry else {
+            return nil
+        }
+        start = annotationTransform.sourcePixelPoint(
+            fromDisplayNormalized: CGPoint(x: normalizedStart.x, y: normalizedStart.y)
+        )
+        end = annotationTransform.sourcePixelPoint(
+            fromDisplayNormalized: CGPoint(x: normalizedEnd.x, y: normalizedEnd.y)
+        )
+        guard start.x.isFinite, start.y.isFinite,
+              end.x.isFinite, end.y.isFinite,
+              length.isFinite else {
+            return nil
+        }
+    }
+}
+
 /// A bounded transaction history for the photo-annotation surface.
 ///
 /// Transactions retain complete before/after collections so undo restores ordering as well as
