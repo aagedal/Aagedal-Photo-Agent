@@ -316,6 +316,36 @@ final class AnalysisWorkspaceModel {
         persist(updatedCase)
     }
 
+    func setPhotoMeasurementCalibration(
+        annotationID: UUID,
+        calibration: AnalysisMeasurementCalibration?
+    ) {
+        guard var updatedCase = analysisCase, !sourceChanged,
+              let targetIndex = updatedCase.annotations.firstIndex(where: {
+                  $0.id == annotationID && $0.kind == .distance
+              }) else { return }
+        let before = updatedCase.annotations
+        let now = Date()
+        for index in updatedCase.annotations.indices {
+            let replacement = index == targetIndex ? calibration : nil
+            guard updatedCase.annotations[index].measurementCalibration != replacement else {
+                continue
+            }
+            updatedCase.annotations[index].measurementCalibration = replacement
+            updatedCase.annotations[index].markUpdated(now: now)
+        }
+        guard before != updatedCase.annotations else { return }
+        updatedCase.replaceAnnotations(updatedCase.annotations, now: now)
+        photoAnnotationHistory.record(
+            before: before,
+            after: updatedCase.annotations,
+            actionName: calibration == nil
+                ? "Remove Measurement Calibration"
+                : "Set Measurement Calibration"
+        )
+        persist(updatedCase)
+    }
+
     private func setAnnotation(_ annotation: AnalysisAnnotation, actionName: String?) {
         guard var updatedCase = analysisCase, !sourceChanged else { return }
         let before = updatedCase.annotations

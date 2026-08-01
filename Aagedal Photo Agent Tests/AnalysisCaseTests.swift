@@ -17,7 +17,7 @@ struct AnalysisCaseTests {
             now: Date(timeIntervalSince1970: 100)
         )
 
-        #expect(analysisCase.schemaVersion == 3)
+        #expect(analysisCase.schemaVersion == 4)
         #expect(analysisCase.source == revision)
         #expect(analysisCase.workspaceMode == .pixelAnalysis)
         #expect(analysisCase.displayPreference == .original)
@@ -139,7 +139,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version one case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 3)
+        #expect(migrated.schemaVersion == 4)
         #expect(migrated.analyzerRuns.isEmpty)
         #expect(migrated.annotations.isEmpty)
     }
@@ -175,9 +175,52 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version two case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 3)
+        #expect(migrated.schemaVersion == 4)
         #expect(migrated.analyzerRuns == analysisCase.analyzerRuns)
         #expect(migrated.annotations.isEmpty)
+    }
+
+    @Test("version three annotation cases migrate without inventing calibration")
+    func migratesVersionThreeCase() async throws {
+        let fixture = try AnalysisFixture(contents: "version three source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        analysisCase.setAnnotation(AnalysisAnnotation(
+            kind: .distance,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+                end: AnalysisNormalizedPoint(x: 0.8, y: 0.7)
+            )
+        ))
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(analysisCase)) as? [String: Any]
+        )
+        object["schemaVersion"] = 3
+
+        let caseDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: caseDirectory,
+            withIntermediateDirectories: true
+        )
+        let caseURL = caseDirectory.appendingPathComponent(
+            "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+        )
+        try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
+
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let match = await repository.loadMostRelevantCase(for: revision)
+        guard case .exact(let migrated) = match else {
+            Issue.record("Expected the version three case to migrate")
+            return
+        }
+        #expect(migrated.schemaVersion == 4)
+        #expect(migrated.annotations.count == 1)
+        #expect(migrated.annotations.first?.measurementCalibration == nil)
+        try migrated.validateForPersistence()
     }
 
     @Test("normalized photo annotations round-trip in the source-bound case")
@@ -209,6 +252,10 @@ struct AnalysisCaseTests {
             ),
             isVisible: false,
             findingIDs: ["metadata.orientation-conflict"],
+            measurementCalibration: AnalysisMeasurementCalibration(
+                knownLength: 42,
+                unit: .centimeters
+            ),
             now: Date(timeIntervalSince1970: 11)
         )
         analysisCase.setAnnotation(annotation, now: Date(timeIntervalSince1970: 12))
@@ -223,6 +270,10 @@ struct AnalysisCaseTests {
         #expect(reopened.annotations.first?.id == annotation.id)
         #expect(reopened.annotations.first?.geometry == annotation.geometry)
         #expect(reopened.annotations.first?.isVisible == false)
+        #expect(
+            reopened.annotations.first?.measurementCalibration
+                == annotation.measurementCalibration
+        )
         #expect(reopened.annotations.first?.updatedAt == Date(timeIntervalSince1970: 12))
         #expect(reopened.updatedAt == Date(timeIntervalSince1970: 12))
         try reopened.validateForPersistence()
@@ -431,6 +482,108 @@ struct AnalysisCaseTests {
         ) == nil)
     }
 
+    @Test("a calibrated segment converts every source-pixel distance across units")
+    func calibratedDistanceConversion() throws {
+        let transform = try DisplayImageTransform(
+            sourcePixelWidth: 4_000,
+            sourcePixelHeight: 3_000,
+            exifOrientation: 6
+        )
+        let calibrationStart = transform.displayNormalizedPoint(
+            fromSourcePixel: CGPoint(x: 100, y: 200)
+        )
+        let calibrationEnd = transform.displayNormalizedPoint(
+            fromSourcePixel: CGPoint(x: 1_100, y: 200)
+        )
+        let calibration = AnalysisAnnotation(
+            kind: .distance,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(
+                    x: calibrationStart.x,
+                    y: calibrationStart.y
+                ),
+                end: AnalysisNormalizedPoint(
+                    x: calibrationEnd.x,
+                    y: calibrationEnd.y
+                )
+            ),
+            measurementCalibration: AnalysisMeasurementCalibration(
+                knownLength: 25,
+                unit: .centimeters
+            )
+        )
+        let scale = try #require(AnalysisMeasurementScale(
+            annotations: [calibration],
+            annotationTransform: transform
+        ))
+
+        #expect(abs(scale.metersPerPixel - 0.00025) < 1e-12)
+        #expect(abs(scale.length(forPixelLength: 500) - 12.5) < 1e-12)
+        #expect(abs(
+            scale.length(forPixelLength: 500, in: .inches) - 4.9212598425
+        ) < 1e-9)
+        #expect(scale.formattedLength(forPixelLength: 500).hasSuffix(" cm"))
+
+        let measurement = try #require(AnalysisSourcePixelMeasurement(
+            annotation: calibration,
+            annotationTransform: transform
+        ))
+        #expect(measurement.formattedLength(calibratedBy: scale).contains("25 cm"))
+        #expect(measurement.formattedLength(calibratedBy: scale).hasSuffix("px"))
+    }
+
+    @Test("calibration is valid only on one positive-length distance annotation")
+    func validatesMeasurementCalibration() async throws {
+        let invalidCalibration = AnalysisMeasurementCalibration(
+            knownLength: 0,
+            unit: .meters
+        )
+        let invalidKind = AnalysisAnnotation(
+            kind: .line,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: 0.1, y: 0.1),
+                end: AnalysisNormalizedPoint(x: 0.2, y: 0.2)
+            ),
+            measurementCalibration: AnalysisMeasurementCalibration(
+                knownLength: 1,
+                unit: .meters
+            )
+        )
+        #expect(!invalidCalibration.isValid)
+        #expect(throws: AnalysisAnnotationValidationError.invalidCalibration) {
+            try invalidKind.validate()
+        }
+
+        let fixture = try AnalysisFixture(contents: "duplicate calibration source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let segment = AnalysisAnnotationGeometry.segment(
+            start: AnalysisNormalizedPoint(x: 0.1, y: 0.1),
+            end: AnalysisNormalizedPoint(x: 0.8, y: 0.8)
+        )
+        analysisCase.setAnnotation(AnalysisAnnotation(
+            kind: .distance,
+            geometry: segment,
+            measurementCalibration: AnalysisMeasurementCalibration(
+                knownLength: 1,
+                unit: .meters
+            )
+        ))
+        analysisCase.setAnnotation(AnalysisAnnotation(
+            kind: .distance,
+            geometry: segment,
+            measurementCalibration: AnalysisMeasurementCalibration(
+                knownLength: 2,
+                unit: .meters
+            )
+        ))
+
+        #expect(throws: AnalysisCaseValidationError.invalidAnnotations) {
+            try analysisCase.validateForPersistence()
+        }
+    }
+
     @Test("photo annotation history undoes, redoes, and discards a branched redo")
     func photoAnnotationUndoRedoTransactions() throws {
         let first = AnalysisAnnotation(
@@ -494,6 +647,46 @@ struct AnalysisCaseTests {
         #expect(history.undo() == [])
         #expect(history.undo() == [annotation])
         #expect(history.undo() == nil)
+    }
+
+    @Test("calibration replacement participates in photo annotation undo and redo")
+    func calibrationUndoRedoTransaction() throws {
+        let geometry = AnalysisAnnotationGeometry.segment(
+            start: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+            end: AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+        )
+        let first = AnalysisAnnotation(
+            kind: .distance,
+            geometry: geometry,
+            measurementCalibration: AnalysisMeasurementCalibration(
+                knownLength: 20,
+                unit: .centimeters
+            )
+        )
+        let uncalibratedSecond = AnalysisAnnotation(kind: .distance, geometry: geometry)
+        var second = uncalibratedSecond
+        var clearedFirst = first
+        clearedFirst.measurementCalibration = nil
+        second.measurementCalibration = AnalysisMeasurementCalibration(
+            knownLength: 8,
+            unit: .inches
+        )
+        var history = AnalysisAnnotationUndoHistory()
+
+        history.record(
+            before: [first, uncalibratedSecond],
+            after: [clearedFirst, second],
+            actionName: "Set Measurement Calibration"
+        )
+
+        let undoResult = history.undo()
+        let restored = try #require(undoResult)
+        #expect(restored.first?.measurementCalibration?.knownLength == 20)
+        #expect(restored.last?.measurementCalibration == nil)
+        let redoResult = history.redo()
+        let replaced = try #require(redoResult)
+        #expect(replaced.first?.measurementCalibration == nil)
+        #expect(replaced.last?.measurementCalibration?.unit == .inches)
     }
 
     @Test("restoring an annotation transaction keeps the case persistently valid")

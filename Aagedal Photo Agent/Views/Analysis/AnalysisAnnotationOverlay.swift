@@ -66,6 +66,9 @@ struct AnalysisAnnotationToolbar: View {
     let redoActionName: String?
     let onUndo: () -> Void
     let onRedo: () -> Void
+    let canCalibrate: Bool
+    let selectedIsCalibration: Bool
+    let onCalibrate: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -140,6 +143,21 @@ struct AnalysisAnnotationToolbar: View {
             .disabled(isReadOnly || !canRedo)
             .help(redoActionName.map { "Redo \($0) (⇧⌘Z)" } ?? "Redo (⇧⌘Z)")
 
+            Button(action: onCalibrate) {
+                Label(
+                    selectedIsCalibration ? "Edit Measurement Calibration" : "Calibrate Distance",
+                    systemImage: selectedIsCalibration ? "ruler.fill" : "ruler"
+                )
+                .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .disabled(isReadOnly || !canCalibrate)
+            .help(
+                selectedIsCalibration
+                    ? "Edit the known real-world length for the selected distance"
+                    : "Use the selected distance as a real-world measurement calibration"
+            )
+
             Button(role: .destructive, action: onDelete) {
                 Label("Delete Annotation", systemImage: "trash")
                     .labelStyle(.iconOnly)
@@ -166,6 +184,7 @@ struct AnalysisAnnotationOverlay: View {
     let selectedAnnotationID: UUID?
     let geometry: ImageInspectionGeometry
     let coordinateMapper: AnalysisAnnotationCoordinateMapper
+    let measurementScale: AnalysisMeasurementScale?
 
     var body: some View {
         Canvas { context, _ in
@@ -191,7 +210,8 @@ struct AnalysisAnnotationOverlay: View {
             AnalysisSourcePixelMeasurement(
                 annotation: $0,
                 annotationTransform: coordinateMapper.annotationTransform
-            )?.formattedLength.replacingOccurrences(of: " px", with: " pixels")
+            )?.formattedLength(calibratedBy: measurementScale)
+                .replacingOccurrences(of: " px", with: " pixels")
         }
         guard !measurements.isEmpty else { return "\(annotations.count) visible" }
         return "\(annotations.count) visible; source-pixel distances: "
@@ -273,7 +293,7 @@ struct AnalysisAnnotationOverlay: View {
                 end: last,
                 imageRect: geometry.imageRectInView
             )
-            let label = Text(measurement.formattedLength)
+            let label = Text(measurement.formattedLength(calibratedBy: measurementScale))
                 .font(.caption2.monospacedDigit().weight(.semibold))
             context.draw(
                 label.foregroundColor(contrast),

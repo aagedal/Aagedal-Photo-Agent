@@ -90,7 +90,7 @@ modifies the source.
 - [x] Add per-surface undo/redo transactions.
 - [x] Add annotation list/layer visibility and keyboard operations.
 - [x] Add source-pixel measurement.
-- [ ] Add user-defined calibration segment and unit conversion.
+- [x] Add user-defined calibration segment and unit conversion.
 - [ ] Add linked finding/annotation references.
 - [ ] Test all orientations, view sizes, source changes, and report transforms.
 - [ ] Validate keyboard-only and VoiceOver workflows.

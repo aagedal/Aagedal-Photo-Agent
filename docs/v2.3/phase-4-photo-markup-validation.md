@@ -9,8 +9,9 @@
   display-profile conversions.
 - Added validated stroke/fill style, visibility, timestamps, stable IDs, and finding references.
 - Added case-owned insert, replacement, and removal operations.
-- Bumped `AnalysisCase` to schema version 3 and migrate version 1 and version 2 cases with an empty
-  annotation collection while preserving the version 2 analyzer cache.
+- Bumped `AnalysisCase` to schema version 4. Versions 1 and 2 migrate with an empty annotation
+  collection, version 2 preserves its analyzer cache, and version 3 preserves annotations without
+  inventing calibration state.
 - Reject duplicate annotation IDs, invalid kind/geometry combinations, non-finite or out-of-range
   coordinates and colors, collapsed geometry, invalid styles, empty labels, invalid timestamps,
   and duplicate or empty finding references before persistence.
@@ -35,6 +36,12 @@
 - Added source-pixel distance calculation through the shared original-image transform, visible
   measurement labels on normal and derived panes, and an accessible measurement summary. Values
   remain independent of preview size, EXIF orientation, Developed crop, straighten, and zoom.
+- Added one user-defined real-world calibration per case, attached to a selected distance segment.
+  The editor accepts millimeters, centimeters, meters, inches, or feet; every distance label shows
+  the converted length alongside the underlying source-pixel length. Calibration replacement and
+  removal use the photo annotation transaction history, so delete and undo restore the scale.
+- Added a calibration badge to the annotation layer list and accessible labels for the calibration
+  editor, known segment length, and converted overlay summaries.
 
 The annotation coordinates describe the original image's display-oriented frame. Rendering,
 hit-testing, developed-preview placement, source-pixel measurement, and report export must all use
@@ -51,12 +58,12 @@ xcodebuild test \
   -only-testing:"Aagedal Photo Agent Tests/AnalysisCaseTests"
 ```
 
-Result: 21 tests passed in 1 suite.
+Result: 27 tests passed in 1 suite.
 
 Coverage includes:
 
-- version 1 to version 3 migration;
-- version 2 to version 3 migration with analyzer-run preservation;
+- version 1 and version 2 migration to version 4, including analyzer-run preservation;
+- version 3 annotation migration without fabricated calibration;
 - atomic annotation persistence and reopening without source or XMP writes;
 - every planned photo-markup kind and its required normalized geometry;
 - custom color, visibility state, and linked-finding round-trip;
@@ -65,10 +72,12 @@ Coverage includes:
 - persistent-to-developed coordinate round-trips with EXIF orientation, crop, and straighten.
 - bounded undo/redo, redo-branch invalidation, and persistently valid snapshot restoration.
 - source-pixel distance through all eight EXIF orientations and Developed representation changes.
+- positive finite calibration validation and rejection of multiple case calibrations;
+- calibrated scale math, preferred-unit formatting, and cross-unit conversion.
+- calibration replacement through photo-surface undo and redo transactions.
 
 ## Remaining Phase 4 work
 
-- Add user-defined calibration and unit conversion.
 - Add finding-link workflow in the UI.
 - Validate all orientations, representation changes, view sizes, reports, keyboard-only use, and
   VoiceOver.

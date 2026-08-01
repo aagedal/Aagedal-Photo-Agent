@@ -50,7 +50,7 @@ enum AnalysisCaseValidationError: Error, Equatable, LocalizedError, Sendable {
 /// Map and report state will join the same source-bound document in later slices rather than
 /// creating separate Pixel Analysis and OSINT sessions.
 nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     let schemaVersion: Int
     let id: UUID
@@ -146,6 +146,21 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         switch schemaVersion {
         case currentSchemaVersion:
             return try decoder.decode(AnalysisCase.self, from: data)
+        case 3:
+            let legacy = try decoder.decode(LegacyAnalysisCaseV3.self, from: data)
+            return AnalysisCase(
+                schemaVersion: currentSchemaVersion,
+                id: legacy.id,
+                title: legacy.title,
+                source: legacy.source,
+                createdAt: legacy.createdAt,
+                updatedAt: legacy.updatedAt,
+                createdByAppBuild: legacy.createdByAppBuild,
+                workspaceMode: legacy.workspaceMode,
+                displayPreference: legacy.displayPreference,
+                analyzerRuns: legacy.analyzerRuns,
+                annotations: legacy.annotations
+            )
         case 2:
             let legacy = try decoder.decode(LegacyAnalysisCaseV2.self, from: data)
             return AnalysisCase(
@@ -204,6 +219,7 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
             throw AnalysisCaseValidationError.invalidAnalyzerRuns
         }
         guard Set(annotations.map(\.id)).count == annotations.count,
+              annotations.filter({ $0.measurementCalibration != nil }).count <= 1,
               annotations.allSatisfy({ (try? $0.validate()) != nil }) else {
             throw AnalysisCaseValidationError.invalidAnnotations
         }
@@ -212,6 +228,20 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
     private static var currentAppBuild: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
     }
+}
+
+nonisolated private struct LegacyAnalysisCaseV3: Codable {
+    let schemaVersion: Int
+    let id: UUID
+    var title: String
+    let source: SourceImageRevision
+    let createdAt: Date
+    var updatedAt: Date
+    let createdByAppBuild: String
+    var workspaceMode: AnalysisWorkspaceMode
+    var displayPreference: AnalysisSourceRepresentation
+    var analyzerRuns: [AnalysisAnalyzerRun]
+    var annotations: [AnalysisAnnotation]
 }
 
 nonisolated private struct LegacyAnalysisCaseV1: Codable {

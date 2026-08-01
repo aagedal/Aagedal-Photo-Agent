@@ -14,6 +14,7 @@ struct AnalysisWorkspaceView: View {
     @State private var annotationTool: AnalysisAnnotationTool = .select
     @State private var annotationStyle = AnalysisAnnotationStyle.default
     @State private var selectedAnnotationID: UUID?
+    @State private var calibrationEditorRequest: AnalysisCalibrationEditorRequest?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -73,6 +74,26 @@ struct AnalysisWorkspaceView: View {
             if annotationStyle != annotation.style {
                 annotationStyle = annotation.style
             }
+        }
+        .sheet(item: $calibrationEditorRequest) { request in
+            AnalysisCalibrationEditor(
+                request: request,
+                onSave: { calibration in
+                    model.setPhotoMeasurementCalibration(
+                        annotationID: request.annotationID,
+                        calibration: calibration
+                    )
+                    calibrationEditorRequest = nil
+                },
+                onRemove: {
+                    model.setPhotoMeasurementCalibration(
+                        annotationID: request.annotationID,
+                        calibration: nil
+                    )
+                    calibrationEditorRequest = nil
+                },
+                onCancel: { calibrationEditorRequest = nil }
+            )
         }
     }
 
@@ -388,6 +409,9 @@ struct AnalysisWorkspaceView: View {
                 redoActionName: model.photoAnnotationRedoActionName,
                 onUndo: model.undoPhotoAnnotation,
                 onRedo: model.redoPhotoAnnotation,
+                canCalibrate: selectedDistanceAnnotation != nil,
+                selectedIsCalibration: selectedDistanceAnnotation?.measurementCalibration != nil,
+                onCalibrate: presentCalibrationEditor,
                 onDelete: {
                     guard let selectedAnnotationID else { return }
                     model.removeAnnotation(id: selectedAnnotationID)
@@ -399,6 +423,28 @@ struct AnalysisWorkspaceView: View {
         }
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var selectedDistanceAnnotation: AnalysisAnnotation? {
+        guard let selectedAnnotationID else { return nil }
+        return model.annotations.first {
+            $0.id == selectedAnnotationID && $0.kind == .distance
+        }
+    }
+
+    private func presentCalibrationEditor() {
+        guard let annotation = selectedDistanceAnnotation else { return }
+        let pixelLength = model.annotationTransform.flatMap {
+            AnalysisSourcePixelMeasurement(
+                annotation: annotation,
+                annotationTransform: $0
+            )?.formattedLength
+        }
+        calibrationEditorRequest = AnalysisCalibrationEditorRequest(
+            annotationID: annotation.id,
+            existingCalibration: annotation.measurementCalibration,
+            sourcePixelLength: pixelLength
+        )
     }
 
     @ViewBuilder
@@ -508,6 +554,16 @@ private struct AnalysisAnnotationList: View {
                         Text(annotation.listName(index: index))
                             .lineLimit(1)
 
+                        if let calibration = annotation.measurementCalibration {
+                            Text("CAL \(calibration.formattedKnownLength)")
+                                .font(.caption2.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .accessibilityLabel(
+                                    "Measurement calibration, \(calibration.formattedKnownLength)"
+                                )
+                        }
+
                         Spacer(minLength: 2)
 
                         Button {
@@ -541,6 +597,108 @@ private struct AnalysisAnnotationList: View {
             }
             .accessibilityLabel("Photo annotation layers")
         }
+    }
+}
+
+private struct AnalysisCalibrationEditorRequest: Identifiable {
+    let annotationID: UUID
+    let existingCalibration: AnalysisMeasurementCalibration?
+    let sourcePixelLength: String?
+
+    var id: UUID { annotationID }
+}
+
+private struct AnalysisCalibrationEditor: View {
+    let request: AnalysisCalibrationEditorRequest
+    let onSave: (AnalysisMeasurementCalibration) -> Void
+    let onRemove: () -> Void
+    let onCancel: () -> Void
+
+    @State private var lengthText: String
+    @State private var unit: AnalysisMeasurementUnit
+
+    init(
+        request: AnalysisCalibrationEditorRequest,
+        onSave: @escaping (AnalysisMeasurementCalibration) -> Void,
+        onRemove: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.request = request
+        self.onSave = onSave
+        self.onRemove = onRemove
+        self.onCancel = onCancel
+        _lengthText = State(initialValue: request.existingCalibration.map {
+            String($0.knownLength)
+        } ?? "")
+        _unit = State(initialValue: request.existingCalibration?.unit ?? .centimeters)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(request.existingCalibration == nil ? "Calibrate Distance" : "Edit Calibration")
+                .font(.headline)
+
+            Text(
+                "Enter the real-world length represented by this distance segment. "
+                    + "Other distance annotations will use the same scale."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if let sourcePixelLength = request.sourcePixelLength {
+                LabeledContent("Segment length", value: sourcePixelLength)
+                    .font(.callout.monospacedDigit())
+            }
+
+            HStack {
+                TextField("Known length", text: $lengthText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 150)
+                    .accessibilityLabel("Known real-world length")
+
+                Picker("Unit", selection: $unit) {
+                    ForEach(AnalysisMeasurementUnit.allCases) { unit in
+                        Text(unit.displayName).tag(unit)
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+            }
+
+            HStack {
+                if request.existingCalibration != nil {
+                    Button("Remove Calibration", role: .destructive, action: onRemove)
+                }
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    guard let knownLength else { return }
+                    onSave(AnalysisMeasurementCalibration(
+                        knownLength: knownLength,
+                        unit: unit
+                    ))
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(knownLength == nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Measurement calibration editor")
+    }
+
+    private var knownLength: Double? {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = .current
+        let trimmed = lengthText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = formatter.number(from: trimmed)?.doubleValue
+            ?? Double(trimmed.replacingOccurrences(of: ",", with: "."))
+        guard let parsed, parsed.isFinite, parsed > 0 else { return nil }
+        return parsed
     }
 }
 
@@ -921,7 +1079,11 @@ private struct AnalysisSourceThumbnail: View {
                                 draft: draftAnnotation,
                                 selectedAnnotationID: selectedAnnotationID,
                                 geometry: inspectionGeometry,
-                                coordinateMapper: coordinateMapper
+                                coordinateMapper: coordinateMapper,
+                                measurementScale: AnalysisMeasurementScale(
+                                    annotations: annotations,
+                                    annotationTransform: coordinateMapper.annotationTransform
+                                )
                             )
                         }
                     }

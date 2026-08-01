@@ -118,8 +118,86 @@ nonisolated enum AnalysisAnnotationValidationError: Error, Equatable, Sendable {
     case invalidGeometry
     case invalidStyle
     case invalidText
+    case invalidCalibration
     case invalidTimestamps
     case invalidFindingReferences
+}
+
+nonisolated enum AnalysisMeasurementUnit: String, Codable, CaseIterable, Identifiable, Sendable {
+    case millimeters
+    case centimeters
+    case meters
+    case inches
+    case feet
+
+    var id: Self { self }
+
+    var displayName: String {
+        switch self {
+        case .millimeters: "Millimeters"
+        case .centimeters: "Centimeters"
+        case .meters: "Meters"
+        case .inches: "Inches"
+        case .feet: "Feet"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .millimeters: "mm"
+        case .centimeters: "cm"
+        case .meters: "m"
+        case .inches: "in"
+        case .feet: "ft"
+        }
+    }
+
+    fileprivate var metersPerUnit: Double {
+        switch self {
+        case .millimeters: 0.001
+        case .centimeters: 0.01
+        case .meters: 1
+        case .inches: 0.0254
+        case .feet: 0.3048
+        }
+    }
+}
+
+/// A known real-world length assigned to one distance annotation.
+///
+/// The segment geometry remains the source of its pixel length. Persisting only the known length
+/// and unit prevents calibration from becoming stale when the source transform is re-resolved.
+nonisolated struct AnalysisMeasurementCalibration: Codable, Equatable, Sendable {
+    var knownLength: Double
+    var unit: AnalysisMeasurementUnit
+
+    var isValid: Bool {
+        knownLength.isFinite && knownLength > 0
+    }
+
+    var formattedKnownLength: String {
+        Self.formatted(knownLength, unit: unit)
+    }
+
+    fileprivate static func formatted(_ value: Double, unit: AnalysisMeasurementUnit) -> String {
+        let magnitude = abs(value)
+        let formattedNumber: String
+        switch magnitude {
+        case 100...:
+            formattedNumber = value.formatted(
+                .number.precision(.fractionLength(0...1)).grouping(.automatic)
+            )
+        case 10..<100:
+            formattedNumber = value.formatted(
+                .number.precision(.fractionLength(0...2)).grouping(.automatic)
+            )
+        default:
+            formattedNumber = value.formatted(
+                .number.precision(.fractionLength(0...3)).grouping(.automatic)
+            )
+        }
+        return formattedNumber + " " + unit.symbol
+    }
 }
 
 nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendable {
@@ -130,6 +208,7 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
     var style: AnalysisAnnotationStyle
     var isVisible: Bool
     var findingIDs: [String]
+    var measurementCalibration: AnalysisMeasurementCalibration?
     let createdAt: Date
     var updatedAt: Date
 
@@ -141,6 +220,7 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
         style: AnalysisAnnotationStyle = .default,
         isVisible: Bool = true,
         findingIDs: [String] = [],
+        measurementCalibration: AnalysisMeasurementCalibration? = nil,
         now: Date = Date()
     ) {
         self.id = id
@@ -150,6 +230,7 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
         self.style = style
         self.isVisible = isVisible
         self.findingIDs = findingIDs
+        self.measurementCalibration = measurementCalibration
         createdAt = now
         updatedAt = now
     }
@@ -173,6 +254,12 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
             }
         } else if text != nil, trimmedText?.isEmpty != false {
             throw AnalysisAnnotationValidationError.invalidText
+        }
+
+        if let measurementCalibration {
+            guard kind == .distance, measurementCalibration.isValid else {
+                throw AnalysisAnnotationValidationError.invalidCalibration
+            }
         }
 
         guard updatedAt >= createdAt else {
@@ -279,6 +366,11 @@ nonisolated struct AnalysisSourcePixelMeasurement: Equatable, Sendable {
         return formattedNumber + " px"
     }
 
+    func formattedLength(calibratedBy scale: AnalysisMeasurementScale?) -> String {
+        guard let scale else { return formattedLength }
+        return scale.formattedLength(forPixelLength: length) + " · " + formattedLength
+    }
+
     init?(
         annotation: AnalysisAnnotation,
         annotationTransform: DisplayImageTransform
@@ -298,6 +390,55 @@ nonisolated struct AnalysisSourcePixelMeasurement: Equatable, Sendable {
               length.isFinite else {
             return nil
         }
+    }
+}
+
+/// Resolves the case's single calibrated distance into a reusable physical scale.
+nonisolated struct AnalysisMeasurementScale: Equatable, Sendable {
+    let metersPerPixel: Double
+    let preferredUnit: AnalysisMeasurementUnit
+
+    init?(
+        annotations: [AnalysisAnnotation],
+        annotationTransform: DisplayImageTransform
+    ) {
+        let calibrationAnnotations = annotations.filter {
+            $0.measurementCalibration != nil
+        }
+        guard calibrationAnnotations.count == 1,
+        let calibrationAnnotation = calibrationAnnotations.first,
+        let calibration = calibrationAnnotation.measurementCalibration,
+        calibration.isValid,
+        let pixelMeasurement = AnalysisSourcePixelMeasurement(
+            annotation: calibrationAnnotation,
+            annotationTransform: annotationTransform
+        ),
+        pixelMeasurement.length > 0 else {
+            return nil
+        }
+        metersPerPixel = calibration.knownLength * calibration.unit.metersPerUnit
+            / Double(pixelMeasurement.length)
+        preferredUnit = calibration.unit
+        guard metersPerPixel.isFinite, metersPerPixel > 0 else { return nil }
+    }
+
+    func length(
+        forPixelLength pixelLength: CGFloat,
+        in unit: AnalysisMeasurementUnit? = nil
+    ) -> Double {
+        let resolvedUnit = unit ?? preferredUnit
+        return Double(pixelLength) * metersPerPixel / resolvedUnit.metersPerUnit
+    }
+
+    func formattedLength(
+        forPixelLength pixelLength: CGFloat,
+        in unit: AnalysisMeasurementUnit? = nil
+    ) -> String {
+        let resolvedUnit = unit ?? preferredUnit
+        return AnalysisMeasurementCalibration.formatted(
+            length(forPixelLength: pixelLength, in: resolvedUnit),
+            unit: resolvedUnit
+        )
     }
 }
 
