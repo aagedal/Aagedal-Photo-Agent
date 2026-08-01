@@ -28,6 +28,7 @@ struct AnalysisWorkspaceView: View {
 
             workspaceBody
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Image Analysis workspace")
         .onChange(of: model.sourceURL) {
@@ -223,12 +224,15 @@ struct AnalysisWorkspaceView: View {
         VStack(spacing: 0) {
             HSplitView {
                 sourcePreview
+                    .frame(minWidth: 420, minHeight: 320)
                 ContentUnavailableView(
                     "Map Evidence",
                     systemImage: "map",
                     description: Text("Satellite and hybrid map evidence arrives in the OSINT map slice.")
                 )
+                .frame(minWidth: 260)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             Label(
                 "Time and location evidence will remain case-only and will not modify IPTC metadata.",
@@ -239,6 +243,7 @@ struct AnalysisWorkspaceView: View {
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var caseSidebar: some View {

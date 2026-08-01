@@ -68,6 +68,7 @@ struct AnalysisScopeWorkspace: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .frame(width: 176)
                 .help("Render scopes from the full displayed image or a selected region")
 
@@ -91,6 +92,7 @@ struct AnalysisScopeWorkspace: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .frame(width: 116)
                 .help("Show one, two, or four resizable scopes")
             }

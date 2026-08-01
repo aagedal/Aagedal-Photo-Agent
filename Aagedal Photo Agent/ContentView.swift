@@ -126,6 +126,8 @@ struct ContentView: View {
     @AppStorage(UserDefaultsKeys.metadataPanelWidth) private var metadataPanelWidth: Double = 320
     @State private var mainViewMode: MainViewMode = .browser
     @State private var lastNonPeopleViewMode: MainViewMode = .browser
+    @State private var navigationSplitViewVisibility: NavigationSplitViewVisibility = .all
+    @State private var navigationSplitViewVisibilityBeforeAnalysis: NavigationSplitViewVisibility?
     /// Defers the Develop transition until the separate full-screen window has
     /// actually been ordered out. Building the editor underneath that key,
     /// always-on-top window can leave AppKit focus handling wedged.
@@ -259,6 +261,15 @@ struct ContentView: View {
                 let editing = (mode == .editing)
                 browserViewModel.fullScreenImageCache.setPrefetchSuppressed(editing)
                 browserViewModel.fullScreenImageCache.setEditingMemoryProfile(editing)
+            }
+            .onChange(of: mainViewMode) { oldMode, newMode in
+                if oldMode != .imageAnalysis, newMode == .imageAnalysis {
+                    navigationSplitViewVisibilityBeforeAnalysis = navigationSplitViewVisibility
+                    navigationSplitViewVisibility = .detailOnly
+                } else if oldMode == .imageAnalysis, newMode != .imageAnalysis {
+                    navigationSplitViewVisibility = navigationSplitViewVisibilityBeforeAnalysis ?? .all
+                    navigationSplitViewVisibilityBeforeAnalysis = nil
+                }
             }
             .onChange(of: importViewModel.isImporting) { _, isImporting in
                 BackgroundOperationMonitor.shared.isImporting = isImporting
@@ -663,7 +674,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var mainContent: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $navigationSplitViewVisibility) {
             sidebar
                 .navigationSplitViewColumnWidth(min: 250, ideal: 320, max: 800)
         } detail: {
