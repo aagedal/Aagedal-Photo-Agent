@@ -159,7 +159,7 @@ struct AnalysisMapEvidenceView: View {
                 "Map Style",
                 selection: Binding(
                     get: { mapState.style },
-                    set: onSetStyle
+                    set: { style in onSetStyle(style) }
                 )
             ) {
                 ForEach(AnalysisMapStyle.allCases, id: \.self) { style in
