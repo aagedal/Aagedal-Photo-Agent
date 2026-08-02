@@ -235,10 +235,13 @@ struct AnalysisWorkspaceView: View {
             HSplitView {
                 sourcePreview
                     .frame(minWidth: 420, minHeight: 320)
-                ContentUnavailableView(
-                    "Map Evidence",
-                    systemImage: "map",
-                    description: Text("Satellite and hybrid map evidence arrives in the OSINT map slice.")
+                AnalysisMapEvidenceView(
+                    mapState: model.mapState,
+                    embeddedLocation: model.embeddedLocation,
+                    isReadOnly: model.sourceChanged,
+                    onSetStyle: model.setMapStyle,
+                    onSetViewport: model.setMapViewport,
+                    onSetInvestigationLocation: model.setInvestigationLocation
                 )
                 .frame(minWidth: 260)
             }

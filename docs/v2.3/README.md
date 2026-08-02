@@ -30,6 +30,12 @@ Embedded capture, GPS, file-system, sidecar, and user-entered evidence retain th
 precision, while timezone-less wall-clock values remain explicitly unresolved rather than being
 coerced to UTC. Only timezone-qualified timestamps participate in absolute chronology checks; the
 timeline highlights those conflicts and supports case-only user observations without IPTC writes.
+The OSINT map now distinguishes embedded GPS from an investigator location, supports persisted
+satellite/hybrid viewports, shared DD/DMS/DDM entry, MapKit place search, and configured
+online/offline reverse geocoding. Investigator coordinates, place-name provenance, and viewport
+state remain in the analysis JSON and never enter the IPTC/XMP write path. The photo-markup toolbar
+now exposes its fixed palette as a direct swatch row, expanded with red, green, and cyan alongside
+the existing colors and custom color well.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

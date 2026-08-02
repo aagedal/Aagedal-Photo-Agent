@@ -102,11 +102,11 @@ reportable without editing IPTC.
 
 - [x] Implement timestamp evidence model with source, precision, and timezone-known state.
 - [x] Build timeline/conflict UI.
-- [ ] Reuse coordinate parsing, place search, and reverse geocoding patterns.
-- [ ] Add satellite/hybrid map with persisted viewport.
+- [x] Reuse coordinate parsing, place search, and reverse geocoding patterns.
+- [x] Add satellite/hybrid map with persisted viewport.
 - [ ] Add map marker, line, shape, distance, label, and visibility tools.
 - [ ] Link photo and map annotations by stable label ID.
-- [ ] Ensure analysis coordinates never silently write IPTC GPS.
+- [x] Ensure analysis coordinates never silently write IPTC GPS.
 - [ ] Add offline/network-failure and no-imagery states.
 - [ ] Capture attribution-compliant report evidence.
 - [ ] Decide and, if approved, implement any sun/shadow conditional analyzer.

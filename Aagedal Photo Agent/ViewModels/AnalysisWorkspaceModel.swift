@@ -80,6 +80,17 @@ final class AnalysisWorkspaceModel {
         AnalysisTimelineResolver.conflicts(in: timestampEvidence)
     }
 
+    var mapState: AnalysisMapState {
+        analysisCase?.mapState ?? AnalysisMapState()
+    }
+
+    var embeddedLocation: AnalysisGeoCoordinate? {
+        guard let latitude = sourceFacts?.latitude,
+              let longitude = sourceFacts?.longitude else { return nil }
+        let coordinate = AnalysisGeoCoordinate(latitude: latitude, longitude: longitude)
+        return coordinate.isValid ? coordinate : nil
+    }
+
     var canUndoPhotoAnnotation: Bool {
         !sourceChanged && photoAnnotationHistory.canUndo
     }
@@ -309,6 +320,32 @@ final class AnalysisWorkspaceModel {
                   $0.id == id && $0.source == .userEntered
               }),
               updatedCase.removeTimestampEvidence(id: id) else { return }
+        persist(updatedCase)
+    }
+
+    func setMapStyle(_ style: AnalysisMapStyle) {
+        guard var updatedCase = analysisCase,
+              !sourceChanged,
+              updatedCase.mapState.style != style else { return }
+        updatedCase.setMapStyle(style)
+        persist(updatedCase)
+    }
+
+    func setMapViewport(_ viewport: AnalysisMapViewport) {
+        guard viewport.isValid,
+              var updatedCase = analysisCase,
+              !sourceChanged,
+              updatedCase.mapState.viewport != viewport else { return }
+        updatedCase.setMapViewport(viewport)
+        persist(updatedCase)
+    }
+
+    func setInvestigationLocation(_ location: AnalysisLocationEvidence?) {
+        guard location?.validate() ?? true,
+              var updatedCase = analysisCase,
+              !sourceChanged,
+              updatedCase.mapState.investigationLocation != location else { return }
+        updatedCase.setInvestigationLocation(location)
         persist(updatedCase)
     }
 

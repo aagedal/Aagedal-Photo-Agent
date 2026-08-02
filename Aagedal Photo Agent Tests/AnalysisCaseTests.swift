@@ -17,12 +17,13 @@ struct AnalysisCaseTests {
             now: Date(timeIntervalSince1970: 100)
         )
 
-        #expect(analysisCase.schemaVersion == 5)
+        #expect(analysisCase.schemaVersion == 6)
         #expect(analysisCase.source == revision)
         #expect(analysisCase.workspaceMode == .pixelAnalysis)
         #expect(analysisCase.displayPreference == .original)
         #expect(analysisCase.annotations.isEmpty)
         #expect(analysisCase.timestampEvidence.isEmpty)
+        #expect(analysisCase.mapState == AnalysisMapState())
         #expect(analysisCase.createdByAppBuild == "test")
         try analysisCase.validateForPersistence()
     }
@@ -140,7 +141,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version one case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 5)
+        #expect(migrated.schemaVersion == 6)
         #expect(migrated.analyzerRuns.isEmpty)
         #expect(migrated.annotations.isEmpty)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -177,7 +178,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version two case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 5)
+        #expect(migrated.schemaVersion == 6)
         #expect(migrated.analyzerRuns == analysisCase.analyzerRuns)
         #expect(migrated.annotations.isEmpty)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -220,7 +221,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version three case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 5)
+        #expect(migrated.schemaVersion == 6)
         #expect(migrated.annotations.count == 1)
         #expect(migrated.annotations.first?.measurementCalibration == nil)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -265,7 +266,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version four case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 5)
+        #expect(migrated.schemaVersion == 6)
         #expect(migrated.annotations.map(\.id) == analysisCase.annotations.map(\.id))
         #expect(migrated.annotations.map(\.kind) == analysisCase.annotations.map(\.kind))
         #expect(migrated.annotations.map(\.geometry) == analysisCase.annotations.map(\.geometry))
@@ -313,6 +314,101 @@ struct AnalysisCaseTests {
         #expect(reopened.timestampEvidence.first?.value.timezoneKnown == false)
         #expect(reopened.timestampEvidence.first?.value.precision == .minute)
         #expect(try Data(contentsOf: fixture.fileURL) == before)
+    }
+
+    @Test("version five timeline cases migrate with a default map state")
+    func migratesVersionFiveCase() async throws {
+        let fixture = try AnalysisFixture(contents: "version five source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(analysisCase)) as? [String: Any]
+        )
+        object["schemaVersion"] = 5
+        object["mapState"] = nil
+
+        let caseDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: caseDirectory,
+            withIntermediateDirectories: true
+        )
+        let caseURL = caseDirectory.appendingPathComponent(
+            "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+        )
+        try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
+
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let migrated) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the version five case to migrate")
+            return
+        }
+        #expect(migrated.schemaVersion == 6)
+        #expect(migrated.timestampEvidence == analysisCase.timestampEvidence)
+        #expect(migrated.mapState == AnalysisMapState())
+        try migrated.validateForPersistence()
+    }
+
+    @Test("map viewport and investigator location persist without writing image GPS")
+    func mapEvidenceRoundTripDoesNotWriteSource() async throws {
+        let fixture = try AnalysisFixture(contents: "map evidence source")
+        defer { fixture.remove() }
+        let before = try Data(contentsOf: fixture.fileURL)
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        var analysisCase = AnalysisCase.create(
+            for: revision,
+            appBuild: "test",
+            now: Date(timeIntervalSince1970: 1)
+        )
+        analysisCase.setMapStyle(.satellite, now: Date(timeIntervalSince1970: 2))
+        analysisCase.setMapViewport(AnalysisMapViewport(
+            center: AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522),
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.06
+        ), now: Date(timeIntervalSince1970: 3))
+        analysisCase.setInvestigationLocation(AnalysisLocationEvidence(
+            coordinate: AnalysisGeoCoordinate(latitude: 59.911, longitude: 10.75),
+            source: .placeSearch,
+            sourceDetail: "Oslo, Norway",
+            placeName: "Oslo",
+            placeNameSource: .placeSearch,
+            now: Date(timeIntervalSince1970: 3)
+        ), now: Date(timeIntervalSince1970: 4))
+
+        try await repository.save(analysisCase)
+        guard case .exact(let reopened) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected map evidence to reopen")
+            return
+        }
+        #expect(reopened.mapState.style == .satellite)
+        #expect(reopened.mapState.viewport?.center.latitude == 59.9139)
+        #expect(reopened.mapState.investigationLocation?.source == .placeSearch)
+        #expect(reopened.mapState.investigationLocation?.placeName == "Oslo")
+        #expect(try Data(contentsOf: fixture.fileURL) == before)
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.fileURL.deletingPathExtension().appendingPathExtension("xmp").path
+        ))
+    }
+
+    @Test("map state validation rejects invalid coordinates and viewports")
+    func rejectsInvalidMapState() async throws {
+        let fixture = try AnalysisFixture(contents: "invalid map source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        analysisCase.mapState.viewport = AnalysisMapViewport(
+            center: AnalysisGeoCoordinate(latitude: 91, longitude: 10),
+            latitudeDelta: 0,
+            longitudeDelta: 1
+        )
+
+        #expect(throws: AnalysisCaseValidationError.invalidMapState) {
+            try analysisCase.validateForPersistence()
+        }
     }
 
     @Test("timestamp validation rejects invalid dates, offsets, and non-user case entries")
