@@ -128,6 +128,23 @@ struct AnalysisWorkspaceView: View {
             .frame(maxWidth: 280)
             .disabled(model.analysisCase == nil)
 
+            if model.workspaceMode == .pixelAnalysis {
+                Picker("Pixel View", selection: $pixelViewMode) {
+                    ForEach(AnalysisPixelViewMode.allCases, id: \.self) { mode in
+                        Text(mode.compactLabel)
+                            .tag(mode)
+                            .accessibilityLabel(mode.displayName)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(minWidth: 360, idealWidth: 460, maxWidth: 540)
+                .disabled(model.analysisCase == nil)
+                .help(
+                    "Show the normal image, a linear-light channel, relative luminance, "
+                        + "or a fixed-parameter JPEG compression residual"
+                )
+            }
+
             Spacer()
 
             Picker(
@@ -370,35 +387,13 @@ struct AnalysisWorkspaceView: View {
 
     private var sourcePreview: some View {
         VStack(spacing: 10) {
-            HStack {
-                Text(model.displayPreference.displayName)
-                    .font(.caption.weight(.semibold))
-                Spacer()
-                if let name = model.sourceURL?.lastPathComponent {
-                    Text(name)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .help(name)
-                }
+            if pixelViewMode != .normal {
+                Text(pixelViewMode.methodLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .accessibilityLabel("Pixel view method: \(pixelViewMode.methodLabel)")
             }
-
-            Picker("Pixel View", selection: $pixelViewMode) {
-                ForEach(AnalysisPixelViewMode.allCases, id: \.self) { mode in
-                    Text(mode.compactLabel)
-                        .tag(mode)
-                        .accessibilityLabel(mode.displayName)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 540)
-            .help("Show the normal image, a linear-light channel, relative luminance, or a fixed-parameter JPEG compression residual")
-
-            Text(pixelViewMode.methodLabel)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .accessibilityLabel("Pixel view method: \(pixelViewMode.methodLabel)")
 
             if let limitation = pixelViewMode.limitationLabel {
                 Label(limitation, systemImage: "info.circle")

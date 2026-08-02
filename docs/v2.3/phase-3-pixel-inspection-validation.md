@@ -27,6 +27,9 @@
 - Converted normalized selection bounds outward to stable integer pixel edges and cropped one
   shared `CGImage` input for all visible scope cards.
 - Added Normal, Red, Green, Blue, and Luminance view modes above the analysis image.
+- Moved the Pixel View segmented control into the shared workspace header and removed the
+  duplicated representation/filename preview row. Normal mode no longer spends a row on its
+  redundant method label; derived modes retain their method and limitation disclosures.
 - Evaluated the channel matrices in extended-linear sRGB, preserved alpha and image geometry,
   and labeled the active method in the UI.
 - Fed the selected channel/luminance visualization to the existing scope and selected-region
