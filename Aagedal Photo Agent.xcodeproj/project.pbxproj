@@ -55,6 +55,7 @@
 		AB4300000000000000000002 /* ScopeRenderRequestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4300000000000000000001 /* ScopeRenderRequestTests.swift */; };
 		AB4400000000000000000002 /* AnalysisScopeSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4400000000000000000001 /* AnalysisScopeSelectionTests.swift */; };
 		AB4500000000000000000002 /* AnalysisPixelViewRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4500000000000000000001 /* AnalysisPixelViewRendererTests.swift */; };
+		AB4600000000000000000002 /* AnalysisReportSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4600000000000000000001 /* AnalysisReportSnapshotTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
@@ -123,6 +124,7 @@
 		AB4300000000000000000001 /* ScopeRenderRequestTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ScopeRenderRequestTests.swift; sourceTree = "<group>"; };
 		AB4400000000000000000001 /* AnalysisScopeSelectionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisScopeSelectionTests.swift; sourceTree = "<group>"; };
 		AB4500000000000000000001 /* AnalysisPixelViewRendererTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisPixelViewRendererTests.swift; sourceTree = "<group>"; };
+		AB4600000000000000000001 /* AnalysisReportSnapshotTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisReportSnapshotTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -219,6 +221,7 @@
 				AB4300000000000000000001 /* ScopeRenderRequestTests.swift */,
 				AB4400000000000000000001 /* AnalysisScopeSelectionTests.swift */,
 				AB4500000000000000000001 /* AnalysisPixelViewRendererTests.swift */,
+				AB4600000000000000000001 /* AnalysisReportSnapshotTests.swift */,
 			);
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
@@ -416,6 +419,7 @@
 				AB4300000000000000000002 /* ScopeRenderRequestTests.swift in Sources */,
 				AB4400000000000000000002 /* AnalysisScopeSelectionTests.swift in Sources */,
 				AB4500000000000000000002 /* AnalysisPixelViewRendererTests.swift in Sources */,
+				AB4600000000000000000002 /* AnalysisReportSnapshotTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

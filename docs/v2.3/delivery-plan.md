@@ -23,7 +23,7 @@ legally and reproducibly.
 - [ ] Decide target hardware tiers and concrete memory/latency budgets.
 - [ ] Prototype raw metadata graph extraction without flattening conflicting namespaces.
 - [ ] Prototype one compression/residual view and document benign counterexamples.
-- [ ] Verify MapKit satellite snapshot/report redistribution and attribution requirements.
+- [x] Verify MapKit satellite snapshot/report redistribution and attribution requirements.
 - [ ] Evaluate candidate on-device AI-origin models and licenses; record a ship/no-ship decision.
 - [ ] Decide version treatment of decoder/process state and unparsed corrections.
 - [ ] Choose keyboard shortcuts after auditing existing shortcuts.
@@ -108,16 +108,16 @@ reportable without editing IPTC.
 - [x] Link photo and map annotations by stable label ID.
 - [x] Ensure analysis coordinates never silently write IPTC GPS.
 - [x] Add offline/network-failure and no-imagery states.
-- [ ] Capture attribution-compliant report evidence.
-- [ ] Decide and, if approved, implement any sun/shadow conditional analyzer.
+- [x] Capture attribution-compliant report evidence.
+- [x] Decide and, if approved, implement any sun/shadow conditional analyzer.
 
 ## Phase 6 — PDF report
 
 **Exit gate:** a report generated from a frozen case snapshot is visually correct, reproducible, and
 honest about methods and limitations.
 
-- [ ] Define immutable report snapshot.
-- [ ] Revalidate source hash at export.
+- [x] Define immutable report snapshot.
+- [x] Revalidate source hash at export.
 - [ ] Implement cover, facts/provenance, findings, figures, timeline/map, user observations,
   methodology, limitations, and appendix.
 - [ ] Add selectable sensitive fields and redaction warning.

@@ -43,6 +43,12 @@ The map now reports offline connectivity, failed MapKit requests, and unavailabl
 as distinct non-destructive states. A cancellable visible-region probe supplies a retryable imagery
 status, place autocomplete no longer drops errors silently, and coordinate entry plus saved map
 evidence remain usable when online services are unavailable.
+Phase 5 report evidence is now frozen as exact WGS-84 viewport and visible geographic markup for an
+app-rendered schematic; exported reports will not persist or redistribute Apple map tiles. The
+immutable Phase 6 report snapshot re-hashes the current source before capture, orders report inputs
+deterministically, filters excluded findings, and includes a live Apple Maps viewport reference.
+The conditional sun/shadow analyzer is not approved for 2.3 because terrain, clock/timezone, and
+measurement uncertainty have not yet passed an evidence-quality gate.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

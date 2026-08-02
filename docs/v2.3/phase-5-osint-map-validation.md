@@ -31,6 +31,13 @@
   accessible banners with retry behavior; the health-check snapshot is never persisted or exported.
 - Kept coordinate entry and existing case evidence available offline, disabled only the online place
   search, and surfaced autocomplete failures that the shared search completer previously discarded.
+- Recorded ADR-004 after reviewing Apple's current Developer Program License Agreement and MapKit
+  documentation. Reports freeze the exact viewport and visible geographic evidence for a WGS-84
+  schematic, state that no Apple map imagery is embedded, and include a live Apple Maps reference.
+  The MapKit snapshot probe remains temporary and is not reused as report content.
+- Did not approve a sun/shadow analyzer for 2.3. A defensible implementation still needs explicit
+  terrain/elevation assumptions, timezone and clock uncertainty, shadow measurement calibration,
+  and a validation corpus; a nominal solar bearing without those inputs would overstate the case.
 
 ## Automated validation
 
@@ -69,7 +76,10 @@ Map-specific coverage includes:
 5. Trigger Retry in a connected failure state and confirm only the temporary health-check snapshot
    is requested; no map image is added to the case JSON or source folder.
 
-## Remaining Phase 5 work
+## Phase 5 disposition
 
-- Resolve report snapshot/attribution requirements and capture attribution-compliant evidence.
-- Decide the conditional sun/shadow analyzer gate.
+- Automated map/timeline/report-evidence foundations are complete.
+- Manual fixture-corpus, keyboard, and VoiceOver validation remains part of the cross-phase release
+  hardening pass.
+- Sun/shadow analysis remains a post-2.3 conditional feature unless a later gate supplies the
+  required assumptions and validation evidence.
