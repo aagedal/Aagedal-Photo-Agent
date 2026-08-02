@@ -25,6 +25,11 @@ Findings and photo annotations can now be linked many-to-many from finding detai
 participate in annotation undo/redo, show counts in both sidebar lists, and focus linked markup.
 The Select tool now moves all annotation kinds and resizes segment, rectangle, and ellipse markup
 from visible handles, committing each completed drag as one undoable source-frame edit.
+Phase 5 has started with a persisted, source-bound timestamp evidence model and an OSINT timeline.
+Embedded capture, GPS, file-system, sidecar, and user-entered evidence retain their source and
+precision, while timezone-less wall-clock values remain explicitly unresolved rather than being
+coerced to UTC. Only timezone-qualified timestamps participate in absolute chronology checks; the
+timeline highlights those conflicts and supports case-only user observations without IPTC writes.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

@@ -15,6 +15,7 @@ struct AnalysisWorkspaceView: View {
     @State private var annotationStyle = AnalysisAnnotationStyle.default
     @State private var selectedAnnotationID: UUID?
     @State private var calibrationEditorRequest: AnalysisCalibrationEditorRequest?
+    @State private var isTimestampEditorPresented = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -94,6 +95,15 @@ struct AnalysisWorkspaceView: View {
                     calibrationEditorRequest = nil
                 },
                 onCancel: { calibrationEditorRequest = nil }
+            )
+        }
+        .sheet(isPresented: $isTimestampEditorPresented) {
+            AnalysisTimestampEditor(
+                onSave: { evidence in
+                    model.setTimestampEvidence(evidence)
+                    isTimestampEditorPresented = false
+                },
+                onCancel: { isTimestampEditorPresented = false }
             )
         }
     }
@@ -221,7 +231,7 @@ struct AnalysisWorkspaceView: View {
     }
 
     private var osintBody: some View {
-        VStack(spacing: 0) {
+        VSplitView {
             HSplitView {
                 sourcePreview
                     .frame(minWidth: 420, minHeight: 320)
@@ -233,15 +243,15 @@ struct AnalysisWorkspaceView: View {
                 .frame(minWidth: 260)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            Label(
-                "Time and location evidence will remain case-only and will not modify IPTC metadata.",
-                systemImage: "clock.badge.questionmark"
+
+            AnalysisTimelineView(
+                evidence: model.timestampEvidence,
+                conflicts: model.timestampConflicts,
+                isReadOnly: model.sourceChanged,
+                onAdd: { isTimestampEditorPresented = true },
+                onDelete: model.removeTimestampEvidence
             )
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minHeight: 190, idealHeight: 250, maxHeight: 340)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -646,6 +656,241 @@ private struct AnalysisAnnotationList: View {
             }
             .accessibilityLabel("Photo annotation layers")
         }
+    }
+}
+
+private struct AnalysisTimelineView: View {
+    let evidence: [AnalysisTimestampEvidence]
+    let conflicts: [AnalysisTimestampConflict]
+    let isReadOnly: Bool
+    let onAdd: () -> Void
+    let onDelete: (UUID) -> Void
+
+    private var conflictedIDs: Set<UUID> {
+        conflicts.reduce(into: Set<UUID>()) { result, conflict in
+            result.formUnion(conflict.evidenceIDs)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Time Evidence", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                    .font(.headline)
+                Spacer()
+                Button(action: onAdd) {
+                    Label("Add Observation", systemImage: "plus")
+                }
+                .disabled(isReadOnly)
+                .help("Add a case-only time observation without changing image metadata")
+            }
+
+            if !conflicts.isEmpty {
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(conflicts) { conflict in
+                            Label(conflict.explanation, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                        }
+                    }
+                    .padding(.top, 5)
+                } label: {
+                    Text("\(conflicts.count) timestamp \(conflicts.count == 1 ? "conflict" : "conflicts")")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+                .accessibilityLabel("Timestamp conflicts")
+            }
+
+            if evidence.isEmpty {
+                ContentUnavailableView(
+                    "No Time Evidence",
+                    systemImage: "clock.badge.questionmark",
+                    description: Text("No readable source timestamps were found. You can add a case-only observation.")
+                )
+            } else {
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: 10) {
+                        ForEach(evidence) { item in
+                            timestampCard(item)
+                        }
+                    }
+                    .padding(.bottom, 4)
+                }
+            }
+
+            Text("Source, precision, and timezone status stay explicit. User observations are stored only in the analysis case and never write IPTC metadata.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(14)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Time evidence timeline")
+    }
+
+    private func timestampCard(_ item: AnalysisTimestampEvidence) -> some View {
+        let conflicted = conflictedIDs.contains(item.id)
+        let timezoneDescription = item.value.timezoneKnown
+            ? "timezone known"
+            : "timezone unknown"
+        let conflictDescription = conflicted ? ", conflict detected" : ""
+        let accessibilityDescription = [
+            item.title,
+            item.value.formatted,
+            item.source.displayName,
+            "\(item.value.precision.displayName) precision",
+            timezoneDescription + conflictDescription,
+        ].joined(separator: ", ")
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(item.title, systemImage: icon(for: item.kind))
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                if conflicted {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Conflicting timestamp")
+                }
+                if item.source == .userEntered {
+                    Button(role: .destructive) {
+                        onDelete(item.id)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isReadOnly)
+                    .help("Delete this user observation")
+                }
+            }
+
+            Text(item.value.formatted)
+                .font(.system(.callout, design: .monospaced).weight(.medium))
+                .textSelection(.enabled)
+
+            HStack(spacing: 6) {
+                Text(item.source.displayName)
+                Text("·")
+                Text(item.value.precision.displayName)
+                Text("·")
+                Label(
+                    item.value.timezoneKnown ? "Timezone known" : "Timezone unknown",
+                    systemImage: item.value.timezoneKnown ? "globe" : "questionmark.circle"
+                )
+            }
+            .font(.caption2)
+            .foregroundStyle(item.value.timezoneKnown ? Color.secondary : Color.orange)
+
+            Text(item.sourceDetail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .padding(10)
+        .frame(width: 285, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9)
+                .fill(conflicted ? Color.orange.opacity(0.10) : Color.secondary.opacity(0.08))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(conflicted ? Color.orange.opacity(0.65) : Color.clear, lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    private func icon(for kind: AnalysisTimestampKind) -> String {
+        switch kind {
+        case .capture: "camera"
+        case .gps: "location"
+        case .fileCreation: "doc.badge.plus"
+        case .fileModification: "doc.badge.clock"
+        case .sidecarModification: "doc.text"
+        case .observation: "person.crop.circle.badge.clock"
+        }
+    }
+}
+
+private struct AnalysisTimestampEditor: View {
+    let onSave: (AnalysisTimestampEvidence) -> Void
+    let onCancel: () -> Void
+    @State private var title = "Observed time"
+    @State private var selectedDate = Date()
+    @State private var precision: AnalysisTimestampPrecision = .minute
+    @State private var timezoneKnown = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Add Time Observation")
+                .font(.headline)
+
+            Text("Record an investigator-supplied time separately from embedded and file-system evidence.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            TextField("Observation label", text: $title)
+                .textFieldStyle(.roundedBorder)
+
+            DatePicker(
+                "Observed date and time",
+                selection: $selectedDate,
+                displayedComponents: precision == .day ? [.date] : [.date, .hourAndMinute]
+            )
+
+            Picker("Precision", selection: $precision) {
+                Text(AnalysisTimestampPrecision.day.displayName)
+                    .tag(AnalysisTimestampPrecision.day)
+                Text(AnalysisTimestampPrecision.minute.displayName)
+                    .tag(AnalysisTimestampPrecision.minute)
+            }
+            .pickerStyle(.segmented)
+
+            Toggle("The current Mac timezone applies", isOn: $timezoneKnown)
+                .help("Leave off when the timezone for this observation is not established")
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Add") {
+                    onSave(makeEvidence())
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 430)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Add time observation")
+    }
+
+    private func makeEvidence() -> AnalysisTimestampEvidence {
+        var value = AnalysisTimestampValue(
+            date: selectedDate,
+            precision: precision,
+            timeZone: .current
+        )
+        if precision == .day {
+            value.hour = 0
+            value.minute = 0
+            value.second = 0
+            value.nanosecond = 0
+        } else {
+            value.second = 0
+            value.nanosecond = 0
+        }
+        if !timezoneKnown {
+            value.utcOffsetMinutes = nil
+        }
+        return AnalysisTimestampEvidence(
+            kind: .observation,
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            value: value,
+            source: .userEntered,
+            sourceDetail: "Entered in this analysis case"
+        )
     }
 }
 

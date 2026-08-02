@@ -67,6 +67,19 @@ final class AnalysisWorkspaceModel {
         analysisCase?.annotations ?? []
     }
 
+    var timestampEvidence: [AnalysisTimestampEvidence] {
+        let sourceEvidence = sourceFacts.map {
+            AnalysisTimelineResolver.sourceEvidence(from: $0, rawMetadata: rawMetadata)
+        } ?? []
+        return AnalysisTimelineResolver.sorted(
+            sourceEvidence + (analysisCase?.timestampEvidence ?? [])
+        )
+    }
+
+    var timestampConflicts: [AnalysisTimestampConflict] {
+        AnalysisTimelineResolver.conflicts(in: timestampEvidence)
+    }
+
     var canUndoPhotoAnnotation: Bool {
         !sourceChanged && photoAnnotationHistory.canUndo
     }
@@ -279,6 +292,24 @@ final class AnalysisWorkspaceModel {
 
     func setFindingIncluded(_ findingID: String, included: Bool) {
         analysisRunner.setFindingIncluded(findingID, included: included)
+    }
+
+    func setTimestampEvidence(_ evidence: AnalysisTimestampEvidence) {
+        guard evidence.source == .userEntered,
+              var updatedCase = analysisCase,
+              !sourceChanged else { return }
+        updatedCase.setTimestampEvidence(evidence)
+        persist(updatedCase)
+    }
+
+    func removeTimestampEvidence(id: UUID) {
+        guard var updatedCase = analysisCase,
+              !sourceChanged,
+              updatedCase.timestampEvidence.contains(where: {
+                  $0.id == id && $0.source == .userEntered
+              }),
+              updatedCase.removeTimestampEvidence(id: id) else { return }
+        persist(updatedCase)
     }
 
     func setFindingLink(

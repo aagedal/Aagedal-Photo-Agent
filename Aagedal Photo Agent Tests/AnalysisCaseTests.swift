@@ -17,11 +17,12 @@ struct AnalysisCaseTests {
             now: Date(timeIntervalSince1970: 100)
         )
 
-        #expect(analysisCase.schemaVersion == 4)
+        #expect(analysisCase.schemaVersion == 5)
         #expect(analysisCase.source == revision)
         #expect(analysisCase.workspaceMode == .pixelAnalysis)
         #expect(analysisCase.displayPreference == .original)
         #expect(analysisCase.annotations.isEmpty)
+        #expect(analysisCase.timestampEvidence.isEmpty)
         #expect(analysisCase.createdByAppBuild == "test")
         try analysisCase.validateForPersistence()
     }
@@ -139,9 +140,10 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version one case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 4)
+        #expect(migrated.schemaVersion == 5)
         #expect(migrated.analyzerRuns.isEmpty)
         #expect(migrated.annotations.isEmpty)
+        #expect(migrated.timestampEvidence.isEmpty)
     }
 
     @Test("version two analyzer cases migrate with an empty annotation collection")
@@ -175,9 +177,10 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version two case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 4)
+        #expect(migrated.schemaVersion == 5)
         #expect(migrated.analyzerRuns == analysisCase.analyzerRuns)
         #expect(migrated.annotations.isEmpty)
+        #expect(migrated.timestampEvidence.isEmpty)
     }
 
     @Test("version three annotation cases migrate without inventing calibration")
@@ -217,10 +220,211 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version three case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 4)
+        #expect(migrated.schemaVersion == 5)
         #expect(migrated.annotations.count == 1)
         #expect(migrated.annotations.first?.measurementCalibration == nil)
+        #expect(migrated.timestampEvidence.isEmpty)
         try migrated.validateForPersistence()
+    }
+
+    @Test("version four markup cases migrate with an empty timestamp evidence collection")
+    func migratesVersionFourCase() async throws {
+        let fixture = try AnalysisFixture(contents: "version four source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        analysisCase.setAnnotation(AnalysisAnnotation(
+            kind: .rectangle,
+            geometry: .bounds(AnalysisNormalizedBounds(
+                minimum: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+                maximum: AnalysisNormalizedPoint(x: 0.7, y: 0.8)
+            ))
+        ))
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(analysisCase)) as? [String: Any]
+        )
+        object["schemaVersion"] = 4
+        object["timestampEvidence"] = nil
+
+        let caseDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: caseDirectory,
+            withIntermediateDirectories: true
+        )
+        let caseURL = caseDirectory.appendingPathComponent(
+            "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+        )
+        try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
+
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let match = await repository.loadMostRelevantCase(for: revision)
+        guard case .exact(let migrated) = match else {
+            Issue.record("Expected the version four case to migrate")
+            return
+        }
+        #expect(migrated.schemaVersion == 5)
+        #expect(migrated.annotations.map(\.id) == analysisCase.annotations.map(\.id))
+        #expect(migrated.annotations.map(\.kind) == analysisCase.annotations.map(\.kind))
+        #expect(migrated.annotations.map(\.geometry) == analysisCase.annotations.map(\.geometry))
+        #expect(migrated.timestampEvidence.isEmpty)
+        try migrated.validateForPersistence()
+    }
+
+    @Test("user-entered timestamp evidence persists without changing the source")
+    func timestampEvidenceRoundTrip() async throws {
+        let fixture = try AnalysisFixture(contents: "timeline source")
+        defer { fixture.remove() }
+        let before = try Data(contentsOf: fixture.fileURL)
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        var analysisCase = AnalysisCase.create(
+            for: revision,
+            appBuild: "test",
+            now: Date(timeIntervalSince1970: 1)
+        )
+        let evidence = AnalysisTimestampEvidence(
+            kind: .observation,
+            title: "Clock visible in frame",
+            value: AnalysisTimestampValue(
+                year: 2026,
+                month: 7,
+                day: 30,
+                hour: 19,
+                minute: 42,
+                precision: .minute,
+                utcOffsetMinutes: nil
+            ),
+            source: .userEntered,
+            sourceDetail: "Entered in this analysis case",
+            now: Date(timeIntervalSince1970: 2)
+        )
+        analysisCase.setTimestampEvidence(evidence, now: Date(timeIntervalSince1970: 3))
+
+        try await repository.save(analysisCase)
+        guard case .exact(let reopened) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected timestamp evidence to reopen")
+            return
+        }
+        #expect(reopened.timestampEvidence.count == 1)
+        #expect(reopened.timestampEvidence.first?.title == "Clock visible in frame")
+        #expect(reopened.timestampEvidence.first?.value.timezoneKnown == false)
+        #expect(reopened.timestampEvidence.first?.value.precision == .minute)
+        #expect(try Data(contentsOf: fixture.fileURL) == before)
+    }
+
+    @Test("timestamp validation rejects invalid dates, offsets, and non-user case entries")
+    func rejectsInvalidTimestampEvidence() async throws {
+        let fixture = try AnalysisFixture(contents: "invalid timeline source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let invalid = AnalysisTimestampEvidence(
+            kind: .observation,
+            value: AnalysisTimestampValue(
+                year: 2026,
+                month: 2,
+                day: 30,
+                precision: .day,
+                utcOffsetMinutes: 15 * 60
+            ),
+            source: .userEntered,
+            sourceDetail: "Test"
+        )
+        analysisCase.setTimestampEvidence(invalid)
+        #expect(throws: AnalysisCaseValidationError.invalidTimestampEvidence) {
+            try analysisCase.validateForPersistence()
+        }
+
+        var sourceDerived = AnalysisCase.create(for: revision, appBuild: "test")
+        sourceDerived.timestampEvidence = [AnalysisTimestampEvidence(
+            kind: .capture,
+            value: AnalysisTimestampValue(
+                year: 2026,
+                month: 7,
+                day: 30,
+                precision: .day,
+                utcOffsetMinutes: nil
+            ),
+            source: .embeddedMetadata,
+            sourceDetail: "EXIF"
+        )]
+        #expect(throws: AnalysisCaseValidationError.invalidTimestampEvidence) {
+            try sourceDerived.validateForPersistence()
+        }
+    }
+
+    @Test("timeline keeps timezone-unknown capture evidence distinct and detects known conflicts")
+    func resolvesTimestampEvidenceAndConflicts() {
+        let facts = makeSourceFacts(
+            fileModificationDate: Date(timeIntervalSince1970: 1_700_000_000),
+            captureDate: "2026:07:30 19:42:10",
+            captureTimezoneKnown: false
+        )
+        let derived = AnalysisTimelineResolver.sourceEvidence(from: facts)
+        let capture = derived.first { $0.kind == .capture }
+        #expect(capture?.value.formatted == "2026-07-30 19:42:10")
+        #expect(capture?.value.timezoneKnown == false)
+        #expect(capture?.value.resolvedInstant == nil)
+        #expect(derived.first { $0.kind == .fileModification }?.value.timezoneKnown == true)
+
+        let gps = AnalysisTimelineResolver.sourceEvidence(
+            from: facts,
+            rawMetadata: [
+                AnalysisRawMetadataEntry(
+                    id: "gps.date",
+                    namespace: "GPS",
+                    key: "GPSDateStamp",
+                    value: "2026:07:30",
+                    origin: .gps
+                ),
+                AnalysisRawMetadataEntry(
+                    id: "gps.time",
+                    namespace: "GPS",
+                    key: "GPSTimeStamp",
+                    value: "17:42:10",
+                    origin: .gps
+                ),
+            ]
+        ).first { $0.kind == .gps }
+        #expect(gps?.value.formatted == "2026-07-30 17:42:10 UTC")
+        #expect(gps?.value.timezoneKnown == true)
+
+        let knownCapture = AnalysisTimestampEvidence(
+            kind: .capture,
+            value: AnalysisTimestampValue(
+                year: 2026,
+                month: 7,
+                day: 30,
+                hour: 20,
+                minute: 0,
+                second: 0,
+                precision: .second,
+                utcOffsetMinutes: 0
+            ),
+            source: .embeddedMetadata,
+            sourceDetail: "EXIF"
+        )
+        let knownGPS = AnalysisTimestampEvidence(
+            kind: .gps,
+            value: AnalysisTimestampValue(
+                year: 2026,
+                month: 7,
+                day: 30,
+                hour: 19,
+                minute: 0,
+                second: 0,
+                precision: .second,
+                utcOffsetMinutes: 0
+            ),
+            source: .gpsMetadata,
+            sourceDetail: "GPS"
+        )
+        let conflicts = AnalysisTimelineResolver.conflicts(in: [knownCapture, knownGPS])
+        #expect(conflicts.count == 1)
+        #expect(conflicts.first?.evidenceIDs == [knownCapture.id, knownGPS.id])
     }
 
     @Test("normalized photo annotations round-trip in the source-bound case")
@@ -1003,7 +1207,12 @@ struct AnalysisCaseTests {
     }
 }
 
-private func makeSourceFacts(camera: String? = nil) -> AnalysisSourceFacts {
+private func makeSourceFacts(
+    camera: String? = nil,
+    fileModificationDate: Date? = nil,
+    captureDate: String? = "2026:01:01 10:00:00",
+    captureTimezoneKnown: Bool = false
+) -> AnalysisSourceFacts {
     AnalysisSourceFacts(
         filename: "source.jpg",
         canonicalPath: "/tmp/source.jpg",
@@ -1022,9 +1231,9 @@ private func makeSourceFacts(camera: String? = nil) -> AnalysisSourceFacts {
         isAnimated: false,
         isHDR: false,
         fileCreationDate: nil,
-        fileModificationDate: nil,
-        captureDate: "2026:01:01 10:00:00",
-        captureTimezoneKnown: false,
+        fileModificationDate: fileModificationDate,
+        captureDate: captureDate,
+        captureTimezoneKnown: captureTimezoneKnown,
         camera: camera,
         lens: nil,
         focalLength: nil,

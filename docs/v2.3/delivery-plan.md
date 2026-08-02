@@ -100,8 +100,8 @@ modifies the source.
 **Exit gate:** embedded, inferred, and user-entered time/location evidence is distinguishable and
 reportable without editing IPTC.
 
-- [ ] Implement timestamp evidence model with source, precision, and timezone-known state.
-- [ ] Build timeline/conflict UI.
+- [x] Implement timestamp evidence model with source, precision, and timezone-known state.
+- [x] Build timeline/conflict UI.
 - [ ] Reuse coordinate parsing, place search, and reverse geocoding patterns.
 - [ ] Add satellite/hybrid map with persisted viewport.
 - [ ] Add map marker, line, shape, distance, label, and visibility tools.
