@@ -107,7 +107,7 @@ reportable without editing IPTC.
 - [x] Add map marker, line, shape, distance, label, and visibility tools.
 - [x] Link photo and map annotations by stable label ID.
 - [x] Ensure analysis coordinates never silently write IPTC GPS.
-- [ ] Add offline/network-failure and no-imagery states.
+- [x] Add offline/network-failure and no-imagery states.
 - [ ] Capture attribution-compliant report evidence.
 - [ ] Decide and, if approved, implement any sun/shadow conditional analyzer.
 

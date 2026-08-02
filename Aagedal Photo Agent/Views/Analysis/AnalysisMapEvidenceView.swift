@@ -70,6 +70,7 @@ struct AnalysisMapEvidenceView: View {
     @State private var selectedAnnotationID: UUID?
     @State private var labelInput = ""
     @State private var isLabelPromptPresented = false
+    @State private var mapAvailability = AnalysisMapAvailabilityMonitor()
 
     private static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 50, longitude: 10),
@@ -141,7 +142,10 @@ struct AnalysisMapEvidenceView: View {
             annotationList
             evidenceSummary
 
-            if let error = coordinateError ?? searchError ?? geocodingError {
+            if let error = coordinateError
+                ?? searchError
+                ?? searchCompleter.errorMessage
+                ?? geocodingError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -168,6 +172,18 @@ struct AnalysisMapEvidenceView: View {
                !mapState.annotations.contains(where: { $0.id == selectedAnnotationID }) {
                 self.selectedAnnotationID = nil
             }
+        }
+        .task {
+            mapAvailability.start()
+            mapAvailability.checkImagery(
+                region: visibleRegion,
+                style: mapState.style,
+                force: true
+            )
+        }
+        .onDisappear(perform: mapAvailability.cancelCurrentCheck)
+        .onChange(of: mapState.style) { _, style in
+            mapAvailability.checkImagery(region: visibleRegion, style: style, force: true)
         }
         .alert("Map Label", isPresented: $isLabelPromptPresented) {
             TextField("Label text", text: $labelInput)
@@ -311,6 +327,7 @@ struct AnalysisMapEvidenceView: View {
                         searchError = nil
                         searchCompleter.search(query: query)
                     }
+                    .disabled(isReadOnly || mapAvailability.isOffline)
                 if !searchText.isEmpty {
                     Button {
                         searchText = ""
@@ -322,7 +339,13 @@ struct AnalysisMapEvidenceView: View {
                     .accessibilityLabel("Clear place search")
                 }
             }
-            .disabled(isReadOnly)
+            .disabled(isReadOnly || mapAvailability.isOffline)
+
+            if mapAvailability.isOffline {
+                Text("Place search is unavailable offline. Coordinate entry and saved evidence still work.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if !searchCompleter.results.isEmpty {
                 ScrollView {
@@ -371,6 +394,12 @@ struct AnalysisMapEvidenceView: View {
                 .allowsHitTesting(false)
 
             VStack {
+                if let title = mapAvailability.imageryAvailability.title,
+                   let message = mapAvailability.imageryAvailability.message {
+                    mapAvailabilityBanner(title: title, message: message)
+                        .padding(8)
+                }
+
                 Spacer()
                 HStack {
                     Button {
@@ -396,6 +425,35 @@ struct AnalysisMapEvidenceView: View {
                 .padding(8)
             }
         }
+    }
+
+    private func mapAvailabilityBanner(title: String, message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: mapAvailability.imageryAvailability.systemImage)
+                .foregroundStyle(.orange)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 4)
+
+            Button("Retry") {
+                mapAvailability.retry()
+            }
+            .font(.caption)
+            .disabled(mapAvailability.isOffline)
+        }
+        .padding(9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title). \(message)")
     }
 
     @ViewBuilder
@@ -506,6 +564,7 @@ struct AnalysisMapEvidenceView: View {
         }
         .onMapCameraChange(frequency: .onEnd) { context in
             visibleRegion = context.region
+            mapAvailability.checkImagery(region: context.region, style: mapState.style, force: true)
             let viewport = AnalysisMapViewport(
                 center: AnalysisGeoCoordinate(
                     latitude: context.region.center.latitude,

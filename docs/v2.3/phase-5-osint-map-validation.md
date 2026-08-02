@@ -26,6 +26,11 @@
 - Added stable links from map annotations to photo-label UUIDs. Link display resolves current label
   text but preserves a missing UUID rather than silently discarding evidence when a label is
   temporarily unavailable.
+- Added a live connectivity monitor and cancellable MapKit snapshot probe for the visible region.
+  Offline connectivity, connected request failures, and missing satellite imagery now have distinct
+  accessible banners with retry behavior; the health-check snapshot is never persisted or exported.
+- Kept coordinate entry and existing case evidence available offline, disabled only the online place
+  search, and surfaced autocomplete failures that the shared search completer previously discarded.
 
 ## Automated validation
 
@@ -38,7 +43,7 @@ xcodebuild test \
   -only-testing:"Aagedal Photo Agent Tests/AnalysisCaseTests"
 ```
 
-Result: 41 tests passed in 1 suite.
+Result: 42 tests passed in 1 suite.
 
 Map-specific coverage includes:
 
@@ -48,9 +53,23 @@ Map-specific coverage includes:
   undo/redo, and geographic distance calculation;
 - unchanged source bytes and absence of a newly written XMP sidecar after map persistence; and
 - rejection of non-finite, out-of-range, or degenerate map coordinates and viewports.
+- deterministic classification and user-facing recovery text for offline, network-failure, and
+  no-imagery states.
+
+## Manual availability validation
+
+1. Open Image Analysis > OSINT with a connected network. Pan or change map style and confirm the
+   availability probe completes without obstructing map controls.
+2. Disable the active network interface. Confirm the map displays **Map is offline**, place search
+   is disabled with an explanation, and coordinate entry, saved pins, and map layers remain usable.
+3. Restore the network. Confirm the current visible region retries automatically and the offline
+   banner clears after MapKit returns imagery.
+4. Exercise a failed place search and confirm its error appears below the evidence controls rather
+   than silently clearing the result list.
+5. Trigger Retry in a connected failure state and confirm only the temporary health-check snapshot
+   is requested; no map image is added to the case JSON or source folder.
 
 ## Remaining Phase 5 work
 
-- Add explicit offline/network/no-imagery map states.
 - Resolve report snapshot/attribution requirements and capture attribution-compliant evidence.
 - Decide the conditional sun/shadow analyzer gate.

@@ -39,6 +39,10 @@ the existing colors and custom color well.
 Map markup now adds persistent markers, lines, polygons, geodesic distance segments, and labels
 from an accessible map-center workflow. Map layers have independent visibility and undo/redo, and
 can reference photo-label UUIDs so cross-surface links survive label edits without copying text.
+The map now reports offline connectivity, failed MapKit requests, and unavailable satellite imagery
+as distinct non-destructive states. A cancellable visible-region probe supplies a retryable imagery
+status, place autocomplete no longer drops errors silently, and coordinate entry plus saved map
+evidence remain usable when online services are unavailable.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

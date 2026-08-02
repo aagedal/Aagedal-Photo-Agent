@@ -580,6 +580,39 @@ struct AnalysisCaseTests {
         }
     }
 
+    @Test("map imagery failures distinguish offline, network, and unavailable states")
+    func classifiesMapImageryFailures() throws {
+        let offline = AnalysisMapImageryAvailability.failure(
+            for: URLError(.notConnectedToInternet),
+            networkAvailable: false
+        )
+        #expect(offline == .offline)
+        #expect(offline.title == "Map is offline")
+        #expect(offline.message?.contains("saved map annotations remain available") == true)
+
+        let networkFailure = AnalysisMapImageryAvailability.failure(
+            for: URLError(.timedOut),
+            networkAvailable: true
+        )
+        guard case .networkFailure = networkFailure else {
+            Issue.record("Expected a connected request timeout to be a network failure")
+            return
+        }
+        #expect(networkFailure.title == "Map network request failed")
+
+        let imageryFailure = AnalysisMapImageryAvailability.failure(
+            for: NSError(
+                domain: "MapImageryTest",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "No tiles for this region"]
+            ),
+            networkAvailable: true
+        )
+        #expect(imageryFailure == .unavailable("No tiles for this region"))
+        #expect(imageryFailure.title == "Satellite imagery unavailable")
+        #expect(imageryFailure.message?.contains("different scale or location") == true)
+    }
+
     @Test("timestamp validation rejects invalid dates, offsets, and non-user case entries")
     func rejectsInvalidTimestampEvidence() async throws {
         let fixture = try AnalysisFixture(contents: "invalid timeline source")
