@@ -58,18 +58,10 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
         .select, .line, .arrow, .distance, .rectangle, .ellipse, .label,
     ]
 
-    static let osintTools: [Self] = [
-        .select, .marker, .line, .arrow, .distance, .rectangle, .ellipse, .shape, .label,
+    static let mapTools: [Self] = [
+        .select, .marker, .line, .distance, .shape, .label,
     ]
 
-    var supportsMap: Bool {
-        switch self {
-        case .select, .marker, .line, .distance, .shape, .label: true
-        case .arrow, .rectangle, .ellipse: false
-        }
-    }
-
-    var supportsPhoto: Bool { annotationKind != nil || self == .select }
 }
 
 struct AnalysisAnnotationGestureDraft {
@@ -95,8 +87,18 @@ struct AnalysisAnnotationToolbar: View {
     let onDelete: () -> Void
     var tools: [AnalysisAnnotationTool] = AnalysisAnnotationTool.photoTools
     var contextLabel: String = "Photo"
+    var secondaryTool: Binding<AnalysisAnnotationTool>?
+    var secondaryTools: [AnalysisAnnotationTool] = []
+    var secondaryContextLabel = "Map"
     var canEditLabel = false
     var selectedHasLabel = false
+    var showsLabelActionTitle = false
+    var mapActionTitle: String?
+    var mapFinishActionTitle: String?
+    var mapDraftIsActive = false
+    var onMapAction: () -> Void = {}
+    var onMapFinishAction: () -> Void = {}
+    var onCancelMapDraft: () -> Void = {}
     var onEditLabel: () -> Void = {}
 
     var body: some View {
@@ -105,17 +107,49 @@ struct AnalysisAnnotationToolbar: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            Picker("Markup Tool", selection: $tool) {
-                ForEach(tools) { tool in
-                    Label(tool.displayName, systemImage: tool.systemImage)
-                        .labelStyle(.iconOnly)
-                        .tag(tool)
-                        .help(tool.displayName)
+            if let secondaryTool {
+                toolGroup(
+                    contextLabel,
+                    selection: $tool,
+                    tools: tools
+                )
+
+                Divider()
+                    .frame(height: 24)
+                    .padding(.horizontal, 2)
+
+                toolGroup(
+                    secondaryContextLabel,
+                    selection: secondaryTool,
+                    tools: secondaryTools
+                )
+
+                if let mapActionTitle {
+                    Button(mapActionTitle, action: onMapAction)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isReadOnly)
                 }
+
+                if let mapFinishActionTitle {
+                    Button(mapFinishActionTitle, action: onMapFinishAction)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(isReadOnly)
+                }
+
+                if mapDraftIsActive {
+                    Button(action: onCancelMapDraft) {
+                        Label("Cancel Map Markup", systemImage: "xmark")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isReadOnly)
+                    .help("Cancel the in-progress map markup")
+                }
+            } else {
+                toolPicker(selection: $tool, tools: tools)
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 330)
-            .disabled(isReadOnly)
 
             HStack(spacing: 5) {
                 ForEach(AnalysisAnnotationPaletteColor.allCases, id: \.self) { color in
@@ -151,6 +185,10 @@ struct AnalysisAnnotationToolbar: View {
                         style.color == .palette(color) ? .isSelected : []
                     )
                 }
+
+                Divider()
+                    .frame(height: 22)
+                    .padding(.horizontal, 6)
 
                 ColorPicker(
                     "Custom Color",
@@ -205,15 +243,16 @@ struct AnalysisAnnotationToolbar: View {
             )
 
             Button(action: onEditLabel) {
-                Label(
-                    selectedHasLabel ? "Edit Annotation Label" : "Label Annotation",
-                    systemImage: selectedHasLabel ? "tag.fill" : "tag"
-                )
-                .labelStyle(.iconOnly)
+                HStack(spacing: 5) {
+                    Image(systemName: selectedHasLabel ? "note.text" : "note.text.badge.plus")
+                    if showsLabelActionTitle {
+                        Text(selectedHasLabel ? "Edit Details" : "Label / Note")
+                    }
+                }
             }
             .buttonStyle(.borderless)
             .disabled(isReadOnly || !canEditLabel)
-            .help(selectedHasLabel ? "Edit the selected annotation label" : "Label the selected annotation")
+            .help(selectedHasLabel ? "Edit the selected annotation details" : "Add a label or note")
 
             Button(role: .destructive, action: onDelete) {
                 Label("Delete Annotation", systemImage: "trash")
@@ -232,6 +271,38 @@ struct AnalysisAnnotationToolbar: View {
         .padding(.horizontal, 2)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(contextLabel) markup tools")
+    }
+
+    private func toolGroup(
+        _ title: String,
+        selection: Binding<AnalysisAnnotationTool>,
+        tools: [AnalysisAnnotationTool]
+    ) -> some View {
+        HStack(spacing: 6) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            toolPicker(selection: selection, tools: tools)
+        }
+        .fixedSize()
+    }
+
+    private func toolPicker(
+        selection: Binding<AnalysisAnnotationTool>,
+        tools: [AnalysisAnnotationTool]
+    ) -> some View {
+        Picker("\(contextLabel) Markup Tool", selection: selection) {
+            ForEach(tools) { tool in
+                Label(tool.displayName, systemImage: tool.systemImage)
+                    .labelStyle(.iconOnly)
+                    .tag(tool)
+                    .help(tool.displayName)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .disabled(isReadOnly)
     }
 }
 

@@ -1,6 +1,15 @@
 import CoreGraphics
 import Foundation
 
+struct AnalysisFolderMapAnnotation: Identifiable, Sendable {
+    let caseID: UUID
+    let sourceURL: URL
+    let sourceName: String
+    let annotation: AnalysisMapAnnotation
+
+    var id: String { "\(caseID.uuidString)-\(annotation.id.uuidString)" }
+}
+
 @Observable
 final class AnalysisWorkspaceModel {
     enum LoadState: Equatable {
@@ -18,6 +27,7 @@ final class AnalysisWorkspaceModel {
     private(set) var hasDevelopedRepresentation = false
     private(set) var developSettings: CameraRawSettings?
     private(set) var sourceOrientation = 1
+    private(set) var folderAnalysisCases: [AnalysisCase] = []
     let analysisRunner: AnalysisRunner
 
     @ObservationIgnored private var repository: AnalysisCaseRepository?
@@ -96,10 +106,48 @@ final class AnalysisWorkspaceModel {
         mapState.annotations
     }
 
-    var labeledPhotoAnnotations: [AnalysisAnnotation] {
-        annotations.filter {
-            !($0.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    var workingFolderMapAnnotations: [AnalysisFolderMapAnnotation] {
+        var newestCaseBySource: [URL: AnalysisCase] = [:]
+        for analysisCase in folderAnalysisCases + (self.analysisCase.map { [$0] } ?? []) {
+            let sourceURL = analysisCase.source.canonicalURL
+            if let existing = newestCaseBySource[sourceURL],
+               existing.updatedAt >= analysisCase.updatedAt {
+                continue
+            }
+            newestCaseBySource[sourceURL] = analysisCase
         }
+        return newestCaseBySource.values
+            .sorted { $0.source.filenameAtCreation < $1.source.filenameAtCreation }
+            .flatMap { analysisCase in
+                var items = analysisCase.mapState.annotations.map {
+                    AnalysisFolderMapAnnotation(
+                        caseID: analysisCase.id,
+                        sourceURL: analysisCase.source.canonicalURL,
+                        sourceName: analysisCase.source.filenameAtCreation,
+                        annotation: $0
+                    )
+                }
+                if let location = analysisCase.mapState.investigationLocation {
+                    items.append(AnalysisFolderMapAnnotation(
+                        caseID: analysisCase.id,
+                        sourceURL: analysisCase.source.canonicalURL,
+                        sourceName: analysisCase.source.filenameAtCreation,
+                        annotation: AnalysisMapAnnotation(
+                            id: analysisCase.id,
+                            kind: .marker,
+                            geometry: .point(location.coordinate),
+                            text: location.placeName ?? "Photo location",
+                            style: AnalysisMapAnnotationStyle(
+                                color: .palette(.orange),
+                                lineWidthPoints: AnalysisMapAnnotationStyle.default.lineWidthPoints,
+                                fillOpacity: AnalysisMapAnnotationStyle.default.fillOpacity
+                            ),
+                            now: analysisCase.updatedAt
+                        )
+                    ))
+                }
+                return items
+            }
     }
 
     var embeddedLocation: AnalysisGeoCoordinate? {
@@ -210,7 +258,10 @@ final class AnalysisWorkspaceModel {
         saveTask?.cancel()
     }
 
-    func open(_ image: ImageFile) {
+    func open(
+        _ image: ImageFile,
+        preferredWorkspaceMode: AnalysisWorkspaceMode? = nil
+    ) {
         loadTask?.cancel()
         saveTask?.cancel()
 
@@ -225,6 +276,7 @@ final class AnalysisWorkspaceModel {
         sourceChanged = false
         photoAnnotationHistory.removeAll()
         mapAnnotationHistory.removeAll()
+        folderAnalysisCases = []
         analysisRunner.configure(existingRuns: [])
 
         let url = image.url
@@ -264,6 +316,19 @@ final class AnalysisWorkspaceModel {
                     self.sourceChanged = false
                     self.configureAnalysis(for: newCase, autoStart: true)
                 }
+
+                if let preferredWorkspaceMode,
+                   !self.sourceChanged,
+                   var preferredCase = self.analysisCase,
+                   preferredCase.workspaceMode != preferredWorkspaceMode {
+                    preferredCase.setWorkspaceMode(preferredWorkspaceMode)
+                    try await repository.save(preferredCase)
+                    self.analysisCase = preferredCase
+                }
+                let folderCases = await repository.loadAllCases()
+                try Task.checkCancellation()
+                guard self.sourceURL == url else { return }
+                self.folderAnalysisCases = folderCases
                 self.loadState = .ready
             } catch is CancellationError {
                 return
@@ -456,7 +521,7 @@ final class AnalysisWorkspaceModel {
         annotationID: UUID,
         photoLabelID: UUID?
     ) {
-        guard photoLabelID == nil || labeledPhotoAnnotations.contains(where: {
+        guard photoLabelID == nil || annotations.contains(where: {
             $0.id == photoLabelID
         }),
         var annotation = mapAnnotations.first(where: { $0.id == annotationID }),
@@ -627,6 +692,11 @@ final class AnalysisWorkspaceModel {
 
     private func persist(_ updatedCase: AnalysisCase) {
         analysisCase = updatedCase
+        if let index = folderAnalysisCases.firstIndex(where: { $0.id == updatedCase.id }) {
+            folderAnalysisCases[index] = updatedCase
+        } else {
+            folderAnalysisCases.append(updatedCase)
+        }
         guard let repository else { return }
 
         saveTask?.cancel()

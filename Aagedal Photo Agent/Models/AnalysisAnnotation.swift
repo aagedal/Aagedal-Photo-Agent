@@ -121,6 +121,7 @@ nonisolated enum AnalysisAnnotationValidationError: Error, Equatable, Sendable {
     case invalidGeometry
     case invalidStyle
     case invalidText
+    case invalidNote
     case invalidCalibration
     case invalidTimestamps
     case invalidFindingReferences
@@ -208,6 +209,7 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
     var kind: AnalysisAnnotationKind
     var geometry: AnalysisAnnotationGeometry
     var text: String?
+    var note: String?
     var style: AnalysisAnnotationStyle
     var isVisible: Bool
     var findingIDs: [String]
@@ -220,6 +222,7 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
         kind: AnalysisAnnotationKind,
         geometry: AnalysisAnnotationGeometry,
         text: String? = nil,
+        note: String? = nil,
         style: AnalysisAnnotationStyle = .default,
         isVisible: Bool = true,
         findingIDs: [String] = [],
@@ -230,6 +233,7 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
         self.kind = kind
         self.geometry = geometry
         self.text = text
+        self.note = note
         self.style = style
         self.isVisible = isVisible
         self.findingIDs = findingIDs
@@ -279,6 +283,11 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
             }
         } else if text != nil, trimmedText?.isEmpty != false {
             throw AnalysisAnnotationValidationError.invalidText
+        }
+
+        if let note,
+           note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw AnalysisAnnotationValidationError.invalidNote
         }
 
         if let measurementCalibration {

@@ -20,30 +20,12 @@ actor AnalysisCaseRepository {
     }
 
     func loadMostRelevantCase(for revision: SourceImageRevision) async -> AnalysisCaseMatch {
-        let caseURLs: [URL]
-        do {
-            caseURLs = try FileManager.default.contentsOfDirectory(
-                at: casesDirectoryURL,
-                includingPropertiesForKeys: nil,
-                options: [.skipsSubdirectoryDescendants]
-            )
-            .filter { $0.lastPathComponent.hasSuffix(".analysis.json") }
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            return .none
-        } catch {
-            return .none
-        }
+        let cases = await loadAllCases()
 
         var exactMatches: [AnalysisCase] = []
         var changedMatches: [AnalysisCase] = []
 
-        for url in caseURLs {
-            let store = AtomicJSONDocumentStore<AnalysisCase>(documentURL: url)
-            guard let loaded = try? await store.load(),
-                  case .document(let analysisCase, _) = loaded else {
-                continue
-            }
-
+        for analysisCase in cases {
             switch analysisCase.source.relationship(to: revision) {
             case .exactRevision:
                 exactMatches.append(analysisCase)
@@ -61,6 +43,35 @@ actor AnalysisCaseRepository {
             return .sourceChanged(changed)
         }
         return .none
+    }
+
+    func loadAllCases() async -> [AnalysisCase] {
+        let caseURLs: [URL]
+        do {
+            caseURLs = try FileManager.default.contentsOfDirectory(
+                at: casesDirectoryURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsSubdirectoryDescendants]
+            )
+            .filter { $0.lastPathComponent.hasSuffix(".analysis.json") }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return []
+        } catch {
+            return []
+        }
+
+        var cases: [AnalysisCase] = []
+
+        for url in caseURLs {
+            let store = AtomicJSONDocumentStore<AnalysisCase>(documentURL: url)
+            guard let loaded = try? await store.load(),
+                  case .document(let analysisCase, _) = loaded else {
+                continue
+            }
+
+            cases.append(analysisCase)
+        }
+        return cases
     }
 
     func save(_ analysisCase: AnalysisCase) async throws {

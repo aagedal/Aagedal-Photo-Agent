@@ -2,9 +2,24 @@ import SwiftUI
 @preconcurrency import CoreLocation
 @preconcurrency import MapKit
 
+enum AnalysisMapLayerScope: String, CaseIterable {
+    case currentPhoto
+    case workingFolder
+
+    var displayName: String {
+        switch self {
+        case .currentPhoto: "This Photo"
+        case .workingFolder: "Working Folder"
+        }
+    }
+}
+
 struct AnalysisMapEvidenceView: View {
     let mapState: AnalysisMapState
     let embeddedLocation: AnalysisGeoCoordinate?
+    let photoAnnotationToLocate: AnalysisAnnotation?
+    let currentSourceURL: URL?
+    let folderAnnotations: [AnalysisFolderMapAnnotation]
     let isReadOnly: Bool
     let onSetStyle: (AnalysisMapStyle) -> Void
     let onSetViewport: (AnalysisMapViewport) -> Void
@@ -14,6 +29,10 @@ struct AnalysisMapEvidenceView: View {
     @Binding var annotationTool: AnalysisAnnotationTool
     @Binding var sharedAnnotationStyle: AnalysisAnnotationStyle
     @Binding var selectedAnnotationID: UUID?
+    let primaryActionRequestID: Int
+    let finishShapeRequestID: Int
+    let cancelDraftRequestID: Int
+    let onDraftCountChanged: (Int) -> Void
 
     @State private var mapPosition: MapCameraPosition
     @State private var visibleRegion: MKCoordinateRegion
@@ -27,6 +46,11 @@ struct AnalysisMapEvidenceView: View {
     @State private var annotationDraftCoordinates: [AnalysisGeoCoordinate] = []
     @State private var labelInput = ""
     @State private var isLabelPromptPresented = false
+    @State private var isFieldOfViewSettingsPresented = false
+    @State private var addsFieldOfViewCone = false
+    @State private var fieldOfViewBearing = 0.0
+    @State private var fieldOfViewAngle = 60.0
+    @State private var fieldOfViewRangeMeters = 100.0
     @State private var mapAvailability = AnalysisMapAvailabilityMonitor()
 
     private static let defaultRegion = MKCoordinateRegion(
@@ -37,6 +61,9 @@ struct AnalysisMapEvidenceView: View {
     init(
         mapState: AnalysisMapState,
         embeddedLocation: AnalysisGeoCoordinate?,
+        photoAnnotationToLocate: AnalysisAnnotation?,
+        currentSourceURL: URL?,
+        folderAnnotations: [AnalysisFolderMapAnnotation],
         isReadOnly: Bool,
         onSetStyle: @escaping (AnalysisMapStyle) -> Void,
         onSetViewport: @escaping (AnalysisMapViewport) -> Void,
@@ -44,10 +71,17 @@ struct AnalysisMapEvidenceView: View {
         onSetAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
         annotationTool: Binding<AnalysisAnnotationTool>,
         sharedAnnotationStyle: Binding<AnalysisAnnotationStyle>,
-        selectedAnnotationID: Binding<UUID?>
+        selectedAnnotationID: Binding<UUID?>,
+        primaryActionRequestID: Int,
+        finishShapeRequestID: Int,
+        cancelDraftRequestID: Int,
+        onDraftCountChanged: @escaping (Int) -> Void
     ) {
         self.mapState = mapState
         self.embeddedLocation = embeddedLocation
+        self.photoAnnotationToLocate = photoAnnotationToLocate
+        self.currentSourceURL = currentSourceURL
+        self.folderAnnotations = folderAnnotations
         self.isReadOnly = isReadOnly
         self.onSetStyle = onSetStyle
         self.onSetViewport = onSetViewport
@@ -56,6 +90,10 @@ struct AnalysisMapEvidenceView: View {
         _annotationTool = annotationTool
         _sharedAnnotationStyle = sharedAnnotationStyle
         _selectedAnnotationID = selectedAnnotationID
+        self.primaryActionRequestID = primaryActionRequestID
+        self.finishShapeRequestID = finishShapeRequestID
+        self.cancelDraftRequestID = cancelDraftRequestID
+        self.onDraftCountChanged = onDraftCountChanged
 
         let region = Self.initialRegion(mapState: mapState, embeddedLocation: embeddedLocation)
         _mapPosition = State(initialValue: .region(region))
@@ -65,12 +103,11 @@ struct AnalysisMapEvidenceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
-            annotationAuthoringControls
-
             searchControls
 
             map
-                .frame(minHeight: 230)
+                .frame(minHeight: 360)
+                .layoutPriority(1)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay {
                     RoundedRectangle(cornerRadius: 10)
@@ -106,6 +143,18 @@ struct AnalysisMapEvidenceView: View {
         .onChange(of: annotationTool) {
             annotationDraftCoordinates.removeAll()
         }
+        .onChange(of: primaryActionRequestID) {
+            performAnnotationPrimaryAction()
+        }
+        .onChange(of: finishShapeRequestID) {
+            finishShape()
+        }
+        .onChange(of: cancelDraftRequestID) {
+            annotationDraftCoordinates.removeAll()
+        }
+        .onChange(of: annotationDraftCoordinates.count) { _, count in
+            onDraftCountChanged(count)
+        }
         .onChange(of: mapState.annotations.map(\.id)) {
             if let selectedAnnotationID,
                !mapState.annotations.contains(where: { $0.id == selectedAnnotationID }) {
@@ -125,6 +174,7 @@ struct AnalysisMapEvidenceView: View {
             moveMap(to: annotation.representativeCoordinate, preservingSpan: true)
         }
         .task {
+            onDraftCountChanged(annotationDraftCoordinates.count)
             mapAvailability.start()
             mapAvailability.checkImagery(
                 region: visibleRegion,
@@ -167,51 +217,16 @@ struct AnalysisMapEvidenceView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .frame(width: 190)
             .disabled(isReadOnly)
         }
     }
 
-    private var annotationAuthoringControls: some View {
-        HStack(spacing: 8) {
-            if annotationTool.supportsMap {
-                if annotationTool != .select {
-                    Button(annotationPrimaryActionTitle, action: performAnnotationPrimaryAction)
-                        .disabled(isReadOnly)
-                } else {
-                    Text("Select markup on the map or in Map Layers below.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Text("\(annotationTool.displayName) is available on the photo.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if annotationTool == .shape, annotationDraftCoordinates.count >= 3 {
-                Button("Finish Shape", action: finishShape)
-                    .disabled(isReadOnly)
-            }
-
-            if !annotationDraftCoordinates.isEmpty {
-                Text(annotationDraftSummary)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Button("Cancel") { annotationDraftCoordinates.removeAll() }
-                    .buttonStyle(.borderless)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(minHeight: 22)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Map markup action")
-    }
-
     private var searchControls: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
-                TextField("Search for an address or place", text: $searchText)
+                TextField("Find the photo location", text: $searchText)
                     .textFieldStyle(.roundedBorder)
                     .onChange(of: searchText) { _, query in
                         searchError = nil
@@ -293,16 +308,9 @@ struct AnalysisMapEvidenceView: View {
                 Spacer()
                 HStack {
                     Button {
-                        setInvestigationLocation(
-                            coordinate: AnalysisGeoCoordinate(
-                                latitude: visibleRegion.center.latitude,
-                                longitude: visibleRegion.center.longitude
-                            ),
-                            source: .mapCenter,
-                            detail: "Selected from the center of the analysis map"
-                        )
+                        setPhotoLocationAtMapCenter()
                     } label: {
-                        Label("Pin Center", systemImage: "mappin.and.ellipse")
+                        Label("Set Photo Location", systemImage: "camera.fill")
                             .font(.caption)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 5)
@@ -310,11 +318,91 @@ struct AnalysisMapEvidenceView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isReadOnly)
+
+                    Button {
+                        isFieldOfViewSettingsPresented.toggle()
+                    } label: {
+                        Image(systemName: addsFieldOfViewCone ? "camera.aperture" : "ellipsis.circle")
+                            .font(.caption)
+                            .padding(6)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isReadOnly)
+                    .help("Photo-location and field-of-view options")
+                    .popover(isPresented: $isFieldOfViewSettingsPresented, arrowEdge: .bottom) {
+                        fieldOfViewSettings
+                    }
+
+                    if let photoAnnotationToLocate {
+                        Button {
+                            addLinkedPhotoMarker(photoAnnotationToLocate)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(photoAnnotationToLocate.style.color.swiftUIColor)
+                                    .frame(width: 9, height: 9)
+                                    .overlay(Circle().stroke(.white.opacity(0.8), lineWidth: 1))
+                                Text(photoLocationActionTitle(photoAnnotationToLocate))
+                                    .font(.caption)
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isReadOnly)
+                        .help("Place the selected photo object at the map center with its matching color")
+                    }
                     Spacer()
                 }
                 .padding(8)
             }
         }
+    }
+
+    private var fieldOfViewSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Add field-of-view cone", isOn: $addsFieldOfViewCone)
+                .font(.headline)
+
+            Text("The cone is added as editable case-only map evidence when Photo Location is set.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+                GridRow {
+                    Text("Bearing")
+                    TextField("Degrees", value: $fieldOfViewBearing, format: .number)
+                        .frame(width: 85)
+                    Text("°")
+                        .foregroundStyle(.secondary)
+                }
+                GridRow {
+                    Text("Field of view")
+                    TextField("Degrees", value: $fieldOfViewAngle, format: .number)
+                        .frame(width: 85)
+                    Text("°")
+                        .foregroundStyle(.secondary)
+                }
+                GridRow {
+                    Text("Range")
+                    TextField("Meters", value: $fieldOfViewRangeMeters, format: .number)
+                        .frame(width: 85)
+                    Text("m")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!addsFieldOfViewCone)
+
+            Text("Bearing uses 0° north and increases clockwise.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(16)
+        .frame(width: 330)
     }
 
     private func mapAvailabilityBanner(title: String, message: String) -> some View {
@@ -370,7 +458,7 @@ struct AnalysisMapEvidenceView: View {
 
             if let location = mapState.investigationLocation {
                 Marker(
-                    location.placeName ?? "Case location",
+                    location.placeName ?? "Photo location",
                     coordinate: CLLocationCoordinate2D(
                         latitude: location.coordinate.latitude,
                         longitude: location.coordinate.longitude
@@ -424,6 +512,56 @@ struct AnalysisMapEvidenceView: View {
                         coordinate: annotation.representativeCoordinate.clLocationCoordinate
                     ) {
                         mapAnnotationButton(annotation)
+                    }
+                }
+            }
+
+            ForEach(folderContextAnnotations) { item in
+                let annotation = item.annotation
+                switch annotation.geometry {
+                case .point(let coordinate):
+                    Annotation(
+                        annotation.text ?? item.sourceName,
+                        coordinate: coordinate.clLocationCoordinate
+                    ) {
+                        folderMapAnnotationLabel(item)
+                    }
+
+                case .segment(let start, let end):
+                    MapPolyline(coordinates: [
+                        start.clLocationCoordinate,
+                        end.clLocationCoordinate,
+                    ])
+                    .stroke(
+                        annotation.style.color.swiftUIColor.opacity(0.75),
+                        lineWidth: annotation.style.lineWidthPoints
+                    )
+                    Annotation(
+                        annotation.text ?? item.sourceName,
+                        coordinate: annotation.representativeCoordinate.clLocationCoordinate
+                    ) {
+                        folderMapAnnotationLabel(item)
+                    }
+
+                case .polygon(let coordinates):
+                    MapPolygon(coordinates: coordinates.map(\.clLocationCoordinate))
+                        .foregroundStyle(
+                            annotation.style.color.swiftUIColor.opacity(
+                                annotation.style.fillOpacity
+                            )
+                        )
+                    MapPolyline(coordinates: (
+                        coordinates + (coordinates.first.map { [$0] } ?? [])
+                    ).map(\.clLocationCoordinate))
+                    .stroke(
+                        annotation.style.color.swiftUIColor.opacity(0.75),
+                        lineWidth: annotation.style.lineWidthPoints
+                    )
+                    Annotation(
+                        annotation.text ?? item.sourceName,
+                        coordinate: annotation.representativeCoordinate.clLocationCoordinate
+                    ) {
+                        folderMapAnnotationLabel(item)
                     }
                 }
             }
@@ -507,12 +645,13 @@ struct AnalysisMapEvidenceView: View {
     @ViewBuilder
     private var evidenceSummary: some View {
         if embeddedLocation == nil && mapState.investigationLocation == nil {
-            ContentUnavailableView(
-                "No Location Evidence",
-                systemImage: "location.slash",
-                description: Text("Search, enter coordinates, or move the map and pin its center.")
+            Label(
+                "No photo location set — search, enter coordinates, or set the map center.",
+                systemImage: "location.slash"
             )
-            .frame(maxWidth: .infinity)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.vertical, 4)
         } else {
             HStack(alignment: .top, spacing: 12) {
                 if let embeddedLocation {
@@ -526,7 +665,7 @@ struct AnalysisMapEvidenceView: View {
                 }
                 if let location = mapState.investigationLocation {
                     locationCard(
-                        title: location.placeName ?? "Case location",
+                        title: location.placeName ?? "Photo location",
                         coordinate: location.coordinate,
                         source: location.source.displayName,
                         detail: location.placeNameSource.map {
@@ -613,26 +752,31 @@ struct AnalysisMapEvidenceView: View {
         .accessibilityAddTraits(selectedAnnotationID == annotation.id ? .isSelected : [])
     }
 
-    private var annotationPrimaryActionTitle: String {
-        switch annotationTool {
-        case .select: "Select"
-        case .marker: "Add Marker at Center"
-        case .line:
-            annotationDraftCoordinates.isEmpty ? "Set Line Start" : "Set Line End"
-        case .shape: "Add Shape Vertex"
-        case .distance:
-            annotationDraftCoordinates.isEmpty ? "Set Distance Start" : "Set Distance End"
-        case .label: "Add Label at Center"
-        case .arrow, .rectangle, .ellipse: "Use on Photo"
+    private var folderContextAnnotations: [AnalysisFolderMapAnnotation] {
+        let currentIDs = Set(mapState.annotations.map(\.id))
+        return folderAnnotations.filter {
+            $0.annotation.isVisible
+                && $0.sourceURL.standardizedFileURL != currentSourceURL?.standardizedFileURL
+                && !currentIDs.contains($0.annotation.id)
         }
     }
 
-    private var annotationDraftSummary: String {
-        switch annotationTool {
-        case .line, .distance: "Start selected — move map to the endpoint"
-        case .shape: "\(annotationDraftCoordinates.count) vertices"
-        default: "Draft"
+    private func folderMapAnnotationLabel(_ item: AnalysisFolderMapAnnotation) -> some View {
+        VStack(spacing: 1) {
+            Image(systemName: item.annotation.kind == .marker ? "mappin.circle.fill" : "circle.fill")
+                .font(item.annotation.kind == .marker ? .title3 : .caption2)
+                .foregroundStyle(item.annotation.style.color.swiftUIColor)
+                .padding(3)
+                .background(.ultraThinMaterial, in: Circle())
+            Text(item.annotation.text ?? item.sourceName)
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
         }
+        .help(item.sourceName)
+        .accessibilityLabel("\(item.sourceName), \(mapAnnotationTitle(item.annotation))")
     }
 
     private func performAnnotationPrimaryAction() {
@@ -701,6 +845,38 @@ struct AnalysisMapEvidenceView: View {
         selectedAnnotationID = annotation.id
     }
 
+    private func addLinkedPhotoMarker(_ photoAnnotation: AnalysisAnnotation) {
+        let coordinate = AnalysisGeoCoordinate(
+            latitude: visibleRegion.center.latitude,
+            longitude: visibleRegion.center.longitude
+        )
+        guard coordinate.isValid else { return }
+        let trimmedLabel = photoAnnotation.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let annotation = AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(coordinate),
+            text: trimmedLabel?.isEmpty == false ? trimmedLabel : nil,
+            style: AnalysisMapAnnotationStyle(
+                color: photoAnnotation.style.color,
+                lineWidthPoints: photoAnnotation.style.lineWidthPoints,
+                fillOpacity: photoAnnotation.style.fillOpacity
+            ),
+            linkedPhotoLabelID: photoAnnotation.id
+        )
+        guard (try? annotation.validate()) != nil else { return }
+        onSetAnnotation(annotation)
+        selectedAnnotationID = annotation.id
+        annotationTool = .select
+    }
+
+    private func photoLocationActionTitle(_ annotation: AnalysisAnnotation) -> String {
+        if let label = annotation.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !label.isEmpty {
+            return "Place \(label)"
+        }
+        return "Place Selected Object"
+    }
+
     private func mapAnnotationTitle(_ annotation: AnalysisMapAnnotation) -> String {
         if let text = annotation.text {
             return "\(annotation.kind.displayName): \(text)"
@@ -737,6 +913,86 @@ struct AnalysisMapEvidenceView: View {
         coordinateInput = ""
     }
 
+    private func setPhotoLocationAtMapCenter() {
+        let coordinate = AnalysisGeoCoordinate(
+            latitude: visibleRegion.center.latitude,
+            longitude: visibleRegion.center.longitude
+        )
+        setInvestigationLocation(
+            coordinate: coordinate,
+            source: .mapCenter,
+            detail: "Selected from the center of the analysis map"
+        )
+        guard addsFieldOfViewCone else { return }
+        addFieldOfViewCone(at: coordinate)
+    }
+
+    private func addFieldOfViewCone(at origin: AnalysisGeoCoordinate) {
+        let bearing = fieldOfViewBearing.truncatingRemainder(dividingBy: 360)
+        let normalizedBearing = bearing < 0 ? bearing + 360 : bearing
+        let angle = min(170, max(5, fieldOfViewAngle))
+        let range = min(100_000, max(1, fieldOfViewRangeMeters))
+        let arcCoordinates = (0...8).map { step in
+            destinationCoordinate(
+                from: origin,
+                bearingDegrees: normalizedBearing - angle / 2 + angle * Double(step) / 8,
+                distanceMeters: range
+            )
+        }
+        let geometry = AnalysisMapAnnotationGeometry.polygon([origin] + arcCoordinates)
+        let style = AnalysisMapAnnotationStyle(
+            color: .palette(.cyan),
+            lineWidthPoints: 2,
+            fillOpacity: 0.18
+        )
+        let annotation: AnalysisMapAnnotation
+        if var existing = mapState.annotations.first(where: {
+            $0.kind == .shape && $0.text == "Field of view"
+        }) {
+            existing.geometry = geometry
+            existing.style = style
+            existing.isVisible = true
+            existing.markUpdated()
+            annotation = existing
+        } else {
+            annotation = AnalysisMapAnnotation(
+                kind: .shape,
+                geometry: geometry,
+                text: "Field of view",
+                style: style
+            )
+        }
+        guard (try? annotation.validate()) != nil else { return }
+        onSetAnnotation(annotation)
+        selectedAnnotationID = annotation.id
+    }
+
+    private func destinationCoordinate(
+        from origin: AnalysisGeoCoordinate,
+        bearingDegrees: Double,
+        distanceMeters: Double
+    ) -> AnalysisGeoCoordinate {
+        let earthRadiusMeters = 6_371_000.0
+        let angularDistance = distanceMeters / earthRadiusMeters
+        let bearing = bearingDegrees * .pi / 180
+        let latitude = origin.latitude * .pi / 180
+        let longitude = origin.longitude * .pi / 180
+        let destinationLatitude = asin(
+            sin(latitude) * cos(angularDistance)
+                + cos(latitude) * sin(angularDistance) * cos(bearing)
+        )
+        let destinationLongitude = longitude + atan2(
+            sin(bearing) * sin(angularDistance) * cos(latitude),
+            cos(angularDistance) - sin(latitude) * sin(destinationLatitude)
+        )
+        var longitudeDegrees = destinationLongitude * 180 / .pi
+        longitudeDegrees = (longitudeDegrees + 540).truncatingRemainder(dividingBy: 360) - 180
+        return AnalysisGeoCoordinate(
+            latitude: destinationLatitude * 180 / .pi,
+            longitude: longitudeDegrees
+        )
+    }
+
     private func setInvestigationLocation(
         coordinate: AnalysisGeoCoordinate,
         source: AnalysisLocationEvidenceSource,
@@ -756,7 +1012,9 @@ struct AnalysisMapEvidenceView: View {
             placeName: placeName,
             placeNameSource: placeNameSource
         ))
-        moveMap(to: coordinate)
+        if source != .mapCenter {
+            moveMap(to: coordinate)
+        }
     }
 
     private func selectSearchResult(_ result: MKLocalSearchCompletion) {

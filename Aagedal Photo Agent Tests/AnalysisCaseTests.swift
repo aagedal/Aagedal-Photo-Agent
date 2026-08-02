@@ -529,7 +529,8 @@ struct AnalysisCaseTests {
                 minimum: AnalysisNormalizedPoint(x: 0.3, y: 0.4),
                 maximum: AnalysisNormalizedPoint(x: 0.5, y: 0.7)
             )),
-            text: "North entrance"
+            text: "North entrance",
+            note: "Stone doorway partially obscured by a tree"
         )
         analysisCase.setAnnotation(photoLabel)
         let oslo = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)
@@ -570,6 +571,7 @@ struct AnalysisCaseTests {
         #expect(reopened.mapState.annotations.map(\.kind) == annotations.map(\.kind))
         #expect(reopened.mapState.annotations[1].isVisible == false)
         #expect(reopened.mapState.annotations.last?.linkedPhotoLabelID == photoLabel.id)
+        #expect(reopened.annotations.first?.note == photoLabel.note)
         #expect(try Data(contentsOf: fixture.fileURL) == before)
         #expect(!FileManager.default.fileExists(
             atPath: fixture.fileURL.deletingPathExtension().appendingPathExtension("xmp").path

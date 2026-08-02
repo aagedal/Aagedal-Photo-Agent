@@ -38,9 +38,14 @@ now exposes its fixed palette as a direct swatch row, expanded with red, green, 
 the existing colors and custom color well.
 Map markup now adds persistent markers, lines, polygons, geodesic distance segments, and labels
 from an accessible map-center workflow. Map layers have independent visibility and undo/redo, and
-can reference any labeled photo-annotation UUID so cross-surface links survive label edits without
-copying text. OSINT now uses one shared photo/map markup bar anchored above the draggable content,
-with Map Layers beside a compact vertical evidence list. Every annotation kind can be labeled, and
+can reference any photo-annotation UUID so cross-surface links survive label edits without copying
+text. OSINT now separates Photo and Map tools in its fixed markup bar, gives the map a full-height
+column, and provides a working-folder thumbnail rail plus per-photo/folder layer scope. Selected
+photo objects can be placed at the map center in one click with the same color. Every annotation
+kind can be labeled, photo annotations can carry longer notes, and the lower pane exposes photo
+and map annotations side by side. Setting the photo location preserves the investigator's zoom and
+can optionally add a persisted bearing/angle/range field-of-view cone. Map authoring actions now
+share the fixed markup row to preserve map height, and
 investigators can add expandable case-only notes when no timestamp can be established.
 The map now reports offline connectivity, failed MapKit requests, and unavailable satellite imagery
 as distinct non-destructive states. A cancellable visible-region probe supplies a retryable imagery

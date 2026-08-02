@@ -185,7 +185,7 @@ nonisolated enum AnalysisMapAnnotationValidationError: Error, Equatable, Sendabl
 
 /// Case-only markup in geographic coordinates.
 ///
-/// `linkedPhotoLabelID` stores the stable UUID of any labeled photo annotation. The persisted key
+/// `linkedPhotoLabelID` stores the stable UUID of any photo annotation. The persisted key
 /// keeps its original name for document compatibility. The reference remains valid across label
 /// edits and is deliberately preserved if a label is temporarily unavailable,
 /// matching the case's existing analyzer-finding reference behavior.

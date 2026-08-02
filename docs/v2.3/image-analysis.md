@@ -264,12 +264,17 @@ The photo and map panels should support:
 
 - satellite and hybrid styles;
 - dropping a labeled color marker;
-- lines, rectangles, ellipses, and distance measurements;
-- one shared markup toolbar for photo and map authoring, fixed outside resizable content panes;
+- photo lines, arrows, rectangles, ellipses, and distance measurements, plus geographic map
+  markers, lines, polygons, and distances;
+- clearly separated Photo and Map tool groups in one fixed OSINT toolbar;
 - optional labels on every annotation geometry, with stable links from a map annotation to any
-  labeled photo annotation;
+  photo annotation;
+- longer case-only notes attached to photo annotations without placing the note text on-canvas;
 - independent undo stacks for photo and map markup within one case;
-- show/hide annotation layers;
+- one-click placement of a selected photo object on the map with its matching color;
+- an optional bearing, angle, and range field-of-view cone when setting the photo location;
+- a working-folder thumbnail rail and a This Photo / Working Folder map-layer scope;
+- side-by-side Photo Annotations and Map Annotations lists with selection and visibility controls;
 - capture of the exact map viewport used by the report.
 
 Time evidence and untimed notes share a compact vertical evidence area. A collapsed row exposes its

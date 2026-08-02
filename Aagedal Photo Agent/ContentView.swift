@@ -699,7 +699,13 @@ struct ContentView: View {
             case .imageAnalysis:
                 AnalysisWorkspaceView(
                     model: analysisWorkspaceModel,
+                    folderImages: browserViewModel.sortedImages.filter(\.isImageFile),
                     thumbnailService: browserViewModel.thumbnailService,
+                    onSelectImage: { image in
+                        browserViewModel.selectedImageIDs = [image.url]
+                        browserViewModel.lastClickedImageURL = image.url
+                        analysisWorkspaceModel.open(image, preferredWorkspaceMode: .osint)
+                    },
                     onClose: {
                         mainViewMode = .browser
                         browserViewModel.shouldRestoreGridFocus = true

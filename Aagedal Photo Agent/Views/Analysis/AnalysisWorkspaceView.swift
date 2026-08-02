@@ -3,7 +3,9 @@ import SwiftUI
 
 struct AnalysisWorkspaceView: View {
     @Bindable var model: AnalysisWorkspaceModel
+    let folderImages: [ImageFile]
     let thumbnailService: ThumbnailService
+    let onSelectImage: (ImageFile) -> Void
     let onClose: () -> Void
     @State private var selectedFindingID: String?
     @State private var pixelInspectionSample: ImageInspectionSample?
@@ -11,7 +13,8 @@ struct AnalysisWorkspaceView: View {
     @State private var scopeSourceMode: AnalysisScopeSourceMode = .fullImage
     @State private var selectedScopeRegion: CGRect?
     @State private var pixelViewMode: AnalysisPixelViewMode = .normal
-    @State private var annotationTool: AnalysisAnnotationTool = .select
+    @State private var photoAnnotationTool: AnalysisAnnotationTool = .select
+    @State private var mapAnnotationTool: AnalysisAnnotationTool = .select
     @State private var annotationStyle = AnalysisAnnotationStyle.default
     @State private var selectedAnnotationID: UUID?
     @State private var selectedMapAnnotationID: UUID?
@@ -20,6 +23,11 @@ struct AnalysisWorkspaceView: View {
     @State private var annotationLabelEditorRequest: AnalysisAnnotationLabelEditorRequest?
     @State private var isTimestampEditorPresented = false
     @State private var isObservationEditorPresented = false
+    @State private var mapLayerScope: AnalysisMapLayerScope = .currentPhoto
+    @State private var mapDraftCoordinateCount = 0
+    @State private var mapPrimaryActionRequestID = 0
+    @State private var mapFinishShapeRequestID = 0
+    @State private var mapCancelDraftRequestID = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,6 +52,7 @@ struct AnalysisWorkspaceView: View {
             pixelViewMode = .normal
             selectedAnnotationID = nil
             selectedMapAnnotationID = nil
+            mapDraftCoordinateCount = 0
         }
         .onChange(of: model.analysisCase?.id) {
             selectedAnnotationID = nil
@@ -156,8 +165,8 @@ struct AnalysisWorkspaceView: View {
         .sheet(item: $annotationLabelEditorRequest) { request in
             AnalysisAnnotationLabelEditor(
                 request: request,
-                onSave: { label in
-                    setSelectedAnnotationLabel(label)
+                onSave: { label, note in
+                    setSelectedAnnotationDetails(label: label, note: note)
                     annotationLabelEditorRequest = nil
                 },
                 onCancel: { annotationLabelEditorRequest = nil }
@@ -309,59 +318,94 @@ struct AnalysisWorkspaceView: View {
             osintMarkupToolbar
             Divider()
 
-            VSplitView {
-                HSplitView {
-                    sourcePreview(showMarkupToolbar: false)
-                        .frame(minWidth: 420, minHeight: 430)
-                    AnalysisMapEvidenceView(
-                        mapState: model.mapState,
-                        embeddedLocation: model.embeddedLocation,
-                        isReadOnly: model.sourceChanged,
-                        onSetStyle: model.setMapStyle,
-                        onSetViewport: model.setMapViewport,
-                        onSetInvestigationLocation: model.setInvestigationLocation,
-                        onSetAnnotation: model.setMapAnnotation,
-                        annotationTool: $annotationTool,
-                        sharedAnnotationStyle: $annotationStyle,
-                        selectedAnnotationID: $selectedMapAnnotationID
-                    )
-                    .frame(minWidth: 320, minHeight: 430)
-                }
-                .frame(minHeight: 430, idealHeight: 620)
+            HStack(spacing: 0) {
+                AnalysisImageRail(
+                    images: folderImages,
+                    selectedURL: model.sourceURL,
+                    thumbnailService: thumbnailService,
+                    onSelect: onSelectImage
+                )
+                .frame(width: 76)
+
+                Divider()
 
                 HSplitView {
-                    AnalysisTimelineView(
-                        evidence: model.timestampEvidence,
-                        observations: model.observations,
-                        conflicts: model.timestampConflicts,
-                        isReadOnly: model.sourceChanged,
-                        onAddTimed: { isTimestampEditorPresented = true },
-                        onAddNote: { isObservationEditorPresented = true },
-                        onDeleteTimestamp: model.removeTimestampEvidence,
-                        onDeleteObservation: model.removeObservation
-                    )
-                    .frame(minWidth: 420)
+                    VSplitView {
+                        sourcePreview(showMarkupToolbar: false)
+                            .frame(minHeight: 360)
 
-                    AnalysisMapLayersView(
-                        annotations: model.mapAnnotations,
-                        photoAnnotations: model.labeledPhotoAnnotations,
-                        selectedAnnotationID: $selectedMapAnnotationID,
-                        isReadOnly: model.sourceChanged,
-                        onSetVisible: model.setMapAnnotationVisible,
-                        onSetAllVisible: model.setAllMapAnnotationsVisible,
-                        onSetPhotoAnnotationLink: model.setMapAnnotationPhotoLabelLink
-                    )
-                    .frame(minWidth: 300, idealWidth: 420)
+                        AnalysisTimelineView(
+                            evidence: model.timestampEvidence,
+                            observations: model.observations,
+                            conflicts: model.timestampConflicts,
+                            isReadOnly: model.sourceChanged,
+                            onAddTimed: { isTimestampEditorPresented = true },
+                            onAddNote: { isObservationEditorPresented = true },
+                            onDeleteTimestamp: model.removeTimestampEvidence,
+                            onDeleteObservation: model.removeObservation
+                        )
+                        .frame(minHeight: 170, idealHeight: 230, maxHeight: 320)
+                    }
+                    .frame(minWidth: 400, idealWidth: 620, maxWidth: 760)
+
+                    VSplitView {
+                        AnalysisMapEvidenceView(
+                            mapState: model.mapState,
+                            embeddedLocation: model.embeddedLocation,
+                            photoAnnotationToLocate: selectedPhotoAnnotation,
+                            currentSourceURL: model.sourceURL,
+                            folderAnnotations: mapLayerScope == .workingFolder
+                                ? model.workingFolderMapAnnotations
+                                : [],
+                            isReadOnly: model.sourceChanged,
+                            onSetStyle: model.setMapStyle,
+                            onSetViewport: model.setMapViewport,
+                            onSetInvestigationLocation: model.setInvestigationLocation,
+                            onSetAnnotation: model.setMapAnnotation,
+                            annotationTool: $mapAnnotationTool,
+                            sharedAnnotationStyle: $annotationStyle,
+                            selectedAnnotationID: $selectedMapAnnotationID,
+                            primaryActionRequestID: mapPrimaryActionRequestID,
+                            finishShapeRequestID: mapFinishShapeRequestID,
+                            cancelDraftRequestID: mapCancelDraftRequestID,
+                            onDraftCountChanged: { mapDraftCoordinateCount = $0 }
+                        )
+                        .frame(minWidth: 520, minHeight: 480)
+
+                        AnalysisMapLayersView(
+                            annotations: model.mapAnnotations,
+                            photoAnnotations: model.annotations,
+                            folderAnnotations: model.workingFolderMapAnnotations,
+                            sourceURL: model.sourceURL,
+                            scope: $mapLayerScope,
+                            selectedPhotoAnnotationID: $selectedAnnotationID,
+                            selectedAnnotationID: $selectedMapAnnotationID,
+                            isReadOnly: model.sourceChanged,
+                            onSetPhotoVisible: model.setPhotoAnnotationVisible,
+                            onSetAllPhotosVisible: model.setAllPhotoAnnotationsVisible,
+                            onEditPhotoAnnotation: presentPhotoAnnotationEditor,
+                            onSetVisible: model.setMapAnnotationVisible,
+                            onSetAllVisible: model.setAllMapAnnotationsVisible,
+                            onSetPhotoAnnotationLink: model.setMapAnnotationPhotoLabelLink
+                        )
+                        .frame(minHeight: 150, idealHeight: 210, maxHeight: 280)
+                    }
+                    .frame(minWidth: 520, maxWidth: .infinity)
                 }
-                .frame(minHeight: 180, idealHeight: 250, maxHeight: 330)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: photoAnnotationTool) {
+            activeMarkupSurface = .photo
+        }
+        .onChange(of: mapAnnotationTool) {
+            activeMarkupSurface = .map
+        }
     }
 
     private var osintMarkupToolbar: some View {
         AnalysisAnnotationToolbar(
-            tool: $annotationTool,
+            tool: $photoAnnotationTool,
             style: $annotationStyle,
             selectedAnnotationID: activeMarkupSurface == .photo
                 ? selectedAnnotationID
@@ -389,16 +433,41 @@ struct AnalysisWorkspaceView: View {
             selectedIsCalibration: selectedDistanceAnnotation?.measurementCalibration != nil,
             onCalibrate: presentCalibrationEditor,
             onDelete: deleteActiveAnnotation,
-            tools: AnalysisAnnotationTool.osintTools,
-            contextLabel: activeMarkupSurface.displayName,
+            tools: AnalysisAnnotationTool.photoTools,
+            contextLabel: "Photo",
+            secondaryTool: $mapAnnotationTool,
+            secondaryTools: AnalysisAnnotationTool.mapTools,
+            secondaryContextLabel: "Map",
             canEditLabel: activeSelectedAnnotationID != nil,
-            selectedHasLabel: activeSelectedAnnotationText?
-                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+            selectedHasLabel: activeSelectedAnnotationHasDetails,
+            showsLabelActionTitle: true,
+            mapActionTitle: mapToolbarActionTitle,
+            mapFinishActionTitle: mapToolbarFinishActionTitle,
+            mapDraftIsActive: mapDraftCoordinateCount > 0,
+            onMapAction: { mapPrimaryActionRequestID += 1 },
+            onMapFinishAction: { mapFinishShapeRequestID += 1 },
+            onCancelMapDraft: { mapCancelDraftRequestID += 1 },
             onEditLabel: presentAnnotationLabelEditor
         )
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var mapToolbarActionTitle: String? {
+        switch mapAnnotationTool {
+        case .select: nil
+        case .marker: "Add Marker"
+        case .line: mapDraftCoordinateCount == 0 ? "Set Start" : "Set End"
+        case .distance: mapDraftCoordinateCount == 0 ? "Set Start" : "Set End"
+        case .shape: "Add Vertex"
+        case .label: "Add Label"
+        case .arrow, .rectangle, .ellipse: nil
+        }
+    }
+
+    private var mapToolbarFinishActionTitle: String? {
+        mapAnnotationTool == .shape && mapDraftCoordinateCount >= 3 ? "Finish Shape" : nil
     }
 
     private var caseSidebar: some View {
@@ -540,7 +609,7 @@ struct AnalysisWorkspaceView: View {
                 scopeSourceMode: scopeSourceMode,
                 selectedScopeRegion: $selectedScopeRegion,
                 annotations: model.annotations,
-                annotationTool: annotationTool,
+                annotationTool: photoAnnotationTool,
                 annotationStyle: annotationStyle,
                 selectedAnnotationID: $selectedAnnotationID,
                 annotationsAreReadOnly: model.sourceChanged,
@@ -553,7 +622,7 @@ struct AnalysisWorkspaceView: View {
 
             if showMarkupToolbar {
                 AnalysisAnnotationToolbar(
-                    tool: $annotationTool,
+                    tool: $photoAnnotationTool,
                     style: $annotationStyle,
                     selectedAnnotationID: selectedAnnotationID,
                     isReadOnly: model.sourceChanged,
@@ -576,13 +645,6 @@ struct AnalysisWorkspaceView: View {
                         .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
                     onEditLabel: presentAnnotationLabelEditor
                 )
-            }
-
-            if !showMarkupToolbar, !annotationTool.supportsPhoto {
-                Text("\(annotationTool.displayName) is available on the map.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             PixelInspectionReadout(sample: pixelInspectionSample)
@@ -615,10 +677,17 @@ struct AnalysisWorkspaceView: View {
         }
     }
 
-    private var activeSelectedAnnotationText: String? {
+    private var activeSelectedAnnotationHasDetails: Bool {
         switch activeMarkupSurface {
-        case .photo: selectedPhotoAnnotation?.text
-        case .map: selectedMapAnnotation?.text
+        case .photo:
+            let label = selectedPhotoAnnotation?.text?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let note = selectedPhotoAnnotation?.note?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return label?.isEmpty == false || note?.isEmpty == false
+        case .map:
+            return selectedMapAnnotation?.text?
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         }
     }
 
@@ -659,6 +728,7 @@ struct AnalysisWorkspaceView: View {
                 annotationID: annotation.id,
                 annotationName: annotation.kind.displayName,
                 existingLabel: annotation.text,
+                existingNote: annotation.note,
                 allowsRemoval: annotation.kind != .label
             )
         case .map:
@@ -668,15 +738,35 @@ struct AnalysisWorkspaceView: View {
                 annotationID: annotation.id,
                 annotationName: annotation.kind.displayName,
                 existingLabel: annotation.text,
+                existingNote: nil,
                 allowsRemoval: annotation.kind != .label
             )
         }
     }
 
-    private func setSelectedAnnotationLabel(_ label: String?) {
+    private func presentPhotoAnnotationEditor(_ annotationID: UUID) {
+        guard let annotation = model.annotations.first(where: { $0.id == annotationID }) else {
+            return
+        }
+        activeMarkupSurface = .photo
+        selectedAnnotationID = annotation.id
+        selectedMapAnnotationID = nil
+        annotationLabelEditorRequest = AnalysisAnnotationLabelEditorRequest(
+            surface: .photo,
+            annotationID: annotation.id,
+            annotationName: annotation.kind.displayName,
+            existingLabel: annotation.text,
+            existingNote: annotation.note,
+            allowsRemoval: annotation.kind != .label
+        )
+    }
+
+    private func setSelectedAnnotationDetails(label: String?, note: String?) {
         guard let request = annotationLabelEditorRequest else { return }
         let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines)
         let storedLabel = trimmed?.isEmpty == false ? trimmed : nil
+        let trimmedNote = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let storedNote = trimmedNote?.isEmpty == false ? trimmedNote : nil
         guard request.allowsRemoval || storedLabel != nil else { return }
 
         switch request.surface {
@@ -685,6 +775,7 @@ struct AnalysisWorkspaceView: View {
                 $0.id == request.annotationID
             }) else { return }
             annotation.text = storedLabel
+            annotation.note = storedNote
             model.setAnnotation(annotation)
         case .map:
             guard var annotation = model.mapAnnotations.first(where: {
@@ -714,7 +805,7 @@ struct AnalysisWorkspaceView: View {
                     )
                 },
                 onSelectAnnotation: { annotationID in
-                    annotationTool = .select
+                    photoAnnotationTool = .select
                     selectedAnnotationID = annotationID
                 }
             )
@@ -1081,36 +1172,54 @@ private struct AnalysisTimelineView: View {
 private struct AnalysisMapLayersView: View {
     let annotations: [AnalysisMapAnnotation]
     let photoAnnotations: [AnalysisAnnotation]
+    let folderAnnotations: [AnalysisFolderMapAnnotation]
+    let sourceURL: URL?
+    @Binding var scope: AnalysisMapLayerScope
+    @Binding var selectedPhotoAnnotationID: UUID?
     @Binding var selectedAnnotationID: UUID?
     let isReadOnly: Bool
+    let onSetPhotoVisible: (UUID, Bool) -> Void
+    let onSetAllPhotosVisible: (Bool) -> Void
+    let onEditPhotoAnnotation: (UUID) -> Void
     let onSetVisible: (UUID, Bool) -> Void
     let onSetAllVisible: (Bool) -> Void
     let onSetPhotoAnnotationLink: (UUID, UUID?) -> Void
 
     var body: some View {
+        HSplitView {
+            photoAnnotationsPane
+                .frame(minWidth: 240)
+            mapAnnotationsPane
+                .frame(minWidth: 300)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Photo and map annotations")
+    }
+
+    private var photoAnnotationsPane: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("Map Layers", systemImage: "square.3.layers.3d")
+                Label("Photo Annotations", systemImage: "photo.on.rectangle.angled")
                     .font(.headline)
                 Spacer()
-                Button("Show All") { onSetAllVisible(true) }
-                    .disabled(isReadOnly || annotations.allSatisfy(\.isVisible))
-                Button("Hide All") { onSetAllVisible(false) }
-                    .disabled(isReadOnly || annotations.allSatisfy({ !$0.isVisible }))
+                Button("Show All") { onSetAllPhotosVisible(true) }
+                    .disabled(isReadOnly || photoAnnotations.allSatisfy(\.isVisible))
+                Button("Hide All") { onSetAllPhotosVisible(false) }
+                    .disabled(isReadOnly || photoAnnotations.allSatisfy({ !$0.isVisible }))
             }
 
-            if annotations.isEmpty {
+            if photoAnnotations.isEmpty {
                 ContentUnavailableView(
-                    "No Map Markup",
-                    systemImage: "map",
-                    description: Text("Use the shared markup tools above to add map evidence.")
+                    "No Photo Annotations",
+                    systemImage: "photo.badge.plus",
+                    description: Text("Use the Photo tools above to mark visible evidence.")
                 )
             } else {
                 ScrollView {
                     LazyVStack(spacing: 5) {
-                        ForEach(Array(annotations.enumerated().reversed()), id: \.element.id) {
+                        ForEach(Array(photoAnnotations.enumerated().reversed()), id: \.element.id) {
                             index, annotation in
-                            mapLayerRow(annotation, index: index)
+                            photoLayerRow(annotation, index: index)
                         }
                     }
                     .padding(.trailing, 4)
@@ -1119,7 +1228,159 @@ private struct AnalysisMapLayersView: View {
         }
         .padding(14)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Map layers")
+        .accessibilityLabel("Photo annotations")
+    }
+
+    private var mapAnnotationsPane: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Map Annotations", systemImage: "square.3.layers.3d")
+                    .font(.headline)
+                Spacer()
+                Picker("Layer Scope", selection: $scope) {
+                    ForEach(AnalysisMapLayerScope.allCases, id: \.self) { scope in
+                        Text(scope.displayName).tag(scope)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+
+                if scope == .currentPhoto {
+                    Button("Show All") { onSetAllVisible(true) }
+                        .disabled(isReadOnly || annotations.allSatisfy(\.isVisible))
+                    Button("Hide All") { onSetAllVisible(false) }
+                        .disabled(isReadOnly || annotations.allSatisfy({ !$0.isVisible }))
+                }
+            }
+
+            if displayedAnnotationsAreEmpty {
+                ContentUnavailableView(
+                    "No Map Markup",
+                    systemImage: "map",
+                    description: Text(
+                        scope == .currentPhoto
+                            ? "Use the Map tools above, or place a selected photo object from the map."
+                            : "No photos in the working folder have map markup yet."
+                    )
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 5) {
+                        if scope == .currentPhoto {
+                            ForEach(Array(annotations.enumerated().reversed()), id: \.element.id) {
+                                index, annotation in
+                                mapLayerRow(annotation, index: index)
+                            }
+                        } else {
+                            ForEach(Array(folderAnnotations.reversed())) { item in
+                                if isCurrentSource(item.sourceURL),
+                                   let index = annotations.firstIndex(where: {
+                                       $0.id == item.annotation.id
+                                   }) {
+                                    mapLayerRow(item.annotation, index: index)
+                                } else {
+                                    folderLayerRow(item)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.trailing, 4)
+                }
+            }
+        }
+        .padding(14)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Map annotations")
+    }
+
+    private func photoLayerRow(_ annotation: AnalysisAnnotation, index: Int) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                selectedPhotoAnnotationID = annotation.id
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: annotation.kind.systemImage)
+                        .frame(width: 15)
+                        .foregroundStyle(annotation.style.color.swiftUIColor)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(annotation.listName(index: index))
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+                        if let note = annotation.note {
+                            Text(note)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                onEditPhotoAnnotation(annotation.id)
+            } label: {
+                Image(systemName: annotation.note == nil && annotation.text == nil ? "note.text.badge.plus" : "note.text")
+            }
+            .buttonStyle(.borderless)
+            .disabled(isReadOnly)
+            .help("Edit this photo annotation's label and note")
+
+            Button {
+                onSetPhotoVisible(annotation.id, !annotation.isVisible)
+            } label: {
+                Image(systemName: annotation.isVisible ? "eye" : "eye.slash")
+            }
+            .buttonStyle(.borderless)
+            .disabled(isReadOnly)
+            .help(annotation.isVisible ? "Hide photo annotation" : "Show photo annotation")
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(
+                    selectedPhotoAnnotationID == annotation.id
+                        ? Color.accentColor.opacity(0.16)
+                        : Color.secondary.opacity(0.08)
+                )
+        )
+    }
+
+    private var displayedAnnotationsAreEmpty: Bool {
+        scope == .currentPhoto ? annotations.isEmpty : folderAnnotations.isEmpty
+    }
+
+    private func isCurrentSource(_ candidate: URL) -> Bool {
+        guard let sourceURL else { return false }
+        return candidate.standardizedFileURL == sourceURL.standardizedFileURL
+    }
+
+    private func folderLayerRow(_ item: AnalysisFolderMapAnnotation) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon(for: item.annotation.kind))
+                .frame(width: 15)
+                .foregroundStyle(item.annotation.style.color.swiftUIColor)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.annotation.text ?? item.annotation.kind.displayName)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                Label(item.sourceName, systemImage: "photo")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: item.annotation.isVisible ? "eye" : "eye.slash")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(item.annotation.isVisible ? "Visible" : "Hidden")
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+        .help("Open \(item.sourceName) to edit this layer")
     }
 
     private func mapLayerRow(_ annotation: AnalysisMapAnnotation, index: Int) -> some View {
@@ -1155,7 +1416,7 @@ private struct AnalysisMapLayersView: View {
                 .disabled(annotation.linkedPhotoLabelID == nil)
                 Divider()
                 if photoAnnotations.isEmpty {
-                    Text("Label a photo annotation first")
+                    Text("Annotate an object in the photo first")
                 } else {
                     ForEach(Array(photoAnnotations.enumerated()), id: \.element.id) {
                         photoIndex, photoAnnotation in
@@ -1176,7 +1437,7 @@ private struct AnalysisMapLayersView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .disabled(isReadOnly)
-            .help("Connect this map annotation to a labeled photo annotation")
+            .help("Connect this map annotation to an object annotated in the photo")
 
             Button {
                 onSetVisible(annotation.id, !annotation.isVisible)
@@ -1358,6 +1619,92 @@ private struct AnalysisObservationEditor: View {
     }
 }
 
+private struct AnalysisImageRail: View {
+    let images: [ImageFile]
+    let selectedURL: URL?
+    let thumbnailService: ThumbnailService
+    let onSelect: (ImageFile) -> Void
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Label("Photos", systemImage: "photo.stack")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .labelStyle(.iconOnly)
+                .padding(.top, 8)
+                .help("Photos in the working folder")
+
+            ScrollView {
+                LazyVStack(spacing: 7) {
+                    ForEach(images) { image in
+                        Button {
+                            guard image.url != selectedURL else { return }
+                            onSelect(image)
+                        } label: {
+                            AnalysisRailThumbnail(
+                                image: image,
+                                isSelected: image.url == selectedURL,
+                                thumbnailService: thumbnailService
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .help(image.filename)
+                        .accessibilityLabel(
+                            image.url == selectedURL
+                                ? "\(image.filename), current photo"
+                                : "Open \(image.filename) in analysis"
+                        )
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Working folder photos")
+    }
+}
+
+private struct AnalysisRailThumbnail: View {
+    let image: ImageFile
+    let isSelected: Bool
+    let thumbnailService: ThumbnailService
+    @State private var thumbnail: NSImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color.secondary.opacity(0.10))
+
+            if let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .frame(width: 58, height: 58)
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(
+                    isSelected ? Color.accentColor : Color.secondary.opacity(0.25),
+                    lineWidth: isSelected ? 3 : 0.5
+                )
+        }
+        .task(id: image.url) {
+            if let cached = thumbnailService.thumbnail(for: image.url) {
+                thumbnail = cached
+            } else {
+                thumbnail = await thumbnailService.loadThumbnail(for: image.url)
+            }
+        }
+    }
+}
+
 private enum AnalysisMarkupSurface: String {
     case photo
     case map
@@ -1370,6 +1717,7 @@ private struct AnalysisAnnotationLabelEditorRequest: Identifiable {
     let annotationID: UUID
     let annotationName: String
     let existingLabel: String?
+    let existingNote: String?
     let allowsRemoval: Bool
 
     var id: String { "\(surface.rawValue)-\(annotationID.uuidString)" }
@@ -1377,24 +1725,26 @@ private struct AnalysisAnnotationLabelEditorRequest: Identifiable {
 
 private struct AnalysisAnnotationLabelEditor: View {
     let request: AnalysisAnnotationLabelEditorRequest
-    let onSave: (String?) -> Void
+    let onSave: (String?, String?) -> Void
     let onCancel: () -> Void
     @State private var label: String
+    @State private var note: String
 
     init(
         request: AnalysisAnnotationLabelEditorRequest,
-        onSave: @escaping (String?) -> Void,
+        onSave: @escaping (String?, String?) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.request = request
         self.onSave = onSave
         self.onCancel = onCancel
         _label = State(initialValue: request.existingLabel ?? "")
+        _note = State(initialValue: request.existingNote ?? "")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(request.existingLabel == nil ? "Label Annotation" : "Edit Annotation Label")
+            Text("Annotation Details")
                 .font(.headline)
 
             Text(
@@ -1408,24 +1758,52 @@ private struct AnalysisAnnotationLabelEditor: View {
             TextField("Annotation label", text: $label)
                 .textFieldStyle(.roundedBorder)
 
+            if request.surface == .photo {
+                Text("Note")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $note)
+                    .font(.body)
+                    .frame(minHeight: 90)
+                    .padding(5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
+                    )
+                    .accessibilityLabel("Photo annotation note")
+            }
+
             HStack {
                 if request.allowsRemoval, request.existingLabel != nil {
-                    Button("Remove Label", role: .destructive) { onSave(nil) }
+                    Button("Remove Label", role: .destructive) {
+                        onSave(nil, trimmedNote)
+                    }
                 }
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
                 Button("Save") {
-                    onSave(label.trimmingCharacters(in: .whitespacesAndNewlines))
+                    onSave(
+                        label.trimmingCharacters(in: .whitespacesAndNewlines),
+                        trimmedNote
+                    )
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    !request.allowsRemoval
+                        && label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .frame(width: 440)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Annotation label editor")
+        .accessibilityLabel("Annotation details editor")
+    }
+
+    private var trimmedNote: String? {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -2087,7 +2465,13 @@ private struct AnalysisSourceThumbnail: View {
                     }
                     inspectionSample = ImageInspectionSample(
                         normalizedDisplayPoint: point,
-                        transform: displayTransform
+                        transform: displayTransform,
+                        rgba16: sourceCGImage.flatMap {
+                            SourcePixelSampler.rgba16(
+                                in: $0,
+                                atDisplayPoint: point
+                            )
+                        }
                     )
                 case .ended:
                     inspectionSample = nil
@@ -2097,7 +2481,13 @@ private struct AnalysisSourceThumbnail: View {
                 guard let displayTransform else { return }
                 inspectionSample = ImageInspectionSample(
                     normalizedDisplayPoint: CGPoint(x: 0.5, y: 0.5),
-                    transform: displayTransform
+                    transform: displayTransform,
+                    rgba16: sourceCGImage.flatMap {
+                        SourcePixelSampler.rgba16(
+                            in: $0,
+                            atDisplayPoint: CGPoint(x: 0.5, y: 0.5)
+                        )
+                    }
                 )
             }
             .accessibilityAction(named: "Select center region for scopes") {
@@ -2601,11 +2991,19 @@ private struct PixelInspectionReadout: View {
             Image(systemName: "scope")
                 .accessibilityHidden(true)
             if let sample {
-                Text(
-                    "Source pixel x: \(sample.sourcePixel.x), y: \(sample.sourcePixel.y)"
-                )
+                Text("Source pixel x: \(sample.sourcePixel.x), y: \(sample.sourcePixel.y)")
                 .monospacedDigit()
                 .textSelection(.enabled)
+                if let rgba = sample.rgba16 {
+                    Divider()
+                        .frame(height: 14)
+                    Text(
+                        "R: \(rgba.red)  |  G: \(rgba.green)  |  "
+                            + "B: \(rgba.blue)  |  A: \(rgba.alpha)"
+                    )
+                    .monospacedDigit()
+                    .textSelection(.enabled)
+                }
                 Spacer()
                 Text(
                     String(
@@ -2632,6 +3030,60 @@ private struct PixelInspectionReadout: View {
         guard let sample else {
             return "Pixel inspector. Hover over the image to inspect a source pixel."
         }
+        if let rgba = sample.rgba16 {
+            return "Source pixel x \(sample.sourcePixel.x), y \(sample.sourcePixel.y). "
+                + "16-bit red \(rgba.red), green \(rgba.green), "
+                + "blue \(rgba.blue), alpha \(rgba.alpha)"
+        }
         return "Source pixel x \(sample.sourcePixel.x), y \(sample.sourcePixel.y)"
+    }
+}
+
+private enum SourcePixelSampler {
+    static func rgba16(
+        in image: CGImage,
+        atDisplayPoint point: CGPoint
+    ) -> SourcePixelRGBA16? {
+        guard image.width > 0, image.height > 0 else { return nil }
+        let x = min(image.width - 1, max(0, Int(point.x * CGFloat(image.width))))
+        let displayY = min(image.height - 1, max(0, Int(point.y * CGFloat(image.height))))
+        let quartzY = image.height - 1 - displayY
+        var components = [UInt16](repeating: 0, count: 4)
+        let bitmapInfo = CGBitmapInfo.byteOrder16Little.rawValue
+            | CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let context = CGContext(
+            data: &components,
+            width: 1,
+            height: 1,
+            bitsPerComponent: 16,
+            bytesPerRow: MemoryLayout<UInt16>.size * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: bitmapInfo
+        ) else { return nil }
+        context.interpolationQuality = .none
+        context.translateBy(x: -CGFloat(x), y: -CGFloat(quartzY))
+        context.draw(
+            image,
+            in: CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        )
+
+        let alpha = components[3]
+        guard alpha > 0, alpha < UInt16.max else {
+            return SourcePixelRGBA16(
+                red: components[0],
+                green: components[1],
+                blue: components[2],
+                alpha: alpha
+            )
+        }
+        func unpremultiply(_ value: UInt16) -> UInt16 {
+            UInt16(min(UInt32(UInt16.max), UInt32(value) * UInt32(UInt16.max) / UInt32(alpha)))
+        }
+        return SourcePixelRGBA16(
+            red: unpremultiply(components[0]),
+            green: unpremultiply(components[1]),
+            blue: unpremultiply(components[2]),
+            alpha: alpha
+        )
     }
 }

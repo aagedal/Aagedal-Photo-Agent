@@ -112,16 +112,25 @@ nonisolated struct SourcePixelCoordinate: Hashable, Sendable {
     let y: Int
 }
 
+nonisolated struct SourcePixelRGBA16: Hashable, Sendable {
+    let red: UInt16
+    let green: UInt16
+    let blue: UInt16
+    let alpha: UInt16
+}
+
 /// One linked hover location expressed both in representation space and in the
 /// original file's pixel-storage frame.
 nonisolated struct ImageInspectionSample: Hashable, Sendable {
     let normalizedDisplayPoint: CGPoint
     let sourceNormalizedPoint: CGPoint
     let sourcePixel: SourcePixelCoordinate
+    let rgba16: SourcePixelRGBA16?
 
     init(
         normalizedDisplayPoint: CGPoint,
-        transform: DisplayImageTransform
+        transform: DisplayImageTransform,
+        rgba16: SourcePixelRGBA16? = nil
     ) {
         let displayPoint = CGPoint(
             x: min(1, max(0, normalizedDisplayPoint.x)),
@@ -144,6 +153,7 @@ nonisolated struct ImageInspectionSample: Hashable, Sendable {
             x: Self.pixelIndex(continuousPixel.x, count: transform.sourcePixelWidth),
             y: Self.pixelIndex(continuousPixel.y, count: transform.sourcePixelHeight)
         )
+        self.rgba16 = rgba16
     }
 
     private static func pixelIndex(_ value: CGFloat, count: Int) -> Int {
