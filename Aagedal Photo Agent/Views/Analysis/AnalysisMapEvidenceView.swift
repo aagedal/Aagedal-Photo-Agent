@@ -41,6 +41,7 @@ struct AnalysisMapEvidenceView: View {
     @State private var searchText = ""
     @State private var searchCompleter = LocationSearchCompleter()
     @State private var searchError: String?
+    @State private var isSearching = false
     @State private var isReverseGeocoding = false
     @State private var geocodingError: String?
     @State private var annotationDraftCoordinates: [AnalysisGeoCoordinate] = []
@@ -101,8 +102,7 @@ struct AnalysisMapEvidenceView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
+        VStack(alignment: .leading, spacing: 8) {
             searchControls
 
             map
@@ -200,34 +200,12 @@ struct AnalysisMapEvidenceView: View {
         }
     }
 
-    private var header: some View {
-        HStack {
-            Label("Location Evidence", systemImage: "map")
-                .font(.headline)
-            Spacer()
-            Picker(
-                "Map Style",
-                selection: Binding(
-                    get: { mapState.style },
-                    set: { style in onSetStyle(style) }
-                )
-            ) {
-                ForEach(AnalysisMapStyle.allCases, id: \.self) { style in
-                    Text(style.displayName).tag(style)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 190)
-            .disabled(isReadOnly)
-        }
-    }
-
     private var searchControls: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack {
+            HStack(spacing: 8) {
                 TextField("Find the photo location", text: $searchText)
                     .textFieldStyle(.roundedBorder)
+                    .onSubmit(searchForPlace)
                     .onChange(of: searchText) { _, query in
                         searchError = nil
                         searchCompleter.search(query: query)
@@ -243,8 +221,41 @@ struct AnalysisMapEvidenceView: View {
                     .buttonStyle(.borderless)
                     .accessibilityLabel("Clear place search")
                 }
+
+                Button(action: searchForPlace) {
+                    if isSearching {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "magnifyingglass")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(
+                    isReadOnly
+                        || mapAvailability.isOffline
+                        || isSearching
+                        || searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+                .help("Search for this place")
+                .accessibilityLabel("Search for place")
+
+                Picker(
+                    "Map Style",
+                    selection: Binding(
+                        get: { mapState.style },
+                        set: { style in onSetStyle(style) }
+                    )
+                ) {
+                    ForEach(AnalysisMapStyle.allCases, id: \.self) { style in
+                        Text(style.displayName).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 190)
+                .disabled(isReadOnly)
             }
-            .disabled(isReadOnly || mapAvailability.isOffline)
 
             if mapAvailability.isOffline {
                 Text("Place search is unavailable offline. Coordinate entry and saved evidence still work.")
@@ -372,14 +383,14 @@ struct AnalysisMapEvidenceView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            HStack(spacing: 14) {
+                Text("Bearing")
+                    .frame(width: 88, alignment: .leading)
+                AnalysisBearingDial(bearing: $fieldOfViewBearing)
+            }
+            .disabled(!addsFieldOfViewCone)
+
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
-                GridRow {
-                    Text("Bearing")
-                    TextField("Degrees", value: $fieldOfViewBearing, format: .number)
-                        .frame(width: 85)
-                    Text("°")
-                        .foregroundStyle(.secondary)
-                }
                 GridRow {
                     Text("Field of view")
                     TextField("Degrees", value: $fieldOfViewAngle, format: .number)
@@ -397,12 +408,12 @@ struct AnalysisMapEvidenceView: View {
             }
             .disabled(!addsFieldOfViewCone)
 
-            Text("Bearing uses 0° north and increases clockwise.")
+            Text("Drag the bearing control left or right. 0° is north; values increase clockwise.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
         .padding(16)
-        .frame(width: 330)
+        .frame(width: 350)
     }
 
     private func mapAvailabilityBanner(title: String, message: String) -> some View {
@@ -465,6 +476,18 @@ struct AnalysisMapEvidenceView: View {
                     )
                 )
                 .tint(.orange)
+            }
+
+            if let coordinates = fieldOfViewPreviewCoordinates {
+                MapPolygon(coordinates: coordinates.map(\.clLocationCoordinate))
+                    .foregroundStyle(Color.cyan.opacity(0.22))
+                MapPolyline(coordinates: (
+                    coordinates + (coordinates.first.map { [$0] } ?? [])
+                ).map(\.clLocationCoordinate))
+                .stroke(
+                    Color.cyan,
+                    style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                )
             }
 
             ForEach(mapState.annotations.filter(\.isVisible)) { annotation in
@@ -667,10 +690,14 @@ struct AnalysisMapEvidenceView: View {
                     locationCard(
                         title: location.placeName ?? "Photo location",
                         coordinate: location.coordinate,
-                        source: location.source.displayName,
-                        detail: location.placeNameSource.map {
-                            "\(location.sourceDetail) · \($0.displayName)"
-                        } ?? location.sourceDetail,
+                        source: location.source == .mapCenter
+                            ? nil
+                            : location.source.displayName,
+                        detail: location.source == .mapCenter
+                            ? nil
+                            : location.placeNameSource.map {
+                                "\(location.sourceDetail) · \($0.displayName)"
+                            } ?? location.sourceDetail,
                         color: .orange
                     )
                 }
@@ -681,8 +708,8 @@ struct AnalysisMapEvidenceView: View {
     private func locationCard(
         title: String,
         coordinate: AnalysisGeoCoordinate,
-        source: String,
-        detail: String,
+        source: String?,
+        detail: String?,
         color: Color
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -696,12 +723,16 @@ struct AnalysisMapEvidenceView: View {
             ))
             .font(.caption.monospaced())
             .textSelection(.enabled)
-            Text(source)
-                .font(.caption.weight(.medium))
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            if let source {
+                Text(source)
+                    .font(.caption.weight(.medium))
+            }
+            if let detail {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -928,18 +959,9 @@ struct AnalysisMapEvidenceView: View {
     }
 
     private func addFieldOfViewCone(at origin: AnalysisGeoCoordinate) {
-        let bearing = fieldOfViewBearing.truncatingRemainder(dividingBy: 360)
-        let normalizedBearing = bearing < 0 ? bearing + 360 : bearing
-        let angle = min(170, max(5, fieldOfViewAngle))
-        let range = min(100_000, max(1, fieldOfViewRangeMeters))
-        let arcCoordinates = (0...8).map { step in
-            destinationCoordinate(
-                from: origin,
-                bearingDegrees: normalizedBearing - angle / 2 + angle * Double(step) / 8,
-                distanceMeters: range
-            )
-        }
-        let geometry = AnalysisMapAnnotationGeometry.polygon([origin] + arcCoordinates)
+        let geometry = AnalysisMapAnnotationGeometry.polygon(
+            fieldOfViewCoordinates(at: origin)
+        )
         let style = AnalysisMapAnnotationStyle(
             color: .palette(.cyan),
             lineWidthPoints: 2,
@@ -965,6 +987,33 @@ struct AnalysisMapEvidenceView: View {
         guard (try? annotation.validate()) != nil else { return }
         onSetAnnotation(annotation)
         selectedAnnotationID = annotation.id
+    }
+
+    private var fieldOfViewPreviewCoordinates: [AnalysisGeoCoordinate]? {
+        guard isFieldOfViewSettingsPresented, addsFieldOfViewCone else { return nil }
+        let origin = mapState.investigationLocation?.coordinate ?? AnalysisGeoCoordinate(
+            latitude: visibleRegion.center.latitude,
+            longitude: visibleRegion.center.longitude
+        )
+        guard origin.isValid else { return nil }
+        return fieldOfViewCoordinates(at: origin)
+    }
+
+    private func fieldOfViewCoordinates(
+        at origin: AnalysisGeoCoordinate
+    ) -> [AnalysisGeoCoordinate] {
+        let bearing = fieldOfViewBearing.truncatingRemainder(dividingBy: 360)
+        let normalizedBearing = bearing < 0 ? bearing + 360 : bearing
+        let angle = min(170, max(5, fieldOfViewAngle))
+        let range = min(100_000, max(1, fieldOfViewRangeMeters))
+        let arcCoordinates = (0...8).map { step in
+            destinationCoordinate(
+                from: origin,
+                bearingDegrees: normalizedBearing - angle / 2 + angle * Double(step) / 8,
+                distanceMeters: range
+            )
+        }
+        return [origin] + arcCoordinates
     }
 
     private func destinationCoordinate(
@@ -1046,6 +1095,40 @@ struct AnalysisMapEvidenceView: View {
         }
     }
 
+    private func searchForPlace() {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, !isSearching else { return }
+
+        searchError = nil
+        isSearching = true
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = query
+        request.region = visibleRegion
+        MKLocalSearch(request: request).start { response, error in
+            Task { @MainActor in
+                isSearching = false
+                guard let item = response?.mapItems.first else {
+                    searchError = error?.localizedDescription
+                        ?? "No location was found for \(query)."
+                    return
+                }
+                let coordinate = AnalysisGeoCoordinate(
+                    latitude: item.location.coordinate.latitude,
+                    longitude: item.location.coordinate.longitude
+                )
+                setInvestigationLocation(
+                    coordinate: coordinate,
+                    source: .placeSearch,
+                    detail: query,
+                    placeName: item.name ?? query,
+                    placeNameSource: .placeSearch
+                )
+                searchText = ""
+                searchCompleter.results = []
+            }
+        }
+    }
+
     private func reverseGeocodeInvestigationLocation() {
         guard var location = mapState.investigationLocation else { return }
         isReverseGeocoding = true
@@ -1118,6 +1201,103 @@ struct AnalysisMapEvidenceView: View {
             )
         }
         return defaultRegion
+    }
+}
+
+private struct AnalysisBearingDial: View {
+    @Binding var bearing: Double
+    @State private var dragStartBearing: Double?
+    @Environment(\.isEnabled) private var isEnabled
+
+    private var normalizedBearing: Double {
+        Self.normalized(bearing)
+    }
+
+    private var displayedBearing: Int {
+        Int(normalizedBearing.rounded()).isMultiple(of: 360)
+            ? 0
+            : Int(normalizedBearing.rounded())
+    }
+
+    private var cardinalDirection: String {
+        let directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        let index = Int((normalizedBearing + 22.5) / 45).isMultiple(of: 8)
+            ? 0
+            : Int((normalizedBearing + 22.5) / 45)
+        return directions[index]
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.secondary.opacity(0.10))
+                Circle()
+                    .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
+
+                ForEach(0..<12, id: \.self) { tick in
+                    Capsule()
+                        .fill(Color.secondary.opacity(tick.isMultiple(of: 3) ? 0.75 : 0.4))
+                        .frame(width: tick.isMultiple(of: 3) ? 2 : 1, height: 5)
+                        .offset(y: -24)
+                        .rotationEffect(.degrees(Double(tick) * 30))
+                }
+
+                Image(systemName: "location.north.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.cyan)
+                    .rotationEffect(.degrees(normalizedBearing))
+            }
+            .frame(width: 58, height: 58)
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard isEnabled else { return }
+                        let start: Double
+                        if let dragStartBearing {
+                            start = dragStartBearing
+                        } else {
+                            start = normalizedBearing
+                            dragStartBearing = start
+                        }
+                        bearing = Self.normalized(start + Double(value.translation.width))
+                    }
+                    .onEnded { _ in
+                        dragStartBearing = nil
+                    }
+            )
+            .help("Drag left or right to change the bearing")
+            .accessibilityElement()
+            .accessibilityLabel("Bearing")
+            .accessibilityValue("\(displayedBearing) degrees \(cardinalDirection)")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment:
+                    bearing = Self.normalized(normalizedBearing + 1)
+                case .decrement:
+                    bearing = Self.normalized(normalizedBearing - 1)
+                @unknown default:
+                    break
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(displayedBearing)°")
+                    .font(.title3.monospacedDigit().weight(.semibold))
+                Text(cardinalDirection)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 48, alignment: .leading)
+        }
+        .opacity(isEnabled ? 1 : 0.45)
+    }
+
+    private static func normalized(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        let remainder = value.truncatingRemainder(dividingBy: 360)
+        return remainder < 0 ? remainder + 360 : remainder
     }
 }
 

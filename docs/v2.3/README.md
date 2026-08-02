@@ -55,6 +55,14 @@ Phase 5 report evidence is now frozen as exact WGS-84 viewport and visible geogr
 app-rendered schematic; exported reports will not persist or redistribute Apple map tiles. The
 immutable Phase 6 report snapshot re-hashes the current source before capture, orders report inputs
 deterministically, filters excluded findings, and includes a live Apple Maps viewport reference.
+Phase 6 now has a workspace PDF export path for A4 and US Letter. It renders cover, source revision,
+findings, annotation legend, timeline, untimed observations, a WGS-84 map schematic, methodology,
+limitations, analyzer provenance, and raw metadata from the immutable snapshot. Export settings make
+paths, serial numbers, exact coordinates, live map links, and raw metadata selectable and warn before
+sharing sensitive fields. Rendering reports progress between closed pages, honors cancellation,
+revalidates the source hash, and atomically replaces only the selected destination. Structural tests
+and full-page raster review cover both paper sizes; source/evidence image figures and crop export remain
+the next Phase 6 slice.
 The conditional sun/shadow analyzer is not approved for 2.3 because terrain, clock/timezone, and
 measurement uncertainty have not yet passed an evidence-quality gate.
 

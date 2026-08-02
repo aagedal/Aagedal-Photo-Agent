@@ -1,4 +1,5 @@
 import Foundation
+import PDFKit
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -156,6 +157,159 @@ struct AnalysisReportSnapshotTests {
         #expect(snapshot.mapEvidence == nil)
     }
 
+    @Test("renders a structured A4 PDF from only the immutable snapshot")
+    func rendersStructuredA4PDF() async throws {
+        let fixture = try AnalysisReportFixture(contents: "rendered report source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        analysisCase.title = "Example Evidence Case"
+        analysisCase.setAnalyzerRun(AnalysisAnalyzerRun(
+            analyzerID: "report-test",
+            analyzerVersion: 3,
+            cacheKey: "sha256:test|report-test|v3",
+            sourceRepresentation: .originalBytes,
+            status: .completed,
+            progress: 1,
+            startedAt: Date(timeIntervalSince1970: 10),
+            completedAt: Date(timeIntervalSince1970: 11),
+            errorMessage: nil,
+            output: AnalysisAnalyzerOutput(findings: [AnalysisFinding(
+                id: "metadata-discrepancy",
+                analyzerID: "report-test",
+                analyzerVersion: 3,
+                category: .metadata,
+                severity: .notable,
+                evidenceClass: .derivedObservation,
+                title: "Metadata discrepancy",
+                explanation: "Two metadata namespaces contain different software values.",
+                technicalDetail: "XMP and EXIF values differ.",
+                alternatives: ["A normal export application may preserve an older value."],
+                confidence: nil,
+                sourceRepresentation: .originalBytes,
+                computedAt: Date(timeIntervalSince1970: 11),
+                includeInReport: true
+            )])
+        ))
+        analysisCase.setAnnotation(AnalysisAnnotation(
+            kind: .distance,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+                end: AnalysisNormalizedPoint(x: 0.7, y: 0.8)
+            ),
+            text: "Known doorway",
+            note: "Measured from visible frame edges.",
+            measurementCalibration: AnalysisMeasurementCalibration(
+                knownLength: 2,
+                unit: .meters
+            )
+        ))
+        analysisCase.setTimestampEvidence(AnalysisTimestampEvidence(
+            kind: .observation,
+            title: "Witness time",
+            value: AnalysisTimestampValue(
+                year: 2026,
+                month: 8,
+                day: 2,
+                hour: 12,
+                minute: 30,
+                precision: .minute,
+                utcOffsetMinutes: 120
+            ),
+            source: .userEntered,
+            sourceDetail: "Investigator entry"
+        ))
+        analysisCase.setObservation(AnalysisObservation(
+            title: "Weather",
+            note: "Overcast, with no reliable timestamp."
+        ))
+        analysisCase.setMapViewport(AnalysisMapViewport(
+            center: AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522),
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.06
+        ))
+        analysisCase.setMapAnnotation(AnalysisMapAnnotation(
+            kind: .label,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.914, longitude: 10.753)),
+            text: "Camera position"
+        ))
+
+        let snapshot = try await AnalysisReportSnapshot.capture(
+            from: analysisCase,
+            sourceURL: fixture.fileURL,
+            appVersion: "2.3",
+            appBuild: "test",
+            now: Date(timeIntervalSince1970: 30)
+        )
+        var progressValues: [Double] = []
+        let data = try await AnalysisPDFReportRenderer.makePDF(snapshot: snapshot) {
+            progressValues.append($0)
+        }
+        try writeQAReportIfRequested(data, filename: "analysis-report-a4.pdf")
+        let document = try #require(PDFDocument(data: data))
+        let text = (0..<document.pageCount)
+            .compactMap { document.page(at: $0)?.string }
+            .joined(separator: "\n")
+
+        #expect(document.pageCount >= 9)
+        let bounds = try #require(document.page(at: 0)?.bounds(for: .mediaBox))
+        #expect(abs(bounds.width - 595.28) < 1)
+        #expect(abs(bounds.height - 841.89) < 1)
+        #expect(text.contains("IMAGE ANALYSIS REPORT"))
+        #expect(text.contains("Example Evidence Case"))
+        #expect(text.contains(revision.sha256))
+        #expect(text.contains("Metadata discrepancy"))
+        #expect(text.contains("Known doorway"))
+        #expect(text.contains("Converted measurements depend"))
+        #expect(text.contains("Witness time"))
+        #expect(text.contains("Weather"))
+        #expect(text.contains("No Apple Maps tiles or imagery are embedded"))
+        #expect(text.contains("Methodology"))
+        #expect(text.contains("Limitations"))
+        #expect(text.contains("sha256:test|report-test|v3"))
+        #expect(progressValues.last == 1)
+        #expect(progressValues == progressValues.sorted())
+    }
+
+    @Test("supports US Letter and privacy-oriented export settings")
+    func supportsLetterAndPrivacyOptions() async throws {
+        let fixture = try AnalysisReportFixture(contents: "letter report source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let snapshot = try await AnalysisReportSnapshot.capture(
+            from: analysisCase,
+            sourceURL: fixture.fileURL,
+            appVersion: "2.3",
+            appBuild: "test"
+        )
+        let data = try await AnalysisPDFReportRenderer.makePDF(
+            snapshot: snapshot,
+            options: AnalysisReportExportOptions(
+                pageFormat: .usLetter,
+                includeCanonicalPath: false,
+                includeCameraSerialNumber: false,
+                includeLocationCoordinates: false,
+                includeRawMetadata: false
+            )
+        )
+        try writeQAReportIfRequested(data, filename: "analysis-report-letter.pdf")
+        let document = try #require(PDFDocument(data: data))
+        let page = try #require(document.page(at: 0))
+        let bounds = page.bounds(for: .mediaBox)
+        let text = (0..<document.pageCount)
+            .compactMap { document.page(at: $0)?.string }
+            .joined(separator: "\n")
+
+        #expect(abs(bounds.width - 612) < 0.1)
+        #expect(abs(bounds.height - 792) < 0.1)
+        #expect(text.contains("US Letter"))
+        #expect(text.contains("Canonical path"))
+        #expect(text.contains("Omitted by export settings"))
+        #expect(!text.contains(fixture.directoryURL.path))
+        #expect(text.contains("Raw metadata was omitted by export settings"))
+    }
+
     private func finding(
         id: String,
         category: AnalysisFindingCategory,
@@ -177,6 +331,18 @@ struct AnalysisReportSnapshotTests {
             computedAt: Date(timeIntervalSince1970: 10),
             includeInReport: includeInReport
         )
+    }
+
+    private func writeQAReportIfRequested(_ data: Data, filename: String) throws {
+        guard let directory = ProcessInfo.processInfo.environment["ANALYSIS_REPORT_QA_OUTPUT"] else {
+            return
+        }
+        let directoryURL = URL(fileURLWithPath: directory, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        try data.write(to: directoryURL.appendingPathComponent(filename), options: .atomic)
     }
 }
 

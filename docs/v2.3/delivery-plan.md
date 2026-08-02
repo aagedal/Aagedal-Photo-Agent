@@ -127,13 +127,13 @@ honest about methods and limitations.
 - [x] Revalidate source hash at export.
 - [ ] Implement cover, facts/provenance, findings, figures, timeline/map, user observations,
   methodology, limitations, and appendix.
-- [ ] Add selectable sensitive fields and redaction warning.
+- [x] Add selectable sensitive fields and redaction warning.
 - [ ] Add evidence crop export with pixel/interpolation scale.
-- [ ] Add annotation legend and calibrated-measurement disclosure.
-- [ ] Add map attribution or schematic fallback.
-- [ ] Add progress, cancellation, atomic output, and cleanup.
-- [ ] Add PDF semantic/structural tests.
-- [ ] Render every page to images and visually verify A4 and US Letter.
+- [x] Add annotation legend and calibrated-measurement disclosure.
+- [x] Add map attribution or schematic fallback.
+- [x] Add progress, cancellation, atomic output, and cleanup.
+- [x] Add PDF semantic/structural tests.
+- [x] Render every page to images and visually verify A4 and US Letter.
 - [ ] Test long findings, Unicode, missing figures, many annotations, and multi-page cases.
 
 ## Phase 7 — comparison core

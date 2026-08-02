@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AnalysisWorkspaceView: View {
     @Bindable var model: AnalysisWorkspaceModel
@@ -28,6 +29,10 @@ struct AnalysisWorkspaceView: View {
     @State private var mapPrimaryActionRequestID = 0
     @State private var mapFinishShapeRequestID = 0
     @State private var mapCancelDraftRequestID = 0
+    @State private var isReportOptionsPresented = false
+    @State private var reportExportProgress: Double?
+    @State private var reportExportError: String?
+    @State private var reportExportTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -172,6 +177,32 @@ struct AnalysisWorkspaceView: View {
                 onCancel: { annotationLabelEditorRequest = nil }
             )
         }
+        .sheet(isPresented: $isReportOptionsPresented) {
+            AnalysisReportExportSheet(
+                onExport: { options in
+                    isReportOptionsPresented = false
+                    Task { @MainActor in
+                        await Task.yield()
+                        chooseReportDestinationAndExport(options: options)
+                    }
+                },
+                onCancel: { isReportOptionsPresented = false }
+            )
+        }
+        .alert(
+            "Report Export Failed",
+            isPresented: Binding(
+                get: { reportExportError != nil },
+                set: { if !$0 { reportExportError = nil } }
+            )
+        ) {
+            Button("OK") { reportExportError = nil }
+        } message: {
+            Text(reportExportError ?? "The report could not be exported.")
+        }
+        .onDisappear {
+            reportExportTask?.cancel()
+        }
     }
 
     private var workspaceHeader: some View {
@@ -212,6 +243,26 @@ struct AnalysisWorkspaceView: View {
             }
 
             Spacer()
+
+            if let reportExportProgress {
+                ProgressView(value: reportExportProgress)
+                    .frame(width: 90)
+                    .accessibilityLabel("Exporting analysis report")
+                Button("Cancel", role: .cancel) {
+                    reportExportTask?.cancel()
+                }
+                .buttonStyle(.borderless)
+            } else {
+                Button("Export PDF…", systemImage: "doc.richtext") {
+                    isReportOptionsPresented = true
+                }
+                .disabled(model.analysisCase == nil || model.sourceChanged)
+                .help(
+                    model.sourceChanged
+                        ? "The source must match the case revision before a report can be exported"
+                        : "Create a PDF from a revalidated, immutable case snapshot"
+                )
+            }
 
             Picker(
                 "Image Representation",
@@ -293,6 +344,61 @@ struct AnalysisWorkspaceView: View {
         .accessibilityElement(children: .combine)
     }
 
+    private func chooseReportDestinationAndExport(options: AnalysisReportExportOptions) {
+        guard let analysisCase = model.analysisCase,
+              let sourceURL = model.sourceURL,
+              reportExportTask == nil else { return }
+
+        let panel = NSSavePanel()
+        panel.title = "Export Analysis Report"
+        panel.prompt = "Export"
+        panel.allowedContentTypes = [.pdf]
+        panel.canCreateDirectories = true
+        let baseName = analysisCase.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        panel.nameFieldStringValue = "\(baseName.isEmpty ? "Analysis" : baseName) Report.pdf"
+        guard panel.runModal() == .OK, let outputURL = panel.url else { return }
+
+        let appVersion = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "unknown"
+        let appBuild = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "unknown"
+        reportExportProgress = 0
+        reportExportTask = Task { @MainActor in
+            defer {
+                reportExportProgress = nil
+                reportExportTask = nil
+            }
+            do {
+                let snapshot = try await AnalysisReportSnapshot.capture(
+                    from: analysisCase,
+                    sourceURL: sourceURL,
+                    appVersion: appVersion,
+                    appBuild: appBuild
+                )
+                try Task.checkCancellation()
+                reportExportProgress = 0.08
+                let data = try await AnalysisPDFReportRenderer.makePDF(
+                    snapshot: snapshot,
+                    options: options,
+                    progress: { reportExportProgress = 0.08 + $0 * 0.90 }
+                )
+                try Task.checkCancellation()
+                try data.write(to: outputURL, options: .atomic)
+                reportExportProgress = 1
+            } catch is CancellationError {
+                return
+            } catch AnalysisPDFReportError.cancelled {
+                return
+            } catch {
+                reportExportError = error.localizedDescription.isEmpty
+                    ? "The report could not be exported."
+                    : error.localizedDescription
+            }
+        }
+    }
+
     private var pixelAnalysisBody: some View {
         HSplitView {
             caseSidebar
@@ -332,7 +438,7 @@ struct AnalysisWorkspaceView: View {
                 HSplitView {
                     VSplitView {
                         sourcePreview(showMarkupToolbar: false)
-                            .frame(minHeight: 360)
+                            .frame(minHeight: 260)
 
                         AnalysisTimelineView(
                             evidence: model.timestampEvidence,
@@ -344,7 +450,7 @@ struct AnalysisWorkspaceView: View {
                             onDeleteTimestamp: model.removeTimestampEvidence,
                             onDeleteObservation: model.removeObservation
                         )
-                        .frame(minHeight: 170, idealHeight: 230, maxHeight: 320)
+                        .frame(minHeight: 170, idealHeight: 280)
                     }
                     .frame(minWidth: 400, idealWidth: 620, maxWidth: 760)
 
@@ -866,6 +972,71 @@ struct AnalysisWorkspaceView: View {
     }
 }
 
+private struct AnalysisReportExportSheet: View {
+    let onExport: (AnalysisReportExportOptions) -> Void
+    let onCancel: () -> Void
+
+    @State private var pageFormat: AnalysisReportPageFormat = .a4
+    @State private var includeCanonicalPath = false
+    @State private var includeCameraSerialNumber = false
+    @State private var includeLocationCoordinates = true
+    @State private var includeRawMetadata = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Export Analysis Report", systemImage: "doc.richtext")
+                    .font(.title2.weight(.semibold))
+                Text("The source will be re-hashed before a frozen report snapshot is rendered.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Form {
+                Picker("Paper size", selection: $pageFormat) {
+                    ForEach(AnalysisReportPageFormat.allCases, id: \.self) { format in
+                        Text(format.displayName).tag(format)
+                    }
+                }
+
+                Section("Sensitive fields") {
+                    Toggle("Canonical source path", isOn: $includeCanonicalPath)
+                    Toggle("Camera serial number", isOn: $includeCameraSerialNumber)
+                    Toggle("Exact location coordinates and live map link", isOn: $includeLocationCoordinates)
+                    Toggle("Raw metadata appendix", isOn: $includeRawMetadata)
+                }
+            }
+            .formStyle(.grouped)
+
+            Label(
+                "Review the selected fields before sharing. Paths, serial numbers, coordinates, and raw metadata can identify a person, device, or location.",
+                systemImage: "exclamationmark.shield"
+            )
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Choose Destination…") {
+                    onExport(AnalysisReportExportOptions(
+                        pageFormat: pageFormat,
+                        includeCanonicalPath: includeCanonicalPath,
+                        includeCameraSerialNumber: includeCameraSerialNumber,
+                        includeLocationCoordinates: includeLocationCoordinates,
+                        includeRawMetadata: includeRawMetadata
+                    ))
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 520)
+    }
+}
+
 private struct AnalysisAnnotationList: View {
     let annotations: [AnalysisAnnotation]
     @Binding var selectedAnnotationID: UUID?
@@ -1233,24 +1404,29 @@ private struct AnalysisMapLayersView: View {
 
     private var mapAnnotationsPane: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("Map Annotations", systemImage: "square.3.layers.3d")
-                    .font(.headline)
-                Spacer()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Map Annotations", systemImage: "square.3.layers.3d")
+                        .font(.headline)
+                        .fixedSize(horizontal: true, vertical: false)
+                    Spacer()
+
+                    if scope == .currentPhoto {
+                        Button("Show All") { onSetAllVisible(true) }
+                            .disabled(isReadOnly || annotations.allSatisfy(\.isVisible))
+                        Button("Hide All") { onSetAllVisible(false) }
+                            .disabled(isReadOnly || annotations.allSatisfy({ !$0.isVisible }))
+                    }
+                }
+
                 Picker("Layer Scope", selection: $scope) {
                     ForEach(AnalysisMapLayerScope.allCases, id: \.self) { scope in
                         Text(scope.displayName).tag(scope)
                     }
                 }
                 .pickerStyle(.segmented)
-                .fixedSize()
-
-                if scope == .currentPhoto {
-                    Button("Show All") { onSetAllVisible(true) }
-                        .disabled(isReadOnly || annotations.allSatisfy(\.isVisible))
-                    Button("Hide All") { onSetAllVisible(false) }
-                        .disabled(isReadOnly || annotations.allSatisfy({ !$0.isVisible }))
-                }
+                .labelsHidden()
+                .frame(maxWidth: 280)
             }
 
             if displayedAnnotationsAreEmpty {
@@ -2301,7 +2477,9 @@ private struct AnalysisSourceThumbnail: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                Color.black.opacity(0.92)
+                Color(nsColor: .windowBackgroundColor)
+                CheckerboardBackground(tileSize: 12)
+                    .opacity(0.16)
                 if let image {
                     if pixelViewMode == .compressionResidual, let sourceImage {
                         HStack(spacing: 8) {
