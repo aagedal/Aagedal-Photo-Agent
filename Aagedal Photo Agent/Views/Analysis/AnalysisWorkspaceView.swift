@@ -258,7 +258,19 @@ struct AnalysisWorkspaceView: View {
                     isReadOnly: model.sourceChanged,
                     onSetStyle: model.setMapStyle,
                     onSetViewport: model.setMapViewport,
-                    onSetInvestigationLocation: model.setInvestigationLocation
+                    onSetInvestigationLocation: model.setInvestigationLocation,
+                    photoLabels: model.photoLabelAnnotations,
+                    canUndoAnnotation: model.canUndoMapAnnotation,
+                    canRedoAnnotation: model.canRedoMapAnnotation,
+                    undoAnnotationActionName: model.mapAnnotationUndoActionName,
+                    redoAnnotationActionName: model.mapAnnotationRedoActionName,
+                    onSetAnnotation: model.setMapAnnotation,
+                    onRemoveAnnotation: model.removeMapAnnotation,
+                    onSetAnnotationVisible: model.setMapAnnotationVisible,
+                    onSetAllAnnotationsVisible: model.setAllMapAnnotationsVisible,
+                    onSetPhotoLabelLink: model.setMapAnnotationPhotoLabelLink,
+                    onUndoAnnotation: model.undoMapAnnotation,
+                    onRedoAnnotation: model.redoMapAnnotation
                 )
                 .frame(minWidth: 260)
             }

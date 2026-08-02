@@ -104,8 +104,8 @@ reportable without editing IPTC.
 - [x] Build timeline/conflict UI.
 - [x] Reuse coordinate parsing, place search, and reverse geocoding patterns.
 - [x] Add satellite/hybrid map with persisted viewport.
-- [ ] Add map marker, line, shape, distance, label, and visibility tools.
-- [ ] Link photo and map annotations by stable label ID.
+- [x] Add map marker, line, shape, distance, label, and visibility tools.
+- [x] Link photo and map annotations by stable label ID.
 - [x] Ensure analysis coordinates never silently write IPTC GPS.
 - [ ] Add offline/network-failure and no-imagery states.
 - [ ] Capture attribution-compliant report evidence.

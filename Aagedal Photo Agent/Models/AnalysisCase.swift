@@ -45,7 +45,7 @@ enum AnalysisCaseValidationError: Error, Equatable, LocalizedError, Sendable {
         case .invalidTimestampEvidence:
             "The analysis case contains duplicate or invalid user-entered timestamp evidence."
         case .invalidMapState:
-            "The analysis case contains an invalid map viewport or location observation."
+            "The analysis case contains an invalid map viewport, location, or annotation."
         }
     }
 }
@@ -56,7 +56,7 @@ enum AnalysisCaseValidationError: Error, Equatable, LocalizedError, Sendable {
 /// Map state shares this source-bound document; report state will join it in a later slice rather
 /// than creating separate Pixel Analysis and OSINT sessions.
 nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
-    static let currentSchemaVersion = 6
+    static let currentSchemaVersion = 7
 
     let schemaVersion: Int
     let id: UUID
@@ -192,6 +192,41 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         updatedAt = max(max(now, createdAt), updatedLocation?.updatedAt ?? createdAt)
     }
 
+    mutating func setMapAnnotation(
+        _ annotation: AnalysisMapAnnotation,
+        now: Date = Date()
+    ) {
+        var updatedAnnotation = annotation
+        updatedAnnotation.markUpdated(now: now)
+        if let index = mapState.annotations.firstIndex(where: { $0.id == annotation.id }) {
+            mapState.annotations[index] = updatedAnnotation
+        } else {
+            mapState.annotations.append(updatedAnnotation)
+        }
+        updatedAt = max(max(now, createdAt), updatedAnnotation.updatedAt)
+    }
+
+    @discardableResult
+    mutating func removeMapAnnotation(id: UUID, now: Date = Date()) -> Bool {
+        guard let index = mapState.annotations.firstIndex(where: { $0.id == id }) else {
+            return false
+        }
+        mapState.annotations.remove(at: index)
+        updatedAt = max(now, createdAt)
+        return true
+    }
+
+    mutating func replaceMapAnnotations(
+        _ replacements: [AnalysisMapAnnotation],
+        now: Date = Date()
+    ) {
+        mapState.annotations = replacements
+        updatedAt = max(
+            max(now, createdAt),
+            replacements.map(\.updatedAt).max() ?? createdAt
+        )
+    }
+
     static func decodeVersion(
         from data: Data,
         schemaVersion: Int,
@@ -200,6 +235,23 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         switch schemaVersion {
         case currentSchemaVersion:
             return try decoder.decode(AnalysisCase.self, from: data)
+        case 6:
+            let legacy = try decoder.decode(LegacyAnalysisCaseV6.self, from: data)
+            return AnalysisCase(
+                schemaVersion: currentSchemaVersion,
+                id: legacy.id,
+                title: legacy.title,
+                source: legacy.source,
+                createdAt: legacy.createdAt,
+                updatedAt: legacy.updatedAt,
+                createdByAppBuild: legacy.createdByAppBuild,
+                workspaceMode: legacy.workspaceMode,
+                displayPreference: legacy.displayPreference,
+                analyzerRuns: legacy.analyzerRuns,
+                annotations: legacy.annotations,
+                timestampEvidence: legacy.timestampEvidence,
+                mapState: legacy.mapState
+            )
         case 5:
             let legacy = try decoder.decode(LegacyAnalysisCaseV5.self, from: data)
             return AnalysisCase(
@@ -323,7 +375,8 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
             throw AnalysisCaseValidationError.invalidTimestampEvidence
         }
         guard mapState.validate(),
-              mapState.investigationLocation.map({ $0.updatedAt <= updatedAt }) ?? true else {
+              mapState.investigationLocation.map({ $0.updatedAt <= updatedAt }) ?? true,
+              mapState.annotations.allSatisfy({ $0.updatedAt <= updatedAt }) else {
             throw AnalysisCaseValidationError.invalidMapState
         }
     }
@@ -331,6 +384,22 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
     private static var currentAppBuild: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
     }
+}
+
+nonisolated private struct LegacyAnalysisCaseV6: Codable {
+    let schemaVersion: Int
+    let id: UUID
+    var title: String
+    let source: SourceImageRevision
+    let createdAt: Date
+    var updatedAt: Date
+    let createdByAppBuild: String
+    var workspaceMode: AnalysisWorkspaceMode
+    var displayPreference: AnalysisSourceRepresentation
+    var analyzerRuns: [AnalysisAnalyzerRun]
+    var annotations: [AnalysisAnnotation]
+    var timestampEvidence: [AnalysisTimestampEvidence]
+    var mapState: AnalysisMapState
 }
 
 nonisolated private struct LegacyAnalysisCaseV5: Codable {

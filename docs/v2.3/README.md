@@ -36,6 +36,9 @@ online/offline reverse geocoding. Investigator coordinates, place-name provenanc
 state remain in the analysis JSON and never enter the IPTC/XMP write path. The photo-markup toolbar
 now exposes its fixed palette as a direct swatch row, expanded with red, green, and cyan alongside
 the existing colors and custom color well.
+Map markup now adds persistent markers, lines, polygons, geodesic distance segments, and labels
+from an accessible map-center workflow. Map layers have independent visibility and undo/redo, and
+can reference photo-label UUIDs so cross-surface links survive label edits without copying text.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

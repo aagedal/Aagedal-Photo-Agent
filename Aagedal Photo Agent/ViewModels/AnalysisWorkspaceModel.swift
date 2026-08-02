@@ -26,6 +26,7 @@ final class AnalysisWorkspaceModel {
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
     private var photoAnnotationHistory = AnalysisAnnotationUndoHistory()
+    private var mapAnnotationHistory = AnalysisMapAnnotationUndoHistory()
 
     init(analyzers: [any AnalysisAnalyzer]? = nil) {
         analysisRunner = AnalysisRunner()
@@ -84,6 +85,14 @@ final class AnalysisWorkspaceModel {
         analysisCase?.mapState ?? AnalysisMapState()
     }
 
+    var mapAnnotations: [AnalysisMapAnnotation] {
+        mapState.annotations
+    }
+
+    var photoLabelAnnotations: [AnalysisAnnotation] {
+        annotations.filter { $0.kind == .label }
+    }
+
     var embeddedLocation: AnalysisGeoCoordinate? {
         guard let latitude = sourceFacts?.latitude,
               let longitude = sourceFacts?.longitude else { return nil }
@@ -105,6 +114,22 @@ final class AnalysisWorkspaceModel {
 
     var photoAnnotationRedoActionName: String? {
         photoAnnotationHistory.redoActionName
+    }
+
+    var canUndoMapAnnotation: Bool {
+        !sourceChanged && mapAnnotationHistory.canUndo
+    }
+
+    var canRedoMapAnnotation: Bool {
+        !sourceChanged && mapAnnotationHistory.canRedo
+    }
+
+    var mapAnnotationUndoActionName: String? {
+        mapAnnotationHistory.undoActionName
+    }
+
+    var mapAnnotationRedoActionName: String? {
+        mapAnnotationHistory.redoActionName
     }
 
     var rawMetadata: [AnalysisRawMetadataEntry] {
@@ -190,6 +215,7 @@ final class AnalysisWorkspaceModel {
         currentRevision = nil
         sourceChanged = false
         photoAnnotationHistory.removeAll()
+        mapAnnotationHistory.removeAll()
         analysisRunner.configure(existingRuns: [])
 
         let url = image.url
@@ -256,6 +282,7 @@ final class AnalysisWorkspaceModel {
         analysisCase = newCase
         sourceChanged = false
         photoAnnotationHistory.removeAll()
+        mapAnnotationHistory.removeAll()
         loadState = .loading
         analysisRunner.configure(existingRuns: [])
 
@@ -346,6 +373,89 @@ final class AnalysisWorkspaceModel {
               !sourceChanged,
               updatedCase.mapState.investigationLocation != location else { return }
         updatedCase.setInvestigationLocation(location)
+        persist(updatedCase)
+    }
+
+    func setMapAnnotation(_ annotation: AnalysisMapAnnotation) {
+        guard (try? annotation.validate()) != nil,
+              var updatedCase = analysisCase,
+              !sourceChanged else { return }
+        let before = updatedCase.mapState.annotations
+        let existing = before.first { $0.id == annotation.id }
+        guard existing != annotation else { return }
+        updatedCase.setMapAnnotation(annotation)
+        mapAnnotationHistory.record(
+            before: before,
+            after: updatedCase.mapState.annotations,
+            actionName: existing == nil ? "Add Map Annotation" : "Edit Map Annotation"
+        )
+        persist(updatedCase)
+    }
+
+    func removeMapAnnotation(id: UUID) {
+        guard var updatedCase = analysisCase, !sourceChanged else { return }
+        let before = updatedCase.mapState.annotations
+        guard updatedCase.removeMapAnnotation(id: id) else { return }
+        mapAnnotationHistory.record(
+            before: before,
+            after: updatedCase.mapState.annotations,
+            actionName: "Delete Map Annotation"
+        )
+        persist(updatedCase)
+    }
+
+    func setMapAnnotationVisible(id: UUID, isVisible: Bool) {
+        guard var annotation = mapAnnotations.first(where: { $0.id == id }),
+              annotation.isVisible != isVisible else { return }
+        annotation.isVisible = isVisible
+        setMapAnnotation(annotation)
+    }
+
+    func setAllMapAnnotationsVisible(_ isVisible: Bool) {
+        guard var updatedCase = analysisCase, !sourceChanged else { return }
+        let before = updatedCase.mapState.annotations
+        let now = Date()
+        var after = before
+        for index in after.indices where after[index].isVisible != isVisible {
+            after[index].isVisible = isVisible
+            after[index].markUpdated(now: now)
+        }
+        guard before != after else { return }
+        updatedCase.replaceMapAnnotations(after, now: now)
+        mapAnnotationHistory.record(
+            before: before,
+            after: after,
+            actionName: isVisible ? "Show All Map Annotations" : "Hide All Map Annotations"
+        )
+        persist(updatedCase)
+    }
+
+    func setMapAnnotationPhotoLabelLink(
+        annotationID: UUID,
+        photoLabelID: UUID?
+    ) {
+        guard photoLabelID == nil || photoLabelAnnotations.contains(where: {
+            $0.id == photoLabelID
+        }),
+        var annotation = mapAnnotations.first(where: { $0.id == annotationID }),
+        annotation.linkedPhotoLabelID != photoLabelID else { return }
+        annotation.linkedPhotoLabelID = photoLabelID
+        setMapAnnotation(annotation)
+    }
+
+    func undoMapAnnotation() {
+        guard !sourceChanged,
+              var updatedCase = analysisCase,
+              let annotations = mapAnnotationHistory.undo() else { return }
+        updatedCase.replaceMapAnnotations(annotations)
+        persist(updatedCase)
+    }
+
+    func redoMapAnnotation() {
+        guard !sourceChanged,
+              var updatedCase = analysisCase,
+              let annotations = mapAnnotationHistory.redo() else { return }
+        updatedCase.replaceMapAnnotations(annotations)
         persist(updatedCase)
     }
 

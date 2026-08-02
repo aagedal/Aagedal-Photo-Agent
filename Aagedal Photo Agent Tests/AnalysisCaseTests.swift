@@ -17,7 +17,7 @@ struct AnalysisCaseTests {
             now: Date(timeIntervalSince1970: 100)
         )
 
-        #expect(analysisCase.schemaVersion == 6)
+        #expect(analysisCase.schemaVersion == 7)
         #expect(analysisCase.source == revision)
         #expect(analysisCase.workspaceMode == .pixelAnalysis)
         #expect(analysisCase.displayPreference == .original)
@@ -141,7 +141,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version one case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 6)
+        #expect(migrated.schemaVersion == 7)
         #expect(migrated.analyzerRuns.isEmpty)
         #expect(migrated.annotations.isEmpty)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -178,7 +178,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version two case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 6)
+        #expect(migrated.schemaVersion == 7)
         #expect(migrated.analyzerRuns == analysisCase.analyzerRuns)
         #expect(migrated.annotations.isEmpty)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -221,7 +221,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version three case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 6)
+        #expect(migrated.schemaVersion == 7)
         #expect(migrated.annotations.count == 1)
         #expect(migrated.annotations.first?.measurementCalibration == nil)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -266,7 +266,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version four case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 6)
+        #expect(migrated.schemaVersion == 7)
         #expect(migrated.annotations.map(\.id) == analysisCase.annotations.map(\.id))
         #expect(migrated.annotations.map(\.kind) == analysisCase.annotations.map(\.kind))
         #expect(migrated.annotations.map(\.geometry) == analysisCase.annotations.map(\.geometry))
@@ -346,7 +346,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version five case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 6)
+        #expect(migrated.schemaVersion == 7)
         #expect(migrated.timestampEvidence == analysisCase.timestampEvidence)
         #expect(migrated.mapState == AnalysisMapState())
         try migrated.validateForPersistence()
@@ -392,6 +392,175 @@ struct AnalysisCaseTests {
         #expect(!FileManager.default.fileExists(
             atPath: fixture.fileURL.deletingPathExtension().appendingPathExtension("xmp").path
         ))
+    }
+
+    @Test("version six map evidence migrates with an empty map annotation collection")
+    func migratesVersionSixCase() async throws {
+        let fixture = try AnalysisFixture(contents: "version six map source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        analysisCase.setMapViewport(AnalysisMapViewport(
+            center: AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522),
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.06
+        ))
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(analysisCase)) as? [String: Any]
+        )
+        object["schemaVersion"] = 6
+        var legacyMapState = try #require(object["mapState"] as? [String: Any])
+        legacyMapState["annotations"] = nil
+        object["mapState"] = legacyMapState
+
+        let caseDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: caseDirectory,
+            withIntermediateDirectories: true
+        )
+        let caseURL = caseDirectory.appendingPathComponent(
+            "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+        )
+        try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
+
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let migrated) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the version six case to migrate")
+            return
+        }
+        #expect(migrated.schemaVersion == 7)
+        #expect(migrated.mapState.viewport == analysisCase.mapState.viewport)
+        #expect(migrated.mapState.annotations.isEmpty)
+        try migrated.validateForPersistence()
+    }
+
+    @Test("all map markup kinds and stable photo-label links persist without source writes")
+    func mapAnnotationsRoundTripDoesNotWriteSource() async throws {
+        let fixture = try AnalysisFixture(contents: "map markup source")
+        defer { fixture.remove() }
+        let before = try Data(contentsOf: fixture.fileURL)
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let photoLabel = AnalysisAnnotation(
+            kind: .label,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.4, y: 0.6)),
+            text: "North entrance"
+        )
+        analysisCase.setAnnotation(photoLabel)
+        let oslo = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)
+        let nearby = AnalysisGeoCoordinate(latitude: 59.918, longitude: 10.761)
+        let polygon = [
+            oslo,
+            AnalysisGeoCoordinate(latitude: 59.914, longitude: 10.76),
+            AnalysisGeoCoordinate(latitude: 59.919, longitude: 10.755),
+        ]
+        let annotations = [
+            AnalysisMapAnnotation(kind: .marker, geometry: .point(oslo)),
+            AnalysisMapAnnotation(
+                kind: .line,
+                geometry: .segment(start: oslo, end: nearby),
+                isVisible: false
+            ),
+            AnalysisMapAnnotation(kind: .shape, geometry: .polygon(polygon)),
+            AnalysisMapAnnotation(
+                kind: .distance,
+                geometry: .segment(start: oslo, end: nearby)
+            ),
+            AnalysisMapAnnotation(
+                kind: .label,
+                geometry: .point(nearby),
+                text: "Camera position",
+                linkedPhotoLabelID: photoLabel.id
+            ),
+        ]
+        for annotation in annotations {
+            analysisCase.setMapAnnotation(annotation)
+        }
+
+        try await repository.save(analysisCase)
+        guard case .exact(let reopened) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected map markup to reopen")
+            return
+        }
+        #expect(reopened.mapState.annotations.map(\.kind) == annotations.map(\.kind))
+        #expect(reopened.mapState.annotations[1].isVisible == false)
+        #expect(reopened.mapState.annotations.last?.linkedPhotoLabelID == photoLabel.id)
+        #expect(try Data(contentsOf: fixture.fileURL) == before)
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.fileURL.deletingPathExtension().appendingPathExtension("xmp").path
+        ))
+        try reopened.validateForPersistence()
+    }
+
+    @Test("map markup rejects mismatched geometry, empty labels, and duplicate IDs")
+    func rejectsInvalidMapAnnotations() async throws {
+        let fixture = try AnalysisFixture(contents: "invalid map markup source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let coordinate = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)
+        let invalid = AnalysisMapAnnotation(
+            kind: .label,
+            geometry: .segment(start: coordinate, end: AnalysisGeoCoordinate(
+                latitude: 59.92,
+                longitude: 10.76
+            )),
+            text: ""
+        )
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        analysisCase.mapState.annotations = [invalid]
+        #expect(throws: AnalysisCaseValidationError.invalidMapState) {
+            try analysisCase.validateForPersistence()
+        }
+
+        let valid = AnalysisMapAnnotation(kind: .marker, geometry: .point(coordinate))
+        analysisCase.mapState.annotations = [valid, valid]
+        #expect(throws: AnalysisCaseValidationError.invalidMapState) {
+            try analysisCase.validateForPersistence()
+        }
+    }
+
+    @Test("map distance uses geographic coordinates and formats useful units")
+    func mapDistanceMeasurement() throws {
+        let annotation = AnalysisMapAnnotation(
+            kind: .distance,
+            geometry: .segment(
+                start: AnalysisGeoCoordinate(latitude: 0, longitude: 0),
+                end: AnalysisGeoCoordinate(latitude: 1, longitude: 0)
+            )
+        )
+        let measurement = try #require(AnalysisMapDistanceMeasurement(annotation: annotation))
+        #expect(abs(measurement.meters - 111_195) < 100)
+        #expect(measurement.formatted.contains("km"))
+    }
+
+    @Test("map annotation history is bounded and independent")
+    func mapAnnotationUndoRedoTransactions() {
+        let marker = AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.9, longitude: 10.7))
+        )
+        let label = AnalysisMapAnnotation(
+            kind: .label,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.91, longitude: 10.71)),
+            text: "Label"
+        )
+        var history = AnalysisMapAnnotationUndoHistory(maximumTransactionCount: 2)
+        history.record(before: [], after: [marker], actionName: "Add Marker")
+        history.record(before: [marker], after: [marker, label], actionName: "Add Label")
+
+        #expect(history.undoActionName == "Add Label")
+        #expect(history.undo() == [marker])
+        #expect(history.redo() == [marker, label])
+        #expect(history.undo() == [marker])
+        history.record(before: [marker], after: [], actionName: "Delete Marker")
+        #expect(!history.canRedo)
+        #expect(history.undo() == [marker])
+        #expect(history.undo() == [])
+        #expect(history.undo() == nil)
     }
 
     @Test("map state validation rejects invalid coordinates and viewports")
