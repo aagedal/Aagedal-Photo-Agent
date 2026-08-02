@@ -249,6 +249,38 @@ nonisolated struct AnalysisTimestampConflict: Identifiable, Equatable, Sendable 
     let explanation: String
 }
 
+/// A case-only investigator note that deliberately makes no time claim.
+nonisolated struct AnalysisObservation: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
+    var title: String
+    var note: String
+    let createdAt: Date
+    var updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        title: String = "Observation",
+        note: String,
+        now: Date = Date()
+    ) {
+        self.id = id
+        self.title = title
+        self.note = note
+        createdAt = now
+        updatedAt = now
+    }
+
+    mutating func markUpdated(now: Date = Date()) {
+        updatedAt = max(now, createdAt)
+    }
+
+    func validate() -> Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && updatedAt >= createdAt
+    }
+}
+
 nonisolated enum AnalysisTimelineResolver {
     static func sourceEvidence(
         from facts: AnalysisSourceFacts,

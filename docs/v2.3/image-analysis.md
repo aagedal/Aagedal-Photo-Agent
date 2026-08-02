@@ -265,11 +265,17 @@ The photo and map panels should support:
 - satellite and hybrid styles;
 - dropping a labeled color marker;
 - lines, rectangles, ellipses, and distance measurements;
-- paired labels: the same label/color can point to an object in the photo and its candidate
-  location in the map;
+- one shared markup toolbar for photo and map authoring, fixed outside resizable content panes;
+- optional labels on every annotation geometry, with stable links from a map annotation to any
+  labeled photo annotation;
 - independent undo stacks for photo and map markup within one case;
 - show/hide annotation layers;
 - capture of the exact map viewport used by the report.
+
+Time evidence and untimed notes share a compact vertical evidence area. A collapsed row exposes its
+title and timestamp status; activating it expands provenance, precision, timezone, or note detail.
+Untimed observations are stored separately so the UI and report never imply a date that was not
+actually established.
 
 Before PDF export with map imagery, verify the provider’s snapshot/export terms and required
 attribution. If redistributable imagery cannot be guaranteed, the report should include a

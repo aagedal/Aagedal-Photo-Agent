@@ -109,6 +109,11 @@ struct AnalysisReportSnapshotTests {
             errorMessage: nil,
             output: AnalysisAnalyzerOutput(findings: [includedB, excluded, includedA])
         ))
+        let observation = AnalysisObservation(
+            title: "Weather",
+            note: "Overcast, with no reliable timestamp."
+        )
+        analysisCase.setObservation(observation)
 
         let snapshot = try await AnalysisReportSnapshot.capture(
             from: analysisCase,
@@ -123,9 +128,12 @@ struct AnalysisReportSnapshotTests {
             geometry: .anchor(AnalysisNormalizedPoint(x: 0.5, y: 0.5)),
             text: "Later annotation"
         ))
+        analysisCase.removeObservation(id: observation.id)
 
         #expect(snapshot.caseTitle != analysisCase.title)
         #expect(snapshot.photoAnnotations.isEmpty)
+        #expect(snapshot.observations.map(\.id) == [observation.id])
+        #expect(snapshot.observations.first?.note == observation.note)
         #expect(snapshot.includedFindings.map(\.id) == ["a", "b"])
         #expect(snapshot.analyzerRuns.count == 1)
         #expect(snapshot.analyzerRuns[0].analyzerID == "z-analyzer")

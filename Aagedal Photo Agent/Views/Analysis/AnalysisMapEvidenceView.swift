@@ -2,39 +2,6 @@ import SwiftUI
 @preconcurrency import CoreLocation
 @preconcurrency import MapKit
 
-private enum AnalysisMapAnnotationTool: String, CaseIterable, Identifiable {
-    case select
-    case marker
-    case line
-    case shape
-    case distance
-    case label
-
-    var id: Self { self }
-
-    var displayName: String {
-        switch self {
-        case .select: "Select"
-        case .marker: "Marker"
-        case .line: "Line"
-        case .shape: "Shape"
-        case .distance: "Distance"
-        case .label: "Label"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .select: "cursorarrow"
-        case .marker: "mappin"
-        case .line: "line.diagonal"
-        case .shape: "pentagon"
-        case .distance: "ruler"
-        case .label: "character.cursor.ibeam"
-        }
-    }
-}
-
 struct AnalysisMapEvidenceView: View {
     let mapState: AnalysisMapState
     let embeddedLocation: AnalysisGeoCoordinate?
@@ -42,18 +9,11 @@ struct AnalysisMapEvidenceView: View {
     let onSetStyle: (AnalysisMapStyle) -> Void
     let onSetViewport: (AnalysisMapViewport) -> Void
     let onSetInvestigationLocation: (AnalysisLocationEvidence?) -> Void
-    let photoLabels: [AnalysisAnnotation]
-    let canUndoAnnotation: Bool
-    let canRedoAnnotation: Bool
-    let undoAnnotationActionName: String?
-    let redoAnnotationActionName: String?
     let onSetAnnotation: (AnalysisMapAnnotation) -> Void
-    let onRemoveAnnotation: (UUID) -> Void
-    let onSetAnnotationVisible: (UUID, Bool) -> Void
-    let onSetAllAnnotationsVisible: (Bool) -> Void
-    let onSetPhotoLabelLink: (UUID, UUID?) -> Void
-    let onUndoAnnotation: () -> Void
-    let onRedoAnnotation: () -> Void
+
+    @Binding var annotationTool: AnalysisAnnotationTool
+    @Binding var sharedAnnotationStyle: AnalysisAnnotationStyle
+    @Binding var selectedAnnotationID: UUID?
 
     @State private var mapPosition: MapCameraPosition
     @State private var visibleRegion: MKCoordinateRegion
@@ -64,10 +24,7 @@ struct AnalysisMapEvidenceView: View {
     @State private var searchError: String?
     @State private var isReverseGeocoding = false
     @State private var geocodingError: String?
-    @State private var annotationTool: AnalysisMapAnnotationTool = .select
-    @State private var annotationStyle = AnalysisMapAnnotationStyle.default
     @State private var annotationDraftCoordinates: [AnalysisGeoCoordinate] = []
-    @State private var selectedAnnotationID: UUID?
     @State private var labelInput = ""
     @State private var isLabelPromptPresented = false
     @State private var mapAvailability = AnalysisMapAvailabilityMonitor()
@@ -84,18 +41,10 @@ struct AnalysisMapEvidenceView: View {
         onSetStyle: @escaping (AnalysisMapStyle) -> Void,
         onSetViewport: @escaping (AnalysisMapViewport) -> Void,
         onSetInvestigationLocation: @escaping (AnalysisLocationEvidence?) -> Void,
-        photoLabels: [AnalysisAnnotation],
-        canUndoAnnotation: Bool,
-        canRedoAnnotation: Bool,
-        undoAnnotationActionName: String?,
-        redoAnnotationActionName: String?,
         onSetAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
-        onRemoveAnnotation: @escaping (UUID) -> Void,
-        onSetAnnotationVisible: @escaping (UUID, Bool) -> Void,
-        onSetAllAnnotationsVisible: @escaping (Bool) -> Void,
-        onSetPhotoLabelLink: @escaping (UUID, UUID?) -> Void,
-        onUndoAnnotation: @escaping () -> Void,
-        onRedoAnnotation: @escaping () -> Void
+        annotationTool: Binding<AnalysisAnnotationTool>,
+        sharedAnnotationStyle: Binding<AnalysisAnnotationStyle>,
+        selectedAnnotationID: Binding<UUID?>
     ) {
         self.mapState = mapState
         self.embeddedLocation = embeddedLocation
@@ -103,18 +52,10 @@ struct AnalysisMapEvidenceView: View {
         self.onSetStyle = onSetStyle
         self.onSetViewport = onSetViewport
         self.onSetInvestigationLocation = onSetInvestigationLocation
-        self.photoLabels = photoLabels
-        self.canUndoAnnotation = canUndoAnnotation
-        self.canRedoAnnotation = canRedoAnnotation
-        self.undoAnnotationActionName = undoAnnotationActionName
-        self.redoAnnotationActionName = redoAnnotationActionName
         self.onSetAnnotation = onSetAnnotation
-        self.onRemoveAnnotation = onRemoveAnnotation
-        self.onSetAnnotationVisible = onSetAnnotationVisible
-        self.onSetAllAnnotationsVisible = onSetAllAnnotationsVisible
-        self.onSetPhotoLabelLink = onSetPhotoLabelLink
-        self.onUndoAnnotation = onUndoAnnotation
-        self.onRedoAnnotation = onRedoAnnotation
+        _annotationTool = annotationTool
+        _sharedAnnotationStyle = sharedAnnotationStyle
+        _selectedAnnotationID = selectedAnnotationID
 
         let region = Self.initialRegion(mapState: mapState, embeddedLocation: embeddedLocation)
         _mapPosition = State(initialValue: .region(region))
@@ -124,8 +65,7 @@ struct AnalysisMapEvidenceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
-
-            annotationToolbar
+            annotationAuthoringControls
 
             searchControls
 
@@ -139,7 +79,6 @@ struct AnalysisMapEvidenceView: View {
                 }
 
             coordinateControls
-            annotationList
             evidenceSummary
 
             if let error = coordinateError
@@ -172,6 +111,18 @@ struct AnalysisMapEvidenceView: View {
                !mapState.annotations.contains(where: { $0.id == selectedAnnotationID }) {
                 self.selectedAnnotationID = nil
             }
+        }
+        .onChange(of: selectedAnnotationID) { _, selection in
+            guard let selection,
+                  let annotation = mapState.annotations.first(where: { $0.id == selection }) else {
+                return
+            }
+            sharedAnnotationStyle = AnalysisAnnotationStyle(
+                color: annotation.style.color,
+                lineWidthPoints: annotation.style.lineWidthPoints,
+                fillOpacity: annotation.style.fillOpacity
+            )
+            moveMap(to: annotation.representativeCoordinate, preservingSpan: true)
         }
         .task {
             mapAvailability.start()
@@ -221,101 +172,40 @@ struct AnalysisMapEvidenceView: View {
         }
     }
 
-    private var annotationToolbar: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Text("MAP MARKUP")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                Picker("Map Markup Tool", selection: $annotationTool) {
-                    ForEach(AnalysisMapAnnotationTool.allCases) { tool in
-                        Label(tool.displayName, systemImage: tool.systemImage)
-                            .labelStyle(.iconOnly)
-                            .tag(tool)
-                            .help(tool.displayName)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 250)
-                .disabled(isReadOnly)
-
-                Menu {
-                    ForEach(AnalysisAnnotationPaletteColor.allCases, id: \.self) { color in
-                        Button {
-                            annotationStyle.color = .palette(color)
-                            updateSelectedAnnotationStyle()
-                        } label: {
-                            Label(color.rawValue.capitalized, systemImage: "circle.fill")
-                        }
-                    }
-                } label: {
-                    Circle()
-                        .fill(annotationStyle.color.swiftUIColor)
-                        .frame(width: 14, height: 14)
-                        .overlay(Circle().stroke(Color.primary.opacity(0.4), lineWidth: 1))
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .disabled(isReadOnly)
-                .help("Map annotation color")
-
-                Spacer(minLength: 0)
-
-                Button(action: onUndoAnnotation) {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .buttonStyle(.borderless)
-                .disabled(isReadOnly || !canUndoAnnotation)
-                .help(undoAnnotationActionName.map { "Undo \($0)" } ?? "Undo map annotation")
-
-                Button(action: onRedoAnnotation) {
-                    Image(systemName: "arrow.uturn.forward")
-                }
-                .buttonStyle(.borderless)
-                .disabled(isReadOnly || !canRedoAnnotation)
-                .help(redoAnnotationActionName.map { "Redo \($0)" } ?? "Redo map annotation")
-
-                Button(role: .destructive) {
-                    guard let selectedAnnotationID else { return }
-                    onRemoveAnnotation(selectedAnnotationID)
-                    self.selectedAnnotationID = nil
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
-                .disabled(isReadOnly || selectedAnnotationID == nil)
-                .help("Delete selected map annotation")
-            }
-
-            HStack(spacing: 8) {
+    private var annotationAuthoringControls: some View {
+        HStack(spacing: 8) {
+            if annotationTool.supportsMap {
                 if annotationTool != .select {
                     Button(annotationPrimaryActionTitle, action: performAnnotationPrimaryAction)
                         .disabled(isReadOnly)
                 } else {
-                    Text("Select markup on the map or in the layer list.")
+                    Text("Select markup on the map or in Map Layers below.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-
-                if annotationTool == .shape, annotationDraftCoordinates.count >= 3 {
-                    Button("Finish Shape", action: finishShape)
-                        .disabled(isReadOnly)
-                }
-
-                if !annotationDraftCoordinates.isEmpty {
-                    Text(annotationDraftSummary)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    Button("Cancel") {
-                        annotationDraftCoordinates.removeAll()
-                    }
-                    .buttonStyle(.borderless)
-                }
+            } else {
+                Text("\(annotationTool.displayName) is available on the photo.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+
+            if annotationTool == .shape, annotationDraftCoordinates.count >= 3 {
+                Button("Finish Shape", action: finishShape)
+                    .disabled(isReadOnly)
+            }
+
+            if !annotationDraftCoordinates.isEmpty {
+                Text(annotationDraftSummary)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button("Cancel") { annotationDraftCoordinates.removeAll() }
+                    .buttonStyle(.borderless)
+            }
+            Spacer(minLength: 0)
         }
+        .frame(minHeight: 22)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Map markup tools")
+        .accessibilityLabel("Map markup action")
     }
 
     private var searchControls: some View {
@@ -542,7 +432,7 @@ struct AnalysisMapEvidenceView: View {
                let coordinate = annotationDraftCoordinates.first {
                 Annotation("Draft start", coordinate: coordinate.clLocationCoordinate) {
                     Circle()
-                        .fill(annotationStyle.color.swiftUIColor)
+                        .fill(sharedAnnotationStyle.color.swiftUIColor)
                         .frame(width: 9, height: 9)
                         .overlay(Circle().stroke(.white, lineWidth: 2))
                         .accessibilityLabel("Map annotation draft start")
@@ -550,9 +440,9 @@ struct AnalysisMapEvidenceView: View {
             } else if annotationDraftCoordinates.count > 1 {
                 MapPolyline(coordinates: annotationDraftCoordinates.map(\.clLocationCoordinate))
                     .stroke(
-                        annotationStyle.color.swiftUIColor.opacity(0.8),
+                        sharedAnnotationStyle.color.swiftUIColor.opacity(0.8),
                         style: StrokeStyle(
-                            lineWidth: annotationStyle.lineWidthPoints,
+                            lineWidth: sharedAnnotationStyle.lineWidthPoints,
                             dash: [6, 4]
                         )
                     )
@@ -612,116 +502,6 @@ struct AnalysisMapEvidenceView: View {
                 .disabled(isReadOnly)
             }
         }
-    }
-
-    @ViewBuilder
-    private var annotationList: some View {
-        if !mapState.annotations.isEmpty {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text("MAP LAYERS")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Show All") {
-                        onSetAllAnnotationsVisible(true)
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(isReadOnly || mapState.annotations.allSatisfy(\.isVisible))
-                    Button("Hide All") {
-                        onSetAllAnnotationsVisible(false)
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(isReadOnly || mapState.annotations.allSatisfy({ !$0.isVisible }))
-                }
-
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(mapState.annotations.reversed()) { annotation in
-                            mapAnnotationRow(annotation)
-                        }
-                    }
-                }
-                .frame(maxHeight: 116)
-            }
-        }
-    }
-
-    private func mapAnnotationRow(_ annotation: AnalysisMapAnnotation) -> some View {
-        HStack(spacing: 7) {
-            Button {
-                onSetAnnotationVisible(annotation.id, !annotation.isVisible)
-            } label: {
-                Image(systemName: annotation.isVisible ? "eye" : "eye.slash")
-                    .frame(width: 16)
-            }
-            .buttonStyle(.borderless)
-            .disabled(isReadOnly)
-            .accessibilityLabel(
-                annotation.isVisible ? "Hide map annotation" : "Show map annotation"
-            )
-
-            Circle()
-                .fill(annotation.style.color.swiftUIColor)
-                .frame(width: 9, height: 9)
-
-            Button {
-                selectedAnnotationID = annotation.id
-                annotationStyle = annotation.style
-                moveMap(to: annotation.representativeCoordinate, preservingSpan: true)
-            } label: {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(mapAnnotationTitle(annotation))
-                        .lineLimit(1)
-                    if let linkedTitle = linkedPhotoLabelTitle(for: annotation) {
-                        Text("Linked to photo label: \(linkedTitle)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            Menu {
-                Button("No Photo Label") {
-                    onSetPhotoLabelLink(annotation.id, nil)
-                }
-                Divider()
-                if photoLabels.isEmpty {
-                    Text("Create a photo label first")
-                } else {
-                    ForEach(photoLabels) { label in
-                        Button {
-                            onSetPhotoLabelLink(annotation.id, label.id)
-                        } label: {
-                            if annotation.linkedPhotoLabelID == label.id {
-                                Label(label.text ?? "Photo label", systemImage: "checkmark")
-                            } else {
-                                Text(label.text ?? "Photo label")
-                            }
-                        }
-                    }
-                }
-            } label: {
-                Image(systemName: annotation.linkedPhotoLabelID == nil ? "link" : "link.badge.plus")
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .disabled(isReadOnly)
-            .help("Link to a stable photo label")
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(
-            selectedAnnotationID == annotation.id
-                ? Color.accentColor.opacity(0.14)
-                : Color.clear,
-            in: RoundedRectangle(cornerRadius: 5)
-        )
-        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
@@ -793,7 +573,11 @@ struct AnalysisMapEvidenceView: View {
     private func mapAnnotationButton(_ annotation: AnalysisMapAnnotation) -> some View {
         Button {
             selectedAnnotationID = annotation.id
-            annotationStyle = annotation.style
+            sharedAnnotationStyle = AnalysisAnnotationStyle(
+                color: annotation.style.color,
+                lineWidthPoints: annotation.style.lineWidthPoints,
+                fillOpacity: annotation.style.fillOpacity
+            )
             annotationTool = .select
         } label: {
             VStack(spacing: 1) {
@@ -807,14 +591,15 @@ struct AnalysisMapEvidenceView: View {
                             Circle().stroke(Color.accentColor, lineWidth: 2)
                         }
                     }
-                if annotation.kind == .label, let text = annotation.text {
+                if let text = annotation.text {
                     Text(text)
                         .font(.caption2.weight(.semibold))
                         .lineLimit(1)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 2)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
-                } else if let measurement = AnalysisMapDistanceMeasurement(annotation: annotation) {
+                }
+                if let measurement = AnalysisMapDistanceMeasurement(annotation: annotation) {
                     Text(measurement.formatted)
                         .font(.caption2.monospacedDigit().weight(.semibold))
                         .padding(.horizontal, 4)
@@ -838,6 +623,7 @@ struct AnalysisMapEvidenceView: View {
         case .distance:
             annotationDraftCoordinates.isEmpty ? "Set Distance Start" : "Set Distance End"
         case .label: "Add Label at Center"
+        case .arrow, .rectangle, .ellipse: "Use on Photo"
         }
     }
 
@@ -858,6 +644,8 @@ struct AnalysisMapEvidenceView: View {
 
         switch annotationTool {
         case .select:
+            return
+        case .arrow, .rectangle, .ellipse:
             return
         case .marker:
             addMapAnnotation(kind: .marker, geometry: .point(coordinate))
@@ -906,21 +694,11 @@ struct AnalysisMapEvidenceView: View {
             kind: kind,
             geometry: geometry,
             text: text,
-            style: annotationStyle
+            style: mapAnnotationStyle
         )
         guard (try? annotation.validate()) != nil else { return }
         onSetAnnotation(annotation)
         selectedAnnotationID = annotation.id
-    }
-
-    private func updateSelectedAnnotationStyle() {
-        guard let selectedAnnotationID,
-              var annotation = mapState.annotations.first(where: {
-                  $0.id == selectedAnnotationID
-              }),
-              annotation.style != annotationStyle else { return }
-        annotation.style = annotationStyle
-        onSetAnnotation(annotation)
     }
 
     private func mapAnnotationTitle(_ annotation: AnalysisMapAnnotation) -> String {
@@ -933,9 +711,12 @@ struct AnalysisMapEvidenceView: View {
         return annotation.kind.displayName
     }
 
-    private func linkedPhotoLabelTitle(for annotation: AnalysisMapAnnotation) -> String? {
-        guard let linkedID = annotation.linkedPhotoLabelID else { return nil }
-        return photoLabels.first(where: { $0.id == linkedID })?.text ?? "Missing label"
+    private var mapAnnotationStyle: AnalysisMapAnnotationStyle {
+        AnalysisMapAnnotationStyle(
+            color: sharedAnnotationStyle.color,
+            lineWidthPoints: sharedAnnotationStyle.lineWidthPoints,
+            fillOpacity: sharedAnnotationStyle.fillOpacity
+        )
     }
 
     private func setCoordinates() {

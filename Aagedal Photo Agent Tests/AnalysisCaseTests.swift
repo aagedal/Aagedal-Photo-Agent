@@ -17,12 +17,13 @@ struct AnalysisCaseTests {
             now: Date(timeIntervalSince1970: 100)
         )
 
-        #expect(analysisCase.schemaVersion == 7)
+        #expect(analysisCase.schemaVersion == 8)
         #expect(analysisCase.source == revision)
         #expect(analysisCase.workspaceMode == .pixelAnalysis)
         #expect(analysisCase.displayPreference == .original)
         #expect(analysisCase.annotations.isEmpty)
         #expect(analysisCase.timestampEvidence.isEmpty)
+        #expect(analysisCase.observations.isEmpty)
         #expect(analysisCase.mapState == AnalysisMapState())
         #expect(analysisCase.createdByAppBuild == "test")
         try analysisCase.validateForPersistence()
@@ -141,7 +142,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version one case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 7)
+        #expect(migrated.schemaVersion == 8)
         #expect(migrated.analyzerRuns.isEmpty)
         #expect(migrated.annotations.isEmpty)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -178,7 +179,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version two case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 7)
+        #expect(migrated.schemaVersion == 8)
         #expect(migrated.analyzerRuns == analysisCase.analyzerRuns)
         #expect(migrated.annotations.isEmpty)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -221,7 +222,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version three case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 7)
+        #expect(migrated.schemaVersion == 8)
         #expect(migrated.annotations.count == 1)
         #expect(migrated.annotations.first?.measurementCalibration == nil)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -266,7 +267,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version four case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 7)
+        #expect(migrated.schemaVersion == 8)
         #expect(migrated.annotations.map(\.id) == analysisCase.annotations.map(\.id))
         #expect(migrated.annotations.map(\.kind) == analysisCase.annotations.map(\.kind))
         #expect(migrated.annotations.map(\.geometry) == analysisCase.annotations.map(\.geometry))
@@ -316,6 +317,41 @@ struct AnalysisCaseTests {
         #expect(try Data(contentsOf: fixture.fileURL) == before)
     }
 
+    @Test("untimed observations persist without changing the source")
+    func observationRoundTrip() async throws {
+        let fixture = try AnalysisFixture(contents: "untimed observation source")
+        defer { fixture.remove() }
+        let before = try Data(contentsOf: fixture.fileURL)
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        var analysisCase = AnalysisCase.create(
+            for: revision,
+            appBuild: "test",
+            now: Date(timeIntervalSince1970: 1)
+        )
+        let observation = AnalysisObservation(
+            title: "Lighting",
+            note: "The north-facing windows appear illuminated, but no reliable time is visible.",
+            now: Date(timeIntervalSince1970: 2)
+        )
+        analysisCase.setObservation(observation, now: Date(timeIntervalSince1970: 3))
+
+        try await repository.save(analysisCase)
+        guard case .exact(let reopened) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the untimed observation to reopen")
+            return
+        }
+        #expect(reopened.observations == [observation].map {
+            var updated = $0
+            updated.markUpdated(now: Date(timeIntervalSince1970: 3))
+            return updated
+        })
+        #expect(try Data(contentsOf: fixture.fileURL) == before)
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.fileURL.deletingPathExtension().appendingPathExtension("xmp").path
+        ))
+    }
+
     @Test("version five timeline cases migrate with a default map state")
     func migratesVersionFiveCase() async throws {
         let fixture = try AnalysisFixture(contents: "version five source")
@@ -346,7 +382,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version five case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 7)
+        #expect(migrated.schemaVersion == 8)
         #expect(migrated.timestampEvidence == analysisCase.timestampEvidence)
         #expect(migrated.mapState == AnalysisMapState())
         try migrated.validateForPersistence()
@@ -431,13 +467,55 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version six case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 7)
+        #expect(migrated.schemaVersion == 8)
         #expect(migrated.mapState.viewport == analysisCase.mapState.viewport)
         #expect(migrated.mapState.annotations.isEmpty)
         try migrated.validateForPersistence()
     }
 
-    @Test("all map markup kinds and stable photo-label links persist without source writes")
+    @Test("version seven map-markup cases migrate with empty untimed observations")
+    func migratesVersionSevenCase() async throws {
+        let fixture = try AnalysisFixture(contents: "version seven map markup source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        analysisCase.setMapAnnotation(AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522))
+        ))
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(analysisCase)) as? [String: Any]
+        )
+        object["schemaVersion"] = 7
+        object["observations"] = nil
+
+        let caseDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: caseDirectory,
+            withIntermediateDirectories: true
+        )
+        let caseURL = caseDirectory.appendingPathComponent(
+            "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+        )
+        try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
+
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let migrated) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the version seven case to migrate")
+            return
+        }
+        #expect(migrated.schemaVersion == 8)
+        #expect(migrated.mapState.annotations.map(\.id) == analysisCase.mapState.annotations.map(\.id))
+        #expect(migrated.mapState.annotations.map(\.kind) == analysisCase.mapState.annotations.map(\.kind))
+        #expect(migrated.mapState.annotations.map(\.geometry) == analysisCase.mapState.annotations.map(\.geometry))
+        #expect(migrated.observations.isEmpty)
+        try migrated.validateForPersistence()
+    }
+
+    @Test("all map markup kinds and stable labeled-photo links persist without source writes")
     func mapAnnotationsRoundTripDoesNotWriteSource() async throws {
         let fixture = try AnalysisFixture(contents: "map markup source")
         defer { fixture.remove() }
@@ -446,8 +524,11 @@ struct AnalysisCaseTests {
         let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
         var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
         let photoLabel = AnalysisAnnotation(
-            kind: .label,
-            geometry: .anchor(AnalysisNormalizedPoint(x: 0.4, y: 0.6)),
+            kind: .rectangle,
+            geometry: .bounds(AnalysisNormalizedBounds(
+                minimum: AnalysisNormalizedPoint(x: 0.3, y: 0.4),
+                maximum: AnalysisNormalizedPoint(x: 0.5, y: 0.7)
+            )),
             text: "North entrance"
         )
         analysisCase.setAnnotation(photoLabel)
@@ -651,6 +732,25 @@ struct AnalysisCaseTests {
         )]
         #expect(throws: AnalysisCaseValidationError.invalidTimestampEvidence) {
             try sourceDerived.validateForPersistence()
+        }
+    }
+
+    @Test("untimed observations require a title, note, and unique IDs")
+    func rejectsInvalidObservations() async throws {
+        let fixture = try AnalysisFixture(contents: "invalid observation source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let invalid = AnalysisObservation(title: "Observation", note: "   ")
+        analysisCase.observations = [invalid]
+        #expect(throws: AnalysisCaseValidationError.invalidObservations) {
+            try analysisCase.validateForPersistence()
+        }
+
+        let valid = AnalysisObservation(title: "Weather", note: "Overcast conditions")
+        analysisCase.observations = [valid, valid]
+        #expect(throws: AnalysisCaseValidationError.invalidObservations) {
+            try analysisCase.validateForPersistence()
         }
     }
 

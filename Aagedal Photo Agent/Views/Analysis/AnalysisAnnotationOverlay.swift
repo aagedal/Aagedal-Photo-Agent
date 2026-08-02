@@ -3,11 +3,13 @@ import SwiftUI
 
 enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     case select
+    case marker
     case line
     case arrow
     case distance
     case rectangle
     case ellipse
+    case shape
     case label
 
     var id: Self { self }
@@ -15,11 +17,13 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .select: "Select"
+        case .marker: "Marker"
         case .line: "Line"
         case .arrow: "Arrow"
         case .distance: "Distance"
         case .rectangle: "Rectangle"
         case .ellipse: "Ellipse"
+        case .shape: "Polygon"
         case .label: "Label"
         }
     }
@@ -27,18 +31,20 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .select: "cursorarrow"
+        case .marker: "mappin"
         case .line: "line.diagonal"
         case .arrow: "arrow.up.right"
         case .distance: "ruler"
         case .rectangle: "rectangle"
         case .ellipse: "circle"
+        case .shape: "pentagon"
         case .label: "character.cursor.ibeam"
         }
     }
 
     var annotationKind: AnalysisAnnotationKind? {
         switch self {
-        case .select: nil
+        case .select, .marker, .shape: nil
         case .line: .line
         case .arrow: .arrow
         case .distance: .distance
@@ -47,6 +53,23 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
         case .label: .label
         }
     }
+
+    static let photoTools: [Self] = [
+        .select, .line, .arrow, .distance, .rectangle, .ellipse, .label,
+    ]
+
+    static let osintTools: [Self] = [
+        .select, .marker, .line, .arrow, .distance, .rectangle, .ellipse, .shape, .label,
+    ]
+
+    var supportsMap: Bool {
+        switch self {
+        case .select, .marker, .line, .distance, .shape, .label: true
+        case .arrow, .rectangle, .ellipse: false
+        }
+    }
+
+    var supportsPhoto: Bool { annotationKind != nil || self == .select }
 }
 
 struct AnalysisAnnotationGestureDraft {
@@ -70,6 +93,11 @@ struct AnalysisAnnotationToolbar: View {
     let selectedIsCalibration: Bool
     let onCalibrate: () -> Void
     let onDelete: () -> Void
+    var tools: [AnalysisAnnotationTool] = AnalysisAnnotationTool.photoTools
+    var contextLabel: String = "Photo"
+    var canEditLabel = false
+    var selectedHasLabel = false
+    var onEditLabel: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 10) {
@@ -78,7 +106,7 @@ struct AnalysisAnnotationToolbar: View {
                 .foregroundStyle(.secondary)
 
             Picker("Markup Tool", selection: $tool) {
-                ForEach(AnalysisAnnotationTool.allCases) { tool in
+                ForEach(tools) { tool in
                     Label(tool.displayName, systemImage: tool.systemImage)
                         .labelStyle(.iconOnly)
                         .tag(tool)
@@ -176,6 +204,17 @@ struct AnalysisAnnotationToolbar: View {
                     : "Use the selected distance as a real-world measurement calibration"
             )
 
+            Button(action: onEditLabel) {
+                Label(
+                    selectedHasLabel ? "Edit Annotation Label" : "Label Annotation",
+                    systemImage: selectedHasLabel ? "tag.fill" : "tag"
+                )
+                .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .disabled(isReadOnly || !canEditLabel)
+            .help(selectedHasLabel ? "Edit the selected annotation label" : "Label the selected annotation")
+
             Button(role: .destructive, action: onDelete) {
                 Label("Delete Annotation", systemImage: "trash")
                     .labelStyle(.iconOnly)
@@ -192,7 +231,7 @@ struct AnalysisAnnotationToolbar: View {
         }
         .padding(.horizontal, 2)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Photo markup tools")
+        .accessibilityLabel("\(contextLabel) markup tools")
     }
 }
 
@@ -282,18 +321,23 @@ struct AnalysisAnnotationOverlay: View {
             )
         )
 
-        if case .anchor(let anchor) = annotation.geometry {
-            let point = AnalysisAnnotationViewGeometry.viewPoint(
-                anchor,
+        if let text = annotation.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty {
+            let placement = AnalysisAnnotationViewGeometry.annotationLabelPlacement(
+                for: annotation,
                 geometry: geometry,
                 coordinateMapper: coordinateMapper
             )
+            let label = Text(text).font(.caption.weight(.semibold))
             context.draw(
-                Text(annotation.text ?? "Label")
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(color),
-                at: CGPoint(x: point.x + 7, y: point.y - 7),
-                anchor: .bottomLeading
+                label.foregroundColor(contrast),
+                at: CGPoint(x: placement.point.x + 1, y: placement.point.y + 1),
+                anchor: placement.anchor
+            )
+            context.draw(
+                label.foregroundColor(color),
+                at: placement.point,
+                anchor: placement.anchor
             )
         }
 
@@ -463,6 +507,32 @@ enum AnalysisAnnotationEditTarget: Equatable {
 }
 
 private enum AnalysisAnnotationViewGeometry {
+    static func annotationLabelPlacement(
+        for annotation: AnalysisAnnotation,
+        geometry: ImageInspectionGeometry,
+        coordinateMapper: AnalysisAnnotationCoordinateMapper
+    ) -> (point: CGPoint, anchor: UnitPoint) {
+        switch annotation.geometry {
+        case .anchor(let anchor):
+            let point = viewPoint(anchor, geometry: geometry, coordinateMapper: coordinateMapper)
+            return (CGPoint(x: point.x + 7, y: point.y - 7), .bottomLeading)
+        case .segment(let start, let end):
+            let first = viewPoint(start, geometry: geometry, coordinateMapper: coordinateMapper)
+            let last = viewPoint(end, geometry: geometry, coordinateMapper: coordinateMapper)
+            return (
+                CGPoint(x: (first.x + last.x) / 2, y: min(first.y, last.y) - 7),
+                .bottom
+            )
+        case .bounds(let bounds):
+            let point = viewPoint(
+                bounds.minimum,
+                geometry: geometry,
+                coordinateMapper: coordinateMapper
+            )
+            return (CGPoint(x: point.x + 4, y: point.y - 5), .bottomLeading)
+        }
+    }
+
     static func path(
         for annotation: AnalysisAnnotation,
         geometry: ImageInspectionGeometry,

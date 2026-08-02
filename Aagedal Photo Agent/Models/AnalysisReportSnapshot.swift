@@ -121,7 +121,7 @@ nonisolated struct AnalysisReportAnalyzerRun: Codable, Equatable, Sendable {
 /// findings, and establishes deterministic ordering. Edits made after creation cannot mix with an
 /// export already in progress.
 nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let schemaVersion: Int
     let id: UUID
@@ -139,6 +139,7 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
     let includedFindings: [AnalysisFinding]
     let photoAnnotations: [AnalysisAnnotation]
     let timestampEvidence: [AnalysisTimestampEvidence]
+    let observations: [AnalysisObservation]
     let mapEvidence: AnalysisReportMapEvidence?
 
     /// Re-hashes the current source bytes immediately before freezing report inputs.
@@ -227,6 +228,10 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
             photoAnnotations: analysisCase.annotations,
             timestampEvidence: analysisCase.timestampEvidence.sorted {
                 $0.id.uuidString < $1.id.uuidString
+            },
+            observations: analysisCase.observations.sorted {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
             },
             mapEvidence: AnalysisReportMapEvidence(
                 state: analysisCase.mapState,

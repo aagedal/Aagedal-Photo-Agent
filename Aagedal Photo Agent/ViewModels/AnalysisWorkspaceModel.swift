@@ -81,6 +81,13 @@ final class AnalysisWorkspaceModel {
         AnalysisTimelineResolver.conflicts(in: timestampEvidence)
     }
 
+    var observations: [AnalysisObservation] {
+        (analysisCase?.observations ?? []).sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
     var mapState: AnalysisMapState {
         analysisCase?.mapState ?? AnalysisMapState()
     }
@@ -89,8 +96,10 @@ final class AnalysisWorkspaceModel {
         mapState.annotations
     }
 
-    var photoLabelAnnotations: [AnalysisAnnotation] {
-        annotations.filter { $0.kind == .label }
+    var labeledPhotoAnnotations: [AnalysisAnnotation] {
+        annotations.filter {
+            !($0.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }
     }
 
     var embeddedLocation: AnalysisGeoCoordinate? {
@@ -350,6 +359,19 @@ final class AnalysisWorkspaceModel {
         persist(updatedCase)
     }
 
+    func setObservation(_ observation: AnalysisObservation) {
+        guard observation.validate(), var updatedCase = analysisCase, !sourceChanged else { return }
+        updatedCase.setObservation(observation)
+        persist(updatedCase)
+    }
+
+    func removeObservation(id: UUID) {
+        guard var updatedCase = analysisCase,
+              !sourceChanged,
+              updatedCase.removeObservation(id: id) else { return }
+        persist(updatedCase)
+    }
+
     func setMapStyle(_ style: AnalysisMapStyle) {
         guard var updatedCase = analysisCase,
               !sourceChanged,
@@ -434,7 +456,7 @@ final class AnalysisWorkspaceModel {
         annotationID: UUID,
         photoLabelID: UUID?
     ) {
-        guard photoLabelID == nil || photoLabelAnnotations.contains(where: {
+        guard photoLabelID == nil || labeledPhotoAnnotations.contains(where: {
             $0.id == photoLabelID
         }),
         var annotation = mapAnnotations.first(where: { $0.id == annotationID }),

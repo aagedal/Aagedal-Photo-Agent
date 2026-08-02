@@ -38,7 +38,10 @@ now exposes its fixed palette as a direct swatch row, expanded with red, green, 
 the existing colors and custom color well.
 Map markup now adds persistent markers, lines, polygons, geodesic distance segments, and labels
 from an accessible map-center workflow. Map layers have independent visibility and undo/redo, and
-can reference photo-label UUIDs so cross-surface links survive label edits without copying text.
+can reference any labeled photo-annotation UUID so cross-surface links survive label edits without
+copying text. OSINT now uses one shared photo/map markup bar anchored above the draggable content,
+with Map Layers beside a compact vertical evidence list. Every annotation kind can be labeled, and
+investigators can add expandable case-only notes when no timestamp can be established.
 The map now reports offline connectivity, failed MapKit requests, and unavailable satellite imagery
 as distinct non-destructive states. A cancellable visible-region probe supplies a retryable imagery
 status, place autocomplete no longer drops errors silently, and coordinate entry plus saved map
@@ -376,3 +379,5 @@ silently redefine forensic claims or persistence behavior in code.
 | 2026-07-26 | Keep named versions in JSON and retain one explicit primary XMP state | Meets app-private versioning goal while preserving interoperability |
 | 2026-07-26 | Persist source SHA-256 as lowercase hex and treat filesystem identifiers as opaque discovery hints | Keeps exact byte identity portable while still supporting fast rename/move discovery |
 | 2026-07-30 | Use a fixed ImageIO JPEG 0.90 re-encode with a 12× linear-sRGB absolute difference for the baseline compression residual | Makes the view reproducible and labelable while avoiding any unsupported manipulation verdict; Analysis uses a bounded 2,048-pixel preview and composites alpha over 50% gray |
+| 2026-08-02 | Use one shared OSINT markup bar and treat annotation labels as optional identity on every geometry | Keeps authoring consistent across photo/map surfaces and lets non-text photo evidence participate in stable map links |
+| 2026-08-02 | Store untimed investigator notes separately from timestamp evidence | Avoids fabricating a date while retaining case-only observations in report inputs |

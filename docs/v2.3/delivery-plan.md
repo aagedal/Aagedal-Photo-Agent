@@ -105,7 +105,11 @@ reportable without editing IPTC.
 - [x] Reuse coordinate parsing, place search, and reverse geocoding patterns.
 - [x] Add satellite/hybrid map with persisted viewport.
 - [x] Add map marker, line, shape, distance, label, and visibility tools.
-- [x] Link photo and map annotations by stable label ID.
+- [x] Use one shared OSINT markup toolbar for the photo and map, outside the draggable split.
+- [x] Let every photo/map annotation kind carry an editable label.
+- [x] Link map annotations to any labeled photo annotation by stable ID.
+- [x] Place Map Layers beside compact, vertically expandable evidence rows.
+- [x] Add case-only observations without a timestamp.
 - [x] Ensure analysis coordinates never silently write IPTC GPS.
 - [x] Add offline/network-failure and no-imagery states.
 - [x] Capture attribution-compliant report evidence.
