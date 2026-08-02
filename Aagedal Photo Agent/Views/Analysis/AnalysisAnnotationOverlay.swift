@@ -89,16 +89,40 @@ struct AnalysisAnnotationToolbar: View {
             .frame(maxWidth: 330)
             .disabled(isReadOnly)
 
-            Menu {
+            HStack(spacing: 5) {
                 ForEach(AnalysisAnnotationPaletteColor.allCases, id: \.self) { color in
                     Button {
                         style.color = .palette(color)
                     } label: {
-                        Label(color.displayName, systemImage: color.systemImage)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(AnalysisAnnotationColor.palette(color).swiftUIColor)
+                            .frame(width: 18, height: 18)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(
+                                        style.color == .palette(color)
+                                            ? Color.accentColor
+                                            : Color.primary.opacity(0.35),
+                                        lineWidth: style.color == .palette(color) ? 3 : 1
+                                    )
+                            }
+                            .overlay {
+                                if style.color == .palette(color) {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundStyle(
+                                            AnalysisAnnotationColor.palette(color).contrastColor
+                                        )
+                                }
+                            }
                     }
+                    .buttonStyle(.plain)
+                    .help(color.displayName)
+                    .accessibilityLabel("\(color.displayName) annotation color")
+                    .accessibilityAddTraits(
+                        style.color == .palette(color) ? .isSelected : []
+                    )
                 }
-
-                Divider()
 
                 ColorPicker(
                     "Custom Color",
@@ -108,20 +132,14 @@ struct AnalysisAnnotationToolbar: View {
                     ),
                     supportsOpacity: true
                 )
-            } label: {
-                Label {
-                    Text("Annotation Color")
-                } icon: {
-                    Circle()
-                        .fill(style.color.swiftUIColor)
-                        .overlay(Circle().stroke(.primary.opacity(0.35), lineWidth: 1))
-                        .frame(width: 13, height: 13)
-                }
+                .labelsHidden()
+                .frame(width: 22)
+                .help("Custom annotation color")
             }
-            .menuStyle(.borderlessButton)
             .fixedSize()
             .disabled(isReadOnly)
-            .help("Choose a fixed high-contrast annotation color or a custom color")
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Annotation colors")
 
             Spacer(minLength: 0)
 
@@ -659,17 +677,6 @@ private extension CGPoint {
 
 private extension AnalysisAnnotationPaletteColor {
     var displayName: String { rawValue.capitalized }
-
-    var systemImage: String {
-        switch self {
-        case .yellow: "circle.fill"
-        case .blue: "circle.fill"
-        case .orange: "circle.fill"
-        case .purple: "circle.fill"
-        case .white: "circle"
-        case .black: "circle.inset.filled"
-        }
-    }
 }
 
 extension AnalysisAnnotationColor {
@@ -678,6 +685,9 @@ extension AnalysisAnnotationColor {
         case .palette(let color):
             switch color {
             case .yellow: Color(red: 1, green: 0.83, blue: 0.08)
+            case .red: Color(red: 1, green: 0.20, blue: 0.18)
+            case .green: Color(red: 0.20, green: 0.84, blue: 0.38)
+            case .cyan: Color(red: 0.18, green: 0.88, blue: 1)
             case .blue: Color(red: 0.20, green: 0.68, blue: 1)
             case .orange: Color(red: 1, green: 0.43, blue: 0.12)
             case .purple: Color(red: 0.74, green: 0.48, blue: 1)

@@ -60,6 +60,9 @@ nonisolated enum AnalysisAnnotationGeometry: Codable, Equatable, Sendable {
 /// source-bound case document.
 nonisolated enum AnalysisAnnotationPaletteColor: String, Codable, CaseIterable, Sendable {
     case yellow
+    case red
+    case green
+    case cyan
     case blue
     case orange
     case purple

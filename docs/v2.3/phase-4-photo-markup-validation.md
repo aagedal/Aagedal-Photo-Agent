@@ -23,9 +23,10 @@
   overlays in the compression-residual comparison.
 - Added selection hit-testing, visible selection handles, toolbar and Delete-key removal, and
   color editing for the selected annotation.
-- Added a fixed high-contrast yellow/blue/orange/purple/white/black palette plus an RGBA custom
-  color picker. Every stroke receives an adaptive contrast outline so black and light colors stay
-  visible over varied image content.
+- Added a direct swatch row with fixed high-contrast
+  yellow/red/green/cyan/blue/orange/purple/white/black choices plus an RGBA custom color picker.
+  The selected swatch has an outline and checkmark, and every stroke receives an adaptive contrast
+  outline so black and light colors stay visible over varied image content.
 - Routed creation, rendering, and hit-testing through the original/source/current transform chain,
   preserving source attachment across EXIF orientations and Developed crop/straighten changes.
 - Added a bounded, photo-surface-owned transaction history for annotation additions, edits, and
