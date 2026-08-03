@@ -132,6 +132,7 @@ struct TemplateCommandRoutingTests {
         #expect(MainViewMode.editing.templateCommandTarget == .develop)
         #expect(MainViewMode.browser.templateCommandTarget == .metadata)
         #expect(MainViewMode.metadataReview.templateCommandTarget == .metadata)
+        #expect(MainViewMode.imageAnalysis.templateCommandTarget == .metadata)
         #expect(MainViewMode.faceManagement.templateCommandTarget == .metadata)
         #expect(MainViewMode.peopleDatabase.templateCommandTarget == .metadata)
     }

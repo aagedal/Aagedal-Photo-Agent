@@ -23,7 +23,7 @@ legally and reproducibly.
 - [ ] Decide target hardware tiers and concrete memory/latency budgets.
 - [ ] Prototype raw metadata graph extraction without flattening conflicting namespaces.
 - [ ] Prototype one compression/residual view and document benign counterexamples.
-- [ ] Verify MapKit satellite snapshot/report redistribution and attribution requirements.
+- [x] Verify MapKit satellite snapshot/report redistribution and attribution requirements.
 - [ ] Evaluate candidate on-device AI-origin models and licenses; record a ship/no-ship decision.
 - [ ] Decide version treatment of decoder/process state and unparsed corrections.
 - [ ] Choose keyboard shortcuts after auditing existing shortcuts.
@@ -37,61 +37,61 @@ updated conditional-scope decision.
 **Exit gate:** an unchanged source can be identified, persisted records recover from failure, and
 all coordinate round-trips pass.
 
-- [ ] Implement `SourceImageRevision` and cancellable streaming SHA-256.
-- [ ] Add source discovery/reassociation by resource ID and hash.
-- [ ] Implement versioned atomic JSON document storage with bounded backup.
-- [ ] Define unknown/newer schema behavior.
-- [ ] Implement normalized display/source pixel transforms for all EXIF orientations.
-- [ ] Implement shared viewport state and view/image coordinate mapping.
-- [ ] Add transform fixtures for crop/straighten and different aspect ratios.
-- [ ] Audit security-scoped access and avoid repeat prompts.
-- [ ] Add folder monitor filtering and invalidation for new hidden stores.
-- [ ] Add corruption, read-only, iCloud-offline, rename/move, and source-changed tests.
+- [x] Implement `SourceImageRevision` and cancellable streaming SHA-256.
+- [x] Add source discovery/reassociation by resource ID and hash.
+- [x] Implement versioned atomic JSON document storage with bounded backup.
+- [x] Define unknown/newer schema behavior.
+- [x] Implement normalized display/source pixel transforms for all EXIF orientations.
+- [x] Implement shared viewport state and view/image coordinate mapping.
+- [x] Add transform fixtures for crop/straighten and different aspect ratios.
+- [x] Audit security-scoped access and avoid repeat prompts.
+- [x] Add folder monitor filtering and invalidation for new hidden stores.
+- [x] Add corruption, read-only, iCloud-offline, rename/move, and source-changed tests.
 
 ## Phase 2 — analysis shell and source facts
 
 **Exit gate:** one selected image opens a persistent case, fast evidence appears, and analysis never
 modifies the source.
 
-- [ ] Add `MainViewMode.imageAnalysis` and layout-menu entry.
-- [ ] Create `AnalysisCase` owner and workspace navigation.
-- [ ] Add Pixel Analysis / OSINT mode selector.
-- [ ] Implement source revision validation and stale-case banner.
-- [ ] Add original/developed representation selector with explicit labels.
-- [ ] Implement analyzer runner states, progress, cancellation, and cache keys.
-- [ ] Add source facts and raw metadata/provenance analyzer.
-- [ ] Integrate C2PA validation states without collapsing validity and trust.
-- [ ] Add metadata consistency rule engine and initial rule set.
-- [ ] Add plain-language finding detail, technical detail, alternatives, and report inclusion.
-- [ ] Verify no metadata/source writes with file-system observation tests.
+- [x] Add `MainViewMode.imageAnalysis` and layout-menu entry.
+- [x] Create `AnalysisCase` owner and workspace navigation.
+- [x] Add Pixel Analysis / OSINT mode selector.
+- [x] Implement source revision validation and stale-case banner.
+- [x] Add original/developed representation selector with explicit labels.
+- [x] Implement analyzer runner states, progress, cancellation, and cache keys.
+- [x] Add source facts and raw metadata/provenance analyzer.
+- [x] Integrate C2PA validation states without collapsing validity and trust.
+- [x] Add metadata consistency rule engine and initial rule set.
+- [x] Add plain-language finding detail, technical detail, alternatives, and report inclusion.
+- [x] Verify no metadata/source writes with file-system observation tests.
 
 ## Phase 3 — pixel views, scopes, and hover inspection
 
 **Exit gate:** normal and derived views remain spatially aligned and useful at fit and true pixels.
 
-- [ ] Extract reusable true-pixel/normalized hover utilities from Advanced Export.
-- [ ] Generalize scope requests and output sizing without regressing the existing scope sidebar.
-- [ ] Build resizable one/two/four-up scope layouts.
-- [ ] Add linked hover sampling and source-pixel readout.
-- [ ] Add selected-region scopes.
-- [ ] Add channel/luminance views.
-- [ ] Ship the calibrated compression/residual view with method/parameter label.
-- [ ] Add cost-bounded derived-view cache and cancellation.
-- [ ] Add HDR/SDR, alpha, orientation, crop, and malformed-source tests.
+- [x] Extract reusable true-pixel/normalized hover utilities from Advanced Export.
+- [x] Generalize scope requests and output sizing without regressing the existing scope sidebar.
+- [x] Build resizable one/two/four-up scope layouts.
+- [x] Add linked hover sampling and source-pixel readout.
+- [x] Add selected-region scopes.
+- [x] Add channel/luminance views.
+- [x] Ship the calibrated compression/residual view with method/parameter label.
+- [x] Add cost-bounded derived-view cache and cancellation.
+- [x] Add HDR/SDR, alpha, orientation, crop, and malformed-source tests.
 - [ ] Manually validate alignment and color behavior on the fixture corpus.
 
 ## Phase 4 — photo markup and measurement
 
 **Exit gate:** annotations are precise, persistent, accessible, reversible, and stable across zoom.
 
-- [ ] Implement annotation model and migrations.
-- [ ] Build select, line/arrow, distance, rectangle, ellipse, and label tools.
-- [ ] Add fixed accessible palette and custom color.
-- [ ] Add per-surface undo/redo transactions.
-- [ ] Add annotation list/layer visibility and keyboard operations.
-- [ ] Add source-pixel measurement.
-- [ ] Add user-defined calibration segment and unit conversion.
-- [ ] Add linked finding/annotation references.
+- [x] Implement annotation model and migrations.
+- [x] Build select, line/arrow, distance, rectangle, ellipse, and label tools.
+- [x] Add fixed accessible palette and custom color.
+- [x] Add per-surface undo/redo transactions.
+- [x] Add annotation list/layer visibility and keyboard operations.
+- [x] Add source-pixel measurement.
+- [x] Add user-defined calibration segment and unit conversion.
+- [x] Add linked finding/annotation references.
 - [ ] Test all orientations, view sizes, source changes, and report transforms.
 - [ ] Validate keyboard-only and VoiceOver workflows.
 
@@ -100,33 +100,40 @@ modifies the source.
 **Exit gate:** embedded, inferred, and user-entered time/location evidence is distinguishable and
 reportable without editing IPTC.
 
-- [ ] Implement timestamp evidence model with source, precision, and timezone-known state.
-- [ ] Build timeline/conflict UI.
-- [ ] Reuse coordinate parsing, place search, and reverse geocoding patterns.
-- [ ] Add satellite/hybrid map with persisted viewport.
-- [ ] Add map marker, line, shape, distance, label, and visibility tools.
-- [ ] Link photo and map annotations by stable label ID.
-- [ ] Ensure analysis coordinates never silently write IPTC GPS.
-- [ ] Add offline/network-failure and no-imagery states.
-- [ ] Capture attribution-compliant report evidence.
-- [ ] Decide and, if approved, implement any sun/shadow conditional analyzer.
+- [x] Implement timestamp evidence model with source, precision, and timezone-known state.
+- [x] Build timeline/conflict UI.
+- [x] Reuse coordinate parsing, place search, and reverse geocoding patterns.
+- [x] Add satellite/hybrid map with persisted viewport.
+- [x] Add map marker, line, shape, distance, label, and visibility tools.
+- [x] Separate Photo and Map tool groups in one OSINT toolbar outside the draggable split.
+- [x] Let every photo/map annotation kind carry an editable label.
+- [x] Let photo annotations carry a separate case-only note.
+- [x] Link map annotations to any photo annotation by stable ID and preserve its color.
+- [x] Optionally add a bearing/angle/range field-of-view cone with the photo location.
+- [x] Add a working-folder thumbnail rail and This Photo / Working Folder map-layer scope.
+- [x] Show Photo Annotations and Map Annotations side by side below a full-height map column.
+- [x] Add case-only observations without a timestamp.
+- [x] Ensure analysis coordinates never silently write IPTC GPS.
+- [x] Add offline/network-failure and no-imagery states.
+- [x] Capture attribution-compliant report evidence.
+- [x] Decide and, if approved, implement any sun/shadow conditional analyzer.
 
 ## Phase 6 — PDF report
 
 **Exit gate:** a report generated from a frozen case snapshot is visually correct, reproducible, and
 honest about methods and limitations.
 
-- [ ] Define immutable report snapshot.
-- [ ] Revalidate source hash at export.
+- [x] Define immutable report snapshot.
+- [x] Revalidate source hash at export.
 - [ ] Implement cover, facts/provenance, findings, figures, timeline/map, user observations,
   methodology, limitations, and appendix.
-- [ ] Add selectable sensitive fields and redaction warning.
+- [x] Add selectable sensitive fields and redaction warning.
 - [ ] Add evidence crop export with pixel/interpolation scale.
-- [ ] Add annotation legend and calibrated-measurement disclosure.
-- [ ] Add map attribution or schematic fallback.
-- [ ] Add progress, cancellation, atomic output, and cleanup.
-- [ ] Add PDF semantic/structural tests.
-- [ ] Render every page to images and visually verify A4 and US Letter.
+- [x] Add annotation legend and calibrated-measurement disclosure.
+- [x] Add map attribution or schematic fallback.
+- [x] Add progress, cancellation, atomic output, and cleanup.
+- [x] Add PDF semantic/structural tests.
+- [x] Render every page to images and visually verify A4 and US Letter.
 - [ ] Test long findings, Unicode, missing figures, many annotations, and multi-page cases.
 
 ## Phase 7 — comparison core

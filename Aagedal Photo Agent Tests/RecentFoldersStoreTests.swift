@@ -5,6 +5,103 @@ import Testing
 @MainActor
 @Suite("RecentFoldersStore")
 struct RecentFoldersStoreTests {
+    @Test("Security scope store retains one claim per normalized root")
+    func securityScopeClaimsAreIdempotent() {
+        var accessRequests: [URL] = []
+        var bookmarkRequests: [URL] = []
+        let scopes = BrowserFolderSecurityScopeStore(
+            accessStarter: {
+                accessRequests.append($0)
+                return true
+            },
+            bookmarkCreator: {
+                bookmarkRequests.append($0)
+                return Data([0x01])
+            },
+            bookmarkResolver: { _ in nil }
+        )
+        let folder = URL(fileURLWithPath: "/tmp/photo-agent-scope/session", isDirectory: true)
+        let equivalent = URL(
+            fileURLWithPath: "/tmp/photo-agent-scope/other/../session",
+            isDirectory: false
+        )
+        let descendant = folder.appendingPathComponent("shoot/day-1", isDirectory: true)
+
+        _ = scopes.bookmarkAndRetainAccess(for: folder)
+        _ = scopes.bookmarkAndRetainAccess(for: equivalent)
+        _ = scopes.bookmarkAndRetainAccess(for: descendant)
+
+        #expect(accessRequests == [folder])
+        #expect(bookmarkRequests == [folder, equivalent, descendant])
+    }
+
+    @Test("A failed access claim can be retried")
+    func failedSecurityScopeClaimRetries() {
+        var accessCount = 0
+        let scopes = BrowserFolderSecurityScopeStore(
+            accessStarter: { _ in
+                accessCount += 1
+                return accessCount == 2
+            },
+            bookmarkCreator: { _ in nil },
+            bookmarkResolver: { _ in nil }
+        )
+        let folder = URL(fileURLWithPath: "/tmp/photo-agent-scope/retry", isDirectory: true)
+
+        _ = scopes.bookmarkAndRetainAccess(for: folder)
+        _ = scopes.bookmarkAndRetainAccess(for: folder)
+        _ = scopes.bookmarkAndRetainAccess(for: folder)
+
+        #expect(accessCount == 2)
+    }
+
+    @Test("Launch resolves, retains, and refreshes a stale recent-folder bookmark")
+    func staleBookmarkRefreshesOnLoad() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let original = URL(
+            fileURLWithPath: "/tmp/photo-agent-recents/original",
+            isDirectory: true
+        )
+        let moved = URL(
+            fileURLWithPath: "/tmp/photo-agent-recents/moved",
+            isDirectory: true
+        )
+        let staleData = Data([0x01])
+        let refreshedData = Data([0x02])
+        let persisted = [RecentFolder(url: original, bookmarkData: staleData)]
+        defaults.set(
+            try JSONEncoder().encode(persisted),
+            forKey: UserDefaultsKeys.recentFolders
+        )
+        var accessedURLs: [URL] = []
+        let scopes = BrowserFolderSecurityScopeStore(
+            accessStarter: {
+                accessedURLs.append($0)
+                return true
+            },
+            bookmarkCreator: { url in
+                #expect(url == moved)
+                return refreshedData
+            },
+            bookmarkResolver: { data in
+                #expect(data == staleData)
+                return .init(url: moved, isStale: true)
+            }
+        )
+
+        let store = RecentFoldersStore(defaults: defaults, securityScopes: scopes)
+
+        #expect(accessedURLs == [moved])
+        #expect(store.folders.first?.url == moved)
+        #expect(store.folders.first?.bookmarkData == refreshedData)
+        let savedData = try #require(
+            defaults.data(forKey: UserDefaultsKeys.recentFolders)
+        )
+        let saved = try JSONDecoder().decode([RecentFolder].self, from: savedData)
+        #expect(saved == store.folders)
+    }
+
     @Test("Equivalent folder URL spellings share one recent entry")
     func equivalentURLsAreDeduplicated() throws {
         let (defaults, suiteName) = try makeDefaults()

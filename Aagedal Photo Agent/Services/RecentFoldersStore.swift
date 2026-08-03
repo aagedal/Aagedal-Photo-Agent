@@ -12,32 +12,64 @@ final class BrowserFolderSecurityScopeStore: @unchecked Sendable {
         var bookmarkData: Data
     }
 
+    struct BookmarkResolution {
+        var url: URL
+        var isStale: Bool
+    }
+
     private let lock = NSLock()
     private var accessedURLs: Set<URL> = []
+    private let accessStarter: (URL) -> Bool
+    private let bookmarkCreator: (URL) -> Data?
+    private let bookmarkResolver: (Data) -> BookmarkResolution?
 
-    private init() {}
-
-    func bookmarkAndRetainAccess(for url: URL) -> Data? {
-        retainAccess(to: url)
-        return try? url.bookmarkData(
-            options: .withSecurityScope,
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
+    private convenience init() {
+        self.init(
+            accessStarter: { $0.startAccessingSecurityScopedResource() },
+            bookmarkCreator: {
+                try? $0.bookmarkData(
+                    options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+            },
+            bookmarkResolver: { data in
+                var stale = false
+                guard let url = try? URL(
+                    resolvingBookmarkData: data,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &stale
+                ) else { return nil }
+                return BookmarkResolution(url: url, isStale: stale)
+            }
         )
     }
 
-    func resolveAndRetainAccess(_ data: Data) -> Resolution? {
-        var stale = false
-        guard let url = try? URL(
-            resolvingBookmarkData: data,
-            options: .withSecurityScope,
-            relativeTo: nil,
-            bookmarkDataIsStale: &stale
-        ) else { return nil }
+    /// Injection point for deterministic lifecycle tests. Production uses `shared`.
+    init(
+        accessStarter: @escaping (URL) -> Bool,
+        bookmarkCreator: @escaping (URL) -> Data?,
+        bookmarkResolver: @escaping (Data) -> BookmarkResolution?
+    ) {
+        self.accessStarter = accessStarter
+        self.bookmarkCreator = bookmarkCreator
+        self.bookmarkResolver = bookmarkResolver
+    }
 
+    func bookmarkAndRetainAccess(for url: URL) -> Data? {
         retainAccess(to: url)
-        let refreshed = stale ? (bookmarkAndRetainAccess(for: url) ?? data) : data
-        return Resolution(url: url, bookmarkData: refreshed)
+        return bookmarkCreator(url)
+    }
+
+    func resolveAndRetainAccess(_ data: Data) -> Resolution? {
+        guard let bookmark = bookmarkResolver(data) else { return nil }
+
+        retainAccess(to: bookmark.url)
+        let refreshed = bookmark.isStale
+            ? (bookmarkCreator(bookmark.url) ?? data)
+            : data
+        return Resolution(url: bookmark.url, bookmarkData: refreshed)
     }
 
     private func retainAccess(to url: URL) {
@@ -47,10 +79,18 @@ final class BrowserFolderSecurityScopeStore: @unchecked Sendable {
         )
         lock.lock()
         defer { lock.unlock() }
-        guard !accessedURLs.contains(normalized) else { return }
-        if url.startAccessingSecurityScopedResource() {
+        guard !accessedURLs.contains(where: {
+            Self.isSameOrDescendant(normalized, of: $0)
+        }) else { return }
+        if accessStarter(url) {
             accessedURLs.insert(normalized)
         }
+    }
+
+    private static func isSameOrDescendant(_ candidate: URL, of root: URL) -> Bool {
+        candidate.standardizedFileURL.pathComponents.starts(
+            with: root.standardizedFileURL.pathComponents
+        )
     }
 }
 
@@ -65,9 +105,14 @@ final class RecentFoldersStore {
 
     private static let maxCount = 10
     private let defaults: UserDefaults
+    private let securityScopes: BrowserFolderSecurityScopeStore
 
-    init(defaults: UserDefaults) {
+    init(
+        defaults: UserDefaults,
+        securityScopes: BrowserFolderSecurityScopeStore = .shared
+    ) {
         self.defaults = defaults
+        self.securityScopes = securityScopes
         load()
     }
 
@@ -76,7 +121,7 @@ final class RecentFoldersStore {
         let existingBookmark = folders.first {
             Self.normalizedFolderURL($0.url) == normalizedURL
         }?.bookmarkData
-        let bookmark = BrowserFolderSecurityScopeStore.shared
+        let bookmark = securityScopes
             .bookmarkAndRetainAccess(for: url) ?? existingBookmark
         folders.removeAll { Self.normalizedFolderURL($0.url) == normalizedURL }
         folders.insert(RecentFolder(url: normalizedURL, bookmarkData: bookmark), at: 0)
@@ -96,7 +141,7 @@ final class RecentFoldersStore {
               let decoded = try? JSONDecoder().decode([RecentFolder].self, from: data) else {
             return
         }
-        folders = Self.sanitized(decoded)
+        folders = sanitized(decoded)
         if folders != decoded {
             save()
         }
@@ -119,27 +164,27 @@ final class RecentFoldersStore {
     /// Older or externally edited defaults may contain duplicates, stale display
     /// names, or more entries than the current menu supports. Repair that data once
     /// at load while preserving the first (most recent) entry and its identity.
-    private static func sanitized(_ decoded: [RecentFolder]) -> [RecentFolder] {
+    private func sanitized(_ decoded: [RecentFolder]) -> [RecentFolder] {
         var seen: Set<URL> = []
         var result: [RecentFolder] = []
-        result.reserveCapacity(min(decoded.count, maxCount))
+        result.reserveCapacity(min(decoded.count, Self.maxCount))
 
         for folder in decoded {
             var repaired = folder
             if let bookmark = folder.bookmarkData,
-               let resolution = BrowserFolderSecurityScopeStore.shared
+               let resolution = securityScopes
                 .resolveAndRetainAccess(bookmark) {
                 repaired.url = resolution.url
                 repaired.bookmarkData = resolution.bookmarkData
             }
-            let normalizedURL = normalizedFolderURL(repaired.url)
+            let normalizedURL = Self.normalizedFolderURL(repaired.url)
             guard seen.insert(normalizedURL).inserted else { continue }
             result.append(RecentFolder(
                 id: repaired.id,
                 url: normalizedURL,
                 bookmarkData: repaired.bookmarkData
             ))
-            if result.count == maxCount { break }
+            if result.count == Self.maxCount { break }
         }
         return result
     }

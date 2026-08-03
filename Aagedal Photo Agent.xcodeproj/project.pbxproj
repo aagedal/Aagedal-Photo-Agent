@@ -46,6 +46,17 @@
 		AB3400000000000000000002 /* RecentFoldersStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3400000000000000000001 /* RecentFoldersStoreTests.swift */; };
 		AB3500000000000000000002 /* SidebarExpansionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3500000000000000000001 /* SidebarExpansionTests.swift */; };
 		AB3600000000000000000002 /* FullScreenShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3600000000000000000001 /* FullScreenShortcutTests.swift */; };
+		AB3700000000000000000002 /* SourceImageRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000001 /* SourceImageRevisionTests.swift */; };
+		AB3800000000000000000002 /* AtomicJSONDocumentStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */; };
+		AB3900000000000000000002 /* SourceImageDiscoveryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */; };
+		AB4000000000000000000002 /* DisplayImageTransformTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4000000000000000000001 /* DisplayImageTransformTests.swift */; };
+		AB4100000000000000000002 /* ViewportStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4100000000000000000001 /* ViewportStateTests.swift */; };
+		AB4200000000000000000002 /* AnalysisCaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4200000000000000000001 /* AnalysisCaseTests.swift */; };
+		AB4300000000000000000002 /* ScopeRenderRequestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4300000000000000000001 /* ScopeRenderRequestTests.swift */; };
+		AB4400000000000000000002 /* AnalysisScopeSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4400000000000000000001 /* AnalysisScopeSelectionTests.swift */; };
+		AB4500000000000000000002 /* AnalysisPixelViewRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4500000000000000000001 /* AnalysisPixelViewRendererTests.swift */; };
+		AB4600000000000000000002 /* AnalysisReportSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4600000000000000000001 /* AnalysisReportSnapshotTests.swift */; };
+		AB4700000000000000000002 /* AnalysisEvidenceJPEGRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4700000000000000000001 /* AnalysisEvidenceJPEGRendererTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
@@ -105,6 +116,17 @@
 		AB3400000000000000000001 /* RecentFoldersStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RecentFoldersStoreTests.swift; sourceTree = "<group>"; };
 		AB3500000000000000000001 /* SidebarExpansionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SidebarExpansionTests.swift; sourceTree = "<group>"; };
 		AB3600000000000000000001 /* FullScreenShortcutTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FullScreenShortcutTests.swift; sourceTree = "<group>"; };
+		AB3700000000000000000001 /* SourceImageRevisionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SourceImageRevisionTests.swift; sourceTree = "<group>"; };
+		AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AtomicJSONDocumentStoreTests.swift; sourceTree = "<group>"; };
+		AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SourceImageDiscoveryServiceTests.swift; sourceTree = "<group>"; };
+		AB4000000000000000000001 /* DisplayImageTransformTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DisplayImageTransformTests.swift; sourceTree = "<group>"; };
+		AB4100000000000000000001 /* ViewportStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ViewportStateTests.swift; sourceTree = "<group>"; };
+		AB4200000000000000000001 /* AnalysisCaseTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisCaseTests.swift; sourceTree = "<group>"; };
+		AB4300000000000000000001 /* ScopeRenderRequestTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ScopeRenderRequestTests.swift; sourceTree = "<group>"; };
+		AB4400000000000000000001 /* AnalysisScopeSelectionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisScopeSelectionTests.swift; sourceTree = "<group>"; };
+		AB4500000000000000000001 /* AnalysisPixelViewRendererTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisPixelViewRendererTests.swift; sourceTree = "<group>"; };
+		AB4600000000000000000001 /* AnalysisReportSnapshotTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisReportSnapshotTests.swift; sourceTree = "<group>"; };
+		AB4700000000000000000001 /* AnalysisEvidenceJPEGRendererTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisEvidenceJPEGRendererTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -192,6 +214,17 @@
 				AB3400000000000000000001 /* RecentFoldersStoreTests.swift */,
 				AB3500000000000000000001 /* SidebarExpansionTests.swift */,
 				AB3600000000000000000001 /* FullScreenShortcutTests.swift */,
+				AB3700000000000000000001 /* SourceImageRevisionTests.swift */,
+				AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */,
+				AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */,
+				AB4000000000000000000001 /* DisplayImageTransformTests.swift */,
+				AB4100000000000000000001 /* ViewportStateTests.swift */,
+				AB4200000000000000000001 /* AnalysisCaseTests.swift */,
+				AB4300000000000000000001 /* ScopeRenderRequestTests.swift */,
+				AB4400000000000000000001 /* AnalysisScopeSelectionTests.swift */,
+				AB4500000000000000000001 /* AnalysisPixelViewRendererTests.swift */,
+				AB4600000000000000000001 /* AnalysisReportSnapshotTests.swift */,
+				AB4700000000000000000001 /* AnalysisEvidenceJPEGRendererTests.swift */,
 			);
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
@@ -380,6 +413,17 @@
 				AB3400000000000000000002 /* RecentFoldersStoreTests.swift in Sources */,
 				AB3500000000000000000002 /* SidebarExpansionTests.swift in Sources */,
 				AB3600000000000000000002 /* FullScreenShortcutTests.swift in Sources */,
+				AB3700000000000000000002 /* SourceImageRevisionTests.swift in Sources */,
+				AB3800000000000000000002 /* AtomicJSONDocumentStoreTests.swift in Sources */,
+				AB3900000000000000000002 /* SourceImageDiscoveryServiceTests.swift in Sources */,
+				AB4000000000000000000002 /* DisplayImageTransformTests.swift in Sources */,
+				AB4100000000000000000002 /* ViewportStateTests.swift in Sources */,
+				AB4200000000000000000002 /* AnalysisCaseTests.swift in Sources */,
+				AB4300000000000000000002 /* ScopeRenderRequestTests.swift in Sources */,
+				AB4400000000000000000002 /* AnalysisScopeSelectionTests.swift in Sources */,
+				AB4500000000000000000002 /* AnalysisPixelViewRendererTests.swift in Sources */,
+				AB4600000000000000000002 /* AnalysisReportSnapshotTests.swift in Sources */,
+				AB4700000000000000000002 /* AnalysisEvidenceJPEGRendererTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -1,12 +1,74 @@
 # Aagedal Photo Agent 2.3 — release plan
 
-**Status:** initial planning baseline
+**Status:** implementation in progress
 
 **Plan date:** 2026-07-26
 
 **Target platform:** macOS 26, Apple Silicon
 
-**Implementation status:** not started
+**Implementation status:** Phases 1 and 2 complete; Phase 3 automated validation is complete with
+shared fit/true-pixel hover geometry, orientation/crop-aware source-pixel inspection, generalized
+scope rendering, resizable one/two/four-up scopes, selected-region scope input, linear-light RGB
+channel/relative-luminance views, calibrated compression residuals, and cost-bounded, cancellable
+derived-view rendering integrated into Image Analysis; automated HDR/SDR, alpha, orientation, crop,
+and malformed-source validation is complete, while fixture-corpus visual validation remains open.
+Phase 4 has started with normalized, source-bound annotation persistence and schema migrations for
+line, arrow, distance, rectangle, ellipse, and label markup, plus a bounded photo-surface undo/redo
+history with persistent transactions and standard keyboard shortcuts. Source-pixel distance labels
+now resolve through the original-image transform across orientations and Developed crops. The case
+sidebar exposes an ordered, keyboard-selectable layer list with per-annotation and grouped
+visibility controls.
+Distance annotations can now define a single real-world calibration in millimeters, centimeters,
+meters, inches, or feet; all source-pixel measurements then show the converted value alongside
+their reproducible pixel length, with calibration changes included in photo-surface undo/redo.
+Findings and photo annotations can now be linked many-to-many from finding detail; persistent links
+participate in annotation undo/redo, show counts in both sidebar lists, and focus linked markup.
+The Select tool now moves all annotation kinds and resizes segment, rectangle, and ellipse markup
+from visible handles, committing each completed drag as one undoable source-frame edit.
+Phase 5 has started with a persisted, source-bound timestamp evidence model and an OSINT timeline.
+Embedded capture, GPS, file-system, sidecar, and user-entered evidence retain their source and
+precision, while timezone-less wall-clock values remain explicitly unresolved rather than being
+coerced to UTC. Only timezone-qualified timestamps participate in absolute chronology checks; the
+timeline highlights those conflicts and supports case-only user observations without IPTC writes.
+The OSINT map now distinguishes embedded GPS from an investigator location, supports persisted
+satellite/hybrid viewports, shared DD/DMS/DDM entry, MapKit place search, and configured
+online/offline reverse geocoding. Investigator coordinates, place-name provenance, and viewport
+state remain in the analysis JSON and never enter the IPTC/XMP write path. The photo-markup toolbar
+now exposes its fixed palette as a direct swatch row, expanded with red, green, and cyan alongside
+the existing colors and custom color well.
+Map markup now adds persistent markers, lines, polygons, geodesic distance segments, and labels
+from an accessible map-center workflow. Map layers have independent visibility and undo/redo, and
+can reference any photo-annotation UUID so cross-surface links survive label edits without copying
+text. OSINT now separates Photo and Map tools in its fixed markup bar, gives the map a full-height
+column, and provides a working-folder thumbnail rail plus per-photo/folder layer scope. Selected
+photo objects can be placed at the map center in one click with the same color. Every annotation
+kind can be labeled, photo annotations can carry longer notes, and the lower pane exposes photo
+and map annotations side by side. Setting the photo location preserves the investigator's zoom and
+can optionally add a persisted bearing/angle/range field-of-view cone. Map authoring actions now
+share the fixed markup row to preserve map height, and
+investigators can add expandable case-only notes when no timestamp can be established.
+The Working Folder scope now owns a separate shared map document alongside the source-bound image
+cases. A shared marker can reference any number of photo annotations through stable case-ID and
+annotation-ID pairs, so the same landmark can be identified in several images without duplicating
+its geographic markup. This Photo continues to author image-local map layers independently.
+The map now reports offline connectivity, failed MapKit requests, and unavailable satellite imagery
+as distinct non-destructive states. A cancellable visible-region probe supplies a retryable imagery
+status, place autocomplete no longer drops errors silently, and coordinate entry plus saved map
+evidence remain usable when online services are unavailable.
+Phase 5 report evidence is now frozen as exact WGS-84 viewport and visible geographic markup for an
+app-rendered schematic; exported reports will not persist or redistribute Apple map tiles. The
+immutable Phase 6 report snapshot re-hashes the current source before capture, orders report inputs
+deterministically, filters excluded findings, and includes a live Apple Maps viewport reference.
+Phase 6 now has a workspace PDF export path for A4 and US Letter. It renders cover, source revision,
+findings, annotation legend, timeline, untimed observations, a WGS-84 map schematic, methodology,
+limitations, analyzer provenance, and raw metadata from the immutable snapshot. Export settings make
+paths, serial numbers, exact coordinates, live map links, and raw metadata selectable and warn before
+sharing sensitive fields. Rendering reports progress between closed pages, honors cancellation,
+revalidates the source hash, and atomically replaces only the selected destination. Structural tests
+and full-page raster review cover both paper sizes; source/evidence image figures and crop export remain
+the next Phase 6 slice.
+The conditional sun/shadow analyzer is not approved for 2.3 because terrain, clock/timezone, and
+measurement uncertainty have not yet passed an evidence-quality gate.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:
@@ -17,7 +79,7 @@ capabilities:
    representations.
 
 This directory converts the short backlog in `TODO.md` into an implementation-ready
-release plan. It does not change the 2.3 backlog or application code.
+release plan and tracks progress as the application code is built.
 
 ## Product intent
 
@@ -332,3 +394,7 @@ silently redefine forensic claims or persistence behavior in code.
 | 2026-07-26 | Establish evidence-first analysis with no real/fake score | The requested evidence is useful; a universal verdict is not supportable |
 | 2026-07-26 | Share source identity and viewport foundations across all three tracks | Prevent divergent orientation, crop, and stale-file behavior |
 | 2026-07-26 | Keep named versions in JSON and retain one explicit primary XMP state | Meets app-private versioning goal while preserving interoperability |
+| 2026-07-26 | Persist source SHA-256 as lowercase hex and treat filesystem identifiers as opaque discovery hints | Keeps exact byte identity portable while still supporting fast rename/move discovery |
+| 2026-07-30 | Use a fixed ImageIO JPEG 0.90 re-encode with a 12× linear-sRGB absolute difference for the baseline compression residual | Makes the view reproducible and labelable while avoiding any unsupported manipulation verdict; Analysis uses a bounded 2,048-pixel preview and composites alpha over 50% gray |
+| 2026-08-02 | Use one shared OSINT markup bar and treat annotation labels as optional identity on every geometry | Keeps authoring consistent across photo/map surfaces and lets non-text photo evidence participate in stable map links |
+| 2026-08-02 | Store untimed investigator notes separately from timestamp evidence | Avoids fabricating a date while retaining case-only observations in report inputs |

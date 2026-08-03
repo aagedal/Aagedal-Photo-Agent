@@ -6,9 +6,7 @@ struct ScopeDisplayView: View {
     @State private var hoveredMode: ScopeViewModel.ScopeMode?
 
     /// Fixed height of the scope area — independent of the sidebar width.
-    private let scopeHeight: CGFloat = 225
-    /// Gamut may stretch, but not without bound.
-    private let gamutMaxWidth: CGFloat = 520
+    private let scopeHeight = ScopePresentationSizing.sidebarHeight
 
     var body: some View {
         VStack(spacing: 4) {
@@ -121,18 +119,10 @@ struct ScopeDisplayView: View {
     /// Size the scope graphic occupies (centered on the background) for a given
     /// available width. Height stays fixed; only the width adapts per-mode.
     private func scopeContentSize(forWidth width: CGFloat) -> CGSize {
-        switch scopeViewModel.scopeMode {
-        case .waveform, .parade:
-            // Stretch to fill the full sidebar width.
-            return CGSize(width: width, height: scopeHeight)
-        case .vectorscope:
-            // Never stretch — keep it square, never wider than the sidebar.
-            let side = min(scopeHeight, width)
-            return CGSize(width: side, height: side)
-        case .chromaticity:
-            // Stretch, but cap the width so it doesn't get too wide.
-            return CGSize(width: min(width, gamutMaxWidth), height: scopeHeight)
-        }
+        ScopePresentationSizing.contentSize(
+            mode: scopeViewModel.scopeMode,
+            availableSize: CGSize(width: width, height: scopeHeight)
+        )
     }
 
     private func label(for mode: ScopeViewModel.ScopeMode) -> String {
@@ -149,7 +139,7 @@ struct ScopeDisplayView: View {
 
 /// SwiftUI overlay that renders text labels for waveform/parade guide lines.
 /// Positioned to match the Metal shader's guide line locations.
-private struct ScopeLabelsOverlay: View {
+struct ScopeLabelsOverlay: View {
     let scale: WaveformScale
 
     var body: some View {

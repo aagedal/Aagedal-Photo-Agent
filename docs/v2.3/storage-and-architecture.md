@@ -69,6 +69,9 @@ Rules:
 - Store hashes as lowercase hex with an algorithm prefix or separate algorithm field.
 - Hashing is cancellable and streamed; never load a large RAW file into one `Data`.
 - A file move can reassociate automatically only when the hash matches.
+- Discovery checks the recorded path and filesystem resource ID first, but verifies either with the
+  full hash. A unique hash-only candidate can be reassociated; multiple copies require an explicit
+  user choice and a changed file is surfaced as changed rather than silently rebound.
 
 ## Analysis schema sketch
 
@@ -171,6 +174,12 @@ Annotation
   createdAt / updatedAt
 ```
 
+Folder-shared geographic markup is stored separately at
+`.photo_analysis/folder-map.analysis.json`. Each entry owns one map annotation plus a unique list
+of `{ caseID, annotationID }` photo references. Both IDs are required because photo-annotation IDs
+are scoped to their source-bound analysis case. References may remain unresolved temporarily when
+an image leaves the working folder; they are not rewritten into filenames or copied label text.
+
 Photo coordinate origin and axis direction must be documented once and used by markup, comparison,
 true-pixel hover, report rendering, and crop transforms. Prefer top-left origin normalized display
 coordinates if that matches current overlays, with explicit conversions at Core Image/Metal/CG
@@ -265,6 +274,11 @@ Never overwrite the only valid case/catalog before the replacement is verified.
 - Every top-level JSON document has a schema version.
 - Migrations are pure and tested from every shipped schema.
 - A newer unsupported schema opens read-only; do not rewrite it with an older schema.
+- The shared store returns the complete bytes of a newer schema for that read-only path and rejects
+  every attempted save until a compatible reader is available.
+- Writers must bump the schema when adding fields that an older build cannot safely round-trip.
+  The default decoder accepts only its current schema; each feature must opt into and test older
+  schema migration explicitly.
 - Preserve the pre-migration file until the migrated file validates.
 - Settings payload migrations are separate from catalog migrations.
 
@@ -308,7 +322,8 @@ Before implementation completes, review:
 - `ContentView` navigation and toolbar branching;
 - `BrowserPanesModel` active-pane ownership;
 - `BrowserViewModel` selection/order and file operations;
-- folder change monitor exclusions/invalidation;
+- folder change monitor exclusions/invalidation (`analysisStoreDidChange` and
+  `versionStoreDidChange` route hidden-store writes without forcing an image-folder diff);
 - recent/favorite/security-scoped folder handling;
 - metadata sidecar reconciliation;
 - XMP read/write and unknown correction preservation;

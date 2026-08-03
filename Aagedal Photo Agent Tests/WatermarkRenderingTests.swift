@@ -439,12 +439,12 @@ struct AnonymizerMultiPassRenderingTests {
         }
     }
 
-    @Test("maximum vignette strongly darkens corners while preserving the center")
-    func filmVignetteHasUsefulMaximumStrength() throws {
+    @Test("maximum darkening vignette strongly darkens corners while preserving the center")
+    func filmDarkeningVignetteHasUsefulMaximumStrength() throws {
         let source = CIImage(color: CIColor(red: 0.8, green: 0.8, blue: 0.8, alpha: 1))
             .cropped(to: extent)
         var settings = CameraRawSettings()
-        settings.filmEmulation = FilmEmulationSettings(vignette: 100)
+        settings.filmEmulation = FilmEmulationSettings(vignette: -100)
         let rendered = try #require(MetalEditPipeline.renderOffscreen(
             source: source, settings: settings
         ))

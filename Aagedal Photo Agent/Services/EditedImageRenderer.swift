@@ -222,33 +222,14 @@ nonisolated enum EditedImageRenderer {
         normalizedPoint: CGPoint,
         pixelSize: Int
     ) throws -> CGImage {
-        let extent = image.extent
-        guard extent.width > 0, extent.height > 0,
-              extent.width.isFinite, extent.height.isFinite else {
+        guard let cropRect = ImageInspectionGeometry.centeredPixelCropRect(
+            in: image.extent,
+            normalizedDisplayPoint: normalizedPoint,
+            pixelSize: pixelSize,
+            extentOrigin: .bottomLeft
+        ) else {
             throw RenderError.encodeFailed
         }
-
-        let cropWidth = min(CGFloat(pixelSize), extent.width)
-        let cropHeight = min(CGFloat(pixelSize), extent.height)
-        let unitX = min(1, max(0, normalizedPoint.x))
-        let unitY = min(1, max(0, normalizedPoint.y))
-        let centerX = extent.minX + unitX * extent.width
-        // SwiftUI reports hover locations from the top; Core Image's origin is bottom-left.
-        let centerY = extent.minY + (1 - unitY) * extent.height
-        let originX = min(
-            extent.maxX - cropWidth,
-            max(extent.minX, centerX - cropWidth / 2)
-        )
-        let originY = min(
-            extent.maxY - cropHeight,
-            max(extent.minY, centerY - cropHeight / 2)
-        )
-        let cropRect = CGRect(
-            x: originX,
-            y: originY,
-            width: cropWidth,
-            height: cropHeight
-        ).integral
         let colorSpace = isHDR
             ? configuration.hdrGamut.hdrLinearColorSpace
             : configuration.sdrGamut.sdrColorSpace

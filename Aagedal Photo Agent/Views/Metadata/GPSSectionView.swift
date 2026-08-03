@@ -264,6 +264,12 @@ struct GPSSectionView: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(.background))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
             }
+
+            if let error = searchCompleter.errorMessage {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
         }
     }
 
@@ -490,6 +496,7 @@ struct GPSSectionView: View {
 @Observable
 class LocationSearchCompleter: NSObject, MKLocalSearchCompleterDelegate {
     var results: [MKLocalSearchCompletion] = []
+    private(set) var errorMessage: String?
     private let completer = MKLocalSearchCompleter()
 
     override init() {
@@ -499,6 +506,7 @@ class LocationSearchCompleter: NSObject, MKLocalSearchCompleterDelegate {
     }
 
     func search(query: String) {
+        errorMessage = nil
         if query.isEmpty {
             results = []
         } else {
@@ -509,11 +517,18 @@ class LocationSearchCompleter: NSObject, MKLocalSearchCompleterDelegate {
     nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
         let completionResults = completer.results
         Task { @MainActor in
+            self.errorMessage = nil
             self.results = completionResults
         }
     }
 
     nonisolated func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
-        // Silently handle search errors
+        let detail = error.localizedDescription
+        Task { @MainActor in
+            self.results = []
+            self.errorMessage = detail.isEmpty
+                ? "Place search is temporarily unavailable."
+                : "Place search failed: \(detail)"
+        }
     }
 }
