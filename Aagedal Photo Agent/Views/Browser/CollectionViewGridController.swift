@@ -261,9 +261,12 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         // Animating reorder of hundreds of items causes layout thrashing and constraint conflicts.
         let itemsAddedOrRemoved = isStructuralChange && Set(newURLs) != Set(lastSnapshotURLs)
         dataSource.apply(snapshot, animatingDifferences: itemsAddedOrRemoved) { [weak self] in
-            guard let self else { return }
-            self.view.layoutSubtreeIfNeeded()
-            self.restoreInitialSelectionIfPossible()
+            // Diffable-data-source completions can arrive while the surrounding SwiftUI
+            // hosting view is still in its layout pass. Forcing AppKit layout here re-enters
+            // NSHostingView. Let AppKit finish naturally, then restore the scroll position.
+            DispatchQueue.main.async { [weak self] in
+                self?.restoreInitialSelectionIfPossible()
+            }
         }
 
         lastSnapshotURLs = newURLs

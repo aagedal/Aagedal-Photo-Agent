@@ -1538,7 +1538,7 @@ private struct AnalysisTimelineView: View {
                     .font(.headline)
                 Spacer()
                 Menu {
-                    Button("Timed Observation", systemImage: "clock.badge.plus", action: onAddTimed)
+                    Button("Timed Observation", systemImage: "clock.badge", action: onAddTimed)
                     Button("Note Without Time", systemImage: "note.text.badge.plus", action: onAddNote)
                 } label: {
                     Label("Add Observation", systemImage: "plus")
