@@ -15,6 +15,13 @@ enum AnalysisMapLayerScope: String, CaseIterable {
     }
 }
 
+private enum AppleMapStyleVariant {
+    case standard
+    case muted
+    case hybrid
+    case satellite
+}
+
 struct AnalysisMapEvidenceView: View {
     let mapState: AnalysisMapState
     let embeddedLocation: AnalysisGeoCoordinate?
@@ -51,10 +58,10 @@ struct AnalysisMapEvidenceView: View {
     @State private var labelInput = ""
     @State private var isLabelPromptPresented = false
     @State private var isFieldOfViewSettingsPresented = false
-    @State private var addsFieldOfViewCone = false
-    @State private var fieldOfViewBearing = 0.0
-    @State private var fieldOfViewAngle = 60.0
-    @State private var fieldOfViewRangeMeters = 100.0
+    @State private var addsFieldOfViewCone: Bool
+    @State private var fieldOfViewBearing: Double
+    @State private var fieldOfViewAngle: Double
+    @State private var fieldOfViewRangeMeters: Double
     @State private var mapAvailability = AnalysisMapAvailabilityMonitor()
     @Environment(\.openWindow) private var openWindow
 
@@ -110,6 +117,11 @@ struct AnalysisMapEvidenceView: View {
             fallbackRegion: region
         ))
         _visibleRegion = State(initialValue: region)
+        let fieldOfView = Self.existingFieldOfViewSettings(in: mapState)
+        _addsFieldOfViewCone = State(initialValue: fieldOfView != nil)
+        _fieldOfViewBearing = State(initialValue: fieldOfView?.bearing ?? 0)
+        _fieldOfViewAngle = State(initialValue: fieldOfView?.angle ?? 60)
+        _fieldOfViewRangeMeters = State(initialValue: fieldOfView?.rangeMeters ?? 100)
     }
 
     var body: some View {
@@ -251,17 +263,21 @@ struct AnalysisMapEvidenceView: View {
                 .help("Search for this place")
                 .accessibilityLabel("Search for place")
 
-                Picker("Map Style", selection: Binding(
-                    get: { mapState.style },
-                    set: { style in onSetStyle(style) }
-                )) {
+                Menu {
                     ForEach(AnalysisMapStyle.allCases, id: \.self) { style in
-                        Label(style.displayName, systemImage: style.systemImage)
-                            .tag(style)
+                        Button {
+                            setMapStylePreservingCamera(style)
+                        } label: {
+                            if mapState.style == style {
+                                Label(style.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(style.displayName)
+                            }
+                        }
                     }
+                } label: {
+                    Label(mapState.style.displayName, systemImage: mapState.style.systemImage)
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
                 .frame(width: 140)
                 .disabled(isReadOnly)
 
@@ -272,9 +288,13 @@ struct AnalysisMapEvidenceView: View {
                     Label("Traffic", systemImage: "car.2")
                 }
                 .toggleStyle(.button)
-                .disabled(isReadOnly || mapState.style == .satellite)
+                .disabled(
+                    isReadOnly
+                        || mapState.style == .satellite
+                        || mapState.style == .openStreetMap
+                )
                 .help(
-                    mapState.style == .satellite
+                    mapState.style == .satellite || mapState.style == .openStreetMap
                         ? "Traffic is available on Standard, Muted, and Hybrid maps"
                         : "Show live traffic on the map"
                 )
@@ -325,6 +345,9 @@ struct AnalysisMapEvidenceView: View {
     private var map: some View {
         ZStack {
             styledMap
+            if mapState.style == .openStreetMap {
+                openStreetMapContent
+            }
 
             Image(systemName: "plus")
                 .font(.caption)
@@ -376,6 +399,20 @@ struct AnalysisMapEvidenceView: View {
                     .buttonStyle(.plain)
                     .disabled(isReadOnly)
 
+                    if let location = mapState.investigationLocation {
+                        Button {
+                            moveMap(to: location.coordinate, preservingSpan: true)
+                        } label: {
+                            Label("Photo Location", systemImage: "location.viewfinder")
+                                .font(.caption)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Move the map back to the set photo location")
+                    }
+
                     Button {
                         isFieldOfViewSettingsPresented.toggle()
                     } label: {
@@ -415,6 +452,22 @@ struct AnalysisMapEvidenceView: View {
                     Spacer()
                 }
                 .padding(8)
+
+                if mapState.style == .openStreetMap {
+                    HStack {
+                        Spacer()
+                        Link(
+                            "© OpenStreetMap contributors",
+                            destination: URL(string: "https://www.openstreetmap.org/copyright")!
+                        )
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
+                }
             }
         }
     }
@@ -424,7 +477,11 @@ struct AnalysisMapEvidenceView: View {
             Toggle("Add field-of-view cone", isOn: $addsFieldOfViewCone)
                 .font(.headline)
 
-            Text("The cone is added as editable case-only map evidence when Photo Location is set.")
+            Text(
+                mapState.investigationLocation == nil
+                    ? "Set a photo location before adding a field-of-view cone."
+                    : "Adjust the cone here, then apply it without changing the saved photo location."
+            )
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -439,15 +496,19 @@ struct AnalysisMapEvidenceView: View {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
                 GridRow {
                     Text("Field of view")
+                    Slider(value: $fieldOfViewAngle, in: 5...170, step: 1)
+                        .frame(width: 130)
                     TextField("Degrees", value: $fieldOfViewAngle, format: .number)
-                        .frame(width: 85)
+                        .frame(width: 64)
                     Text("°")
                         .foregroundStyle(.secondary)
                 }
                 GridRow {
                     Text("Range")
+                    Slider(value: fieldOfViewRangeSliderBinding, in: 0...5)
+                        .frame(width: 130)
                     TextField("Meters", value: $fieldOfViewRangeMeters, format: .number)
-                        .frame(width: 85)
+                        .frame(width: 64)
                     Text("m")
                         .foregroundStyle(.secondary)
                 }
@@ -457,9 +518,39 @@ struct AnalysisMapEvidenceView: View {
             Text("Drag the bearing control left or right. 0° is north; values increase clockwise.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+
+            HStack {
+                Spacer()
+                Button(fieldOfViewAnnotation == nil ? "Add Cone" : "Update Cone") {
+                    guard let origin = mapState.investigationLocation?.coordinate else { return }
+                    addFieldOfViewCone(at: origin)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(
+                    isReadOnly
+                        || !addsFieldOfViewCone
+                        || mapState.investigationLocation == nil
+                        || !fieldOfViewValuesAreValid
+                )
+            }
         }
         .padding(16)
-        .frame(width: 350)
+        .frame(width: 470)
+    }
+
+    private var fieldOfViewRangeSliderBinding: Binding<Double> {
+        Binding(
+            get: { log10(min(100_000, max(1, fieldOfViewRangeMeters))) },
+            set: { fieldOfViewRangeMeters = pow(10, $0) }
+        )
+    }
+
+    private var fieldOfViewValuesAreValid: Bool {
+        fieldOfViewBearing.isFinite
+            && fieldOfViewAngle.isFinite
+            && (5...170).contains(fieldOfViewAngle)
+            && fieldOfViewRangeMeters.isFinite
+            && (1...100_000).contains(fieldOfViewRangeMeters)
     }
 
     private func mapAvailabilityBanner(title: String, message: String) -> some View {
@@ -492,8 +583,35 @@ struct AnalysisMapEvidenceView: View {
     }
 
     @ViewBuilder
+    private var openStreetMapContent: some View {
+        AnalysisOpenStreetMapView(
+            region: visibleRegion,
+            embeddedLocation: embeddedLocation,
+            investigationLocation: mapState.investigationLocation,
+            annotations: mapState.annotations,
+            folderAnnotations: folderContextAnnotations,
+            fieldOfViewPreview: fieldOfViewPreviewCoordinates,
+            selectedAnnotationID: selectedAnnotationID,
+            onCameraChanged: { region, camera in
+                visibleRegion = region
+                mapPosition = .region(region)
+                persistViewport(
+                    region: region,
+                    cameraDistance: camera.altitude,
+                    heading: camera.heading,
+                    pitch: camera.pitch
+                )
+            },
+            onSelectAnnotation: { annotationID in
+                selectedAnnotationID = annotationID
+                annotationTool = .select
+            }
+        )
+    }
+
+    @ViewBuilder
     private var styledMap: some View {
-        switch mapState.style {
+        switch appleMapStyle {
         case .standard:
             baseMap.mapStyle(.standard(
                 elevation: .realistic,
@@ -512,6 +630,15 @@ struct AnalysisMapEvidenceView: View {
             ))
         case .satellite:
             baseMap.mapStyle(.imagery(elevation: .realistic))
+        }
+    }
+
+    private var appleMapStyle: AppleMapStyleVariant {
+        switch mapState.style {
+        case .standard, .openStreetMap: .standard
+        case .muted: .muted
+        case .hybrid: .hybrid
+        case .satellite: .satellite
         }
     }
 
@@ -680,20 +807,40 @@ struct AnalysisMapEvidenceView: View {
         .onMapCameraChange(frequency: .onEnd) { context in
             visibleRegion = context.region
             mapAvailability.checkImagery(region: context.region, style: mapState.style, force: true)
-            let viewport = AnalysisMapViewport(
-                center: AnalysisGeoCoordinate(
-                    latitude: context.region.center.latitude,
-                    longitude: context.region.center.longitude
-                ),
-                latitudeDelta: context.region.span.latitudeDelta,
-                longitudeDelta: context.region.span.longitudeDelta,
+            persistViewport(
+                region: context.region,
                 cameraDistance: context.camera.distance,
-                heading: normalizedHeading(context.camera.heading),
-                pitch: min(90, max(0, context.camera.pitch))
+                heading: context.camera.heading,
+                pitch: context.camera.pitch
             )
-            guard !isReadOnly, viewport.isValid else { return }
-            onSetViewport(viewport)
         }
+    }
+
+    private func persistViewport(
+        region: MKCoordinateRegion,
+        cameraDistance: Double?,
+        heading: Double,
+        pitch: Double
+    ) {
+        let viewport = AnalysisMapViewport(
+            center: AnalysisGeoCoordinate(
+                latitude: region.center.latitude,
+                longitude: region.center.longitude
+            ),
+            latitudeDelta: region.span.latitudeDelta,
+            longitudeDelta: region.span.longitudeDelta,
+            cameraDistance: cameraDistance,
+            heading: normalizedHeading(heading),
+            pitch: min(90, max(0, pitch))
+        )
+        guard !isReadOnly, viewport.isValid else { return }
+        onSetViewport(viewport)
+    }
+
+    private func setMapStylePreservingCamera(_ style: AnalysisMapStyle) {
+        guard style != mapState.style else { return }
+        mapPosition = .region(visibleRegion)
+        onSetStyle(style)
     }
 
     private var coordinateControls: some View {
@@ -1044,9 +1191,7 @@ struct AnalysisMapEvidenceView: View {
             fillOpacity: 0.18
         )
         let annotation: AnalysisMapAnnotation
-        if var existing = mapState.annotations.first(where: {
-            $0.kind == .shape && $0.text == "Field of view"
-        }) {
+        if var existing = fieldOfViewAnnotation {
             existing.geometry = geometry
             existing.style = style
             existing.isVisible = true
@@ -1062,7 +1207,12 @@ struct AnalysisMapEvidenceView: View {
         }
         guard (try? annotation.validate()) != nil else { return }
         onSetAnnotation(annotation)
-        selectedAnnotationID = annotation.id
+    }
+
+    private var fieldOfViewAnnotation: AnalysisMapAnnotation? {
+        mapState.annotations.first {
+            $0.kind == .shape && $0.text == "Field of view"
+        }
     }
 
     private var fieldOfViewPreviewCoordinates: [AnalysisGeoCoordinate]? {
@@ -1306,6 +1456,63 @@ struct AnalysisMapEvidenceView: View {
             )
         }
         return defaultRegion
+    }
+
+    private static func existingFieldOfViewSettings(
+        in mapState: AnalysisMapState
+    ) -> (bearing: Double, angle: Double, rangeMeters: Double)? {
+        guard let annotation = mapState.annotations.first(where: {
+            $0.kind == .shape && $0.text == "Field of view"
+        }), case .polygon(let coordinates) = annotation.geometry,
+        coordinates.count >= 4,
+        let origin = coordinates.first,
+        let firstArcPoint = coordinates.dropFirst().first,
+        let lastArcPoint = coordinates.last else { return nil }
+
+        let startBearing = bearing(from: origin, to: firstArcPoint)
+        let endBearing = bearing(from: origin, to: lastArcPoint)
+        var signedAngle = (endBearing - startBearing).truncatingRemainder(dividingBy: 360)
+        if signedAngle < -180 { signedAngle += 360 }
+        if signedAngle > 180 { signedAngle -= 360 }
+        let angle = min(170, max(5, abs(signedAngle)))
+        let centerBearing = normalizedBearing(startBearing + signedAngle / 2)
+        let range = coordinates.dropFirst().map {
+            distanceMeters(from: origin, to: $0)
+        }.reduce(0, +) / Double(coordinates.count - 1)
+        guard centerBearing.isFinite, angle.isFinite, range.isFinite else { return nil }
+        return (centerBearing, angle, min(100_000, max(1, range)))
+    }
+
+    private static func bearing(
+        from origin: AnalysisGeoCoordinate,
+        to destination: AnalysisGeoCoordinate
+    ) -> Double {
+        let latitude1 = origin.latitude * .pi / 180
+        let latitude2 = destination.latitude * .pi / 180
+        let longitudeDelta = (destination.longitude - origin.longitude) * .pi / 180
+        let y = sin(longitudeDelta) * cos(latitude2)
+        let x = cos(latitude1) * sin(latitude2)
+            - sin(latitude1) * cos(latitude2) * cos(longitudeDelta)
+        return normalizedBearing(atan2(y, x) * 180 / .pi)
+    }
+
+    private static func distanceMeters(
+        from origin: AnalysisGeoCoordinate,
+        to destination: AnalysisGeoCoordinate
+    ) -> Double {
+        let latitudeDelta = (destination.latitude - origin.latitude) * .pi / 180
+        let longitudeDelta = (destination.longitude - origin.longitude) * .pi / 180
+        let latitude1 = origin.latitude * .pi / 180
+        let latitude2 = destination.latitude * .pi / 180
+        let a = sin(latitudeDelta / 2) * sin(latitudeDelta / 2)
+            + cos(latitude1) * cos(latitude2)
+                * sin(longitudeDelta / 2) * sin(longitudeDelta / 2)
+        return 6_371_000 * 2 * atan2(sqrt(a), sqrt(max(0, 1 - a)))
+    }
+
+    private static func normalizedBearing(_ bearing: Double) -> Double {
+        let value = bearing.truncatingRemainder(dividingBy: 360)
+        return value < 0 ? value + 360 : value
     }
 
     private static func initialPosition(

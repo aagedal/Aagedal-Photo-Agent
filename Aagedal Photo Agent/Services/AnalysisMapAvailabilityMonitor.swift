@@ -122,6 +122,11 @@ final class AnalysisMapAvailabilityMonitor {
             imageryAvailability = .offline
             return
         }
+        if style == .openStreetMap {
+            probeTask?.cancel()
+            imageryAvailability = .available
+            return
+        }
         guard force || imageryAvailability != .checking else { return }
 
         probeTask?.cancel()
@@ -140,6 +145,8 @@ final class AnalysisMapAvailabilityMonitor {
                 options.mapType = .hybrid
             case .satellite:
                 options.mapType = .satellite
+            case .openStreetMap:
+                return
             }
             let snapshotter = MKMapSnapshotter(options: options)
 

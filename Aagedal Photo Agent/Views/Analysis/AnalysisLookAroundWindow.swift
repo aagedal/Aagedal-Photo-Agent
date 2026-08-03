@@ -52,12 +52,7 @@ struct AnalysisLookAroundWindowView: View {
     var body: some View {
         Group {
             if let scene {
-                LookAroundPreview(
-                    initialScene: scene,
-                    allowsNavigation: true,
-                    showsRoadLabels: true,
-                    badgePosition: .topLeading
-                )
+                InteractiveLookAroundView(scene: scene)
             } else if isLoading {
                 ContentUnavailableView {
                     Label("Loading Look Around", systemImage: "binoculars")
@@ -136,5 +131,28 @@ struct AnalysisLookAroundWindowView: View {
             return
         }
         NSWorkspace.shared.open(url)
+    }
+}
+
+private struct InteractiveLookAroundView: NSViewControllerRepresentable {
+    let scene: MKLookAroundScene
+
+    func makeNSViewController(context: Context) -> MKLookAroundViewController {
+        let controller = MKLookAroundViewController(scene: scene)
+        controller.isNavigationEnabled = true
+        controller.showsRoadLabels = true
+        controller.badgePosition = .topLeading
+        return controller
+    }
+
+    func updateNSViewController(
+        _ controller: MKLookAroundViewController,
+        context: Context
+    ) {
+        if controller.scene !== scene {
+            controller.scene = scene
+        }
+        controller.isNavigationEnabled = true
+        controller.showsRoadLabels = true
     }
 }

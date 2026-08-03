@@ -495,6 +495,7 @@ struct AnalysisWorkspaceView: View {
                             onDeletePhotoAnnotation: model.removeAnnotation,
                             onSetVisible: model.setMapAnnotationVisible,
                             onSetAllVisible: model.setAllMapAnnotationsVisible,
+                            onEditMapAnnotation: presentMapAnnotationEditor,
                             onDeleteMapAnnotation: model.removeMapAnnotation,
                             onSetPhotoAnnotationLink: model.setMapAnnotationPhotoLabelLink
                         )
@@ -872,6 +873,23 @@ struct AnalysisWorkspaceView: View {
         )
     }
 
+    private func presentMapAnnotationEditor(_ annotationID: UUID) {
+        guard let annotation = model.mapAnnotations.first(where: { $0.id == annotationID }) else {
+            return
+        }
+        activeMarkupSurface = .map
+        selectedMapAnnotationID = annotation.id
+        selectedAnnotationID = nil
+        annotationLabelEditorRequest = AnalysisAnnotationLabelEditorRequest(
+            surface: .map,
+            annotationID: annotation.id,
+            annotationName: annotation.kind.displayName,
+            existingLabel: annotation.text,
+            existingNote: nil,
+            allowsRemoval: annotation.kind != .label
+        )
+    }
+
     private func setSelectedAnnotationDetails(label: String?, note: String?) {
         guard let request = annotationLabelEditorRequest else { return }
         let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -986,6 +1004,7 @@ private struct AnalysisReportExportSheet: View {
     @State private var includeCameraSerialNumber = false
     @State private var includeLocationCoordinates = true
     @State private var includeRawMetadata = true
+    @State private var mapBasemap: AnalysisReportMapBasemap = .openStreetMap
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1001,6 +1020,12 @@ private struct AnalysisReportExportSheet: View {
                 Picker("Paper size", selection: $pageFormat) {
                     ForEach(AnalysisReportPageFormat.allCases, id: \.self) { format in
                         Text(format.displayName).tag(format)
+                    }
+                }
+
+                Picker("Map background", selection: $mapBasemap) {
+                    ForEach(AnalysisReportMapBasemap.allCases, id: \.self) { basemap in
+                        Text(basemap.displayName).tag(basemap)
                     }
                 }
 
@@ -1031,7 +1056,8 @@ private struct AnalysisReportExportSheet: View {
                         includeCanonicalPath: includeCanonicalPath,
                         includeCameraSerialNumber: includeCameraSerialNumber,
                         includeLocationCoordinates: includeLocationCoordinates,
-                        includeRawMetadata: includeRawMetadata
+                        includeRawMetadata: includeRawMetadata,
+                        mapBasemap: mapBasemap
                     ))
                 }
                 .keyboardShortcut(.defaultAction)
@@ -1366,6 +1392,7 @@ private struct AnalysisMapLayersView: View {
     let onDeletePhotoAnnotation: (UUID) -> Void
     let onSetVisible: (UUID, Bool) -> Void
     let onSetAllVisible: (Bool) -> Void
+    let onEditMapAnnotation: (UUID) -> Void
     let onDeleteMapAnnotation: (UUID) -> Void
     let onSetPhotoAnnotationLink: (UUID, UUID?) -> Void
 
@@ -1537,7 +1564,7 @@ private struct AnalysisMapLayersView: View {
                 )
         )
         .contextMenu {
-            Button("Edit Label / Note") {
+            Button("Rename…") {
                 onEditPhotoAnnotation(annotation.id)
             }
             .disabled(isReadOnly)
@@ -1662,6 +1689,11 @@ private struct AnalysisMapLayersView: View {
                 )
         )
         .contextMenu {
+            Button("Rename…") {
+                onEditMapAnnotation(annotation.id)
+            }
+            .disabled(isReadOnly)
+            Divider()
             Button("Delete Map Layer", role: .destructive) {
                 onDeleteMapAnnotation(annotation.id)
                 if selectedAnnotationID == annotation.id {
@@ -2509,14 +2541,20 @@ private struct AnalysisSourceThumbnail: View {
     @State private var pendingLabelAnchor: AnalysisNormalizedPoint?
     @State private var labelText = ""
     @State private var isLabelPromptPresented = false
+    @State private var zoomScale: CGFloat = 1
+    @State private var zoomGestureStartScale: CGFloat?
+    @State private var panOffset: CGSize = .zero
+    @State private var panDragStartOffset: CGSize?
+    @State private var isPanModeEnabled = false
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack {
-                Color(nsColor: .windowBackgroundColor)
-                CheckerboardBackground(tileSize: 12)
-                    .opacity(0.16)
-                if let image {
+            ZStack(alignment: .bottomTrailing) {
+                ZStack {
+                    Color(nsColor: .windowBackgroundColor)
+                    CheckerboardBackground(tileSize: 12)
+                        .opacity(0.16)
+                    if let image {
                     if pixelViewMode == .compressionResidual, let sourceImage {
                         HStack(spacing: 8) {
                             analysisImagePane(
@@ -2598,69 +2636,77 @@ private struct AnalysisSourceThumbnail: View {
                             )
                         }
                     }
-                } else {
-                    ProgressView()
-                        .tint(.white)
+                    } else {
+                        ProgressView()
+                            .tint(.white)
+                    }
                 }
-            }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                    .onChanged { value in
-                        if handleAnnotationDragChanged(value, image: image, size: geometry.size) {
-                            return
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                        .onChanged { value in
+                            if isPanModeEnabled, zoomScale > 1 {
+                                updatePan(value.translation, in: geometry.size)
+                                return
+                            }
+                            if handleAnnotationDragChanged(value, image: image, size: geometry.size) {
+                                return
+                            }
+                            guard scopeSourceMode == .selectedRegion,
+                                  annotationTool == .select,
+                                  let image,
+                                  let inspectionGeometry = inspectionGeometry(
+                                      containing: value.startLocation,
+                                      image: image,
+                                      containerSize: geometry.size
+                                  ),
+                                  let initial = selectionDragStart
+                                      ?? inspectionGeometry.normalizedDisplayPoint(
+                                          fromViewPoint: value.startLocation
+                                      ) else {
+                                return
+                            }
+                            let current = inspectionGeometry.clampedNormalizedDisplayPoint(
+                                fromViewPoint: value.location
+                            )
+                            selectionDragStart = initial
+                            selectionDraft = AnalysisScopeSelection.normalizedRect(
+                                from: initial,
+                                to: current
+                            )
                         }
-                        guard scopeSourceMode == .selectedRegion,
-                              annotationTool == .select,
-                              let image,
-                              let inspectionGeometry = inspectionGeometry(
-                                  containing: value.startLocation,
-                                  image: image,
-                                  containerSize: geometry.size
-                              ),
-                              let initial = selectionDragStart
-                                  ?? inspectionGeometry.normalizedDisplayPoint(
-                                      fromViewPoint: value.startLocation
-                                  ) else {
-                            return
+                        .onEnded { value in
+                            if isPanModeEnabled, zoomScale > 1 {
+                                panDragStartOffset = nil
+                                return
+                            }
+                            defer {
+                                selectionDragStart = nil
+                                selectionDraft = nil
+                            }
+                            if handleAnnotationDragEnded(value, image: image, size: geometry.size) {
+                                return
+                            }
+                            guard scopeSourceMode == .selectedRegion,
+                                  annotationTool == .select,
+                                  let image,
+                                  let inspectionGeometry = inspectionGeometry(
+                                      containing: value.startLocation,
+                                      image: image,
+                                      containerSize: geometry.size
+                                  ),
+                                  let start = selectionDragStart else {
+                                return
+                            }
+                            let end = inspectionGeometry.clampedNormalizedDisplayPoint(
+                                fromViewPoint: value.location
+                            )
+                            selectedScopeRegion = AnalysisScopeSelection.normalizedRect(
+                                from: start,
+                                to: end
+                            )
                         }
-                        let current = inspectionGeometry.clampedNormalizedDisplayPoint(
-                            fromViewPoint: value.location
-                        )
-                        selectionDragStart = initial
-                        selectionDraft = AnalysisScopeSelection.normalizedRect(
-                            from: initial,
-                            to: current
-                        )
-                    }
-                    .onEnded { value in
-                        defer {
-                            selectionDragStart = nil
-                            selectionDraft = nil
-                        }
-                        if handleAnnotationDragEnded(value, image: image, size: geometry.size) {
-                            return
-                        }
-                        guard scopeSourceMode == .selectedRegion,
-                              annotationTool == .select,
-                              let image,
-                              let inspectionGeometry = inspectionGeometry(
-                                  containing: value.startLocation,
-                                  image: image,
-                                  containerSize: geometry.size
-                              ),
-                              let start = selectionDragStart else {
-                            return
-                        }
-                        let end = inspectionGeometry.clampedNormalizedDisplayPoint(
-                            fromViewPoint: value.location
-                        )
-                        selectedScopeRegion = AnalysisScopeSelection.normalizedRect(
-                            from: start,
-                            to: end
-                        )
-                    }
-            )
+                )
             .onContinuousHover(coordinateSpace: .local) { phase in
                 switch phase {
                 case .active(let location):
@@ -2719,10 +2765,29 @@ private struct AnalysisSourceThumbnail: View {
                 }
             }
             .focusable()
-            .onDeleteCommand {
-                guard !annotationsAreReadOnly, let selectedAnnotationID else { return }
-                onRemoveAnnotation(selectedAnnotationID)
-                self.selectedAnnotationID = nil
+                .onDeleteCommand {
+                    guard !annotationsAreReadOnly, let selectedAnnotationID else { return }
+                    onRemoveAnnotation(selectedAnnotationID)
+                    self.selectedAnnotationID = nil
+                }
+                .scaleEffect(zoomScale)
+                .offset(panOffset)
+                .simultaneousGesture(
+                    MagnifyGesture()
+                        .onChanged { value in
+                            let start = zoomGestureStartScale ?? zoomScale
+                            if zoomGestureStartScale == nil {
+                                zoomGestureStartScale = start
+                            }
+                            setZoom(start * value.magnification, in: geometry.size)
+                        }
+                        .onEnded { _ in
+                            zoomGestureStartScale = nil
+                        }
+                )
+
+                zoomControls(in: geometry.size)
+                    .padding(8)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -2752,6 +2817,7 @@ private struct AnalysisSourceThumbnail: View {
             )
         ) {
             image = nil
+            resetZoom()
             onImageLoaded(nil)
             guard let url else { return }
             let sourceIdentity = SourcePreviewIdentity(
@@ -2830,6 +2896,104 @@ private struct AnalysisSourceThumbnail: View {
                 : NSImage(cgImage: rendered, size: loadedImage.size)
             onImageLoaded(rendered)
         }
+    }
+
+    private func zoomControls(in viewportSize: CGSize) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                setZoom(zoomScale / 1.25, in: viewportSize)
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .disabled(zoomScale <= 1)
+            .help("Zoom out")
+
+            Slider(
+                value: Binding(
+                    get: { Double(zoomScale) },
+                    set: { setZoom(CGFloat($0), in: viewportSize) }
+                ),
+                in: 1...8
+            )
+            .frame(width: 100)
+            .accessibilityLabel("Photo zoom")
+            .accessibilityValue("\(Int((zoomScale * 100).rounded())) percent")
+
+            Button {
+                setZoom(zoomScale * 1.25, in: viewportSize)
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .disabled(zoomScale >= 8)
+            .help("Zoom in")
+
+            Text("\(Int((zoomScale * 100).rounded()))%")
+                .font(.caption.monospacedDigit())
+                .frame(width: 42, alignment: .trailing)
+
+            Button {
+                isPanModeEnabled.toggle()
+            } label: {
+                Image(systemName: "hand.draw")
+            }
+            .buttonStyle(.bordered)
+            .tint(isPanModeEnabled ? .accentColor : nil)
+            .disabled(zoomScale <= 1)
+            .help("Drag to pan the zoomed photo")
+            .accessibilityLabel("Pan zoomed photo")
+            .accessibilityAddTraits(isPanModeEnabled ? .isSelected : [])
+
+            Button("Fit") {
+                resetZoom()
+            }
+            .disabled(zoomScale <= 1 && panOffset == .zero)
+            .help("Fit the whole photo")
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func setZoom(_ requestedScale: CGFloat, in viewportSize: CGSize) {
+        zoomScale = min(8, max(1, requestedScale))
+        panOffset = clampedPanOffset(panOffset, in: viewportSize)
+        if zoomScale <= 1 {
+            panOffset = .zero
+            panDragStartOffset = nil
+            isPanModeEnabled = false
+        }
+    }
+
+    private func updatePan(_ translation: CGSize, in viewportSize: CGSize) {
+        let start = panDragStartOffset ?? panOffset
+        if panDragStartOffset == nil {
+            panDragStartOffset = start
+        }
+        panOffset = clampedPanOffset(
+            CGSize(
+                width: start.width + translation.width,
+                height: start.height + translation.height
+            ),
+            in: viewportSize
+        )
+    }
+
+    private func clampedPanOffset(_ offset: CGSize, in viewportSize: CGSize) -> CGSize {
+        let maximumX = max(0, (zoomScale - 1) * viewportSize.width / 2)
+        let maximumY = max(0, (zoomScale - 1) * viewportSize.height / 2)
+        return CGSize(
+            width: min(maximumX, max(-maximumX, offset.width)),
+            height: min(maximumY, max(-maximumY, offset.height))
+        )
+    }
+
+    private func resetZoom() {
+        zoomScale = 1
+        zoomGestureStartScale = nil
+        panOffset = .zero
+        panDragStartOffset = nil
+        isPanModeEnabled = false
     }
 
     private func analysisImagePane(

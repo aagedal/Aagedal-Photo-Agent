@@ -95,6 +95,7 @@ nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
         case .standard, .muted: "m"
         case .hybrid: "h"
         case .satellite: "k"
+        case .openStreetMap: "m"
         }
     }
 }

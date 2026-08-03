@@ -5,6 +5,7 @@ nonisolated enum AnalysisMapStyle: String, Codable, CaseIterable, Sendable {
     case muted
     case hybrid
     case satellite
+    case openStreetMap
 
     var displayName: String {
         switch self {
@@ -12,6 +13,7 @@ nonisolated enum AnalysisMapStyle: String, Codable, CaseIterable, Sendable {
         case .muted: "Muted"
         case .hybrid: "Hybrid"
         case .satellite: "Satellite"
+        case .openStreetMap: "OpenStreetMap"
         }
     }
 
@@ -21,6 +23,7 @@ nonisolated enum AnalysisMapStyle: String, Codable, CaseIterable, Sendable {
         case .muted: "map.fill"
         case .hybrid: "square.2.layers.3d"
         case .satellite: "globe.americas.fill"
+        case .openStreetMap: "map.circle"
         }
     }
 }
