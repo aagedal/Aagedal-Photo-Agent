@@ -315,6 +315,30 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
     }
 }
 
+/// Creates independent annotations for another source image.
+///
+/// Geometry, labels, notes, and styling are portable because they use the normalized upright
+/// image coordinate space. Finding links and measurement calibration are intentionally
+/// source-specific and are therefore not carried to another image.
+nonisolated enum AnalysisAnnotationTransfer {
+    static func copies(
+        of annotations: [AnalysisAnnotation],
+        now: Date = Date()
+    ) -> [AnalysisAnnotation] {
+        annotations.map { annotation in
+            AnalysisAnnotation(
+                kind: annotation.kind,
+                geometry: annotation.geometry,
+                text: annotation.text,
+                note: annotation.note,
+                style: annotation.style,
+                isVisible: annotation.isVisible,
+                now: now
+            )
+        }
+    }
+}
+
 /// Converts between the case's stable full-image annotation frame and the representation that is
 /// currently visible. The two transforms deliberately meet in source-pixel normalized space.
 nonisolated struct AnalysisAnnotationCoordinateMapper: Sendable {

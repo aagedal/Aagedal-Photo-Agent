@@ -37,6 +37,9 @@ struct AnalysisWorkspaceView: View {
     @State private var reportExportError: String?
     @State private var reportExportTask: Task<Void, Never>?
     @State private var evidenceExportTask: Task<Void, Never>?
+    @State private var copiedPhotoAnnotations: [AnalysisAnnotation] = []
+    @State private var copiedAnnotationSourceName: String?
+    @State private var annotationPasteError: String?
 
     var body: some View {
         workspaceWithStateObservers
@@ -110,6 +113,17 @@ struct AnalysisWorkspaceView: View {
             Button("OK") { reportExportError = nil }
         } message: {
             Text(reportExportError ?? "The export could not be completed.")
+        }
+        .alert(
+            "Annotations Could Not Be Pasted",
+            isPresented: Binding(
+                get: { annotationPasteError != nil },
+                set: { if !$0 { annotationPasteError = nil } }
+            )
+        ) {
+            Button("OK") { annotationPasteError = nil }
+        } message: {
+            Text(annotationPasteError ?? "The annotations could not be pasted.")
         }
         .onDisappear {
             reportExportTask?.cancel()
@@ -516,7 +530,15 @@ struct AnalysisWorkspaceView: View {
                 images: folderImages,
                 selectedURL: model.sourceURL,
                 thumbnailService: thumbnailService,
-                onSelect: onSelectImage
+                copiedAnnotationCount: copiedPhotoAnnotations.count,
+                copiedAnnotationSourceName: copiedAnnotationSourceName,
+                annotationCount: { model.photoAnnotations(for: $0).count },
+                canPasteAnnotations: { image in
+                    image.url != model.sourceURL || !model.sourceChanged
+                },
+                onSelect: onSelectImage,
+                onCopyAnnotations: copyAnnotations,
+                onPasteAnnotations: pasteAnnotations
             )
             .frame(width: 76)
 
@@ -552,7 +574,15 @@ struct AnalysisWorkspaceView: View {
                     images: folderImages,
                     selectedURL: model.sourceURL,
                     thumbnailService: thumbnailService,
-                    onSelect: onSelectImage
+                    copiedAnnotationCount: copiedPhotoAnnotations.count,
+                    copiedAnnotationSourceName: copiedAnnotationSourceName,
+                    annotationCount: { model.photoAnnotations(for: $0).count },
+                    canPasteAnnotations: { image in
+                        image.url != model.sourceURL || !model.sourceChanged
+                    },
+                    onSelect: onSelectImage,
+                    onCopyAnnotations: copyAnnotations,
+                    onPasteAnnotations: pasteAnnotations
                 )
                 .frame(width: 76)
 
@@ -664,6 +694,25 @@ struct AnalysisWorkspaceView: View {
         }
         .onChange(of: mapAnnotationTool) {
             activeMarkupSurface = .map
+        }
+    }
+
+    private func copyAnnotations(from image: ImageFile) {
+        copiedPhotoAnnotations = model.photoAnnotations(for: image)
+        copiedAnnotationSourceName = image.filename
+    }
+
+    private func pasteAnnotations(to image: ImageFile) {
+        let annotations = copiedPhotoAnnotations
+        guard !annotations.isEmpty else { return }
+        Task { @MainActor in
+            do {
+                try await model.pastePhotoAnnotations(annotations, to: image)
+            } catch {
+                annotationPasteError = error.localizedDescription.isEmpty
+                    ? "The annotations could not be pasted to \(image.filename)."
+                    : error.localizedDescription
+            }
         }
     }
 
@@ -2297,7 +2346,13 @@ private struct AnalysisImageRail: View {
     let images: [ImageFile]
     let selectedURL: URL?
     let thumbnailService: ThumbnailService
+    let copiedAnnotationCount: Int
+    let copiedAnnotationSourceName: String?
+    let annotationCount: (ImageFile) -> Int
+    let canPasteAnnotations: (ImageFile) -> Bool
     let onSelect: (ImageFile) -> Void
+    let onCopyAnnotations: (ImageFile) -> Void
+    let onPasteAnnotations: (ImageFile) -> Void
 
     var body: some View {
         VStack(spacing: 6) {
@@ -2322,6 +2377,29 @@ private struct AnalysisImageRail: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            let count = annotationCount(image)
+                            Button("Copy All Annotations", systemImage: "doc.on.doc") {
+                                onCopyAnnotations(image)
+                            }
+                            .disabled(count == 0)
+
+                            Button(
+                                copiedAnnotationCount == 1
+                                    ? "Paste 1 Annotation"
+                                    : "Paste \(copiedAnnotationCount) Annotations",
+                                systemImage: "doc.on.clipboard"
+                            ) {
+                                onPasteAnnotations(image)
+                            }
+                            .disabled(
+                                copiedAnnotationCount == 0 || !canPasteAnnotations(image)
+                            )
+
+                            if let copiedAnnotationSourceName, copiedAnnotationCount > 0 {
+                                Text("Copied from \(copiedAnnotationSourceName)")
+                            }
+                        }
                         .help(image.filename)
                         .accessibilityLabel(
                             image.url == selectedURL

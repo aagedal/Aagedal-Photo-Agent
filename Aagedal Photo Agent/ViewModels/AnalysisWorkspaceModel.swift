@@ -81,6 +81,66 @@ final class AnalysisWorkspaceModel {
         analysisCase?.annotations ?? []
     }
 
+    func photoAnnotations(for image: ImageFile) -> [AnalysisAnnotation] {
+        analysisCase(for: image.url)?.annotations ?? []
+    }
+
+    func pastePhotoAnnotations(
+        _ sourceAnnotations: [AnalysisAnnotation],
+        to image: ImageFile
+    ) async throws {
+        guard !sourceAnnotations.isEmpty else { return }
+
+        let targetRevision = try await SourceImageRevision.capture(
+            at: image.url,
+            exifOrientation: image.exifOrientation
+        )
+        let targetRepository = repository ?? AnalysisCaseRepository(
+            sourceFolderURL: image.url.deletingLastPathComponent()
+        )
+        let isCurrentSource = sourceURL?.standardizedFileURL == image.url.standardizedFileURL
+        var targetCase: AnalysisCase
+        if isCurrentSource,
+           let currentCase = analysisCase,
+           currentCase.source.relationship(to: targetRevision) == .exactRevision {
+            targetCase = currentCase
+        } else {
+            let match = await targetRepository.loadMostRelevantCase(for: targetRevision)
+            switch match {
+            case .exact(let existing):
+                targetCase = existing
+            case .sourceChanged, .none:
+                targetCase = AnalysisCase.create(for: targetRevision)
+            }
+        }
+
+        let before = targetCase.annotations
+        let copies = AnalysisAnnotationTransfer.copies(of: sourceAnnotations)
+        targetCase.replaceAnnotations(before + copies)
+        try targetCase.validateForPersistence()
+        if isCurrentSource {
+            saveTask?.cancel()
+            await saveTask?.value
+        }
+        try await targetRepository.save(targetCase)
+
+        if let index = folderAnalysisCases.firstIndex(where: { $0.id == targetCase.id }) {
+            folderAnalysisCases[index] = targetCase
+        } else {
+            folderAnalysisCases.append(targetCase)
+        }
+
+        if isCurrentSource {
+            analysisCase = targetCase
+            sourceChanged = false
+            photoAnnotationHistory.record(
+                before: before,
+                after: targetCase.annotations,
+                actionName: "Paste Annotations"
+            )
+        }
+    }
+
     var timestampEvidence: [AnalysisTimestampEvidence] {
         let sourceEvidence = sourceFacts.map {
             AnalysisTimelineResolver.sourceEvidence(from: $0, rawMetadata: rawMetadata)
@@ -915,6 +975,13 @@ final class AnalysisWorkspaceModel {
                 self.loadState = .failed(error.localizedDescription)
             }
         }
+    }
+
+    private func analysisCase(for sourceURL: URL) -> AnalysisCase? {
+        let canonicalURL = sourceURL.standardizedFileURL.resolvingSymlinksInPath()
+        return (folderAnalysisCases + (analysisCase.map { [$0] } ?? []))
+            .filter { $0.source.canonicalURL == canonicalURL }
+            .max { $0.updatedAt < $1.updatedAt }
     }
 
     private static func severityRank(_ severity: AnalysisFindingSeverity) -> Int {

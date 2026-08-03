@@ -1596,6 +1596,94 @@ struct AnalysisCaseTests {
         #expect(!history.canUndo)
     }
 
+    @Test("photo annotation transfer creates independent source-safe copies")
+    func photoAnnotationTransferCopies() throws {
+        let timestamp = Date(timeIntervalSince1970: 100)
+        let source = AnalysisAnnotation(
+            kind: .distance,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+                end: AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+            ),
+            text: "Measured edge",
+            note: "Keep this note",
+            style: AnalysisAnnotationStyle(
+                color: .palette(.cyan),
+                lineWidthPoints: 4,
+                fillOpacity: 0.2
+            ),
+            isVisible: false,
+            findingIDs: ["source-only-finding"],
+            measurementCalibration: AnalysisMeasurementCalibration(
+                knownLength: 25,
+                unit: .centimeters
+            ),
+            now: Date(timeIntervalSince1970: 50)
+        )
+
+        let copy = try #require(AnalysisAnnotationTransfer.copies(
+            of: [source],
+            now: timestamp
+        ).first)
+
+        #expect(copy.id != source.id)
+        #expect(copy.kind == source.kind)
+        #expect(copy.geometry == source.geometry)
+        #expect(copy.text == source.text)
+        #expect(copy.note == source.note)
+        #expect(copy.style == source.style)
+        #expect(copy.isVisible == source.isVisible)
+        #expect(copy.findingIDs.isEmpty)
+        #expect(copy.measurementCalibration == nil)
+        #expect(copy.createdAt == timestamp)
+        #expect(copy.updatedAt == timestamp)
+        try copy.validate()
+    }
+
+    @Test("pasting annotations appends independent copies to the target image case")
+    func pastesAnnotationsIntoTargetCase() async throws {
+        let fixture = try AnalysisFixture(contents: "annotation paste target")
+        defer { fixture.remove() }
+        let image = ImageFile(url: fixture.fileURL)
+        let revision = try await SourceImageRevision.capture(at: image.url)
+        let existing = AnalysisAnnotation(
+            kind: .label,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.2, y: 0.3)),
+            text: "Existing"
+        )
+        var targetCase = AnalysisCase.create(for: revision, appBuild: "test")
+        targetCase.setAnnotation(existing)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        try await repository.save(targetCase)
+
+        let source = AnalysisAnnotation(
+            kind: .rectangle,
+            geometry: .bounds(AnalysisNormalizedBounds(
+                minimum: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+                maximum: AnalysisNormalizedPoint(x: 0.7, y: 0.8)
+            )),
+            note: "Copied note",
+            findingIDs: ["source-finding"]
+        )
+        let model = AnalysisWorkspaceModel(analyzers: [])
+
+        try await model.pastePhotoAnnotations([source], to: image)
+
+        let match = await repository.loadMostRelevantCase(for: revision)
+        guard case .exact(let pastedCase) = match else {
+            Issue.record("Expected the target case after annotation paste")
+            return
+        }
+        #expect(pastedCase.annotations.count == 2)
+        #expect(pastedCase.annotations.first?.id == existing.id)
+        let pasted = try #require(pastedCase.annotations.last)
+        #expect(pasted.id != source.id)
+        #expect(pasted.geometry == source.geometry)
+        #expect(pasted.note == source.note)
+        #expect(pasted.findingIDs.isEmpty)
+        try pastedCase.validateForPersistence()
+    }
+
     @Test("photo annotation history keeps only its configured transaction bound")
     func photoAnnotationUndoBound() {
         let annotation = AnalysisAnnotation(
