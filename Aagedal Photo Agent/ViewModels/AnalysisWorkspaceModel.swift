@@ -445,6 +445,14 @@ final class AnalysisWorkspaceModel {
         persist(updatedCase)
     }
 
+    func setMapTrafficVisible(_ isVisible: Bool) {
+        guard var updatedCase = analysisCase,
+              !sourceChanged,
+              updatedCase.mapState.showsTraffic != isVisible else { return }
+        updatedCase.setMapTrafficVisible(isVisible)
+        persist(updatedCase)
+    }
+
     func setMapViewport(_ viewport: AnalysisMapViewport) {
         guard viewport.isValid,
               var updatedCase = analysisCase,

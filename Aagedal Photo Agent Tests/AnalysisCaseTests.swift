@@ -401,10 +401,14 @@ struct AnalysisCaseTests {
             now: Date(timeIntervalSince1970: 1)
         )
         analysisCase.setMapStyle(.satellite, now: Date(timeIntervalSince1970: 2))
+        analysisCase.setMapTrafficVisible(true, now: Date(timeIntervalSince1970: 2))
         analysisCase.setMapViewport(AnalysisMapViewport(
             center: AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522),
             latitudeDelta: 0.05,
-            longitudeDelta: 0.06
+            longitudeDelta: 0.06,
+            cameraDistance: 4_500,
+            heading: 32,
+            pitch: 55
         ), now: Date(timeIntervalSince1970: 3))
         analysisCase.setInvestigationLocation(AnalysisLocationEvidence(
             coordinate: AnalysisGeoCoordinate(latitude: 59.911, longitude: 10.75),
@@ -421,13 +425,44 @@ struct AnalysisCaseTests {
             return
         }
         #expect(reopened.mapState.style == .satellite)
+        #expect(reopened.mapState.showsTraffic)
         #expect(reopened.mapState.viewport?.center.latitude == 59.9139)
+        #expect(reopened.mapState.viewport?.cameraDistance == 4_500)
+        #expect(reopened.mapState.viewport?.heading == 32)
+        #expect(reopened.mapState.viewport?.pitch == 55)
         #expect(reopened.mapState.investigationLocation?.source == .placeSearch)
         #expect(reopened.mapState.investigationLocation?.placeName == "Oslo")
         #expect(try Data(contentsOf: fixture.fileURL) == before)
         #expect(!FileManager.default.fileExists(
             atPath: fixture.fileURL.deletingPathExtension().appendingPathExtension("xmp").path
         ))
+    }
+
+    @Test("legacy map camera data defaults to a level north-facing viewport")
+    func decodesLegacyMapViewportCameraDefaults() throws {
+        let data = Data(#"{"center":{"latitude":59.9139,"longitude":10.7522},"latitudeDelta":0.05,"longitudeDelta":0.06}"#.utf8)
+        let viewport = try JSONDecoder().decode(AnalysisMapViewport.self, from: data)
+
+        #expect(viewport.cameraDistance == nil)
+        #expect(viewport.heading == 0)
+        #expect(viewport.pitch == 0)
+        #expect(viewport.isValid)
+    }
+
+    @Test("all live map styles round-trip and Google Maps links preserve coordinates")
+    func mapStylesAndExternalLinkRoundTrip() throws {
+        let styles = AnalysisMapStyle.allCases
+        let encoded = try JSONEncoder().encode(styles)
+        #expect(try JSONDecoder().decode([AnalysisMapStyle].self, from: encoded) == styles)
+
+        let coordinate = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)
+        let url = try #require(AnalysisExternalMapLinks.googleMapsURL(for: coordinate))
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        #expect(components.host == "www.google.com")
+        #expect(components.path == "/maps/search/")
+        #expect(components.queryItems?.first(where: { $0.name == "api" })?.value == "1")
+        #expect(components.queryItems?.first(where: { $0.name == "query" })?.value
+            == "59.91390000,10.75220000")
     }
 
     @Test("version six map evidence migrates with an empty map annotation collection")
@@ -663,7 +698,7 @@ struct AnalysisCaseTests {
         }
     }
 
-    @Test("map imagery failures distinguish offline, network, and unavailable states")
+    @Test("map content failures distinguish offline, network, and unavailable states")
     func classifiesMapImageryFailures() throws {
         let offline = AnalysisMapImageryAvailability.failure(
             for: URLError(.notConnectedToInternet),
@@ -692,8 +727,8 @@ struct AnalysisCaseTests {
             networkAvailable: true
         )
         #expect(imageryFailure == .unavailable("No tiles for this region"))
-        #expect(imageryFailure.title == "Satellite imagery unavailable")
-        #expect(imageryFailure.message?.contains("different scale or location") == true)
+        #expect(imageryFailure.title == "Map content unavailable")
+        #expect(imageryFailure.message?.contains("different scale, style, or location") == true)
     }
 
     @Test("timestamp validation rejects invalid dates, offsets, and non-user case entries")

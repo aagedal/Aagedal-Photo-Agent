@@ -1,13 +1,26 @@
 import Foundation
 
 nonisolated enum AnalysisMapStyle: String, Codable, CaseIterable, Sendable {
+    case standard
+    case muted
     case hybrid
     case satellite
 
     var displayName: String {
         switch self {
+        case .standard: "Standard"
+        case .muted: "Muted"
         case .hybrid: "Hybrid"
         case .satellite: "Satellite"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .standard: "map"
+        case .muted: "map.fill"
+        case .hybrid: "square.2.layers.3d"
+        case .satellite: "globe.americas.fill"
         }
     }
 }
@@ -28,6 +41,25 @@ nonisolated struct AnalysisMapViewport: Codable, Equatable, Sendable {
     var center: AnalysisGeoCoordinate
     var latitudeDelta: Double
     var longitudeDelta: Double
+    var cameraDistance: Double?
+    var heading: Double
+    var pitch: Double
+
+    init(
+        center: AnalysisGeoCoordinate,
+        latitudeDelta: Double,
+        longitudeDelta: Double,
+        cameraDistance: Double? = nil,
+        heading: Double = 0,
+        pitch: Double = 0
+    ) {
+        self.center = center
+        self.latitudeDelta = latitudeDelta
+        self.longitudeDelta = longitudeDelta
+        self.cameraDistance = cameraDistance
+        self.heading = heading
+        self.pitch = pitch
+    }
 
     var isValid: Bool {
         center.isValid
@@ -37,6 +69,30 @@ nonisolated struct AnalysisMapViewport: Codable, Equatable, Sendable {
             && latitudeDelta <= 180
             && longitudeDelta > 0
             && longitudeDelta <= 360
+            && (cameraDistance.map { $0.isFinite && $0 > 0 } ?? true)
+            && heading.isFinite
+            && (0..<360).contains(heading)
+            && pitch.isFinite
+            && (0...90).contains(pitch)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case center
+        case latitudeDelta
+        case longitudeDelta
+        case cameraDistance
+        case heading
+        case pitch
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        center = try container.decode(AnalysisGeoCoordinate.self, forKey: .center)
+        latitudeDelta = try container.decode(Double.self, forKey: .latitudeDelta)
+        longitudeDelta = try container.decode(Double.self, forKey: .longitudeDelta)
+        cameraDistance = try container.decodeIfPresent(Double.self, forKey: .cameraDistance)
+        heading = try container.decodeIfPresent(Double.self, forKey: .heading) ?? 0
+        pitch = try container.decodeIfPresent(Double.self, forKey: .pitch) ?? 0
     }
 }
 
@@ -305,17 +361,20 @@ nonisolated struct AnalysisMapDistanceMeasurement: Equatable, Sendable {
 
 nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
     var style: AnalysisMapStyle
+    var showsTraffic: Bool
     var viewport: AnalysisMapViewport?
     var investigationLocation: AnalysisLocationEvidence?
     var annotations: [AnalysisMapAnnotation]
 
     init(
         style: AnalysisMapStyle = .hybrid,
+        showsTraffic: Bool = false,
         viewport: AnalysisMapViewport? = nil,
         investigationLocation: AnalysisLocationEvidence? = nil,
         annotations: [AnalysisMapAnnotation] = []
     ) {
         self.style = style
+        self.showsTraffic = showsTraffic
         self.viewport = viewport
         self.investigationLocation = investigationLocation
         self.annotations = annotations
@@ -331,6 +390,7 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case style
+        case showsTraffic
         case viewport
         case investigationLocation
         case annotations
@@ -339,6 +399,7 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         style = try container.decode(AnalysisMapStyle.self, forKey: .style)
+        showsTraffic = try container.decodeIfPresent(Bool.self, forKey: .showsTraffic) ?? false
         viewport = try container.decodeIfPresent(AnalysisMapViewport.self, forKey: .viewport)
         investigationLocation = try container.decodeIfPresent(
             AnalysisLocationEvidence.self,

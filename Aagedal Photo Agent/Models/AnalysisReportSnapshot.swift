@@ -75,7 +75,7 @@ nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
                 viewport.latitudeDelta,
                 viewport.longitudeDelta
             )),
-            URLQueryItem(name: "t", value: style == .hybrid ? "h" : "k"),
+            URLQueryItem(name: "t", value: mapTypeQueryValue(for: style)),
         ]
         // Every input has already passed finite/range validation, and these components are fixed.
         return components.url!
@@ -88,6 +88,14 @@ nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
             first,
             second
         )
+    }
+
+    private static func mapTypeQueryValue(for style: AnalysisMapStyle) -> String {
+        switch style {
+        case .standard, .muted: "m"
+        case .hybrid: "h"
+        case .satellite: "k"
+        }
     }
 }
 

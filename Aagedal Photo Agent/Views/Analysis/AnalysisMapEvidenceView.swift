@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 @preconcurrency import CoreLocation
 @preconcurrency import MapKit
@@ -22,9 +23,11 @@ struct AnalysisMapEvidenceView: View {
     let folderAnnotations: [AnalysisFolderMapAnnotation]
     let isReadOnly: Bool
     let onSetStyle: (AnalysisMapStyle) -> Void
+    let onSetTrafficVisible: (Bool) -> Void
     let onSetViewport: (AnalysisMapViewport) -> Void
     let onSetInvestigationLocation: (AnalysisLocationEvidence?) -> Void
     let onSetAnnotation: (AnalysisMapAnnotation) -> Void
+    let onDeleteAnnotation: (UUID) -> Void
 
     @Binding var annotationTool: AnalysisAnnotationTool
     @Binding var sharedAnnotationStyle: AnalysisAnnotationStyle
@@ -53,6 +56,7 @@ struct AnalysisMapEvidenceView: View {
     @State private var fieldOfViewAngle = 60.0
     @State private var fieldOfViewRangeMeters = 100.0
     @State private var mapAvailability = AnalysisMapAvailabilityMonitor()
+    @Environment(\.openWindow) private var openWindow
 
     private static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 50, longitude: 10),
@@ -67,9 +71,11 @@ struct AnalysisMapEvidenceView: View {
         folderAnnotations: [AnalysisFolderMapAnnotation],
         isReadOnly: Bool,
         onSetStyle: @escaping (AnalysisMapStyle) -> Void,
+        onSetTrafficVisible: @escaping (Bool) -> Void,
         onSetViewport: @escaping (AnalysisMapViewport) -> Void,
         onSetInvestigationLocation: @escaping (AnalysisLocationEvidence?) -> Void,
         onSetAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
+        onDeleteAnnotation: @escaping (UUID) -> Void,
         annotationTool: Binding<AnalysisAnnotationTool>,
         sharedAnnotationStyle: Binding<AnalysisAnnotationStyle>,
         selectedAnnotationID: Binding<UUID?>,
@@ -85,9 +91,11 @@ struct AnalysisMapEvidenceView: View {
         self.folderAnnotations = folderAnnotations
         self.isReadOnly = isReadOnly
         self.onSetStyle = onSetStyle
+        self.onSetTrafficVisible = onSetTrafficVisible
         self.onSetViewport = onSetViewport
         self.onSetInvestigationLocation = onSetInvestigationLocation
         self.onSetAnnotation = onSetAnnotation
+        self.onDeleteAnnotation = onDeleteAnnotation
         _annotationTool = annotationTool
         _sharedAnnotationStyle = sharedAnnotationStyle
         _selectedAnnotationID = selectedAnnotationID
@@ -97,7 +105,10 @@ struct AnalysisMapEvidenceView: View {
         self.onDraftCountChanged = onDraftCountChanged
 
         let region = Self.initialRegion(mapState: mapState, embeddedLocation: embeddedLocation)
-        _mapPosition = State(initialValue: .region(region))
+        _mapPosition = State(initialValue: Self.initialPosition(
+            mapState: mapState,
+            fallbackRegion: region
+        ))
         _visibleRegion = State(initialValue: region)
     }
 
@@ -240,21 +251,33 @@ struct AnalysisMapEvidenceView: View {
                 .help("Search for this place")
                 .accessibilityLabel("Search for place")
 
-                Picker(
-                    "Map Style",
-                    selection: Binding(
-                        get: { mapState.style },
-                        set: { style in onSetStyle(style) }
-                    )
-                ) {
+                Picker("Map Style", selection: Binding(
+                    get: { mapState.style },
+                    set: { style in onSetStyle(style) }
+                )) {
                     ForEach(AnalysisMapStyle.allCases, id: \.self) { style in
-                        Text(style.displayName).tag(style)
+                        Label(style.displayName, systemImage: style.systemImage)
+                            .tag(style)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(width: 190)
+                .frame(width: 140)
                 .disabled(isReadOnly)
+
+                Toggle(isOn: Binding(
+                    get: { mapState.showsTraffic },
+                    set: { onSetTrafficVisible($0) }
+                )) {
+                    Label("Traffic", systemImage: "car.2")
+                }
+                .toggleStyle(.button)
+                .disabled(isReadOnly || mapState.style == .satellite)
+                .help(
+                    mapState.style == .satellite
+                        ? "Traffic is available on Standard, Muted, and Hybrid maps"
+                        : "Show live traffic on the map"
+                )
             }
 
             if mapAvailability.isOffline {
@@ -315,6 +338,29 @@ struct AnalysisMapEvidenceView: View {
                     mapAvailabilityBanner(title: title, message: message)
                         .padding(8)
                 }
+
+                HStack(spacing: 6) {
+                    Spacer()
+                    Button(action: openLookAroundAtMapCenter) {
+                        Label("Look Around", systemImage: "binoculars")
+                            .labelStyle(.iconOnly)
+                            .padding(6)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(mapAvailability.isOffline)
+                    .help("Open Look Around for the map center in a separate window")
+
+                    Button(action: openMapCenterInGoogleMaps) {
+                        Label("Open in Google Maps", systemImage: "arrow.up.right.square")
+                            .labelStyle(.iconOnly)
+                            .padding(6)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open the map center in Google Maps in your default browser")
+                }
+                .padding(.horizontal, 8)
 
                 Spacer()
                 HStack {
@@ -447,9 +493,24 @@ struct AnalysisMapEvidenceView: View {
 
     @ViewBuilder
     private var styledMap: some View {
-        if mapState.style == .hybrid {
-            baseMap.mapStyle(.hybrid(elevation: .realistic))
-        } else {
+        switch mapState.style {
+        case .standard:
+            baseMap.mapStyle(.standard(
+                elevation: .realistic,
+                showsTraffic: mapState.showsTraffic
+            ))
+        case .muted:
+            baseMap.mapStyle(.standard(
+                elevation: .realistic,
+                emphasis: .muted,
+                showsTraffic: mapState.showsTraffic
+            ))
+        case .hybrid:
+            baseMap.mapStyle(.hybrid(
+                elevation: .realistic,
+                showsTraffic: mapState.showsTraffic
+            ))
+        case .satellite:
             baseMap.mapStyle(.imagery(elevation: .realistic))
         }
     }
@@ -612,6 +673,9 @@ struct AnalysisMapEvidenceView: View {
         .mapControls {
             MapCompass()
             MapScaleView()
+            MapZoomStepper()
+            MapPitchToggle()
+            MapPitchSlider()
         }
         .onMapCameraChange(frequency: .onEnd) { context in
             visibleRegion = context.region
@@ -622,7 +686,10 @@ struct AnalysisMapEvidenceView: View {
                     longitude: context.region.center.longitude
                 ),
                 latitudeDelta: context.region.span.latitudeDelta,
-                longitudeDelta: context.region.span.longitudeDelta
+                longitudeDelta: context.region.span.longitudeDelta,
+                cameraDistance: context.camera.distance,
+                heading: normalizedHeading(context.camera.heading),
+                pitch: min(90, max(0, context.camera.pitch))
             )
             guard !isReadOnly, viewport.isValid else { return }
             onSetViewport(viewport)
@@ -781,6 +848,15 @@ struct AnalysisMapEvidenceView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(mapAnnotationTitle(annotation))
         .accessibilityAddTraits(selectedAnnotationID == annotation.id ? .isSelected : [])
+        .contextMenu {
+            Button("Delete Map Annotation", role: .destructive) {
+                onDeleteAnnotation(annotation.id)
+                if selectedAnnotationID == annotation.id {
+                    selectedAnnotationID = nil
+                }
+            }
+            .disabled(isReadOnly)
+        }
     }
 
     private var folderContextAnnotations: [AnalysisFolderMapAnnotation] {
@@ -1175,6 +1251,35 @@ struct AnalysisMapEvidenceView: View {
         mapPosition = .region(region)
     }
 
+    private func openLookAroundAtMapCenter() {
+        let coordinate = mapCenterCoordinate
+        guard coordinate.isValid else { return }
+        openWindow(value: AnalysisLookAroundLocation(
+            coordinate: coordinate,
+            title: mapState.investigationLocation?.placeName ?? "Map Center"
+        ))
+    }
+
+    private func openMapCenterInGoogleMaps() {
+        guard let url = AnalysisExternalMapLinks.googleMapsURL(for: mapCenterCoordinate) else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    private var mapCenterCoordinate: AnalysisGeoCoordinate {
+        AnalysisGeoCoordinate(
+            latitude: visibleRegion.center.latitude,
+            longitude: visibleRegion.center.longitude
+        )
+    }
+
+    private func normalizedHeading(_ heading: Double) -> Double {
+        guard heading.isFinite else { return 0 }
+        let value = heading.truncatingRemainder(dividingBy: 360)
+        return value < 0 ? value + 360 : value
+    }
+
     private static func initialRegion(
         mapState: AnalysisMapState,
         embeddedLocation: AnalysisGeoCoordinate?
@@ -1201,6 +1306,23 @@ struct AnalysisMapEvidenceView: View {
             )
         }
         return defaultRegion
+    }
+
+    private static func initialPosition(
+        mapState: AnalysisMapState,
+        fallbackRegion: MKCoordinateRegion
+    ) -> MapCameraPosition {
+        guard let viewport = mapState.viewport,
+              viewport.isValid,
+              let distance = viewport.cameraDistance else {
+            return .region(fallbackRegion)
+        }
+        return .camera(MapCamera(
+            centerCoordinate: viewport.center.clLocationCoordinate,
+            distance: distance,
+            heading: viewport.heading,
+            pitch: viewport.pitch
+        ))
     }
 }
 

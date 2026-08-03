@@ -465,9 +465,11 @@ struct AnalysisWorkspaceView: View {
                                 : [],
                             isReadOnly: model.sourceChanged,
                             onSetStyle: model.setMapStyle,
+                            onSetTrafficVisible: model.setMapTrafficVisible,
                             onSetViewport: model.setMapViewport,
                             onSetInvestigationLocation: model.setInvestigationLocation,
                             onSetAnnotation: model.setMapAnnotation,
+                            onDeleteAnnotation: model.removeMapAnnotation,
                             annotationTool: $mapAnnotationTool,
                             sharedAnnotationStyle: $annotationStyle,
                             selectedAnnotationID: $selectedMapAnnotationID,
@@ -490,8 +492,10 @@ struct AnalysisWorkspaceView: View {
                             onSetPhotoVisible: model.setPhotoAnnotationVisible,
                             onSetAllPhotosVisible: model.setAllPhotoAnnotationsVisible,
                             onEditPhotoAnnotation: presentPhotoAnnotationEditor,
+                            onDeletePhotoAnnotation: model.removeAnnotation,
                             onSetVisible: model.setMapAnnotationVisible,
                             onSetAllVisible: model.setAllMapAnnotationsVisible,
+                            onDeleteMapAnnotation: model.removeMapAnnotation,
                             onSetPhotoAnnotationLink: model.setMapAnnotationPhotoLabelLink
                         )
                         .frame(minHeight: 150, idealHeight: 210, maxHeight: 280)
@@ -663,10 +667,11 @@ struct AnalysisWorkspaceView: View {
                         isReadOnly: model.sourceChanged,
                         onSetVisible: model.setPhotoAnnotationVisible,
                         onSetAllVisible: model.setAllPhotoAnnotationsVisible,
-                        onDelete: {
-                            guard let selectedAnnotationID else { return }
-                            model.removeAnnotation(id: selectedAnnotationID)
-                            self.selectedAnnotationID = nil
+                        onDelete: { annotationID in
+                            model.removeAnnotation(id: annotationID)
+                            if selectedAnnotationID == annotationID {
+                                self.selectedAnnotationID = nil
+                            }
                         }
                     )
                 }
@@ -1043,7 +1048,7 @@ private struct AnalysisAnnotationList: View {
     let isReadOnly: Bool
     let onSetVisible: (UUID, Bool) -> Void
     let onSetAllVisible: (Bool) -> Void
-    let onDelete: () -> Void
+    let onDelete: (UUID) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1126,13 +1131,19 @@ private struct AnalysisAnnotationList: View {
                         "\(annotation.listName(index: index)), "
                             + (annotation.isVisible ? "visible" : "hidden")
                     )
+                    .contextMenu {
+                        Button("Delete Photo Annotation", role: .destructive) {
+                            onDelete(annotation.id)
+                        }
+                        .disabled(isReadOnly)
+                    }
                 }
             }
             .listStyle(.inset)
             .frame(minHeight: 90, idealHeight: 150, maxHeight: 210)
             .onDeleteCommand {
-                guard !isReadOnly, selectedAnnotationID != nil else { return }
-                onDelete()
+                guard !isReadOnly, let selectedAnnotationID else { return }
+                onDelete(selectedAnnotationID)
             }
             .accessibilityLabel("Photo annotation layers")
         }
@@ -1352,8 +1363,10 @@ private struct AnalysisMapLayersView: View {
     let onSetPhotoVisible: (UUID, Bool) -> Void
     let onSetAllPhotosVisible: (Bool) -> Void
     let onEditPhotoAnnotation: (UUID) -> Void
+    let onDeletePhotoAnnotation: (UUID) -> Void
     let onSetVisible: (UUID, Bool) -> Void
     let onSetAllVisible: (Bool) -> Void
+    let onDeleteMapAnnotation: (UUID) -> Void
     let onSetPhotoAnnotationLink: (UUID, UUID?) -> Void
 
     var body: some View {
@@ -1523,6 +1536,20 @@ private struct AnalysisMapLayersView: View {
                         : Color.secondary.opacity(0.08)
                 )
         )
+        .contextMenu {
+            Button("Edit Label / Note") {
+                onEditPhotoAnnotation(annotation.id)
+            }
+            .disabled(isReadOnly)
+            Divider()
+            Button("Delete Photo Annotation", role: .destructive) {
+                onDeletePhotoAnnotation(annotation.id)
+                if selectedPhotoAnnotationID == annotation.id {
+                    selectedPhotoAnnotationID = nil
+                }
+            }
+            .disabled(isReadOnly)
+        }
     }
 
     private var displayedAnnotationsAreEmpty: Bool {
@@ -1634,6 +1661,15 @@ private struct AnalysisMapLayersView: View {
                         : Color.secondary.opacity(0.08)
                 )
         )
+        .contextMenu {
+            Button("Delete Map Layer", role: .destructive) {
+                onDeleteMapAnnotation(annotation.id)
+                if selectedAnnotationID == annotation.id {
+                    selectedAnnotationID = nil
+                }
+            }
+            .disabled(isReadOnly)
+        }
     }
 
     private func layerName(_ annotation: AnalysisMapAnnotation, index: Int) -> String {
@@ -2670,6 +2706,17 @@ private struct AnalysisSourceThumbnail: View {
             }
             .accessibilityAction(named: "Select center region for scopes") {
                 selectedScopeRegion = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+            }
+            .contextMenu {
+                if let selectedAnnotationID {
+                    Button("Delete Selected Photo Annotation", role: .destructive) {
+                        onRemoveAnnotation(selectedAnnotationID)
+                        self.selectedAnnotationID = nil
+                    }
+                    .disabled(annotationsAreReadOnly)
+                } else {
+                    Text("Select a photo annotation to delete it")
+                }
             }
             .focusable()
             .onDeleteCommand {

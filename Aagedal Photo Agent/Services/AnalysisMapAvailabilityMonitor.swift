@@ -19,7 +19,7 @@ nonisolated enum AnalysisMapImageryAvailability: Equatable, Sendable {
         case .networkFailure:
             "Map network request failed"
         case .unavailable:
-            "Satellite imagery unavailable"
+            "Map content unavailable"
         }
     }
 
@@ -32,7 +32,7 @@ nonisolated enum AnalysisMapImageryAvailability: Equatable, Sendable {
         case .networkFailure(let detail):
             "The network is connected, but MapKit could not complete the imagery request. \(detail)"
         case .unavailable(let detail):
-            "MapKit did not return imagery for this view. Try a different scale or location. \(detail)"
+            "MapKit did not return content for this view. Try a different scale, style, or location. \(detail)"
         }
     }
 
@@ -131,7 +131,16 @@ final class AnalysisMapAvailabilityMonitor {
             let options = MKMapSnapshotter.Options()
             options.region = region
             options.size = CGSize(width: 64, height: 64)
-            options.mapType = style == .hybrid ? .hybrid : .satellite
+            switch style {
+            case .standard:
+                options.mapType = .standard
+            case .muted:
+                options.mapType = .mutedStandard
+            case .hybrid:
+                options.mapType = .hybrid
+            case .satellite:
+                options.mapType = .satellite
+            }
             let snapshotter = MKMapSnapshotter(options: options)
 
             do {
