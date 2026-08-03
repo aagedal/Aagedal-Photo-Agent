@@ -27,13 +27,16 @@ struct AnalysisMapEvidenceView: View {
     let embeddedLocation: AnalysisGeoCoordinate?
     let photoAnnotationToLocate: AnalysisAnnotation?
     let currentSourceURL: URL?
-    let folderAnnotations: [AnalysisFolderMapAnnotation]
+    let folderAnnotations: [AnalysisImageMapAnnotation]
+    let globalAnnotations: [AnalysisGlobalMapAnnotation]
+    let usesFolderOwnedAnnotations: Bool
     let isReadOnly: Bool
     let onSetStyle: (AnalysisMapStyle) -> Void
     let onSetTrafficVisible: (Bool) -> Void
     let onSetViewport: (AnalysisMapViewport) -> Void
     let onSetInvestigationLocation: (AnalysisLocationEvidence?) -> Void
     let onSetAnnotation: (AnalysisMapAnnotation) -> Void
+    let onSetLocalAnnotation: (AnalysisMapAnnotation) -> Void
     let onDeleteAnnotation: (UUID) -> Void
 
     @Binding var annotationTool: AnalysisAnnotationTool
@@ -75,13 +78,16 @@ struct AnalysisMapEvidenceView: View {
         embeddedLocation: AnalysisGeoCoordinate?,
         photoAnnotationToLocate: AnalysisAnnotation?,
         currentSourceURL: URL?,
-        folderAnnotations: [AnalysisFolderMapAnnotation],
+        folderAnnotations: [AnalysisImageMapAnnotation],
+        globalAnnotations: [AnalysisGlobalMapAnnotation],
+        usesFolderOwnedAnnotations: Bool,
         isReadOnly: Bool,
         onSetStyle: @escaping (AnalysisMapStyle) -> Void,
         onSetTrafficVisible: @escaping (Bool) -> Void,
         onSetViewport: @escaping (AnalysisMapViewport) -> Void,
         onSetInvestigationLocation: @escaping (AnalysisLocationEvidence?) -> Void,
         onSetAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
+        onSetLocalAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
         onDeleteAnnotation: @escaping (UUID) -> Void,
         annotationTool: Binding<AnalysisAnnotationTool>,
         sharedAnnotationStyle: Binding<AnalysisAnnotationStyle>,
@@ -96,12 +102,15 @@ struct AnalysisMapEvidenceView: View {
         self.photoAnnotationToLocate = photoAnnotationToLocate
         self.currentSourceURL = currentSourceURL
         self.folderAnnotations = folderAnnotations
+        self.globalAnnotations = globalAnnotations
+        self.usesFolderOwnedAnnotations = usesFolderOwnedAnnotations
         self.isReadOnly = isReadOnly
         self.onSetStyle = onSetStyle
         self.onSetTrafficVisible = onSetTrafficVisible
         self.onSetViewport = onSetViewport
         self.onSetInvestigationLocation = onSetInvestigationLocation
         self.onSetAnnotation = onSetAnnotation
+        self.onSetLocalAnnotation = onSetLocalAnnotation
         self.onDeleteAnnotation = onDeleteAnnotation
         _annotationTool = annotationTool
         _sharedAnnotationStyle = sharedAnnotationStyle
@@ -150,7 +159,7 @@ struct AnalysisMapEvidenceView: View {
                     .foregroundStyle(.orange)
             }
 
-            Text("Map locations are case-only evidence. They never change embedded or sidecar GPS metadata.")
+            Text("Map locations are analysis-only evidence. They never change embedded or sidecar GPS metadata.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -178,15 +187,15 @@ struct AnalysisMapEvidenceView: View {
         .onChange(of: annotationDraftCoordinates.count) { _, count in
             onDraftCountChanged(count)
         }
-        .onChange(of: mapState.annotations.map(\.id)) {
+        .onChange(of: activeMapAnnotations.map(\.id)) {
             if let selectedAnnotationID,
-               !mapState.annotations.contains(where: { $0.id == selectedAnnotationID }) {
+               !activeMapAnnotations.contains(where: { $0.id == selectedAnnotationID }) {
                 self.selectedAnnotationID = nil
             }
         }
         .onChange(of: selectedAnnotationID) { _, selection in
             guard let selection,
-                  let annotation = mapState.annotations.first(where: { $0.id == selection }) else {
+                  let annotation = activeMapAnnotations.first(where: { $0.id == selection }) else {
                 return
             }
             sharedAnnotationStyle = AnalysisAnnotationStyle(
@@ -219,7 +228,11 @@ struct AnalysisMapEvidenceView: View {
             }
             .disabled(labelInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } message: {
-            Text("The label is stored only in this analysis case.")
+            Text(
+                usesFolderOwnedAnnotations
+                    ? "The label is stored in the working folder's shared map."
+                    : "The label is stored only in this image's analysis case."
+            )
         }
     }
 
@@ -588,7 +601,7 @@ struct AnalysisMapEvidenceView: View {
             region: visibleRegion,
             embeddedLocation: embeddedLocation,
             investigationLocation: mapState.investigationLocation,
-            annotations: mapState.annotations,
+            annotations: activeMapAnnotations,
             folderAnnotations: folderContextAnnotations,
             fieldOfViewPreview: fieldOfViewPreviewCoordinates,
             selectedAnnotationID: selectedAnnotationID,
@@ -678,7 +691,7 @@ struct AnalysisMapEvidenceView: View {
                 )
             }
 
-            ForEach(mapState.annotations.filter(\.isVisible)) { annotation in
+            ForEach(activeMapAnnotations.filter(\.isVisible)) { annotation in
                 switch annotation.geometry {
                 case .point(let coordinate):
                     Annotation(
@@ -1033,8 +1046,8 @@ struct AnalysisMapEvidenceView: View {
         }
     }
 
-    private var folderContextAnnotations: [AnalysisFolderMapAnnotation] {
-        let currentIDs = Set(mapState.annotations.map(\.id))
+    private var folderContextAnnotations: [AnalysisImageMapAnnotation] {
+        let currentIDs = Set(activeMapAnnotations.map(\.id))
         return folderAnnotations.filter {
             $0.annotation.isVisible
                 && $0.sourceURL.standardizedFileURL != currentSourceURL?.standardizedFileURL
@@ -1042,7 +1055,13 @@ struct AnalysisMapEvidenceView: View {
         }
     }
 
-    private func folderMapAnnotationLabel(_ item: AnalysisFolderMapAnnotation) -> some View {
+    private var activeMapAnnotations: [AnalysisMapAnnotation] {
+        usesFolderOwnedAnnotations
+            ? globalAnnotations.map(\.annotation)
+            : mapState.annotations
+    }
+
+    private func folderMapAnnotationLabel(_ item: AnalysisImageMapAnnotation) -> some View {
         VStack(spacing: 1) {
             Image(systemName: item.annotation.kind == .marker ? "mappin.circle.fill" : "circle.fill")
                 .font(item.annotation.kind == .marker ? .title3 : .caption2)
@@ -1243,7 +1262,7 @@ struct AnalysisMapEvidenceView: View {
             )
         }
         guard (try? annotation.validate()) != nil else { return }
-        onSetAnnotation(annotation)
+        onSetLocalAnnotation(annotation)
     }
 
     private var fieldOfViewAnnotation: AnalysisMapAnnotation? {

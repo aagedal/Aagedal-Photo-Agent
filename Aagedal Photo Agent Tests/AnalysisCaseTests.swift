@@ -630,6 +630,121 @@ struct AnalysisCaseTests {
         try reopened.validateForPersistence()
     }
 
+    @Test("folder map annotations link photo annotations from several image cases")
+    func folderMapAnnotationsLinkAcrossCases() async throws {
+        let fixture = try AnalysisFixture(contents: "first image")
+        defer { fixture.remove() }
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("second image".utf8).write(to: secondURL)
+        let firstBytes = try Data(contentsOf: fixture.fileURL)
+        let secondBytes = try Data(contentsOf: secondURL)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+
+        var firstCase = AnalysisCase.create(
+            for: try await SourceImageRevision.capture(at: fixture.fileURL),
+            appBuild: "test"
+        )
+        var secondCase = AnalysisCase.create(
+            for: try await SourceImageRevision.capture(at: secondURL),
+            appBuild: "test"
+        )
+        let firstPhotoAnnotation = AnalysisAnnotation(
+            kind: .rectangle,
+            geometry: .bounds(AnalysisNormalizedBounds(
+                minimum: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+                maximum: AnalysisNormalizedPoint(x: 0.3, y: 0.5)
+            )),
+            text: "West facade"
+        )
+        let secondPhotoAnnotation = AnalysisAnnotation(
+            kind: .polygon,
+            geometry: .polygon([
+                AnalysisNormalizedPoint(x: 0.4, y: 0.2),
+                AnalysisNormalizedPoint(x: 0.7, y: 0.3),
+                AnalysisNormalizedPoint(x: 0.6, y: 0.7),
+            ]),
+            text: "Same building from the south"
+        )
+        firstCase.setAnnotation(firstPhotoAnnotation)
+        secondCase.setAnnotation(secondPhotoAnnotation)
+        try await repository.save(firstCase)
+        try await repository.save(secondCase)
+
+        let sharedMarker = AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)),
+            text: "Shared landmark"
+        )
+        var folderDocument = AnalysisFolderMapDocument.create()
+        folderDocument.setAnnotation(AnalysisGlobalMapAnnotation(
+            annotation: sharedMarker,
+            photoAnnotationReferences: [
+                AnalysisPhotoAnnotationReference(
+                    caseID: firstCase.id,
+                    annotationID: firstPhotoAnnotation.id
+                ),
+                AnalysisPhotoAnnotationReference(
+                    caseID: secondCase.id,
+                    annotationID: secondPhotoAnnotation.id
+                ),
+            ]
+        ))
+        try await repository.saveFolderMapDocument(folderDocument)
+
+        let reopened = await repository.loadFolderMapDocument()
+        #expect(reopened.annotations.count == 1)
+        #expect(reopened.annotations.first?.id == sharedMarker.id)
+        #expect(reopened.annotations.first?.annotation.kind == sharedMarker.kind)
+        #expect(reopened.annotations.first?.annotation.geometry == sharedMarker.geometry)
+        #expect(reopened.annotations.first?.annotation.text == sharedMarker.text)
+        #expect(reopened.annotations.first?.photoAnnotationReferences.count == 2)
+        #expect(Set(reopened.annotations.first?.photoAnnotationReferences ?? []) == Set([
+            AnalysisPhotoAnnotationReference(
+                caseID: firstCase.id,
+                annotationID: firstPhotoAnnotation.id
+            ),
+            AnalysisPhotoAnnotationReference(
+                caseID: secondCase.id,
+                annotationID: secondPhotoAnnotation.id
+            ),
+        ]))
+        #expect(firstCase.mapState.annotations.isEmpty)
+        #expect(secondCase.mapState.annotations.isEmpty)
+        #expect(try Data(contentsOf: fixture.fileURL) == firstBytes)
+        #expect(try Data(contentsOf: secondURL) == secondBytes)
+        try reopened.validateForPersistence()
+    }
+
+    @Test("folder map links are unique and independently removable")
+    func folderMapAnnotationLinksAreManyToMany() {
+        let firstReference = AnalysisPhotoAnnotationReference(
+            caseID: UUID(),
+            annotationID: UUID()
+        )
+        let secondReference = AnalysisPhotoAnnotationReference(
+            caseID: UUID(),
+            annotationID: UUID()
+        )
+        var annotation = AnalysisGlobalMapAnnotation(
+            annotation: AnalysisMapAnnotation(
+                kind: .marker,
+                geometry: .point(AnalysisGeoCoordinate(latitude: 1, longitude: 2))
+            )
+        )
+
+        let addedFirst = annotation.setPhotoAnnotationLinked(firstReference, isLinked: true)
+        let rejectedDuplicate = annotation.setPhotoAnnotationLinked(firstReference, isLinked: true)
+        let addedSecond = annotation.setPhotoAnnotationLinked(secondReference, isLinked: true)
+        #expect(addedFirst)
+        #expect(!rejectedDuplicate)
+        #expect(addedSecond)
+        #expect(annotation.photoAnnotationReferences == [firstReference, secondReference])
+        let removedFirst = annotation.setPhotoAnnotationLinked(firstReference, isLinked: false)
+        #expect(removedFirst)
+        #expect(annotation.photoAnnotationReferences == [secondReference])
+        #expect(annotation.validate())
+    }
+
     @Test("map markup rejects mismatched geometry, empty labels, and duplicate IDs")
     func rejectsInvalidMapAnnotations() async throws {
         let fixture = try AnalysisFixture(contents: "invalid map markup source")

@@ -47,6 +47,10 @@ and map annotations side by side. Setting the photo location preserves the inves
 can optionally add a persisted bearing/angle/range field-of-view cone. Map authoring actions now
 share the fixed markup row to preserve map height, and
 investigators can add expandable case-only notes when no timestamp can be established.
+The Working Folder scope now owns a separate shared map document alongside the source-bound image
+cases. A shared marker can reference any number of photo annotations through stable case-ID and
+annotation-ID pairs, so the same landmark can be identified in several images without duplicating
+its geographic markup. This Photo continues to author image-local map layers independently.
 The map now reports offline connectivity, failed MapKit requests, and unavailable satellite imagery
 as distinct non-destructive states. A cancellable visible-region probe supplies a retryable imagery
 status, place autocomplete no longer drops errors silently, and coordinate entry plus saved map

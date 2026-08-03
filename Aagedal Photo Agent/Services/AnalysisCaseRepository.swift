@@ -12,11 +12,15 @@ enum AnalysisCaseMatch: Equatable, Sendable {
 /// the source image, its metadata, or its XMP sidecar.
 actor AnalysisCaseRepository {
     private let casesDirectoryURL: URL
+    private let folderMapDocumentURL: URL
 
     init(sourceFolderURL: URL) {
-        casesDirectoryURL = sourceFolderURL
+        let analysisDirectoryURL = sourceFolderURL
             .appendingPathComponent(".photo_analysis", isDirectory: true)
+        casesDirectoryURL = analysisDirectoryURL
             .appendingPathComponent("cases", isDirectory: true)
+        folderMapDocumentURL = analysisDirectoryURL
+            .appendingPathComponent("folder-map.analysis.json")
     }
 
     func loadMostRelevantCase(for revision: SourceImageRevision) async -> AnalysisCaseMatch {
@@ -79,6 +83,24 @@ actor AnalysisCaseRepository {
             documentURL: caseURL(for: analysisCase.id)
         )
         try await store.save(analysisCase)
+    }
+
+    func loadFolderMapDocument() async -> AnalysisFolderMapDocument {
+        let store = AtomicJSONDocumentStore<AnalysisFolderMapDocument>(
+            documentURL: folderMapDocumentURL
+        )
+        guard let loaded = try? await store.load(),
+              case .document(let document, _) = loaded else {
+            return AnalysisFolderMapDocument.create()
+        }
+        return document
+    }
+
+    func saveFolderMapDocument(_ document: AnalysisFolderMapDocument) async throws {
+        let store = AtomicJSONDocumentStore<AnalysisFolderMapDocument>(
+            documentURL: folderMapDocumentURL
+        )
+        try await store.save(document)
     }
 
     private func caseURL(for id: UUID) -> URL {

@@ -174,6 +174,12 @@ Annotation
   createdAt / updatedAt
 ```
 
+Folder-shared geographic markup is stored separately at
+`.photo_analysis/folder-map.analysis.json`. Each entry owns one map annotation plus a unique list
+of `{ caseID, annotationID }` photo references. Both IDs are required because photo-annotation IDs
+are scoped to their source-bound analysis case. References may remain unresolved temporarily when
+an image leaves the working folder; they are not rewritten into filenames or copied label text.
+
 Photo coordinate origin and axis direction must be documented once and used by markup, comparison,
 true-pixel hover, report rendering, and crop transforms. Prefer top-left origin normalized display
 coordinates if that matches current overlays, with explicit conversions at Core Image/Metal/CG

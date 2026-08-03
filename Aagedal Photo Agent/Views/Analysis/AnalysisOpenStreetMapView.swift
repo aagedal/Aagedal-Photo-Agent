@@ -12,7 +12,7 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
     let embeddedLocation: AnalysisGeoCoordinate?
     let investigationLocation: AnalysisLocationEvidence?
     let annotations: [AnalysisMapAnnotation]
-    let folderAnnotations: [AnalysisFolderMapAnnotation]
+    let folderAnnotations: [AnalysisImageMapAnnotation]
     let fieldOfViewPreview: [AnalysisGeoCoordinate]?
     let selectedAnnotationID: UUID?
     let onCameraChanged: (MKCoordinateRegion, MKMapCamera) -> Void

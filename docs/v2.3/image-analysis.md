@@ -267,13 +267,16 @@ The photo and map panels should support:
 - photo lines, arrows, rectangles, ellipses, and distance measurements, plus geographic map
   markers, lines, polygons, and distances;
 - clearly separated Photo and Map tool groups in one fixed OSINT toolbar;
-- optional labels on every annotation geometry, with stable links from a map annotation to any
-  photo annotation;
+- optional labels on every annotation geometry, with stable links from an image-local map
+  annotation to a photo annotation;
+- folder-owned map annotations with many-to-many links to photo annotations from several image
+  cases, identified by stable case and annotation UUIDs;
 - longer case-only notes attached to photo annotations without placing the note text on-canvas;
 - independent undo stacks for photo and map markup within one case;
 - one-click placement of a selected photo object on the map with its matching color;
 - an optional bearing, angle, and range field-of-view cone when setting the photo location;
-- a working-folder thumbnail rail and a This Photo / Working Folder map-layer scope;
+- a working-folder thumbnail rail and a This Photo / Working Folder ownership scope for local and
+  shared map layers;
 - side-by-side Photo Annotations and Map Annotations lists with selection and visibility controls;
 - capture of the exact map viewport used by the report.
 

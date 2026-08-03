@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-struct AnalysisFolderMapAnnotation: Identifiable, Sendable {
+struct AnalysisImageMapAnnotation: Identifiable, Sendable {
     let caseID: UUID
     let sourceURL: URL
     let sourceName: String
@@ -28,15 +28,18 @@ final class AnalysisWorkspaceModel {
     private(set) var developSettings: CameraRawSettings?
     private(set) var sourceOrientation = 1
     private(set) var folderAnalysisCases: [AnalysisCase] = []
+    private(set) var folderMapDocument = AnalysisFolderMapDocument.create()
     let analysisRunner: AnalysisRunner
 
     @ObservationIgnored private var repository: AnalysisCaseRepository?
     @ObservationIgnored private var openedImage: ImageFile?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private var folderMapSaveTask: Task<Void, Never>?
     @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
     private var photoAnnotationHistory = AnalysisAnnotationUndoHistory()
     private var mapAnnotationHistory = AnalysisMapAnnotationUndoHistory()
+    private var globalMapAnnotationHistory = AnalysisGlobalMapAnnotationUndoHistory()
 
     init(analyzers: [any AnalysisAnalyzer]? = nil) {
         analysisRunner = AnalysisRunner()
@@ -106,7 +109,11 @@ final class AnalysisWorkspaceModel {
         mapState.annotations
     }
 
-    var workingFolderMapAnnotations: [AnalysisFolderMapAnnotation] {
+    var globalMapAnnotations: [AnalysisGlobalMapAnnotation] {
+        folderMapDocument.annotations
+    }
+
+    var workingFolderMapAnnotations: [AnalysisImageMapAnnotation] {
         var newestCaseBySource: [URL: AnalysisCase] = [:]
         for analysisCase in folderAnalysisCases + (self.analysisCase.map { [$0] } ?? []) {
             let sourceURL = analysisCase.source.canonicalURL
@@ -120,7 +127,7 @@ final class AnalysisWorkspaceModel {
             .sorted { $0.source.filenameAtCreation < $1.source.filenameAtCreation }
             .flatMap { analysisCase in
                 var items = analysisCase.mapState.annotations.map {
-                    AnalysisFolderMapAnnotation(
+                    AnalysisImageMapAnnotation(
                         caseID: analysisCase.id,
                         sourceURL: analysisCase.source.canonicalURL,
                         sourceName: analysisCase.source.filenameAtCreation,
@@ -128,7 +135,7 @@ final class AnalysisWorkspaceModel {
                     )
                 }
                 if let location = analysisCase.mapState.investigationLocation {
-                    items.append(AnalysisFolderMapAnnotation(
+                    items.append(AnalysisImageMapAnnotation(
                         caseID: analysisCase.id,
                         sourceURL: analysisCase.source.canonicalURL,
                         sourceName: analysisCase.source.filenameAtCreation,
@@ -187,6 +194,22 @@ final class AnalysisWorkspaceModel {
 
     var mapAnnotationRedoActionName: String? {
         mapAnnotationHistory.redoActionName
+    }
+
+    var canUndoGlobalMapAnnotation: Bool {
+        !sourceChanged && globalMapAnnotationHistory.canUndo
+    }
+
+    var canRedoGlobalMapAnnotation: Bool {
+        !sourceChanged && globalMapAnnotationHistory.canRedo
+    }
+
+    var globalMapAnnotationUndoActionName: String? {
+        globalMapAnnotationHistory.undoActionName
+    }
+
+    var globalMapAnnotationRedoActionName: String? {
+        globalMapAnnotationHistory.redoActionName
     }
 
     var rawMetadata: [AnalysisRawMetadataEntry] {
@@ -262,8 +285,10 @@ final class AnalysisWorkspaceModel {
         _ image: ImageFile,
         preferredWorkspaceMode: AnalysisWorkspaceMode? = nil
     ) {
+        let pendingFolderMapSaveTask = folderMapSaveTask
         loadTask?.cancel()
         saveTask?.cancel()
+        folderMapSaveTask = nil
 
         sourceURL = image.url
         openedImage = image
@@ -276,7 +301,9 @@ final class AnalysisWorkspaceModel {
         sourceChanged = false
         photoAnnotationHistory.removeAll()
         mapAnnotationHistory.removeAll()
+        globalMapAnnotationHistory.removeAll()
         folderAnalysisCases = []
+        folderMapDocument = AnalysisFolderMapDocument.create()
         analysisRunner.configure(existingRuns: [])
 
         let url = image.url
@@ -288,6 +315,8 @@ final class AnalysisWorkspaceModel {
 
         loadTask = Task { [weak self] in
             do {
+                await pendingFolderMapSaveTask?.value
+                try Task.checkCancellation()
                 let revision = try await SourceImageRevision.capture(
                     at: url,
                     exifOrientation: orientation
@@ -326,9 +355,11 @@ final class AnalysisWorkspaceModel {
                     self.analysisCase = preferredCase
                 }
                 let folderCases = await repository.loadAllCases()
+                let folderMapDocument = await repository.loadFolderMapDocument()
                 try Task.checkCancellation()
                 guard self.sourceURL == url else { return }
                 self.folderAnalysisCases = folderCases
+                self.folderMapDocument = folderMapDocument
                 self.loadState = .ready
             } catch is CancellationError {
                 return
@@ -538,6 +569,123 @@ final class AnalysisWorkspaceModel {
         setMapAnnotation(annotation)
     }
 
+    func setGlobalMapAnnotation(_ annotation: AnalysisMapAnnotation) {
+        guard (try? annotation.validate()) != nil, !sourceChanged else { return }
+        let before = folderMapDocument.annotations
+        let existing = before.first { $0.id == annotation.id }
+        var normalizedAnnotation = annotation
+        var references = existing?.photoAnnotationReferences ?? []
+        if let legacyPhotoAnnotationID = normalizedAnnotation.linkedPhotoLabelID,
+           let analysisCase,
+           analysisCase.annotations.contains(where: { $0.id == legacyPhotoAnnotationID }) {
+            let reference = AnalysisPhotoAnnotationReference(
+                caseID: analysisCase.id,
+                annotationID: legacyPhotoAnnotationID
+            )
+            if !references.contains(reference) {
+                references.append(reference)
+            }
+            normalizedAnnotation.linkedPhotoLabelID = nil
+        }
+        guard existing?.annotation != normalizedAnnotation
+                || existing?.photoAnnotationReferences != references else { return }
+        var document = folderMapDocument
+        document.setAnnotation(AnalysisGlobalMapAnnotation(
+            annotation: normalizedAnnotation,
+            photoAnnotationReferences: references
+        ))
+        globalMapAnnotationHistory.record(
+            before: before,
+            after: document.annotations,
+            actionName: existing == nil ? "Add Folder Map Annotation" : "Edit Folder Map Annotation"
+        )
+        persistFolderMapDocument(document)
+    }
+
+    func removeGlobalMapAnnotation(id: UUID) {
+        guard !sourceChanged else { return }
+        let before = folderMapDocument.annotations
+        var document = folderMapDocument
+        guard document.removeAnnotation(id: id) else { return }
+        globalMapAnnotationHistory.record(
+            before: before,
+            after: document.annotations,
+            actionName: "Delete Folder Map Annotation"
+        )
+        persistFolderMapDocument(document)
+    }
+
+    func setGlobalMapAnnotationVisible(id: UUID, isVisible: Bool) {
+        guard var annotation = globalMapAnnotations.first(where: { $0.id == id })?.annotation,
+              annotation.isVisible != isVisible else { return }
+        annotation.isVisible = isVisible
+        setGlobalMapAnnotation(annotation)
+    }
+
+    func setAllGlobalMapAnnotationsVisible(_ isVisible: Bool) {
+        guard !sourceChanged else { return }
+        let before = folderMapDocument.annotations
+        let now = Date()
+        var after = before
+        for index in after.indices where after[index].annotation.isVisible != isVisible {
+            after[index].annotation.isVisible = isVisible
+            after[index].annotation.markUpdated(now: now)
+        }
+        guard before != after else { return }
+        var document = folderMapDocument
+        document.replaceAnnotations(after, now: now)
+        globalMapAnnotationHistory.record(
+            before: before,
+            after: after,
+            actionName: isVisible ? "Show All Folder Map Annotations" : "Hide All Folder Map Annotations"
+        )
+        persistFolderMapDocument(document)
+    }
+
+    func setGlobalMapAnnotationPhotoLink(
+        annotationID: UUID,
+        photoAnnotationID: UUID,
+        isLinked: Bool
+    ) {
+        guard let analysisCase,
+              analysisCase.annotations.contains(where: { $0.id == photoAnnotationID }),
+              var globalAnnotation = globalMapAnnotations.first(where: {
+                  $0.id == annotationID
+              }) else { return }
+        let reference = AnalysisPhotoAnnotationReference(
+            caseID: analysisCase.id,
+            annotationID: photoAnnotationID
+        )
+        guard globalAnnotation.setPhotoAnnotationLinked(reference, isLinked: isLinked) else {
+            return
+        }
+        let before = folderMapDocument.annotations
+        var document = folderMapDocument
+        document.setAnnotation(globalAnnotation)
+        globalMapAnnotationHistory.record(
+            before: before,
+            after: document.annotations,
+            actionName: isLinked ? "Link Photo Annotation" : "Unlink Photo Annotation"
+        )
+        persistFolderMapDocument(document)
+    }
+
+    func undoGlobalMapAnnotation() {
+        guard !sourceChanged,
+              let annotations = globalMapAnnotationHistory.undo() else { return }
+        var document = folderMapDocument
+        document.replaceAnnotations(annotations)
+        persistFolderMapDocument(document)
+    }
+
+    func redoGlobalMapAnnotation() {
+        guard !sourceChanged,
+              let annotations = globalMapAnnotationHistory.redo() else { return }
+        var document = folderMapDocument
+        document.replaceAnnotations(annotations)
+        persistFolderMapDocument(document)
+    }
+
     func undoMapAnnotation() {
         guard !sourceChanged,
               var updatedCase = analysisCase,
@@ -715,6 +863,23 @@ final class AnalysisWorkspaceModel {
                 return
             } catch {
                 guard let self, self.analysisCase?.id == updatedCase.id else { return }
+                self.loadState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func persistFolderMapDocument(_ document: AnalysisFolderMapDocument) {
+        folderMapDocument = document
+        guard let repository else { return }
+
+        folderMapSaveTask?.cancel()
+        folderMapSaveTask = Task { [weak self] in
+            do {
+                try await repository.saveFolderMapDocument(document)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.folderMapDocument.id == document.id else { return }
                 self.loadState = .failed(error.localizedDescription)
             }
         }
