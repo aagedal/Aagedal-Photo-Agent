@@ -28,11 +28,13 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
         mapView.showsCompass = true
         mapView.showsScale = true
         mapView.showsZoomControls = true
-        mapView.pointOfInterestFilter = .includingAll
+        mapView.pointOfInterestFilter = .excludingAll
         mapView.setRegion(region, animated: false)
-        // Keep replacement tiles on the map-content layer. Investigative geometry is
-        // added at .aboveLabels so opaque OSM tiles can never cover it after a redraw.
-        mapView.addOverlay(AnalysisOpenStreetMapTileOverlay(), level: .aboveRoads)
+        // MapKit renders its own labels above `.aboveRoads` overlays, even when a tile
+        // overlay replaces the base map. Put OSM above that layer so only OSM's labels
+        // remain visible. Evidence geometry is added afterward at the same level and
+        // therefore stays above the replacement tiles.
+        mapView.addOverlay(AnalysisOpenStreetMapTileOverlay(), level: .aboveLabels)
         context.coordinator.rebuildEvidence(in: mapView)
         return mapView
     }

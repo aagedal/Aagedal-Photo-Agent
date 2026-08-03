@@ -291,7 +291,7 @@ struct AnalysisMapEvidenceView: View {
                 } label: {
                     Label(mapState.style.displayName, systemImage: mapState.style.systemImage)
                 }
-                .frame(width: 140)
+                .frame(width: 170)
                 .disabled(isReadOnly)
 
                 Toggle(isOn: Binding(
