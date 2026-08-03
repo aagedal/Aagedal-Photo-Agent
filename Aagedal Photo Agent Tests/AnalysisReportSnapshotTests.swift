@@ -204,6 +204,15 @@ struct AnalysisReportSnapshotTests {
                 unit: .meters
             )
         ))
+        analysisCase.setAnnotation(AnalysisAnnotation(
+            kind: .polygon,
+            geometry: .polygon([
+                AnalysisNormalizedPoint(x: 0.15, y: 0.15),
+                AnalysisNormalizedPoint(x: 0.45, y: 0.20),
+                AnalysisNormalizedPoint(x: 0.30, y: 0.50),
+            ]),
+            text: "Polygon detail"
+        ))
         analysisCase.setTimestampEvidence(AnalysisTimestampEvidence(
             kind: .observation,
             title: "Witness time",
@@ -260,6 +269,8 @@ struct AnalysisReportSnapshotTests {
         #expect(text.contains(revision.sha256))
         #expect(text.contains("Metadata discrepancy"))
         #expect(text.contains("Known doorway"))
+        #expect(text.contains("Polygon detail"))
+        #expect(text.contains("polygon with 3 vertices"))
         #expect(text.contains("Converted measurements depend"))
         #expect(text.contains("Witness time"))
         #expect(text.contains("Weather"))

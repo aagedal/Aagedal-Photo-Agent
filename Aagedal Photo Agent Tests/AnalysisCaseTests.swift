@@ -1019,6 +1019,11 @@ struct AnalysisCaseTests {
             AnalysisAnnotation(kind: .distance, geometry: .segment(start: start, end: end)),
             AnalysisAnnotation(kind: .rectangle, geometry: .bounds(bounds)),
             AnalysisAnnotation(kind: .ellipse, geometry: .bounds(bounds)),
+            AnalysisAnnotation(kind: .polygon, geometry: .polygon([
+                start,
+                AnalysisNormalizedPoint(x: 0.8, y: 0.2),
+                end,
+            ])),
             AnalysisAnnotation(kind: .label, geometry: .anchor(start), text: "Detail"),
         ]
 
@@ -1102,6 +1107,31 @@ struct AnalysisCaseTests {
             controlPoint: .segmentEnd,
             to: AnalysisNormalizedPoint(x: 0.1, y: 0.2)
         ) == nil)
+
+        let polygonPoints = [
+            AnalysisNormalizedPoint(x: 0.125, y: 0.125),
+            AnalysisNormalizedPoint(x: 0.625, y: 0.125),
+            AnalysisNormalizedPoint(x: 0.375, y: 0.625),
+        ]
+        let polygon = AnalysisAnnotationGeometry.polygon(polygonPoints)
+        #expect(AnalysisAnnotationGeometryEditor.resizing(
+            polygon,
+            controlPoint: .polygonVertex(2),
+            to: AnalysisNormalizedPoint(x: 0.5, y: 0.75)
+        ) == .polygon([
+            polygonPoints[0],
+            polygonPoints[1],
+            AnalysisNormalizedPoint(x: 0.5, y: 0.75),
+        ]))
+        #expect(AnalysisAnnotationGeometryEditor.moving(
+            polygon,
+            from: AnalysisNormalizedPoint(x: 0.375, y: 0.375),
+            to: AnalysisNormalizedPoint(x: 0.5, y: 0.5)
+        ) == .polygon([
+            AnalysisNormalizedPoint(x: 0.25, y: 0.25),
+            AnalysisNormalizedPoint(x: 0.75, y: 0.25),
+            AnalysisNormalizedPoint(x: 0.5, y: 0.75),
+        ]))
 
         let annotation = AnalysisAnnotation(kind: .line, geometry: segment)
         let transform = try DisplayImageTransform(

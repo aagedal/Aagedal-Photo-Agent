@@ -159,12 +159,16 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
                 addPolygon(
                     coordinates,
                     style: annotation.style,
-                    annotationID: annotation.id,
-                    title: title,
+                    annotationID: isFieldOfView(annotation) ? nil : annotation.id,
+                    title: isFieldOfView(annotation) ? nil : title,
                     dimmed: dimmed,
                     to: mapView
                 )
             }
+        }
+
+        private func isFieldOfView(_ annotation: AnalysisMapAnnotation) -> Bool {
+            annotation.kind == .shape && annotation.text == "Field of view"
         }
 
         private func addPolygon(

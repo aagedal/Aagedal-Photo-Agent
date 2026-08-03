@@ -718,11 +718,13 @@ struct AnalysisMapEvidenceView: View {
                         annotation.style.color.swiftUIColor,
                         lineWidth: annotation.style.lineWidthPoints
                     )
-                    Annotation(
-                        annotation.text ?? annotation.kind.displayName,
-                        coordinate: annotation.representativeCoordinate.clLocationCoordinate
-                    ) {
-                        mapAnnotationButton(annotation)
+                    if !Self.isFieldOfView(annotation) {
+                        Annotation(
+                            annotation.text ?? annotation.kind.displayName,
+                            coordinate: annotation.representativeCoordinate.clLocationCoordinate
+                        ) {
+                            mapAnnotationButton(annotation)
+                        }
                     }
                 }
             }
@@ -1246,8 +1248,12 @@ struct AnalysisMapEvidenceView: View {
 
     private var fieldOfViewAnnotation: AnalysisMapAnnotation? {
         mapState.annotations.first {
-            $0.kind == .shape && $0.text == "Field of view"
+            Self.isFieldOfView($0)
         }
+    }
+
+    private static func isFieldOfView(_ annotation: AnalysisMapAnnotation) -> Bool {
+        annotation.kind == .shape && annotation.text == "Field of view"
     }
 
     private var fieldOfViewPreviewCoordinates: [AnalysisGeoCoordinate]? {

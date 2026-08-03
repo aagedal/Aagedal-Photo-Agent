@@ -360,8 +360,10 @@ struct ImagePreviewZoomGeometryTests {
     @Test("the hand tool belongs to photo markup, not map markup")
     func handToolPlacement() {
         #expect(AnalysisAnnotationTool.photoTools.contains(.hand))
+        #expect(AnalysisAnnotationTool.photoTools.contains(.shape))
         #expect(!AnalysisAnnotationTool.mapTools.contains(.hand))
         #expect(AnalysisAnnotationTool.hand.annotationKind == nil)
+        #expect(AnalysisAnnotationTool.shape.annotationKind == .polygon)
     }
 
     @Test("analysis preview zoom supports 4000 percent")

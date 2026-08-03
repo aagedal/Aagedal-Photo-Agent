@@ -22,6 +22,9 @@ struct AnalysisWorkspaceView: View {
     @State private var activeMarkupSurface: AnalysisMarkupSurface = .photo
     @State private var calibrationEditorRequest: AnalysisCalibrationEditorRequest?
     @State private var annotationLabelEditorRequest: AnalysisAnnotationLabelEditorRequest?
+    @State private var photoPolygonDraftCount = 0
+    @State private var photoPolygonFinishRequestID = 0
+    @State private var photoPolygonCancelRequestID = 0
     @State private var isTimestampEditorPresented = false
     @State private var isObservationEditorPresented = false
     @State private var mapLayerScope: AnalysisMapLayerScope = .currentPhoto
@@ -33,6 +36,7 @@ struct AnalysisWorkspaceView: View {
     @State private var reportExportProgress: Double?
     @State private var reportExportError: String?
     @State private var reportExportTask: Task<Void, Never>?
+    @State private var evidenceExportTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -58,6 +62,8 @@ struct AnalysisWorkspaceView: View {
             selectedAnnotationID = nil
             selectedMapAnnotationID = nil
             mapDraftCoordinateCount = 0
+            photoPolygonDraftCount = 0
+            photoPolygonCancelRequestID += 1
         }
         .onChange(of: model.analysisCase?.id) {
             selectedAnnotationID = nil
@@ -190,7 +196,7 @@ struct AnalysisWorkspaceView: View {
             )
         }
         .alert(
-            "Report Export Failed",
+            "Export Failed",
             isPresented: Binding(
                 get: { reportExportError != nil },
                 set: { if !$0 { reportExportError = nil } }
@@ -198,10 +204,11 @@ struct AnalysisWorkspaceView: View {
         ) {
             Button("OK") { reportExportError = nil }
         } message: {
-            Text(reportExportError ?? "The report could not be exported.")
+            Text(reportExportError ?? "The export could not be completed.")
         }
         .onDisappear {
             reportExportTask?.cancel()
+            evidenceExportTask?.cancel()
         }
     }
 
@@ -253,15 +260,28 @@ struct AnalysisWorkspaceView: View {
                 }
                 .buttonStyle(.borderless)
             } else {
-                Button("Export PDF…", systemImage: "doc.richtext") {
-                    isReportOptionsPresented = true
+                Menu {
+                    Button("PDF Report…", systemImage: "doc.richtext") {
+                        isReportOptionsPresented = true
+                    }
+                    .disabled(model.sourceChanged)
+
+                    Divider()
+
+                    Button("Annotated Image (JPEG)…", systemImage: "photo") {
+                        chooseAnnotatedImageDestinationAndExport()
+                    }
+                    .disabled(model.sourceChanged || evidenceExportTask != nil)
+
+                    Button("Annotated Map (JPEG)…", systemImage: "map") {
+                        chooseAnnotatedMapDestinationAndExport()
+                    }
+                    .disabled(model.mapState.viewport == nil || evidenceExportTask != nil)
+                } label: {
+                    Label("Export…", systemImage: "square.and.arrow.up")
                 }
-                .disabled(model.analysisCase == nil || model.sourceChanged)
-                .help(
-                    model.sourceChanged
-                        ? "The source must match the case revision before a report can be exported"
-                        : "Create a PDF from a revalidated, immutable case snapshot"
-                )
+                .disabled(model.analysisCase == nil)
+                .help("Export a PDF report or a separate annotated image or map JPEG")
             }
 
             Picker(
@@ -399,23 +419,101 @@ struct AnalysisWorkspaceView: View {
         }
     }
 
-    private var pixelAnalysisBody: some View {
-        HSplitView {
-            caseSidebar
-                .frame(minWidth: 190, idealWidth: 230, maxWidth: 300)
-            VSplitView {
-                sourcePreview(showMarkupToolbar: true)
-                    .frame(minHeight: 260)
-                AnalysisScopeWorkspace(
-                    sourceImage: displayedScopeImage,
-                    sourceMode: $scopeSourceMode,
-                    selectedRegion: $selectedScopeRegion
+    private func chooseAnnotatedImageDestinationAndExport() {
+        guard let analysisCase = model.analysisCase,
+              let sourceURL = model.sourceURL,
+              evidenceExportTask == nil else { return }
+        guard let outputURL = chooseJPEGDestination(
+            title: "Export Annotated Image",
+            suggestedName: "\(analysisCase.title) Annotated.jpg"
+        ) else { return }
+
+        evidenceExportTask = Task { @MainActor in
+            defer { evidenceExportTask = nil }
+            do {
+                let data = try await AnalysisEvidenceJPEGRenderer.photoJPEG(
+                    sourceURL: sourceURL,
+                    annotations: analysisCase.annotations
                 )
-                    .frame(minHeight: 180, idealHeight: 300)
+                try Task.checkCancellation()
+                try data.write(to: outputURL, options: .atomic)
+            } catch is CancellationError {
+                return
+            } catch {
+                reportExportError = error.localizedDescription.isEmpty
+                    ? "The annotated image could not be exported."
+                    : error.localizedDescription
             }
-                .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
-            analysisDetail
-                .frame(minWidth: 260, idealWidth: 330, maxWidth: 430)
+        }
+    }
+
+    private func chooseAnnotatedMapDestinationAndExport() {
+        guard let analysisCase = model.analysisCase,
+              let evidence = AnalysisReportMapEvidence(
+                  state: analysisCase.mapState,
+                  capturedAt: Date()
+              ), evidenceExportTask == nil else { return }
+        guard let outputURL = chooseJPEGDestination(
+            title: "Export Annotated Map",
+            suggestedName: "\(analysisCase.title) Map.jpg"
+        ) else { return }
+
+        evidenceExportTask = Task { @MainActor in
+            defer { evidenceExportTask = nil }
+            do {
+                let data = try await AnalysisEvidenceJPEGRenderer.mapJPEG(evidence: evidence)
+                try Task.checkCancellation()
+                try data.write(to: outputURL, options: .atomic)
+            } catch is CancellationError {
+                return
+            } catch {
+                reportExportError = error.localizedDescription.isEmpty
+                    ? "The annotated map could not be exported."
+                    : error.localizedDescription
+            }
+        }
+    }
+
+    private func chooseJPEGDestination(title: String, suggestedName: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.title = title
+        panel.prompt = "Export"
+        panel.allowedContentTypes = [.jpeg]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = suggestedName
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    private var pixelAnalysisBody: some View {
+        HStack(spacing: 0) {
+            AnalysisImageRail(
+                images: folderImages,
+                selectedURL: model.sourceURL,
+                thumbnailService: thumbnailService,
+                onSelect: onSelectImage
+            )
+            .frame(width: 76)
+
+            Divider()
+
+            HSplitView {
+                caseSidebar
+                    .frame(minWidth: 190, idealWidth: 230, maxWidth: 300)
+                VSplitView {
+                    sourcePreview(showMarkupToolbar: true)
+                        .frame(minHeight: 260)
+                    AnalysisScopeWorkspace(
+                        sourceImage: displayedScopeImage,
+                        sourceMode: $scopeSourceMode,
+                        selectedRegion: $selectedScopeRegion
+                    )
+                        .frame(minHeight: 180, idealHeight: 300)
+                }
+                    .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+                analysisDetail
+                    .frame(minWidth: 260, idealWidth: 330, maxWidth: 430)
+            }
         }
     }
 
@@ -552,6 +650,10 @@ struct AnalysisWorkspaceView: View {
             canEditLabel: activeSelectedAnnotationID != nil,
             selectedHasLabel: activeSelectedAnnotationHasDetails,
             showsLabelActionTitle: true,
+            photoFinishActionTitle: photoPolygonDraftCount >= 3 ? "Finish Polygon" : nil,
+            photoDraftIsActive: photoPolygonDraftCount > 0,
+            onPhotoFinishAction: { photoPolygonFinishRequestID += 1 },
+            onCancelPhotoDraft: { photoPolygonCancelRequestID += 1 },
             mapActionTitle: mapToolbarActionTitle,
             mapFinishActionTitle: mapToolbarFinishActionTitle,
             mapDraftIsActive: mapDraftCoordinateCount > 0,
@@ -668,6 +770,7 @@ struct AnalysisWorkspaceView: View {
                         isReadOnly: model.sourceChanged,
                         onSetVisible: model.setPhotoAnnotationVisible,
                         onSetAllVisible: model.setAllPhotoAnnotationsVisible,
+                        onEdit: presentPhotoAnnotationEditor,
                         onDelete: { annotationID in
                             model.removeAnnotation(id: annotationID)
                             if selectedAnnotationID == annotationID {
@@ -677,14 +780,14 @@ struct AnalysisWorkspaceView: View {
                     )
                 }
 
-                Text("SHA-256")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(analysisCase.source.sha256)
-                    .font(.system(.caption2, design: .monospaced))
-                    .textSelection(.enabled)
-                    .lineLimit(4)
-                    .accessibilityLabel("Source SHA-256 \(analysisCase.source.sha256)")
+                Divider()
+
+                AnalysisCaseNotesView(
+                    observations: model.observations,
+                    isReadOnly: model.sourceChanged,
+                    onAdd: { isObservationEditorPresented = true },
+                    onDelete: model.removeObservation
+                )
             }
             Spacer()
         }
@@ -726,8 +829,12 @@ struct AnalysisWorkspaceView: View {
                 selectedAnnotationID: $selectedAnnotationID,
                 annotationsAreReadOnly: model.sourceChanged,
                 thumbnailService: thumbnailService,
+                polygonFinishRequestID: photoPolygonFinishRequestID,
+                polygonCancelRequestID: photoPolygonCancelRequestID,
+                onPolygonDraftCountChanged: { photoPolygonDraftCount = $0 },
                 onImageLoaded: { displayedScopeImage = $0 },
                 onSetAnnotation: model.setAnnotation,
+                onEditAnnotation: presentPhotoAnnotationEditor,
                 onRemoveAnnotation: model.removeAnnotation
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -755,6 +862,12 @@ struct AnalysisWorkspaceView: View {
                     canEditLabel: selectedAnnotationID != nil,
                     selectedHasLabel: selectedPhotoAnnotation?.text?
                         .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+                    photoFinishActionTitle: photoPolygonDraftCount >= 3
+                        ? "Finish Polygon"
+                        : nil,
+                    photoDraftIsActive: photoPolygonDraftCount > 0,
+                    onPhotoFinishAction: { photoPolygonFinishRequestID += 1 },
+                    onCancelPhotoDraft: { photoPolygonCancelRequestID += 1 },
                     onEditLabel: presentAnnotationLabelEditor
                 )
             }
@@ -917,43 +1030,64 @@ struct AnalysisWorkspaceView: View {
 
     @ViewBuilder
     private var analysisDetail: some View {
-        if let selectedFindingID,
-           let finding = model.findings.first(where: { $0.id == selectedFindingID }) {
-            FindingDetailView(
-                finding: finding,
-                annotations: model.annotations,
-                isReadOnly: model.sourceChanged,
-                onReportInclusionChanged: { included in
-                    model.setFindingIncluded(finding.id, included: included)
-                },
-                onAnnotationLinkChanged: { annotationID, isLinked in
-                    model.setFindingLink(
-                        findingID: finding.id,
-                        annotationID: annotationID,
-                        isLinked: isLinked
+        VStack(spacing: 0) {
+            Group {
+                if let selectedFindingID,
+                   let finding = model.findings.first(where: { $0.id == selectedFindingID }) {
+                    FindingDetailView(
+                        finding: finding,
+                        annotations: model.annotations,
+                        isReadOnly: model.sourceChanged,
+                        onReportInclusionChanged: { included in
+                            model.setFindingIncluded(finding.id, included: included)
+                        },
+                        onAnnotationLinkChanged: { annotationID, isLinked in
+                            model.setFindingLink(
+                                findingID: finding.id,
+                                annotationID: annotationID,
+                                isLinked: isLinked
+                            )
+                        },
+                        onSelectAnnotation: { annotationID in
+                            photoAnnotationTool = .select
+                            selectedAnnotationID = annotationID
+                        }
                     )
-                },
-                onSelectAnnotation: { annotationID in
-                    photoAnnotationTool = .select
-                    selectedAnnotationID = annotationID
+                } else {
+                    SourceFactsDetailView(
+                        facts: model.sourceFacts,
+                        rawMetadata: model.rawMetadata,
+                        run: model.sourceFactsRun,
+                        onCancel: {
+                            if let id = model.sourceFactsRun?.analyzerID {
+                                model.cancelAnalyzer(id)
+                            }
+                        },
+                        onRetry: {
+                            if let id = model.sourceFactsRun?.analyzerID {
+                                model.retryAnalyzer(id)
+                            }
+                        }
+                    )
                 }
-            )
-        } else {
-            SourceFactsDetailView(
-                facts: model.sourceFacts,
-                rawMetadata: model.rawMetadata,
-                run: model.sourceFactsRun,
-                onCancel: {
-                    if let id = model.sourceFactsRun?.analyzerID {
-                        model.cancelAnalyzer(id)
-                    }
-                },
-                onRetry: {
-                    if let id = model.sourceFactsRun?.analyzerID {
-                        model.retryAnalyzer(id)
-                    }
+            }
+            .frame(maxHeight: .infinity)
+
+            if let hash = model.analysisCase?.source.sha256 {
+                Divider()
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("SOURCE SHA-256")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(hash)
+                        .font(.system(.caption2, design: .monospaced))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Source SHA-256 \(hash)")
                 }
-            )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+            }
         }
     }
 
@@ -1074,6 +1208,7 @@ private struct AnalysisAnnotationList: View {
     let isReadOnly: Bool
     let onSetVisible: (UUID, Bool) -> Void
     let onSetAllVisible: (Bool) -> Void
+    let onEdit: (UUID) -> Void
     let onDelete: (UUID) -> Void
 
     var body: some View {
@@ -1158,6 +1293,13 @@ private struct AnalysisAnnotationList: View {
                             + (annotation.isVisible ? "visible" : "hidden")
                     )
                     .contextMenu {
+                        Button("Rename / Add Note…") {
+                            onEdit(annotation.id)
+                        }
+                        .disabled(isReadOnly)
+
+                        Divider()
+
                         Button("Delete Photo Annotation", role: .destructive) {
                             onDelete(annotation.id)
                         }
@@ -1173,6 +1315,66 @@ private struct AnalysisAnnotationList: View {
             }
             .accessibilityLabel("Photo annotation layers")
         }
+    }
+}
+
+private struct AnalysisCaseNotesView: View {
+    let observations: [AnalysisObservation]
+    let isReadOnly: Bool
+    let onAdd: () -> Void
+    let onDelete: (UUID) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("CASE NOTES")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Add Note", systemImage: "plus", action: onAdd)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .disabled(isReadOnly)
+                    .help("Add a case-only note; IPTC metadata is not changed")
+            }
+
+            if observations.isEmpty {
+                Text("Add general analysis notes here. Notes remain in the case and do not alter IPTC metadata.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(observations) { observation in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(observation.title)
+                                    .font(.caption.weight(.semibold))
+                                Text(observation.note)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(7)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.secondary.opacity(0.08))
+                            )
+                            .contextMenu {
+                                Button("Delete Note", role: .destructive) {
+                                    onDelete(observation.id)
+                                }
+                                .disabled(isReadOnly)
+                            }
+                        }
+                    }
+                }
+                .frame(minHeight: 55, idealHeight: 110, maxHeight: 150)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("General case notes")
     }
 }
 
@@ -2171,6 +2373,7 @@ private extension AnalysisAnnotationKind {
         case .distance: "Distance"
         case .rectangle: "Rectangle"
         case .ellipse: "Ellipse"
+        case .polygon: "Polygon"
         case .label: "Label"
         }
     }
@@ -2182,6 +2385,7 @@ private extension AnalysisAnnotationKind {
         case .distance: "ruler"
         case .rectangle: "rectangle"
         case .ellipse: "circle"
+        case .polygon: "pentagon"
         case .label: "character.cursor.ibeam"
         }
     }
@@ -2527,8 +2731,12 @@ private struct AnalysisSourceThumbnail: View {
     @Binding var selectedAnnotationID: UUID?
     let annotationsAreReadOnly: Bool
     let thumbnailService: ThumbnailService
+    let polygonFinishRequestID: Int
+    let polygonCancelRequestID: Int
+    let onPolygonDraftCountChanged: (Int) -> Void
     let onImageLoaded: (CGImage?) -> Void
     let onSetAnnotation: (AnalysisAnnotation) -> Void
+    let onEditAnnotation: (UUID) -> Void
     let onRemoveAnnotation: (UUID) -> Void
     @State private var loadedSourceIdentity: SourcePreviewIdentity?
     @State private var sourceCGImage: CGImage?
@@ -2538,6 +2746,7 @@ private struct AnalysisSourceThumbnail: View {
     @State private var selectionDraft: CGRect?
     @State private var annotationDraft: AnalysisAnnotationGestureDraft?
     @State private var annotationEditSession: AnalysisAnnotationEditSession?
+    @State private var polygonDraftPoints: [AnalysisNormalizedPoint] = []
     @State private var pendingLabelAnchor: AnalysisNormalizedPoint?
     @State private var labelText = ""
     @State private var isLabelPromptPresented = false
@@ -2751,6 +2960,13 @@ private struct AnalysisSourceThumbnail: View {
             }
             .contextMenu {
                 if let selectedAnnotationID {
+                    Button("Rename / Add Note…") {
+                        onEditAnnotation(selectedAnnotationID)
+                    }
+                    .disabled(annotationsAreReadOnly)
+
+                    Divider()
+
                     Button("Delete Selected Photo Annotation", role: .destructive) {
                         onRemoveAnnotation(selectedAnnotationID)
                         self.selectedAnnotationID = nil
@@ -2834,6 +3050,17 @@ private struct AnalysisSourceThumbnail: View {
         .onDisappear {
             removeScrollEventMonitor()
         }
+        .onChange(of: polygonFinishRequestID) {
+            finishPolygonDraft()
+        }
+        .onChange(of: polygonCancelRequestID) {
+            cancelPolygonDraft()
+        }
+        .onChange(of: annotationTool) {
+            if annotationTool != .shape {
+                cancelPolygonDraft()
+            }
+        }
         .alert("New Label", isPresented: $isLabelPromptPresented) {
             TextField("Label", text: $labelText)
             Button("Cancel", role: .cancel) {
@@ -2861,6 +3088,7 @@ private struct AnalysisSourceThumbnail: View {
         ) {
             image = nil
             resetZoom()
+            cancelPolygonDraft()
             onImageLoaded(nil)
             guard let url else { return }
             let sourceIdentity = SourcePreviewIdentity(
@@ -3127,6 +3355,13 @@ private struct AnalysisSourceThumbnail: View {
         if let annotationEditSession {
             return annotationEditSession.updated
         }
+        if !polygonDraftPoints.isEmpty {
+            return AnalysisAnnotation(
+                kind: .polygon,
+                geometry: .polygon(polygonDraftPoints),
+                style: annotationStyle
+            )
+        }
         guard let annotationDraft,
               let geometry = AnalysisAnnotationGeometryBuilder.geometry(
                   for: annotationDraft.kind,
@@ -3206,6 +3441,7 @@ private struct AnalysisSourceThumbnail: View {
         guard let kind = annotationTool.annotationKind else {
             return false
         }
+        if kind == .polygon { return true }
         guard kind != .label else { return true }
         guard let image,
               let coordinateMapper,
@@ -3276,6 +3512,37 @@ private struct AnalysisSourceThumbnail: View {
             return true
         }
 
+        if kind == .polygon {
+            let point = coordinateMapper.annotationPoint(
+                from: geometry.clampedNormalizedDisplayPoint(fromViewPoint: value.location)
+            )
+            let viewPoint = geometry.viewPoint(
+                fromNormalizedDisplay: coordinateMapper.displayPoint(from: point)
+            )
+            if polygonDraftPoints.count >= 3,
+               let first = polygonDraftPoints.first {
+                let firstViewPoint = geometry.viewPoint(
+                    fromNormalizedDisplay: coordinateMapper.displayPoint(from: first)
+                )
+                if hypot(viewPoint.x - firstViewPoint.x, viewPoint.y - firstViewPoint.y) <= 12 {
+                    finishPolygonDraft()
+                    return true
+                }
+            }
+            if let last = polygonDraftPoints.last {
+                let lastViewPoint = geometry.viewPoint(
+                    fromNormalizedDisplay: coordinateMapper.displayPoint(from: last)
+                )
+                guard hypot(viewPoint.x - lastViewPoint.x, viewPoint.y - lastViewPoint.y) > 3 else {
+                    return true
+                }
+            }
+            guard polygonDraftPoints.count < 1_000 else { return true }
+            polygonDraftPoints.append(point)
+            onPolygonDraftCountChanged(polygonDraftPoints.count)
+            return true
+        }
+
         if kind == .label {
             pendingLabelAnchor = coordinateMapper.annotationPoint(
                 from: geometry.clampedNormalizedDisplayPoint(fromViewPoint: value.location)
@@ -3306,6 +3573,26 @@ private struct AnalysisSourceThumbnail: View {
         onSetAnnotation(annotation)
         selectedAnnotationID = annotation.id
         return true
+    }
+
+    private func finishPolygonDraft() {
+        guard !annotationsAreReadOnly, polygonDraftPoints.count >= 3 else { return }
+        let annotation = AnalysisAnnotation(
+            kind: .polygon,
+            geometry: .polygon(polygonDraftPoints),
+            style: annotationStyle
+        )
+        guard (try? annotation.validate()) != nil else { return }
+        onSetAnnotation(annotation)
+        selectedAnnotationID = annotation.id
+        polygonDraftPoints.removeAll(keepingCapacity: false)
+        onPolygonDraftCountChanged(0)
+    }
+
+    private func cancelPolygonDraft() {
+        guard !polygonDraftPoints.isEmpty else { return }
+        polygonDraftPoints.removeAll(keepingCapacity: false)
+        onPolygonDraftCountChanged(0)
     }
 
     private func createPendingLabel() {

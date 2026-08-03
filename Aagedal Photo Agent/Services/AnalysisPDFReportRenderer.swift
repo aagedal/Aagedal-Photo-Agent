@@ -112,6 +112,7 @@ private final class Renderer {
     private var pageNumber = 0
     private var pageOpen = false
     private var openStreetMapImage: NSImage?
+    private var annotatedPhotoImage: NSImage?
 
     private let ink = NSColor(srgbRed: 0.10, green: 0.12, blue: 0.15, alpha: 1)
     private let secondary = NSColor(srgbRed: 0.36, green: 0.39, blue: 0.43, alpha: 1)
@@ -138,6 +139,10 @@ private final class Renderer {
     }
 
     func render() async throws {
+        annotatedPhotoImage = try? await AnalysisEvidenceJPEGRenderer.annotatedPhotoImage(
+            sourceURL: snapshot.source.canonicalURL,
+            annotations: snapshot.photoAnnotations
+        )
         if options.mapBasemap == .openStreetMap, let map = snapshot.mapEvidence {
             openStreetMapImage = try? await AnalysisOpenStreetMapSnapshotter.image(
                 viewport: map.viewport,
@@ -402,6 +407,43 @@ private final class Renderer {
     }
 
     private func drawPhotoAnnotations() {
+        if let annotatedPhotoImage {
+            let imageSize = annotatedPhotoImage.size
+            let aspectRatio = max(0.01, imageSize.width / max(1, imageSize.height))
+            let figureHeight = min(380, contentWidth / aspectRatio)
+            ensureSpace(figureHeight + 32)
+            let figureRect = CGRect(
+                x: margin,
+                y: cursorY - figureHeight,
+                width: contentWidth,
+                height: figureHeight
+            )
+            annotatedPhotoImage.draw(
+                in: figureRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1
+            )
+            hairline.setStroke()
+            let border = NSBezierPath(rect: figureRect)
+            border.lineWidth = 0.75
+            border.stroke()
+            cursorY = figureRect.minY - 13
+            drawFlowingText(
+                "Source image with visible case annotations flattened for this report snapshot.",
+                font: .systemFont(ofSize: 8.5),
+                color: secondary,
+                lineSpacing: 1
+            )
+            cursorY -= 12
+        } else {
+            drawCallout(
+                title: "Image figure unavailable",
+                body: "The source could not be decoded for the report figure. Annotation geometry and notes are still listed below."
+            )
+            cursorY -= 12
+        }
+
         drawFlowingText(
             "Annotation geometry is stored in normalized, display-oriented coordinates tied to the source revision. Visibility below reflects the frozen case state.",
             font: .systemFont(ofSize: 9.5),
@@ -859,6 +901,9 @@ private final class Renderer {
             return "segment (\(normalized(start))) to (\(normalized(end)))"
         case .bounds(let bounds):
             return "bounds (\(normalized(bounds.minimum))) to (\(normalized(bounds.maximum)))"
+        case .polygon(let points):
+            return "polygon with \(points.count) vertices: "
+                + points.map { "(\(normalized($0)))" }.joined(separator: ", ")
         case .anchor(let point):
             return "anchor (\(normalized(point)))"
         }

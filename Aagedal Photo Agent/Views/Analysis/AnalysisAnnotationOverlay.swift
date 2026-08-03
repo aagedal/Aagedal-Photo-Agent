@@ -47,18 +47,19 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
 
     var annotationKind: AnalysisAnnotationKind? {
         switch self {
-        case .select, .hand, .marker, .shape: nil
+        case .select, .hand, .marker: nil
         case .line: .line
         case .arrow: .arrow
         case .distance: .distance
         case .rectangle: .rectangle
         case .ellipse: .ellipse
+        case .shape: .polygon
         case .label: .label
         }
     }
 
     static let photoTools: [Self] = [
-        .select, .hand, .line, .arrow, .distance, .rectangle, .ellipse, .label,
+        .select, .hand, .line, .arrow, .distance, .rectangle, .ellipse, .shape, .label,
     ]
 
     static let mapTools: [Self] = [
@@ -96,6 +97,10 @@ struct AnalysisAnnotationToolbar: View {
     var canEditLabel = false
     var selectedHasLabel = false
     var showsLabelActionTitle = false
+    var photoFinishActionTitle: String?
+    var photoDraftIsActive = false
+    var onPhotoFinishAction: () -> Void = {}
+    var onCancelPhotoDraft: () -> Void = {}
     var mapActionTitle: String?
     var mapFinishActionTitle: String?
     var mapDraftIsActive = false
@@ -152,6 +157,23 @@ struct AnalysisAnnotationToolbar: View {
                 }
             } else {
                 toolPicker(selection: $tool, tools: tools)
+            }
+
+            if let photoFinishActionTitle {
+                Button(photoFinishActionTitle, action: onPhotoFinishAction)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(isReadOnly)
+            }
+
+            if photoDraftIsActive {
+                Button(action: onCancelPhotoDraft) {
+                    Label("Cancel Photo Polygon", systemImage: "xmark")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+                .disabled(isReadOnly)
+                .help("Cancel the in-progress photo polygon")
             }
 
             HStack(spacing: 5) {
@@ -369,7 +391,7 @@ struct AnalysisAnnotationOverlay: View {
         let contrast = annotation.style.color.contrastColor.opacity(isDraft ? 0.55 : 0.82)
         let width = CGFloat(annotation.style.lineWidthPoints)
 
-        if case .bounds = annotation.geometry, annotation.style.fillOpacity > 0 {
+        if annotation.geometry.supportsFill, annotation.style.fillOpacity > 0 {
             context.fill(
                 path,
                 with: .color(color.opacity(annotation.style.fillOpacity))
@@ -468,6 +490,15 @@ struct AnalysisAnnotationOverlay: View {
     }
 }
 
+private extension AnalysisAnnotationGeometry {
+    var supportsFill: Bool {
+        switch self {
+        case .bounds, .polygon: true
+        case .segment, .anchor: false
+        }
+    }
+}
+
 enum AnalysisAnnotationHitTester {
     static func editTarget(
         at point: CGPoint,
@@ -558,6 +589,22 @@ enum AnalysisAnnotationHitTester {
                 point.distance(toSegmentFrom: $0.0, to: $0.1) <= tolerance
             }
 
+        case .polygon:
+            let path = AnalysisAnnotationViewGeometry.path(
+                for: annotation,
+                geometry: geometry,
+                coordinateMapper: coordinateMapper
+            )
+            if path.contains(point) { return true }
+            let points = AnalysisAnnotationViewGeometry.outlinePoints(
+                for: annotation,
+                geometry: geometry,
+                coordinateMapper: coordinateMapper
+            )
+            return zip(points, points.dropFirst() + points.prefix(1)).contains {
+                point.distance(toSegmentFrom: $0.0, to: $0.1) <= tolerance
+            }
+
         case .anchor(let anchor):
             let location = AnalysisAnnotationViewGeometry.viewPoint(
                 anchor,
@@ -604,6 +651,10 @@ private enum AnalysisAnnotationViewGeometry {
                 coordinateMapper: coordinateMapper
             )
             return (CGPoint(x: point.x + 4, y: point.y - 5), .bottomLeading)
+        case .polygon(let points):
+            guard let first = points.first else { return (.zero, .center) }
+            let point = viewPoint(first, geometry: geometry, coordinateMapper: coordinateMapper)
+            return (CGPoint(x: point.x + 4, y: point.y - 5), .bottomLeading)
         }
     }
 
@@ -626,7 +677,7 @@ private enum AnalysisAnnotationViewGeometry {
             }
             return path
 
-        case .bounds:
+        case .bounds, .polygon:
             let points = outlinePoints(
                 for: annotation,
                 geometry: geometry,
@@ -652,6 +703,11 @@ private enum AnalysisAnnotationViewGeometry {
         geometry: ImageInspectionGeometry,
         coordinateMapper: AnalysisAnnotationCoordinateMapper
     ) -> [CGPoint] {
+        if case .polygon(let points) = annotation.geometry {
+            return points.map {
+                viewPoint($0, geometry: geometry, coordinateMapper: coordinateMapper)
+            }
+        }
         guard case .bounds(let bounds) = annotation.geometry else { return [] }
         if annotation.kind == .rectangle {
             return [
@@ -739,6 +795,13 @@ private enum AnalysisAnnotationViewGeometry {
                     )
                 ),
             ]
+        case .polygon(let points):
+            return points.enumerated().map { index, point in
+                (
+                    .polygonVertex(index),
+                    viewPoint(point, geometry: geometry, coordinateMapper: coordinateMapper)
+                )
+            }
         case .anchor(let point):
             return [(
                 nil,

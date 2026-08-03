@@ -7,6 +7,7 @@ nonisolated enum AnalysisAnnotationKind: String, Codable, CaseIterable, Sendable
     case distance
     case rectangle
     case ellipse
+    case polygon
     case label
 }
 
@@ -39,6 +40,7 @@ nonisolated struct AnalysisNormalizedBounds: Codable, Equatable, Sendable {
 nonisolated enum AnalysisAnnotationGeometry: Codable, Equatable, Sendable {
     case segment(start: AnalysisNormalizedPoint, end: AnalysisNormalizedPoint)
     case bounds(AnalysisNormalizedBounds)
+    case polygon([AnalysisNormalizedPoint])
     case anchor(AnalysisNormalizedPoint)
 
     fileprivate var isValid: Bool {
@@ -47,6 +49,11 @@ nonisolated enum AnalysisAnnotationGeometry: Codable, Equatable, Sendable {
             start.isValid && end.isValid && start != end
         case .bounds(let bounds):
             bounds.isValid
+        case .polygon(let points):
+            points.count >= 3
+                && points.count <= 1_000
+                && points.allSatisfy(\.isValid)
+                && Set(points.map { "\($0.x),\($0.y)" }).count >= 3
         case .anchor(let point):
             point.isValid
         }
@@ -362,6 +369,8 @@ nonisolated enum AnalysisAnnotationGeometryBuilder {
             )
             guard bounds.isValid else { return nil }
             return .bounds(bounds)
+        case .polygon:
+            return nil
         case .label:
             return .anchor(start)
         }
@@ -375,6 +384,7 @@ nonisolated enum AnalysisAnnotationControlPoint: Equatable, Sendable {
     case boundsMaximumXMinimumY
     case boundsMaximum
     case boundsMinimumXMaximumY
+    case polygonVertex(Int)
 }
 
 /// Pure source-frame edits used by the Select tool.
@@ -404,6 +414,8 @@ nonisolated enum AnalysisAnnotationGeometryEditor {
                 minimum: translated(bounds.minimum),
                 maximum: translated(bounds.maximum)
             ))
+        case .polygon(let points):
+            return .polygon(points.map(translated))
         case .anchor(let point):
             return .anchor(translated(point))
         }
@@ -442,6 +454,12 @@ nonisolated enum AnalysisAnnotationGeometryEditor {
                 ),
                 to: point
             )
+        case (.polygon(let points), .polygonVertex(let index)):
+            guard points.indices.contains(index) else { return nil }
+            var updated = points
+            updated[index] = point
+            guard Set(updated.map { "\($0.x),\($0.y)" }).count >= 3 else { return nil }
+            return .polygon(updated)
         default:
             return nil
         }
@@ -455,6 +473,17 @@ nonisolated enum AnalysisAnnotationGeometryEditor {
             return normalizedBounds(from: start, to: end)
         case .bounds(let bounds):
             return bounds
+        case .polygon(let points):
+            return AnalysisNormalizedBounds(
+                minimum: AnalysisNormalizedPoint(
+                    x: points.map(\.x).min() ?? 0,
+                    y: points.map(\.y).min() ?? 0
+                ),
+                maximum: AnalysisNormalizedPoint(
+                    x: points.map(\.x).max() ?? 0,
+                    y: points.map(\.y).max() ?? 0
+                )
+            )
         case .anchor(let point):
             return AnalysisNormalizedBounds(minimum: point, maximum: point)
         }
@@ -658,7 +687,8 @@ private extension AnalysisAnnotationGeometry {
     nonisolated func matches(_ kind: AnalysisAnnotationKind) -> Bool {
         switch (kind, self) {
         case (.line, .segment), (.arrow, .segment), (.distance, .segment),
-             (.rectangle, .bounds), (.ellipse, .bounds), (.label, .anchor):
+             (.rectangle, .bounds), (.ellipse, .bounds), (.polygon, .polygon),
+             (.label, .anchor):
             true
         default:
             false
