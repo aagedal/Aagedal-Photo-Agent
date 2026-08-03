@@ -354,3 +354,55 @@ struct ImageInspectionGeometryTests {
         )
     }
 }
+
+@Suite("Image preview zoom geometry")
+struct ImagePreviewZoomGeometryTests {
+    @Test("the hand tool belongs to photo markup, not map markup")
+    func handToolPlacement() {
+        #expect(AnalysisAnnotationTool.photoTools.contains(.hand))
+        #expect(!AnalysisAnnotationTool.mapTools.contains(.hand))
+        #expect(AnalysisAnnotationTool.hand.annotationKind == nil)
+    }
+
+    @Test("analysis preview zoom supports 4000 percent")
+    func zoomLimit() {
+        #expect(ImagePreviewZoomGeometry.maximumScale == 40)
+        #expect(ImagePreviewZoomGeometry.clampedScale(80) == 40)
+        #expect(ImagePreviewZoomGeometry.clampedScale(0.5) == 1)
+    }
+
+    @Test("pan bounds follow the fitted image rather than the viewport outline")
+    func fittedImagePanBounds() {
+        let viewport = CGSize(width: 400, height: 300)
+        let fittedImage = CGRect(x: 0, y: 50, width: 400, height: 200)
+
+        let atFit = ImagePreviewZoomGeometry.clampedOffset(
+            CGSize(width: 100, height: 100),
+            zoomScale: 1,
+            viewportSize: viewport,
+            imageRects: [fittedImage]
+        )
+        #expect(atFit == .zero)
+
+        let atTwoTimes = ImagePreviewZoomGeometry.clampedOffset(
+            CGSize(width: 500, height: 500),
+            zoomScale: 2,
+            viewportSize: viewport,
+            imageRects: [fittedImage]
+        )
+        #expect(atTwoTimes == CGSize(width: 200, height: 50))
+    }
+
+    @Test("cursor anchored zoom preserves the point beneath the cursor")
+    func cursorAnchoredZoom() {
+        let offset = ImagePreviewZoomGeometry.offset(
+            anchoredAt: CGPoint(x: 300, y: 100),
+            in: CGSize(width: 400, height: 300),
+            currentOffset: .zero,
+            oldScale: 1,
+            newScale: 2
+        )
+
+        #expect(offset == CGSize(width: -100, height: 50))
+    }
+}

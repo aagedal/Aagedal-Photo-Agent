@@ -438,6 +438,22 @@ struct AnalysisCaseTests {
         ))
     }
 
+    @Test("embedded GPS promotion keeps explicit provenance")
+    func embeddedGPSLocationEvidenceRoundTrip() throws {
+        let evidence = AnalysisLocationEvidence(
+            coordinate: AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522),
+            source: .embeddedGPS,
+            sourceDetail: "Promoted from the analyzed source's embedded GPS metadata",
+            now: Date(timeIntervalSince1970: 1)
+        )
+
+        #expect(evidence.validate())
+        let encoded = try JSONEncoder().encode(evidence)
+        let decoded = try JSONDecoder().decode(AnalysisLocationEvidence.self, from: encoded)
+        #expect(decoded == evidence)
+        #expect(decoded.source.displayName == "Embedded GPS")
+    }
+
     @Test("legacy map camera data defaults to a level north-facing viewport")
     func decodesLegacyMapViewportCameraDefaults() throws {
         let data = Data(#"{"center":{"latitude":59.9139,"longitude":10.7522},"latitudeDelta":0.05,"longitudeDelta":0.06}"#.utf8)

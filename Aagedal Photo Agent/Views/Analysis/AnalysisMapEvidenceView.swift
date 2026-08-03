@@ -897,7 +897,8 @@ struct AnalysisMapEvidenceView: View {
                         coordinate: embeddedLocation,
                         source: "Source metadata",
                         detail: "Read from the analyzed source; unchanged by this workspace",
-                        color: .blue
+                        color: .blue,
+                        canSetAsPhotoLocation: true
                     )
                 }
                 if let location = mapState.investigationLocation {
@@ -924,7 +925,8 @@ struct AnalysisMapEvidenceView: View {
         coordinate: AnalysisGeoCoordinate,
         source: String?,
         detail: String?,
-        color: Color
+        color: Color,
+        canSetAsPhotoLocation: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Label(title, systemImage: "mappin.circle.fill")
@@ -947,11 +949,34 @@ struct AnalysisMapEvidenceView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
+            if canSetAsPhotoLocation {
+                Button {
+                    setPhotoLocationFromEmbeddedGPS(coordinate)
+                } label: {
+                    Label(
+                        isEmbeddedGPSPhotoLocation(coordinate)
+                            ? "Photo Location Set"
+                            : "Set as Photo Location",
+                        systemImage: "camera.fill"
+                    )
+                }
+                .controlSize(.small)
+                .disabled(
+                    isReadOnly
+                        || isEmbeddedGPSPhotoLocation(coordinate)
+                )
+                .help("Use the source file's embedded GPS as the case photo location")
+            }
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: canSetAsPhotoLocation ? .contain : .combine)
+    }
+
+    private func isEmbeddedGPSPhotoLocation(_ coordinate: AnalysisGeoCoordinate) -> Bool {
+        mapState.investigationLocation?.coordinate == coordinate
+            && mapState.investigationLocation?.source == .embeddedGPS
     }
 
     private func mapAnnotationButton(_ annotation: AnalysisMapAnnotation) -> some View {
@@ -1041,7 +1066,7 @@ struct AnalysisMapEvidenceView: View {
         guard coordinate.isValid else { return }
 
         switch annotationTool {
-        case .select:
+        case .select, .hand:
             return
         case .arrow, .rectangle, .ellipse:
             return
@@ -1176,6 +1201,16 @@ struct AnalysisMapEvidenceView: View {
             coordinate: coordinate,
             source: .mapCenter,
             detail: "Selected from the center of the analysis map"
+        )
+        guard addsFieldOfViewCone else { return }
+        addFieldOfViewCone(at: coordinate)
+    }
+
+    private func setPhotoLocationFromEmbeddedGPS(_ coordinate: AnalysisGeoCoordinate) {
+        setInvestigationLocation(
+            coordinate: coordinate,
+            source: .embeddedGPS,
+            detail: "Promoted from the analyzed source's embedded GPS metadata"
         )
         guard addsFieldOfViewCone else { return }
         addFieldOfViewCone(at: coordinate)

@@ -101,15 +101,17 @@ nonisolated struct AnalysisMapViewport: Codable, Equatable, Sendable {
 
 /// The provenance of a case-only location pin.
 ///
-/// Embedded GPS is rendered directly from source facts and is never copied into this persisted
-/// collection. Every persisted value is an investigator action with an explicit origin.
+/// Embedded GPS is rendered directly from source facts. An investigator may explicitly promote
+/// it to the case photo location; that action is persisted with its embedded-GPS provenance.
 nonisolated enum AnalysisLocationEvidenceSource: String, Codable, CaseIterable, Sendable {
+    case embeddedGPS
     case manualCoordinates
     case placeSearch
     case mapCenter
 
     var displayName: String {
         switch self {
+        case .embeddedGPS: "Embedded GPS"
         case .manualCoordinates: "Entered coordinates"
         case .placeSearch: "Place search"
         case .mapCenter: "Selected on map"

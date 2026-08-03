@@ -567,7 +567,7 @@ struct AnalysisWorkspaceView: View {
 
     private var mapToolbarActionTitle: String? {
         switch mapAnnotationTool {
-        case .select: nil
+        case .select, .hand: nil
         case .marker: "Add Marker"
         case .line: mapDraftCoordinateCount == 0 ? "Set Start" : "Set End"
         case .distance: mapDraftCoordinateCount == 0 ? "Set Start" : "Set End"
@@ -2545,15 +2545,18 @@ private struct AnalysisSourceThumbnail: View {
     @State private var zoomGestureStartScale: CGFloat?
     @State private var panOffset: CGSize = .zero
     @State private var panDragStartOffset: CGSize?
-    @State private var isPanModeEnabled = false
+    @State private var viewportSize: CGSize = .zero
+    @State private var pointerLocationInViewport: CGPoint?
+    @State private var scrollEventMonitor: Any?
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 ZStack {
                     Color(nsColor: .windowBackgroundColor)
                     CheckerboardBackground(tileSize: 12)
                         .opacity(0.16)
+                    ZStack {
                     if let image {
                     if pixelViewMode == .compressionResidual, let sourceImage {
                         HStack(spacing: 8) {
@@ -2640,15 +2643,12 @@ private struct AnalysisSourceThumbnail: View {
                         ProgressView()
                             .tint(.white)
                     }
-                }
+                    }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .local)
                         .onChanged { value in
-                            if isPanModeEnabled, zoomScale > 1 {
-                                updatePan(value.translation, in: geometry.size)
-                                return
-                            }
                             if handleAnnotationDragChanged(value, image: image, size: geometry.size) {
                                 return
                             }
@@ -2676,10 +2676,6 @@ private struct AnalysisSourceThumbnail: View {
                             )
                         }
                         .onEnded { value in
-                            if isPanModeEnabled, zoomScale > 1 {
-                                panDragStartOffset = nil
-                                return
-                            }
                             defer {
                                 selectionDragStart = nil
                                 selectionDraft = nil
@@ -2763,15 +2759,34 @@ private struct AnalysisSourceThumbnail: View {
                 } else {
                     Text("Select a photo annotation to delete it")
                 }
-            }
-            .focusable()
-                .onDeleteCommand {
-                    guard !annotationsAreReadOnly, let selectedAnnotationID else { return }
-                    onRemoveAnnotation(selectedAnnotationID)
-                    self.selectedAnnotationID = nil
                 }
                 .scaleEffect(zoomScale)
                 .offset(panOffset)
+
+                if annotationTool == .hand {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                                .onChanged { value in
+                                    NSCursor.closedHand.set()
+                                    updatePan(value.translation, in: geometry.size)
+                                }
+                                .onEnded { _ in
+                                    panDragStartOffset = nil
+                                    NSCursor.openHand.set()
+                                }
+                        )
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active:
+                                NSCursor.openHand.set()
+                            case .ended:
+                                NSCursor.arrow.set()
+                            }
+                        }
+                }
+                }
                 .simultaneousGesture(
                     MagnifyGesture()
                         .onChanged { value in
@@ -2785,12 +2800,40 @@ private struct AnalysisSourceThumbnail: View {
                             zoomGestureStartScale = nil
                         }
                 )
-
-                zoomControls(in: geometry.size)
-                    .padding(8)
+                // Keep keyboard focus on the fixed viewport. A focus effect attached
+                // to the zoomed canvas scales into the large blue rectangle that can
+                // escape the photo pane.
+                .focusable()
+                .focusEffectDisabled()
+                .onDeleteCommand {
+                    guard !annotationsAreReadOnly, let selectedAnnotationID else { return }
+                    onRemoveAnnotation(selectedAnnotationID)
+                    self.selectedAnnotationID = nil
+                }
+                .onContinuousHover(coordinateSpace: .local) { phase in
+                    switch phase {
+                    case .active(let location):
+                        pointerLocationInViewport = location
+                    case .ended:
+                        pointerLocationInViewport = nil
+                    }
+                }
+                .onAppear {
+                    viewportSize = geometry.size
+                }
+                .onChange(of: geometry.size) { _, newSize in
+                    viewportSize = newSize
+                    panOffset = clampedPanOffset(panOffset, in: newSize)
+                }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .onAppear {
+            installScrollEventMonitor()
+        }
+        .onDisappear {
+            removeScrollEventMonitor()
+        }
         .alert("New Label", isPresented: $isLabelPromptPresented) {
             TextField("Label", text: $labelText)
             Button("Cancel", role: .cancel) {
@@ -2898,70 +2941,30 @@ private struct AnalysisSourceThumbnail: View {
         }
     }
 
-    private func zoomControls(in viewportSize: CGSize) -> some View {
-        HStack(spacing: 6) {
-            Button {
-                setZoom(zoomScale / 1.25, in: viewportSize)
-            } label: {
-                Image(systemName: "minus.magnifyingglass")
-            }
-            .disabled(zoomScale <= 1)
-            .help("Zoom out")
-
-            Slider(
-                value: Binding(
-                    get: { Double(zoomScale) },
-                    set: { setZoom(CGFloat($0), in: viewportSize) }
-                ),
-                in: 1...8
+    private func setZoom(
+        _ requestedScale: CGFloat,
+        anchoredAt anchor: CGPoint? = nil,
+        in viewportSize: CGSize
+    ) {
+        let oldScale = zoomScale
+        let newScale = ImagePreviewZoomGeometry.clampedScale(requestedScale)
+        let requestedOffset: CGSize
+        if let anchor, newScale != oldScale {
+            requestedOffset = ImagePreviewZoomGeometry.offset(
+                anchoredAt: anchor,
+                in: viewportSize,
+                currentOffset: panOffset,
+                oldScale: oldScale,
+                newScale: newScale
             )
-            .frame(width: 100)
-            .accessibilityLabel("Photo zoom")
-            .accessibilityValue("\(Int((zoomScale * 100).rounded())) percent")
-
-            Button {
-                setZoom(zoomScale * 1.25, in: viewportSize)
-            } label: {
-                Image(systemName: "plus.magnifyingglass")
-            }
-            .disabled(zoomScale >= 8)
-            .help("Zoom in")
-
-            Text("\(Int((zoomScale * 100).rounded()))%")
-                .font(.caption.monospacedDigit())
-                .frame(width: 42, alignment: .trailing)
-
-            Button {
-                isPanModeEnabled.toggle()
-            } label: {
-                Image(systemName: "hand.draw")
-            }
-            .buttonStyle(.bordered)
-            .tint(isPanModeEnabled ? .accentColor : nil)
-            .disabled(zoomScale <= 1)
-            .help("Drag to pan the zoomed photo")
-            .accessibilityLabel("Pan zoomed photo")
-            .accessibilityAddTraits(isPanModeEnabled ? .isSelected : [])
-
-            Button("Fit") {
-                resetZoom()
-            }
-            .disabled(zoomScale <= 1 && panOffset == .zero)
-            .help("Fit the whole photo")
+        } else {
+            requestedOffset = panOffset
         }
-        .controlSize(.small)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func setZoom(_ requestedScale: CGFloat, in viewportSize: CGSize) {
-        zoomScale = min(8, max(1, requestedScale))
-        panOffset = clampedPanOffset(panOffset, in: viewportSize)
+        zoomScale = newScale
+        panOffset = clampedPanOffset(requestedOffset, in: viewportSize)
         if zoomScale <= 1 {
             panOffset = .zero
             panDragStartOffset = nil
-            isPanModeEnabled = false
         }
     }
 
@@ -2980,12 +2983,46 @@ private struct AnalysisSourceThumbnail: View {
     }
 
     private func clampedPanOffset(_ offset: CGSize, in viewportSize: CGSize) -> CGSize {
-        let maximumX = max(0, (zoomScale - 1) * viewportSize.width / 2)
-        let maximumY = max(0, (zoomScale - 1) * viewportSize.height / 2)
-        return CGSize(
-            width: min(maximumX, max(-maximumX, offset.width)),
-            height: min(maximumY, max(-maximumY, offset.height))
+        guard let image else { return .zero }
+        return ImagePreviewZoomGeometry.clampedOffset(
+            offset,
+            zoomScale: zoomScale,
+            viewportSize: viewportSize,
+            imageRects: inspectionGeometries(
+                image: image,
+                containerSize: viewportSize
+            ).map(\.imageRectInView)
         )
+    }
+
+    private func installScrollEventMonitor() {
+        guard scrollEventMonitor == nil else { return }
+        scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            guard let pointerLocationInViewport,
+                  viewportSize.width > 0,
+                  viewportSize.height > 0 else {
+                return event
+            }
+            // Ignore trackpad momentum so zoom stops when the user's fingers stop,
+            // while still supporting ordinary mouse-wheel events without phases.
+            guard event.phase != [] || event.momentumPhase == [] else { return event }
+            let delta = event.scrollingDeltaY
+            guard abs(delta) > 0.01 else { return event }
+
+            let zoomFactor = max(0.1, 1 + delta * 0.005)
+            setZoom(
+                zoomScale * zoomFactor,
+                anchoredAt: pointerLocationInViewport,
+                in: viewportSize
+            )
+            return nil
+        }
+    }
+
+    private func removeScrollEventMonitor() {
+        guard let scrollEventMonitor else { return }
+        NSEvent.removeMonitor(scrollEventMonitor)
+        self.scrollEventMonitor = nil
     }
 
     private func resetZoom() {
@@ -2993,7 +3030,6 @@ private struct AnalysisSourceThumbnail: View {
         zoomGestureStartScale = nil
         panOffset = .zero
         panDragStartOffset = nil
-        isPanModeEnabled = false
     }
 
     private func analysisImagePane(

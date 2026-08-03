@@ -107,6 +107,108 @@ nonisolated enum ImageInspectionExtentOrigin: Hashable, Sendable {
     case bottomLeft
 }
 
+/// Geometry shared by fit-to-view previews that zoom a centered image canvas.
+/// Offsets are expressed in viewport points after scaling, so a one-point pointer
+/// movement always produces a one-point pan on screen.
+nonisolated enum ImagePreviewZoomGeometry {
+    static let maximumScale: CGFloat = 40
+
+    static func clampedScale(_ requestedScale: CGFloat, minimumScale: CGFloat = 1) -> CGFloat {
+        min(maximumScale, max(minimumScale, requestedScale))
+    }
+
+    static func offset(
+        anchoredAt anchor: CGPoint,
+        in viewportSize: CGSize,
+        currentOffset: CGSize,
+        oldScale: CGFloat,
+        newScale: CGFloat
+    ) -> CGSize {
+        guard oldScale > 0,
+              oldScale.isFinite,
+              newScale.isFinite,
+              viewportSize.width > 0,
+              viewportSize.height > 0 else {
+            return currentOffset
+        }
+
+        let ratio = newScale / oldScale
+        let anchorFromCenter = CGSize(
+            width: anchor.x - viewportSize.width / 2,
+            height: anchor.y - viewportSize.height / 2
+        )
+        return CGSize(
+            width: currentOffset.width * ratio + anchorFromCenter.width * (1 - ratio),
+            height: currentOffset.height * ratio + anchorFromCenter.height * (1 - ratio)
+        )
+    }
+
+    static func clampedOffset(
+        _ requestedOffset: CGSize,
+        zoomScale: CGFloat,
+        viewportSize: CGSize,
+        imageRects: [CGRect]
+    ) -> CGSize {
+        guard zoomScale >= 1,
+              zoomScale.isFinite,
+              viewportSize.width > 0,
+              viewportSize.height > 0,
+              let imageBounds = imageRects
+                .map(\.standardized)
+                .filter({ !$0.isEmpty && !$0.isNull && !$0.isInfinite })
+                .reduce(nil, { bounds, rect in
+                    bounds?.union(rect) ?? rect
+                }) else {
+            return .zero
+        }
+
+        let viewportCenter = CGPoint(
+            x: viewportSize.width / 2,
+            y: viewportSize.height / 2
+        )
+        return CGSize(
+            width: clampedAxisOffset(
+                requestedOffset.width,
+                scale: zoomScale,
+                viewportLength: viewportSize.width,
+                viewportCenter: viewportCenter.x,
+                contentMinimum: imageBounds.minX,
+                contentMaximum: imageBounds.maxX
+            ),
+            height: clampedAxisOffset(
+                requestedOffset.height,
+                scale: zoomScale,
+                viewportLength: viewportSize.height,
+                viewportCenter: viewportCenter.y,
+                contentMinimum: imageBounds.minY,
+                contentMaximum: imageBounds.maxY
+            )
+        )
+    }
+
+    private static func clampedAxisOffset(
+        _ requestedOffset: CGFloat,
+        scale: CGFloat,
+        viewportLength: CGFloat,
+        viewportCenter: CGFloat,
+        contentMinimum: CGFloat,
+        contentMaximum: CGFloat
+    ) -> CGFloat {
+        let scaledLength = (contentMaximum - contentMinimum) * scale
+        guard scaledLength > viewportLength else {
+            let contentCenter = (contentMinimum + contentMaximum) / 2
+            return -(contentCenter - viewportCenter) * scale
+        }
+
+        let minimumOffset = viewportLength
+            - viewportCenter
+            - (contentMaximum - viewportCenter) * scale
+        let maximumOffset = -viewportCenter
+            - (contentMinimum - viewportCenter) * scale
+        return min(maximumOffset, max(minimumOffset, requestedOffset))
+    }
+}
+
 nonisolated struct SourcePixelCoordinate: Hashable, Sendable {
     let x: Int
     let y: Int

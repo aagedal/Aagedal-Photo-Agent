@@ -3,6 +3,7 @@ import SwiftUI
 
 enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     case select
+    case hand
     case marker
     case line
     case arrow
@@ -17,6 +18,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .select: "Select"
+        case .hand: "Hand"
         case .marker: "Marker"
         case .line: "Line"
         case .arrow: "Arrow"
@@ -31,6 +33,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .select: "cursorarrow"
+        case .hand: "hand.draw"
         case .marker: "mappin"
         case .line: "line.diagonal"
         case .arrow: "arrow.up.right"
@@ -44,7 +47,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
 
     var annotationKind: AnalysisAnnotationKind? {
         switch self {
-        case .select, .marker, .shape: nil
+        case .select, .hand, .marker, .shape: nil
         case .line: .line
         case .arrow: .arrow
         case .distance: .distance
@@ -55,7 +58,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     }
 
     static let photoTools: [Self] = [
-        .select, .line, .arrow, .distance, .rectangle, .ellipse, .label,
+        .select, .hand, .line, .arrow, .distance, .rectangle, .ellipse, .label,
     ]
 
     static let mapTools: [Self] = [

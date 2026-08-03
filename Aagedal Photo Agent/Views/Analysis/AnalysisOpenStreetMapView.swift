@@ -30,7 +30,9 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
         mapView.showsZoomControls = true
         mapView.pointOfInterestFilter = .includingAll
         mapView.setRegion(region, animated: false)
-        mapView.addOverlay(AnalysisOpenStreetMapTileOverlay(), level: .aboveLabels)
+        // Keep replacement tiles on the map-content layer. Investigative geometry is
+        // added at .aboveLabels so opaque OSM tiles can never cover it after a redraw.
+        mapView.addOverlay(AnalysisOpenStreetMapTileOverlay(), level: .aboveRoads)
         context.coordinator.rebuildEvidence(in: mapView)
         return mapView
     }
@@ -104,6 +106,25 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
             for item in parent.folderAnnotations where item.annotation.isVisible {
                 add(item.annotation, dimmed: true, fallbackTitle: item.sourceName, to: mapView)
             }
+            restoreSelectionAfterEvidenceUpdate(in: mapView)
+        }
+
+        private func restoreSelectionAfterEvidenceUpdate(in mapView: MKMapView) {
+            guard let selectedAnnotationID = parent.selectedAnnotationID else { return }
+            // Selecting from viewFor: opens a nested MapKit/AppKit transaction while the
+            // annotation view is being committed. Defer it until MapKit finishes this pass.
+            DispatchQueue.main.async { [weak mapView] in
+                guard let mapView,
+                      !mapView.selectedAnnotations.contains(where: {
+                          ($0 as? AnalysisOSMPointAnnotation)?.annotationID == selectedAnnotationID
+                      }),
+                      let annotation = mapView.annotations.first(where: {
+                          ($0 as? AnalysisOSMPointAnnotation)?.annotationID == selectedAnnotationID
+                      }) else {
+                    return
+                }
+                mapView.selectAnnotation(annotation, animated: false)
+            }
         }
 
         private var embeddedLocation: AnalysisGeoCoordinate? { parent.embeddedLocation }
@@ -132,7 +153,7 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
                 )
                 overlay.style = annotation.style
                 overlay.isDimmed = dimmed
-                mapView.addOverlay(overlay)
+                mapView.addOverlay(overlay, level: .aboveLabels)
                 addSelectionAnnotation(annotation, title: title, color: color, to: mapView)
             case .polygon(let coordinates):
                 addPolygon(
@@ -161,7 +182,7 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
             )
             polygon.style = style
             polygon.isDimmed = dimmed
-            mapView.addOverlay(polygon)
+            mapView.addOverlay(polygon, level: .aboveLabels)
             if let annotationID, let title {
                 let representative = AnalysisGeoCoordinate(
                     latitude: polygon.coordinate.latitude,
@@ -214,16 +235,13 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
                 ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: identifier)
             view.annotation = annotation
             view.markerTintColor = annotation.color
-            view.glyphImage = NSImage(
-                systemSymbolName: annotation.usesSmallSymbol ? "circle.fill" : "mappin",
-                accessibilityDescription: nil
-            )
+            // MKMarkerAnnotationView can crash while resolving an NSImage system symbol
+            // during the layer transaction created by an Apple-map → OSM switch. Use
+            // MapKit's native marker glyph and a lightweight text dot for small handles.
+            view.glyphImage = nil
+            view.glyphText = annotation.usesSmallSymbol ? "•" : nil
             view.displayPriority = annotation.usesSmallSymbol ? .defaultLow : .required
             view.canShowCallout = true
-            if annotation.annotationID == parent.selectedAnnotationID {
-                view.selectedZPriority = .max
-                mapView.selectAnnotation(annotation, animated: false)
-            }
             return view
         }
 
