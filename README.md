@@ -229,16 +229,15 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
 ### Per release
 
 1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in the Xcode project.
-2. In Xcode: Product → Archive → Distribute App → Developer ID → upload for notarization → Export Notarized App.
-3. Build the DMG with the existing process.
-4. Sign the DMG (produces `sparkle:edSignature` and `length`):
+2. Add the release notes to `CHANGELOG.md`, including a concise `### Highlights` list for the Sparkle appcast.
+3. Run the release assistant:
    ```bash
-   "$(find ~/Library/Developer/Xcode/DerivedData -name sign_update -path '*/Sparkle*' | head -n 1)" \
-     "Aagedal-Photo-Agent-X.Y.Z.dmg"
+   scripts/release.sh
    ```
-5. Add a new `<item>` entry to `appcast.xml` with the version, build number, pubDate, enclosure URL on `aagedal.me`, signed length, signature, and release notes. Sparkle's docs cover the schema: <https://sparkle-project.org/documentation/publishing/>.
-6. Commit and push `appcast.xml` to GitHub, then synchronize the legacy Codeberg copy for older installed builds.
-7. Bump the cask in the `aagedal/homebrew-tap` repo.
+   It archives, exports with Developer ID, notarizes and staples the app and DMG, Sparkle-signs the DMG, and inserts the appcast item. When a matching archive or valid exported app already exists, its terminal menu can resume from that artifact instead of rebuilding. Set `RELEASE_BUILD_MODE=reuse` or `RELEASE_BUILD_MODE=rebuild` to make that choice non-interactively.
+4. Upload the DMG to `https://aagedal.me/apps/photoagent/`, using the exact filename printed by the script.
+5. Commit and push the generated `appcast.xml` to GitHub, tag the release, then synchronize the website fallback appcast and legacy Codeberg copy.
+6. Bump the cask in the `aagedal/homebrew-tap` repo.
 
 ## License
 

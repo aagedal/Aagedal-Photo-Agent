@@ -15,6 +15,7 @@
 # Usage:
 #   scripts/release.sh
 #   NOTARY_PROFILE=AC_NOTARY scripts/release.sh          # skip the prompt
+#   RELEASE_BUILD_MODE=rebuild scripts/release.sh        # ignore saved builds
 #
 set -euo pipefail
 
@@ -27,16 +28,121 @@ CHANGELOG="${CHANGELOG:-CHANGELOG.md}"
 OUTPUT_DIR="${OUTPUT_DIR:-build/release}"
 # Base URL the published DMG will live under. The enclosure URL becomes
 # "$RELEASE_URL_BASE/<stem>-<version>.dmg" — must match where you actually
-# upload the DMG. It is self-hosted at this flat path (no per-version
-# subfolder).
-RELEASE_URL_BASE="${RELEASE_URL_BASE:-https://aagedal.me/apps}"
+# upload the DMG.
+RELEASE_URL_BASE="${RELEASE_URL_BASE:-https://aagedal.me/apps/photoagent}"
+# What to do when a matching archive or exported app already exists:
+#   ask (default, interactive), reuse (best valid artifact), or rebuild.
+RELEASE_BUILD_MODE="${RELEASE_BUILD_MODE:-ask}"
 
 # Move to repo root (this script lives in scripts/).
 cd "$(dirname "$0")/.."
 
 say()  { printf '\n\033[1;34m▶ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33m! %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+artifact_app_version() {
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null || true
+}
+
+artifact_app_build() {
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$1/Contents/Info.plist" 2>/dev/null || true
+}
+
+app_matches_release() {
+  [ -d "$1" ] \
+    && [ "$(artifact_app_version "$1")" = "$VERSION" ] \
+    && [ "$(artifact_app_build "$1")" = "$BUILD" ]
+}
+
+archive_app_path() {
+  /usr/bin/find "$1/Products/Applications" -maxdepth 1 -name '*.app' -type d 2>/dev/null | head -1
+}
+
+archive_matches_release() {
+  local archived_app
+  [ -d "$1" ] || return 1
+  archived_app="$(archive_app_path "$1")"
+  [ -n "$archived_app" ] && app_matches_release "$archived_app"
+}
+
+choose_build_source() {
+  local existing_app="$1" existing_archive="$2"
+  local app_usable=0 archive_usable=0 choice default_choice
+  local -a labels=() values=()
+
+  if app_matches_release "$existing_app" && codesign --verify --deep --strict "$existing_app" >/dev/null 2>&1; then
+    app_usable=1
+  elif [ -d "$existing_app" ]; then
+    warn "Existing exported app does not match $VERSION ($BUILD), or its Developer ID signature is invalid; it will not be reused."
+  fi
+
+  if archive_matches_release "$existing_archive"; then
+    archive_usable=1
+  elif [ -d "$existing_archive" ]; then
+    warn "Existing archive does not match $VERSION ($BUILD); it will not be reused."
+  fi
+
+  case "$RELEASE_BUILD_MODE" in
+    rebuild)
+      BUILD_CHOICE="rebuild"
+      return
+      ;;
+    reuse)
+      if [ "$app_usable" -eq 1 ]; then
+        BUILD_CHOICE="app"
+      elif [ "$archive_usable" -eq 1 ]; then
+        BUILD_CHOICE="archive"
+      else
+        die "RELEASE_BUILD_MODE=reuse was requested, but no valid $VERSION ($BUILD) artifact exists."
+      fi
+      return
+      ;;
+    ask) ;;
+    *) die "RELEASE_BUILD_MODE must be ask, reuse, or rebuild (got '$RELEASE_BUILD_MODE')." ;;
+  esac
+
+  if [ "$app_usable" -eq 0 ] && [ "$archive_usable" -eq 0 ]; then
+    BUILD_CHOICE="rebuild"
+    return
+  fi
+
+  # A non-interactive invocation cannot answer the menu safely.
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    warn "Matching release artifacts exist, but no terminal is attached; rebuilding. Set RELEASE_BUILD_MODE=reuse to resume."
+    BUILD_CHOICE="rebuild"
+    return
+  fi
+
+  say "Resume release $VERSION (build $BUILD)"
+  if [ "$app_usable" -eq 1 ]; then
+    labels+=("Continue with the existing Developer ID app (skip archive and export)")
+    values+=("app")
+  fi
+  if [ "$archive_usable" -eq 1 ]; then
+    labels+=("Export/sign the existing archive (skip the Xcode rebuild)")
+    values+=("archive")
+  fi
+  labels+=("Rebuild everything from source")
+  values+=("rebuild")
+  default_choice=1
+
+  printf 'Reusable artifacts were found:\n'
+  local index
+  for ((index = 0; index < ${#labels[@]}; index++)); do
+    printf '  %d) %s\n' "$((index + 1))" "${labels[$index]}"
+  done
+  while true; do
+    read -r -p "Choose [${default_choice}]: " choice
+    choice="${choice:-$default_choice}"
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#values[@]}" ]; then
+      BUILD_CHOICE="${values[$((choice - 1))]}"
+      return
+    fi
+    warn "Enter a number from 1 to ${#values[@]}."
+  done
+}
 
 # Run a normally-silent command with a small terminal spinner while keeping its complete output in
 # a log. On failure, print the useful tail immediately so the user does not have to hunt for it.
@@ -184,22 +290,44 @@ if [ -x "$GENERATE_KEYS" ] && [ -n "$PUB_PLIST" ]; then
   ok "Sparkle signing key matches the app's embedded public key"
 fi
 
-# ─── 6. Archive (Release) ─────────────────────────────────────────────────────
-rm -rf "$OUTPUT_DIR" && mkdir -p "$OUTPUT_DIR"
-ARCHIVE="$OUTPUT_DIR/$DMG_STEM.xcarchive"
-say "Archiving (Release)…"
-run_with_progress "Archiving" "$OUTPUT_DIR/archive.log" \
-  xcodebuild -scheme "$SCHEME" -configuration Release -destination 'generic/platform=macOS' \
-  -archivePath "$ARCHIVE" archive \
-  || die "Archive failed — see $OUTPUT_DIR/archive.log"
-ok "Archived"
+# ─── 6. Choose a fresh build or a safe resume point ───────────────────────────
+# Archives are versioned so a failed notarization run can be resumed later
+# without accidentally exporting a build from another release.
+mkdir -p "$OUTPUT_DIR"
+ARCHIVE="$OUTPUT_DIR/$DMG_STEM-$VERSION.xcarchive"
+LEGACY_ARCHIVE="$OUTPUT_DIR/$DMG_STEM.xcarchive"
+EXISTING_ARCHIVE="$ARCHIVE"
+if [ ! -d "$EXISTING_ARCHIVE" ] && archive_matches_release "$LEGACY_ARCHIVE"; then
+  EXISTING_ARCHIVE="$LEGACY_ARCHIVE"
+fi
+EXISTING_APP="$(/usr/bin/find "$OUTPUT_DIR/export" -maxdepth 1 -name '*.app' -type d 2>/dev/null | head -1)"
+BUILD_CHOICE=""
+choose_build_source "$EXISTING_APP" "$EXISTING_ARCHIVE"
+ok "Release path: $BUILD_CHOICE"
+
+if [ "$BUILD_CHOICE" = "rebuild" ]; then
+  rm -rf "$ARCHIVE" "$LEGACY_ARCHIVE" "$OUTPUT_DIR/export"
+  say "Archiving (Release)…"
+  run_with_progress "Archiving" "$OUTPUT_DIR/archive.log" \
+    xcodebuild -scheme "$SCHEME" -configuration Release -destination 'generic/platform=macOS' \
+    -archivePath "$ARCHIVE" archive \
+    || die "Archive failed — see $OUTPUT_DIR/archive.log"
+  ok "Archived: $ARCHIVE"
+elif [ "$BUILD_CHOICE" = "archive" ]; then
+  ARCHIVE="$EXISTING_ARCHIVE"
+  ok "Reusing archive: $ARCHIVE"
+fi
 
 # ─── 7. Export with Developer ID ──────────────────────────────────────────────
 # -allowProvisioningUpdates lets Xcode fetch/create the Developer ID provisioning
 # profile the iCloud entitlement requires. If this fails with "PLA Update
 # available", accept the updated agreement at developer.apple.com and re-run.
-EXPORT_OPTS="$OUTPUT_DIR/ExportOptions.plist"
-cat >"$EXPORT_OPTS" <<EOF
+if [ "$BUILD_CHOICE" = "app" ]; then
+  APP="$EXISTING_APP"
+  ok "Reusing verified Developer ID app: $APP"
+else
+  EXPORT_OPTS="$OUTPUT_DIR/ExportOptions.plist"
+  cat >"$EXPORT_OPTS" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -209,21 +337,35 @@ cat >"$EXPORT_OPTS" <<EOF
   <key>signingCertificate</key><string>Developer ID Application</string>
 </dict></plist>
 EOF
-say "Exporting (Developer ID)…"
-xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportOptionsPlist "$EXPORT_OPTS" \
-  -exportPath "$OUTPUT_DIR/export" -allowProvisioningUpdates >"$OUTPUT_DIR/export.log" 2>&1 \
-  || die "Export failed — see $OUTPUT_DIR/export.log (if 'PLA Update available', accept the agreement at developer.apple.com and re-run)"
-APP="$(/usr/bin/find "$OUTPUT_DIR/export" -maxdepth 1 -name '*.app' | head -1)"
-[ -n "$APP" ] || die "Exported .app not found."
-codesign --verify --deep --strict "$APP" || die "Exported app failed signature verification."
-ok "Exported & verified: $APP"
+  rm -rf "$OUTPUT_DIR/export"
+  say "Exporting (Developer ID)…"
+  xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportOptionsPlist "$EXPORT_OPTS" \
+    -exportPath "$OUTPUT_DIR/export" -allowProvisioningUpdates >"$OUTPUT_DIR/export.log" 2>&1 \
+    || die "Export failed — see $OUTPUT_DIR/export.log (if 'PLA Update available', accept the agreement at developer.apple.com and re-run)"
+  APP="$(/usr/bin/find "$OUTPUT_DIR/export" -maxdepth 1 -name '*.app' -type d | head -1)"
+  [ -n "$APP" ] || die "Exported .app not found."
+  app_matches_release "$APP" || die "Exported app version/build does not match $VERSION ($BUILD)."
+  codesign --verify --deep --strict "$APP" || die "Exported app failed signature verification."
+  ok "Exported & verified: $APP"
+fi
 
 # ─── 8. Notarize the app, then staple ─────────────────────────────────────────
-ZIP="$OUTPUT_DIR/$DMG_STEM-app.zip"
-ditto -c -k --keepParent "$APP" "$ZIP"
-notarize "$ZIP" "App" "$OUTPUT_DIR/notarize-app.log"
-xcrun stapler staple "$APP" && xcrun stapler validate "$APP"
-ok "App notarized & stapled"
+if xcrun stapler validate "$APP" >/dev/null 2>&1; then
+  ok "App already notarized & stapled"
+else
+  say "Checking for an accepted notarization ticket from an earlier run…"
+  if xcrun stapler staple "$APP" >"$OUTPUT_DIR/staple-app-resume.log" 2>&1 \
+    && xcrun stapler validate "$APP" >/dev/null 2>&1; then
+    ok "Recovered the accepted notarization ticket; no resubmission needed"
+  else
+    ZIP="$OUTPUT_DIR/$DMG_STEM-$VERSION-app.zip"
+    rm -f "$ZIP"
+    ditto -c -k --keepParent "$APP" "$ZIP"
+    notarize "$ZIP" "App" "$OUTPUT_DIR/notarize-app.log"
+    xcrun stapler staple "$APP" && xcrun stapler validate "$APP"
+    ok "App notarized & stapled"
+  fi
+fi
 
 # ─── 9. Build, sign, notarize, staple the DMG ─────────────────────────────────
 DMG="$OUTPUT_DIR/$DMG_STEM-$VERSION.dmg"
@@ -257,7 +399,8 @@ NOTES="$(awk -v ver="$VERSION" '
   inh && /^### / { inh=0 }
   inh && /^- / { sub(/^- /,""); print "                    <li>" $0 "</li>" }
 ' "$CHANGELOG")"
-[ -n "$NOTES" ] || NOTES="                    <li>See the changelog for details.</li>"
+[ -n "$NOTES" ] \
+  || die "$CHANGELOG needs a '## $VERSION' section with at least one bullet under '### Highlights'."
 PUBDATE="$(date '+%a, %d %b %Y %H:%M:%S %z')"
 DMG_URL="$RELEASE_URL_BASE/$DMG_STEM-$VERSION.dmg"
 ITEM="        <item>
@@ -280,22 +423,32 @@ $NOTES
                 type=\"application/octet-stream\" />
         </item>"
 
-if grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" "$APPCAST"; then
+ACTIVE_VERSION_COUNT="$(xmllint --xpath \
+  "count(//*[local-name()='item']/*[local-name()='shortVersionString' and text()='$VERSION'])" \
+  "$APPCAST" 2>/dev/null)" || die "Could not inspect active releases in $APPCAST."
+if [ "$ACTIVE_VERSION_COUNT" != "0" ]; then
   printf '%s\n' "$ITEM" >"$OUTPUT_DIR/appcast-item.xml"
   ok "$VERSION already in $APPCAST — wrote the regenerated item to $OUTPUT_DIR/appcast-item.xml instead"
 else
   ITEM_FILE="$OUTPUT_DIR/appcast-item.xml"
   printf '%s\n' "$ITEM" >"$ITEM_FILE"
   awk -v item_file="$ITEM_FILE" '
-    /^[[:space:]]*<item>/ && !d {
+    /New release items are inserted here by scripts\/release\.sh/ && !d {
+      print
+      print ""
       while ((getline line < item_file) > 0) print line
       close(item_file)
-      print ""
       d=1
+      next
     }
     { print }
   ' "$APPCAST" >"$APPCAST.tmp" && mv "$APPCAST.tmp" "$APPCAST"
   xmllint --noout "$APPCAST" || die "appcast.xml is no longer well-formed."
+  ACTIVE_VERSION_COUNT="$(xmllint --xpath \
+    "count(//*[local-name()='item']/*[local-name()='shortVersionString' and text()='$VERSION'])" \
+    "$APPCAST" 2>/dev/null)"
+  [ "$ACTIVE_VERSION_COUNT" = "1" ] \
+    || die "$VERSION was not inserted as exactly one active appcast item."
   ok "Inserted the $VERSION item into $APPCAST"
 fi
 
