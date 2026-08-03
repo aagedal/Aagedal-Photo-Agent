@@ -470,6 +470,31 @@ struct AnalysisAnnotationOverlay: View {
             )
         }
 
+        if isDraft, case .polygon = annotation.geometry {
+            let vertices = AnalysisAnnotationViewGeometry.controlPoints(
+                for: annotation,
+                geometry: geometry,
+                coordinateMapper: coordinateMapper
+            )
+            for (_, point) in vertices {
+                let halo = Path(ellipseIn: CGRect(
+                    x: point.x - 5,
+                    y: point.y - 5,
+                    width: 10,
+                    height: 10
+                ))
+                let center = Path(ellipseIn: CGRect(
+                    x: point.x - 2.5,
+                    y: point.y - 2.5,
+                    width: 5,
+                    height: 5
+                ))
+                context.fill(halo, with: .color(.white.opacity(0.95)))
+                context.stroke(halo, with: .color(color), lineWidth: 2)
+                context.fill(center, with: .color(color))
+            }
+        }
+
         if selected {
             let handles = AnalysisAnnotationViewGeometry.controlPoints(
                 for: annotation,
