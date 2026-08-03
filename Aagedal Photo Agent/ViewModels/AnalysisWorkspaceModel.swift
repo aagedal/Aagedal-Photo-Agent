@@ -602,6 +602,38 @@ final class AnalysisWorkspaceModel {
         persistFolderMapDocument(document)
     }
 
+    func copyMapAnnotationToGlobal(id: UUID) {
+        guard let analysisCase,
+              let source = mapAnnotations.first(where: { $0.id == id }),
+              !sourceChanged else { return }
+        let before = folderMapDocument.annotations
+        let copy = source.copiedToGlobal(caseID: analysisCase.id)
+        var document = folderMapDocument
+        document.setAnnotation(copy)
+        globalMapAnnotationHistory.record(
+            before: before,
+            after: document.annotations,
+            actionName: "Copy Map Annotation to Global Map"
+        )
+        persistFolderMapDocument(document)
+    }
+
+    func copyGlobalMapAnnotationToCurrentPhoto(id: UUID) {
+        guard let analysisCase,
+              let source = globalMapAnnotations.first(where: { $0.id == id }),
+              !sourceChanged else { return }
+        let before = analysisCase.mapState.annotations
+        let copy = source.copiedToPhoto(caseID: analysisCase.id)
+        var updatedCase = analysisCase
+        updatedCase.setMapAnnotation(copy)
+        mapAnnotationHistory.record(
+            before: before,
+            after: updatedCase.mapState.annotations,
+            actionName: "Copy Global Map Annotation to Photo"
+        )
+        persist(updatedCase)
+    }
+
     func removeGlobalMapAnnotation(id: UUID) {
         guard !sourceChanged else { return }
         let before = folderMapDocument.annotations

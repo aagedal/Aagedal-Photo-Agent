@@ -286,6 +286,25 @@ nonisolated struct AnalysisMapAnnotation: Identifiable, Codable, Equatable, Send
         updatedAt = max(now, createdAt)
     }
 
+    /// Creates an independent annotation for a different map owner.
+    ///
+    /// A copied annotation deliberately receives a new identity and timestamps so editing or
+    /// deleting either copy cannot affect the source annotation.
+    func copied(
+        linkedPhotoLabelID: UUID? = nil,
+        now: Date = Date()
+    ) -> AnalysisMapAnnotation {
+        AnalysisMapAnnotation(
+            kind: kind,
+            geometry: geometry,
+            text: text,
+            style: style,
+            isVisible: isVisible,
+            linkedPhotoLabelID: linkedPhotoLabelID,
+            now: now
+        )
+    }
+
     func validate() throws {
         guard geometry.isValid, geometry.matches(kind) else {
             throw AnalysisMapAnnotationValidationError.invalidGeometry

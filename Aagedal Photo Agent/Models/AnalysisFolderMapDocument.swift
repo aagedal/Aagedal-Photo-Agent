@@ -45,6 +45,32 @@ nonisolated struct AnalysisGlobalMapAnnotation: Identifiable, Codable, Equatable
         }
         return true
     }
+
+    /// Copies the shared annotation into one photo's case, retaining a link to an annotation on
+    /// that photo when the shared annotation has one.
+    func copiedToPhoto(caseID: UUID, now: Date = Date()) -> AnalysisMapAnnotation {
+        let linkedPhotoAnnotationID = photoAnnotationReferences.first {
+            $0.caseID == caseID
+        }?.annotationID
+        return annotation.copied(
+            linkedPhotoLabelID: linkedPhotoAnnotationID,
+            now: now
+        )
+    }
+}
+
+nonisolated extension AnalysisMapAnnotation {
+    /// Copies a photo-local annotation into the folder map and converts its local photo link to
+    /// the folder map's stable cross-case reference format.
+    func copiedToGlobal(caseID: UUID, now: Date = Date()) -> AnalysisGlobalMapAnnotation {
+        let references = linkedPhotoLabelID.map {
+            [AnalysisPhotoAnnotationReference(caseID: caseID, annotationID: $0)]
+        } ?? []
+        return AnalysisGlobalMapAnnotation(
+            annotation: copied(now: now),
+            photoAnnotationReferences: references
+        )
+    }
 }
 
 enum AnalysisFolderMapDocumentValidationError: Error, Equatable, LocalizedError, Sendable {

@@ -37,6 +37,7 @@ struct AnalysisMapEvidenceView: View {
     let onSetInvestigationLocation: (AnalysisLocationEvidence?) -> Void
     let onSetAnnotation: (AnalysisMapAnnotation) -> Void
     let onSetLocalAnnotation: (AnalysisMapAnnotation) -> Void
+    let onCopyAnnotationToOtherScope: (UUID) -> Void
     let onDeleteAnnotation: (UUID) -> Void
 
     @Binding var annotationTool: AnalysisAnnotationTool
@@ -88,6 +89,7 @@ struct AnalysisMapEvidenceView: View {
         onSetInvestigationLocation: @escaping (AnalysisLocationEvidence?) -> Void,
         onSetAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
         onSetLocalAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
+        onCopyAnnotationToOtherScope: @escaping (UUID) -> Void,
         onDeleteAnnotation: @escaping (UUID) -> Void,
         annotationTool: Binding<AnalysisAnnotationTool>,
         sharedAnnotationStyle: Binding<AnalysisAnnotationStyle>,
@@ -111,6 +113,7 @@ struct AnalysisMapEvidenceView: View {
         self.onSetInvestigationLocation = onSetInvestigationLocation
         self.onSetAnnotation = onSetAnnotation
         self.onSetLocalAnnotation = onSetLocalAnnotation
+        self.onCopyAnnotationToOtherScope = onCopyAnnotationToOtherScope
         self.onDeleteAnnotation = onDeleteAnnotation
         _annotationTool = annotationTool
         _sharedAnnotationStyle = sharedAnnotationStyle
@@ -1036,6 +1039,15 @@ struct AnalysisMapEvidenceView: View {
         .accessibilityLabel(mapAnnotationTitle(annotation))
         .accessibilityAddTraits(selectedAnnotationID == annotation.id ? .isSelected : [])
         .contextMenu {
+            Button(
+                usesFolderOwnedAnnotations
+                    ? "Copy to This Photo's Map"
+                    : "Copy to Global Map"
+            ) {
+                onCopyAnnotationToOtherScope(annotation.id)
+            }
+            .disabled(isReadOnly)
+            Divider()
             Button("Delete Map Annotation", role: .destructive) {
                 onDeleteAnnotation(annotation.id)
                 if selectedAnnotationID == annotation.id {

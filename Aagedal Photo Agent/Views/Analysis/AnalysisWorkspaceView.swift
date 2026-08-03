@@ -601,6 +601,13 @@ struct AnalysisWorkspaceView: View {
                                 }
                             },
                             onSetLocalAnnotation: model.setMapAnnotation,
+                            onCopyAnnotationToOtherScope: { annotationID in
+                                if mapLayerScope == .workingFolder {
+                                    model.copyGlobalMapAnnotationToCurrentPhoto(id: annotationID)
+                                } else {
+                                    model.copyMapAnnotationToGlobal(id: annotationID)
+                                }
+                            },
                             onDeleteAnnotation: { annotationID in
                                 if mapLayerScope == .workingFolder {
                                     model.removeGlobalMapAnnotation(id: annotationID)
@@ -641,7 +648,9 @@ struct AnalysisWorkspaceView: View {
                             onSetAllGlobalsVisible: model.setAllGlobalMapAnnotationsVisible,
                             onEditGlobalAnnotation: presentMapAnnotationEditor,
                             onDeleteGlobalAnnotation: model.removeGlobalMapAnnotation,
-                            onSetGlobalPhotoAnnotationLink: model.setGlobalMapAnnotationPhotoLink
+                            onSetGlobalPhotoAnnotationLink: model.setGlobalMapAnnotationPhotoLink,
+                            onCopyToGlobal: model.copyMapAnnotationToGlobal,
+                            onCopyToCurrentPhoto: model.copyGlobalMapAnnotationToCurrentPhoto
                         )
                         .frame(minHeight: 150, idealHeight: 210, maxHeight: 280)
                     }
@@ -1680,6 +1689,8 @@ private struct AnalysisMapLayersView: View {
     let onEditGlobalAnnotation: (UUID) -> Void
     let onDeleteGlobalAnnotation: (UUID) -> Void
     let onSetGlobalPhotoAnnotationLink: (UUID, UUID, Bool) -> Void
+    let onCopyToGlobal: (UUID) -> Void
+    let onCopyToCurrentPhoto: (UUID) -> Void
 
     var body: some View {
         HSplitView {
@@ -1996,6 +2007,11 @@ private struct AnalysisMapLayersView: View {
                 )
         )
         .contextMenu {
+            Button("Copy to This Photo's Map") {
+                onCopyToCurrentPhoto(annotation.id)
+            }
+            .disabled(isReadOnly)
+            Divider()
             Button("Rename…") { onEditGlobalAnnotation(annotation.id) }
                 .disabled(isReadOnly)
             Divider()
@@ -2098,6 +2114,11 @@ private struct AnalysisMapLayersView: View {
                 )
         )
         .contextMenu {
+            Button("Copy to Global Map") {
+                onCopyToGlobal(annotation.id)
+            }
+            .disabled(isReadOnly)
+            Divider()
             Button("Rename…") {
                 onEditMapAnnotation(annotation.id)
             }

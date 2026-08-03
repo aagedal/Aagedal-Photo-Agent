@@ -5,6 +5,55 @@ import Testing
 
 @Suite("Analysis case")
 struct AnalysisCaseTests {
+    @Test("map annotation copies receive new identities and preserve destination-compatible links")
+    func copiesMapAnnotationsBetweenPhotoAndGlobalOwners() throws {
+        let caseID = UUID()
+        let photoAnnotationID = UUID()
+        let source = AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.91, longitude: 10.75)),
+            text: "Subject location",
+            style: AnalysisMapAnnotationStyle(
+                color: .palette(.cyan),
+                lineWidthPoints: 3,
+                fillOpacity: 0.25
+            ),
+            isVisible: false,
+            linkedPhotoLabelID: photoAnnotationID,
+            now: Date(timeIntervalSince1970: 10)
+        )
+
+        let globalCopy = source.copiedToGlobal(
+            caseID: caseID,
+            now: Date(timeIntervalSince1970: 20)
+        )
+        #expect(globalCopy.id != source.id)
+        #expect(globalCopy.annotation.geometry == source.geometry)
+        #expect(globalCopy.annotation.text == source.text)
+        #expect(globalCopy.annotation.style == source.style)
+        #expect(globalCopy.annotation.isVisible == source.isVisible)
+        #expect(globalCopy.annotation.linkedPhotoLabelID == nil)
+        #expect(globalCopy.photoAnnotationReferences == [
+            AnalysisPhotoAnnotationReference(
+                caseID: caseID,
+                annotationID: photoAnnotationID
+            )
+        ])
+
+        let photoCopy = globalCopy.copiedToPhoto(
+            caseID: caseID,
+            now: Date(timeIntervalSince1970: 30)
+        )
+        #expect(photoCopy.id != globalCopy.id)
+        #expect(photoCopy.geometry == source.geometry)
+        #expect(photoCopy.text == source.text)
+        #expect(photoCopy.style == source.style)
+        #expect(photoCopy.isVisible == source.isVisible)
+        #expect(photoCopy.linkedPhotoLabelID == photoAnnotationID)
+        #expect(photoCopy.createdAt == Date(timeIntervalSince1970: 30))
+        try photoCopy.validate()
+    }
+
     @Test("new cases are source-bound and default to original Pixel Analysis")
     func createsSourceBoundCase() async throws {
         let fixture = try AnalysisFixture(contents: "original")
