@@ -23,6 +23,7 @@ nonisolated enum AnalysisReportPageFormat: String, CaseIterable, Sendable {
 
 nonisolated struct AnalysisReportExportOptions: Equatable, Sendable {
     var pageFormat: AnalysisReportPageFormat = .a4
+    var includeSelectedEvidenceCrop = true
     var includeCanonicalPath = false
     var includeCameraSerialNumber = false
     var includeLocationCoordinates = true
@@ -113,6 +114,7 @@ private final class Renderer {
     private var pageOpen = false
     private var openStreetMapImage: NSImage?
     private var annotatedPhotoImage: NSImage?
+    private var evidenceCropImage: NSImage?
 
     private let ink = NSColor(srgbRed: 0.10, green: 0.12, blue: 0.15, alpha: 1)
     private let secondary = NSColor(srgbRed: 0.36, green: 0.39, blue: 0.43, alpha: 1)
@@ -143,6 +145,13 @@ private final class Renderer {
             sourceURL: snapshot.source.canonicalURL,
             annotations: snapshot.photoAnnotations
         )
+        if let crop = snapshot.evidenceCrop {
+            evidenceCropImage = try? await AnalysisEvidenceJPEGRenderer.annotatedEvidenceCropImage(
+                sourceURL: snapshot.source.canonicalURL,
+                crop: crop,
+                annotations: snapshot.photoAnnotations
+            )
+        }
         if options.mapBasemap == .openStreetMap, let map = snapshot.mapEvidence {
             openStreetMapImage = try? await AnalysisOpenStreetMapSnapshotter.image(
                 viewport: map.viewport,
@@ -163,32 +172,37 @@ private final class Renderer {
         try await section("Findings") {
             drawFindings()
         }
-        try await checkpoint(progress: 0.42)
+        try await checkpoint(progress: 0.38)
+
+        try await section("Pixel evidence") {
+            drawPixelEvidence()
+        }
+        try await checkpoint(progress: 0.50)
 
         try await section("Photo annotations") {
             drawPhotoAnnotations()
         }
-        try await checkpoint(progress: 0.55)
+        try await checkpoint(progress: 0.60)
 
         try await section("Timeline and observations") {
             drawTimeline()
         }
-        try await checkpoint(progress: 0.67)
+        try await checkpoint(progress: 0.70)
 
         try await section("Location evidence") {
             drawLocationEvidence()
         }
-        try await checkpoint(progress: 0.79)
+        try await checkpoint(progress: 0.80)
 
         try await section("Methodology") {
             drawMethodology()
         }
-        try await checkpoint(progress: 0.88)
+        try await checkpoint(progress: 0.89)
 
         try await section("Limitations") {
             drawLimitations()
         }
-        try await checkpoint(progress: 0.94)
+        try await checkpoint(progress: 0.95)
 
         try await section("Appendix") {
             drawAppendix()
@@ -406,17 +420,20 @@ private final class Renderer {
         }
     }
 
-    private func drawPhotoAnnotations() {
+    private func drawPixelEvidence() {
+        drawSubheading("Annotated source overview")
         if let annotatedPhotoImage {
             let imageSize = annotatedPhotoImage.size
-            let aspectRatio = max(0.01, imageSize.width / max(1, imageSize.height))
-            let figureHeight = min(380, contentWidth / aspectRatio)
-            ensureSpace(figureHeight + 32)
+            let figureSize = aspectFitSize(
+                imageSize,
+                maximum: CGSize(width: contentWidth, height: 380)
+            )
+            ensureSpace(figureSize.height + 32)
             let figureRect = CGRect(
-                x: margin,
-                y: cursorY - figureHeight,
-                width: contentWidth,
-                height: figureHeight
+                x: margin + (contentWidth - figureSize.width) / 2,
+                y: cursorY - figureSize.height,
+                width: figureSize.width,
+                height: figureSize.height
             )
             annotatedPhotoImage.draw(
                 in: figureRect,
@@ -430,7 +447,7 @@ private final class Renderer {
             border.stroke()
             cursorY = figureRect.minY - 13
             drawFlowingText(
-                "Source image with visible case annotations flattened for this report snapshot.",
+                "Original representation · bounded overview · high-quality page-fit interpolation · visible annotation overlays from the frozen case.",
                 font: .systemFont(ofSize: 8.5),
                 color: secondary,
                 lineSpacing: 1
@@ -443,6 +460,81 @@ private final class Renderer {
             )
             cursorY -= 12
         }
+
+        cursorY -= 10
+        let evidenceCropFigureSize = evidenceCropImage.map { image in
+            aspectFitSize(
+                image.size,
+                maximum: CGSize(width: contentWidth, height: 400)
+            )
+        }
+        if snapshot.evidenceCrop != nil, let evidenceCropFigureSize {
+            // Keep the crop heading with its raster. Without this reservation, a large source
+            // overview can leave room for only the heading at the foot of the preceding page.
+            ensureSpace(30 + evidenceCropFigureSize.height + 80)
+        }
+        drawSubheading("Selected true-pixel crop")
+        guard let crop = snapshot.evidenceCrop else {
+            drawEmptyState("No source-pixel evidence crop was selected for this report.")
+            return
+        }
+        guard let evidenceCropImage else {
+            drawCallout(
+                title: "Evidence crop unavailable",
+                body: "The exact crop bounds remain frozen below, but the source could not be decoded at full resolution for this figure."
+            )
+            drawEvidenceCropCaption(crop)
+            return
+        }
+
+        let figureSize = evidenceCropFigureSize ?? aspectFitSize(
+            evidenceCropImage.size,
+            maximum: CGSize(width: contentWidth, height: 400)
+        )
+        ensureSpace(figureSize.height + 80)
+        let figureRect = CGRect(
+            x: margin + (contentWidth - figureSize.width) / 2,
+            y: cursorY - figureSize.height,
+            width: figureSize.width,
+            height: figureSize.height
+        )
+        NSGraphicsContext.current?.cgContext.interpolationQuality = .none
+        evidenceCropImage.draw(
+            in: figureRect,
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1
+        )
+        hairline.setStroke()
+        let border = NSBezierPath(rect: figureRect)
+        border.lineWidth = 0.75
+        border.stroke()
+        cursorY = figureRect.minY - 13
+        drawEvidenceCropCaption(crop)
+    }
+
+    private func drawEvidenceCropCaption(_ crop: AnalysisReportEvidenceCrop) {
+        let bounds = crop.sourcePixelRect
+        let annotationIDs = snapshot.photoAnnotations
+            .filter(\.isVisible)
+            .map { String($0.id.uuidString.lowercased().prefix(8)) }
+            .joined(separator: ", ")
+        let annotationList = annotationIDs.isEmpty ? "none" : annotationIDs
+        drawFlowingText(
+            "Original representation · true-pixel crop · source-storage bounds x \(bounds.x), y \(bounds.y), \(bounds.width) × \(bounds.height) px · \(crop.scaleLabel) · \(crop.interpolationLabel). The embedded crop raster is \(crop.displayPixelRect.width) × \(crop.displayPixelRect.height) px; the PDF viewer may scale it to fit the page. Annotation IDs in the frozen overlay set: \(annotationList).",
+            font: .systemFont(ofSize: 8.5),
+            color: secondary,
+            lineSpacing: 2
+        )
+    }
+
+    private func aspectFitSize(_ size: CGSize, maximum: CGSize) -> CGSize {
+        guard size.width > 0, size.height > 0 else { return maximum }
+        let scale = min(maximum.width / size.width, maximum.height / size.height)
+        return CGSize(width: size.width * scale, height: size.height * scale)
+    }
+
+    private func drawPhotoAnnotations() {
 
         drawFlowingText(
             "Annotation geometry is stored in normalized, display-oriented coordinates tied to the source revision. Visibility below reflects the frozen case state.",
@@ -790,21 +882,28 @@ private final class Renderer {
                 beginPage()
             }
             let pageAvailable = max(font.pointSize * 1.8, cursorY - minimumY)
+            // AppKit's attributed-string bounding rectangle can be fractionally shorter than
+            // the final line fragment when a paragraph nearly fills a PDF page. Reserve one
+            // physical line so the renderer never clips a measured final line at the footer.
+            let lineSafety = ceil(font.boundingRectForFont.height + lineSpacing + 2)
+            let safePageAvailable = max(font.pointSize * 1.8, pageAvailable - lineSafety)
             let fullHeight = textHeight(remaining, font: font, width: width, lineSpacing: lineSpacing)
-            if fullHeight <= pageAvailable {
-                drawText(remaining, font: font, color: color, in: CGRect(x: margin + leftInset, y: cursorY - fullHeight, width: width, height: fullHeight), lineSpacing: lineSpacing)
-                cursorY -= fullHeight
+            if fullHeight <= safePageAvailable {
+                let reservedHeight = min(pageAvailable, fullHeight + lineSafety)
+                drawText(remaining, font: font, color: color, in: CGRect(x: margin + leftInset, y: cursorY - reservedHeight, width: width, height: reservedHeight), lineSpacing: lineSpacing)
+                cursorY -= reservedHeight
                 return
             }
 
-            let split = fittingPrefix(in: remaining, font: font, width: width, height: pageAvailable, lineSpacing: lineSpacing)
+            let split = fittingPrefix(in: remaining, font: font, width: width, height: safePageAvailable, lineSpacing: lineSpacing)
             guard split > remaining.startIndex else {
                 beginPage()
                 continue
             }
             let chunk = String(remaining[..<split]).trimmingCharacters(in: .whitespacesAndNewlines)
             let height = textHeight(chunk, font: font, width: width, lineSpacing: lineSpacing)
-            drawText(chunk, font: font, color: color, in: CGRect(x: margin + leftInset, y: cursorY - height, width: width, height: height), lineSpacing: lineSpacing)
+            let reservedHeight = min(pageAvailable, height + lineSafety)
+            drawText(chunk, font: font, color: color, in: CGRect(x: margin + leftInset, y: cursorY - reservedHeight, width: width, height: reservedHeight), lineSpacing: lineSpacing)
             remaining = String(remaining[split...]).trimmingCharacters(in: .whitespacesAndNewlines)
             beginPage()
         }
@@ -878,11 +977,20 @@ private final class Renderer {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byWordWrapping
         paragraph.lineSpacing = lineSpacing
-        return ceil((string as NSString).boundingRect(
-            with: CGSize(width: width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
+        let storage = NSTextStorage(attributedString: NSAttributedString(
+            string: string,
             attributes: [.font: font, .paragraphStyle: paragraph]
-        ).height) + 1
+        ))
+        let layoutManager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(
+            width: width,
+            height: .greatestFiniteMagnitude
+        ))
+        container.lineFragmentPadding = 0
+        layoutManager.addTextContainer(container)
+        storage.addLayoutManager(layoutManager)
+        layoutManager.ensureLayout(for: container)
+        return ceil(layoutManager.usedRect(for: container).height) + 1
     }
 
     private func formatted(_ date: Date) -> String {

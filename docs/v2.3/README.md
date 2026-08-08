@@ -65,8 +65,11 @@ limitations, analyzer provenance, and raw metadata from the immutable snapshot. 
 paths, serial numbers, exact coordinates, live map links, and raw metadata selectable and warn before
 sharing sensitive fields. Rendering reports progress between closed pages, honors cancellation,
 revalidates the source hash, and atomically replaces only the selected destination. Structural tests
-and full-page raster review cover both paper sizes; source/evidence image figures and crop export remain
-the next Phase 6 slice.
+and full-page raster review cover both paper sizes. Reports now include an aspect-preserving annotated
+source overview plus an optional selected evidence crop taken directly from the original source pixels.
+The snapshot freezes display-oriented and source-storage pixel bounds, and the report states that the
+crop uses 1:1 source-pixel extraction with no interpolation. Stress coverage includes long findings,
+Unicode, missing figures, many annotations, and organically flowing multi-page content.
 The conditional sun/shadow analyzer is not approved for 2.3 because terrain, clock/timezone, and
 measurement uncertainty have not yet passed an evidence-quality gate.
 

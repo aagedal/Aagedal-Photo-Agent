@@ -125,16 +125,16 @@ honest about methods and limitations.
 
 - [x] Define immutable report snapshot.
 - [x] Revalidate source hash at export.
-- [ ] Implement cover, facts/provenance, findings, figures, timeline/map, user observations,
+- [x] Implement cover, facts/provenance, findings, figures, timeline/map, user observations,
   methodology, limitations, and appendix.
 - [x] Add selectable sensitive fields and redaction warning.
-- [ ] Add evidence crop export with pixel/interpolation scale.
+- [x] Add evidence crop export with pixel/interpolation scale.
 - [x] Add annotation legend and calibrated-measurement disclosure.
 - [x] Add map attribution or schematic fallback.
 - [x] Add progress, cancellation, atomic output, and cleanup.
 - [x] Add PDF semantic/structural tests.
 - [x] Render every page to images and visually verify A4 and US Letter.
-- [ ] Test long findings, Unicode, missing figures, many annotations, and multi-page cases.
+- [x] Test long findings, Unicode, missing figures, many annotations, and multi-page cases.
 
 ## Phase 7 — comparison core
 

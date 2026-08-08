@@ -71,6 +71,42 @@ enum AnalysisEvidenceJPEGRenderer {
         return image
     }
 
+    /// Extracts an upright source crop without resampling, then flattens the visible annotations
+    /// that intersect it. The returned bitmap retains the crop's exact displayed source-pixel
+    /// dimensions; any later page-fit scaling is presentation only.
+    static func annotatedEvidenceCropImage(
+        sourceURL: URL,
+        crop: AnalysisReportEvidenceCrop,
+        annotations: [AnalysisAnnotation]
+    ) async throws -> NSImage {
+        guard let source = await FullScreenImageCache.loadFullResolutionOffPool(from: sourceURL),
+              source.width == crop.displayedSourceWidth,
+              source.height == crop.displayedSourceHeight,
+              let croppedSource = AnalysisScopeSelection.croppedImage(
+                  from: source,
+                  normalizedRect: crop.normalizedDisplayRect
+              ) else {
+            throw AnalysisEvidenceJPEGError.sourceImageUnavailable
+        }
+        try Task.checkCancellation()
+
+        let size = CGSize(width: croppedSource.width, height: croppedSource.height)
+        let cropAnnotations = cropRelativeAnnotations(
+            annotations.filter(\.isVisible),
+            cropRect: crop.normalizedDisplayRect
+        )
+        return try bitmapImage(size: size) {
+            NSGraphicsContext.current?.cgContext.interpolationQuality = .none
+            NSImage(cgImage: croppedSource, size: size).draw(
+                in: CGRect(origin: .zero, size: size),
+                from: .zero,
+                operation: .copy,
+                fraction: 1
+            )
+            drawPhotoAnnotations(cropAnnotations, in: CGRect(origin: .zero, size: size))
+        }
+    }
+
     static func mapJPEG(
         evidence: AnalysisReportMapEvidence,
         pixelSize: CGSize = CGSize(width: 2_000, height: 1_200)
@@ -223,6 +259,63 @@ enum AnalysisEvidenceJPEGRenderer {
                 drawPhotoLabel(annotation, near: photoPoint(point, in: rect), scale: scale)
             }
         }
+    }
+
+    private static func cropRelativeAnnotations(
+        _ annotations: [AnalysisAnnotation],
+        cropRect: CGRect
+    ) -> [AnalysisAnnotation] {
+        guard cropRect.width > 0, cropRect.height > 0 else { return [] }
+
+        func map(_ point: AnalysisNormalizedPoint) -> AnalysisNormalizedPoint {
+            AnalysisNormalizedPoint(
+                x: (point.x - Double(cropRect.minX)) / Double(cropRect.width),
+                y: (point.y - Double(cropRect.minY)) / Double(cropRect.height)
+            )
+        }
+
+        return annotations.compactMap { annotation in
+            guard annotationBounds(annotation.geometry).intersects(cropRect) else { return nil }
+            var relative = annotation
+            switch annotation.geometry {
+            case .segment(let start, let end):
+                relative.geometry = .segment(start: map(start), end: map(end))
+            case .bounds(let bounds):
+                relative.geometry = .bounds(AnalysisNormalizedBounds(
+                    minimum: map(bounds.minimum),
+                    maximum: map(bounds.maximum)
+                ))
+            case .polygon(let points):
+                relative.geometry = .polygon(points.map(map))
+            case .anchor(let point):
+                relative.geometry = .anchor(map(point))
+            }
+            return relative
+        }
+    }
+
+    private static func annotationBounds(_ geometry: AnalysisAnnotationGeometry) -> CGRect {
+        let points: [AnalysisNormalizedPoint]
+        switch geometry {
+        case .segment(let start, let end): points = [start, end]
+        case .bounds(let bounds): points = [bounds.minimum, bounds.maximum]
+        case .polygon(let vertices): points = vertices
+        case .anchor(let point): points = [point]
+        }
+        guard let minX = points.map(\.x).min(),
+              let maxX = points.map(\.x).max(),
+              let minY = points.map(\.y).min(),
+              let maxY = points.map(\.y).max() else {
+            return .null
+        }
+        // A point/axis-aligned line still needs a non-empty hit target for intersection testing.
+        let epsilon = 0.000_001
+        return CGRect(
+            x: CGFloat(minX),
+            y: CGFloat(minY),
+            width: CGFloat(max(epsilon, maxX - minX)),
+            height: CGFloat(max(epsilon, maxY - minY))
+        )
     }
 
     private static func drawPhotoLabel(

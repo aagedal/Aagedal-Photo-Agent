@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 nonisolated enum AnalysisReportSnapshotError: Error, Equatable, LocalizedError, Sendable {
@@ -123,6 +124,115 @@ nonisolated struct AnalysisReportAnalyzerRun: Codable, Equatable, Sendable {
     }
 }
 
+/// Integer pixel bounds captured for a report figure.
+///
+/// Coordinates use a top-left origin. Keeping the rounded bounds in the snapshot makes the crop
+/// reproducible and prevents the renderer from making a different floating-point rounding choice.
+nonisolated struct AnalysisReportPixelRect: Codable, Equatable, Sendable {
+    let x: Int
+    let y: Int
+    let width: Int
+    let height: Int
+
+    var cgRect: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+/// One investigator-selected crop of the original, upright source representation.
+///
+/// The crop is extracted at one decoded source pixel per crop pixel. Report layout may visually
+/// scale the embedded raster to fit the paper, but the extraction itself never interpolates.
+nonisolated struct AnalysisReportEvidenceCrop: Codable, Equatable, Sendable {
+    static let scaleLabel = "1:1 source-pixel extraction"
+    static let interpolationLabel = "No interpolation"
+
+    let displayPixelRect: AnalysisReportPixelRect
+    let sourcePixelRect: AnalysisReportPixelRect
+    let displayedSourceWidth: Int
+    let displayedSourceHeight: Int
+    let scaleLabel: String
+    let interpolationLabel: String
+
+    init?(originalDisplayNormalizedRect: CGRect, source: SourceImageRevision) {
+        guard let sourceWidth = source.pixelWidth,
+              let sourceHeight = source.pixelHeight,
+              let transform = try? DisplayImageTransform(
+                  sourcePixelWidth: sourceWidth,
+                  sourcePixelHeight: sourceHeight,
+                  exifOrientation: source.exifOrientation
+              ) else {
+            return nil
+        }
+
+        let displayedSize = transform.fullDisplayedPixelSize
+        guard let displayedBounds = AnalysisScopeSelection.pixelRect(
+            for: originalDisplayNormalizedRect,
+            imageWidth: Int(displayedSize.width),
+            imageHeight: Int(displayedSize.height)
+        ) else {
+            return nil
+        }
+        let normalizedDisplayedBounds = CGRect(
+            x: displayedBounds.minX / displayedSize.width,
+            y: displayedBounds.minY / displayedSize.height,
+            width: displayedBounds.width / displayedSize.width,
+            height: displayedBounds.height / displayedSize.height
+        )
+        let sourceBounds = transform.sourcePixelRect(
+            fromDisplayNormalized: normalizedDisplayedBounds
+        ).standardized
+        guard let sourcePixelBounds = Self.outwardPixelRect(
+            sourceBounds,
+            pixelWidth: sourceWidth,
+            pixelHeight: sourceHeight
+        ) else {
+            return nil
+        }
+
+        displayPixelRect = AnalysisReportPixelRect(
+            x: Int(displayedBounds.minX),
+            y: Int(displayedBounds.minY),
+            width: Int(displayedBounds.width),
+            height: Int(displayedBounds.height)
+        )
+        sourcePixelRect = sourcePixelBounds
+        displayedSourceWidth = Int(displayedSize.width)
+        displayedSourceHeight = Int(displayedSize.height)
+        scaleLabel = Self.scaleLabel
+        interpolationLabel = Self.interpolationLabel
+    }
+
+    var normalizedDisplayRect: CGRect {
+        CGRect(
+            x: CGFloat(displayPixelRect.x) / CGFloat(displayedSourceWidth),
+            y: CGFloat(displayPixelRect.y) / CGFloat(displayedSourceHeight),
+            width: CGFloat(displayPixelRect.width) / CGFloat(displayedSourceWidth),
+            height: CGFloat(displayPixelRect.height) / CGFloat(displayedSourceHeight)
+        )
+    }
+
+    private static func outwardPixelRect(
+        _ rect: CGRect,
+        pixelWidth: Int,
+        pixelHeight: Int
+    ) -> AnalysisReportPixelRect? {
+        let bounds = rect.intersection(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
+        guard !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return nil }
+        let minX = max(0, Int(floor(bounds.minX)))
+        let minY = max(0, Int(floor(bounds.minY)))
+        let maxX = min(pixelWidth, Int(ceil(bounds.maxX)))
+        let maxY = min(pixelHeight, Int(ceil(bounds.maxY)))
+        guard maxX > minX, maxY > minY else { return nil }
+        return AnalysisReportPixelRect(
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY
+        )
+    }
+}
+
 /// A deep value snapshot used as the sole input to report rendering.
 ///
 /// Report generators must not retain an `AnalysisCase` or workspace model. Creating this value
@@ -130,7 +240,7 @@ nonisolated struct AnalysisReportAnalyzerRun: Codable, Equatable, Sendable {
 /// findings, and establishes deterministic ordering. Edits made after creation cannot mix with an
 /// export already in progress.
 nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     let schemaVersion: Int
     let id: UUID
@@ -146,6 +256,7 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
     let sourceFacts: AnalysisSourceFacts?
     let rawMetadata: [AnalysisRawMetadataEntry]
     let includedFindings: [AnalysisFinding]
+    let evidenceCrop: AnalysisReportEvidenceCrop?
     let photoAnnotations: [AnalysisAnnotation]
     let timestampEvidence: [AnalysisTimestampEvidence]
     let observations: [AnalysisObservation]
@@ -157,6 +268,7 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
         sourceURL: URL,
         appVersion: String,
         appBuild: String,
+        originalDisplayEvidenceCrop: CGRect? = nil,
         id: UUID = UUID(),
         now: Date = Date()
     ) async throws -> AnalysisReportSnapshot {
@@ -171,6 +283,7 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
             validatedSource: revision,
             appVersion: appVersion,
             appBuild: appBuild,
+            originalDisplayEvidenceCrop: originalDisplayEvidenceCrop,
             id: id,
             now: now
         )
@@ -181,6 +294,7 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
         validatedSource: SourceImageRevision,
         appVersion: String,
         appBuild: String,
+        originalDisplayEvidenceCrop: CGRect? = nil,
         id: UUID = UUID(),
         now: Date = Date()
     ) throws -> AnalysisReportSnapshot {
@@ -233,6 +347,12 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
                     return $0.value < $1.value
                 },
             includedFindings: findings,
+            evidenceCrop: originalDisplayEvidenceCrop.flatMap {
+                AnalysisReportEvidenceCrop(
+                    originalDisplayNormalizedRect: $0,
+                    source: validatedSource
+                )
+            },
             // Annotation order is user-authored layer order and must not be normalized away.
             photoAnnotations: analysisCase.annotations,
             timestampEvidence: analysisCase.timestampEvidence.sorted {

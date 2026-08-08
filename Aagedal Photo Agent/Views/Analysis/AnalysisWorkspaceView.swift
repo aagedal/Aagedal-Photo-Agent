@@ -93,6 +93,7 @@ struct AnalysisWorkspaceView: View {
         }
         .sheet(isPresented: $isReportOptionsPresented) {
             AnalysisReportExportSheet(
+                hasSelectedEvidenceCrop: reportEvidenceCropRect != nil,
                 onExport: { options in
                     isReportOptionsPresented = false
                     Task { @MainActor in
@@ -423,6 +424,9 @@ struct AnalysisWorkspaceView: View {
         let appBuild = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleVersion"
         ) as? String ?? "unknown"
+        let evidenceCropRect = options.includeSelectedEvidenceCrop
+            ? reportEvidenceCropRect
+            : nil
         reportExportProgress = 0
         reportExportTask = Task { @MainActor in
             defer {
@@ -434,7 +438,8 @@ struct AnalysisWorkspaceView: View {
                     from: analysisCase,
                     sourceURL: sourceURL,
                     appVersion: appVersion,
-                    appBuild: appBuild
+                    appBuild: appBuild,
+                    originalDisplayEvidenceCrop: evidenceCropRect
                 )
                 try Task.checkCancellation()
                 reportExportProgress = 0.08
@@ -456,6 +461,30 @@ struct AnalysisWorkspaceView: View {
                     : error.localizedDescription
             }
         }
+    }
+
+    /// The scope selection is relative to the currently displayed representation. A true-pixel
+    /// crop is offered only for the original representation, where every selected displayed pixel
+    /// maps directly to one source pixel without a developed crop/straighten resample.
+    private var reportEvidenceCropRect: CGRect? {
+        guard model.displayPreference == .original,
+              let selectedScopeRegion,
+              let displayTransform = model.displayTransform,
+              let annotationTransform = model.annotationTransform else {
+            return nil
+        }
+        let sourceRect = displayTransform.sourceNormalizedRect(
+            fromDisplayNormalized: selectedScopeRegion
+        )
+        let originalDisplayRect = annotationTransform.displayNormalizedRect(
+            fromSourceNormalized: sourceRect
+        ).standardized.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        guard !originalDisplayRect.isNull,
+              originalDisplayRect.width >= AnalysisScopeSelection.minimumNormalizedDimension,
+              originalDisplayRect.height >= AnalysisScopeSelection.minimumNormalizedDimension else {
+            return nil
+        }
+        return originalDisplayRect
     }
 
     private func chooseAnnotatedImageDestinationAndExport() {
@@ -1265,10 +1294,12 @@ struct AnalysisWorkspaceView: View {
 }
 
 private struct AnalysisReportExportSheet: View {
+    let hasSelectedEvidenceCrop: Bool
     let onExport: (AnalysisReportExportOptions) -> Void
     let onCancel: () -> Void
 
     @State private var pageFormat: AnalysisReportPageFormat = .a4
+    @State private var includeSelectedEvidenceCrop = true
     @State private var includeCanonicalPath = false
     @State private var includeCameraSerialNumber = false
     @State private var includeLocationCoordinates = true
@@ -1298,6 +1329,23 @@ private struct AnalysisReportExportSheet: View {
                     }
                 }
 
+                Section("Pixel evidence") {
+                    Toggle(
+                        "Include selected source-pixel region",
+                        isOn: $includeSelectedEvidenceCrop
+                    )
+                    .disabled(!hasSelectedEvidenceCrop)
+                    if hasSelectedEvidenceCrop {
+                        Text("The selected region is embedded at 1:1 source-pixel extraction with no interpolation and captioned with its exact bounds.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Choose Original, switch Scopes to Selected Region, and drag a region to include a true-pixel crop.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Sensitive fields") {
                     Toggle("Canonical source path", isOn: $includeCanonicalPath)
                     Toggle("Camera serial number", isOn: $includeCameraSerialNumber)
@@ -1322,6 +1370,8 @@ private struct AnalysisReportExportSheet: View {
                 Button("Choose Destination…") {
                     onExport(AnalysisReportExportOptions(
                         pageFormat: pageFormat,
+                        includeSelectedEvidenceCrop: includeSelectedEvidenceCrop
+                            && hasSelectedEvidenceCrop,
                         includeCanonicalPath: includeCanonicalPath,
                         includeCameraSerialNumber: includeCameraSerialNumber,
                         includeLocationCoordinates: includeLocationCoordinates,

@@ -1,6 +1,8 @@
 import Foundation
+import ImageIO
 import PDFKit
 import Testing
+import UniformTypeIdentifiers
 @testable import Aagedal_Photo_Agent
 
 @Suite("Analysis report snapshot")
@@ -157,6 +159,73 @@ struct AnalysisReportSnapshotTests {
         #expect(snapshot.mapEvidence == nil)
     }
 
+    @Test("freezes outward-rounded true-pixel bounds through EXIF orientation")
+    func freezesTruePixelCropBounds() async throws {
+        let fixture = try AnalysisReportFixture(contents: "crop coordinate source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(
+            at: fixture.fileURL,
+            pixelWidth: 120,
+            pixelHeight: 80,
+            exifOrientation: 6
+        )
+        let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+
+        let snapshot = try await AnalysisReportSnapshot.capture(
+            from: analysisCase,
+            sourceURL: fixture.fileURL,
+            appVersion: "2.3",
+            appBuild: "test",
+            originalDisplayEvidenceCrop: CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+        )
+        let crop = try #require(snapshot.evidenceCrop)
+
+        #expect(crop.displayedSourceWidth == 80)
+        #expect(crop.displayedSourceHeight == 120)
+        #expect(crop.displayPixelRect == AnalysisReportPixelRect(x: 20, y: 30, width: 40, height: 60))
+        #expect(crop.sourcePixelRect == AnalysisReportPixelRect(x: 30, y: 20, width: 60, height: 40))
+        #expect(crop.scaleLabel == "1:1 source-pixel extraction")
+        #expect(crop.interpolationLabel == "No interpolation")
+
+        let encoded = try JSONEncoder().encode(snapshot)
+        #expect(try JSONDecoder().decode(AnalysisReportSnapshot.self, from: encoded) == snapshot)
+    }
+
+    @Test("embeds and captions a selected true-pixel crop")
+    func rendersTruePixelCrop() async throws {
+        let fixture = try AnalysisReportFixture(pixelWidth: 80, pixelHeight: 60)
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(
+            at: fixture.fileURL,
+            pixelWidth: 80,
+            pixelHeight: 60,
+            exifOrientation: 1
+        )
+        let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let snapshot = try await AnalysisReportSnapshot.capture(
+            from: analysisCase,
+            sourceURL: fixture.fileURL,
+            appVersion: "2.3",
+            appBuild: "test",
+            originalDisplayEvidenceCrop: CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+        )
+
+        let data = try await AnalysisPDFReportRenderer.makePDF(snapshot: snapshot)
+        let document = try #require(PDFDocument(data: data))
+        let text = (0..<document.pageCount)
+            .compactMap { document.page(at: $0)?.string }
+            .joined(separator: "\n")
+
+        #expect(text.contains("Pixel evidence"))
+        #expect(text.contains("true-pixel crop"))
+        #expect(text.contains("1:1 source-pixel extraction"))
+        #expect(text.contains("No interpolation"))
+        #expect(text.contains("40 × 30 px"))
+        #expect(!text.contains("Evidence crop unavailable"))
+
+        try writeQAReportIfRequested(data, filename: "analysis-report-evidence-crop.pdf")
+    }
+
     @Test("renders a structured A4 PDF from only the immutable snapshot")
     func rendersStructuredA4PDF() async throws {
         let fixture = try AnalysisReportFixture(contents: "rendered report source")
@@ -278,6 +347,7 @@ struct AnalysisReportSnapshotTests {
         #expect(text.contains("Methodology"))
         #expect(text.contains("Limitations"))
         #expect(text.contains("sha256:test|report-test|v3"))
+        #expect(text.contains("Image figure unavailable"))
         #expect(progressValues.last == 1)
         #expect(progressValues == progressValues.sorted())
     }
@@ -319,6 +389,75 @@ struct AnalysisReportSnapshotTests {
         #expect(text.contains("Omitted by export settings"))
         #expect(!text.contains(fixture.directoryURL.path))
         #expect(text.contains("Raw metadata was omitted by export settings"))
+    }
+
+    @Test("paginates long Unicode findings and many annotations")
+    func paginatesLongUnicodeAndManyAnnotations() async throws {
+        let fixture = try AnalysisReportFixture(contents: "pagination source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        analysisCase.title = "Åsted – blåbær og café"
+        let longExplanation = String(
+            repeating: "A normal workflow may preserve this observation; context remains necessary. ",
+            count: 70
+        ) + "Sluttmerknad: blåbær, café, Straße."
+        analysisCase.setAnalyzerRun(AnalysisAnalyzerRun(
+            analyzerID: "pagination-test",
+            analyzerVersion: 1,
+            cacheKey: "pagination-key",
+            sourceRepresentation: .originalBytes,
+            status: .completed,
+            progress: 1,
+            startedAt: nil,
+            completedAt: nil,
+            errorMessage: nil,
+            output: AnalysisAnalyzerOutput(findings: [AnalysisFinding(
+                id: "long-unicode",
+                analyzerID: "pagination-test",
+                analyzerVersion: 1,
+                category: .metadata,
+                severity: .notable,
+                evidenceClass: .derivedObservation,
+                title: "Lang merknad – café",
+                explanation: longExplanation,
+                technicalDetail: "Unicode: ÆØÅ, é, ß.",
+                alternatives: ["Benign eksport", "Normal redigering"],
+                confidence: nil,
+                sourceRepresentation: .originalBytes,
+                computedAt: Date(timeIntervalSince1970: 1),
+                includeInReport: true
+            )])
+        ))
+        for index in 0..<70 {
+            analysisCase.setAnnotation(AnalysisAnnotation(
+                kind: .label,
+                geometry: .anchor(AnalysisNormalizedPoint(
+                    x: Double((index % 10) + 1) / 11,
+                    y: Double((index / 10) + 1) / 8
+                )),
+                text: index == 69 ? "Siste merknad – blåbær" : "Merknad \(index + 1)"
+            ))
+        }
+        let snapshot = try await AnalysisReportSnapshot.capture(
+            from: analysisCase,
+            sourceURL: fixture.fileURL,
+            appVersion: "2.3",
+            appBuild: "test"
+        )
+
+        let data = try await AnalysisPDFReportRenderer.makePDF(snapshot: snapshot)
+        let document = try #require(PDFDocument(data: data))
+        let text = (0..<document.pageCount)
+            .compactMap { document.page(at: $0)?.string }
+            .joined(separator: "\n")
+
+        #expect(document.pageCount >= 15)
+        #expect(text.contains("Åsted – blåbær og café"))
+        #expect(text.contains("Sluttmerknad: blåbær, café, Straße."))
+        #expect(text.contains("Siste merknad – blåbær"))
+
+        try writeQAReportIfRequested(data, filename: "analysis-report-long-unicode.pdf")
     }
 
     private func finding(
@@ -374,7 +513,50 @@ private struct AnalysisReportFixture {
         try Data(contents.utf8).write(to: fileURL)
     }
 
+    init(pixelWidth: Int, pixelHeight: Int) throws {
+        directoryURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "analysis-report-tests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        fileURL = directoryURL.appendingPathComponent("fixture.png")
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                  data: nil,
+                  width: pixelWidth,
+                  height: pixelHeight,
+                  bitsPerComponent: 8,
+                  bytesPerRow: pixelWidth * 4,
+                  space: colorSpace,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            throw AnalysisReportFixtureError.imageCreationFailed
+        }
+        context.setFillColor(red: 0.12, green: 0.36, blue: 0.68, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
+        guard let image = context.makeImage(),
+              let destination = CGImageDestinationCreateWithURL(
+                  fileURL as CFURL,
+                  UTType.png.identifier as CFString,
+                  1,
+                  nil
+              ) else {
+            throw AnalysisReportFixtureError.imageCreationFailed
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw AnalysisReportFixtureError.imageCreationFailed
+        }
+    }
+
     func remove() {
         try? FileManager.default.removeItem(at: directoryURL)
     }
+}
+
+private enum AnalysisReportFixtureError: Error {
+    case imageCreationFailed
 }
