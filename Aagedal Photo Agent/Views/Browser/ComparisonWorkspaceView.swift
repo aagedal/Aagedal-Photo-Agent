@@ -4,8 +4,12 @@ import SwiftUI
 
 struct ComparisonWorkspaceView: View {
     let images: [ImageFile]
+    let navigationImages: [ImageFile]
+    let availableImages: [ImageFile]
     let fullScreenImageCache: FullScreenImageCache
-    let onClose: () -> Void
+    let onFocusedImageChange: (ImageFile) -> Void
+    let onRequestDelete: (ImageFile) -> Void
+    let onClose: (Set<URL>, URL?) -> Void
 
     @State private var coordinator: ComparisonCoordinator?
     @State private var renderedImages: [ComparisonPane: CGImage] = [:]
@@ -15,6 +19,10 @@ struct ComparisonWorkspaceView: View {
     @State private var isLoading = true
     @State private var exactLockWasPossible = true
     @State private var loadTask: Task<Void, Never>?
+    @State private var replacementTask: Task<Void, Never>?
+    @State private var replacingPane: ComparisonPane?
+    @State private var previousAvailableOrder: [URL] = []
+    @State private var missingReplacement: [ComparisonPane: ImageFile] = [:]
     @FocusState private var workspaceFocused: Bool
 
     var body: some View {
@@ -28,15 +36,34 @@ struct ComparisonWorkspaceView: View {
         .focused($workspaceFocused)
         .onAppear {
             workspaceFocused = true
+            previousAvailableOrder = availableImages.map(\.url)
             startLoading()
         }
-        .onDisappear { loadTask?.cancel() }
+        .onDisappear {
+            loadTask?.cancel()
+            replacementTask?.cancel()
+        }
+        .onChange(of: availableImages.map(\.url)) { _, _ in
+            reconcileAvailableSources()
+        }
         .onKeyPress(.escape) {
-            onClose()
+            closeComparison()
             return .handled
         }
         .onKeyPress(.tab) {
             focus(session?.focusedPane.other ?? .right)
+            return .handled
+        }
+        .onKeyPress(.leftArrow) {
+            replaceFocusedSource(.previous)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            replaceFocusedSource(.next)
+            return .handled
+        }
+        .onKeyPress(.delete) {
+            requestDeleteFocusedSource()
             return .handled
         }
         .accessibilityElement(children: .contain)
@@ -48,10 +75,30 @@ struct ComparisonWorkspaceView: View {
     @ViewBuilder
     private var controls: some View {
         HStack(spacing: 12) {
-            Button(action: { onClose() }) {
+            Button(action: { closeComparison() }) {
                 Label("Close Compare", systemImage: "chevron.backward")
             }
             .help("Return to the Browser (Esc)")
+
+            Divider().frame(height: 20)
+
+            Button { replaceFocusedSource(.previous) } label: {
+                Image(systemName: "chevron.left")
+            }
+            .help("Previous image in focused pane (Left Arrow)")
+            .disabled(replacementTarget(.previous) == nil || replacingPane != nil)
+
+            Button { replaceFocusedSource(.next) } label: {
+                Image(systemName: "chevron.right")
+            }
+            .help("Next image in focused pane (Right Arrow)")
+            .disabled(replacementTarget(.next) == nil || replacingPane != nil)
+
+            Button(role: .destructive) { requestDeleteFocusedSource() } label: {
+                Image(systemName: "trash")
+            }
+            .help("Move the focused image to the Trash")
+            .disabled(focusedImageFile == nil || replacingPane != nil)
 
             Divider().frame(height: 20)
 
@@ -195,7 +242,7 @@ struct ComparisonWorkspaceView: View {
                 Text(loadError)
             } actions: {
                 Button("Try Again") { startLoading() }
-                Button("Back to Browser", action: { onClose() })
+                Button("Back to Browser", action: { closeComparison() })
             }
         } else if let session {
             comparisonLayout(session)
@@ -248,11 +295,19 @@ struct ComparisonWorkspaceView: View {
                 onGeometryChange: { geometry in geometries[pane] = geometry }
             )
         } else {
-            ContentUnavailableView(
-                "Source Missing",
-                systemImage: "photo.badge.exclamationmark",
-                description: Text("Return to the Browser to choose another image.")
-            )
+            ContentUnavailableView {
+                Label("Source Missing", systemImage: "photo.badge.exclamationmark")
+            } description: {
+                Text("The other image remains available. Replace this pane or return to the Browser.")
+            } actions: {
+                if let replacement = missingReplacement[pane] {
+                    Button("Replace with \(replacement.filename)") {
+                        replaceSource(in: pane, with: replacement)
+                    }
+                    .disabled(replacingPane != nil)
+                }
+                Button("Back to Browser", action: { closeComparison() })
+            }
         }
     }
 
@@ -302,6 +357,7 @@ struct ComparisonWorkspaceView: View {
                 coordinator = try ComparisonCoordinator(session: session)
                 renderedImages = [.left: leftResult.image, .right: rightResult.image]
                 isLoading = false
+                onFocusedImageChange(selectedImages[0])
             } catch is CancellationError {
                 return
             } catch {
@@ -321,6 +377,129 @@ struct ComparisonWorkspaceView: View {
 
     private func focus(_ pane: ComparisonPane) {
         mutateCoordinator { $0.setFocusedPane(pane) }
+        if let image = imageFile(in: pane) {
+            onFocusedImageChange(image)
+        }
+    }
+
+    private var focusedImageFile: ImageFile? {
+        guard let pane = session?.focusedPane else { return nil }
+        return imageFile(in: pane)
+    }
+
+    private func imageFile(in pane: ComparisonPane) -> ImageFile? {
+        guard let url = session?[pane].source?.revision.canonicalURL else { return nil }
+        return availableImages.first { $0.url == url }
+    }
+
+    private func replacementTarget(_ direction: ComparisonNavigationDirection) -> ImageFile? {
+        guard let session,
+              let currentURL = session[session.focusedPane].source?.revision.canonicalURL else {
+            return nil
+        }
+        let excludedURL = session[session.focusedPane.other].source?.revision.canonicalURL
+        return ComparisonNavigationResolver.replacement(
+            in: navigationImages,
+            currentURL: currentURL,
+            excluding: excludedURL,
+            direction: direction
+        )
+    }
+
+    private func replaceFocusedSource(_ direction: ComparisonNavigationDirection) {
+        guard let pane = session?.focusedPane,
+              let image = replacementTarget(direction) else { return }
+        replaceSource(in: pane, with: image)
+    }
+
+    private func replaceSource(in pane: ComparisonPane, with image: ImageFile) {
+        guard replacingPane == nil else { return }
+        replacementTask?.cancel()
+        replacingPane = pane
+        interactionError = nil
+
+        let cache = fullScreenImageCache
+        let expectedSessionID = session?.id
+        replacementTask = Task {
+            do {
+                let result = try await ComparisonRenderService().render(
+                    imageFile: image,
+                    settings: committedSettings(for: image),
+                    cache: cache,
+                    maxPixelSize: comparisonMaxPixelSize
+                )
+                try Task.checkCancellation()
+                guard coordinator?.session.id == expectedSessionID else { return }
+
+                mutateCoordinator { $0.replaceSource(result.source, in: pane) }
+                renderedImages[pane] = result.image
+                geometries[pane] = nil
+                missingReplacement[pane] = nil
+                replacingPane = nil
+                focus(pane)
+            } catch is CancellationError {
+                return
+            } catch {
+                interactionError = error.localizedDescription
+                replacingPane = nil
+            }
+        }
+    }
+
+    private var comparisonMaxPixelSize: CGFloat {
+        let screenPixels = (NSScreen.main?.frame.size.width ?? 2_048)
+            * (NSScreen.main?.backingScaleFactor ?? 2)
+        return min(max(screenPixels, 2_048), 4_096)
+    }
+
+    private func requestDeleteFocusedSource() {
+        guard let focusedImageFile else { return }
+        onRequestDelete(focusedImageFile)
+    }
+
+    private func reconcileAvailableSources() {
+        guard coordinator != nil else {
+            previousAvailableOrder = availableImages.map(\.url)
+            return
+        }
+        let availableURLs = Set(availableImages.map(\.url))
+
+        for pane in ComparisonPane.allCases {
+            guard let source = session?[pane].source,
+                  !availableURLs.contains(source.revision.canonicalURL) else { continue }
+            let otherURL = session?[pane.other].source?.revision.canonicalURL
+            missingReplacement[pane] = ComparisonNavigationResolver.closestReplacement(
+                in: availableImages,
+                previousOrder: previousAvailableOrder,
+                missingURL: source.revision.canonicalURL,
+                excluding: otherURL
+            )
+            mutateCoordinator { $0.markSourceMissing(in: pane) }
+            renderedImages[pane] = nil
+            geometries[pane] = nil
+        }
+
+        previousAvailableOrder = availableImages.map(\.url)
+        if let focusedImageFile {
+            onFocusedImageChange(focusedImageFile)
+        }
+    }
+
+    private func closeComparison() {
+        let sourceURLs: Set<URL>
+        let focusedURL: URL?
+        if let session {
+            sourceURLs = Set(ComparisonPane.allCases.compactMap {
+                session[$0].source?.revision.canonicalURL
+            })
+            focusedURL = session[session.focusedPane].source?.revision.canonicalURL
+        } else {
+            // Escape or Back can be used while initial revision capture is still running or after
+            // it fails. In that case preserve the Browser selection that opened Compare.
+            sourceURLs = Set(images.map(\.url))
+            focusedURL = images.first?.url
+        }
+        onClose(sourceURLs, focusedURL)
     }
 
     private func updateViewport(_ viewport: ViewportState, in pane: ComparisonPane) {

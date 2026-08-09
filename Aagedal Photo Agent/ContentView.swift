@@ -718,8 +718,21 @@ struct ContentView: View {
             case .comparison:
                 ComparisonWorkspaceView(
                     images: comparisonImages,
+                    navigationImages: browserViewModel.visibleImages,
+                    availableImages: browserViewModel.sortedImages.filter(\.isImageFile),
                     fullScreenImageCache: browserViewModel.fullScreenImageCache,
-                    onClose: {
+                    onFocusedImageChange: { image in
+                        browserViewModel.selectedImageIDs = [image.url]
+                        browserViewModel.lastClickedImageURL = image.url
+                    },
+                    onRequestDelete: { image in
+                        browserViewModel.selectedImageIDs = [image.url]
+                        browserViewModel.lastClickedImageURL = image.url
+                        browserViewModel.confirmDeleteSelectedImages()
+                    },
+                    onClose: { sourceURLs, focusedURL in
+                        browserViewModel.selectedImageIDs = sourceURLs
+                        browserViewModel.lastClickedImageURL = focusedURL ?? sourceURLs.first
                         mainViewMode = .browser
                         browserViewModel.shouldRestoreGridFocus = true
                     }

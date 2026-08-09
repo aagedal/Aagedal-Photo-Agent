@@ -47,6 +47,17 @@ provides draggable side-by-side and stacked splitters, single-pane A/B switching
 representation and dynamic-range badges, Fit/100%/custom scale, linked pan/zoom, temporary unlock,
 saved alignment offset, edge-clamp disclosure, cancellation, and accessible pane labels.
 
+Left/Right Arrow or the toolbar replaces the focused pane in visible filmstrip order while keeping
+the session viewport and alignment. Replacement skips the source already shown in the other pane,
+uses the same cancellable revision capture and bounded render path as initial loading, and stops at
+filmstrip boundaries. Tab changes pane focus. Delete targets only the focused image and reuses the
+Browser's confirmation-based Trash flow. If a compared source disappears, the session retains the
+surviving pane, moves focus safely, and offers the nearest distinct survivor from the pre-deletion
+order. Closing Compare restores the current surviving comparison sources as the Browser selection.
+
+The resolver tests additionally cover visible-order navigation, duplicate-source avoidance,
+boundary behavior, and nearest-survivor replacement after deletion.
+
 The comparison renderer captures exact source revisions before presentation and reuses the bounded
-full-screen caches and committed-edit decode path. Source navigation/replacement, deletion behavior,
-two-RAW memory measurement, and the complete keyboard/VoiceOver pass remain pending.
+full-screen caches and committed-edit decode path. Two-RAW memory measurement and the complete
+keyboard/VoiceOver pass remain pending.

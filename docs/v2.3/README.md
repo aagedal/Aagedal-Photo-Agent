@@ -72,6 +72,11 @@ crop uses 1:1 source-pixel extraction with no interpolation. Stress coverage inc
 Unicode, missing figures, many annotations, and organically flowing multi-page content.
 The conditional sun/shadow analyzer is not approved for 2.3 because terrain, clock/timezone, and
 measurement uncertainty have not yet passed an evidence-quality gate.
+Phase 7 now includes the reusable comparison session/coordinator and a Browser workspace for exactly
+two selected images. Side-by-side, stacked, and A/B layouts share synchronized fit, true-pixel, and
+custom viewport state with deliberate alignment offsets. The focused pane can be replaced in visible
+filmstrip order, confirmed deletion preserves the surviving pane and offers a nearby replacement,
+and leaving Compare restores the current comparison selection to the Browser.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

@@ -198,3 +198,79 @@ nonisolated enum ComparisonSelectionResolver {
         return selection.count == 2 ? selection : nil
     }
 }
+
+nonisolated enum ComparisonNavigationDirection: Sendable {
+    case previous
+    case next
+
+    var step: Int {
+        switch self {
+        case .previous: -1
+        case .next: 1
+        }
+    }
+}
+
+/// Resolves filmstrip replacement without letting both comparison panes silently resolve to the
+/// same source. Navigation stops at the visible-order boundary, matching Browser arrow behavior.
+nonisolated enum ComparisonNavigationResolver {
+    static func replacement(
+        in visibleImages: [ImageFile],
+        currentURL: URL,
+        excluding excludedURL: URL?,
+        direction: ComparisonNavigationDirection
+    ) -> ImageFile? {
+        guard let currentIndex = visibleImages.firstIndex(where: { $0.url == currentURL }) else {
+            return nil
+        }
+
+        var index = currentIndex + direction.step
+        while visibleImages.indices.contains(index) {
+            let candidate = visibleImages[index]
+            if candidate.url != excludedURL,
+               SupportedImageFormats.isSupported(url: candidate.url) {
+                return candidate
+            }
+            index += direction.step
+        }
+        return nil
+    }
+
+    /// Picks the nearest surviving source from the order that existed before deletion. The image
+    /// after the missing source wins ties, and the source already displayed in the other pane is
+    /// excluded.
+    static func closestReplacement(
+        in availableImages: [ImageFile],
+        previousOrder: [URL],
+        missingURL: URL,
+        excluding excludedURL: URL?
+    ) -> ImageFile? {
+        let availableByURL: [URL: ImageFile] = Dictionary(
+            uniqueKeysWithValues: availableImages.compactMap { image -> (URL, ImageFile)? in
+                guard SupportedImageFormats.isSupported(url: image.url),
+                      image.url != excludedURL else { return nil }
+                return (image.url, image)
+            }
+        )
+        guard !availableByURL.isEmpty else { return nil }
+
+        guard let missingIndex = previousOrder.firstIndex(of: missingURL) else {
+            return availableImages.first { availableByURL[$0.url] != nil }
+        }
+
+        for distance in 1..<previousOrder.count {
+            let nextIndex = missingIndex + distance
+            if previousOrder.indices.contains(nextIndex),
+               let image = availableByURL[previousOrder[nextIndex]] {
+                return image
+            }
+
+            let previousIndex = missingIndex - distance
+            if previousOrder.indices.contains(previousIndex),
+               let image = availableByURL[previousOrder[previousIndex]] {
+                return image
+            }
+        }
+        return availableImages.first { availableByURL[$0.url] != nil }
+    }
+}

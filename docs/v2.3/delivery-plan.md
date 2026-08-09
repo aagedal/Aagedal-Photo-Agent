@@ -148,7 +148,7 @@ feedback or memory spikes.
 - [x] Build side-by-side, stacked, and A/B layouts.
 - [x] Add adjustable divider, focus, badges, and fit/100%/custom zoom.
 - [x] Add Browser entry for exactly two selected images.
-- [ ] Add source replacement/navigation and deletion behavior.
+- [x] Add source replacement/navigation and deletion behavior.
 - [ ] Add original/committed/live/named representation labels.
 - [x] Add sync math and feedback-loop tests.
 - [ ] Add two-RAW memory and cancellation validation.

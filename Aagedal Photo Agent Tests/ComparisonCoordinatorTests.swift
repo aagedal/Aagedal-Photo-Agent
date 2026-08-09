@@ -41,6 +41,54 @@ struct ComparisonCoordinatorTests {
         ) == nil)
     }
 
+    @Test("filmstrip replacement follows visible order and skips the other pane")
+    func resolvesFilmstripReplacement() throws {
+        let directory = URL(fileURLWithPath: "/tmp/comparison-navigation", isDirectory: true)
+        let images = (1...4).map {
+            ImageFile(url: directory.appendingPathComponent("0\($0).jpg"))
+        }
+
+        let next = try #require(ComparisonNavigationResolver.replacement(
+            in: images,
+            currentURL: images[0].url,
+            excluding: images[1].url,
+            direction: .next
+        ))
+        #expect(next.url == images[2].url)
+
+        let previous = try #require(ComparisonNavigationResolver.replacement(
+            in: images,
+            currentURL: images[3].url,
+            excluding: images[2].url,
+            direction: .previous
+        ))
+        #expect(previous.url == images[1].url)
+        #expect(ComparisonNavigationResolver.replacement(
+            in: images,
+            currentURL: images[0].url,
+            excluding: nil,
+            direction: .previous
+        ) == nil)
+    }
+
+    @Test("missing source offers the nearest distinct survivor")
+    func resolvesMissingSourceReplacement() throws {
+        let directory = URL(fileURLWithPath: "/tmp/comparison-navigation", isDirectory: true)
+        let images = (1...4).map {
+            ImageFile(url: directory.appendingPathComponent("0\($0).jpg"))
+        }
+        let previousOrder = images.map(\.url)
+        let available = [images[0], images[2], images[3]]
+
+        let replacement = try #require(ComparisonNavigationResolver.closestReplacement(
+            in: available,
+            previousOrder: previousOrder,
+            missingURL: images[1].url,
+            excluding: images[2].url
+        ))
+        #expect(replacement.url == images[0].url)
+    }
+
     @Test("presentation mutations keep the revision-bound session")
     func updatesPresentationState() throws {
         var coordinator = try makeCoordinator(focusedPane: .left)
