@@ -58,6 +58,7 @@
 		AB4600000000000000000002 /* AnalysisReportSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4600000000000000000001 /* AnalysisReportSnapshotTests.swift */; };
 		AB4700000000000000000002 /* AnalysisEvidenceJPEGRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4700000000000000000001 /* AnalysisEvidenceJPEGRendererTests.swift */; };
 		AB4800000000000000000002 /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */; };
+		AB4900000000000000000002 /* DevelopVersionCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
@@ -129,6 +130,7 @@
 		AB4600000000000000000001 /* AnalysisReportSnapshotTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisReportSnapshotTests.swift; sourceTree = "<group>"; };
 		AB4700000000000000000001 /* AnalysisEvidenceJPEGRendererTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisEvidenceJPEGRendererTests.swift; sourceTree = "<group>"; };
 		AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ComparisonCoordinatorTests.swift; sourceTree = "<group>"; };
+		AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopVersionCatalogTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -228,6 +230,7 @@
 				AB4600000000000000000001 /* AnalysisReportSnapshotTests.swift */,
 				AB4700000000000000000001 /* AnalysisEvidenceJPEGRendererTests.swift */,
 				AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */,
+				AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */,
 			);
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
@@ -428,6 +431,7 @@
 				AB4600000000000000000002 /* AnalysisReportSnapshotTests.swift in Sources */,
 				AB4700000000000000000002 /* AnalysisEvidenceJPEGRendererTests.swift in Sources */,
 				AB4800000000000000000002 /* ComparisonCoordinatorTests.swift in Sources */,
+				AB4900000000000000000002 /* DevelopVersionCatalogTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

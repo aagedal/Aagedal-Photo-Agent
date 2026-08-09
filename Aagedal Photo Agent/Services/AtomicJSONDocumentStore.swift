@@ -36,12 +36,12 @@ extension VersionedJSONDocument {
     nonisolated func validateForPersistence() throws {}
 }
 
-enum AtomicJSONDocumentSource: Equatable, Sendable {
+nonisolated enum AtomicJSONDocumentSource: Equatable, Sendable {
     case primary
     case backup
 }
 
-enum AtomicJSONDocumentLoad<Document: VersionedJSONDocument>: Sendable {
+nonisolated enum AtomicJSONDocumentLoad<Document: VersionedJSONDocument>: Sendable {
     case document(Document, source: AtomicJSONDocumentSource)
     /// The bytes are returned intact for a read-only presentation or later migration.
     case newerSchema(

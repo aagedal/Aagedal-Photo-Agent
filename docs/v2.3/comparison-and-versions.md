@@ -231,6 +231,26 @@ The implementation should add a dedicated sanitization API. Reusing
 `DevelopTemplate.settingsForDevelopTemplate` directly is insufficient because versions are
 source-bound and must preserve some information that portable templates intentionally strip.
 
+#### Implemented source-bound snapshot policy
+
+The Phase 9 catalog contract makes the following choices explicit:
+
+- persist Camera Raw `version` and `processVersion`, because decoder/process interpretation can
+  change the visible result;
+- persist as-shot neutral temperature/tint because a named version is bound to one exact source,
+  rather than being portable to another image;
+- preserve unparsed Adobe mask corrections verbatim so switching or later promotion cannot lose
+  edits Photo Agent does not understand;
+- preserve layer identifiers, order, crop/mask geometry, embedded LUT data, and AI matte payloads;
+- strip only `sourceHasHDRHeadroom`, which is a decode-time render hint and is recomputed from the
+  source rather than version intent;
+- record external watermark library identifiers and content hashes for embedded LUT, AI-mask, and
+  preserved-correction payloads in the dependency manifest.
+
+`DevelopVersionSnapshot` is the dedicated boundary for this policy. Catalog persistence remains
+inside `.photo_versions`; focused file-observation tests verify that creating and saving named
+versions does not create or modify XMP.
+
 ### Version switching
 
 Switching should:

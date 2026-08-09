@@ -175,14 +175,14 @@ This can begin after Phase 1 independently of the analysis UI.
 **Exit gate:** catalogs are source-bound, atomic, migration-safe, and losslessly snapshot the intended
 Develop state.
 
-- [ ] Define catalog/settings schema and source binding.
-- [ ] Implement dedicated version snapshot sanitization.
-- [ ] Define decoder/as-shot/unparsed-correction handling.
-- [ ] Add dependency manifest for LUTs, watermarks, and raster masks.
-- [ ] Implement catalog create/read/update/delete with backup recovery.
+- [x] Define catalog/settings schema and source binding.
+- [x] Implement dedicated version snapshot sanitization.
+- [x] Define decoder/as-shot/unparsed-correction handling.
+- [x] Add dependency manifest for LUTs, watermarks, and raster masks.
+- [x] Implement catalog create/read/update/delete with backup recovery.
 - [ ] Add Application Support fallback/read-only behavior.
 - [ ] Add source move/rename/change and reassociation behavior.
-- [ ] Verify new JSON never enters XMP.
+- [x] Verify new JSON never enters XMP.
 - [ ] Add round-trip tests for every current layer/effect type.
 
 ## Phase 10 — version workflow and promotion
