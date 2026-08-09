@@ -8,6 +8,7 @@ struct ComparisonWorkspaceView: View {
     let availableImages: [ImageFile]
     let fullScreenImageCache: FullScreenImageCache
     let origin: ComparisonOriginWorkspace
+    let initialLeftRepresentation: ComparisonRepresentation?
     let liveSource: ComparisonRenderedSource?
     let allowsDeletion: Bool
     let onFocusedImageChange: (ImageFile) -> Void
@@ -355,9 +356,13 @@ struct ComparisonWorkspaceView: View {
                 if let liveSource {
                     leftResult = liveSource
                 } else {
+                    let representation = initialLeftRepresentation ?? .committedEdit
                     leftResult = try await service.render(
                         imageFile: selectedImages[0],
-                        settings: committedSettings(for: selectedImages[0]),
+                        settings: representation == .original
+                            ? nil
+                            : committedSettings(for: selectedImages[0]),
+                        representation: representation,
                         cache: cache,
                         maxPixelSize: maxPixelSize
                     )

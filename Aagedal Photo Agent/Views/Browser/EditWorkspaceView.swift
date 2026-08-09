@@ -727,6 +727,7 @@ struct EditWorkspaceView: View {
                     availableImages: browserViewModel.sortedImages.filter(\.isImageFile),
                     fullScreenImageCache: browserViewModel.fullScreenImageCache,
                     origin: .develop,
+                    initialLeftRepresentation: nil,
                     liveSource: developComparisonLiveSource,
                     allowsDeletion: false,
                     onFocusedImageChange: { _ in },

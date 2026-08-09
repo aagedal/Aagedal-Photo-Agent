@@ -41,6 +41,18 @@ struct ComparisonCoordinatorTests {
         #expect(ComparisonRenderPolicy.maximumResidentOutputBytes == 256 * 1_024 * 1_024)
     }
 
+    @Test("comparison representation chooses the matching pixel cache")
+    func comparisonRepresentationPixelRouting() {
+        #expect(!ComparisonRenderPolicy.usesEditedPixels(for: .original))
+        #expect(ComparisonRenderPolicy.usesEditedPixels(for: .committedEdit))
+        #expect(ComparisonRenderPolicy.usesEditedPixels(for: .liveEdit(renderToken: "live")))
+        #expect(ComparisonRenderPolicy.usesEditedPixels(for: .namedVersion(
+            id: UUID(),
+            name: "Alternate",
+            renderToken: "named"
+        )))
+    }
+
     @Test("RAW comparison sources use the serialized decode path")
     func rawComparisonDecodeRouting() {
         for extensionName in ["arw", "cr2", "cr3", "dng", "nef", "raf", "rw2"] {
@@ -131,6 +143,55 @@ struct ComparisonCoordinatorTests {
         #expect(ComparisonSelectionResolver.images(
             in: [first, second],
             selectedURLs: [first.url, second.url, unsupported.url]
+        ) == nil)
+    }
+
+    @Test("full-screen comparison keeps the current image and prefers another selection")
+    func resolvesFullScreenSelectedPeer() throws {
+        let current = imageFile("current.jpg")
+        let neighbor = imageFile("neighbor.jpg")
+        let selectedPeer = imageFile("selected.jpg")
+
+        let result = try #require(FullScreenComparisonSelectionResolver.images(
+            in: [current, neighbor, selectedPeer],
+            currentURL: current.url,
+            selectedURLs: [current.url, selectedPeer.url]
+        ))
+
+        #expect(result.map(\.url) == [current.url, selectedPeer.url])
+    }
+
+    @Test("full-screen comparison chooses the next supported neighbor")
+    func resolvesFullScreenNextNeighbor() throws {
+        let current = imageFile("current.jpg")
+        let unsupported = imageFile("notes.txt")
+        let next = imageFile("next.jpg")
+
+        let result = try #require(FullScreenComparisonSelectionResolver.images(
+            in: [current, unsupported, next],
+            currentURL: current.url,
+            selectedURLs: [current.url]
+        ))
+
+        #expect(result.map(\.url) == [current.url, next.url])
+    }
+
+    @Test("full-screen comparison falls back to the previous image at the boundary")
+    func resolvesFullScreenPreviousNeighbor() throws {
+        let previous = imageFile("previous.jpg")
+        let current = imageFile("current.jpg")
+
+        let result = try #require(FullScreenComparisonSelectionResolver.images(
+            in: [previous, current],
+            currentURL: current.url,
+            selectedURLs: [current.url]
+        ))
+
+        #expect(result.map(\.url) == [current.url, previous.url])
+        #expect(FullScreenComparisonSelectionResolver.images(
+            in: [current],
+            currentURL: current.url,
+            selectedURLs: [current.url]
         ) == nil)
     }
 

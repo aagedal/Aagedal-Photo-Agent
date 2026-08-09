@@ -77,6 +77,7 @@ fileprivate class ZoomController {
     var toggleScalingAction: (() -> Void)?
     var toggleFaceRectanglesAction: (() -> Void)?
     var toggleEditRenderingAction: (() -> Void)?
+    var openComparisonAction: (() -> Void)?
 
     func toggleZoom(at location: CGPoint) {
         toggleZoomAction?(location)
@@ -100,6 +101,10 @@ fileprivate class ZoomController {
 
     func toggleEditRendering() {
         toggleEditRenderingAction?()
+    }
+
+    func openComparison() {
+        openComparisonAction?()
     }
 }
 
@@ -144,6 +149,7 @@ enum FullScreenNumberShortcut: Equatable, Sendable {
 
 private class FullScreenWindow: NSWindow {
     var onDismiss: (() -> Void)?
+    var onOpenComparison: (() -> Void)?
     var onSetRating: ((Int) -> Void)?
     var onSetLabel: ((Int) -> Void)?
     var onToggleZoom: ((CGPoint) -> Void)?
@@ -165,6 +171,13 @@ private class FullScreenWindow: NSWindow {
         // Escape or Space → dismiss
         if keyCode == 53 || keyCode == 49 {
             onDismiss?()
+            return
+        }
+
+        // C → transition to Compare. Modified C remains available to system commands.
+        if keyCode == 8 && !hasCmd && !hasOption && !event.isARepeat,
+           let onOpenComparison {
+            onOpenComparison()
             return
         }
 
@@ -257,15 +270,21 @@ private class FullScreenWindow: NSWindow {
 struct FullScreenImageView: View {
     @Bindable var viewModel: BrowserViewModel
     let scopeViewModel: ScopeViewModel
+    let canOpenComparison: Bool
+    let onRequestComparison: (Bool) -> Void
     fileprivate var zoomController: ZoomController?
 
     fileprivate init(
         viewModel: BrowserViewModel,
         scopeViewModel: ScopeViewModel,
+        canOpenComparison: Bool = false,
+        onRequestComparison: @escaping (Bool) -> Void = { _ in },
         zoomController: ZoomController? = nil
     ) {
         self.viewModel = viewModel
         self.scopeViewModel = scopeViewModel
+        self.canOpenComparison = canOpenComparison
+        self.onRequestComparison = onRequestComparison
         self.zoomController = zoomController
     }
 
@@ -345,7 +364,12 @@ struct FullScreenImageView: View {
     private let maxZoom: CGFloat = 40.0
 
     private var currentImageFile: ImageFile? {
-        viewModel.firstSelectedImage
+        if let activeURL = viewModel.lastClickedImageURL,
+           viewModel.selectedImageIDs.contains(activeURL),
+           let index = viewModel.urlToImageIndex[activeURL] {
+            return viewModel.images[index]
+        }
+        return viewModel.firstSelectedImage
     }
 
     private var isHDR: Bool {
@@ -659,6 +683,19 @@ struct FullScreenImageView: View {
                                 Text("Scaling: \(scaling.useNearestNeighbor ? "Nearest Neighbour" : "Bilinear")")
                                     .font(.caption2)
                                     .foregroundStyle(.white.opacity(0.7))
+
+                                if canOpenComparison {
+                                    Button {
+                                        onRequestComparison(renderEdits)
+                                    } label: {
+                                        Label("Compare", systemImage: "rectangle.split.2x1")
+                                            .font(.caption)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.white)
+                                    .help("Compare with another image (C)")
+                                    .accessibilityLabel("Compare current image with another image")
+                                }
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
@@ -699,6 +736,9 @@ struct FullScreenImageView: View {
             }
             zoomController?.toggleEditRenderingAction = { [self] in
                 renderEdits.toggle()
+            }
+            zoomController?.openComparisonAction = { [self] in
+                onRequestComparison(renderEdits)
             }
         }
         .onDisappear {
@@ -1038,6 +1078,9 @@ struct FullScreenImageView: View {
                 }
                 if file.hasDevelopEdits || file.hasCropEdits {
                     shortcutRow("E", "Toggle edits / original")
+                }
+                if canOpenComparison {
+                    shortcutRow("C", "Compare with another image")
                 }
                 shortcutRow("H", "Hide interface")
                 shortcutRow("Z", "Toggle 1:1 at cursor")
@@ -1996,6 +2039,8 @@ struct FullScreenImageView: View {
 struct FullScreenPresenter: ViewModifier {
     @Bindable var viewModel: BrowserViewModel
     let scopeViewModel: ScopeViewModel
+    let canOpenComparison: Bool
+    let onRequestComparison: (Bool) -> Void
     let onDismissed: () -> Void
     @State private var fullScreenWindow: FullScreenWindow?
     @State private var zoomController: ZoomController?
@@ -2034,6 +2079,9 @@ struct FullScreenPresenter: ViewModifier {
         window.onDismiss = { [weak viewModel] in
             viewModel?.isFullScreen = false
         }
+        window.onOpenComparison = canOpenComparison ? { [weak controller] in
+            controller?.openComparison()
+        } : nil
         window.onSetRating = { [weak viewModel] ratingValue in
             guard let rating = StarRating(rawValue: ratingValue) else { return }
             viewModel?.setRating(rating)
@@ -2062,7 +2110,13 @@ struct FullScreenPresenter: ViewModifier {
         }
 
         let hostingView = NSHostingView(
-            rootView: FullScreenImageView(viewModel: viewModel, scopeViewModel: scopeViewModel, zoomController: controller)
+            rootView: FullScreenImageView(
+                viewModel: viewModel,
+                scopeViewModel: scopeViewModel,
+                canOpenComparison: canOpenComparison,
+                onRequestComparison: onRequestComparison,
+                zoomController: controller
+            )
         )
         hostingView.wantsLayer = true
         if #available(macOS 26.0, *) {
@@ -2105,12 +2159,16 @@ extension View {
     func fullScreenImagePresenter(
         viewModel: BrowserViewModel,
         scopeViewModel: ScopeViewModel,
+        canOpenComparison: Bool = false,
+        onRequestComparison: @escaping (Bool) -> Void = { _ in },
         onDismissed: @escaping () -> Void = {}
     ) -> some View {
         modifier(
             FullScreenPresenter(
                 viewModel: viewModel,
                 scopeViewModel: scopeViewModel,
+                canOpenComparison: canOpenComparison,
+                onRequestComparison: onRequestComparison,
                 onDismissed: onDismissed
             )
         )

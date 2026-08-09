@@ -199,6 +199,52 @@ nonisolated enum ComparisonSelectionResolver {
     }
 }
 
+/// Resolves a comparison launched from the dedicated full-screen viewer. The image currently
+/// displayed remains pane A. A second selected image wins when available; otherwise the next
+/// supported filmstrip image is used, with the previous image as the end-of-filmstrip fallback.
+nonisolated enum FullScreenComparisonSelectionResolver {
+    static func images(
+        in visibleImages: [ImageFile],
+        currentURL: URL?,
+        selectedURLs: Set<URL>
+    ) -> [ImageFile]? {
+        guard let currentURL,
+              let currentIndex = visibleImages.firstIndex(where: {
+                  $0.url == currentURL && SupportedImageFormats.isSupported(url: $0.url)
+              }) else {
+            return nil
+        }
+
+        let current = visibleImages[currentIndex]
+        if let selectedPeer = visibleImages.first(where: {
+            $0.url != currentURL
+                && selectedURLs.contains($0.url)
+                && SupportedImageFormats.isSupported(url: $0.url)
+        }) {
+            return [current, selectedPeer]
+        }
+
+        if currentIndex < visibleImages.index(before: visibleImages.endIndex) {
+            for index in visibleImages.index(after: currentIndex)..<visibleImages.endIndex {
+                let candidate = visibleImages[index]
+                if SupportedImageFormats.isSupported(url: candidate.url) {
+                    return [current, candidate]
+                }
+            }
+        }
+
+        if currentIndex > visibleImages.startIndex {
+            for index in stride(from: currentIndex - 1, through: visibleImages.startIndex, by: -1) {
+                let candidate = visibleImages[index]
+                if SupportedImageFormats.isSupported(url: candidate.url) {
+                    return [current, candidate]
+                }
+            }
+        }
+        return nil
+    }
+}
+
 /// Resolves the default Develop comparison target without changing the current edit selection.
 /// The previous supported filmstrip image wins; the next image is the boundary fallback.
 nonisolated enum DevelopComparisonSelectionResolver {

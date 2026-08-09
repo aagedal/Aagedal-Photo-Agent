@@ -133,6 +133,9 @@ struct ContentView: View {
     /// actually been ordered out. Building the editor underneath that key,
     /// always-on-top window can leave AppKit focus handling wedged.
     @State private var opensEditWorkspaceAfterFullScreenDismissal = false
+    /// Comparison follows the same focus-safe handoff: freeze the pair, order the dedicated
+    /// full-screen window out, and only then construct the comparison workspace.
+    @State private var opensComparisonAfterFullScreenDismissal = false
     @State private var faceSelectionState = FaceSelectionState()
     @State private var technicalMetadata: TechnicalMetadata?
     @State private var technicalMetadataCache: [URL: TechnicalMetadata] = [:]
@@ -151,6 +154,8 @@ struct ContentView: View {
     @State private var scopeImageTask: Task<Void, Never>?
     @State private var analysisWorkspaceModel = AnalysisWorkspaceModel()
     @State private var comparisonImages: [ImageFile] = []
+    @State private var comparisonOrigin: ComparisonOriginWorkspace = .browser
+    @State private var comparisonInitialLeftRepresentation: ComparisonRepresentation?
 
     // Keyword-list backup recovery (prompts when a list comes back empty at launch).
     @State private var isShowingListRecoveryPrompt = false
@@ -656,7 +661,14 @@ struct ContentView: View {
             .fullScreenImagePresenter(
                 viewModel: browserViewModel,
                 scopeViewModel: scopeViewModel,
+                canOpenComparison: fullScreenComparisonImages != nil,
+                onRequestComparison: openComparisonFromFullScreen,
                 onDismissed: {
+                    if opensComparisonAfterFullScreenDismissal {
+                        opensComparisonAfterFullScreenDismissal = false
+                        mainViewMode = .comparison
+                        return
+                    }
                     guard opensEditWorkspaceAfterFullScreenDismissal else { return }
                     opensEditWorkspaceAfterFullScreenDismissal = false
                     openEditWorkspace()
@@ -721,7 +733,8 @@ struct ContentView: View {
                     navigationImages: browserViewModel.visibleImages,
                     availableImages: browserViewModel.sortedImages.filter(\.isImageFile),
                     fullScreenImageCache: browserViewModel.fullScreenImageCache,
-                    origin: .browser,
+                    origin: comparisonOrigin,
+                    initialLeftRepresentation: comparisonInitialLeftRepresentation,
                     liveSource: nil,
                     allowsDeletion: true,
                     onFocusedImageChange: { image in
@@ -737,7 +750,18 @@ struct ContentView: View {
                         browserViewModel.selectedImageIDs = sourceURLs
                         browserViewModel.lastClickedImageURL = focusedURL ?? sourceURLs.first
                         mainViewMode = .browser
-                        browserViewModel.shouldRestoreGridFocus = true
+                        if comparisonOrigin == .fullScreen, focusedURL != nil {
+                            browserViewModel.shouldRestoreGridFocus = false
+                            Task { @MainActor in
+                                // Let SwiftUI remove Compare and restore Browser before creating
+                                // a new dedicated key window for the returning full-screen image.
+                                await Task.yield()
+                                guard mainViewMode == .browser else { return }
+                                browserViewModel.isFullScreen = true
+                            }
+                        } else {
+                            browserViewModel.shouldRestoreGridFocus = true
+                        }
                     }
                 )
             case .editing:
@@ -897,7 +921,34 @@ struct ContentView: View {
     private func openComparison() {
         guard let selectedComparisonImages else { return }
         comparisonImages = selectedComparisonImages
+        comparisonOrigin = .browser
+        comparisonInitialLeftRepresentation = nil
         mainViewMode = .comparison
+    }
+
+    private var fullScreenComparisonImages: [ImageFile]? {
+        let currentURL: URL?
+        if let activeURL = browserViewModel.lastClickedImageURL,
+           browserViewModel.selectedImageIDs.contains(activeURL) {
+            currentURL = activeURL
+        } else {
+            currentURL = browserViewModel.selectedImageIDs.first
+        }
+        return FullScreenComparisonSelectionResolver.images(
+            in: browserViewModel.visibleImages,
+            currentURL: currentURL,
+            selectedURLs: browserViewModel.selectedImageIDs
+        )
+    }
+
+    private func openComparisonFromFullScreen(renderEdits: Bool) {
+        guard browserViewModel.isFullScreen,
+              let fullScreenComparisonImages else { return }
+        comparisonImages = fullScreenComparisonImages
+        comparisonOrigin = .fullScreen
+        comparisonInitialLeftRepresentation = renderEdits ? .committedEdit : .original
+        opensComparisonAfterFullScreenDismissal = true
+        browserViewModel.isFullScreen = false
     }
 
     @ViewBuilder

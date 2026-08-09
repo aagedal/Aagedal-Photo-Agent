@@ -160,7 +160,7 @@ feedback or memory spikes.
 a valid state.
 
 - [x] Add Develop comparison-target selection and live-current rendering.
-- [ ] Add full-screen entry/exit with safe window teardown and focus restoration.
+- [x] Add full-screen entry/exit with safe window teardown and focus restoration.
 - [ ] Extend Clean Feed to side-by-side, stacked, and focused-pane presentation.
 - [ ] Add View-menu controls for Clean Feed comparison layout.
 - [ ] Add rating/label focused-image behavior.

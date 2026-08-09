@@ -47,6 +47,11 @@ nonisolated enum ComparisonRenderPolicy {
     static func requiresSerializedDecode(for url: URL) -> Bool {
         FullScreenImageCache.isRawFile(url)
     }
+
+    static func usesEditedPixels(for representation: ComparisonRepresentation) -> Bool {
+        if case .original = representation { return false }
+        return true
+    }
 }
 
 /// Cancellation-aware FIFO gate used to keep transient RAW decode memory bounded. A waiting pane
@@ -120,6 +125,7 @@ nonisolated struct ComparisonRenderService: Sendable {
     func render(
         imageFile: ImageFile,
         settings: CameraRawSettings?,
+        representation: ComparisonRepresentation = .committedEdit,
         cache: FullScreenImageCache,
         maxPixelSize: CGFloat
     ) async throws -> ComparisonRenderedSource {
@@ -143,13 +149,25 @@ nonisolated struct ComparisonRenderService: Sendable {
             for: imageFile.url,
             fallback: imageFile.exifOrientation
         )
-        let renderToken = FullScreenImageCache.renderToken(settings: settings, isEdited: true)
+        let isEdited: Bool
+        let effectiveSettings: CameraRawSettings?
+        if !ComparisonRenderPolicy.usesEditedPixels(for: representation) {
+            isEdited = false
+            effectiveSettings = nil
+        } else {
+            isEdited = true
+            effectiveSettings = settings
+        }
+        let renderToken = FullScreenImageCache.renderToken(
+            settings: effectiveSettings,
+            isEdited: isEdited
+        )
         let rendered: CGImage
         if let cached = cache.cachedImage(
             for: imageFile.url,
             orientation: orientation,
             renderToken: renderToken,
-            isEdited: true
+            isEdited: isEdited
         ), ComparisonRenderPolicy.acceptsCachedImage(
             cached,
             maximumLongEdge: boundedMaxPixelSize
@@ -158,7 +176,7 @@ nonisolated struct ComparisonRenderService: Sendable {
         } else {
             let decoded = try await decode(
                 imageFile: imageFile,
-                settings: settings,
+                settings: effectiveSettings,
                 orientation: orientation,
                 maxPixelSize: boundedMaxPixelSize
             )
@@ -172,7 +190,7 @@ nonisolated struct ComparisonRenderService: Sendable {
                 for: imageFile.url,
                 orientation: orientation,
                 renderToken: renderToken,
-                isEdited: true
+                isEdited: isEdited
             )
             rendered = decoded
         }
@@ -180,7 +198,7 @@ nonisolated struct ComparisonRenderService: Sendable {
         return ComparisonRenderedSource(
             source: ComparisonSource(
                 revision: revision,
-                representation: .committedEdit,
+                representation: representation,
                 dynamicRange: imageFile.isNativeHDR ? .hdr : .sdr
             ),
             image: rendered
