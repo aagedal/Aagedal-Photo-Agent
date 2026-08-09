@@ -3009,7 +3009,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     }
 
     /// Returns true if settings have no visual adjustments (all filters would be identity).
-    nonisolated private static func isIdentitySettings(_ settings: CameraRawSettings) -> Bool {
+    nonisolated static func isIdentitySettings(_ settings: CameraRawSettings) -> Bool {
         let noTonal = ToneCurveGenerator.isIdentity(settings: settings)
         let noOutputToneMap = settings.sourceHasHDRHeadroom != true || settings.hdrEditMode == 1
         let noVibrance = settings.vibrance == nil || settings.vibrance == 0

@@ -721,6 +721,9 @@ struct ContentView: View {
                     navigationImages: browserViewModel.visibleImages,
                     availableImages: browserViewModel.sortedImages.filter(\.isImageFile),
                     fullScreenImageCache: browserViewModel.fullScreenImageCache,
+                    origin: .browser,
+                    liveSource: nil,
+                    allowsDeletion: true,
                     onFocusedImageChange: { image in
                         browserViewModel.selectedImageIDs = [image.url]
                         browserViewModel.lastClickedImageURL = image.url

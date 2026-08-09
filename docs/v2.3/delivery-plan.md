@@ -159,7 +159,7 @@ feedback or memory spikes.
 **Exit gate:** Develop, full-screen, and Clean Feed use the same session semantics and leave focus in
 a valid state.
 
-- [ ] Add Develop comparison-target selection and live-current rendering.
+- [x] Add Develop comparison-target selection and live-current rendering.
 - [ ] Add full-screen entry/exit with safe window teardown and focus restoration.
 - [ ] Extend Clean Feed to side-by-side, stacked, and focused-pane presentation.
 - [ ] Add View-menu controls for Clean Feed comparison layout.

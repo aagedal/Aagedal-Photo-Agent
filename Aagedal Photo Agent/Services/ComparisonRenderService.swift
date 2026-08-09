@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import Foundation
 
 nonisolated enum ComparisonRenderError: Error, LocalizedError, Sendable {
@@ -184,6 +185,104 @@ nonisolated struct ComparisonRenderService: Sendable {
             ),
             image: rendered
         )
+    }
+
+    /// Produces a bounded snapshot of the current in-memory Develop buffer. This deliberately
+    /// uses the same Metal edit graph as the live editor instead of exporting or reading the XMP
+    /// sidecar, so uncommitted adjustments are represented honestly as `Live Edit`.
+    func renderLiveEdit(
+        imageFile: ImageFile,
+        sourceImage: CIImage,
+        settings: CameraRawSettings?,
+        renderToken: String,
+        revision existingRevision: SourceImageRevision? = nil,
+        maxPixelSize: CGFloat
+    ) async throws -> ComparisonRenderedSource {
+        try Task.checkCancellation()
+        guard !imageFile.isICloudDownloadPending else {
+            throw ComparisonRenderError.sourceUnavailable(imageFile.filename)
+        }
+
+        let boundedMaxPixelSize = ComparisonRenderPolicy.boundedLongEdge(maxPixelSize)
+        let revision: SourceImageRevision
+        if let existingRevision,
+           existingRevision.canonicalURL.standardizedFileURL
+                == imageFile.url.standardizedFileURL {
+            revision = existingRevision
+        } else {
+            let pixelSize = FullScreenImageCache.nativePixelSize(of: imageFile.url)
+            revision = try await SourceImageRevision.capture(
+                at: imageFile.url,
+                pixelWidth: pixelSize.map { Int($0.width) },
+                pixelHeight: pixelSize.map { Int($0.height) },
+                exifOrientation: imageFile.exifOrientation
+            )
+        }
+        try Task.checkCancellation()
+
+        let workingSource = Self.boundedSource(sourceImage, maximumLongEdge: boundedMaxPixelSize)
+        let orientation = imageFile.exifOrientation
+        let renderedOutput: CIImage?
+        if settings?.crop?.isEffectiveCrop == true {
+            renderedOutput = await MetalEditPipeline.renderOffscreenCroppedAsync(
+                source: workingSource,
+                settings: settings,
+                exifOrientation: orientation
+            )
+        } else {
+            renderedOutput = await MetalEditPipeline.renderOffscreenAsync(
+                source: workingSource,
+                settings: settings,
+                exifOrientation: orientation
+            )
+        }
+        try Task.checkCancellation()
+
+        let output: CIImage
+        if let renderedOutput {
+            output = renderedOutput
+        } else if let settings, MetalEditPipeline.isIdentitySettings(settings) {
+            output = CameraRawApproximation.applyCrop(
+                to: workingSource,
+                originalExtent: workingSource.extent,
+                settings: settings,
+                exifOrientation: orientation
+            )
+        } else if settings == nil {
+            output = workingSource
+        } else {
+            throw ComparisonRenderError.decodeFailed(imageFile.filename)
+        }
+
+        guard let image = CameraRawApproximation.ciContext.createCGImage(
+            output,
+            from: output.extent,
+            format: .RGBAh,
+            colorSpace: CameraRawApproximation.workingColorSpace
+        ) else {
+            throw ComparisonRenderError.decodeFailed(imageFile.filename)
+        }
+
+        return ComparisonRenderedSource(
+            source: ComparisonSource(
+                revision: revision,
+                representation: .liveEdit(renderToken: renderToken),
+                dynamicRange: imageFile.isNativeHDR ? .hdr : .sdr
+            ),
+            image: image
+        )
+    }
+
+    private static func boundedSource(
+        _ source: CIImage,
+        maximumLongEdge: CGFloat
+    ) -> CIImage {
+        let longEdge = max(source.extent.width, source.extent.height)
+        guard longEdge.isFinite,
+              longEdge > maximumLongEdge,
+              longEdge > 0 else { return source }
+        let scale = maximumLongEdge / longEdge
+        return source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
     }
 
     private func decode(

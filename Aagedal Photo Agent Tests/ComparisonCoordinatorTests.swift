@@ -5,6 +5,33 @@ import Testing
 
 @Suite("Comparison coordinator")
 struct ComparisonCoordinatorTests {
+    @Test("Develop comparison prefers the previous supported filmstrip image")
+    func developComparisonPrefersPreviousImage() {
+        let previous = imageFile("previous.jpg")
+        let current = imageFile("current.jpg")
+        let next = imageFile("next.jpg")
+
+        let target = DevelopComparisonSelectionResolver.target(
+            in: [previous, current, next],
+            currentURL: current.url
+        )
+
+        #expect(target?.url == previous.url)
+    }
+
+    @Test("Develop comparison falls forward at the filmstrip boundary")
+    func developComparisonFallsForward() {
+        let current = imageFile("current.jpg")
+        let next = imageFile("next.jpg")
+
+        let target = DevelopComparisonSelectionResolver.target(
+            in: [current, next],
+            currentURL: current.url
+        )
+
+        #expect(target?.url == next.url)
+    }
+
     @Test("comparison rendering has a fixed two-pane output budget")
     func comparisonRenderBudget() {
         #expect(ComparisonRenderPolicy.boundedLongEdge(.infinity) == 4_096)
@@ -400,6 +427,10 @@ struct ComparisonCoordinatorTests {
                 viewport: ViewportState(mode: .actualPixels)
             )
         )
+    }
+
+    private func imageFile(_ filename: String) -> ImageFile {
+        ImageFile(url: URL(fileURLWithPath: "/tmp/develop-comparison/\(filename)"))
     }
 
     private func makeGeometries(

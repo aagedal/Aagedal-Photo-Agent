@@ -145,6 +145,10 @@ struct EditWorkspaceView: View {
     @State private var previewImage: NSImage?
     @State private var previewTask: Task<Void, Never>?
     @State private var previewRenderTask: Task<Void, Never>?
+    @State private var developComparisonRenderTask: Task<Void, Never>?
+    @State private var developComparisonTarget: ImageFile?
+    @State private var developComparisonLiveSource: ComparisonRenderedSource?
+    @State private var developComparisonError: String?
     /// Speculative adjacent-RAW decoding must have a single owner. Without retaining this task,
     /// rapid navigation left every previous pair decoding and uploading concurrently even after
     /// its preview was cancelled, causing extreme Core Image/IOSurface memory growth.
@@ -532,7 +536,7 @@ struct EditWorkspaceView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                previewPane
+                developPreviewArea
                 Divider()
                 controlsPane
                     .frame(width: 330)
@@ -564,6 +568,9 @@ struct EditWorkspaceView: View {
             ensureAtLeastOneSelected()
         }
         .onChange(of: selectedImageURL) { oldURL, newURL in
+            if oldURL != newURL {
+                closeDevelopComparison()
+            }
             editLog.info("[\(newURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onChange(selectedImageURL) old=\(oldURL?.lastPathComponent ?? "nil")")
             loadSelectedImagePreview()
         }
@@ -706,6 +713,46 @@ struct EditWorkspaceView: View {
             if let error = saveError {
                 Text(error)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var developPreviewArea: some View {
+        if let target = developComparisonTarget,
+           let current = selectedImage {
+            if let developComparisonLiveSource {
+                ComparisonWorkspaceView(
+                    images: [current, target],
+                    navigationImages: browserViewModel.visibleImages,
+                    availableImages: browserViewModel.sortedImages.filter(\.isImageFile),
+                    fullScreenImageCache: browserViewModel.fullScreenImageCache,
+                    origin: .develop,
+                    liveSource: developComparisonLiveSource,
+                    allowsDeletion: false,
+                    onFocusedImageChange: { _ in },
+                    onRequestDelete: { _ in },
+                    onClose: { _, _ in closeDevelopComparison() }
+                )
+            } else if let developComparisonError {
+                ContentUnavailableView {
+                    Label("Comparison Unavailable", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(developComparisonError)
+                } actions: {
+                    Button("Try Again") { scheduleDevelopComparisonRender() }
+                    Button("Close Compare") { closeDevelopComparison() }
+                }
+            } else {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Preparing the live Develop comparison…")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Self.previewBackground)
+            }
+        } else {
+            previewPane
         }
     }
 
@@ -1235,6 +1282,41 @@ struct EditWorkspaceView: View {
                     .help("Exit Edit View (Esc)")
                     Spacer()
                     if canEditSingleImage {
+                        Menu {
+                            if let target = defaultDevelopComparisonTarget {
+                                Button("Compare with \(target.filename)") {
+                                    openDevelopComparison(with: target)
+                                }
+                            } else {
+                                Text("No other supported image is available")
+                            }
+
+                            Divider()
+                            Text("Or right-click an image in the filmstrip")
+
+                            if developComparisonTarget != nil {
+                                Divider()
+                                Button("Close Comparison") {
+                                    closeDevelopComparison()
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "rectangle.split.2x1")
+                                .font(.system(size: 11, weight: developComparisonTarget == nil ? .regular : .semibold))
+                                .foregroundStyle(developComparisonTarget == nil ? Color.secondary : Color.accentColor)
+                                .padding(4)
+                                .background(
+                                    developComparisonTarget == nil ? Color.clear : Color.accentColor.opacity(0.16),
+                                    in: RoundedRectangle(cornerRadius: 4)
+                                )
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .disabled(defaultDevelopComparisonTarget == nil && developComparisonTarget == nil)
+                        .help(developComparisonTarget == nil ? "Compare the live edit with another image" : "Develop comparison options")
+                        .accessibilityLabel("Develop comparison")
+
                         Button {
                             saveCurrentRenderedImage()
                         } label: {
@@ -1608,6 +1690,10 @@ struct EditWorkspaceView: View {
 
                             if image.url != selectedImageURL {
                                 Divider()
+                                Button("Compare with Current Image", systemImage: "rectangle.split.2x1") {
+                                    openDevelopComparison(with: image)
+                                }
+
                                 Button("Copy Settings to Current Selection", systemImage: "paintbrush") {
                                     applyFilmstripSettingsFromImageToCurrentSelection(image)
                                 }
@@ -1644,6 +1730,7 @@ struct EditWorkspaceView: View {
         isSpaceHandToolActive = false
         maskMattePreviewMaskID = nil
         metalPipeline?.maskMattePreviewMaskID = nil
+        developComparisonRenderTask?.cancel()
         NSCursor.arrow.set()
 
         // Flush any unsaved edit adjustments (CRS) to disk before tearing down.
@@ -2575,6 +2662,10 @@ struct EditWorkspaceView: View {
             return settingsForPipeline(s)
         }()
 
+        if developComparisonTarget != nil {
+            scheduleDevelopComparisonRender()
+        }
+
         // Keep Metal scope coordinator's crop region up to date
         if let coordinator = scopeViewModel.metalScopeCoordinator {
             let crop = activeCrop
@@ -2659,6 +2750,75 @@ struct EditWorkspaceView: View {
             } else {
                 previewImage = fallback
                 NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["isHDR": hdr])
+            }
+        }
+    }
+
+    private var defaultDevelopComparisonTarget: ImageFile? {
+        guard let selectedImageURL else { return nil }
+        return DevelopComparisonSelectionResolver.target(
+            in: browserViewModel.visibleImages,
+            currentURL: selectedImageURL
+        )
+    }
+
+    private func openDevelopComparison(with target: ImageFile) {
+        guard target.url != selectedImageURL,
+              SupportedImageFormats.isSupported(url: target.url) else { return }
+        if showCropControls {
+            toggleCropControls()
+        }
+        developComparisonTarget = target
+        developComparisonLiveSource = nil
+        developComparisonError = nil
+        scheduleDevelopComparisonRender()
+    }
+
+    private func closeDevelopComparison() {
+        developComparisonRenderTask?.cancel()
+        developComparisonRenderTask = nil
+        developComparisonTarget = nil
+        developComparisonLiveSource = nil
+        developComparisonError = nil
+    }
+
+    private func scheduleDevelopComparisonRender() {
+        developComparisonRenderTask?.cancel()
+        guard developComparisonTarget != nil,
+              let current = selectedImage,
+              let sourceCIImage else { return }
+
+        var settings = metadataViewModel.editingMetadata.cameraRaw
+        if let asShotWhiteBalance {
+            settings?.asShotNeutralTemperature = Double(asShotWhiteBalance.temperature)
+            settings?.asShotNeutralTint = Double(asShotWhiteBalance.tint)
+        }
+        let liveSettings = settingsForPipeline(settings)
+        let renderToken = FullScreenImageCache.renderToken(
+            settings: liveSettings,
+            isEdited: true
+        ) ?? "live-unedited"
+        let existingRevision = developComparisonLiveSource?.source.revision
+        let maxPixelSize = min(max(previewWorkingMaxPixelSize, 2_048), 4_096)
+
+        developComparisonError = nil
+        developComparisonRenderTask = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+                let result = try await ComparisonRenderService().renderLiveEdit(
+                    imageFile: current,
+                    sourceImage: sourceCIImage,
+                    settings: liveSettings,
+                    renderToken: renderToken,
+                    revision: existingRevision,
+                    maxPixelSize: maxPixelSize
+                )
+                try Task.checkCancellation()
+                developComparisonLiveSource = result
+            } catch is CancellationError {
+                return
+            } catch {
+                developComparisonError = error.localizedDescription
             }
         }
     }

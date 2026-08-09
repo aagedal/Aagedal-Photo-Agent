@@ -199,6 +199,38 @@ nonisolated enum ComparisonSelectionResolver {
     }
 }
 
+/// Resolves the default Develop comparison target without changing the current edit selection.
+/// The previous supported filmstrip image wins; the next image is the boundary fallback.
+nonisolated enum DevelopComparisonSelectionResolver {
+    static func target(
+        in visibleImages: [ImageFile],
+        currentURL: URL
+    ) -> ImageFile? {
+        guard let currentIndex = visibleImages.firstIndex(where: { $0.url == currentURL }) else {
+            return nil
+        }
+
+        if currentIndex > visibleImages.startIndex {
+            for index in stride(from: currentIndex - 1, through: visibleImages.startIndex, by: -1) {
+                let candidate = visibleImages[index]
+                if SupportedImageFormats.isSupported(url: candidate.url) {
+                    return candidate
+                }
+            }
+        }
+
+        if currentIndex < visibleImages.index(before: visibleImages.endIndex) {
+            for index in visibleImages.index(after: currentIndex)..<visibleImages.endIndex {
+                let candidate = visibleImages[index]
+                if SupportedImageFormats.isSupported(url: candidate.url) {
+                    return candidate
+                }
+            }
+        }
+        return nil
+    }
+}
+
 nonisolated enum ComparisonNavigationDirection: Sendable {
     case previous
     case next

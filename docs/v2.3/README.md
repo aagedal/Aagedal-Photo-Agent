@@ -81,6 +81,14 @@ identify Original, Committed Edit, Live Edit, or a named version. Comparison out
 4096-pixel long edge, and RAW decodes share a cancellation-aware single-permit gate so two large RAW
 sources cannot create overlapping transient decode spikes. Wipe and difference layouts are deferred
 and do not block 2.3.
+Phase 8 now includes Develop comparison entry. The inspector can compare the current image with the
+previous supported filmstrip image by default, or with a target chosen from a filmstrip context
+menu, without changing the active edit selection. The current pane is a debounced, revision-bound
+Live Edit rendered through the same Metal graph as Develop; the target pane retains its committed
+representation. The shared comparison coordinator continues to own layout, focus, pan/zoom lock,
+and alignment semantics while the Develop inspector remains editable. Live output remains bounded
+to the comparison memory budget, reuses the captured source revision after the first render, and
+reports render failure rather than mislabeling unedited fallback pixels as live evidence.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

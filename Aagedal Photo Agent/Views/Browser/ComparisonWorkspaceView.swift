@@ -7,6 +7,9 @@ struct ComparisonWorkspaceView: View {
     let navigationImages: [ImageFile]
     let availableImages: [ImageFile]
     let fullScreenImageCache: FullScreenImageCache
+    let origin: ComparisonOriginWorkspace
+    let liveSource: ComparisonRenderedSource?
+    let allowsDeletion: Bool
     let onFocusedImageChange: (ImageFile) -> Void
     let onRequestDelete: (ImageFile) -> Void
     let onClose: (Set<URL>, URL?) -> Void
@@ -46,6 +49,9 @@ struct ComparisonWorkspaceView: View {
         .onChange(of: availableImages.map(\.url)) { _, _ in
             reconcileAvailableSources()
         }
+        .onChange(of: liveSource?.source.representation.renderToken) { _, _ in
+            reconcileLiveSource()
+        }
         .onKeyPress(.escape) {
             closeComparison()
             return .handled
@@ -78,7 +84,7 @@ struct ComparisonWorkspaceView: View {
             Button(action: { closeComparison() }) {
                 Label("Close Compare", systemImage: "chevron.backward")
             }
-            .help("Return to the Browser (Esc)")
+            .help(origin == .develop ? "Return to Develop (Esc)" : "Return to the Browser (Esc)")
 
             Divider().frame(height: 20)
 
@@ -98,7 +104,7 @@ struct ComparisonWorkspaceView: View {
                 Image(systemName: "trash")
             }
             .help("Move the focused image to the Trash")
-            .disabled(focusedImageFile == nil || replacingPane != nil)
+            .disabled(!allowsDeletion || focusedImageFile == nil || replacingPane != nil)
 
             Divider().frame(height: 20)
 
@@ -298,7 +304,7 @@ struct ComparisonWorkspaceView: View {
             ContentUnavailableView {
                 Label("Source Missing", systemImage: "photo.badge.exclamationmark")
             } description: {
-                Text("The other image remains available. Replace this pane or return to the Browser.")
+                Text("The other image remains available. Replace this pane or close Compare.")
             } actions: {
                 if let replacement = missingReplacement[pane] {
                     Button("Replace with \(replacement.filename)") {
@@ -306,7 +312,7 @@ struct ComparisonWorkspaceView: View {
                     }
                     .disabled(replacingPane != nil)
                 }
-                Button("Back to Browser", action: { closeComparison() })
+                Button(origin == .develop ? "Back to Develop" : "Back to Browser", action: { closeComparison() })
             }
         }
     }
@@ -316,6 +322,11 @@ struct ComparisonWorkspaceView: View {
         guard images.count == 2 else {
             isLoading = false
             loadError = "Select exactly two supported images in the Browser."
+            return
+        }
+        if origin == .develop, liveSource == nil {
+            isLoading = true
+            loadError = nil
             return
         }
 
@@ -334,23 +345,28 @@ struct ComparisonWorkspaceView: View {
             let maxPixelSize = min(max(screenPixels, 2_048), 4_096)
             let service = ComparisonRenderService()
             do {
-                async let left = service.render(
-                    imageFile: selectedImages[0],
-                    settings: committedSettings(for: selectedImages[0]),
-                    cache: cache,
-                    maxPixelSize: maxPixelSize
-                )
                 async let right = service.render(
                     imageFile: selectedImages[1],
                     settings: committedSettings(for: selectedImages[1]),
                     cache: cache,
                     maxPixelSize: maxPixelSize
                 )
-                let (leftResult, rightResult) = try await (left, right)
+                let leftResult: ComparisonRenderedSource
+                if let liveSource {
+                    leftResult = liveSource
+                } else {
+                    leftResult = try await service.render(
+                        imageFile: selectedImages[0],
+                        settings: committedSettings(for: selectedImages[0]),
+                        cache: cache,
+                        maxPixelSize: maxPixelSize
+                    )
+                }
+                let rightResult = try await right
                 try Task.checkCancellation()
 
                 let session = ComparisonSession(
-                    origin: .browser,
+                    origin: origin,
                     left: leftResult.source,
                     right: rightResult.source
                 )
@@ -453,8 +469,24 @@ struct ComparisonWorkspaceView: View {
     }
 
     private func requestDeleteFocusedSource() {
-        guard let focusedImageFile else { return }
+        guard allowsDeletion, let focusedImageFile else { return }
         onRequestDelete(focusedImageFile)
+    }
+
+    private func reconcileLiveSource() {
+        guard origin == .develop, let liveSource else { return }
+        guard let session else {
+            startLoading()
+            return
+        }
+        guard session.left.source?.revision.canonicalURL
+                == liveSource.source.revision.canonicalURL else {
+            startLoading()
+            return
+        }
+        mutateCoordinator { $0.replaceSource(liveSource.source, in: .left) }
+        renderedImages[.left] = liveSource.image
+        geometries[.left] = nil
     }
 
     private func reconcileAvailableSources() {
