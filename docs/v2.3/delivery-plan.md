@@ -180,7 +180,7 @@ Develop state.
 - [x] Define decoder/as-shot/unparsed-correction handling.
 - [x] Add dependency manifest for LUTs, watermarks, and raster masks.
 - [x] Implement catalog create/read/update/delete with backup recovery.
-- [ ] Add Application Support fallback/read-only behavior.
+- [x] Add Application Support fallback/read-only behavior.
 - [ ] Add source move/rename/change and reassociation behavior.
 - [x] Verify new JSON never enters XMP.
 - [ ] Add round-trip tests for every current layer/effect type.

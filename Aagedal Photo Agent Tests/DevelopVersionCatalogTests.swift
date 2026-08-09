@@ -141,11 +141,12 @@ struct DevelopVersionCatalogTests {
 
         try Data("{".utf8).write(to: catalogURL)
         let match = await repository.loadMostRelevantCatalog(for: revision)
-        guard case .exact(let recovered, let source) = match else {
+        guard case .exact(let recovered, let source, let storage) = match else {
             Issue.record("Expected backup recovery for the exact source")
             return
         }
         #expect(source == .backup)
+        #expect(storage == .folderLocal)
         #expect(recovered.versions.first?.name == "First")
     }
 
@@ -162,10 +163,11 @@ struct DevelopVersionCatalogTests {
         let changedRevision = try await SourceImageRevision.capture(at: fixture.fileURL)
         let match = await repository.loadMostRelevantCatalog(for: changedRevision)
 
-        guard case .sourceChanged(let reopened, _) = match else {
+        guard case .sourceChanged(let reopened, _, let storage) = match else {
             Issue.record("Expected the old catalog to remain source-bound")
             return
         }
+        #expect(storage == .folderLocal)
         #expect(reopened.source.sha256 == originalRevision.sha256)
         #expect(reopened.source.relationship(to: changedRevision) == .sameFileChanged)
     }
@@ -185,13 +187,83 @@ struct DevelopVersionCatalogTests {
 
         let repository = DevelopVersionCatalogRepository(sourceFolderURL: fixture.directoryURL)
         let match = await repository.loadMostRelevantCatalog(for: revision)
-        guard case .newerSchema(let schemaVersion, let data, let source) = match else {
+        guard case .newerSchema(
+            let schemaVersion,
+            let data,
+            let source,
+            let storage
+        ) = match else {
             Issue.record("Expected a read-only newer catalog")
             return
         }
         #expect(schemaVersion == 2)
         #expect(data == future)
         #expect(source == .primary)
+        #expect(storage == .folderLocal)
+
+        let currentCatalog = DevelopVersionCatalog.create(for: revision)
+        await #expect(throws: AtomicJSONDocumentStoreError.newerSchemaRequiresReadOnly(
+            found: 2,
+            supported: 1
+        )) {
+            try await repository.save(currentCatalog)
+        }
+    }
+
+    @Test("read-only photo folder falls back to indexed Application Support storage")
+    func readOnlyFolderFallback() async throws {
+        let fixture = try VersionCatalogFixture(contents: "source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let applicationSupportURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "apa-version-support-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: applicationSupportURL) }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555],
+            ofItemAtPath: fixture.directoryURL.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: fixture.directoryURL.path
+            )
+        }
+
+        let repository = DevelopVersionCatalogRepository(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: applicationSupportURL
+        )
+        let catalog = DevelopVersionCatalog.create(for: revision)
+        let storage = try await repository.save(catalog)
+
+        #expect(storage == .applicationSupport)
+        #expect(storage.portabilityWarning != nil)
+        #expect(!FileManager.default.fileExists(atPath: fixture.catalogURL(for: revision).path))
+        let fallbackRoot = applicationSupportURL
+            .appendingPathComponent("DevelopVersions", isDirectory: true)
+        let fallbackCatalogURL = fallbackRoot
+            .appendingPathComponent("catalogs", isDirectory: true)
+            .appendingPathComponent("\(revision.sha256).versions.json")
+        #expect(FileManager.default.fileExists(atPath: fallbackCatalogURL.path))
+        let indexURL = fallbackRoot.appendingPathComponent("index.versions.json")
+        #expect(FileManager.default.fileExists(atPath: indexURL.path))
+        let indexObject = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any]
+        )
+        let entries = try #require(indexObject["entries"] as? [[String: Any]])
+        let indexedSource = try #require(entries.first?["source"] as? [String: Any])
+        #expect(indexedSource["sha256"] as? String == revision.sha256)
+        #expect(entries.first?["catalogFilename"] as? String
+            == "\(revision.sha256).versions.json")
+
+        let match = await repository.loadMostRelevantCatalog(for: revision)
+        guard case .exact(_, _, let loadedStorage) = match else {
+            Issue.record("Expected the Application Support catalog to load")
+            return
+        }
+        #expect(loadedStorage == .applicationSupport)
     }
 }
 
