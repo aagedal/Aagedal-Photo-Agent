@@ -5,6 +5,56 @@ import Testing
 
 @Suite("Comparison coordinator")
 struct ComparisonCoordinatorTests {
+    @Test("browser selection resolves in visible order")
+    func resolvesBrowserSelectionInVisibleOrder() throws {
+        let directory = URL(fileURLWithPath: "/tmp/comparison-selection", isDirectory: true)
+        let first = ImageFile(url: directory.appendingPathComponent("01.jpg"))
+        let second = ImageFile(url: directory.appendingPathComponent("02.jpg"))
+        let third = ImageFile(url: directory.appendingPathComponent("03.jpg"))
+
+        let result = try #require(ComparisonSelectionResolver.images(
+            in: [third, first, second],
+            selectedURLs: [first.url, third.url]
+        ))
+
+        #expect(result.map(\.url) == [third.url, first.url])
+    }
+
+    @Test("browser comparison requires exactly two supported visible images")
+    func rejectsInvalidBrowserSelection() {
+        let directory = URL(fileURLWithPath: "/tmp/comparison-selection", isDirectory: true)
+        let first = ImageFile(url: directory.appendingPathComponent("01.jpg"))
+        let second = ImageFile(url: directory.appendingPathComponent("02.jpg"))
+        let unsupported = ImageFile(url: directory.appendingPathComponent("notes.txt"))
+
+        #expect(ComparisonSelectionResolver.images(
+            in: [first],
+            selectedURLs: [first.url]
+        ) == nil)
+        #expect(ComparisonSelectionResolver.images(
+            in: [first, second, unsupported],
+            selectedURLs: [first.url, unsupported.url]
+        ) == nil)
+        #expect(ComparisonSelectionResolver.images(
+            in: [first, second],
+            selectedURLs: [first.url, second.url, unsupported.url]
+        ) == nil)
+    }
+
+    @Test("presentation mutations keep the revision-bound session")
+    func updatesPresentationState() throws {
+        var coordinator = try makeCoordinator(focusedPane: .left)
+        let sessionID = coordinator.session.id
+
+        coordinator.setLayout(.stacked)
+        coordinator.setFocusedPane(.right)
+
+        #expect(coordinator.session.id == sessionID)
+        #expect(coordinator.session.layout == .stacked)
+        #expect(coordinator.session.focusedPane == .right)
+        #expect(coordinator.session.hasBothSources)
+    }
+
     @Test("locked panes share normalized center and comparable pixel scale")
     func synchronizesCenterAndScale() throws {
         var coordinator = try makeCoordinator()

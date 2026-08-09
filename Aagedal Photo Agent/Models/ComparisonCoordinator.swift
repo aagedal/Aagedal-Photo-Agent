@@ -228,6 +228,15 @@ nonisolated struct ComparisonCoordinator: Sendable {
         session.markSourceMissing(in: pane)
     }
 
+    mutating func setLayout(_ layout: ComparisonLayout) {
+        session.layout = layout
+    }
+
+    mutating func setFocusedPane(_ pane: ComparisonPane) {
+        guard session[pane].source != nil else { return }
+        session.focusedPane = pane
+    }
+
     private func synchronizedViewport(
         drivenBy pane: ComparisonPane,
         driverViewport: ViewportState,

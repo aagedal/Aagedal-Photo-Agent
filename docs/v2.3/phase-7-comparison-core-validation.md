@@ -42,6 +42,11 @@ xcodebuild test \
 
 ## Manual validation status
 
-No comparison surface is exposed in this slice, so visual, keyboard, accessibility, RAW-memory,
-and source-navigation checks remain pending. Those checks become meaningful after the comparison
-render service, layouts, and Browser entry are wired in the next Phase 7 slices.
+The Browser now exposes Compare for exactly two supported, visible selected images. The surface
+provides draggable side-by-side and stacked splitters, single-pane A/B switching, pane focus,
+representation and dynamic-range badges, Fit/100%/custom scale, linked pan/zoom, temporary unlock,
+saved alignment offset, edge-clamp disclosure, cancellation, and accessible pane labels.
+
+The comparison renderer captures exact source revisions before presentation and reuses the bounded
+full-screen caches and committed-edit decode path. Source navigation/replacement, deletion behavior,
+two-RAW memory measurement, and the complete keyboard/VoiceOver pass remain pending.

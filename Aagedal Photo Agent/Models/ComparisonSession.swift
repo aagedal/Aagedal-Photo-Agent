@@ -184,3 +184,17 @@ nonisolated struct ComparisonSession: Hashable, Sendable {
     }
 }
 
+/// Resolves Browser Compare input in the same order the user sees in the grid. A `Set` does not
+/// preserve selection order, so callers must supply the currently visible, sorted image list.
+nonisolated enum ComparisonSelectionResolver {
+    static func images(
+        in visibleImages: [ImageFile],
+        selectedURLs: Set<URL>
+    ) -> [ImageFile]? {
+        guard selectedURLs.count == 2 else { return nil }
+        let selection = visibleImages.filter { image in
+            selectedURLs.contains(image.url) && SupportedImageFormats.isSupported(url: image.url)
+        }
+        return selection.count == 2 ? selection : nil
+    }
+}

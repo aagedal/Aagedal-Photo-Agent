@@ -10,6 +10,7 @@ enum MainViewMode {
     case browser           // Normal photo browsing
     case metadataReview    // Folder-wide metadata comparison list
     case imageAnalysis     // Source-bound evidence and OSINT workspace
+    case comparison        // Revision-bound two-image comparison workspace
     case editing           // Dedicated image editing workspace
     case faceManagement    // Expanded face management (existing)
     case peopleDatabase    // Known People database view
@@ -149,6 +150,7 @@ struct ContentView: View {
     @State private var scopeViewModel = ScopeViewModel()
     @State private var scopeImageTask: Task<Void, Never>?
     @State private var analysisWorkspaceModel = AnalysisWorkspaceModel()
+    @State private var comparisonImages: [ImageFile] = []
 
     // Keyword-list backup recovery (prompts when a list comes back empty at launch).
     @State private var isShowingListRecoveryPrompt = false
@@ -263,10 +265,12 @@ struct ContentView: View {
                 browserViewModel.fullScreenImageCache.setEditingMemoryProfile(editing)
             }
             .onChange(of: mainViewMode) { oldMode, newMode in
-                if oldMode != .imageAnalysis, newMode == .imageAnalysis {
+                let oldUsesFocusedWorkspace = oldMode == .imageAnalysis || oldMode == .comparison
+                let newUsesFocusedWorkspace = newMode == .imageAnalysis || newMode == .comparison
+                if !oldUsesFocusedWorkspace, newUsesFocusedWorkspace {
                     navigationSplitViewVisibilityBeforeAnalysis = navigationSplitViewVisibility
                     navigationSplitViewVisibility = .detailOnly
-                } else if oldMode == .imageAnalysis, newMode != .imageAnalysis {
+                } else if oldUsesFocusedWorkspace, !newUsesFocusedWorkspace {
                     navigationSplitViewVisibility = navigationSplitViewVisibilityBeforeAnalysis ?? .all
                     navigationSplitViewVisibilityBeforeAnalysis = nil
                 }
@@ -711,6 +715,15 @@ struct ContentView: View {
                         browserViewModel.shouldRestoreGridFocus = true
                     }
                 )
+            case .comparison:
+                ComparisonWorkspaceView(
+                    images: comparisonImages,
+                    fullScreenImageCache: browserViewModel.fullScreenImageCache,
+                    onClose: {
+                        mainViewMode = .browser
+                        browserViewModel.shouldRestoreGridFocus = true
+                    }
+                )
             case .editing:
                 editingWorkspaceView
             case .faceManagement:
@@ -858,6 +871,19 @@ struct ContentView: View {
         mainViewMode = .imageAnalysis
     }
 
+    private var selectedComparisonImages: [ImageFile]? {
+        ComparisonSelectionResolver.images(
+            in: browserViewModel.visibleImages,
+            selectedURLs: browserViewModel.selectedImageIDs
+        )
+    }
+
+    private func openComparison() {
+        guard let selectedComparisonImages else { return }
+        comparisonImages = selectedComparisonImages
+        mainViewMode = .comparison
+    }
+
     @ViewBuilder
     private var browserAndMetadataPanel: some View {
         HStack(spacing: 0) {
@@ -975,6 +1001,18 @@ struct ContentView: View {
             .disabled(selectedAnalysisImage == nil)
 
             Button {
+                openComparison()
+            } label: {
+                Label(
+                    "Compare Two Images",
+                    systemImage: mainViewMode == .comparison
+                        ? "checkmark"
+                        : "rectangle.split.2x1"
+                )
+            }
+            .disabled(selectedComparisonImages == nil)
+
+            Button {
                 mainViewMode = .metadataReview
             } label: {
                 Label("Metadata Review", systemImage: mainViewMode == .metadataReview ? "checkmark" : "list.bullet.rectangle")
@@ -988,6 +1026,7 @@ struct ContentView: View {
             Image(systemName: {
                 switch mainViewMode {
                 case .imageAnalysis: "waveform.path.ecg.rectangle"
+                case .comparison: "rectangle.split.2x1"
                 case .metadataReview: "list.bullet.rectangle"
                 default: paneLayoutIcon
                 }
@@ -1115,7 +1154,8 @@ struct ContentView: View {
         ToolbarItem(placement: .automatic) {
             if mainViewMode == .browser
                 || mainViewMode == .metadataReview
-                || mainViewMode == .imageAnalysis {
+                || mainViewMode == .imageAnalysis
+                || mainViewMode == .comparison {
                 paneLayoutMenu
             }
         }
