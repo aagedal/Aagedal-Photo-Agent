@@ -145,9 +145,9 @@ feedback or memory spikes.
 
 - [x] Implement comparison source/session models.
 - [x] Implement coordinator transactions, lock, temporary unlock, offset, and reset.
-- [ ] Build side-by-side, stacked, and A/B layouts.
+- [x] Build side-by-side, stacked, and A/B layouts.
 - [ ] Add adjustable divider, focus, badges, and fit/100%/custom zoom.
-- [ ] Add Browser entry for exactly two selected images.
+- [x] Add Browser entry for exactly two selected images.
 - [ ] Add source replacement/navigation and deletion behavior.
 - [ ] Add original/committed/live/named representation labels.
 - [ ] Add sync math and feedback-loop tests.
