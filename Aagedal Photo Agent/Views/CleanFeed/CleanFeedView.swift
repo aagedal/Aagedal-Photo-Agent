@@ -24,8 +24,10 @@ struct CleanFeedContentView: View {
             controller: controller,
             feedImage: controller.feedImage,
             useEditPipeline: controller.useEditPipeline,
-            isHDR: controller.isHDR,
-            feedCrop: controller.feedCrop
+            isHDR: controller.comparisonPresentation?.containsHDR ?? controller.isHDR,
+            feedCrop: controller.feedCrop,
+            comparisonPresentation: controller.comparisonPresentation,
+            comparisonLayout: controller.comparisonLayout
         )
         .background(Color.black)
         .ignoresSafeArea()
@@ -138,6 +140,8 @@ struct CleanFeedRenderView: NSViewRepresentable {
     let useEditPipeline: Bool
     let isHDR: Bool
     let feedCrop: CleanFeedController.FeedCrop?
+    let comparisonPresentation: CleanFeedComparisonPresentation?
+    let comparisonLayout: ComparisonLayout
 
     func makeCoordinator() -> Coordinator {
         Coordinator(feedPipeline: controller.feedPipeline)
@@ -178,6 +182,8 @@ struct CleanFeedRenderView: NSViewRepresentable {
         context.coordinator.feedImage = feedImage
         context.coordinator.useEditPipeline = useEditPipeline
         context.coordinator.feedCrop = feedCrop
+        context.coordinator.comparisonPresentation = comparisonPresentation
+        context.coordinator.comparisonLayout = comparisonLayout
         if let layer = view.layer as? CAMetalLayer {
             // wantsExtendedDynamicRangeContent is the fundamental CAMetalLayer EDR enabler;
             // preferredDynamicRange (macOS 26+) controls compositing but doesn't replace it.
@@ -208,6 +214,8 @@ struct CleanFeedRenderView: NSViewRepresentable {
         var feedImage: CIImage?
         var useEditPipeline: Bool = false
         var feedCrop: CleanFeedController.FeedCrop?
+        var comparisonPresentation: CleanFeedComparisonPresentation?
+        var comparisonLayout: ComparisonLayout = .sideBySide
 
         init(feedPipeline: MetalEditPipeline?) {
             self.feedPipeline = feedPipeline
@@ -241,6 +249,20 @@ struct CleanFeedRenderView: NSViewRepresentable {
             guard let drawable = view.currentDrawable else { return }
             let drawableSize = view.drawableSize
             guard drawableSize.width > 0, drawableSize.height > 0 else { return }
+
+            // Comparison takes precedence over the browse/edit feed. The interactive workspace
+            // owns focus, zoom, pan, replacement, and lock semantics; this passive surface uses
+            // that exact snapshot with a separately chosen audience-display layout.
+            if let comparisonPresentation {
+                renderComparison(
+                    comparisonPresentation,
+                    layout: comparisonLayout,
+                    in: view,
+                    drawable: drawable,
+                    drawableSize: drawableSize
+                )
+                return
+            }
 
             // Live edit path: shared compute pipeline, aspect-fit for this display.
             if useEditPipeline,
@@ -315,5 +337,82 @@ struct CleanFeedRenderView: NSViewRepresentable {
             commandBuffer.present(drawable)
             commandBuffer.commit()
         }
+
+        private func renderComparison(
+            _ presentation: CleanFeedComparisonPresentation,
+            layout: ComparisonLayout,
+            in view: MTKView,
+            drawable: CAMetalDrawable,
+            drawableSize: CGSize
+        ) {
+            guard let commandBuffer = MetalPreviewView.Coordinator.commandQueue.makeCommandBuffer() else {
+                return
+            }
+            let drawableRect = CGRect(origin: .zero, size: drawableSize)
+            let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: drawableRect)
+            var composite = black
+
+            for (pane, paneRect) in CleanFeedComparisonGeometry.paneRects(
+                layout: layout,
+                focusedPane: presentation.session.focusedPane,
+                drawableSize: drawableSize
+            ) {
+                guard let image = presentation.images[pane],
+                      presentation.session[pane].source != nil else { continue }
+                let viewport = presentation.session[pane].viewport
+                guard let geometry = try? viewport.geometry(
+                    displayedPixelSize: CGSize(width: image.width, height: image.height),
+                    viewSize: paneRect.size,
+                    backingScale: 1
+                ) else { continue }
+
+                let imageRect = geometry.imageRectInView.offsetBy(
+                    dx: paneRect.minX,
+                    dy: paneRect.minY
+                )
+                let extent = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+                let fitted = CIImage(cgImage: image)
+                    .cropped(to: extent)
+                    .transformed(by: CGAffineTransform(
+                        translationX: -extent.minX,
+                        y: -extent.minY
+                    ))
+                    .transformed(by: CGAffineTransform(
+                        scaleX: imageRect.width / extent.width,
+                        y: imageRect.height / extent.height
+                    ))
+                    .transformed(by: CGAffineTransform(
+                        translationX: imageRect.minX,
+                        y: imageRect.minY
+                    ))
+                    .cropped(to: paneRect)
+                composite = fitted.composited(over: composite)
+            }
+
+            let destination = CIRenderDestination(
+                width: Int(drawableSize.width),
+                height: Int(drawableSize.height),
+                pixelFormat: view.colorPixelFormat,
+                commandBuffer: commandBuffer,
+                mtlTextureProvider: { drawable.texture }
+            )
+            destination.isFlipped = true
+            destination.colorSpace = MetalPreviewView.Coordinator.colorSpace
+
+            do {
+                try MetalPreviewView.Coordinator.ciContext.startTask(
+                    toRender: composite,
+                    from: drawableRect,
+                    to: destination,
+                    at: .zero
+                )
+            } catch {
+                cleanFeedViewLog.error("Comparison render failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            commandBuffer.present(drawable)
+            commandBuffer.commit()
+        }
+
     }
 }

@@ -3,6 +3,62 @@ import CoreImage
 import Metal
 import os
 
+/// Immutable handoff from the interactive comparison workspace to the passive Clean Feed.
+/// The workspace remains the sole owner of comparison coordination; Clean Feed only presents
+/// the latest completed session and bitmaps on the selected secondary display.
+struct CleanFeedComparisonPresentation {
+    let session: ComparisonSession
+    let images: [ComparisonPane: CGImage]
+
+    var containsHDR: Bool {
+        ComparisonPane.allCases.contains {
+            session[$0].source?.dynamicRange == .hdr
+        }
+    }
+}
+
+/// Pure layout math shared by the Metal presenter and unit tests. Rectangles use the same
+/// top-left coordinate convention as ViewportState; CIRenderDestination performs the final flip.
+nonisolated enum CleanFeedComparisonGeometry {
+    static func paneRects(
+        layout: ComparisonLayout,
+        focusedPane: ComparisonPane,
+        drawableSize: CGSize,
+        gap: CGFloat = 2
+    ) -> [(ComparisonPane, CGRect)] {
+        switch layout {
+        case .sideBySide:
+            let safeGap = min(max(gap, 0), drawableSize.width)
+            let availableWidth = max(drawableSize.width - safeGap, 0)
+            let firstWidth = floor(availableWidth / 2)
+            return [
+                (.left, CGRect(x: 0, y: 0, width: firstWidth, height: drawableSize.height)),
+                (.right, CGRect(
+                    x: firstWidth + safeGap,
+                    y: 0,
+                    width: availableWidth - firstWidth,
+                    height: drawableSize.height
+                ))
+            ]
+        case .stacked:
+            let safeGap = min(max(gap, 0), drawableSize.height)
+            let availableHeight = max(drawableSize.height - safeGap, 0)
+            let firstHeight = floor(availableHeight / 2)
+            return [
+                (.left, CGRect(x: 0, y: 0, width: drawableSize.width, height: firstHeight)),
+                (.right, CGRect(
+                    x: 0,
+                    y: firstHeight + safeGap,
+                    width: drawableSize.width,
+                    height: availableHeight - firstHeight
+                ))
+            ]
+        case .singlePane:
+            return [(focusedPane, CGRect(origin: .zero, size: drawableSize))]
+        }
+    }
+}
+
 nonisolated private let cleanFeedLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "CleanFeed"
 )
@@ -77,6 +133,22 @@ final class CleanFeedController {
     }
     var feedCrop: FeedCrop?
 
+    /// Live comparison snapshot supplied by ComparisonWorkspaceView. This takes precedence over
+    /// browse and Develop content while present, then cleanly falls back when Compare closes.
+    private(set) var comparisonPresentation: CleanFeedComparisonPresentation?
+
+    /// Clean Feed may use a layout suited to the audience display without changing the layout of
+    /// the interactive comparison workspace on the main display.
+    var comparisonLayout: ComparisonLayout = .sideBySide {
+        didSet {
+            UserDefaults.standard.set(
+                comparisonLayout.rawValue,
+                forKey: UserDefaultsKeys.cleanFeedComparisonLayout
+            )
+            requestFeedRedraw()
+        }
+    }
+
     /// True while the edit workspace is on screen and owns the feed content. While
     /// true, the browse-mode loader stands down to avoid racing the editor's pushes.
     var editModeActive = false
@@ -94,6 +166,7 @@ final class CleanFeedController {
         let queue = MetalPreviewView.Coordinator.commandQueue
         self.feedPipeline = MetalEditPipeline(device: device, commandQueue: queue)
         loadTargetDisplay()
+        loadComparisonLayout()
         refreshDisplays()
 
         NotificationCenter.default.addObserver(
@@ -177,6 +250,29 @@ final class CleanFeedController {
     func requestFeedRedraw() { hooks.redraw?() }
     func setFeedContinuousRendering(_ on: Bool) { hooks.setContinuous?(on) }
 
+    var isPresentingComparison: Bool { comparisonPresentation != nil }
+
+    func presentComparison(
+        session: ComparisonSession,
+        images: [ComparisonPane: CGImage]
+    ) {
+        comparisonPresentation = CleanFeedComparisonPresentation(
+            session: session,
+            images: images
+        )
+        requestFeedRedraw()
+    }
+
+    /// Avoids an outgoing workspace clearing a newer comparison during rapid transitions.
+    func clearComparison(sessionID: UUID? = nil) {
+        if let sessionID,
+           comparisonPresentation?.session.id != sessionID {
+            return
+        }
+        comparisonPresentation = nil
+        requestFeedRedraw()
+    }
+
     // MARK: - Selection
 
     /// Send the clean feed to a specific display (and enable it). Picking a display
@@ -209,6 +305,13 @@ final class CleanFeedController {
         } else {
             UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.cleanFeedDisplayID)
         }
+    }
+
+    private func loadComparisonLayout() {
+        guard let raw = UserDefaults.standard.string(
+            forKey: UserDefaultsKeys.cleanFeedComparisonLayout
+        ), let saved = ComparisonLayout(rawValue: raw) else { return }
+        comparisonLayout = saved
     }
 }
 

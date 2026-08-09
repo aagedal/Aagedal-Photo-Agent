@@ -161,10 +161,10 @@ a valid state.
 
 - [x] Add Develop comparison-target selection and live-current rendering.
 - [x] Add full-screen entry/exit with safe window teardown and focus restoration.
-- [ ] Extend Clean Feed to side-by-side, stacked, and focused-pane presentation.
-- [ ] Add View-menu controls for Clean Feed comparison layout.
-- [ ] Add rating/label focused-image behavior.
-- [ ] Add shortcut help/settings entries.
+- [x] Extend Clean Feed to side-by-side, stacked, and focused-pane presentation.
+- [x] Add View-menu controls for Clean Feed comparison layout.
+- [x] Add rating/label focused-image behavior.
+- [x] Add shortcut help/settings entries.
 - [ ] Validate monitor disconnect/reconnect, HDR/SDR pairing, and live edit load.
 - [ ] Add version-to-version comparison hook for Phase 10.
 

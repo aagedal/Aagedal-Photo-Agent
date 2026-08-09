@@ -388,6 +388,26 @@ struct Aagedal_Photo_AgentApp: App {
                 .pickerStyle(.inline)
                 .disabled(!CleanFeedController.shared.hasExternalDisplay)
 
+                Picker(
+                    "Clean Feed Comparison Layout",
+                    selection: Binding(
+                        get: { CleanFeedController.shared.comparisonLayout },
+                        set: { CleanFeedController.shared.comparisonLayout = $0 }
+                    )
+                ) {
+                    Label("Side by Side", systemImage: "rectangle.split.2x1")
+                        .tag(ComparisonLayout.sideBySide)
+                    Label("Stacked", systemImage: "rectangle.split.1x2")
+                        .tag(ComparisonLayout.stacked)
+                    Label("Focused Image", systemImage: "rectangle.inset.filled")
+                        .tag(ComparisonLayout.singlePane)
+                }
+                .pickerStyle(.inline)
+                .disabled(
+                    !CleanFeedController.shared.isEnabled
+                    || !CleanFeedController.shared.isPresentingComparison
+                )
+
                 Divider()
 
                 Button(CleanFeedController.shared.isEnabled

@@ -5,6 +5,38 @@ import Testing
 
 @Suite("Comparison coordinator")
 struct ComparisonCoordinatorTests {
+    @Test("Clean Feed comparison layouts cover the output without overlapping")
+    func cleanFeedComparisonLayoutGeometry() throws {
+        let size = CGSize(width: 1_921, height: 1_081)
+
+        let sideBySide = CleanFeedComparisonGeometry.paneRects(
+            layout: .sideBySide,
+            focusedPane: .right,
+            drawableSize: size
+        )
+        #expect(sideBySide.map(\.0) == [.left, .right])
+        #expect(sideBySide[0].1 == CGRect(x: 0, y: 0, width: 959, height: 1_081))
+        #expect(sideBySide[1].1 == CGRect(x: 961, y: 0, width: 960, height: 1_081))
+
+        let stacked = CleanFeedComparisonGeometry.paneRects(
+            layout: .stacked,
+            focusedPane: .left,
+            drawableSize: size
+        )
+        #expect(stacked.map(\.0) == [.left, .right])
+        #expect(stacked[0].1 == CGRect(x: 0, y: 0, width: 1_921, height: 539))
+        #expect(stacked[1].1 == CGRect(x: 0, y: 541, width: 1_921, height: 540))
+
+        let focused = CleanFeedComparisonGeometry.paneRects(
+            layout: .singlePane,
+            focusedPane: .right,
+            drawableSize: size
+        )
+        #expect(focused.count == 1)
+        #expect(focused[0].0 == .right)
+        #expect(focused[0].1 == CGRect(origin: .zero, size: size))
+    }
+
     @Test("Develop comparison prefers the previous supported filmstrip image")
     func developComparisonPrefersPreviousImage() {
         let previous = imageFile("previous.jpg")

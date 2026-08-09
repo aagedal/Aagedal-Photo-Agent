@@ -62,6 +62,7 @@ struct KeyboardShortcutsSettingsView: View {
         ]),
         ("Full Screen", [
             ("Escape / Space", "Dismiss"),
+            ("C", "Open Comparison"),
             ("Z", "Toggle Zoom at Cursor"),
             ("H", "Toggle UI Visibility"),
             ("S", "Toggle Scaling Filter"),
@@ -71,6 +72,18 @@ struct KeyboardShortcutsSettingsView: View {
             ("\u{2318}\u{2325}0\u{2013}8", "Set Color Label"),
             ("Arrow Keys", "Navigate Images"),
             ("Scroll Wheel", "Zoom at Cursor"),
+        ]),
+        ("Comparison", [
+            ("Escape", "Close Comparison"),
+            ("Tab", "Focus Other Image"),
+            ("\u{2190}\u{2192}", "Replace Focused Image"),
+            ("Delete", "Move Focused Image to Trash"),
+            ("0\u{2013}5", "Rate Focused Image"),
+            ("6\u{2013}9", "Label Focused Image"),
+            ("X / S", "Trash / Red Label Focused Image"),
+        ]),
+        ("Clean Feed", [
+            ("\u{2318}\u{21E7}F", "Toggle Clean Feed"),
         ]),
         ("Scopes", [
             ("\u{21E7}1", "Waveform"),

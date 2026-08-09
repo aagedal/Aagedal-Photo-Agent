@@ -27,6 +27,7 @@ struct ComparisonWorkspaceView: View {
     @State private var replacingPane: ComparisonPane?
     @State private var previousAvailableOrder: [URL] = []
     @State private var missingReplacement: [ComparisonPane: ImageFile] = [:]
+    @State private var publishedCleanFeedSessionID: UUID?
     @FocusState private var workspaceFocused: Bool
 
     var body: some View {
@@ -46,6 +47,11 @@ struct ComparisonWorkspaceView: View {
         .onDisappear {
             loadTask?.cancel()
             replacementTask?.cancel()
+            if let publishedCleanFeedSessionID {
+                CleanFeedController.shared.clearComparison(
+                    sessionID: publishedCleanFeedSessionID
+                )
+            }
         }
         .onChange(of: availableImages.map(\.url)) { _, _ in
             reconcileAvailableSources()
@@ -72,6 +78,9 @@ struct ComparisonWorkspaceView: View {
         .onKeyPress(.delete) {
             requestDeleteFocusedSource()
             return .handled
+        }
+        .onKeyPress(keys: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "x", "s"]) {
+            handleCullingShortcut($0)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Image comparison workspace")
@@ -334,6 +343,10 @@ struct ComparisonWorkspaceView: View {
         isLoading = true
         loadError = nil
         interactionError = nil
+        if let publishedCleanFeedSessionID {
+            CleanFeedController.shared.clearComparison(sessionID: publishedCleanFeedSessionID)
+            self.publishedCleanFeedSessionID = nil
+        }
         coordinator = nil
         renderedImages = [:]
         geometries = [:]
@@ -379,6 +392,7 @@ struct ComparisonWorkspaceView: View {
                 renderedImages = [.left: leftResult.image, .right: rightResult.image]
                 isLoading = false
                 onFocusedImageChange(selectedImages[0])
+                publishComparisonToCleanFeed()
             } catch is CancellationError {
                 return
             } catch {
@@ -458,6 +472,7 @@ struct ComparisonWorkspaceView: View {
                 missingReplacement[pane] = nil
                 replacingPane = nil
                 focus(pane)
+                publishComparisonToCleanFeed()
             } catch is CancellationError {
                 return
             } catch {
@@ -492,6 +507,7 @@ struct ComparisonWorkspaceView: View {
         mutateCoordinator { $0.replaceSource(liveSource.source, in: .left) }
         renderedImages[.left] = liveSource.image
         geometries[.left] = nil
+        publishComparisonToCleanFeed()
     }
 
     private func reconcileAvailableSources() {
@@ -515,6 +531,8 @@ struct ComparisonWorkspaceView: View {
             renderedImages[pane] = nil
             geometries[pane] = nil
         }
+
+        publishComparisonToCleanFeed()
 
         previousAvailableOrder = availableImages.map(\.url)
         if let focusedImageFile {
@@ -610,9 +628,44 @@ struct ComparisonWorkspaceView: View {
             try mutation(&updated)
             coordinator = updated
             interactionError = nil
+            publishComparisonToCleanFeed()
         } catch {
             interactionError = error.localizedDescription
         }
+    }
+
+    private func publishComparisonToCleanFeed() {
+        guard let session else { return }
+        CleanFeedController.shared.presentComparison(
+            session: session,
+            images: renderedImages
+        )
+        publishedCleanFeedSessionID = session.id
+    }
+
+    private func handleCullingShortcut(_ press: KeyPress) -> KeyPress.Result {
+        guard press.modifiers.isEmpty else { return .ignored }
+        let characters = press.characters.lowercased()
+        if let digit = characters.first?.wholeNumberValue {
+            if (0...5).contains(digit), let rating = StarRating(rawValue: digit) {
+                NotificationCenter.default.post(name: .setRating, object: rating)
+                return .handled
+            }
+            if (6...9).contains(digit),
+               let label = ColorLabel.fromShortcutIndex(digit - 5) {
+                NotificationCenter.default.post(name: .setLabel, object: label)
+                return .handled
+            }
+        }
+        if characters == "x" {
+            NotificationCenter.default.post(name: .setLabel, object: ColorLabel.trash)
+            return .handled
+        }
+        if characters == "s" {
+            NotificationCenter.default.post(name: .setLabel, object: ColorLabel.red)
+            return .handled
+        }
+        return .ignored
     }
 }
 

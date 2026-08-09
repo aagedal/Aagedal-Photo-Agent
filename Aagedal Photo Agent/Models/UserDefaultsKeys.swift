@@ -107,6 +107,8 @@ nonisolated enum UserDefaultsKeys {
     /// CGDirectDisplayID of the screen the clean-feed window should occupy.
     /// Stored as an Int; 0 / absent means "first available external display".
     static let cleanFeedDisplayID = "cleanFeedDisplayID"
+    /// ComparisonLayout raw value used by the passive secondary-display output.
+    static let cleanFeedComparisonLayout = "cleanFeedComparisonLayout"
 
     // MARK: - Multi-Select Behavior
     static let multiSelectKeywordsMode = "multiSelectKeywordsMode"
