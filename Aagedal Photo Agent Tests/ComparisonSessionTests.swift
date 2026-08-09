@@ -233,6 +233,32 @@ struct ComparisonSessionTests {
         expectEqual(session.leftViewport.normalizedCenter, CGPoint(x: 0.7, y: 0.65))
     }
 
+    @Test("right-pane changes apply saved alignment in reverse")
+    func reverseSynchronization() throws {
+        var session = makeSession()
+        session.alignment = ComparisonAlignment(
+            normalizedCenterOffset: CGSize(width: 0.1, height: -0.2),
+            scaleRatio: 1.5
+        )
+        session.lockState = .lockedWithOffset
+        var coordinator = ComparisonCoordinator()
+
+        _ = try coordinator.updateViewport(
+            ViewportState(
+                mode: .custom(imagePixelsPerBackingPixel: 0.75),
+                normalizedCenter: CGPoint(x: 0.6, y: 0.3),
+                interpolation: .nearest
+            ),
+            in: .right,
+            session: &session,
+            surfaces: regularSurfaces
+        )
+
+        expectEqual(session.leftViewport.normalizedCenter, CGPoint(x: 0.5, y: 0.5))
+        #expect(session.leftViewport.mode == .custom(imagePixelsPerBackingPixel: 0.5))
+        #expect(session.leftViewport.interpolation == .nearest)
+    }
+
     private var regularSurfaces: ComparisonViewportSurfaces {
         ComparisonViewportSurfaces(
             left: ComparisonViewportSurface(

@@ -47,6 +47,11 @@ struct ComparisonWorkspaceView: View {
                     .frame(width: 90)
                     .help("Switch the visible comparison image")
                 }
+
+                Divider()
+                    .frame(height: 20)
+
+                viewportControls(session: session)
             }
 
             Spacer()
@@ -56,6 +61,91 @@ struct ComparisonWorkspaceView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    private func viewportControls(session: ComparisonSession) -> some View {
+        let focusedPane = session.focusedPane
+        let viewport = session.viewport(for: focusedPane)
+        let zoomPercent = model.zoomPercent(for: focusedPane) ?? 100
+
+        return HStack(spacing: 7) {
+            Button("Fit") { model.setViewportMode(.fit) }
+                .buttonStyle(.bordered)
+                .tint(isFit(viewport) ? .accentColor : nil)
+                .help("Fit the focused image; applies to both panes while locked")
+
+            Button("100%") { model.setViewportMode(.actualPixels) }
+                .buttonStyle(.bordered)
+                .tint(isActualPixels(viewport) ? .accentColor : nil)
+                .help("Show one decoded image pixel per display backing pixel")
+
+            Slider(
+                value: Binding(
+                    get: { Double(model.zoomPercent(for: focusedPane) ?? zoomPercent) },
+                    set: { model.setZoomPercent(CGFloat($0)) }
+                ),
+                in: 12.5...800
+            )
+            .frame(width: 110)
+            .help("Custom zoom")
+
+            Text("\(Int(zoomPercent.rounded()))%")
+                .font(.caption.monospacedDigit())
+                .frame(width: 44, alignment: .trailing)
+
+            Button {
+                model.toggleLock()
+            } label: {
+                Label(
+                    isLocked(session.lockState) ? "Unlock" : "Relock",
+                    systemImage: isLocked(session.lockState) ? "lock.fill" : "lock.open"
+                )
+                .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered)
+            .help(isLocked(session.lockState) ? "Temporarily unlock pan and zoom" : "Relock pan and zoom")
+
+            Button {
+                model.resetAlignment()
+            } label: {
+                Label("Reset Alignment", systemImage: "arrow.counterclockwise")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered)
+            .help("Reset pane offset and scale alignment")
+
+            Picker("Interpolation", selection: Binding(
+                get: { viewport.interpolation },
+                set: { model.setInterpolation($0) }
+            )) {
+                Text("Smooth").tag(ViewportState.Interpolation.linear)
+                Text("Nearest").tag(ViewportState.Interpolation.nearest)
+            }
+            .labelsHidden()
+            .frame(width: 88)
+            .help("Image interpolation")
+
+            if !model.lastClampedPanes.isEmpty {
+                Label("Edge limited", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right")
+                    .font(.caption)
+                    .foregroundStyle(.yellow)
+                    .help("An image edge prevented an exact locked position")
+            }
+        }
+    }
+
+    private func isFit(_ viewport: ViewportState) -> Bool {
+        if case .fit = viewport.mode { return true }
+        return false
+    }
+
+    private func isActualPixels(_ viewport: ViewportState) -> Bool {
+        if case .actualPixels = viewport.mode { return true }
+        return false
+    }
+
+    private func isLocked(_ state: ComparisonLockState) -> Bool {
+        state == .locked || state == .lockedWithOffset
     }
 
     @ViewBuilder
@@ -127,8 +217,15 @@ struct ComparisonWorkspaceView: View {
             source: session.source(for: pane),
             file: model.sourceFiles[pane],
             image: model.paneImages[pane],
+            viewport: session.viewport(for: pane),
             isFocused: session.focusedPane == pane,
-            onFocus: { model.focus(pane) }
+            onFocus: { model.focus(pane) },
+            onSurfaceChange: { size, scale in
+                model.updateSurface(for: pane, viewSize: size, backingScale: scale)
+            },
+            onViewportChange: { viewport in
+                model.updateViewport(viewport, in: pane)
+            }
         )
     }
 }
@@ -138,24 +235,73 @@ private struct ComparisonImagePane: View {
     let source: ComparisonSource
     let file: ImageFile?
     let image: ComparisonWorkspaceModel.PaneImage?
+    let viewport: ViewportState
     let isFocused: Bool
     let onFocus: () -> Void
+    let onSurfaceChange: (CGSize, CGFloat) -> Void
+    let onViewportChange: (ViewportState) -> Void
+
+    @Environment(\.displayScale) private var displayScale
+    @State private var panStartViewport: ViewportState?
+    @State private var magnifyStartViewport: ViewportState?
 
     var body: some View {
         ZStack {
             Color.black
 
             if let image {
-                HDRImageView(
-                    cgImage: image.cgImage,
-                    isHDR: image.isHDR,
-                    useNearestNeighbor: false
-                )
-                .aspectRatio(
-                    CGFloat(image.cgImage.width) / CGFloat(image.cgImage.height),
-                    contentMode: .fit
-                )
-                .padding(1)
+                GeometryReader { geometry in
+                    let pixelSize = CGSize(width: image.cgImage.width, height: image.cgImage.height)
+                    let viewportGeometry = try? viewport.geometry(
+                        displayedPixelSize: pixelSize,
+                        viewSize: geometry.size,
+                        backingScale: displayScale
+                    )
+
+                    if let viewportGeometry {
+                        HDRImageView(
+                            cgImage: image.cgImage,
+                            isHDR: image.isHDR,
+                            useNearestNeighbor: viewport.interpolation == .nearest,
+                            onPanChanged: { translation in
+                                updatePan(
+                                    translation,
+                                    geometry: viewportGeometry,
+                                    ended: false
+                                )
+                            },
+                            onPanEnded: { translation in
+                                updatePan(
+                                    translation,
+                                    geometry: viewportGeometry,
+                                    ended: true
+                                )
+                            }
+                        )
+                        .frame(
+                            width: viewportGeometry.imageRectInView.width,
+                            height: viewportGeometry.imageRectInView.height
+                        )
+                        .position(
+                            x: viewportGeometry.imageRectInView.midX,
+                            y: viewportGeometry.imageRectInView.midY
+                        )
+                        .gesture(magnifyGesture(geometry: viewportGeometry))
+                    }
+
+                    Color.clear
+                        .allowsHitTesting(false)
+                        .onAppear {
+                            onSurfaceChange(geometry.size, displayScale)
+                        }
+                        .onChange(of: geometry.size) { _, size in
+                            onSurfaceChange(size, displayScale)
+                        }
+                        .onChange(of: displayScale) { _, scale in
+                            onSurfaceChange(geometry.size, scale)
+                        }
+                }
+                .clipped()
             } else {
                 ContentUnavailableView(
                     "Preview Unavailable",
@@ -210,5 +356,60 @@ private struct ComparisonImagePane: View {
             "Image \(pane == .left ? "A" : "B"), \(file?.filename ?? source.revision.filenameAtCreation), \(source.representation.label)"
         )
         .accessibilityAddTraits(isFocused ? .isSelected : [])
+    }
+
+    private func updatePan(
+        _ translation: CGSize,
+        geometry: ViewportGeometry,
+        ended: Bool
+    ) {
+        guard viewport.mode != .fit else {
+            panStartViewport = nil
+            return
+        }
+        let start = panStartViewport ?? viewport
+        if panStartViewport == nil { panStartViewport = start }
+        var requested = start
+        requested.normalizedCenter = CGPoint(
+            x: start.normalizedCenter.x - translation.width / geometry.imageRectInView.width,
+            y: start.normalizedCenter.y - translation.height / geometry.imageRectInView.height
+        )
+        onViewportChange(requested)
+        if ended { panStartViewport = nil }
+    }
+
+    private func magnifyGesture(geometry: ViewportGeometry) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let start = magnifyStartViewport ?? viewport
+                if magnifyStartViewport == nil { magnifyStartViewport = start }
+                let startScale = resolvedScale(for: start, fallback: geometry.imagePixelsPerBackingPixel)
+                var requested = start
+                requested.mode = .custom(
+                    imagePixelsPerBackingPixel: min(max(startScale / value.magnification, 0.125), 8)
+                )
+                onViewportChange(requested)
+            }
+            .onEnded { value in
+                let start = magnifyStartViewport ?? viewport
+                let startScale = resolvedScale(for: start, fallback: geometry.imagePixelsPerBackingPixel)
+                var requested = start
+                requested.mode = .custom(
+                    imagePixelsPerBackingPixel: min(max(startScale / value.magnification, 0.125), 8)
+                )
+                onViewportChange(requested)
+                magnifyStartViewport = nil
+            }
+    }
+
+    private func resolvedScale(for viewport: ViewportState, fallback: CGFloat) -> CGFloat {
+        switch viewport.mode {
+        case .fit:
+            fallback
+        case .actualPixels:
+            1
+        case .custom(let scale):
+            scale
+        }
     }
 }

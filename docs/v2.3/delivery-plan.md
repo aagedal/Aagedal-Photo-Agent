@@ -150,7 +150,7 @@ feedback or memory spikes.
 - [x] Add Browser entry for exactly two selected images.
 - [ ] Add source replacement/navigation and deletion behavior.
 - [ ] Add original/committed/live/named representation labels.
-- [ ] Add sync math and feedback-loop tests.
+- [x] Add sync math and feedback-loop tests.
 - [ ] Add two-RAW memory and cancellation validation.
 - [ ] Decide whether wipe/difference views pass the 2.3 gate.
 

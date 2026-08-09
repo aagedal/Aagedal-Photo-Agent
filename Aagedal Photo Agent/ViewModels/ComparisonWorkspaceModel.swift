@@ -21,8 +21,11 @@ final class ComparisonWorkspaceModel {
     private(set) var loadState: LoadState = .idle
     private(set) var paneImages: [ComparisonPane: PaneImage] = [:]
     private(set) var sourceFiles: [ComparisonPane: ImageFile] = [:]
+    private(set) var surfaces: [ComparisonPane: ComparisonViewportSurface] = [:]
+    private(set) var lastClampedPanes: Set<ComparisonPane> = []
 
     @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var coordinator = ComparisonCoordinator()
 
     deinit {
         loadTask?.cancel()
@@ -32,6 +35,8 @@ final class ComparisonWorkspaceModel {
         loadTask?.cancel()
         session = nil
         paneImages = [:]
+        surfaces = [:]
+        lastClampedPanes = []
         sourceFiles = [.left: left, .right: right]
         loadState = .identifyingSources
 
@@ -105,6 +110,8 @@ final class ComparisonWorkspaceModel {
         session = nil
         paneImages = [:]
         sourceFiles = [:]
+        surfaces = [:]
+        lastClampedPanes = []
         loadState = .idle
     }
 
@@ -118,6 +125,129 @@ final class ComparisonWorkspaceModel {
         guard var session else { return }
         session.focusedPane = pane
         self.session = session
+    }
+
+    func updateSurface(
+        for pane: ComparisonPane,
+        viewSize: CGSize,
+        backingScale: CGFloat
+    ) {
+        guard viewSize.width > 0, viewSize.height > 0,
+              backingScale > 0,
+              let displayedPixelSize = displayedPixelSize(for: pane) else { return }
+        surfaces[pane] = ComparisonViewportSurface(
+            displayedPixelSize: displayedPixelSize,
+            viewSize: viewSize,
+            backingScale: backingScale
+        )
+        reapplyFocusedViewportIfPossible()
+    }
+
+    func updateViewport(_ viewport: ViewportState, in pane: ComparisonPane) {
+        guard var session else { return }
+        guard let surfaces = resolvedSurfaces else {
+            session.setViewport(viewport, for: pane)
+            self.session = session
+            return
+        }
+
+        do {
+            let transaction = try coordinator.updateViewport(
+                viewport,
+                in: pane,
+                session: &session,
+                surfaces: surfaces
+            )
+            lastClampedPanes = transaction?.clampedPanes ?? []
+            self.session = session
+        } catch {
+            // Surface values are validated before storage. If a transient resize still creates
+            // invalid geometry, keep the previous atomic session rather than partially syncing.
+        }
+    }
+
+    func setViewportMode(_ mode: ViewportState.Mode) {
+        guard let session else { return }
+        let pane = session.focusedPane
+        var viewport = session.viewport(for: pane)
+        viewport.mode = mode
+        updateViewport(viewport, in: pane)
+    }
+
+    func setZoomPercent(_ percent: CGFloat) {
+        let clampedPercent = min(max(percent, 12.5), 800)
+        setViewportMode(.custom(imagePixelsPerBackingPixel: 100 / clampedPercent))
+    }
+
+    func zoomPercent(for pane: ComparisonPane) -> CGFloat? {
+        guard let session, let surface = surfaces[pane] else { return nil }
+        return try? 100 / session.viewport(for: pane).geometry(
+            displayedPixelSize: surface.displayedPixelSize,
+            viewSize: surface.viewSize,
+            backingScale: surface.backingScale
+        ).imagePixelsPerBackingPixel
+    }
+
+    func toggleLock() {
+        guard var session else { return }
+        switch session.lockState {
+        case .locked, .lockedWithOffset:
+            coordinator.temporarilyUnlock(session: &session)
+        case .temporarilyUnlocked:
+            coordinator.relock(session: &session)
+        case .aligning:
+            return
+        }
+        lastClampedPanes = []
+        self.session = session
+    }
+
+    func setInterpolation(_ interpolation: ViewportState.Interpolation) {
+        guard let session else { return }
+        let pane = session.focusedPane
+        var viewport = session.viewport(for: pane)
+        viewport.interpolation = interpolation
+        updateViewport(viewport, in: pane)
+    }
+
+    func resetAlignment() {
+        guard var session, let surfaces = resolvedSurfaces else { return }
+        do {
+            let transaction = try coordinator.resetAlignment(
+                anchoredAt: session.focusedPane,
+                session: &session,
+                surfaces: surfaces
+            )
+            lastClampedPanes = transaction?.clampedPanes ?? []
+            self.session = session
+        } catch {
+            return
+        }
+    }
+
+    private var resolvedSurfaces: ComparisonViewportSurfaces? {
+        guard let left = surfaces[.left], let right = surfaces[.right] else { return nil }
+        return ComparisonViewportSurfaces(left: left, right: right)
+    }
+
+    private func displayedPixelSize(for pane: ComparisonPane) -> CGSize? {
+        if let image = paneImages[pane] {
+            return CGSize(width: image.cgImage.width, height: image.cgImage.height)
+        }
+        guard let revision = session?.source(for: pane).revision,
+              let width = revision.pixelWidth,
+              let height = revision.pixelHeight,
+              width > 0,
+              height > 0 else { return nil }
+        let orientation = revision.exifOrientation ?? 1
+        return orientation >= 5 && orientation <= 8
+            ? CGSize(width: height, height: width)
+            : CGSize(width: width, height: height)
+    }
+
+    private func reapplyFocusedViewportIfPossible() {
+        guard let session, resolvedSurfaces != nil else { return }
+        updateViewport(session.viewport(for: session.focusedPane), in: session.focusedPane)
     }
 
     private nonisolated static func captureRevision(for image: ImageFile) async throws -> SourceImageRevision {

@@ -10,6 +10,9 @@
 - Added a single-pane A/B presentation with an explicit A/B switch.
 - Added filename and Original/Committed Edit badges, visible pane focus, partial-decode handling,
   bounded 4096-pixel previews, HDR presentation, close/cancel behavior, and accessibility labels.
+- Connected pane resize, pan, and magnification events to the atomic `ComparisonCoordinator`.
+  Fit, decoded-pixel 100%, custom zoom, linear/nearest interpolation, temporary unlock/relock,
+  alignment reset, and edge-clamping feedback are now visible in the comparison header.
 
 ## Automated validation
 
@@ -23,12 +26,14 @@ xcodebuild test \
   -only-testing:"Aagedal Photo Agent Tests/ComparisonSessionTests"
 ```
 
-Result: 6 tests passed in 1 suite. A full `build-for-testing` of the app and test targets also
+Result: 7 tests passed in 1 suite. A full `build-for-testing` of the app and test targets also
 completed successfully under Swift 6.
 
-## Remaining interaction gate
+## Remaining true-pixel gate
 
-The layout slice intentionally stays fit-only. The next Phase 7 slice must connect the existing
-`ComparisonCoordinator` transactions to both panes and visually validate fit, true pixels, custom
-zoom, locked pan/zoom, temporary unlock, saved offset, clamping feedback, and interpolation. The
+Comparison remains intentionally bounded to 4096-pixel decoded previews. The controls exercise the
+shared viewport and synchronization semantics, but 100% cannot yet promise one source pixel per
+display pixel for a larger source. The next slice must add a cancellable, memory-bounded detail
+upgrade and visually validate fit, true source pixels, custom zoom, locked pan/zoom, temporary
+unlock, saved offset, clamping feedback, and interpolation on mismatched fixtures. The combined
 delivery-plan control/zoom item remains unchecked until that gate passes.
