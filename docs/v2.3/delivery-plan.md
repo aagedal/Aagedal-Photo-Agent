@@ -143,14 +143,14 @@ This can begin after Phase 1 in parallel with Analysis phases once implementatio
 **Exit gate:** two images compare reliably across aspect/orientation/crop differences without sync
 feedback or memory spikes.
 
-- [ ] Implement comparison source/session models.
-- [ ] Implement coordinator transactions, lock, temporary unlock, offset, and reset.
+- [x] Implement comparison source/session models.
+- [x] Implement coordinator transactions, lock, temporary unlock, offset, and reset.
 - [ ] Build side-by-side, stacked, and A/B layouts.
 - [ ] Add adjustable divider, focus, badges, and fit/100%/custom zoom.
 - [ ] Add Browser entry for exactly two selected images.
 - [ ] Add source replacement/navigation and deletion behavior.
 - [ ] Add original/committed/live/named representation labels.
-- [ ] Add sync math and feedback-loop tests.
+- [x] Add sync math and feedback-loop tests.
 - [ ] Add two-RAW memory and cancellation validation.
 - [ ] Decide whether wipe/difference views pass the 2.3 gate.
 
