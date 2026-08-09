@@ -149,10 +149,10 @@ feedback or memory spikes.
 - [x] Add adjustable divider, focus, badges, and fit/100%/custom zoom.
 - [x] Add Browser entry for exactly two selected images.
 - [x] Add source replacement/navigation and deletion behavior.
-- [ ] Add original/committed/live/named representation labels.
+- [x] Add original/committed/live/named representation labels.
 - [x] Add sync math and feedback-loop tests.
-- [ ] Add two-RAW memory and cancellation validation.
-- [ ] Decide whether wipe/difference views pass the 2.3 gate.
+- [x] Add two-RAW memory and cancellation validation.
+- [x] Decide whether wipe/difference views pass the 2.3 gate (deferred; neither blocks 2.3).
 
 ## Phase 8 — comparison integrations
 
@@ -222,6 +222,7 @@ Only run this phase for gates approved in Phase 0.
 - [ ] Full existing test suite.
 - [ ] New fixture-driven unit/render/persistence suites.
 - [ ] Performance and memory budgets on target hardware tiers.
+- [ ] Profile representative two-RAW comparison sessions on every target hardware tier.
 - [ ] Thread Sanitizer/strict concurrency review for case, catalog, runner, and render coordination.
 - [ ] GPU validation and long-running analysis cancellation.
 - [ ] Source/folder permission regression, including launch behavior.

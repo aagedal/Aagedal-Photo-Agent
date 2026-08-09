@@ -22,18 +22,112 @@ nonisolated struct ComparisonRenderedSource: @unchecked Sendable {
     let image: CGImage
 }
 
+/// Comparison keeps two completed panes resident, so its output budget is deliberately tighter
+/// than an arbitrary full-screen decode. RAW decoding also has a substantially larger transient
+/// footprint than the completed screen-sized bitmap; those decodes are serialized below.
+nonisolated enum ComparisonRenderPolicy {
+    static let maximumLongEdge: CGFloat = 4_096
+    static let maximumBytesPerPixel = 8
+    static let paneCount = 2
+
+    static var maximumResidentOutputBytes: Int {
+        Int(maximumLongEdge) * Int(maximumLongEdge) * maximumBytesPerPixel * paneCount
+    }
+
+    static func boundedLongEdge(_ requested: CGFloat) -> CGFloat {
+        guard requested.isFinite else { return maximumLongEdge }
+        return min(max(requested, 1), maximumLongEdge)
+    }
+
+    static func acceptsCachedImage(_ image: CGImage, maximumLongEdge: CGFloat) -> Bool {
+        max(image.width, image.height) <= Int(maximumLongEdge.rounded(.up))
+    }
+
+    static func requiresSerializedDecode(for url: URL) -> Bool {
+        FullScreenImageCache.isRawFile(url)
+    }
+}
+
+/// Cancellation-aware FIFO gate used to keep transient RAW decode memory bounded. A waiting pane
+/// can be cancelled without receiving a permit later, which matters when Compare is closed or a
+/// filmstrip replacement supersedes an in-flight request.
+actor ComparisonDecodeGate {
+    private let limit: Int
+    private var inUse = 0
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    private var waiterOrder: [UUID] = []
+    private var waiterHead = 0
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func acquire() async -> Bool {
+        guard !Task.isCancelled else { return false }
+        if inUse < limit {
+            inUse += 1
+            return true
+        }
+
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else {
+                    waiters[id] = continuation
+                    waiterOrder.append(id)
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
+    }
+
+    func release() {
+        while waiterHead < waiterOrder.count {
+            let id = waiterOrder[waiterHead]
+            waiterHead += 1
+            if let continuation = waiters.removeValue(forKey: id) {
+                compactWaiterOrderIfNeeded()
+                continuation.resume(returning: true)
+                return
+            }
+        }
+        compactWaiterOrderIfNeeded(force: true)
+        inUse = max(0, inUse - 1)
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let continuation = waiters.removeValue(forKey: id) else { return }
+        continuation.resume(returning: false)
+    }
+
+    private func compactWaiterOrderIfNeeded(force: Bool = false) {
+        guard waiterHead > 0,
+              force || (waiterHead >= 64 && waiterHead * 2 >= waiterOrder.count) else { return }
+        waiterOrder.removeFirst(waiterHead)
+        waiterHead = 0
+    }
+}
+
 /// Reuses the bounded full-screen caches and decode pipeline so Compare does not establish a
 /// second unbounded pool of high-resolution images.
 nonisolated struct ComparisonRenderService: Sendable {
+    private static let rawDecodeGate = ComparisonDecodeGate(limit: 1)
+
     func render(
         imageFile: ImageFile,
         settings: CameraRawSettings?,
         cache: FullScreenImageCache,
         maxPixelSize: CGFloat
     ) async throws -> ComparisonRenderedSource {
+        try Task.checkCancellation()
         guard !imageFile.isICloudDownloadPending else {
             throw ComparisonRenderError.sourceUnavailable(imageFile.filename)
         }
+
+        let boundedMaxPixelSize = ComparisonRenderPolicy.boundedLongEdge(maxPixelSize)
 
         let pixelSize = FullScreenImageCache.nativePixelSize(of: imageFile.url)
         let revision = try await SourceImageRevision.capture(
@@ -55,15 +149,19 @@ nonisolated struct ComparisonRenderService: Sendable {
             orientation: orientation,
             renderToken: renderToken,
             isEdited: true
+        ), ComparisonRenderPolicy.acceptsCachedImage(
+            cached,
+            maximumLongEdge: boundedMaxPixelSize
         ) {
             rendered = cached
         } else {
-            guard let decoded = await FullScreenImageCache.decodedEditedPreview(
-                for: imageFile.url,
+            let decoded = try await decode(
+                imageFile: imageFile,
                 settings: settings,
                 orientation: orientation,
-                screenMaxPx: maxPixelSize
-            ) else {
+                maxPixelSize: boundedMaxPixelSize
+            )
+            guard let decoded else {
                 try Task.checkCancellation()
                 throw ComparisonRenderError.decodeFailed(imageFile.filename)
             }
@@ -86,5 +184,39 @@ nonisolated struct ComparisonRenderService: Sendable {
             ),
             image: rendered
         )
+    }
+
+    private func decode(
+        imageFile: ImageFile,
+        settings: CameraRawSettings?,
+        orientation: Int,
+        maxPixelSize: CGFloat
+    ) async throws -> CGImage? {
+        if ComparisonRenderPolicy.requiresSerializedDecode(for: imageFile.url) {
+            guard await Self.rawDecodeGate.acquire() else { throw CancellationError() }
+            if Task.isCancelled {
+                await Self.rawDecodeGate.release()
+                throw CancellationError()
+            }
+
+            let image = await FullScreenImageCache.decodedEditedPreview(
+                for: imageFile.url,
+                settings: settings,
+                orientation: orientation,
+                screenMaxPx: maxPixelSize
+            )
+            await Self.rawDecodeGate.release()
+            try Task.checkCancellation()
+            return image
+        }
+
+        let image = await FullScreenImageCache.decodedEditedPreview(
+            for: imageFile.url,
+            settings: settings,
+            orientation: orientation,
+            screenMaxPx: maxPixelSize
+        )
+        try Task.checkCancellation()
+        return image
     }
 }

@@ -29,6 +29,9 @@ ratio is never allowed to drive a reverse update into the original pane.
 - explicit alignment reset;
 - missing-source survival and replacement;
 - representation labels and HDR/SDR mismatch detection;
+- fixed two-pane output budgeting and RAW/non-RAW decode routing;
+- cancellation while waiting for the serialized RAW decode permit;
+- pre-cancelled render exit before source access;
 - invalid alignment rejection and atomic failure behavior.
 
 Run with:
@@ -59,5 +62,12 @@ The resolver tests additionally cover visible-order navigation, duplicate-source
 boundary behavior, and nearest-survivor replacement after deletion.
 
 The comparison renderer captures exact source revisions before presentation and reuses the bounded
-full-screen caches and committed-edit decode path. Two-RAW memory measurement and the complete
-keyboard/VoiceOver pass remain pending.
+full-screen caches and committed-edit decode path. It independently caps each completed pane at a
+4096-pixel long edge; at the worst supported 8-byte pixel format, two square panes therefore have a
+fixed 256 MiB completed-output ceiling. RAW sources share a cancellation-aware, single-permit FIFO
+decode gate so their larger transient decode/process allocations cannot overlap. Oversized cache
+entries are rejected and replaced with a bounded render, and cancelled waiters cannot later start a
+decode or populate the cache.
+
+Representative two-RAW Instruments profiling on each target hardware tier remains a Phase 12
+release-hardening task. The complete manual keyboard/VoiceOver pass remains pending there as well.

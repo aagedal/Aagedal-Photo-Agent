@@ -5,6 +5,72 @@ import Testing
 
 @Suite("Comparison coordinator")
 struct ComparisonCoordinatorTests {
+    @Test("comparison rendering has a fixed two-pane output budget")
+    func comparisonRenderBudget() {
+        #expect(ComparisonRenderPolicy.boundedLongEdge(.infinity) == 4_096)
+        #expect(ComparisonRenderPolicy.boundedLongEdge(8_192) == 4_096)
+        #expect(ComparisonRenderPolicy.boundedLongEdge(2_560) == 2_560)
+        #expect(ComparisonRenderPolicy.boundedLongEdge(0) == 1)
+        #expect(ComparisonRenderPolicy.maximumResidentOutputBytes == 256 * 1_024 * 1_024)
+    }
+
+    @Test("RAW comparison sources use the serialized decode path")
+    func rawComparisonDecodeRouting() {
+        for extensionName in ["arw", "cr2", "cr3", "dng", "nef", "raf", "rw2"] {
+            #expect(ComparisonRenderPolicy.requiresSerializedDecode(
+                for: URL(fileURLWithPath: "/tmp/photo.\(extensionName)")
+            ))
+        }
+        for extensionName in ["jpg", "heic", "png", "tiff"] {
+            #expect(!ComparisonRenderPolicy.requiresSerializedDecode(
+                for: URL(fileURLWithPath: "/tmp/photo.\(extensionName)")
+            ))
+        }
+    }
+
+    @Test("a cancelled RAW comparison waiter never receives a decode permit")
+    func canceledComparisonDecodeWaiter() async {
+        let gate = ComparisonDecodeGate(limit: 1)
+        let firstPermit = await gate.acquire()
+        #expect(firstPermit)
+
+        let waiter = Task { await gate.acquire() }
+        await Task.yield()
+        waiter.cancel()
+        let cancelledPermit = await waiter.value
+        #expect(!cancelledPermit)
+
+        await gate.release()
+        let nextPermit = await gate.acquire()
+        #expect(nextPermit)
+        await gate.release()
+    }
+
+    @Test("a pre-cancelled comparison render exits before source access")
+    func preCancelledComparisonRender() async {
+        let missing = ImageFile(
+            url: URL(fileURLWithPath: "/tmp/missing-comparison-\(UUID().uuidString).dng")
+        )
+        let task = Task { () throws -> ComparisonRenderedSource in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await ComparisonRenderService().render(
+                imageFile: missing,
+                settings: nil,
+                cache: FullScreenImageCache(),
+                maxPixelSize: 8_192
+            )
+        }
+
+        do {
+            _ = try await task.value
+            Issue.record("A pre-cancelled comparison render unexpectedly completed")
+        } catch is CancellationError {
+            // Expected: cancellation wins before revision capture or decode.
+        } catch {
+            Issue.record("Expected CancellationError, received \(error)")
+        }
+    }
+
     @Test("browser selection resolves in visible order")
     func resolvesBrowserSelectionInVisibleOrder() throws {
         let directory = URL(fileURLWithPath: "/tmp/comparison-selection", isDirectory: true)
