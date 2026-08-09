@@ -170,6 +170,37 @@ nonisolated enum DevelopVersionCatalogMutationError: Error, Equatable, Localized
     }
 }
 
+nonisolated enum DevelopVersionGeometryCompatibility: Equatable, Sendable {
+    /// None of the catalog's snapshots contain crop, mask, watermark, or preserved correction
+    /// state whose meaning depends on the source coordinate system.
+    case noSourceBoundGeometry
+    /// Both revisions have the same known pixel dimensions and EXIF orientation.
+    case compatible
+    /// Geometry is present and the revisions either differ or do not contain enough metadata to
+    /// prove that their coordinate systems agree.
+    case requiresExplicitChoice
+}
+
+/// The caller's geometry decision when explicitly copying a catalog to changed source bytes.
+nonisolated enum DevelopVersionGeometryReassociationChoice: Equatable, Sendable {
+    /// Refuse reassociation unless the old and new coordinate systems are known to match.
+    case requireCompatibleGeometry
+    /// Keep the catalog's normalized crop and layer coordinates. This is an explicit user choice;
+    /// the old source-bound catalog remains available if the result is not meaningful.
+    case keepNormalizedCoordinates
+}
+
+nonisolated enum DevelopVersionCatalogReassociationError: Error, Equatable, LocalizedError, Sendable {
+    case geometryRequiresExplicitChoice
+
+    var errorDescription: String? {
+        switch self {
+        case .geometryRequiresExplicitChoice:
+            "The source dimensions or orientation changed. Choose how to transform the version's crop and layer geometry before reassociating it."
+        }
+    }
+}
+
 /// App-private named Develop versions for one exact source revision.
 ///
 /// Primary remains virtual and XMP-backed; `activeVersionID == nil` means Primary.
@@ -196,6 +227,57 @@ nonisolated struct DevelopVersionCatalog: VersionedJSONDocument, Equatable, Send
             activeVersionID: nil,
             defaultVersionID: nil,
             versions: []
+        )
+    }
+
+    /// Describes whether every source-bound snapshot can retain its normalized geometry on a
+    /// different source revision without further user input.
+    func geometryCompatibility(
+        with target: SourceImageRevision
+    ) -> DevelopVersionGeometryCompatibility {
+        guard versions.contains(where: { $0.snapshot.settings.hasSourceBoundVersionGeometry }) else {
+            return .noSourceBoundGeometry
+        }
+        guard let sourceWidth = source.pixelWidth,
+              let sourceHeight = source.pixelHeight,
+              let sourceOrientation = source.exifOrientation,
+              let targetWidth = target.pixelWidth,
+              let targetHeight = target.pixelHeight,
+              let targetOrientation = target.exifOrientation else {
+            return .requiresExplicitChoice
+        }
+        return sourceWidth == targetWidth
+            && sourceHeight == targetHeight
+            && sourceOrientation == targetOrientation
+            ? .compatible
+            : .requiresExplicitChoice
+    }
+
+    /// Produces a catalog bound to `target` without mutating or deleting this source-bound value.
+    ///
+    /// A rename or move of the exact bytes only refreshes discovery hints. Changed bytes are an
+    /// explicit copy operation and must pass the geometry gate (or carry the caller's explicit
+    /// normalized-coordinate choice). The repository persists the returned catalog under the new
+    /// source hash, leaving the old catalog recoverable.
+    func reassociated(
+        to target: SourceImageRevision,
+        geometryChoice: DevelopVersionGeometryReassociationChoice = .requireCompatibleGeometry,
+        now: Date = Date()
+    ) throws -> DevelopVersionCatalog {
+        if source.sha256 != target.sha256,
+           geometryCompatibility(with: target) == .requiresExplicitChoice,
+           geometryChoice == .requireCompatibleGeometry {
+            throw DevelopVersionCatalogReassociationError.geometryRequiresExplicitChoice
+        }
+
+        return DevelopVersionCatalog(
+            schemaVersion: schemaVersion,
+            source: target,
+            createdAt: createdAt,
+            updatedAt: max(updatedAt, now),
+            activeVersionID: activeVersionID,
+            defaultVersionID: defaultVersionID,
+            versions: versions
         )
     }
 
@@ -354,6 +436,13 @@ nonisolated struct DevelopVersionCatalog: VersionedJSONDocument, Equatable, Send
 }
 
 private nonisolated extension CameraRawSettings {
+    var hasSourceBoundVersionGeometry: Bool {
+        (crop?.isEffectiveCrop ?? false)
+            || !(localAdjustments?.isEmpty ?? true)
+            || !(watermarkLayers?.isEmpty ?? true)
+            || !(unparsedMaskCorrections?.isEmpty ?? true)
+    }
+
     var hasVersionGlobalAdjustments: Bool {
         var copy = self
         copy.crop = nil

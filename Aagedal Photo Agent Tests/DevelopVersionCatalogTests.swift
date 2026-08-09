@@ -109,6 +109,55 @@ struct DevelopVersionCatalogTests {
         }
     }
 
+    @Test("catalog JSON round-trips every current Develop layer and effect family")
+    func everyCurrentLayerAndEffectRoundTrips() async throws {
+        let fixture = try VersionCatalogFixture(contents: "complete settings source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(
+            at: fixture.fileURL,
+            pixelWidth: 6_048,
+            pixelHeight: 4_024,
+            exifOrientation: 1
+        )
+        let repository = DevelopVersionCatalogRepository(sourceFolderURL: fixture.directoryURL)
+        var catalog = DevelopVersionCatalog.create(for: revision)
+        var settings = everyCurrentEffectSettings()
+        let expectedLayerKinds: [LayerKind] = [
+            .ellipseMask,
+            .rectangleMask,
+            .brushMask,
+            .aiMask,
+            .secondaryGlobal,
+            .colorTransform,
+            .colorTransform
+        ]
+        #expect(settings.localAdjustments?.map(\.layerKind) == expectedLayerKinds)
+        #expect(settings.watermarkLayers?.map(\.layerKind) == [.watermark])
+        let expectedOrder = settings.layerOrder
+        settings.sourceHasHDRHeadroom = true
+        _ = try catalog.createVersion(name: "Everything", settings: settings)
+
+        try await repository.save(catalog)
+        let match = await repository.loadMostRelevantCatalog(for: revision)
+        guard case .exact(let decoded, _, _) = match,
+              let snapshot = decoded.versions.first?.snapshot else {
+            Issue.record("Expected the complete catalog to round-trip")
+            return
+        }
+
+        var expectedSettings = settings
+        expectedSettings.sourceHasHDRHeadroom = nil
+        #expect(snapshot.settings == expectedSettings)
+        #expect(snapshot.settings.localAdjustments?.map(\.layerKind) == expectedLayerKinds)
+        #expect(snapshot.settings.watermarkLayers?.map(\.layerKind) == [.watermark])
+        #expect(snapshot.settings.layerOrder == expectedOrder)
+        #expect(snapshot.settings.resolvedLayerOrder() == expectedOrder)
+        #expect(Set(snapshot.dependencyManifest.map(\.kind)) == [
+            .watermark, .lut, .aiMask, .preservedCorrection
+        ])
+        #expect(snapshot.validate())
+    }
+
     @Test("repository atomically round-trips without writing XMP")
     func repositoryRoundTripAndBackupRecovery() async throws {
         let fixture = try VersionCatalogFixture(contents: "source bytes")
@@ -170,6 +219,103 @@ struct DevelopVersionCatalogTests {
         #expect(storage == .folderLocal)
         #expect(reopened.source.sha256 == originalRevision.sha256)
         #expect(reopened.source.relationship(to: changedRevision) == .sameFileChanged)
+    }
+
+    @Test("renamed exact bytes refresh source hints after hash-verified discovery")
+    func renamedSourceReassociation() async throws {
+        let fixture = try VersionCatalogFixture(contents: "same source bytes")
+        defer { fixture.remove() }
+        let originalRevision = try await SourceImageRevision.capture(
+            at: fixture.fileURL,
+            pixelWidth: 6_000,
+            pixelHeight: 4_000,
+            exifOrientation: 1
+        )
+        let repository = DevelopVersionCatalogRepository(sourceFolderURL: fixture.directoryURL)
+        let catalog = DevelopVersionCatalog.create(for: originalRevision)
+        try await repository.save(catalog)
+
+        let renamedURL = fixture.directoryURL.appendingPathComponent("renamed.raw")
+        try FileManager.default.moveItem(at: fixture.fileURL, to: renamedURL)
+
+        let discovery = try await repository.discoverSource(
+            for: catalog,
+            among: [renamedURL]
+        )
+        guard case .located(let renamedRevision, let method) = discovery else {
+            Issue.record("Expected hash-verified source discovery after rename")
+            return
+        }
+        #expect(method == .fileResourceIdentifier || method == .contentHash)
+
+        let result = try await repository.reassociate(catalog, to: renamedRevision)
+        #expect(!result.preservedOriginalCatalog)
+        #expect(result.catalog.source.sha256 == originalRevision.sha256)
+        #expect(result.catalog.source.canonicalURL == renamedURL.standardizedFileURL)
+
+        let match = await repository.loadMostRelevantCatalog(for: renamedRevision)
+        guard case .exact(let refreshed, _, _) = match else {
+            Issue.record("Expected the relocated source to reopen its catalog")
+            return
+        }
+        #expect(refreshed.source.canonicalURL == renamedURL.standardizedFileURL)
+        #expect(FileManager.default.fileExists(atPath: fixture.catalogURL(for: originalRevision).path))
+    }
+
+    @Test("changed-source reassociation gates geometry and preserves the old catalog")
+    func changedSourceReassociationPreservesOriginal() async throws {
+        let fixture = try VersionCatalogFixture(contents: "old source bytes")
+        defer { fixture.remove() }
+        let originalRevision = try await SourceImageRevision.capture(
+            at: fixture.fileURL,
+            pixelWidth: 6_000,
+            pixelHeight: 4_000,
+            exifOrientation: 1
+        )
+        let repository = DevelopVersionCatalogRepository(sourceFolderURL: fixture.directoryURL)
+        var catalog = DevelopVersionCatalog.create(for: originalRevision)
+        var settings = CameraRawSettings()
+        settings.crop = CameraRawCrop(
+            top: 0.1,
+            left: 0.2,
+            bottom: 0.9,
+            right: 0.8,
+            angle: 0,
+            hasCrop: true
+        )
+        _ = try catalog.createVersion(name: "Crop", settings: settings)
+        try await repository.save(catalog)
+
+        try Data("replacement source bytes".utf8).write(to: fixture.fileURL)
+        let changedRevision = try await SourceImageRevision.capture(
+            at: fixture.fileURL,
+            pixelWidth: 4_000,
+            pixelHeight: 6_000,
+            exifOrientation: 6
+        )
+
+        #expect(catalog.geometryCompatibility(with: changedRevision) == .requiresExplicitChoice)
+        await #expect(throws: DevelopVersionCatalogReassociationError.geometryRequiresExplicitChoice) {
+            try await repository.reassociate(catalog, to: changedRevision)
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.catalogURL(for: changedRevision).path))
+
+        let result = try await repository.reassociate(
+            catalog,
+            to: changedRevision,
+            geometryChoice: .keepNormalizedCoordinates
+        )
+        #expect(result.preservedOriginalCatalog)
+        #expect(result.catalog.source.sha256 == changedRevision.sha256)
+        #expect(result.catalog.versions == catalog.versions)
+        #expect(FileManager.default.fileExists(atPath: fixture.catalogURL(for: originalRevision).path))
+        #expect(FileManager.default.fileExists(atPath: fixture.catalogURL(for: changedRevision).path))
+
+        let oldCatalogs = await repository.loadAllCatalogs()
+        #expect(Set(oldCatalogs.map(\.source.sha256)) == [
+            originalRevision.sha256,
+            changedRevision.sha256
+        ])
     }
 
     @Test("newer catalog schema opens as intact read-only bytes")
@@ -295,4 +441,183 @@ private struct VersionCatalogFixture {
     func remove() {
         try? FileManager.default.removeItem(at: directoryURL)
     }
+}
+
+private func everyCurrentEffectSettings() -> CameraRawSettings {
+    var settings = CameraRawSettings()
+    settings.version = "15.4"
+    settings.processVersion = "15.4"
+    settings.whiteBalance = "Custom"
+    settings.temperature = 5_400
+    settings.tint = 8
+    settings.incrementalTemperature = 3
+    settings.incrementalTint = -2
+    settings.exposure2012 = 0.65
+    settings.contrast2012 = 12
+    settings.highlights2012 = -24
+    settings.shadows2012 = 18
+    settings.whites2012 = 7
+    settings.blacks2012 = -9
+    settings.saturation = 5
+    settings.vibrance = 14
+    settings.globalDensity = 88
+    settings.sharpness = 31
+    settings.clarity2012 = 11
+    settings.dehaze = 6
+    settings.hasSettings = true
+    settings.crop = CameraRawCrop(
+        top: 0.08,
+        left: 0.12,
+        bottom: 0.91,
+        right: 0.87,
+        angle: -2.5,
+        hasCrop: true
+    )
+    settings.hdrEditMode = 1
+    settings.hdrMaxValue = "4"
+    settings.sdrBrightness = 9
+    settings.sdrContrast = 4
+    settings.sdrClarity = 3
+    settings.sdrHighlights = -7
+    settings.sdrShadows = 8
+    settings.sdrWhites = 2
+    settings.sdrBlend = 35
+    settings.toneCurve = ToneCurve(
+        master: [ToneCurvePoint(x: 0, y: 0.02), ToneCurvePoint(x: 1, y: 0.98)],
+        red: [ToneCurvePoint(x: 0, y: 0), ToneCurvePoint(x: 1, y: 0.96)],
+        green: [ToneCurvePoint(x: 0, y: 0.01), ToneCurvePoint(x: 1, y: 1)],
+        blue: [ToneCurvePoint(x: 0, y: 0.03), ToneCurvePoint(x: 1, y: 0.97)]
+    )
+    settings.hslAdjustments = HSLAdjustments(
+        red: HSLColorAdjustment(saturation: 1, luminance: 2, hueShift: 3),
+        yellow: HSLColorAdjustment(saturation: 4, luminance: 5, hueShift: 6),
+        green: HSLColorAdjustment(saturation: 7, luminance: 8, hueShift: 9),
+        cyan: HSLColorAdjustment(saturation: 10, luminance: 11, hueShift: 12),
+        blue: HSLColorAdjustment(saturation: 13, luminance: 14, hueShift: 15),
+        magenta: HSLColorAdjustment(saturation: 16, luminance: 17, hueShift: 18),
+        skinTone: HSLColorAdjustment(saturation: 19, luminance: 20, hueShift: 21)
+    )
+    settings.anonymizer = AnonymizerSettings(amount: 62, blackOut: false)
+    settings.filmEmulation = FilmEmulationSettings(
+        grain: 28,
+        grainCoarseness: 44,
+        halation: 17,
+        bloom: 13,
+        vignette: -32,
+        edgeBlur: 9
+    )
+    settings.asShotNeutralTemperature = 5_215
+    settings.asShotNeutralTint = 6.5
+    settings.unparsedMaskCorrections = [PreservedMaskCorrection(fields: [
+        "crs:String": .string("future"),
+        "crs:Strings": .strings(["one", "two"]),
+        "crs:Structure": .structure(["crs:Nested": .string("value")]),
+        "crs:Items": .items([["crs:Item": .string("payload")]])
+    ])]
+
+    var ellipseGeometry = EllipseMaskGeometry()
+    ellipseGeometry.centerX = 0.35
+    ellipseGeometry.centerY = 0.45
+    ellipseGeometry.radiusX = 0.2
+    ellipseGeometry.radiusY = 0.12
+    ellipseGeometry.rotation = 8
+    ellipseGeometry.feather = 42
+    var ellipse = MaskAdjustment(name: "Ellipse", geometry: ellipseGeometry)
+    ellipse.inverted = true
+    ellipse.amount = 0.82
+    ellipse.exposure = 0.4
+    ellipse.contrast = 8
+    ellipse.highlights = -12
+    ellipse.shadows = 14
+    ellipse.whites = 3
+    ellipse.blacks = -5
+    ellipse.saturation = 7
+    ellipse.vibrance = 9
+    ellipse.temperature = 4.5
+    ellipse.tint = -2.5
+    ellipse.anonymizer = AnonymizerSettings(amount: 35, blackOut: true)
+
+    var rectangleGeometry = EllipseMaskGeometry()
+    rectangleGeometry.cornerRadius = 0.25
+    let rectangle = MaskAdjustment(name: "Rounded rectangle", geometry: rectangleGeometry)
+
+    let brush = MaskAdjustment(
+        name: "Brush",
+        brush: BrushMaskGeometry(strokes: [BrushStroke(
+            dabs: [BrushDab(x: 0.2, y: 0.3, flow: 0.7, hardness: 0.8)],
+            radius: 0.04,
+            density: 0.9,
+            erase: false
+        )]),
+        exposure: -0.3
+    )
+
+    let aiMask = MaskAdjustment(
+        name: "AI subject",
+        aiMask: AIMaskGeometry(
+            width: 2,
+            height: 2,
+            pngData: Data("raster mask".utf8),
+            sourceOrientation: 1,
+            displayOrientation: 6,
+            target: .person,
+            blackPoint: 0.1,
+            whitePoint: 0.9,
+            blurRadius: 0.005
+        ),
+        shadows: 20
+    )
+
+    var secondaryGlobal = MaskAdjustment(name: "Global 2", fullFrame: true)
+    secondaryGlobal.geometry.radiusX = 2
+    secondaryGlobal.geometry.radiusY = 2
+    secondaryGlobal.exposure = -0.2
+
+    var lut = MaskAdjustment(name: "LUT", amount: 0.75, fullFrame: true)
+    lut.colorTransform = ColorTransformSettings(
+        mode: .lut,
+        lutName: "Editorial.cube",
+        lutData: Data("LUT_3D_SIZE 2".utf8),
+        inputSpace: .linearSRGB,
+        outputSpace: .linearDisplayP3
+    )
+
+    var cst = MaskAdjustment(name: "CST", amount: 0.6, fullFrame: true)
+    cst.colorTransform = ColorTransformSettings(
+        mode: .cst,
+        inputSpace: .linearRec2020,
+        outputSpace: .linearAdobeRGB
+    )
+
+    let watermark = WatermarkLayer(
+        name: "Credit",
+        libraryAssetID: UUID(),
+        geometry: WatermarkGeometry(
+            centerX: 0.8,
+            centerY: 0.85,
+            sizeDimension: .height,
+            sizeUnit: .pixel,
+            sizeValue: 320,
+            marginUnit: .percent,
+            marginValue: 4
+        ),
+        opacity: 0.72
+    )
+
+    settings.localAdjustments = [
+        ellipse, rectangle, brush, aiMask, secondaryGlobal, lut, cst
+    ]
+    settings.watermarkLayers = [watermark]
+    settings.layerOrder = [
+        .mask(lut.id),
+        .global,
+        .mask(ellipse.id),
+        .mask(rectangle.id),
+        .mask(brush.id),
+        .mask(aiMask.id),
+        .mask(secondaryGlobal.id),
+        .mask(cst.id),
+        .watermark(watermark.id)
+    ]
+    return settings
 }

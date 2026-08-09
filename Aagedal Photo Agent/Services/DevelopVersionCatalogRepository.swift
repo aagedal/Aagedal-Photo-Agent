@@ -35,6 +35,13 @@ nonisolated enum DevelopVersionCatalogMatch: Equatable, Sendable {
     case none
 }
 
+nonisolated struct DevelopVersionCatalogReassociation: Equatable, Sendable {
+    let catalog: DevelopVersionCatalog
+    let storage: DevelopVersionCatalogStorage
+    /// `true` for changed bytes: the original hash-named catalog remains separate and recoverable.
+    let preservedOriginalCatalog: Bool
+}
+
 /// Folder-local persistence for app-private named Develop versions, with an Application Support
 /// fallback when the photo folder cannot be written.
 ///
@@ -116,6 +123,43 @@ actor DevelopVersionCatalogRepository {
             )
         }
         return .none
+    }
+
+    /// Resolves a catalog's recorded source through the shared hash-verifying discovery service.
+    /// Callers provide visible/searchable candidate files so ambiguous byte-for-byte copies can be
+    /// presented for an explicit choice.
+    func discoverSource(
+        for catalog: DevelopVersionCatalog,
+        among candidateURLs: [URL]
+    ) async throws -> SourceImageDiscoveryService.Result {
+        try await SourceImageDiscoveryService().discover(
+            catalog.source,
+            among: candidateURLs
+        )
+    }
+
+    /// Persists a safely reassociated copy. A changed source gets a new hash-named catalog; the old
+    /// file is never deleted or overwritten. Exact-byte moves only refresh the stored path and
+    /// resource-identifier hints in the existing source identity.
+    @discardableResult
+    func reassociate(
+        _ catalog: DevelopVersionCatalog,
+        to target: SourceImageRevision,
+        geometryChoice: DevelopVersionGeometryReassociationChoice = .requireCompatibleGeometry,
+        now: Date = Date()
+    ) async throws -> DevelopVersionCatalogReassociation {
+        let sourceChanged = catalog.source.sha256 != target.sha256
+        let reassociated = try catalog.reassociated(
+            to: target,
+            geometryChoice: geometryChoice,
+            now: now
+        )
+        let storage = try await save(reassociated)
+        return DevelopVersionCatalogReassociation(
+            catalog: reassociated,
+            storage: storage,
+            preservedOriginalCatalog: sourceChanged
+        )
     }
 
     @discardableResult
