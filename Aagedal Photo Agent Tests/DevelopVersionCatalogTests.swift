@@ -52,6 +52,63 @@ struct DevelopVersionCatalogTests {
         #expect(snapshot.dependencyManifest.filter({ $0.sha256 != nil }).count == 3)
     }
 
+    @Test("watermark dependency diagnostics distinguish matching, changed, and missing bytes")
+    func watermarkDependencyDiagnostics() throws {
+        let assetID = UUID()
+        let originalData = Data("original watermark".utf8)
+        let changedData = Data("changed watermark".utf8)
+        var settings = CameraRawSettings()
+        settings.watermarkLayers = [WatermarkLayer(libraryAssetID: assetID)]
+
+        let snapshot = DevelopVersionSnapshot(
+            settings: settings,
+            watermarkDataProvider: { $0 == assetID ? originalData : nil }
+        )
+
+        #expect(snapshot.validate())
+        #expect(snapshot.dependencyManifest.first?.sha256 != nil)
+        #expect(snapshot.dependencyDiagnostics { _ in originalData }.map(\.status) == [.resolved])
+        #expect(snapshot.dependencyDiagnostics { _ in changedData }.map(\.status) == [.changed])
+        #expect(snapshot.dependencyDiagnostics { _ in nil }.map(\.status) == [.missing])
+
+        // Pre-hash catalogs stay compatible: they can report a missing asset, but an available
+        // legacy asset is accepted because its historical content cannot be reconstructed.
+        let legacy = DevelopVersionSnapshot(settings: settings)
+        #expect(legacy.validate())
+        #expect(legacy.dependencyDiagnostics { _ in originalData }.map(\.status) == [.resolved])
+        #expect(legacy.dependencyDiagnostics { _ in nil }.map(\.status) == [.missing])
+    }
+
+    @Test("updating adjustments preserves the original external dependency contract")
+    func updatePreservesExternalDependencyHash() async throws {
+        let fixture = try VersionCatalogFixture(contents: "dependency source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let assetID = UUID()
+        let originalData = Data("original watermark".utf8)
+        let replacementData = Data("replacement watermark".utf8)
+        var settings = CameraRawSettings()
+        settings.watermarkLayers = [WatermarkLayer(libraryAssetID: assetID)]
+        var catalog = DevelopVersionCatalog.create(for: revision)
+        let versionID = try catalog.createVersion(
+            name: "Watermarked",
+            settings: settings,
+            watermarkDataProvider: { _ in originalData }
+        )
+        let originalHash = try #require(catalog.versions.first?.snapshot.dependencyManifest.first?.sha256)
+
+        settings.exposure2012 = 0.5
+        try catalog.updateVersion(
+            id: versionID,
+            settings: settings,
+            watermarkDataProvider: { _ in replacementData }
+        )
+
+        let updated = try #require(catalog.versions.first?.snapshot)
+        #expect(updated.dependencyManifest.first?.sha256 == originalHash)
+        #expect(updated.dependencyDiagnostics { _ in replacementData }.map(\.status) == [.changed])
+    }
+
     @Test("catalog CRUD maintains active and default invariants")
     func catalogMutations() async throws {
         let fixture = try VersionCatalogFixture(contents: "source")

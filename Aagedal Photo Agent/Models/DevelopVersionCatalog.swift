@@ -71,6 +71,19 @@ nonisolated struct DevelopVersionDependency: Codable, Hashable, Sendable {
     let isEmbedded: Bool
 }
 
+nonisolated enum DevelopVersionDependencyStatus: Equatable, Sendable {
+    case resolved
+    case changed
+    case missing
+    case unsupported
+}
+
+/// The current resolution state of one dependency recorded by a named Develop snapshot.
+nonisolated struct DevelopVersionDependencyDiagnostic: Equatable, Sendable {
+    let dependency: DevelopVersionDependency
+    let status: DevelopVersionDependencyStatus
+}
+
 /// The exact source-bound Develop payload stored by a named version.
 ///
 /// Unlike `DevelopTemplate`, this deliberately retains decoder/process state, as-shot white
@@ -83,30 +96,111 @@ nonisolated struct DevelopVersionSnapshot: Codable, Equatable, Sendable {
     let settings: CameraRawSettings
     let dependencyManifest: [DevelopVersionDependency]
 
-    init(settings: CameraRawSettings) {
+    init(
+        settings: CameraRawSettings,
+        watermarkDataProvider: (UUID) -> Data? = { _ in nil },
+        preservingExternalDependencies previousManifest: [DevelopVersionDependency] = []
+    ) {
         var persisted = settings
         persisted.sourceHasHDRHeadroom = nil
         self.settingsSchemaVersion = Self.currentSettingsSchemaVersion
         self.settings = persisted
-        self.dependencyManifest = Self.dependencies(in: persisted)
+        var dependencies = Self.dependencies(
+            in: persisted,
+            watermarkDataProvider: watermarkDataProvider
+        )
+        // Editing an unrelated slider must not silently bless replacement bytes for an existing
+        // external asset. Keep the hash contract captured when the reference was first added;
+        // legacy nil hashes are upgraded when bytes are available.
+        let previousHashes = previousManifest.reduce(into: [String: String]()) { result, dependency in
+            guard !dependency.isEmbedded, let sha256 = dependency.sha256 else { return }
+            result["\(dependency.kind.rawValue)|\(dependency.identifier)"] = sha256
+        }
+        for index in dependencies.indices where !dependencies[index].isEmbedded {
+            let key = "\(dependencies[index].kind.rawValue)|\(dependencies[index].identifier)"
+            guard let previousHash = previousHashes[key] else { continue }
+            dependencies[index] = DevelopVersionDependency(
+                kind: dependencies[index].kind,
+                identifier: dependencies[index].identifier,
+                sha256: previousHash,
+                isEmbedded: false
+            )
+        }
+        self.dependencyManifest = dependencies
     }
 
     func validate() -> Bool {
-        settingsSchemaVersion == Self.currentSettingsSchemaVersion
-            && settings.sourceHasHDRHeadroom == nil
-            && dependencyManifest == Self.dependencies(in: settings)
+        guard settingsSchemaVersion == Self.currentSettingsSchemaVersion,
+              settings.sourceHasHDRHeadroom == nil else { return false }
+
+        // Embedded payloads must still hash exactly. External watermark hashes cannot be
+        // recomputed while decoding a catalog (the library may be offline), so accept either a
+        // legacy nil hash or a well-formed recorded hash while still requiring exact identity.
+        let expected = Self.dependencies(in: settings)
+        guard expected.count == dependencyManifest.count else { return false }
+        return zip(expected, dependencyManifest).allSatisfy { expected, recorded in
+            guard expected.kind == recorded.kind,
+                  expected.identifier == recorded.identifier,
+                  expected.isEmbedded == recorded.isEmbedded else { return false }
+            if expected.isEmbedded {
+                return expected.sha256 == recorded.sha256
+            }
+            return recorded.sha256 == nil || Self.isValidSHA256(recorded.sha256)
+        }
+    }
+
+    /// Resolves dependencies without mutating the snapshot. Embedded resources are already
+    /// verified by `validate`; watermark bytes are looked up lazily so an offline iCloud library
+    /// produces a visible missing state instead of making the catalog unreadable.
+    func dependencyDiagnostics(
+        watermarkDataProvider: (UUID) -> Data?
+    ) -> [DevelopVersionDependencyDiagnostic] {
+        dependencyManifest.map { dependency in
+            guard dependency.kind == .watermark, !dependency.isEmbedded else {
+                return DevelopVersionDependencyDiagnostic(
+                    dependency: dependency,
+                    status: .resolved
+                )
+            }
+            guard let id = UUID(uuidString: dependency.identifier) else {
+                return DevelopVersionDependencyDiagnostic(
+                    dependency: dependency,
+                    status: .unsupported
+                )
+            }
+            guard let data = watermarkDataProvider(id), !data.isEmpty else {
+                return DevelopVersionDependencyDiagnostic(
+                    dependency: dependency,
+                    status: .missing
+                )
+            }
+            // Catalogs created before watermark hashing remain usable: presence is known, but
+            // their historical bytes cannot be reconstructed for a changed-content comparison.
+            guard let expectedHash = dependency.sha256 else {
+                return DevelopVersionDependencyDiagnostic(
+                    dependency: dependency,
+                    status: .resolved
+                )
+            }
+            return DevelopVersionDependencyDiagnostic(
+                dependency: dependency,
+                status: Self.sha256(data) == expectedHash ? .resolved : .changed
+            )
+        }
     }
 
     private static func dependencies(
-        in settings: CameraRawSettings
+        in settings: CameraRawSettings,
+        watermarkDataProvider: (UUID) -> Data? = { _ in nil }
     ) -> [DevelopVersionDependency] {
         var dependencies: [DevelopVersionDependency] = []
 
         for watermark in settings.watermarkLayers ?? [] {
+            let data = watermarkDataProvider(watermark.libraryAssetID)
             dependencies.append(DevelopVersionDependency(
                 kind: .watermark,
                 identifier: watermark.libraryAssetID.uuidString.lowercased(),
-                sha256: nil,
+                sha256: data.flatMap { $0.isEmpty ? nil : Self.sha256($0) },
                 isEmbedded: false
             ))
         }
@@ -155,6 +249,12 @@ nonisolated struct DevelopVersionSnapshot: Codable, Equatable, Sendable {
 
     private static func sha256(_ data: Data) -> String {
         Data(SHA256.hash(data: data)).lowercaseHexString
+    }
+
+    private static func isValidSHA256(_ value: String?) -> Bool {
+        guard let value, value.count == 64 else { return false }
+        let hexadecimal = CharacterSet(charactersIn: "0123456789abcdef")
+        return value.unicodeScalars.allSatisfy(hexadecimal.contains)
     }
 }
 
@@ -341,6 +441,7 @@ nonisolated struct DevelopVersionCatalog: VersionedJSONDocument, Equatable, Send
         notes: String? = nil,
         appVersion: String = DevelopVersionCatalog.currentAppVersion,
         appBuild: String = DevelopVersionCatalog.currentAppBuild,
+        watermarkDataProvider: (UUID) -> Data? = { _ in nil },
         now: Date = Date()
     ) throws -> UUID {
         let normalizedName = try Self.normalizedName(name)
@@ -352,7 +453,10 @@ nonisolated struct DevelopVersionCatalog: VersionedJSONDocument, Equatable, Send
             updatedAt: effectiveNow,
             createdByAppVersion: appVersion,
             createdByAppBuild: appBuild,
-            snapshot: DevelopVersionSnapshot(settings: settings),
+            snapshot: DevelopVersionSnapshot(
+                settings: settings,
+                watermarkDataProvider: watermarkDataProvider
+            ),
             notes: notes?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         )
         versions.append(version)
@@ -372,14 +476,22 @@ nonisolated struct DevelopVersionCatalog: VersionedJSONDocument, Equatable, Send
         guard let sourceVersion = versions.first(where: { $0.id == id }) else {
             throw DevelopVersionCatalogMutationError.versionNotFound
         }
-        return try createVersion(
-            name: name,
-            settings: sourceVersion.snapshot.settings,
-            notes: sourceVersion.notes,
-            appVersion: appVersion,
-            appBuild: appBuild,
-            now: now
+        let normalizedName = try Self.normalizedName(name)
+        let effectiveNow = max(now, createdAt)
+        let duplicate = DevelopNamedVersion(
+            id: UUID(),
+            name: normalizedName,
+            createdAt: effectiveNow,
+            updatedAt: effectiveNow,
+            createdByAppVersion: appVersion,
+            createdByAppBuild: appBuild,
+            snapshot: sourceVersion.snapshot,
+            notes: sourceVersion.notes
         )
+        versions.append(duplicate)
+        activeVersionID = duplicate.id
+        updatedAt = max(updatedAt, effectiveNow)
+        return duplicate.id
     }
 
     mutating func renameVersion(id: UUID, name: String, now: Date = Date()) throws {
@@ -394,12 +506,18 @@ nonisolated struct DevelopVersionCatalog: VersionedJSONDocument, Equatable, Send
     mutating func updateVersion(
         id: UUID,
         settings: CameraRawSettings,
+        watermarkDataProvider: (UUID) -> Data? = { _ in nil },
         now: Date = Date()
     ) throws {
         guard let index = versions.firstIndex(where: { $0.id == id }) else {
             throw DevelopVersionCatalogMutationError.versionNotFound
         }
-        versions[index].snapshot = DevelopVersionSnapshot(settings: settings)
+        let previousManifest = versions[index].snapshot.dependencyManifest
+        versions[index].snapshot = DevelopVersionSnapshot(
+            settings: settings,
+            watermarkDataProvider: watermarkDataProvider,
+            preservingExternalDependencies: previousManifest
+        )
         versions[index].updatedAt = max(versions[index].updatedAt, now)
         updatedAt = max(updatedAt, versions[index].updatedAt)
     }
@@ -436,6 +554,7 @@ nonisolated struct DevelopVersionCatalog: VersionedJSONDocument, Equatable, Send
         to targetID: UUID?,
         savingCurrentSettings currentSettings: CameraRawSettings?,
         primarySettings: CameraRawSettings?,
+        watermarkDataProvider: (UUID) -> Data? = { _ in nil },
         now: Date = Date()
     ) throws -> CameraRawSettings? {
         try requireVersion(targetID)
@@ -444,6 +563,7 @@ nonisolated struct DevelopVersionCatalog: VersionedJSONDocument, Equatable, Send
             try updateVersion(
                 id: activeVersionID,
                 settings: currentSettings ?? CameraRawSettings(),
+                watermarkDataProvider: watermarkDataProvider,
                 now: now
             )
         }

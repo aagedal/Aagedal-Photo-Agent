@@ -19,6 +19,9 @@
 - Applying a destination replaces `editingMetadata.cameraRaw` once, resets the edit undo stack,
   invalidates edited thumbnail/full-screen caches, and refreshes preview, scopes, viewport, and
   Clean Feed state.
+- New snapshots hash referenced watermark PNG bytes. The version menu and active-version summary
+  distinguish missing and content-changed watermarks without making legacy, unhashed snapshots
+  unreadable. Duplicating a version preserves its original dependency contract.
 - Primary remains an in-memory/XMP-backed virtual entry. Named-version edits clear the metadata
   dirty flag and use `DevelopVersionCatalogRepository`; they do not enter the XMP commit path.
 - Changed-source and newer-schema catalogs remain unavailable for editing and show an explicit
@@ -26,7 +29,7 @@
 
 ## Automated validation
 
-On 2026-08-10:
+On 2026-08-11:
 
 ```text
 xcodebuild build-for-testing -scheme "Aagedal Photo Agent Tests" \
@@ -41,13 +44,14 @@ xcodebuild test-without-building -scheme "Aagedal Photo Agent Tests" \
   -destination "platform=macOS" \
   -only-testing:"Aagedal Photo Agent Tests/DevelopVersionCatalogTests"
 
-Result: 11 tests in 1 suite passed
+Result: 13 tests in 1 suite passed
 ```
 
 The switch test verifies that the version being left is snapshotted, Primary is never added to
 `versions`, a named snapshot restores exactly, and an invalid destination leaves the catalog
-unchanged. The flush-coordinator test verifies failure forwarding, stale-registration safety, and
-the no-active-workspace success path. Existing repository tests continue to verify atomic
+unchanged. Dependency tests distinguish matching, changed, missing, and legacy-unhashed watermark
+states. The flush-coordinator test verifies failure forwarding, stale-registration safety, and the
+no-active-workspace success path. Existing repository tests continue to verify atomic
 persistence, XMP isolation, fallback storage, schema handling, reassociation, and full settings
 round trips.
 
@@ -61,5 +65,5 @@ round trips.
 - Verify create/duplicate/rename/default/delete menus with VoiceOver and keyboard navigation.
 - Confirm crop, masks, LUT layers, watermarks, HDR controls, scopes, and Clean Feed redraw after
   repeated Primary/named switches.
-- Verify the remaining Phase 10 work: dependency diagnostics, version comparison, explicit Primary
-  promotion/recovery, and promotion read-back.
+- Verify the remaining Phase 10 work: version comparison, explicit Primary promotion/recovery, and
+  promotion read-back.

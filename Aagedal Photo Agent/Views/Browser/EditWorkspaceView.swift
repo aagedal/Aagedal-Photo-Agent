@@ -321,6 +321,7 @@ struct EditWorkspaceView: View {
     @State private var dragCropAngle: Double?
     @State private var dragCropRegion: NormalizedCropRegion?
     @State private var editUndoManager = UndoManager()
+    @State private var watermarkStore = WatermarkStore.shared
     /// URLs whose develop settings actually changed during this edit session. On exit these are
     /// proactively re-rendered into the full-screen + thumbnail caches so the return to culling is
     /// instant and correct, rather than catching up reactively a beat later. Populated wherever
@@ -1619,7 +1620,22 @@ struct EditWorkspaceView: View {
     }
 
     private var developVersionSelector: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        let availableWatermarkIDs = Set(watermarkStore.allAssets().map(\.id))
+        let referencedWatermarkIDs = Set(
+            (developVersionCatalog?.versions ?? []).flatMap { version in
+                version.snapshot.dependencyManifest.compactMap { dependency in
+                    dependency.kind == .watermark ? UUID(uuidString: dependency.identifier) : nil
+                }
+            }
+        )
+        let watermarkPairs: [(UUID, Data)] = referencedWatermarkIDs.compactMap {
+            id -> (UUID, Data)? in
+            guard availableWatermarkIDs.contains(id) else { return nil }
+            return watermarkStore.imageData(forAssetID: id).map { (id, $0) }
+        }
+        let watermarkData = Dictionary(uniqueKeysWithValues: watermarkPairs)
+
+        return VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Text("Version")
                     .font(.caption)
@@ -1643,9 +1659,16 @@ struct EditWorkspaceView: View {
                                 switchDevelopVersion(to: version.id)
                             } label: {
                                 Label(
-                                    version.name + (catalog.defaultVersionID == version.id ? " (Default)" : ""),
-                                    systemImage: catalog.activeVersionID == version.id
-                                        ? "checkmark" : "camera.filters"
+                                    developVersionMenuLabel(
+                                        for: version,
+                                        isDefault: catalog.defaultVersionID == version.id,
+                                        watermarkData: watermarkData
+                                    ),
+                                    systemImage: developVersionMenuIcon(
+                                        for: version,
+                                        isActive: catalog.activeVersionID == version.id,
+                                        watermarkData: watermarkData
+                                    )
                                 )
                             }
                         }
@@ -1721,6 +1744,17 @@ struct EditWorkspaceView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
+
+                if let warning = developVersionDependencyWarning(
+                    for: activeVersion,
+                    watermarkData: watermarkData
+                ) {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Version dependency warning: \(warning)")
+                }
             } else {
                 Text("XMP-backed primary Develop state")
                     .font(.caption2)
@@ -1740,6 +1774,65 @@ struct EditWorkspaceView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Develop version selector")
+    }
+
+    private func developVersionDiagnostics(
+        for version: DevelopNamedVersion,
+        watermarkData: [UUID: Data]
+    ) -> [DevelopVersionDependencyDiagnostic] {
+        version.snapshot.dependencyDiagnostics { watermarkData[$0] }
+    }
+
+    private func developVersionMenuLabel(
+        for version: DevelopNamedVersion,
+        isDefault: Bool,
+        watermarkData: [UUID: Data]
+    ) -> String {
+        let suffix: String
+        let diagnostics = developVersionDiagnostics(for: version, watermarkData: watermarkData)
+        if diagnostics.contains(where: { $0.status == .missing }) {
+            suffix = " • Missing Watermark"
+        } else if diagnostics.contains(where: { $0.status == .changed }) {
+            suffix = " • Changed Watermark"
+        } else if diagnostics.contains(where: { $0.status == .unsupported }) {
+            suffix = " • Unsupported Dependency"
+        } else {
+            suffix = ""
+        }
+        return version.name + (isDefault ? " (Default)" : "") + suffix
+    }
+
+    private func developVersionMenuIcon(
+        for version: DevelopNamedVersion,
+        isActive: Bool,
+        watermarkData: [UUID: Data]
+    ) -> String {
+        let diagnostics = developVersionDiagnostics(for: version, watermarkData: watermarkData)
+        return diagnostics.contains(where: { $0.status != .resolved })
+            ? "exclamationmark.triangle.fill"
+            : (isActive ? "checkmark" : "camera.filters")
+    }
+
+    private func developVersionDependencyWarning(
+        for version: DevelopNamedVersion,
+        watermarkData: [UUID: Data]
+    ) -> String? {
+        let diagnostics = developVersionDiagnostics(for: version, watermarkData: watermarkData)
+        let missing = diagnostics.filter { $0.status == .missing }.count
+        let changed = diagnostics.filter { $0.status == .changed }.count
+        let unsupported = diagnostics.filter { $0.status == .unsupported }.count
+        var parts: [String] = []
+        if missing > 0 {
+            parts.append("\(missing) watermark\(missing == 1 ? " is" : "s are") missing")
+        }
+        if changed > 0 {
+            parts.append("\(changed) watermark\(changed == 1 ? " has" : "s have") changed")
+        }
+        if unsupported > 0 {
+            parts.append("\(unsupported) dependenc\(unsupported == 1 ? "y is" : "ies are") unsupported")
+        }
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: "; ") + ". Rendering may not match the saved version."
     }
 
     private var cropInspectorControls: some View {
@@ -2167,7 +2260,11 @@ struct EditWorkspaceView: View {
         }
 
         do {
-            _ = try candidate.createVersion(name: name, settings: settings)
+            _ = try candidate.createVersion(
+                name: name,
+                settings: settings,
+                watermarkDataProvider: watermarkStore.imageData(forAssetID:)
+            )
         } catch {
             developVersionNotice = error.localizedDescription
             return
@@ -2237,7 +2334,8 @@ struct EditWorkspaceView: View {
             targetSettings = try candidate.prepareSwitch(
                 to: targetID,
                 savingCurrentSettings: currentSettings,
-                primarySettings: primaryDevelopSettings
+                primarySettings: primaryDevelopSettings,
+                watermarkDataProvider: watermarkStore.imageData(forAssetID:)
             )
         } catch {
             developVersionNotice = error.localizedDescription
@@ -2294,7 +2392,8 @@ struct EditWorkspaceView: View {
         do {
             try candidate.updateVersion(
                 id: activeID,
-                settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings(),
+                watermarkDataProvider: watermarkStore.imageData(forAssetID:)
             )
         } catch {
             developVersionPersistenceState = .failed(error.localizedDescription)
@@ -2338,7 +2437,8 @@ struct EditWorkspaceView: View {
         do {
             try candidate.updateVersion(
                 id: activeID,
-                settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings(),
+                watermarkDataProvider: watermarkStore.imageData(forAssetID:)
             )
         } catch {
             developVersionPersistenceState = .failed(error.localizedDescription)

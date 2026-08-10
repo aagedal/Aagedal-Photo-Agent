@@ -195,9 +195,9 @@ Primary.
 - [x] Add debounced auto-save with Saving/Saved/Failed state.
 - [x] Flush on switch/navigation/quit and block silent switch after a failed flush.
 - [x] Apply a version as one edit-model transaction.
-- [ ] Define undo-stack reset and communicate it.
-- [ ] Invalidate every dependent preview/cache/feed.
-- [ ] Add missing/changed dependency UI.
+- [x] Define undo-stack reset and communicate it.
+- [x] Invalidate every dependent preview/cache/feed.
+- [x] Add missing/changed dependency UI.
 - [ ] Add version-to-version Compare.
 - [ ] Implement explicit Promote to Primary with recovery snapshot and XMP read-back.
 - [ ] Test failure at every promotion step.
