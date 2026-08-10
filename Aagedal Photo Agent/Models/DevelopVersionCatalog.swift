@@ -1,6 +1,59 @@
 import CryptoKit
 import Foundation
 
+nonisolated enum DevelopVersionFlushReason: Equatable, Sendable {
+    case imageNavigation
+    case workspaceExit
+    case applicationTermination
+}
+
+nonisolated enum DevelopVersionFlushOutcome: Equatable, Sendable {
+    case succeeded
+    case failed(String)
+}
+
+/// Bridges the active Develop workspace to app-level transitions that must wait for its named
+/// version JSON to reach durable storage. Registrations are token-owned so a disappearing stale
+/// view cannot unregister a newer workspace that has already taken its place.
+@MainActor
+final class DevelopVersionFlushCoordinator {
+    typealias Handler = @MainActor (DevelopVersionFlushReason) async -> DevelopVersionFlushOutcome
+
+    static let shared = DevelopVersionFlushCoordinator()
+
+    private var registration: (id: UUID, handler: Handler)?
+    private var inFlightFlush: (id: UUID, task: Task<DevelopVersionFlushOutcome, Never>)?
+
+    var hasRegisteredHandler: Bool { registration != nil }
+
+    @discardableResult
+    func register(_ handler: @escaping Handler) -> UUID {
+        let id = UUID()
+        registration = (id, handler)
+        return id
+    }
+
+    func unregister(_ id: UUID) {
+        guard registration?.id == id else { return }
+        registration = nil
+    }
+
+    func flush(_ reason: DevelopVersionFlushReason) async -> DevelopVersionFlushOutcome {
+        if let inFlightFlush {
+            return await inFlightFlush.task.value
+        }
+        guard let handler = registration?.handler else { return .succeeded }
+        let id = UUID()
+        let task = Task { @MainActor in await handler(reason) }
+        inFlightFlush = (id, task)
+        let outcome = await task.value
+        if inFlightFlush?.id == id {
+            inFlightFlush = nil
+        }
+        return outcome
+    }
+}
+
 /// An external or embedded resource needed to reproduce a named Develop version.
 nonisolated struct DevelopVersionDependency: Codable, Hashable, Sendable {
     enum Kind: String, Codable, Sendable {

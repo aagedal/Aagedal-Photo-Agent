@@ -274,6 +274,8 @@ struct EditWorkspaceView: View {
     @State private var developVersionNotice: String?
     @State private var developVersionLoadTask: Task<Void, Never>?
     @State private var developVersionSaveTask: Task<Void, Never>?
+    @State private var developVersionTransitionTask: Task<Void, Never>?
+    @State private var developVersionFlushRegistrationID: UUID?
     @State private var primaryDevelopSettings: CameraRawSettings?
     @State private var hasInstalledLoadedDevelopVersion = false
     @State private var developVersionNameAction: DevelopVersionNameAction?
@@ -479,7 +481,7 @@ struct EditWorkspaceView: View {
     }
 
     private var isDevelopVersionTransitioning: Bool {
-        developVersionPersistenceState == .saving
+        developVersionPersistenceState == .saving || developVersionTransitionTask != nil
     }
 
     private var hdrToggleBinding: Binding<Bool> {
@@ -1438,7 +1440,7 @@ struct EditWorkspaceView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Button {
-                        onExit()
+                        requestEditWorkspaceExit()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 16))
@@ -1940,29 +1942,7 @@ struct EditWorkspaceView: View {
                         .id(image.url)
                         .onTapGesture {
                             let modifiers = NSEvent.modifierFlags
-                            if modifiers.contains(.command) {
-                                // ⌘-click: toggle selection
-                                if browserViewModel.selectedImageIDs.contains(image.url) {
-                                    browserViewModel.selectedImageIDs.remove(image.url)
-                                } else {
-                                    browserViewModel.selectedImageIDs.insert(image.url)
-                                }
-                            } else if modifiers.contains(.shift), let anchor = browserViewModel.lastClickedImageURL {
-                                // Shift-click: range select (O(1) lookup via urlToVisibleIndex)
-                                if let anchorIdx = browserViewModel.urlToVisibleIndex[anchor],
-                                   let clickIdx = browserViewModel.urlToVisibleIndex[image.url] {
-                                    let images = browserViewModel.visibleImages
-                                    let range = min(anchorIdx, clickIdx)...max(anchorIdx, clickIdx)
-                                    for i in range {
-                                        browserViewModel.selectedImageIDs.insert(images[i].url)
-                                    }
-                                }
-                            } else {
-                                // Normal click: single select
-                                browserViewModel.selectedImageIDs = [image.url]
-                            }
-                            browserViewModel.lastClickedImageURL = image.url
-                            isWorkspaceFocused = true
+                            requestDevelopImageSelection(image.url, modifiers: modifiers)
                         }
                         .onContinuousHover { phase in
                             switch phase {
@@ -2024,7 +2004,6 @@ struct EditWorkspaceView: View {
 
     private func handleDevelopVersionImageChange(from oldURL: URL?, to newURL: URL?) {
         guard oldURL != newURL else { return }
-        persistDevelopVersionBeforeLeaving()
         resetDevelopVersionState()
         loadDevelopVersionCatalog()
     }
@@ -2034,6 +2013,8 @@ struct EditWorkspaceView: View {
         developVersionLoadTask = nil
         developVersionSaveTask?.cancel()
         developVersionSaveTask = nil
+        developVersionTransitionTask?.cancel()
+        developVersionTransitionTask = nil
         developVersionCatalog = nil
         developVersionRepository = nil
         developVersionRevision = nil
@@ -2329,38 +2310,137 @@ struct EditWorkspaceView: View {
             do {
                 try await Task.sleep(for: .milliseconds(650))
                 guard !Task.isCancelled else { return }
-                persistDevelopVersionCatalog(candidate, through: repository)
-            } catch {
+                let storage = try await repository.save(candidate)
+                guard !Task.isCancelled,
+                      developVersionRevision?.sha256 == candidate.source.sha256 else { return }
+                developVersionCatalog = candidate
+                developVersionStorage = storage
+                developVersionPersistenceState = .saved
+                metadataViewModel.hasChanges = false
+            } catch is CancellationError {
                 return
+            } catch {
+                guard developVersionRevision?.sha256 == candidate.source.sha256 else { return }
+                developVersionPersistenceState = .failed(error.localizedDescription)
+                developVersionNotice = error.localizedDescription
             }
         }
     }
 
-    private func persistDevelopVersionBeforeLeaving() {
+    private func flushActiveDevelopVersion(
+        reason: DevelopVersionFlushReason
+    ) async -> DevelopVersionFlushOutcome {
         developVersionSaveTask?.cancel()
+        developVersionSaveTask = nil
         guard let activeID = developVersionCatalog?.activeVersionID,
               let repository = developVersionRepository,
-              var candidate = developVersionCatalog else { return }
+              var candidate = developVersionCatalog else { return .succeeded }
         do {
             try candidate.updateVersion(
                 id: activeID,
                 settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
             )
         } catch {
+            developVersionPersistenceState = .failed(error.localizedDescription)
             developVersionNotice = error.localizedDescription
-            return
+            return .failed(error.localizedDescription)
         }
 
-        // This task owns value snapshots and may finish after the view has moved to another image.
-        // It intentionally does not write back into current-view state.
-        Task {
-            do {
-                _ = try await repository.save(candidate)
-            } catch {
-                editLog.error("Failed to flush named Develop version: \(error.localizedDescription, privacy: .public)")
+        developVersionPersistenceState = .saving
+        developVersionNotice = nil
+        do {
+            let storage = try await repository.save(candidate)
+            guard developVersionRevision?.sha256 == candidate.source.sha256 else {
+                let message = "The source changed before the named version could be saved."
+                developVersionPersistenceState = .failed(message)
+                developVersionNotice = message
+                return .failed(message)
+            }
+            developVersionCatalog = candidate
+            developVersionStorage = storage
+            developVersionPersistenceState = .saved
+            metadataViewModel.hasChanges = false
+            return .succeeded
+        } catch {
+            let message = error.localizedDescription
+            developVersionPersistenceState = .failed(message)
+            developVersionNotice = message
+            editLog.error(
+                "Failed to flush named Develop version for \(String(describing: reason), privacy: .public): \(message, privacy: .public)"
+            )
+            return .failed(message)
+        }
+    }
+
+    private func requestDevelopImageSelection(
+        _ imageURL: URL,
+        modifiers: NSEvent.ModifierFlags = []
+    ) {
+        guard developVersionTransitionTask == nil else { return }
+        let oldSelectedIDs = browserViewModel.selectedImageIDs
+        let oldAnchor = browserViewModel.lastClickedImageURL
+        let visibleImages = browserViewModel.visibleImages
+        let visibleIndex = browserViewModel.urlToVisibleIndex
+
+        developVersionTransitionTask = Task {
+            let outcome = await flushActiveDevelopVersion(reason: .imageNavigation)
+            guard !Task.isCancelled else {
+                developVersionTransitionTask = nil
+                return
+            }
+            guard outcome == .succeeded else {
+                // Explicitly retain both pieces of selection state. This also protects against
+                // future callers that optimistically mutate selection before requesting a flush.
+                browserViewModel.selectedImageIDs = oldSelectedIDs
+                browserViewModel.lastClickedImageURL = oldAnchor
+                developVersionTransitionTask = nil
+                return
+            }
+
+            if modifiers.contains(.command) {
+                if browserViewModel.selectedImageIDs.contains(imageURL) {
+                    browserViewModel.selectedImageIDs.remove(imageURL)
+                } else {
+                    browserViewModel.selectedImageIDs.insert(imageURL)
+                }
+            } else if modifiers.contains(.shift), let anchor = oldAnchor,
+                      let anchorIndex = visibleIndex[anchor],
+                      let imageIndex = visibleIndex[imageURL] {
+                let range = min(anchorIndex, imageIndex)...max(anchorIndex, imageIndex)
+                for index in range {
+                    browserViewModel.selectedImageIDs.insert(visibleImages[index].url)
+                }
+            } else {
+                browserViewModel.selectedImageIDs = [imageURL]
+            }
+            browserViewModel.lastClickedImageURL = imageURL
+            filmstripKeyboardScrollTarget = imageURL
+            isWorkspaceFocused = true
+            developVersionTransitionTask = nil
+        }
+    }
+
+    private func requestAdjacentDevelopImage(forward: Bool) {
+        guard let currentURL = selectedImageURL,
+              let currentIndex = browserViewModel.urlToVisibleIndex[currentURL] else { return }
+        let targetIndex = forward ? currentIndex + 1 : currentIndex - 1
+        guard browserViewModel.visibleImages.indices.contains(targetIndex) else { return }
+        requestDevelopImageSelection(browserViewModel.visibleImages[targetIndex].url)
+    }
+
+    private func requestEditWorkspaceExit() {
+        guard developVersionTransitionTask == nil else { return }
+        developVersionTransitionTask = Task {
+            let outcome = await flushActiveDevelopVersion(reason: .workspaceExit)
+            guard !Task.isCancelled else {
+                developVersionTransitionTask = nil
+                return
+            }
+            developVersionTransitionTask = nil
+            if outcome == .succeeded {
+                onExit()
             }
         }
-        metadataViewModel.hasChanges = false
     }
 
     private func handleEditWorkspaceDisappear() {
@@ -2370,9 +2450,19 @@ struct EditWorkspaceView: View {
         developComparisonRenderTask?.cancel()
         NSCursor.arrow.set()
 
-        // Flush any unsaved edit adjustments (CRS) to disk before tearing down.
-        commitEditAdjustments()
-        persistDevelopVersionBeforeLeaving()
+        // Primary has already followed the XMP commit path during editing. A named version reaches
+        // here only after the coordinated JSON flush succeeds; sync its in-memory browser preview
+        // without scheduling a second delayed write while the view is being destroyed.
+        if developVersionCatalog?.activeVersionID == nil {
+            commitEditAdjustments()
+        } else {
+            syncCameraRawToImageFile()
+        }
+
+        if let registrationID = developVersionFlushRegistrationID {
+            DevelopVersionFlushCoordinator.shared.unregister(registrationID)
+            developVersionFlushRegistrationID = nil
+        }
 
         // Tear down the clean-feed mirror; browse mode resumes driving the feed.
         metalPipeline?.mirror = nil
@@ -2490,6 +2580,10 @@ struct EditWorkspaceView: View {
 
         updateGamutClipMode()
         metadataViewModel.isInEditView = true
+        developVersionFlushRegistrationID = DevelopVersionFlushCoordinator.shared.register {
+            reason in
+            await flushActiveDevelopVersion(reason: reason)
+        }
         loadDevelopVersionCatalog()
         editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
         loadSelectedImagePreview()
@@ -8042,7 +8136,7 @@ struct EditWorkspaceView: View {
                 toggleCropControls()
                 return nil
             }
-            onExit()
+            requestEditWorkspaceExit()
             return nil
         }
 
@@ -8157,13 +8251,11 @@ struct EditWorkspaceView: View {
 
         // Arrow keys
         if event.keyCode == 123 { // left arrow
-            browserViewModel.selectPrevious()
-            filmstripKeyboardScrollTarget = browserViewModel.lastClickedImageURL
+            requestAdjacentDevelopImage(forward: false)
             return nil
         }
         if event.keyCode == 124 { // right arrow
-            browserViewModel.selectNext()
-            filmstripKeyboardScrollTarget = browserViewModel.lastClickedImageURL
+            requestAdjacentDevelopImage(forward: true)
             return nil
         }
 

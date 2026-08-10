@@ -11,6 +11,11 @@
   portability warning.
 - Switching first snapshots the named version being left and atomically persists that snapshot
   together with the new active selection. The editor changes only after persistence succeeds.
+- Filmstrip clicks, arrow-key image navigation, workspace exits, and app termination now await the
+  same active-version flush contract. Failed navigation or workspace saves retain the current
+  selection; failed termination offers **Keep App Open** or an explicit **Quit Without Saving**.
+- Toolbar/layout transitions out of Develop also use the registered flush contract rather than
+  relying on a non-blocking `onDisappear` write.
 - Applying a destination replaces `editingMetadata.cameraRaw` once, resets the edit undo stack,
   invalidates edited thumbnail/full-screen caches, and refreshes preview, scopes, viewport, and
   Clean Feed state.
@@ -21,7 +26,7 @@
 
 ## Automated validation
 
-On 2026-08-09:
+On 2026-08-10:
 
 ```text
 xcodebuild build-for-testing -scheme "Aagedal Photo Agent Tests" \
@@ -36,21 +41,25 @@ xcodebuild test-without-building -scheme "Aagedal Photo Agent Tests" \
   -destination "platform=macOS" \
   -only-testing:"Aagedal Photo Agent Tests/DevelopVersionCatalogTests"
 
-Result: 10 tests in 1 suite passed
+Result: 11 tests in 1 suite passed
 ```
 
-The added switch test verifies that the version being left is snapshotted, Primary is never added
-to `versions`, a named snapshot restores exactly, and an invalid destination leaves the catalog
-unchanged. Existing repository tests continue to verify atomic persistence, XMP isolation,
-fallback storage, schema handling, reassociation, and full settings round trips.
+The switch test verifies that the version being left is snapshotted, Primary is never added to
+`versions`, a named snapshot restores exactly, and an invalid destination leaves the catalog
+unchanged. The flush-coordinator test verifies failure forwarding, stale-registration safety, and
+the no-active-workspace success path. Existing repository tests continue to verify atomic
+persistence, XMP isolation, fallback storage, schema handling, reassociation, and full settings
+round trips.
 
 ## Manual follow-up before Phase 10 exit
 
 - Exercise rapid slider edits followed by named-version switching and image navigation.
 - Force folder-local and Application Support write failures and verify the visible version does not
   switch after a failed flush.
+- Force a quit-time write failure and verify both **Keep App Open** and explicit
+  **Quit Without Saving** choices.
 - Verify create/duplicate/rename/default/delete menus with VoiceOver and keyboard navigation.
 - Confirm crop, masks, LUT layers, watermarks, HDR controls, scopes, and Clean Feed redraw after
   repeated Primary/named switches.
 - Verify the remaining Phase 10 work: dependency diagnostics, version comparison, explicit Primary
-  promotion/recovery, promotion read-back, and complete navigation/termination failure handling.
+  promotion/recovery, and promotion read-back.

@@ -477,20 +477,44 @@ final class BackgroundOperationMonitor {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor private var terminationReplyPending = false
+
     @MainActor
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationReplyPending { return .terminateLater }
+
         let monitor = BackgroundOperationMonitor.shared
-        guard monitor.hasActiveOperation else { return .terminateNow }
+        if monitor.hasActiveOperation {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Import or upload still in progress"
+            let summary = monitor.activeOperationSummary.isEmpty ? "background work" : monitor.activeOperationSummary
+            alert.informativeText = "Quitting now will stop \(summary). Wait for it to finish, or quit anyway?"
+            alert.addButton(withTitle: "Keep Running")
+            alert.addButton(withTitle: "Quit Anyway")
+            if alert.runModal() == .alertFirstButtonReturn { return .terminateCancel }
+        }
 
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Import or upload still in progress"
-        let summary = monitor.activeOperationSummary.isEmpty ? "background work" : monitor.activeOperationSummary
-        alert.informativeText = "Quitting now will stop \(summary). Wait for it to finish, or quit anyway?"
-        alert.addButton(withTitle: "Keep Running")
-        alert.addButton(withTitle: "Quit Anyway")
+        let coordinator = DevelopVersionFlushCoordinator.shared
+        guard coordinator.hasRegisteredHandler else { return .terminateNow }
 
-        return alert.runModal() == .alertFirstButtonReturn ? .terminateCancel : .terminateNow
+        terminationReplyPending = true
+        Task { @MainActor in
+            let outcome = await coordinator.flush(.applicationTermination)
+            var shouldTerminate = true
+            if case let .failed(message) = outcome {
+                let alert = NSAlert()
+                alert.alertStyle = .critical
+                alert.messageText = "Named Version Save Failed"
+                alert.informativeText = "The active Develop version could not be saved: \(message)\n\nKeep the app open to retry, or quit without saving these changes."
+                alert.addButton(withTitle: "Keep App Open")
+                alert.addButton(withTitle: "Quit Without Saving")
+                shouldTerminate = alert.runModal() == .alertSecondButtonReturn
+            }
+            terminationReplyPending = false
+            sender.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
+        return .terminateLater
     }
 }
 

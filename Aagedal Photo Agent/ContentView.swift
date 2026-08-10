@@ -860,17 +860,40 @@ struct ContentView: View {
         if mainViewMode == .peopleDatabase {
             closePeopleDatabase()
         } else {
-            openPeopleDatabase()
+            leaveEditWorkspaceIfNeeded {
+                openPeopleDatabase()
+            }
         }
     }
 
     private func toggleEditWorkspace() {
         if mainViewMode == .editing {
-            mainViewMode = .browser
-            browserViewModel.shouldRestoreGridFocus = true
+            leaveEditWorkspaceIfNeeded {
+                mainViewMode = .browser
+                browserViewModel.shouldRestoreGridFocus = true
+            }
             return
         }
         openEditWorkspace()
+    }
+
+    /// Toolbar and layout-menu transitions live outside `EditWorkspaceView`, so they cannot use
+    /// its local exit button. Route them through the same registered flush handler and leave the
+    /// editor visible when persistence fails.
+    private func leaveEditWorkspaceIfNeeded(_ transition: @escaping @MainActor () -> Void) {
+        performAfterDevelopFlush(reason: .workspaceExit, transition)
+    }
+
+    private func performAfterDevelopFlush(
+        reason: DevelopVersionFlushReason,
+        _ transition: @escaping @MainActor () -> Void
+    ) {
+        guard mainViewMode == .editing else { transition(); return }
+        Task { @MainActor in
+            let outcome = await DevelopVersionFlushCoordinator.shared.flush(reason)
+            guard outcome == .succeeded, mainViewMode == .editing else { return }
+            transition()
+        }
     }
 
     private func openEditWorkspace() {
@@ -907,8 +930,10 @@ struct ContentView: View {
 
     private func openImageAnalysis() {
         guard let image = selectedAnalysisImage else { return }
-        analysisWorkspaceModel.open(image)
-        mainViewMode = .imageAnalysis
+        leaveEditWorkspaceIfNeeded {
+            analysisWorkspaceModel.open(image)
+            mainViewMode = .imageAnalysis
+        }
     }
 
     private var selectedComparisonImages: [ImageFile]? {
@@ -920,10 +945,12 @@ struct ContentView: View {
 
     private func openComparison() {
         guard let selectedComparisonImages else { return }
-        comparisonImages = selectedComparisonImages
-        comparisonOrigin = .browser
-        comparisonInitialLeftRepresentation = nil
-        mainViewMode = .comparison
+        leaveEditWorkspaceIfNeeded {
+            comparisonImages = selectedComparisonImages
+            comparisonOrigin = .browser
+            comparisonInitialLeftRepresentation = nil
+            mainViewMode = .comparison
+        }
     }
 
     private var fullScreenComparisonImages: [ImageFile]? {
@@ -1080,7 +1107,9 @@ struct ContentView: View {
             .disabled(selectedComparisonImages == nil)
 
             Button {
-                mainViewMode = .metadataReview
+                leaveEditWorkspaceIfNeeded {
+                    mainViewMode = .metadataReview
+                }
             } label: {
                 Label("Metadata Review", systemImage: mainViewMode == .metadataReview ? "checkmark" : "list.bullet.rectangle")
             }
@@ -1107,8 +1136,10 @@ struct ContentView: View {
             // Pane layouts are all Thumbnail Browser variants. Selecting any of them
             // also exits Metadata Review; "Single" is therefore the intuitive return
             // to the ordinary one-pane browser without a redundant browser command.
-            mainViewMode = .browser
-            panes.setLayout(layout)
+            leaveEditWorkspaceIfNeeded {
+                mainViewMode = .browser
+                panes.setLayout(layout)
+            }
         } label: {
             Label(
                 title,

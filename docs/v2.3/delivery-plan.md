@@ -193,7 +193,7 @@ Primary.
 - [x] Add Primary/named version selector in Develop.
 - [x] Add create, duplicate, rename, delete, default, and summary.
 - [x] Add debounced auto-save with Saving/Saved/Failed state.
-- [ ] Flush on switch/navigation/quit and block silent switch after a failed flush.
+- [x] Flush on switch/navigation/quit and block silent switch after a failed flush.
 - [x] Apply a version as one edit-model transaction.
 - [ ] Define undo-stack reset and communicate it.
 - [ ] Invalidate every dependent preview/cache/feed.

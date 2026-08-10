@@ -165,6 +165,33 @@ struct DevelopVersionCatalogTests {
         #expect(catalog == beforeInvalidSwitch)
     }
 
+    @Test("flush coordinator forwards failures and token-owns the active registration")
+    func flushCoordinatorRegistration() async {
+        let coordinator = DevelopVersionFlushCoordinator()
+        var receivedReasons: [DevelopVersionFlushReason] = []
+        let staleID = coordinator.register { reason in
+            receivedReasons.append(reason)
+            return .failed("read only")
+        }
+
+        let failure = await coordinator.flush(.imageNavigation)
+        #expect(failure == .failed("read only"))
+        #expect(receivedReasons == [.imageNavigation])
+
+        let activeID = coordinator.register { reason in
+            receivedReasons.append(reason)
+            return .succeeded
+        }
+        coordinator.unregister(staleID)
+        #expect(coordinator.hasRegisteredHandler)
+        #expect(await coordinator.flush(.applicationTermination) == .succeeded)
+        #expect(receivedReasons == [.imageNavigation, .applicationTermination])
+
+        coordinator.unregister(activeID)
+        #expect(!coordinator.hasRegisteredHandler)
+        #expect(await coordinator.flush(.workspaceExit) == .succeeded)
+    }
+
     @Test("catalog JSON round-trips every current Develop layer and effect family")
     func everyCurrentLayerAndEffectRoundTrips() async throws {
         let fixture = try VersionCatalogFixture(contents: "complete settings source")
