@@ -109,6 +109,62 @@ struct DevelopVersionCatalogTests {
         }
     }
 
+    @Test("switch preparation snapshots the version being left and keeps Primary virtual")
+    func switchPreparationIsAtomic() async throws {
+        let fixture = try VersionCatalogFixture(contents: "source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var catalog = DevelopVersionCatalog.create(
+            for: revision,
+            now: Date(timeIntervalSince1970: 100)
+        )
+
+        var originalNamedSettings = CameraRawSettings()
+        originalNamedSettings.exposure2012 = 0.5
+        let namedID = try catalog.createVersion(
+            name: "Editorial",
+            settings: originalNamedSettings,
+            now: Date(timeIntervalSince1970: 110)
+        )
+
+        var editedNamedSettings = originalNamedSettings
+        editedNamedSettings.exposure2012 = 1.25
+        var primarySettings = CameraRawSettings()
+        primarySettings.contrast2012 = 12
+
+        let resolvedPrimary = try catalog.prepareSwitch(
+            to: nil,
+            savingCurrentSettings: editedNamedSettings,
+            primarySettings: primarySettings,
+            now: Date(timeIntervalSince1970: 120)
+        )
+
+        #expect(catalog.activeVersionID == nil)
+        #expect(catalog.versions.count == 1)
+        #expect(catalog.versions.first?.id == namedID)
+        #expect(catalog.versions.first?.snapshot.settings.exposure2012 == 1.25)
+        #expect(resolvedPrimary?.contrast2012 == 12)
+
+        let restoredNamed = try catalog.prepareSwitch(
+            to: namedID,
+            savingCurrentSettings: primarySettings,
+            primarySettings: primarySettings,
+            now: Date(timeIntervalSince1970: 130)
+        )
+        #expect(catalog.activeVersionID == namedID)
+        #expect(restoredNamed?.exposure2012 == 1.25)
+
+        let beforeInvalidSwitch = catalog
+        #expect(throws: DevelopVersionCatalogMutationError.versionNotFound) {
+            _ = try catalog.prepareSwitch(
+                to: UUID(),
+                savingCurrentSettings: restoredNamed,
+                primarySettings: primarySettings
+            )
+        }
+        #expect(catalog == beforeInvalidSwitch)
+    }
+
     @Test("catalog JSON round-trips every current Develop layer and effect family")
     func everyCurrentLayerAndEffectRoundTrips() async throws {
         let fixture = try VersionCatalogFixture(contents: "complete settings source")

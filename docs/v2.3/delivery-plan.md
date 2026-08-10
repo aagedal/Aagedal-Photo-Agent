@@ -190,11 +190,11 @@ Develop state.
 **Exit gate:** users can work among versions without losing dirty state or accidentally overwriting
 Primary.
 
-- [ ] Add Primary/named version selector in Develop.
-- [ ] Add create, duplicate, rename, delete, default, and summary.
-- [ ] Add debounced auto-save with Saving/Saved/Failed state.
+- [x] Add Primary/named version selector in Develop.
+- [x] Add create, duplicate, rename, delete, default, and summary.
+- [x] Add debounced auto-save with Saving/Saved/Failed state.
 - [ ] Flush on switch/navigation/quit and block silent switch after a failed flush.
-- [ ] Apply a version as one edit-model transaction.
+- [x] Apply a version as one edit-model transaction.
 - [ ] Define undo-stack reset and communicate it.
 - [ ] Invalidate every dependent preview/cache/feed.
 - [ ] Add missing/changed dependency UI.

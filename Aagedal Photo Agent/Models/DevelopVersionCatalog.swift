@@ -373,6 +373,36 @@ nonisolated struct DevelopVersionCatalog: VersionedJSONDocument, Equatable, Send
         updatedAt = max(updatedAt, now)
     }
 
+    /// Captures the version being left and resolves the complete Develop state to install for the
+    /// destination. Callers persist the returned catalog before applying the returned settings so
+    /// a failed flush cannot silently switch the editor.
+    ///
+    /// `nil` remains the virtual, XMP-backed Primary entry and is never serialized as a duplicate
+    /// named version.
+    mutating func prepareSwitch(
+        to targetID: UUID?,
+        savingCurrentSettings currentSettings: CameraRawSettings?,
+        primarySettings: CameraRawSettings?,
+        now: Date = Date()
+    ) throws -> CameraRawSettings? {
+        try requireVersion(targetID)
+
+        if let activeVersionID {
+            try updateVersion(
+                id: activeVersionID,
+                settings: currentSettings ?? CameraRawSettings(),
+                now: now
+            )
+        }
+
+        try setActiveVersion(targetID, now: now)
+        guard let targetID else { return primarySettings }
+        guard let target = versions.first(where: { $0.id == targetID }) else {
+            throw DevelopVersionCatalogMutationError.versionNotFound
+        }
+        return target.snapshot.settings
+    }
+
     func validateForPersistence() throws {
         let hexadecimal = CharacterSet(charactersIn: "0123456789abcdef")
         guard source.sha256.count == 64,
