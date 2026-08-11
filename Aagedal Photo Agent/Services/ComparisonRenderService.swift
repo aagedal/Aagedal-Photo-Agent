@@ -213,6 +213,7 @@ nonisolated struct ComparisonRenderService: Sendable {
         sourceImage: CIImage,
         settings: CameraRawSettings?,
         renderToken: String,
+        representation: ComparisonRepresentation? = nil,
         revision existingRevision: SourceImageRevision? = nil,
         maxPixelSize: CGFloat
     ) async throws -> ComparisonRenderedSource {
@@ -284,7 +285,7 @@ nonisolated struct ComparisonRenderService: Sendable {
         return ComparisonRenderedSource(
             source: ComparisonSource(
                 revision: revision,
-                representation: .liveEdit(renderToken: renderToken),
+                representation: representation ?? .liveEdit(renderToken: renderToken),
                 dynamicRange: imageFile.isNativeHDR ? .hdr : .sdr
             ),
             image: image

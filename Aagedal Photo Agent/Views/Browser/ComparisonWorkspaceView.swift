@@ -10,6 +10,8 @@ struct ComparisonWorkspaceView: View {
     let origin: ComparisonOriginWorkspace
     let initialLeftRepresentation: ComparisonRepresentation?
     let liveSource: ComparisonRenderedSource?
+    let initialRightSource: ComparisonRenderedSource?
+    let allowsSourceReplacement: Bool
     let allowsDeletion: Bool
     let onFocusedImageChange: (ImageFile) -> Void
     let onRequestDelete: (ImageFile) -> Void
@@ -98,25 +100,27 @@ struct ComparisonWorkspaceView: View {
 
             Divider().frame(height: 20)
 
-            Button { replaceFocusedSource(.previous) } label: {
-                Image(systemName: "chevron.left")
-            }
-            .help("Previous image in focused pane (Left Arrow)")
-            .disabled(replacementTarget(.previous) == nil || replacingPane != nil)
+            if allowsSourceReplacement {
+                Button { replaceFocusedSource(.previous) } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .help("Previous image in focused pane (Left Arrow)")
+                .disabled(replacementTarget(.previous) == nil || replacingPane != nil)
 
-            Button { replaceFocusedSource(.next) } label: {
-                Image(systemName: "chevron.right")
-            }
-            .help("Next image in focused pane (Right Arrow)")
-            .disabled(replacementTarget(.next) == nil || replacingPane != nil)
+                Button { replaceFocusedSource(.next) } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .help("Next image in focused pane (Right Arrow)")
+                .disabled(replacementTarget(.next) == nil || replacingPane != nil)
 
-            Button(role: .destructive) { requestDeleteFocusedSource() } label: {
-                Image(systemName: "trash")
-            }
-            .help("Move the focused image to the Trash")
-            .disabled(!allowsDeletion || focusedImageFile == nil || replacingPane != nil)
+                Button(role: .destructive) { requestDeleteFocusedSource() } label: {
+                    Image(systemName: "trash")
+                }
+                .help("Move the focused image to the Trash")
+                .disabled(!allowsDeletion || focusedImageFile == nil || replacingPane != nil)
 
-            Divider().frame(height: 20)
+                Divider().frame(height: 20)
+            }
 
             Picker("Layout", selection: Binding(
                 get: { session?.layout ?? .sideBySide },
@@ -359,18 +363,10 @@ struct ComparisonWorkspaceView: View {
             let maxPixelSize = min(max(screenPixels, 2_048), 4_096)
             let service = ComparisonRenderService()
             do {
-                async let right = service.render(
-                    imageFile: selectedImages[1],
-                    settings: committedSettings(for: selectedImages[1]),
-                    cache: cache,
-                    maxPixelSize: maxPixelSize
-                )
-                let leftResult: ComparisonRenderedSource
-                if let liveSource {
-                    leftResult = liveSource
-                } else {
+                let renderLeft: () async throws -> ComparisonRenderedSource = {
+                    if let liveSource { return liveSource }
                     let representation = initialLeftRepresentation ?? .committedEdit
-                    leftResult = try await service.render(
+                    return try await service.render(
                         imageFile: selectedImages[0],
                         settings: representation == .original
                             ? nil
@@ -380,7 +376,21 @@ struct ComparisonWorkspaceView: View {
                         maxPixelSize: maxPixelSize
                     )
                 }
-                let rightResult = try await right
+                let leftResult: ComparisonRenderedSource
+                let rightResult: ComparisonRenderedSource
+                if let initialRightSource {
+                    leftResult = try await renderLeft()
+                    rightResult = initialRightSource
+                } else {
+                    async let pendingRight = service.render(
+                        imageFile: selectedImages[1],
+                        settings: committedSettings(for: selectedImages[1]),
+                        cache: cache,
+                        maxPixelSize: maxPixelSize
+                    )
+                    leftResult = try await renderLeft()
+                    rightResult = try await pendingRight
+                }
                 try Task.checkCancellation()
 
                 let session = ComparisonSession(
@@ -442,7 +452,8 @@ struct ComparisonWorkspaceView: View {
     }
 
     private func replaceFocusedSource(_ direction: ComparisonNavigationDirection) {
-        guard let pane = session?.focusedPane,
+        guard allowsSourceReplacement,
+              let pane = session?.focusedPane,
               let image = replacementTarget(direction) else { return }
         replaceSource(in: pane, with: image)
     }

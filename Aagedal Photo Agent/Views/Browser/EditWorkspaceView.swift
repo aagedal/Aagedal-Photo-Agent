@@ -264,7 +264,9 @@ struct EditWorkspaceView: View {
     @State private var previewRenderTask: Task<Void, Never>?
     @State private var developComparisonRenderTask: Task<Void, Never>?
     @State private var developComparisonTarget: ImageFile?
+    @State private var developVersionComparisonTarget: DevelopVersionComparisonTarget?
     @State private var developComparisonLiveSource: ComparisonRenderedSource?
+    @State private var developVersionComparisonRightSource: ComparisonRenderedSource?
     @State private var developComparisonError: String?
     @State private var developVersionCatalog: DevelopVersionCatalog?
     @State private var developVersionRepository: DevelopVersionCatalogRepository?
@@ -483,6 +485,16 @@ struct EditWorkspaceView: View {
 
     private var isDevelopVersionTransitioning: Bool {
         developVersionPersistenceState == .saving || developVersionTransitionTask != nil
+    }
+
+    private var isDevelopComparisonActive: Bool {
+        developComparisonTarget != nil || developVersionComparisonTarget != nil
+    }
+
+    private var hasDevelopVersionComparisonTargets: Bool {
+        guard let catalog = developVersionCatalog else { return false }
+        if catalog.activeVersionID != nil { return true }
+        return !catalog.versions.isEmpty
     }
 
     private var hdrToggleBinding: Binding<Bool> {
@@ -897,6 +909,8 @@ struct EditWorkspaceView: View {
                     origin: .develop,
                     initialLeftRepresentation: nil,
                     liveSource: developComparisonLiveSource,
+                    initialRightSource: nil,
+                    allowsSourceReplacement: true,
                     allowsDeletion: false,
                     onFocusedImageChange: { _ in },
                     onRequestDelete: { _ in },
@@ -915,6 +929,43 @@ struct EditWorkspaceView: View {
                 VStack(spacing: 12) {
                     ProgressView()
                     Text("Preparing the live Develop comparison…")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Self.previewBackground)
+            }
+        } else if developVersionComparisonTarget != nil,
+                  let current = selectedImage {
+            if let developComparisonLiveSource,
+               let developVersionComparisonRightSource {
+                ComparisonWorkspaceView(
+                    images: [current, current],
+                    navigationImages: [current],
+                    availableImages: [current],
+                    fullScreenImageCache: browserViewModel.fullScreenImageCache,
+                    origin: .develop,
+                    initialLeftRepresentation: nil,
+                    liveSource: developComparisonLiveSource,
+                    initialRightSource: developVersionComparisonRightSource,
+                    allowsSourceReplacement: false,
+                    allowsDeletion: false,
+                    onFocusedImageChange: { _ in },
+                    onRequestDelete: { _ in },
+                    onClose: { _, _ in closeDevelopComparison() }
+                )
+            } else if let developComparisonError {
+                ContentUnavailableView {
+                    Label("Version Comparison Unavailable", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(developComparisonError)
+                } actions: {
+                    Button("Try Again") { scheduleDevelopComparisonRender() }
+                    Button("Close Compare") { closeDevelopComparison() }
+                }
+            } else {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Preparing the Develop version comparison…")
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1463,7 +1514,7 @@ struct EditWorkspaceView: View {
                             Divider()
                             Text("Or right-click an image in the filmstrip")
 
-                            if developComparisonTarget != nil {
+                            if isDevelopComparisonActive {
                                 Divider()
                                 Button("Close Comparison") {
                                     closeDevelopComparison()
@@ -1471,19 +1522,19 @@ struct EditWorkspaceView: View {
                             }
                         } label: {
                             Image(systemName: "rectangle.split.2x1")
-                                .font(.system(size: 11, weight: developComparisonTarget == nil ? .regular : .semibold))
-                                .foregroundStyle(developComparisonTarget == nil ? Color.secondary : Color.accentColor)
+                                .font(.system(size: 11, weight: isDevelopComparisonActive ? .semibold : .regular))
+                                .foregroundStyle(isDevelopComparisonActive ? Color.accentColor : Color.secondary)
                                 .padding(4)
                                 .background(
-                                    developComparisonTarget == nil ? Color.clear : Color.accentColor.opacity(0.16),
+                                    isDevelopComparisonActive ? Color.accentColor.opacity(0.16) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 4)
                                 )
                         }
                         .menuStyle(.borderlessButton)
                         .menuIndicator(.hidden)
                         .fixedSize()
-                        .disabled(defaultDevelopComparisonTarget == nil && developComparisonTarget == nil)
-                        .help(developComparisonTarget == nil ? "Compare the live edit with another image" : "Develop comparison options")
+                        .disabled(defaultDevelopComparisonTarget == nil && !isDevelopComparisonActive)
+                        .help(isDevelopComparisonActive ? "Develop comparison options" : "Compare the live edit with another image")
                         .accessibilityLabel("Develop comparison")
 
                         Button {
@@ -1714,6 +1765,47 @@ struct EditWorkspaceView: View {
                         || developVersionPersistenceState == .loading
                         || developVersionPersistenceState == .saving
                 )
+
+                Menu {
+                    if developVersionCatalog?.activeVersionID != nil {
+                        Button {
+                            beginDevelopVersionComparison(with: .primary)
+                        } label: {
+                            Label(
+                                "Primary (XMP)",
+                                systemImage: developVersionComparisonTarget == .primary
+                                    ? "checkmark" : "photo"
+                            )
+                        }
+                    }
+
+                    if let catalog = developVersionCatalog {
+                        ForEach(catalog.versions.filter { $0.id != catalog.activeVersionID }) { version in
+                            Button {
+                                beginDevelopVersionComparison(with: .named(version.id))
+                            } label: {
+                                Label(
+                                    version.name,
+                                    systemImage: developVersionComparisonTarget == .named(version.id)
+                                        ? "checkmark" : "camera.filters"
+                                )
+                            }
+                        }
+                    }
+
+                    if isDevelopComparisonActive {
+                        Divider()
+                        Button("Close Comparison") { closeDevelopComparison() }
+                    }
+                } label: {
+                    Text("Compare Version…")
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(!hasDevelopVersionComparisonTargets || isDevelopVersionTransitioning)
+                .help("Compare the current Develop version with Primary or another named version")
 
                 Image(systemName: developVersionPersistenceState.systemImage)
                     .foregroundStyle(developVersionStatusColor)
@@ -2240,6 +2332,7 @@ struct EditWorkspaceView: View {
         let name = developVersionNameDraft
         developVersionNameAction = nil
         developVersionNameDraft = ""
+        closeDevelopComparison()
 
         switch action {
         case .create:
@@ -2310,6 +2403,7 @@ struct EditWorkspaceView: View {
 
     private func deleteDevelopVersion(id: UUID) {
         developVersionPendingDeleteID = nil
+        closeDevelopComparison()
         guard let repository = developVersionRepository,
               var candidate = developVersionCatalog else { return }
         let wasActive = candidate.activeVersionID == id
@@ -2326,6 +2420,7 @@ struct EditWorkspaceView: View {
         guard targetID != developVersionCatalog?.activeVersionID,
               let repository = developVersionRepository,
               var candidate = developVersionCatalog else { return }
+        closeDevelopComparison()
 
         developVersionSaveTask?.cancel()
         let currentSettings = metadataViewModel.editingMetadata.cameraRaw
@@ -3495,7 +3590,7 @@ struct EditWorkspaceView: View {
             return settingsForPipeline(s)
         }()
 
-        if developComparisonTarget != nil {
+        if isDevelopComparisonActive {
             scheduleDevelopComparisonRender()
         }
 
@@ -3601,8 +3696,23 @@ struct EditWorkspaceView: View {
         if showCropControls {
             toggleCropControls()
         }
+        developVersionComparisonTarget = nil
+        developVersionComparisonRightSource = nil
         developComparisonTarget = target
         developComparisonLiveSource = nil
+        developComparisonError = nil
+        scheduleDevelopComparisonRender()
+    }
+
+    private func beginDevelopVersionComparison(with target: DevelopVersionComparisonTarget) {
+        guard resolvedDevelopVersionComparisonTarget(target) != nil else { return }
+        if showCropControls {
+            toggleCropControls()
+        }
+        developComparisonTarget = nil
+        developVersionComparisonTarget = target
+        developComparisonLiveSource = nil
+        developVersionComparisonRightSource = nil
         developComparisonError = nil
         scheduleDevelopComparisonRender()
     }
@@ -3611,15 +3721,26 @@ struct EditWorkspaceView: View {
         developComparisonRenderTask?.cancel()
         developComparisonRenderTask = nil
         developComparisonTarget = nil
+        developVersionComparisonTarget = nil
         developComparisonLiveSource = nil
+        developVersionComparisonRightSource = nil
         developComparisonError = nil
     }
 
     private func scheduleDevelopComparisonRender() {
         developComparisonRenderTask?.cancel()
-        guard developComparisonTarget != nil,
+        guard isDevelopComparisonActive,
               let current = selectedImage,
               let sourceCIImage else { return }
+
+        if let versionTarget = developVersionComparisonTarget {
+            scheduleDevelopVersionComparisonRender(
+                current: current,
+                sourceImage: sourceCIImage,
+                target: versionTarget
+            )
+            return
+        }
 
         var settings = metadataViewModel.editingMetadata.cameraRaw
         if let asShotWhiteBalance {
@@ -3654,6 +3775,130 @@ struct EditWorkspaceView: View {
                 developComparisonError = error.localizedDescription
             }
         }
+    }
+
+    private func scheduleDevelopVersionComparisonRender(
+        current: ImageFile,
+        sourceImage: CIImage,
+        target: DevelopVersionComparisonTarget
+    ) {
+        guard let targetValue = resolvedDevelopVersionComparisonTarget(target) else {
+            closeDevelopComparison()
+            return
+        }
+
+        let currentSettings = versionComparisonSettings(
+            metadataViewModel.editingMetadata.cameraRaw
+        )
+        let targetSettings = versionComparisonSettings(targetValue.settings)
+        let currentToken = FullScreenImageCache.renderToken(
+            settings: currentSettings,
+            isEdited: true
+        ) ?? "primary-unedited"
+        let targetToken = FullScreenImageCache.renderToken(
+            settings: targetSettings,
+            isEdited: true
+        ) ?? "primary-unedited"
+        let currentRepresentation: ComparisonRepresentation
+        if let activeVersion = activeNamedDevelopVersion {
+            currentRepresentation = .namedVersion(
+                id: activeVersion.id,
+                name: activeVersion.name,
+                renderToken: currentToken
+            )
+        } else {
+            currentRepresentation = .primary(renderToken: currentToken)
+        }
+        let targetRepresentation: ComparisonRepresentation
+        switch target {
+        case .primary:
+            targetRepresentation = .primary(renderToken: targetToken)
+        case let .named(id):
+            targetRepresentation = .namedVersion(
+                id: id,
+                name: targetValue.name,
+                renderToken: targetToken
+            )
+        }
+
+        let existingRevision = developVersionRevision
+            ?? developComparisonLiveSource?.source.revision
+        let existingRightSource = developVersionComparisonRightSource.flatMap { source in
+            source.source.representation == targetRepresentation ? source : nil
+        }
+        let maxPixelSize = min(max(previewWorkingMaxPixelSize, 2_048), 4_096)
+        developComparisonError = nil
+        developComparisonRenderTask = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+                let service = ComparisonRenderService()
+                let left = try await service.renderLiveEdit(
+                    imageFile: current,
+                    sourceImage: sourceImage,
+                    settings: currentSettings,
+                    renderToken: currentToken,
+                    representation: currentRepresentation,
+                    revision: existingRevision,
+                    maxPixelSize: maxPixelSize
+                )
+                let right: ComparisonRenderedSource
+                if let existingRightSource {
+                    right = existingRightSource
+                } else {
+                    right = try await service.renderLiveEdit(
+                        imageFile: current,
+                        sourceImage: sourceImage,
+                        settings: targetSettings,
+                        renderToken: targetToken,
+                        representation: targetRepresentation,
+                        revision: left.source.revision,
+                        maxPixelSize: maxPixelSize
+                    )
+                }
+                try Task.checkCancellation()
+                guard developVersionComparisonTarget == target else { return }
+                developComparisonLiveSource = left
+                developVersionComparisonRightSource = right
+            } catch is CancellationError {
+                return
+            } catch {
+                developComparisonError = error.localizedDescription
+            }
+        }
+    }
+
+    private func resolvedDevelopVersionComparisonTarget(
+        _ target: DevelopVersionComparisonTarget
+    ) -> (name: String, settings: CameraRawSettings?)? {
+        switch target {
+        case .primary:
+            return ("Primary (XMP)", primaryDevelopSettings)
+        case let .named(id):
+            guard let version = developVersionCatalog?.versions.first(where: { $0.id == id }) else {
+                return nil
+            }
+            return (version.name, version.snapshot.settings)
+        }
+    }
+
+    /// Version comparison renders the stored version itself, independent of temporary section
+    /// mute/solo controls, while retaining the decoder state required for a faithful RAW preview.
+    private func versionComparisonSettings(
+        _ settings: CameraRawSettings?
+    ) -> CameraRawSettings? {
+        let isRawSource = selectedImageURL.map { SupportedImageFormats.isRaw(url: $0) } ?? false
+        guard var result = settings else {
+            guard isRawSource else { return nil }
+            var tonemapOnly = CameraRawSettings()
+            tonemapOnly.sourceHasHDRHeadroom = true
+            return tonemapOnly
+        }
+        if let asShotWhiteBalance {
+            result.asShotNeutralTemperature = Double(asShotWhiteBalance.temperature)
+            result.asShotNeutralTint = Double(asShotWhiteBalance.tint)
+        }
+        result.sourceHasHDRHeadroom = isRawSource ? true : nil
+        return result
     }
 
     private func updateScopeDuringDrag() {

@@ -78,11 +78,39 @@ struct ComparisonCoordinatorTests {
         #expect(!ComparisonRenderPolicy.usesEditedPixels(for: .original))
         #expect(ComparisonRenderPolicy.usesEditedPixels(for: .committedEdit))
         #expect(ComparisonRenderPolicy.usesEditedPixels(for: .liveEdit(renderToken: "live")))
+        #expect(ComparisonRenderPolicy.usesEditedPixels(for: .primary(renderToken: "primary")))
         #expect(ComparisonRenderPolicy.usesEditedPixels(for: .namedVersion(
             id: UUID(),
             name: "Alternate",
             renderToken: "named"
         )))
+    }
+
+    @Test("one source revision can compare Primary with a named version")
+    func comparesTwoRepresentationsOfOneRevision() throws {
+        let versionID = UUID()
+        let primary = makeSource(
+            name: "same-source.jpg",
+            representation: .primary(renderToken: "primary-token")
+        )
+        var named = primary
+        named.representation = .namedVersion(
+            id: versionID,
+            name: "Warm editorial",
+            renderToken: "named-token"
+        )
+
+        let coordinator = try ComparisonCoordinator(session: ComparisonSession(
+            origin: .develop,
+            left: primary,
+            right: named
+        ))
+
+        #expect(coordinator.session.hasBothSources)
+        #expect(coordinator.session.left.source?.revision == coordinator.session.right.source?.revision)
+        #expect(coordinator.session.left.source?.representationLabel == "Primary (XMP)")
+        #expect(coordinator.session.right.source?.representationLabel == "Warm editorial")
+        #expect(DevelopVersionComparisonTarget.primary != .named(versionID))
     }
 
     @Test("RAW comparison sources use the serialized decode path")

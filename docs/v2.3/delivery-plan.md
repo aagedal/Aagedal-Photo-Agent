@@ -198,7 +198,7 @@ Primary.
 - [x] Define undo-stack reset and communicate it.
 - [x] Invalidate every dependent preview/cache/feed.
 - [x] Add missing/changed dependency UI.
-- [ ] Add version-to-version Compare.
+- [x] Add version-to-version Compare.
 - [ ] Implement explicit Promote to Primary with recovery snapshot and XMP read-back.
 - [ ] Test failure at every promotion step.
 

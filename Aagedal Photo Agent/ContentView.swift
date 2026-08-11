@@ -736,6 +736,8 @@ struct ContentView: View {
                     origin: comparisonOrigin,
                     initialLeftRepresentation: comparisonInitialLeftRepresentation,
                     liveSource: nil,
+                    initialRightSource: nil,
+                    allowsSourceReplacement: true,
                     allowsDeletion: true,
                     onFocusedImageChange: { image in
                         browserViewModel.selectedImageIDs = [image.url]

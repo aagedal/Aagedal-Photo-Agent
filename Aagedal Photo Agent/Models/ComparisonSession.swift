@@ -24,11 +24,21 @@ nonisolated enum ComparisonOriginWorkspace: String, Hashable, Sendable {
     case fullScreen
 }
 
+/// A fixed Develop representation selected for comparison with the currently active version.
+/// Primary remains virtual and XMP-backed, while named versions resolve through the source-bound
+/// catalog. Keeping this separate from `ComparisonRepresentation` makes target selection stable
+/// before the render token is known.
+nonisolated enum DevelopVersionComparisonTarget: Hashable, Sendable {
+    case primary
+    case named(UUID)
+}
+
 /// The pixels a comparison pane resolves for a source revision.
 nonisolated enum ComparisonRepresentation: Hashable, Sendable {
     case original
     case committedEdit
     case liveEdit(renderToken: String)
+    case primary(renderToken: String)
     case namedVersion(id: UUID, name: String, renderToken: String)
 
     var displayName: String {
@@ -39,6 +49,8 @@ nonisolated enum ComparisonRepresentation: Hashable, Sendable {
             "Committed Edit"
         case .liveEdit:
             "Live Edit"
+        case .primary:
+            "Primary (XMP)"
         case let .namedVersion(_, name, _):
             name
         }
@@ -49,7 +61,8 @@ nonisolated enum ComparisonRepresentation: Hashable, Sendable {
         switch self {
         case .original, .committedEdit:
             nil
-        case let .liveEdit(renderToken), let .namedVersion(_, _, renderToken):
+        case let .liveEdit(renderToken), let .primary(renderToken),
+             let .namedVersion(_, _, renderToken):
             renderToken
         }
     }
