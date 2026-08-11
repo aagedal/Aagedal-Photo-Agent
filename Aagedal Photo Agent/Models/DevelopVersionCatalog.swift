@@ -323,6 +323,16 @@ nonisolated enum DevelopVersionCatalogMutationError: Error, Equatable, Localized
     }
 }
 
+/// The durable catalog state prepared before a named version crosses into the XMP-backed Primary.
+/// The recovery version is already part of `catalog`, while the source named version remains
+/// intact and active until XMP read-back succeeds.
+nonisolated struct DevelopVersionPromotionPreparation: Equatable, Sendable {
+    let catalog: DevelopVersionCatalog
+    let sourceVersionID: UUID
+    let recoveryVersionID: UUID
+    let promotedSettings: CameraRawSettings
+}
+
 nonisolated enum DevelopVersionGeometryCompatibility: Equatable, Sendable {
     /// None of the catalog's snapshots contain crop, mask, watermark, or preserved correction
     /// state whose meaning depends on the source coordinate system.
@@ -542,6 +552,53 @@ nonisolated struct DevelopVersionCatalog: VersionedJSONDocument, Equatable, Send
         try requireVersion(id)
         defaultVersionID = id
         updatedAt = max(updatedAt, now)
+    }
+
+    /// Flushes the named source version and adds a recovery copy of the current virtual Primary.
+    /// The source version deliberately stays active until the promotion service has written and
+    /// verified XMP, so a failed cross-store transaction never claims Primary is active.
+    mutating func preparePromotion(
+        of sourceVersionID: UUID,
+        currentSettings: CameraRawSettings,
+        primarySettings: CameraRawSettings?,
+        recoveryName: String,
+        appVersion: String = DevelopVersionCatalog.currentAppVersion,
+        appBuild: String = DevelopVersionCatalog.currentAppBuild,
+        watermarkDataProvider: (UUID) -> Data? = { _ in nil },
+        now: Date = Date()
+    ) throws -> DevelopVersionPromotionPreparation {
+        guard versions.contains(where: { $0.id == sourceVersionID }) else {
+            throw DevelopVersionCatalogMutationError.versionNotFound
+        }
+
+        if activeVersionID == sourceVersionID {
+            try updateVersion(
+                id: sourceVersionID,
+                settings: currentSettings,
+                watermarkDataProvider: watermarkDataProvider,
+                now: now
+            )
+        }
+        guard let promoted = versions.first(where: { $0.id == sourceVersionID }) else {
+            throw DevelopVersionCatalogMutationError.versionNotFound
+        }
+
+        let recoveryVersionID = try createVersion(
+            name: recoveryName,
+            settings: primarySettings ?? CameraRawSettings(),
+            appVersion: appVersion,
+            appBuild: appBuild,
+            watermarkDataProvider: watermarkDataProvider,
+            now: now
+        )
+        try setActiveVersion(sourceVersionID, now: now)
+
+        return DevelopVersionPromotionPreparation(
+            catalog: self,
+            sourceVersionID: sourceVersionID,
+            recoveryVersionID: recoveryVersionID,
+            promotedSettings: promoted.snapshot.settings
+        )
     }
 
     /// Captures the version being left and resolves the complete Develop state to install for the

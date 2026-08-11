@@ -199,8 +199,8 @@ Primary.
 - [x] Invalidate every dependent preview/cache/feed.
 - [x] Add missing/changed dependency UI.
 - [x] Add version-to-version Compare.
-- [ ] Implement explicit Promote to Primary with recovery snapshot and XMP read-back.
-- [ ] Test failure at every promotion step.
+- [x] Implement explicit Promote to Primary with recovery snapshot and XMP read-back.
+- [x] Test failure at every promotion step.
 
 ## Phase 11 — conditional forensic analyzers
 

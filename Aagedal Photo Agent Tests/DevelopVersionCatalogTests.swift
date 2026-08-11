@@ -551,6 +551,237 @@ struct DevelopVersionCatalogTests {
         }
         #expect(loadedStorage == .applicationSupport)
     }
+
+    @Test("promotion preparation flushes the source and preserves Primary as recovery")
+    func promotionPreparation() async throws {
+        let fixture = try VersionCatalogFixture(contents: "promotion source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var catalog = DevelopVersionCatalog.create(for: revision)
+        var savedNamed = CameraRawSettings()
+        savedNamed.exposure2012 = 0.4
+        let sourceID = try catalog.createVersion(name: "Editorial", settings: savedNamed)
+        var liveNamed = savedNamed
+        liveNamed.exposure2012 = 0.85
+        var primary = CameraRawSettings()
+        primary.contrast2012 = 12
+
+        let preparation = try catalog.preparePromotion(
+            of: sourceID,
+            currentSettings: liveNamed,
+            primarySettings: primary,
+            recoveryName: "Primary before promotion — test",
+            appVersion: "2.3",
+            appBuild: "500"
+        )
+
+        #expect(preparation.catalog.activeVersionID == sourceID)
+        #expect(preparation.catalog.versions.count == 2)
+        #expect(preparation.promotedSettings.exposure2012 == 0.85)
+        #expect(preparation.catalog.versions.first(where: { $0.id == sourceID })?
+            .snapshot.settings.exposure2012 == 0.85)
+        #expect(preparation.catalog.versions.first(where: {
+            $0.id == preparation.recoveryVersionID
+        })?.snapshot.settings.contrast2012 == 12)
+    }
+
+    @Test("promotion writes recovery, verifies XMP, then activates Primary")
+    func promotionIntegration() async throws {
+        let fixture = try VersionCatalogFixture(contents: "promotion integration source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let repository = DevelopVersionCatalogRepository(sourceFolderURL: fixture.directoryURL)
+        let sidecars = XMPSidecarService()
+        var oldPrimary = CameraRawSettings()
+        oldPrimary.contrast2012 = 14
+        try sidecars.saveCameraRawOnly(oldPrimary, orientation: 1, for: fixture.fileURL)
+
+        var catalog = DevelopVersionCatalog.create(for: revision)
+        var promoted = everyCurrentEffectSettings()
+        // The synthetic catalog fixture uses prefix-style keys that are deliberately not a valid
+        // parsed XMP correction graph. Real preserved corrections are covered by the XMP codec
+        // suite; promotion integration exercises every modeled Develop effect family here.
+        promoted.unparsedMaskCorrections = nil
+        let sourceID = try catalog.createVersion(name: "Editorial", settings: promoted)
+        let preparation = try catalog.preparePromotion(
+            of: sourceID,
+            currentSettings: promoted,
+            primarySettings: oldPrimary,
+            recoveryName: "Primary before promotion — integration"
+        )
+
+        let result = try await DevelopVersionPromotionService(
+            repository: repository,
+            imageURL: fixture.fileURL,
+            orientation: 1
+        ).promote(preparation)
+
+        #expect(result.catalog.activeVersionID == nil)
+        #expect(result.catalog.versions.contains(where: { $0.id == sourceID }))
+        #expect(result.catalog.versions.first(where: { $0.id == result.recoveryVersionID })?
+            .snapshot.settings.contrast2012 == 14)
+        let readBack = sidecars.loadSidecar(for: fixture.fileURL)?.cameraRaw
+        #expect(DevelopVersionPromotionService.readBackMatches(
+            expected: promoted,
+            actual: readBack
+        ))
+
+        let match = await repository.loadMostRelevantCatalog(for: revision)
+        guard case .exact(let persisted, _, _) = match else {
+            Issue.record("Expected the finalized promotion catalog")
+            return
+        }
+        #expect(persisted.activeVersionID == nil)
+        #expect(persisted.versions.count == 2)
+    }
+
+    @Test("promotion reports and contains failure at every durable step")
+    func promotionFailureMatrix() async throws {
+        let fixture = try VersionCatalogFixture(contents: "promotion failure source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var catalog = DevelopVersionCatalog.create(for: revision)
+        var promoted = CameraRawSettings()
+        promoted.exposure2012 = 0.5
+        let sourceID = try catalog.createVersion(name: "Editorial", settings: promoted)
+        let preparation = try catalog.preparePromotion(
+            of: sourceID,
+            currentSettings: promoted,
+            primarySettings: CameraRawSettings(),
+            recoveryName: "Primary before promotion — failures"
+        )
+
+        for step in [
+            DevelopVersionPromotionStep.recoveryCatalogWrite,
+            .xmpWrite,
+            .xmpReadBack,
+            .finalCatalogWrite
+        ] {
+            let io = PromotionTestIO(failure: step)
+            let service = DevelopVersionPromotionService(
+                saveCatalog: { try await io.save($0) },
+                writePrimary: { try await io.write($0) },
+                readPrimary: { try await io.read() }
+            )
+            do {
+                _ = try await service.promote(preparation)
+                Issue.record("Expected injected failure at \(step.rawValue)")
+            } catch let error as DevelopVersionPromotionError {
+                #expect(error.step == step)
+                #expect(error.recoveryCatalogWasSaved == (step != .recoveryCatalogWrite))
+            }
+
+            let state = await io.state()
+            switch step {
+            case .recoveryCatalogWrite:
+                #expect(state.successfulCatalogSaves == 0)
+                #expect(state.writeAttempts == 0)
+                #expect(state.readAttempts == 0)
+            case .xmpWrite:
+                #expect(state.successfulCatalogSaves == 1)
+                #expect(state.writeAttempts == 1)
+                #expect(state.readAttempts == 0)
+            case .xmpReadBack:
+                #expect(state.successfulCatalogSaves == 1)
+                #expect(state.writeAttempts == 1)
+                #expect(state.readAttempts == 1)
+            case .finalCatalogWrite:
+                #expect(state.successfulCatalogSaves == 1)
+                #expect(state.writeAttempts == 1)
+                #expect(state.readAttempts == 1)
+            }
+        }
+    }
+
+    @Test("promotion rejects mismatched XMP read-back after saving recovery")
+    func promotionReadBackMismatch() async throws {
+        let fixture = try VersionCatalogFixture(contents: "promotion mismatch source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var catalog = DevelopVersionCatalog.create(for: revision)
+        var promoted = CameraRawSettings()
+        promoted.exposure2012 = 0.5
+        let sourceID = try catalog.createVersion(name: "Editorial", settings: promoted)
+        let preparation = try catalog.preparePromotion(
+            of: sourceID,
+            currentSettings: promoted,
+            primarySettings: nil,
+            recoveryName: "Primary before promotion — mismatch"
+        )
+        let io = PromotionTestIO(readBackMismatch: true)
+        let service = DevelopVersionPromotionService(
+            saveCatalog: { try await io.save($0) },
+            writePrimary: { try await io.write($0) },
+            readPrimary: { try await io.read() }
+        )
+
+        await #expect(throws: DevelopVersionPromotionError.readBackMismatch) {
+            try await service.promote(preparation)
+        }
+        let state = await io.state()
+        #expect(state.successfulCatalogSaves == 1)
+        #expect(state.writeAttempts == 1)
+        #expect(state.readAttempts == 1)
+    }
+}
+
+private enum PromotionTestInjectedError: Error {
+    case failed
+}
+
+private actor PromotionTestIO {
+    struct State: Sendable {
+        let successfulCatalogSaves: Int
+        let writeAttempts: Int
+        let readAttempts: Int
+    }
+
+    let failure: DevelopVersionPromotionStep?
+    let readBackMismatch: Bool
+    private var savedCatalogs: [DevelopVersionCatalog] = []
+    private var primary: CameraRawSettings?
+    private var writeAttempts = 0
+    private var readAttempts = 0
+
+    init(
+        failure: DevelopVersionPromotionStep? = nil,
+        readBackMismatch: Bool = false
+    ) {
+        self.failure = failure
+        self.readBackMismatch = readBackMismatch
+    }
+
+    func save(_ catalog: DevelopVersionCatalog) throws -> DevelopVersionCatalogStorage {
+        let step: DevelopVersionPromotionStep = savedCatalogs.isEmpty
+            ? .recoveryCatalogWrite
+            : .finalCatalogWrite
+        if failure == step { throw PromotionTestInjectedError.failed }
+        savedCatalogs.append(catalog)
+        return .folderLocal
+    }
+
+    func write(_ settings: CameraRawSettings?) throws {
+        writeAttempts += 1
+        if failure == .xmpWrite { throw PromotionTestInjectedError.failed }
+        primary = settings
+    }
+
+    func read() throws -> CameraRawSettings? {
+        readAttempts += 1
+        if failure == .xmpReadBack { throw PromotionTestInjectedError.failed }
+        guard readBackMismatch else { return primary }
+        var mismatch = CameraRawSettings()
+        mismatch.exposure2012 = 2
+        return mismatch
+    }
+
+    func state() -> State {
+        State(
+            successfulCatalogSaves: savedCatalogs.count,
+            writeAttempts: writeAttempts,
+            readAttempts: readAttempts
+        )
+    }
 }
 
 private struct VersionCatalogFixture {

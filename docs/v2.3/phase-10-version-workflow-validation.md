@@ -26,6 +26,15 @@
   dirty flag and use `DevelopVersionCatalogRepository`; they do not enter the XMP commit path.
 - Changed-source and newer-schema catalogs remain unavailable for editing and show an explicit
   notice instead of being silently applied.
+- Active named versions now offer **Promote to Primary…** with an explicit confirmation that shows
+  the named/current-Primary summaries, affected XMP sidecar path, recovery policy, and any changed
+  or missing external dependency count.
+- Promotion flushes the live named version, persists a dated named recovery snapshot of the old
+  Primary, writes through `XMPSidecarService`, reads the XMP back, and only then persists Primary
+  as active. The promoted named source version remains intact.
+- Failure messages identify the recovery-catalog, XMP-write, XMP-read-back, mismatch, or final
+  catalog boundary. XMP is never touched if the recovery snapshot cannot be made durable; after a
+  later failure the saved recovery catalog remains reflected in the workspace.
 
 ## Automated validation
 
@@ -44,7 +53,7 @@ xcodebuild test-without-building -scheme "Aagedal Photo Agent Tests" \
   -destination "platform=macOS" \
   -only-testing:"Aagedal Photo Agent Tests/DevelopVersionCatalogTests"
 
-Result: 13 tests in 1 suite passed
+Result: 17 tests in 1 suite passed
 ```
 
 The switch test verifies that the version being left is snapshotted, Primary is never added to
@@ -53,7 +62,9 @@ unchanged. Dependency tests distinguish matching, changed, missing, and legacy-u
 states. The flush-coordinator test verifies failure forwarding, stale-registration safety, and the
 no-active-workspace success path. Existing repository tests continue to verify atomic
 persistence, XMP isolation, fallback storage, schema handling, reassociation, and full settings
-round trips.
+round trips. Promotion tests exercise the real JSON/XMP integration, verify the recoverable old
+Primary and intact named source, reject mismatched read-back, and inject failures independently at
+the recovery write, XMP write, XMP read, and final catalog write boundaries.
 
 ## Manual follow-up before Phase 10 exit
 
@@ -65,5 +76,7 @@ round trips.
 - Verify create/duplicate/rename/default/delete menus with VoiceOver and keyboard navigation.
 - Confirm crop, masks, LUT layers, watermarks, HDR controls, scopes, and Clean Feed redraw after
   repeated Primary/named switches.
-- Verify the remaining Phase 10 work: version comparison, explicit Primary promotion/recovery, and
-  promotion read-back.
+- Promote representative crop, mask, LUT, watermark, HDR, and preserved-correction versions and
+  verify the confirmation copy, dated recovery name, Primary selection, and redraw behavior.
+- Force each promotion failure boundary in a manual build and verify the surfaced recovery action
+  and the Primary/named selector state.

@@ -85,8 +85,11 @@ private struct DevelopVersionDialogsModifier: ViewModifier {
     @Binding var nameAction: DevelopVersionNameAction?
     @Binding var nameDraft: String
     @Binding var pendingDeleteID: UUID?
+    @Binding var pendingPromotionID: UUID?
+    let promotionMessage: String
     let performNameAction: () -> Void
     let deleteVersion: (UUID) -> Void
+    let promoteVersion: (UUID) -> Void
 
     private var nameActionPresented: Binding<Bool> {
         Binding(
@@ -104,6 +107,13 @@ private struct DevelopVersionDialogsModifier: ViewModifier {
         Binding(
             get: { pendingDeleteID != nil },
             set: { if !$0 { pendingDeleteID = nil } }
+        )
+    }
+
+    private var promotionPresented: Binding<Bool> {
+        Binding(
+            get: { pendingPromotionID != nil },
+            set: { if !$0 { pendingPromotionID = nil } }
         )
     }
 
@@ -132,6 +142,19 @@ private struct DevelopVersionDialogsModifier: ViewModifier {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("The named snapshot will be removed. Primary XMP settings are not changed.")
+            }
+            .confirmationDialog(
+                "Promote this version to Primary?",
+                isPresented: promotionPresented,
+                titleVisibility: .visible
+            ) {
+                Button("Promote and Verify") {
+                    guard let id = pendingPromotionID else { return }
+                    promoteVersion(id)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(promotionMessage)
             }
     }
 }
@@ -283,6 +306,7 @@ struct EditWorkspaceView: View {
     @State private var developVersionNameAction: DevelopVersionNameAction?
     @State private var developVersionNameDraft = ""
     @State private var developVersionPendingDeleteID: UUID?
+    @State private var developVersionPendingPromotionID: UUID?
     /// Speculative adjacent-RAW decoding must have a single owner. Without retaining this task,
     /// rapid navigation left every previous pair decoding and uploading concurrently even after
     /// its preview was cancelled, causing extreme Core Image/IOSurface memory growth.
@@ -891,8 +915,11 @@ struct EditWorkspaceView: View {
             nameAction: $developVersionNameAction,
             nameDraft: $developVersionNameDraft,
             pendingDeleteID: $developVersionPendingDeleteID,
+            pendingPromotionID: $developVersionPendingPromotionID,
+            promotionMessage: developVersionPromotionMessage,
             performNameAction: performDevelopVersionNameAction,
-            deleteVersion: deleteDevelopVersion
+            deleteVersion: deleteDevelopVersion,
+            promoteVersion: promoteDevelopVersion
         ))
     }
 
@@ -1745,6 +1772,9 @@ struct EditWorkspaceView: View {
                         ) {
                             toggleDefaultDevelopVersion(activeVersion.id)
                         }
+                        Button("Promote to Primary…", systemImage: "arrow.up.doc") {
+                            developVersionPendingPromotionID = activeVersion.id
+                        }
                         Divider()
                         Button("Delete…", systemImage: "trash", role: .destructive) {
                             developVersionPendingDeleteID = activeVersion.id
@@ -2414,6 +2444,96 @@ struct EditWorkspaceView: View {
             settingsToInstall: wasActive ? primaryDevelopSettings : nil,
             installsSettings: wasActive
         )
+    }
+
+    private var developVersionPromotionMessage: String {
+        guard let id = developVersionPendingPromotionID,
+              let version = developVersionCatalog?.versions.first(where: { $0.id == id }),
+              let imageURL = selectedImageURL else { return "" }
+
+        let primarySummary = primaryDevelopSettings?.hasEffectiveEdits == true
+            ? "Develop adjustments"
+            : "No adjustments"
+        let sidecarPath = XMPSidecarService().sidecarURL(for: imageURL).path
+        let availableWatermarkIDs = Set(watermarkStore.allAssets().map(\.id))
+        let diagnostics = version.snapshot.dependencyDiagnostics { id in
+            guard availableWatermarkIDs.contains(id) else { return nil }
+            return watermarkStore.imageData(forAssetID: id)
+        }
+        let unresolved = diagnostics.filter { $0.status != .resolved }.count
+        let dependencyWarning = unresolved == 0
+            ? ""
+            : " Warning: \(unresolved) external dependency \(unresolved == 1 ? "is" : "are") missing or changed."
+
+        return "\(version.name) (\(version.summary)) will replace Primary (\(primarySummary)) at \(sidecarPath). A dated named recovery version of the current Primary will be saved first, and the XMP write must pass read-back verification.\(dependencyWarning)"
+    }
+
+    private func promoteDevelopVersion(id: UUID) {
+        developVersionPendingPromotionID = nil
+        guard developVersionTransitionTask == nil,
+              let repository = developVersionRepository,
+              let imageURL = selectedImageURL,
+              var candidate = developVersionCatalog else { return }
+        closeDevelopComparison()
+        developVersionSaveTask?.cancel()
+        developVersionSaveTask = nil
+
+        let versionName = candidate.versions.first(where: { $0.id == id })?.name ?? "Named version"
+        let recoveryName = "Primary before promotion — \(Date().formatted(date: .abbreviated, time: .shortened))"
+        let preparation: DevelopVersionPromotionPreparation
+        do {
+            preparation = try candidate.preparePromotion(
+                of: id,
+                currentSettings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings(),
+                primarySettings: primaryDevelopSettings,
+                recoveryName: recoveryName,
+                watermarkDataProvider: watermarkStore.imageData(forAssetID:)
+            )
+        } catch {
+            developVersionPersistenceState = .failed(error.localizedDescription)
+            developVersionNotice = error.localizedDescription
+            return
+        }
+
+        let service = DevelopVersionPromotionService(
+            repository: repository,
+            imageURL: imageURL,
+            orientation: selectedImageOrientation
+        )
+        let sourceHash = preparation.catalog.source.sha256
+        developVersionPersistenceState = .saving
+        developVersionNotice = nil
+        developVersionTransitionTask = Task {
+            defer { developVersionTransitionTask = nil }
+            do {
+                let result = try await service.promote(preparation)
+                guard !Task.isCancelled,
+                      developVersionRevision?.sha256 == sourceHash,
+                      selectedImageURL == imageURL else { return }
+                developVersionCatalog = result.catalog
+                developVersionStorage = result.storage
+                primaryDevelopSettings = result.promotedSettings
+                developVersionPersistenceState = .saved
+                installDevelopSettings(result.promotedSettings)
+                metadataViewModel.hasChanges = false
+                showCopyPasteFeedback("Promoted \(versionName) to Primary and verified XMP")
+            } catch is CancellationError {
+                return
+            } catch {
+                guard developVersionRevision?.sha256 == sourceHash,
+                      selectedImageURL == imageURL else { return }
+                if let promotionError = error as? DevelopVersionPromotionError,
+                   promotionError.recoveryCatalogWasSaved {
+                    // The first catalog write is durable. Reflect that recovery snapshot locally
+                    // even when a later XMP/read-back/finalization boundary fails.
+                    developVersionCatalog = preparation.catalog
+                    let actualPrimary = XMPSidecarService().loadSidecar(for: imageURL)?.cameraRaw
+                    primaryDevelopSettings = actualPrimary
+                }
+                developVersionPersistenceState = .failed(error.localizedDescription)
+                developVersionNotice = error.localizedDescription
+            }
+        }
     }
 
     private func switchDevelopVersion(to targetID: UUID?) {
