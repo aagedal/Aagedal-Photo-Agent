@@ -438,15 +438,6 @@ struct Aagedal_Photo_AgentApp: App {
         }
         .defaultSize(width: 420, height: 560)
 
-        WindowGroup("Look Around", for: AnalysisLookAroundLocation.self) { $location in
-            if let location {
-                AnalysisLookAroundWindowView(location: location)
-            } else {
-                ContentUnavailableView("No Location", systemImage: "location.slash")
-            }
-        }
-        .defaultSize(width: 760, height: 520)
-
         Settings {
             SettingsView(settingsViewModel: settingsViewModel)
         }

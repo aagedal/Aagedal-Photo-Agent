@@ -3,18 +3,6 @@ import SwiftUI
 @preconcurrency import CoreLocation
 @preconcurrency import MapKit
 
-enum AnalysisMapLayerScope: String, CaseIterable {
-    case currentPhoto
-    case workingFolder
-
-    var displayName: String {
-        switch self {
-        case .currentPhoto: "This Photo"
-        case .workingFolder: "Working Folder"
-        }
-    }
-}
-
 private enum AppleMapStyleVariant {
     case standard
     case muted
@@ -29,7 +17,6 @@ struct AnalysisMapEvidenceView: View {
     let currentSourceURL: URL?
     let folderAnnotations: [AnalysisImageMapAnnotation]
     let globalAnnotations: [AnalysisGlobalMapAnnotation]
-    let usesFolderOwnedAnnotations: Bool
     let isReadOnly: Bool
     let onSetStyle: (AnalysisMapStyle) -> Void
     let onSetTrafficVisible: (Bool) -> Void
@@ -38,7 +25,6 @@ struct AnalysisMapEvidenceView: View {
     let onSetInvestigationLocation: (AnalysisLocationEvidence?) -> Void
     let onSetAnnotation: (AnalysisMapAnnotation) -> Void
     let onSetLocalAnnotation: (AnalysisMapAnnotation) -> Void
-    let onCopyAnnotationToOtherScope: (UUID) -> Void
     let onDeleteAnnotation: (UUID) -> Void
 
     @Binding var annotationTool: AnalysisAnnotationTool
@@ -68,8 +54,6 @@ struct AnalysisMapEvidenceView: View {
     @State private var fieldOfViewAngle: Double
     @State private var fieldOfViewRangeMeters: Double
     @State private var mapAvailability = AnalysisMapAvailabilityMonitor()
-    @Environment(\.openWindow) private var openWindow
-
     private static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 50, longitude: 10),
         span: MKCoordinateSpan(latitudeDelta: 30, longitudeDelta: 40)
@@ -82,7 +66,6 @@ struct AnalysisMapEvidenceView: View {
         currentSourceURL: URL?,
         folderAnnotations: [AnalysisImageMapAnnotation],
         globalAnnotations: [AnalysisGlobalMapAnnotation],
-        usesFolderOwnedAnnotations: Bool,
         isReadOnly: Bool,
         onSetStyle: @escaping (AnalysisMapStyle) -> Void,
         onSetTrafficVisible: @escaping (Bool) -> Void,
@@ -91,7 +74,6 @@ struct AnalysisMapEvidenceView: View {
         onSetInvestigationLocation: @escaping (AnalysisLocationEvidence?) -> Void,
         onSetAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
         onSetLocalAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
-        onCopyAnnotationToOtherScope: @escaping (UUID) -> Void,
         onDeleteAnnotation: @escaping (UUID) -> Void,
         annotationTool: Binding<AnalysisAnnotationTool>,
         sharedAnnotationStyle: Binding<AnalysisAnnotationStyle>,
@@ -107,7 +89,6 @@ struct AnalysisMapEvidenceView: View {
         self.currentSourceURL = currentSourceURL
         self.folderAnnotations = folderAnnotations
         self.globalAnnotations = globalAnnotations
-        self.usesFolderOwnedAnnotations = usesFolderOwnedAnnotations
         self.isReadOnly = isReadOnly
         self.onSetStyle = onSetStyle
         self.onSetTrafficVisible = onSetTrafficVisible
@@ -116,7 +97,6 @@ struct AnalysisMapEvidenceView: View {
         self.onSetInvestigationLocation = onSetInvestigationLocation
         self.onSetAnnotation = onSetAnnotation
         self.onSetLocalAnnotation = onSetLocalAnnotation
-        self.onCopyAnnotationToOtherScope = onCopyAnnotationToOtherScope
         self.onDeleteAnnotation = onDeleteAnnotation
         _annotationTool = annotationTool
         _sharedAnnotationStyle = sharedAnnotationStyle
@@ -234,11 +214,7 @@ struct AnalysisMapEvidenceView: View {
             }
             .disabled(labelInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } message: {
-            Text(
-                usesFolderOwnedAnnotations
-                    ? "The label is stored in the working folder's shared map."
-                    : "The label is stored only in this image's analysis case."
-            )
+            Text("The label is stored in the working folder's shared map.")
         }
     }
 
@@ -397,15 +373,15 @@ struct AnalysisMapEvidenceView: View {
 
                 HStack(spacing: 6) {
                     Spacer()
-                    Button(action: openLookAroundAtMapCenter) {
-                        Label("Look Around", systemImage: "binoculars")
+                    Button(action: openMapCenterInAppleLookAround) {
+                        Label("Open in Apple Maps Look Around", systemImage: "binoculars")
                             .labelStyle(.iconOnly)
                             .padding(6)
                             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
                     .disabled(mapAvailability.isOffline)
-                    .help("Open Look Around for the map center in a separate window")
+                    .help("Open an interactive Look Around view for the map center in Apple Maps")
 
                     Button(action: openMapCenterInGoogleMaps) {
                         Label("Open in Google Maps", systemImage: "arrow.up.right.square")
@@ -1060,15 +1036,6 @@ struct AnalysisMapEvidenceView: View {
         .accessibilityLabel(mapAnnotationTitle(annotation))
         .accessibilityAddTraits(selectedAnnotationID == annotation.id ? .isSelected : [])
         .contextMenu {
-            Button(
-                usesFolderOwnedAnnotations
-                    ? "Copy to This Photo's Map"
-                    : "Copy to Global Map"
-            ) {
-                onCopyAnnotationToOtherScope(annotation.id)
-            }
-            .disabled(isReadOnly)
-            Divider()
             Button("Delete Map Annotation", role: .destructive) {
                 onDeleteAnnotation(annotation.id)
                 if selectedAnnotationID == annotation.id {
@@ -1089,9 +1056,7 @@ struct AnalysisMapEvidenceView: View {
     }
 
     private var activeMapAnnotations: [AnalysisMapAnnotation] {
-        usesFolderOwnedAnnotations
-            ? globalAnnotations.map(\.annotation)
-            : mapState.annotations
+        globalAnnotations.map(\.annotation)
     }
 
     private func folderMapAnnotationLabel(_ item: AnalysisImageMapAnnotation) -> some View {
@@ -1494,13 +1459,13 @@ struct AnalysisMapEvidenceView: View {
         mapPosition = .region(region)
     }
 
-    private func openLookAroundAtMapCenter() {
-        let coordinate = mapCenterCoordinate
-        guard coordinate.isValid else { return }
-        openWindow(value: AnalysisLookAroundLocation(
-            coordinate: coordinate,
-            title: mapState.investigationLocation?.placeName ?? "Map Center"
-        ))
+    private func openMapCenterInAppleLookAround() {
+        guard let url = AnalysisExternalMapLinks.appleLookAroundURL(
+            for: mapCenterCoordinate
+        ) else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     private func openMapCenterInGoogleMaps() {

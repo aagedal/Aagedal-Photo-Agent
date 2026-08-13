@@ -28,10 +28,6 @@ struct AnalysisWorkspaceView: View {
     @State private var photoPolygonCancelRequestID = 0
     @State private var isTimestampEditorPresented = false
     @State private var isObservationEditorPresented = false
-    /// Geographic markup is project context by default. Photo-local map layers remain available
-    /// for older cases and deliberately image-specific exceptions, but are never part of photo
-    /// annotation copy/paste.
-    @State private var mapLayerScope: AnalysisMapLayerScope = .workingFolder
     @State private var mapDraftCoordinateCount = 0
     @State private var mapPrimaryActionRequestID = 0
     @State private var mapFinishShapeRequestID = 0
@@ -175,11 +171,6 @@ struct AnalysisWorkspaceView: View {
                 annotationStyle = annotation.style
             }
         }
-        .onChange(of: mapLayerScope) {
-            selectedMapAnnotationID = nil
-            mapDraftCoordinateCount = 0
-            mapCancelDraftRequestID += 1
-        }
     }
 
     private var workspaceWithSourceObservers: some View {
@@ -250,11 +241,7 @@ struct AnalysisWorkspaceView: View {
             )
             guard annotation.style != style else { return }
             annotation.style = style
-            if mapLayerScope == .workingFolder {
-                model.setGlobalMapAnnotation(annotation)
-            } else {
-                model.setMapAnnotation(annotation)
-            }
+            model.setGlobalMapAnnotation(annotation)
         }
     }
 
@@ -748,39 +735,17 @@ struct AnalysisWorkspaceView: View {
                             embeddedLocation: model.embeddedLocation,
                             photoAnnotationToLocate: selectedPhotoAnnotation,
                             currentSourceURL: model.sourceURL,
-                            folderAnnotations: mapLayerScope == .workingFolder
-                                ? model.workingFolderMapAnnotations
-                                : [],
+                            folderAnnotations: model.workingFolderMapAnnotations,
                             globalAnnotations: model.globalMapAnnotations,
-                            usesFolderOwnedAnnotations: mapLayerScope == .workingFolder,
                             isReadOnly: model.sourceChanged,
                             onSetStyle: model.setMapStyle,
                             onSetTrafficVisible: model.setMapTrafficVisible,
                             onSet3DContentVisible: model.setMap3DContentVisible,
                             onSetViewport: model.setMapViewport,
                             onSetInvestigationLocation: model.setInvestigationLocation,
-                            onSetAnnotation: { annotation in
-                                if mapLayerScope == .workingFolder {
-                                    model.setGlobalMapAnnotation(annotation)
-                                } else {
-                                    model.setMapAnnotation(annotation)
-                                }
-                            },
+                            onSetAnnotation: model.setGlobalMapAnnotation,
                             onSetLocalAnnotation: model.setMapAnnotation,
-                            onCopyAnnotationToOtherScope: { annotationID in
-                                if mapLayerScope == .workingFolder {
-                                    model.copyGlobalMapAnnotationToCurrentPhoto(id: annotationID)
-                                } else {
-                                    model.copyMapAnnotationToGlobal(id: annotationID)
-                                }
-                            },
-                            onDeleteAnnotation: { annotationID in
-                                if mapLayerScope == .workingFolder {
-                                    model.removeGlobalMapAnnotation(id: annotationID)
-                                } else {
-                                    model.removeMapAnnotation(id: annotationID)
-                                }
-                            },
+                            onDeleteAnnotation: model.removeGlobalMapAnnotation,
                             annotationTool: $mapAnnotationTool,
                             sharedAnnotationStyle: $annotationStyle,
                             selectedAnnotationID: $selectedMapAnnotationID,
@@ -792,12 +757,10 @@ struct AnalysisWorkspaceView: View {
                         .frame(minWidth: 520, minHeight: 480)
 
                         AnalysisMapLayersView(
-                            annotations: model.mapAnnotations,
                             globalAnnotations: model.globalMapAnnotations,
                             photoAnnotations: model.annotations,
                             folderAnnotations: model.workingFolderMapAnnotations,
                             currentCaseID: model.analysisCase?.id,
-                            scope: $mapLayerScope,
                             selectedPhotoAnnotationID: $selectedAnnotationID,
                             selectedAnnotationID: $selectedMapAnnotationID,
                             isReadOnly: model.sourceChanged,
@@ -805,18 +768,11 @@ struct AnalysisWorkspaceView: View {
                             onSetAllPhotosVisible: model.setAllPhotoAnnotationsVisible,
                             onEditPhotoAnnotation: presentPhotoAnnotationEditor,
                             onDeletePhotoAnnotation: model.removeAnnotation,
-                            onSetVisible: model.setMapAnnotationVisible,
-                            onSetAllVisible: model.setAllMapAnnotationsVisible,
-                            onEditMapAnnotation: presentMapAnnotationEditor,
-                            onDeleteMapAnnotation: model.removeMapAnnotation,
-                            onSetPhotoAnnotationLink: model.setMapAnnotationPhotoLabelLink,
                             onSetGlobalVisible: model.setGlobalMapAnnotationVisible,
                             onSetAllGlobalsVisible: model.setAllGlobalMapAnnotationsVisible,
                             onEditGlobalAnnotation: presentMapAnnotationEditor,
                             onDeleteGlobalAnnotation: model.removeGlobalMapAnnotation,
-                            onSetGlobalPhotoAnnotationLink: model.setGlobalMapAnnotationPhotoLink,
-                            onCopyToGlobal: model.copyMapAnnotationToGlobal,
-                            onCopyToCurrentPhoto: model.copyGlobalMapAnnotationToCurrentPhoto
+                            onSetGlobalPhotoAnnotationLink: model.setGlobalMapAnnotationPhotoLink
                         )
                         .frame(minHeight: 150, idealHeight: 210, maxHeight: 280)
                     }
@@ -862,34 +818,22 @@ struct AnalysisWorkspaceView: View {
             isReadOnly: model.sourceChanged,
             canUndo: activeMarkupSurface == .photo
                 ? model.canUndoPhotoAnnotation
-                : (mapLayerScope == .workingFolder
-                    ? model.canUndoGlobalMapAnnotation
-                    : model.canUndoMapAnnotation),
+                : model.canUndoGlobalMapAnnotation,
             canRedo: activeMarkupSurface == .photo
                 ? model.canRedoPhotoAnnotation
-                : (mapLayerScope == .workingFolder
-                    ? model.canRedoGlobalMapAnnotation
-                    : model.canRedoMapAnnotation),
+                : model.canRedoGlobalMapAnnotation,
             undoActionName: activeMarkupSurface == .photo
                 ? model.photoAnnotationUndoActionName
-                : (mapLayerScope == .workingFolder
-                    ? model.globalMapAnnotationUndoActionName
-                    : model.mapAnnotationUndoActionName),
+                : model.globalMapAnnotationUndoActionName,
             redoActionName: activeMarkupSurface == .photo
                 ? model.photoAnnotationRedoActionName
-                : (mapLayerScope == .workingFolder
-                    ? model.globalMapAnnotationRedoActionName
-                    : model.mapAnnotationRedoActionName),
+                : model.globalMapAnnotationRedoActionName,
             onUndo: activeMarkupSurface == .photo
                 ? model.undoPhotoAnnotation
-                : (mapLayerScope == .workingFolder
-                    ? model.undoGlobalMapAnnotation
-                    : model.undoMapAnnotation),
+                : model.undoGlobalMapAnnotation,
             onRedo: activeMarkupSurface == .photo
                 ? model.redoPhotoAnnotation
-                : (mapLayerScope == .workingFolder
-                    ? model.redoGlobalMapAnnotation
-                    : model.redoMapAnnotation),
+                : model.redoGlobalMapAnnotation,
             canCalibrate: activeMarkupSurface == .photo && selectedDistanceAnnotation != nil,
             selectedIsCalibration: selectedDistanceAnnotation?.measurementCalibration != nil,
             onCalibrate: presentCalibrationEditor,
@@ -1144,12 +1088,9 @@ struct AnalysisWorkspaceView: View {
 
     private var selectedMapAnnotation: AnalysisMapAnnotation? {
         guard let selectedMapAnnotationID else { return nil }
-        if mapLayerScope == .workingFolder {
-            return model.globalMapAnnotations.first {
-                $0.id == selectedMapAnnotationID
-            }?.annotation
-        }
-        return model.mapAnnotations.first { $0.id == selectedMapAnnotationID }
+        return model.globalMapAnnotations.first {
+            $0.id == selectedMapAnnotationID
+        }?.annotation
     }
 
     private var activeSelectedAnnotationID: UUID? {
@@ -1196,11 +1137,7 @@ struct AnalysisWorkspaceView: View {
             self.selectedAnnotationID = nil
         case .map:
             guard let selectedMapAnnotationID else { return }
-            if mapLayerScope == .workingFolder {
-                model.removeGlobalMapAnnotation(id: selectedMapAnnotationID)
-            } else {
-                model.removeMapAnnotation(id: selectedMapAnnotationID)
-            }
+            model.removeGlobalMapAnnotation(id: selectedMapAnnotationID)
             self.selectedMapAnnotationID = nil
         }
     }
@@ -1248,9 +1185,9 @@ struct AnalysisWorkspaceView: View {
     }
 
     private func presentMapAnnotationEditor(_ annotationID: UUID) {
-        let annotation = mapLayerScope == .workingFolder
-            ? model.globalMapAnnotations.first(where: { $0.id == annotationID })?.annotation
-            : model.mapAnnotations.first(where: { $0.id == annotationID })
+        let annotation = model.globalMapAnnotations.first {
+            $0.id == annotationID
+        }?.annotation
         guard let annotation else {
             return
         }
@@ -1284,18 +1221,12 @@ struct AnalysisWorkspaceView: View {
             annotation.note = storedNote
             model.setAnnotation(annotation)
         case .map:
-            let existing = mapLayerScope == .workingFolder
-                ? model.globalMapAnnotations.first(where: {
-                    $0.id == request.annotationID
-                })?.annotation
-                : model.mapAnnotations.first(where: { $0.id == request.annotationID })
+            let existing = model.globalMapAnnotations.first {
+                $0.id == request.annotationID
+            }?.annotation
             guard var annotation = existing else { return }
             annotation.text = storedLabel
-            if mapLayerScope == .workingFolder {
-                model.setGlobalMapAnnotation(annotation)
-            } else {
-                model.setMapAnnotation(annotation)
-            }
+            model.setGlobalMapAnnotation(annotation)
         }
     }
 
@@ -1872,12 +1803,10 @@ private struct AnalysisTimelineView: View {
 }
 
 private struct AnalysisMapLayersView: View {
-    let annotations: [AnalysisMapAnnotation]
     let globalAnnotations: [AnalysisGlobalMapAnnotation]
     let photoAnnotations: [AnalysisAnnotation]
     let folderAnnotations: [AnalysisImageMapAnnotation]
     let currentCaseID: UUID?
-    @Binding var scope: AnalysisMapLayerScope
     @Binding var selectedPhotoAnnotationID: UUID?
     @Binding var selectedAnnotationID: UUID?
     let isReadOnly: Bool
@@ -1885,18 +1814,11 @@ private struct AnalysisMapLayersView: View {
     let onSetAllPhotosVisible: (Bool) -> Void
     let onEditPhotoAnnotation: (UUID) -> Void
     let onDeletePhotoAnnotation: (UUID) -> Void
-    let onSetVisible: (UUID, Bool) -> Void
-    let onSetAllVisible: (Bool) -> Void
-    let onEditMapAnnotation: (UUID) -> Void
-    let onDeleteMapAnnotation: (UUID) -> Void
-    let onSetPhotoAnnotationLink: (UUID, UUID?) -> Void
     let onSetGlobalVisible: (UUID, Bool) -> Void
     let onSetAllGlobalsVisible: (Bool) -> Void
     let onEditGlobalAnnotation: (UUID) -> Void
     let onDeleteGlobalAnnotation: (UUID) -> Void
     let onSetGlobalPhotoAnnotationLink: (UUID, UUID, Bool) -> Void
-    let onCopyToGlobal: (UUID) -> Void
-    let onCopyToCurrentPhoto: (UUID) -> Void
 
     var body: some View {
         HSplitView {
@@ -1953,28 +1875,11 @@ private struct AnalysisMapLayersView: View {
                         .fixedSize(horizontal: true, vertical: false)
                     Spacer()
 
-                    Button("Show All") {
-                        scope == .currentPhoto
-                            ? onSetAllVisible(true)
-                            : onSetAllGlobalsVisible(true)
-                    }
+                    Button("Show All") { onSetAllGlobalsVisible(true) }
                     .disabled(isReadOnly || displayedMapAnnotations.allSatisfy(\.isVisible))
-                    Button("Hide All") {
-                        scope == .currentPhoto
-                            ? onSetAllVisible(false)
-                            : onSetAllGlobalsVisible(false)
-                    }
+                    Button("Hide All") { onSetAllGlobalsVisible(false) }
                     .disabled(isReadOnly || displayedMapAnnotations.allSatisfy({ !$0.isVisible }))
                 }
-
-                Picker("Layer Scope", selection: $scope) {
-                    ForEach(AnalysisMapLayerScope.allCases, id: \.self) { scope in
-                        Text(scope.displayName).tag(scope)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 280)
             }
 
             if displayedAnnotationsAreEmpty {
@@ -1982,33 +1887,24 @@ private struct AnalysisMapLayersView: View {
                     "No Map Markup",
                     systemImage: "map",
                     description: Text(
-                        scope == .currentPhoto
-                            ? "Use the Map tools above, or place a selected photo object from the map."
-                            : "Use the Map tools above to add a map layer shared by this working folder."
+                        "Use the Map tools above to add a map layer shared by this working folder."
                     )
                 )
             } else {
                 ScrollView {
                     LazyVStack(spacing: 5) {
-                        if scope == .currentPhoto {
-                            ForEach(Array(annotations.enumerated().reversed()), id: \.element.id) {
-                                index, annotation in
-                                mapLayerRow(annotation, index: index)
-                            }
-                        } else {
-                            ForEach(Array(globalAnnotations.enumerated().reversed()), id: \.element.id) {
-                                index, globalAnnotation in
-                                globalMapLayerRow(globalAnnotation, index: index)
-                            }
-                            if !folderAnnotations.isEmpty {
-                                Text("PHOTO-LOCAL CONTEXT")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.top, 8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                ForEach(Array(folderAnnotations.reversed())) { item in
-                                    folderLayerRow(item)
-                                }
+                        ForEach(Array(globalAnnotations.enumerated().reversed()), id: \.element.id) {
+                            index, globalAnnotation in
+                            globalMapLayerRow(globalAnnotation, index: index)
+                        }
+                        if !folderAnnotations.isEmpty {
+                            Text("PHOTO-LOCAL CONTEXT")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            ForEach(Array(folderAnnotations.reversed())) { item in
+                                folderLayerRow(item)
                             }
                         }
                     }
@@ -2152,11 +2048,11 @@ private struct AnalysisMapLayersView: View {
     }
 
     private var displayedAnnotationsAreEmpty: Bool {
-        scope == .currentPhoto ? annotations.isEmpty : globalAnnotations.isEmpty
+        globalAnnotations.isEmpty && folderAnnotations.isEmpty
     }
 
     private var displayedMapAnnotations: [AnalysisMapAnnotation] {
-        scope == .currentPhoto ? annotations : globalAnnotations.map(\.annotation)
+        globalAnnotations.map(\.annotation)
     }
 
     private func folderLayerRow(_ item: AnalysisImageMapAnnotation) -> some View {
@@ -2273,11 +2169,6 @@ private struct AnalysisMapLayersView: View {
                 )
         )
         .contextMenu {
-            Button("Copy to This Photo's Map") {
-                onCopyToCurrentPhoto(annotation.id)
-            }
-            .disabled(isReadOnly)
-            Divider()
             Button("Rename…") { onEditGlobalAnnotation(annotation.id) }
                 .disabled(isReadOnly)
             Divider()
@@ -2304,114 +2195,12 @@ private struct AnalysisMapLayersView: View {
         )
     }
 
-    private func mapLayerRow(_ annotation: AnalysisMapAnnotation, index: Int) -> some View {
-        HStack(spacing: 8) {
-            Button {
-                selectedAnnotationID = annotation.id
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: icon(for: annotation.kind))
-                        .frame(width: 15)
-                        .foregroundStyle(annotation.style.color.swiftUIColor)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(layerName(annotation, index: index))
-                            .font(.callout.weight(.semibold))
-                            .lineLimit(1)
-                        if let linkedName = linkedPhotoAnnotationName(annotation) {
-                            Label("Photo: \(linkedName)", systemImage: "link")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            Menu {
-                Button("No Photo Link") {
-                    onSetPhotoAnnotationLink(annotation.id, nil)
-                }
-                .disabled(annotation.linkedPhotoLabelID == nil)
-                Divider()
-                if photoAnnotations.isEmpty {
-                    Text("Annotate an object in the photo first")
-                } else {
-                    ForEach(Array(photoAnnotations.enumerated()), id: \.element.id) {
-                        photoIndex, photoAnnotation in
-                        Button {
-                            onSetPhotoAnnotationLink(annotation.id, photoAnnotation.id)
-                        } label: {
-                            if annotation.linkedPhotoLabelID == photoAnnotation.id {
-                                Label(photoAnnotation.listName(index: photoIndex), systemImage: "checkmark")
-                            } else {
-                                Text(photoAnnotation.listName(index: photoIndex))
-                            }
-                        }
-                    }
-                }
-            } label: {
-                Image(systemName: annotation.linkedPhotoLabelID == nil ? "link.badge.plus" : "link")
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .disabled(isReadOnly)
-            .help("Connect this map annotation to an object annotated in the photo")
-
-            Button {
-                onSetVisible(annotation.id, !annotation.isVisible)
-            } label: {
-                Image(systemName: annotation.isVisible ? "eye" : "eye.slash")
-            }
-            .buttonStyle(.borderless)
-            .disabled(isReadOnly)
-            .help(annotation.isVisible ? "Hide map annotation" : "Show map annotation")
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(
-                    selectedAnnotationID == annotation.id
-                        ? Color.accentColor.opacity(0.16)
-                        : Color.secondary.opacity(0.08)
-                )
-        )
-        .contextMenu {
-            Button("Copy to Global Map") {
-                onCopyToGlobal(annotation.id)
-            }
-            .disabled(isReadOnly)
-            Divider()
-            Button("Rename…") {
-                onEditMapAnnotation(annotation.id)
-            }
-            .disabled(isReadOnly)
-            Divider()
-            Button("Delete Map Layer", role: .destructive) {
-                onDeleteMapAnnotation(annotation.id)
-                if selectedAnnotationID == annotation.id {
-                    selectedAnnotationID = nil
-                }
-            }
-            .disabled(isReadOnly)
-        }
-    }
-
     private func layerName(_ annotation: AnalysisMapAnnotation, index: Int) -> String {
         if let text = annotation.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty {
             return text
         }
         return "\(annotation.kind.displayName) \(index + 1)"
-    }
-
-    private func linkedPhotoAnnotationName(_ annotation: AnalysisMapAnnotation) -> String? {
-        guard let id = annotation.linkedPhotoLabelID,
-              let index = photoAnnotations.firstIndex(where: { $0.id == id }) else { return nil }
-        return photoAnnotations[index].listName(index: index)
     }
 
     private func icon(for kind: AnalysisMapAnnotationKind) -> String {
