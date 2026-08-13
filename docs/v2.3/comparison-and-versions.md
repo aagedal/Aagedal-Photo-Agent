@@ -30,12 +30,11 @@ Must ship:
 
 - side by side;
 - stacked;
-- single-pane A/B toggle;
+- adjustable angled wipe overlay;
 - adjustable divider.
 
 Strong stretch:
 
-- draggable wipe/split overlay;
 - difference blend.
 
 Difference blend should not block 2.3 because meaningful alignment requires more than synchronized
@@ -110,7 +109,7 @@ Extend the Clean Feed content contract from one current image to a presentation:
 - single focused pane;
 - side by side;
 - stacked;
-- optional wipe if that layout ships.
+- adjustable wipe position and angle.
 
 Clean Feed is presentation-only. Alignment and source replacement remain controlled from the main
 window. The secondary display follows changes without becoming key. If GPU mirroring two live

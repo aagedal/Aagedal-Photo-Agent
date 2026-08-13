@@ -15,7 +15,172 @@ nonisolated enum ComparisonPane: String, CaseIterable, Hashable, Sendable {
 nonisolated enum ComparisonLayout: String, CaseIterable, Hashable, Sendable {
     case sideBySide
     case stacked
-    case singlePane
+    case wipe
+}
+
+/// Geometry for the adjustable comparison wipe. The angle is measured from a vertical divider:
+/// zero degrees produces the familiar left/right wipe, while positive values tilt it clockwise.
+nonisolated enum ComparisonWipeGeometry {
+    static func maskPolygon(
+        in rect: CGRect,
+        position: CGFloat,
+        angleDegrees: CGFloat
+    ) -> [CGPoint] {
+        guard rect.width > 0, rect.height > 0 else { return [] }
+        let normal = normalVector(angleDegrees: angleDegrees)
+        let threshold = projectionThreshold(
+            in: rect,
+            position: position,
+            normal: normal
+        )
+        let corners = [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY)
+        ]
+
+        var output: [CGPoint] = []
+        for index in corners.indices {
+            let current = corners[index]
+            let previous = corners[(index + corners.count - 1) % corners.count]
+            let currentInside = projection(of: current, normal: normal) <= threshold
+            let previousInside = projection(of: previous, normal: normal) <= threshold
+
+            if currentInside != previousInside,
+               let intersection = intersection(
+                    from: previous,
+                    to: current,
+                    threshold: threshold,
+                    normal: normal
+               ) {
+                output.append(intersection)
+            }
+            if currentInside { output.append(current) }
+        }
+        return output
+    }
+
+    static func dividerSegment(
+        in rect: CGRect,
+        position: CGFloat,
+        angleDegrees: CGFloat
+    ) -> (CGPoint, CGPoint)? {
+        guard rect.width > 0, rect.height > 0 else { return nil }
+        let normal = normalVector(angleDegrees: angleDegrees)
+        let threshold = projectionThreshold(
+            in: rect,
+            position: position,
+            normal: normal
+        )
+        let corners = [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY)
+        ]
+        var intersections: [CGPoint] = []
+        for index in corners.indices {
+            let start = corners[index]
+            let end = corners[(index + 1) % corners.count]
+            if let point = intersection(
+                from: start,
+                to: end,
+                threshold: threshold,
+                normal: normal
+            ), rect.insetBy(dx: -0.001, dy: -0.001).contains(point) {
+                if !intersections.contains(where: { hypot($0.x - point.x, $0.y - point.y) < 0.001 }) {
+                    intersections.append(point)
+                }
+            }
+        }
+        guard intersections.count >= 2 else { return nil }
+        var pair = (intersections[0], intersections[1])
+        var longestDistance = hypot(
+            pair.0.x - pair.1.x,
+            pair.0.y - pair.1.y
+        )
+        for firstIndex in intersections.indices {
+            for secondIndex in intersections.indices where secondIndex > firstIndex {
+                let first = intersections[firstIndex]
+                let second = intersections[secondIndex]
+                let distance = hypot(first.x - second.x, first.y - second.y)
+                if distance > longestDistance {
+                    pair = (first, second)
+                    longestDistance = distance
+                }
+            }
+        }
+        return pair
+    }
+
+    static func position(
+        for point: CGPoint,
+        in rect: CGRect,
+        angleDegrees: CGFloat
+    ) -> CGFloat {
+        guard rect.width > 0, rect.height > 0 else { return 0.5 }
+        let normal = normalVector(angleDegrees: angleDegrees)
+        let range = projectionRange(in: rect, normal: normal)
+        guard range.upperBound > range.lowerBound else { return 0.5 }
+        return min(max(
+            (projection(of: point, normal: normal) - range.lowerBound)
+                / (range.upperBound - range.lowerBound),
+            0
+        ), 1)
+    }
+
+    private static func normalVector(angleDegrees: CGFloat) -> CGPoint {
+        let radians = angleDegrees * .pi / 180
+        return CGPoint(x: cos(radians), y: sin(radians))
+    }
+
+    private static func projectionThreshold(
+        in rect: CGRect,
+        position: CGFloat,
+        normal: CGPoint
+    ) -> CGFloat {
+        let range = projectionRange(in: rect, normal: normal)
+        return range.lowerBound
+            + min(max(position, 0), 1) * (range.upperBound - range.lowerBound)
+    }
+
+    private static func projectionRange(
+        in rect: CGRect,
+        normal: CGPoint
+    ) -> ClosedRange<CGFloat> {
+        let values = [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY)
+        ].map { projection(of: $0, normal: normal) }
+        return (values.min() ?? 0)...(values.max() ?? 0)
+    }
+
+    private static func projection(of point: CGPoint, normal: CGPoint) -> CGFloat {
+        point.x * normal.x + point.y * normal.y
+    }
+
+    private static func intersection(
+        from start: CGPoint,
+        to end: CGPoint,
+        threshold: CGFloat,
+        normal: CGPoint
+    ) -> CGPoint? {
+        let startProjection = projection(of: start, normal: normal)
+        let deltaProjection = projection(
+            of: CGPoint(x: end.x - start.x, y: end.y - start.y),
+            normal: normal
+        )
+        guard abs(deltaProjection) > 0.000_001 else { return nil }
+        let amount = (threshold - startProjection) / deltaProjection
+        guard amount >= -0.000_001, amount <= 1.000_001 else { return nil }
+        return CGPoint(
+            x: start.x + (end.x - start.x) * amount,
+            y: start.y + (end.y - start.y) * amount
+        )
+    }
 }
 
 nonisolated enum ComparisonOriginWorkspace: String, Hashable, Sendable {
@@ -138,6 +303,8 @@ nonisolated struct ComparisonSession: Hashable, Sendable {
     var focusedPane: ComparisonPane
     var lockState: ComparisonLockState
     var alignment: ComparisonAlignment
+    var wipePosition: CGFloat
+    var wipeAngleDegrees: CGFloat
     var left: ComparisonPaneState
     var right: ComparisonPaneState
 
@@ -150,6 +317,8 @@ nonisolated struct ComparisonSession: Hashable, Sendable {
         focusedPane: ComparisonPane = .left,
         lockState: ComparisonLockState = .locked,
         alignment: ComparisonAlignment = .identity,
+        wipePosition: CGFloat = 0.5,
+        wipeAngleDegrees: CGFloat = 0,
         viewport: ViewportState = ViewportState()
     ) {
         self.id = id
@@ -158,6 +327,8 @@ nonisolated struct ComparisonSession: Hashable, Sendable {
         self.focusedPane = focusedPane
         self.lockState = lockState
         self.alignment = alignment
+        self.wipePosition = min(max(wipePosition, 0), 1)
+        self.wipeAngleDegrees = min(max(wipeAngleDegrees, -90), 90)
         self.left = ComparisonPaneState(source: left, viewport: viewport)
         self.right = ComparisonPaneState(source: right, viewport: viewport)
     }

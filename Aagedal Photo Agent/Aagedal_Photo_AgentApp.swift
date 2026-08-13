@@ -399,8 +399,8 @@ struct Aagedal_Photo_AgentApp: App {
                         .tag(ComparisonLayout.sideBySide)
                     Label("Stacked", systemImage: "rectangle.split.1x2")
                         .tag(ComparisonLayout.stacked)
-                    Label("Focused Image", systemImage: "rectangle.inset.filled")
-                        .tag(ComparisonLayout.singlePane)
+                    Label("Wipe", systemImage: "rectangle.lefthalf.inset.filled")
+                        .tag(ComparisonLayout.wipe)
                 }
                 .pickerStyle(.inline)
                 .disabled(

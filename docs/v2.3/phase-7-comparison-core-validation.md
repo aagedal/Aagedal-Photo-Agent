@@ -6,7 +6,7 @@ The first Phase 7 slice adds UI-independent comparison state and coordination:
 
 - exact-revision-bound left and right sources;
 - Original, Committed Edit, Live Edit, and named-version representations;
-- side-by-side, stacked, and single-pane layout state;
+- side-by-side, stacked, and angled-wipe layout state;
 - focused pane, origin workspace, source replacement, and missing-source survival;
 - locked, temporarily unlocked, and anchored alignment states;
 - normalized center offset and right-to-left pixel-scale ratio;
@@ -46,7 +46,7 @@ xcodebuild test \
 ## Manual validation status
 
 The Browser now exposes Compare for exactly two supported, visible selected images. The surface
-provides draggable side-by-side and stacked splitters, single-pane A/B switching, pane focus,
+provides draggable side-by-side and stacked splitters, an adjustable angled wipe, pane focus,
 representation and dynamic-range badges, Fit/100%/custom scale, linked pan/zoom, temporary unlock,
 saved alignment offset, edge-clamp disclosure, cancellation, and accessible pane labels.
 

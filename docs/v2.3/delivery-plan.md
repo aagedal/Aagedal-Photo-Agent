@@ -145,14 +145,14 @@ feedback or memory spikes.
 
 - [x] Implement comparison source/session models.
 - [x] Implement coordinator transactions, lock, temporary unlock, offset, and reset.
-- [x] Build side-by-side, stacked, and A/B layouts.
+- [x] Build side-by-side, stacked, and adjustable wipe layouts.
 - [x] Add adjustable divider, focus, badges, and fit/100%/custom zoom.
 - [x] Add Browser entry for exactly two selected images.
 - [x] Add source replacement/navigation and deletion behavior.
 - [x] Add original/committed/live/named representation labels.
 - [x] Add sync math and feedback-loop tests.
 - [x] Add two-RAW memory and cancellation validation.
-- [x] Decide whether wipe/difference views pass the 2.3 gate (deferred; neither blocks 2.3).
+- [x] Ship the wipe view; keep the difference view deferred.
 
 ## Phase 8 — comparison integrations
 

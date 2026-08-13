@@ -232,6 +232,14 @@ nonisolated struct ComparisonCoordinator: Sendable {
         session.layout = layout
     }
 
+    mutating func setWipePosition(_ position: CGFloat) {
+        session.wipePosition = min(max(position, 0), 1)
+    }
+
+    mutating func setWipeAngleDegrees(_ angle: CGFloat) {
+        session.wipeAngleDegrees = min(max(angle, -90), 90)
+    }
+
     mutating func setFocusedPane(_ pane: ComparisonPane) {
         guard session[pane].source != nil else { return }
         session.focusedPane = pane

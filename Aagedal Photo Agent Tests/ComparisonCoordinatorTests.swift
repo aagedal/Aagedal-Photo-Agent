@@ -27,14 +27,40 @@ struct ComparisonCoordinatorTests {
         #expect(stacked[0].1 == CGRect(x: 0, y: 0, width: 1_921, height: 539))
         #expect(stacked[1].1 == CGRect(x: 0, y: 541, width: 1_921, height: 540))
 
-        let focused = CleanFeedComparisonGeometry.paneRects(
-            layout: .singlePane,
+        let wipe = CleanFeedComparisonGeometry.paneRects(
+            layout: .wipe,
             focusedPane: .right,
             drawableSize: size
         )
-        #expect(focused.count == 1)
-        #expect(focused[0].0 == .right)
-        #expect(focused[0].1 == CGRect(origin: .zero, size: size))
+        #expect(wipe.map(\.0) == [.left, .right])
+        #expect(wipe.allSatisfy { $0.1 == CGRect(origin: .zero, size: size) })
+    }
+
+    @Test("wipe geometry supports position and angle changes")
+    func comparisonWipeGeometry() throws {
+        let rect = CGRect(x: 0, y: 0, width: 1_000, height: 600)
+        let vertical = ComparisonWipeGeometry.maskPolygon(
+            in: rect,
+            position: 0.25,
+            angleDegrees: 0
+        )
+        #expect(vertical.contains(CGPoint(x: 250, y: 0)))
+        #expect(vertical.contains(CGPoint(x: 250, y: 600)))
+        #expect(!vertical.contains(CGPoint(x: 1_000, y: 300)))
+
+        let segment = try #require(ComparisonWipeGeometry.dividerSegment(
+            in: rect,
+            position: 0.5,
+            angleDegrees: 45
+        ))
+        #expect(segment.0 != segment.1)
+
+        let position = ComparisonWipeGeometry.position(
+            for: CGPoint(x: 750, y: 300),
+            in: rect,
+            angleDegrees: 0
+        )
+        #expect(abs(position - 0.75) < 0.000_001)
     }
 
     @Test("Develop comparison prefers the previous supported filmstrip image")

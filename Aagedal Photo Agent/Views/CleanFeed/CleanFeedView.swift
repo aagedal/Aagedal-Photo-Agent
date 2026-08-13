@@ -352,41 +352,45 @@ struct CleanFeedRenderView: NSViewRepresentable {
             let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: drawableRect)
             var composite = black
 
-            for (pane, paneRect) in CleanFeedComparisonGeometry.paneRects(
+            let paneRects = CleanFeedComparisonGeometry.paneRects(
                 layout: layout,
                 focusedPane: presentation.session.focusedPane,
                 drawableSize: drawableSize
-            ) {
-                guard let image = presentation.images[pane],
-                      presentation.session[pane].source != nil else { continue }
-                let viewport = presentation.session[pane].viewport
-                guard let geometry = try? viewport.geometry(
-                    displayedPixelSize: CGSize(width: image.width, height: image.height),
-                    viewSize: paneRect.size,
-                    backingScale: 1
-                ) else { continue }
+            )
 
-                let imageRect = geometry.imageRectInView.offsetBy(
-                    dx: paneRect.minX,
-                    dy: paneRect.minY
+            if layout == .wipe,
+               let left = comparisonImage(
+                    pane: .left,
+                    paneRect: drawableRect,
+                    presentation: presentation
+               ),
+               let right = comparisonImage(
+                    pane: .right,
+                    paneRect: drawableRect,
+                    presentation: presentation
+               ),
+               let mask = wipeMaskImage(
+                    size: drawableSize,
+                    position: presentation.session.wipePosition,
+                    angleDegrees: presentation.session.wipeAngleDegrees
+               ) {
+                let background = right.composited(over: black)
+                composite = left.applyingFilter(
+                    "CIBlendWithMask",
+                    parameters: [
+                        kCIInputBackgroundImageKey: background,
+                        kCIInputMaskImageKey: mask
+                    ]
                 )
-                let extent = CGRect(x: 0, y: 0, width: image.width, height: image.height)
-                let fitted = CIImage(cgImage: image)
-                    .cropped(to: extent)
-                    .transformed(by: CGAffineTransform(
-                        translationX: -extent.minX,
-                        y: -extent.minY
-                    ))
-                    .transformed(by: CGAffineTransform(
-                        scaleX: imageRect.width / extent.width,
-                        y: imageRect.height / extent.height
-                    ))
-                    .transformed(by: CGAffineTransform(
-                        translationX: imageRect.minX,
-                        y: imageRect.minY
-                    ))
-                    .cropped(to: paneRect)
-                composite = fitted.composited(over: composite)
+            } else {
+                for (pane, paneRect) in paneRects {
+                    guard let fitted = comparisonImage(
+                        pane: pane,
+                        paneRect: paneRect,
+                        presentation: presentation
+                    ) else { continue }
+                    composite = fitted.composited(over: composite)
+                }
             }
 
             let destination = CIRenderDestination(
@@ -412,6 +416,79 @@ struct CleanFeedRenderView: NSViewRepresentable {
             }
             commandBuffer.present(drawable)
             commandBuffer.commit()
+        }
+
+        private func comparisonImage(
+            pane: ComparisonPane,
+            paneRect: CGRect,
+            presentation: CleanFeedComparisonPresentation
+        ) -> CIImage? {
+            guard let image = presentation.images[pane],
+                  presentation.session[pane].source != nil else { return nil }
+            let viewport = presentation.session[pane].viewport
+            guard let geometry = try? viewport.geometry(
+                displayedPixelSize: CGSize(width: image.width, height: image.height),
+                viewSize: paneRect.size,
+                backingScale: 1
+            ) else { return nil }
+
+            let imageRect = geometry.imageRectInView.offsetBy(
+                dx: paneRect.minX,
+                dy: paneRect.minY
+            )
+            let extent = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+            return CIImage(cgImage: image)
+                .cropped(to: extent)
+                .transformed(by: CGAffineTransform(
+                    translationX: -extent.minX,
+                    y: -extent.minY
+                ))
+                .transformed(by: CGAffineTransform(
+                    scaleX: imageRect.width / extent.width,
+                    y: imageRect.height / extent.height
+                ))
+                .transformed(by: CGAffineTransform(
+                    translationX: imageRect.minX,
+                    y: imageRect.minY
+                ))
+                .cropped(to: paneRect)
+        }
+
+        private func wipeMaskImage(
+            size: CGSize,
+            position: CGFloat,
+            angleDegrees: CGFloat
+        ) -> CIImage? {
+            let width = max(Int(size.width.rounded(.up)), 1)
+            let height = max(Int(size.height.rounded(.up)), 1)
+            guard let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return nil }
+
+            context.setFillColor(gray: 0, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            let polygon = ComparisonWipeGeometry.maskPolygon(
+                in: CGRect(x: 0, y: 0, width: width, height: height),
+                position: position,
+                angleDegrees: angleDegrees
+            )
+            guard let first = polygon.first else { return nil }
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: 1, y: -1)
+            context.beginPath()
+            context.move(to: first)
+            for point in polygon.dropFirst() { context.addLine(to: point) }
+            context.closePath()
+            context.setFillColor(gray: 1, alpha: 1)
+            context.fillPath()
+            guard let image = context.makeImage() else { return nil }
+            return CIImage(cgImage: image)
         }
 
     }

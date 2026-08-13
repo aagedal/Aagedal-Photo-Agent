@@ -73,13 +73,13 @@ Unicode, missing figures, many annotations, and organically flowing multi-page c
 The conditional sun/shadow analyzer is not approved for 2.3 because terrain, clock/timezone, and
 measurement uncertainty have not yet passed an evidence-quality gate.
 Phase 7 now includes the reusable comparison session/coordinator and a Browser workspace for exactly
-two selected images. Side-by-side, stacked, and A/B layouts share synchronized fit, true-pixel, and
+two selected images. Side-by-side, stacked, and angled-wipe layouts share synchronized fit, true-pixel, and
 custom viewport state with deliberate alignment offsets. The focused pane can be replaced in visible
 filmstrip order, confirmed deletion preserves the surviving pane and offers a nearby replacement,
 and leaving Compare restores the current comparison selection to the Browser. Pane badges explicitly
 identify Original, Committed Edit, Live Edit, or a named version. Comparison output is capped at a
 4096-pixel long edge, and RAW decodes share a cancellation-aware single-permit gate so two large RAW
-sources cannot create overlapping transient decode spikes. Wipe and difference layouts are deferred
+sources cannot create overlapping transient decode spikes. The difference layout remains deferred
 and do not block 2.3.
 Phase 8 now includes Develop comparison entry. The inspector can compare the current image with the
 previous supported filmstrip image by default, or with a target chosen from a filmstrip context

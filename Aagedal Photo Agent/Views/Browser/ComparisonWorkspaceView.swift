@@ -130,25 +130,14 @@ struct ComparisonWorkspaceView: View {
                     .tag(ComparisonLayout.sideBySide)
                 Label("Stacked", systemImage: "rectangle.split.1x2")
                     .tag(ComparisonLayout.stacked)
-                Label("A/B", systemImage: "square.on.square")
-                    .tag(ComparisonLayout.singlePane)
+                Label("Wipe", systemImage: "rectangle.lefthalf.inset.filled")
+                    .tag(ComparisonLayout.wipe)
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 350)
             .disabled(session == nil)
 
-            if session?.layout == .singlePane {
-                Picker("Visible Image", selection: Binding(
-                    get: { session?.focusedPane ?? .left },
-                    set: { pane in focus(pane) }
-                )) {
-                    Text("A").tag(ComparisonPane.left)
-                    Text("B").tag(ComparisonPane.right)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 76)
-                .help("Toggle the visible comparison image")
-            }
+            wipeControls
 
             Spacer(minLength: 8)
 
@@ -180,7 +169,7 @@ struct ComparisonWorkspaceView: View {
                 Image(systemName: "minus.magnifyingglass")
             }
             .help("Zoom out")
-            .disabled(session == nil)
+            .disabled(!isZoomReady)
 
             Menu {
                 Button("Fit") { setScaleMode(.fit) }
@@ -191,14 +180,57 @@ struct ComparisonWorkspaceView: View {
                     .frame(minWidth: 42)
             }
             .help("Comparison scale")
-            .disabled(session == nil)
+            .disabled(!isZoomReady)
 
             Button { zoom(by: 0.8) } label: {
                 Image(systemName: "plus.magnifyingglass")
             }
             .help("Zoom in")
-            .disabled(session == nil)
+            .disabled(!isZoomReady)
         }
+    }
+
+    @ViewBuilder
+    private var wipeControls: some View {
+        if let session, session.layout == .wipe {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.left.and.right")
+                    .foregroundStyle(.secondary)
+                Slider(
+                    value: Binding(
+                        get: { session.wipePosition },
+                        set: { setWipePosition($0) }
+                    ),
+                    in: 0...1
+                )
+                .frame(width: 90)
+                .help("Wipe position")
+
+                Image(systemName: "angle")
+                    .foregroundStyle(.secondary)
+                Slider(
+                    value: Binding(
+                        get: { session.wipeAngleDegrees },
+                        set: { setWipeAngle($0) }
+                    ),
+                    in: -90...90,
+                    step: 1
+                )
+                .frame(width: 90)
+                .help("Wipe angle")
+                Text("\(Int(session.wipeAngleDegrees.rounded()))°")
+                    .font(.caption.monospacedDigit())
+                    .frame(width: 32, alignment: .trailing)
+            }
+        }
+    }
+
+    private var isZoomReady: Bool {
+        guard let session, geometries[session.focusedPane] != nil else { return false }
+        if session.lockState == .locked, session[session.focusedPane.other].source != nil {
+            return geometries[session.focusedPane.other] != nil
+        }
+        return true
     }
 
     @ViewBuilder
@@ -296,7 +328,35 @@ struct ComparisonWorkspaceView: View {
                 pane(.right, session: session)
                     .frame(minHeight: 140)
             }
-        case .singlePane:
+        case .wipe:
+            wipePane(session)
+        }
+    }
+
+    @ViewBuilder
+    private func wipePane(_ session: ComparisonSession) -> some View {
+        if let leftImage = renderedImages[.left],
+           let rightImage = renderedImages[.right],
+           let leftSource = session.left.source,
+           let rightSource = session.right.source {
+            WipeComparisonPane(
+                leftImage: leftImage,
+                rightImage: rightImage,
+                leftSource: leftSource,
+                rightSource: rightSource,
+                leftViewport: session.left.viewport,
+                rightViewport: session.right.viewport,
+                focusedPane: session.focusedPane,
+                wipePosition: session.wipePosition,
+                wipeAngleDegrees: session.wipeAngleDegrees,
+                onFocus: { focus($0) },
+                onViewportChange: { viewport, pane in updateViewport(viewport, in: pane) },
+                onGeometryChange: { pane, geometry in
+                    geometries[pane] = geometry
+                },
+                onWipePositionChange: { setWipePosition($0) }
+            )
+        } else {
             pane(session.focusedPane, session: session)
         }
     }
@@ -417,7 +477,16 @@ struct ComparisonWorkspaceView: View {
     }
 
     private func setLayout(_ layout: ComparisonLayout) {
+        geometries = [:]
         mutateCoordinator { $0.setLayout(layout) }
+    }
+
+    private func setWipePosition(_ position: CGFloat) {
+        mutateCoordinator { $0.setWipePosition(position) }
+    }
+
+    private func setWipeAngle(_ angle: CGFloat) {
+        mutateCoordinator { $0.setWipeAngleDegrees(angle) }
     }
 
     private func focus(_ pane: ComparisonPane) {
@@ -693,6 +762,10 @@ private struct ComparisonImagePane: View {
     @Environment(\.displayScale) private var displayScale
     @State private var dragStart: ViewportState?
     @State private var magnifyStart: ViewportState?
+    @State private var pointerLocation: CGPoint?
+    @State private var latestGeometry: ComparisonPaneGeometry?
+    @State private var latestViewport: ViewportState?
+    @State private var scrollEventMonitor: Any?
 
     var body: some View {
         GeometryReader { proxy in
@@ -710,17 +783,11 @@ private struct ComparisonImagePane: View {
             ZStack {
                 Color.black
                 if let resolved {
-                    Image(decorative: image, scale: 1)
-                        .resizable()
-                        .interpolation(viewport.interpolation == .nearest ? .none : .high)
-                        .frame(
-                            width: resolved.imageRectInView.width,
-                            height: resolved.imageRectInView.height
-                        )
-                        .position(
-                            x: resolved.imageRectInView.midX,
-                            y: resolved.imageRectInView.midY
-                        )
+                    ComparisonImageLayer(
+                        image: image,
+                        viewport: viewport,
+                        geometry: resolved
+                    )
                 }
             }
             .clipped()
@@ -728,15 +795,40 @@ private struct ComparisonImagePane: View {
             .onTapGesture { onFocus() }
             .gesture(dragGesture(geometry: paneGeometry))
             .simultaneousGesture(magnifyGesture(geometry: paneGeometry))
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                switch phase {
+                case let .active(location): pointerLocation = location
+                case .ended: pointerLocation = nil
+                }
+            }
             .overlay(alignment: .topLeading) { badge }
             .overlay {
                 RoundedRectangle(cornerRadius: 2)
                     .stroke(isFocused ? Color.accentColor : .clear, lineWidth: 3)
                     .allowsHitTesting(false)
             }
-            .onAppear { onGeometryChange(paneGeometry) }
-            .onChange(of: proxy.size) { _, _ in onGeometryChange(paneGeometry) }
-            .onChange(of: displayScale) { _, _ in onGeometryChange(paneGeometry) }
+            .onAppear {
+                latestGeometry = paneGeometry
+                latestViewport = viewport
+                onGeometryChange(paneGeometry)
+                installScrollEventMonitor()
+            }
+            .onDisappear { removeScrollEventMonitor() }
+            .onChange(of: proxy.size) { _, _ in
+                latestGeometry = paneGeometry
+                onGeometryChange(paneGeometry)
+            }
+            .onChange(of: displayScale) { _, _ in
+                latestGeometry = paneGeometry
+                onGeometryChange(paneGeometry)
+            }
+            .onChange(of: paneGeometry.displayedPixelSize) { _, _ in
+                latestGeometry = paneGeometry
+                onGeometryChange(paneGeometry)
+            }
+            .onChange(of: viewport) { _, newViewport in
+                latestViewport = newViewport
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
@@ -816,4 +908,410 @@ private struct ComparisonImagePane: View {
             }
             .onEnded { _ in magnifyStart = nil }
     }
+
+    private func installScrollEventMonitor() {
+        guard scrollEventMonitor == nil else { return }
+        scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            guard let pointerLocation,
+                  let geometry = latestGeometry,
+                  let viewport = latestViewport else { return event }
+            guard event.phase != [] || event.momentumPhase == [] else { return event }
+            let delta = event.scrollingDeltaY
+            guard abs(delta) > 0.01 else { return event }
+            onFocus()
+            onViewportChange(
+                zoomedViewport(
+                    viewport,
+                    by: exp(delta * 0.01),
+                    anchoredAt: pointerLocation,
+                    geometry: geometry
+                )
+            )
+            return nil
+        }
+    }
+
+    private func removeScrollEventMonitor() {
+        guard let scrollEventMonitor else { return }
+        NSEvent.removeMonitor(scrollEventMonitor)
+        self.scrollEventMonitor = nil
+    }
+}
+
+private struct WipeComparisonPane: View {
+    let leftImage: CGImage
+    let rightImage: CGImage
+    let leftSource: ComparisonSource
+    let rightSource: ComparisonSource
+    let leftViewport: ViewportState
+    let rightViewport: ViewportState
+    let focusedPane: ComparisonPane
+    let wipePosition: CGFloat
+    let wipeAngleDegrees: CGFloat
+    let onFocus: (ComparisonPane) -> Void
+    let onViewportChange: (ViewportState, ComparisonPane) -> Void
+    let onGeometryChange: (ComparisonPane, ComparisonPaneGeometry) -> Void
+    let onWipePositionChange: (CGFloat) -> Void
+
+    @Environment(\.displayScale) private var displayScale
+    @State private var dragStart: ViewportState?
+    @State private var magnifyStart: ViewportState?
+    @State private var pointerLocation: CGPoint?
+    @State private var latestGeometries: [ComparisonPane: ComparisonPaneGeometry] = [:]
+    @State private var latestViewports: [ComparisonPane: ViewportState] = [:]
+    @State private var latestFocusedPane: ComparisonPane = .left
+    @State private var scrollEventMonitor: Any?
+
+    var body: some View {
+        GeometryReader { proxy in
+            let rect = CGRect(origin: .zero, size: proxy.size)
+            let leftGeometry = ComparisonPaneGeometry(
+                displayedPixelSize: CGSize(width: leftImage.width, height: leftImage.height),
+                viewSize: proxy.size,
+                backingScale: displayScale
+            )
+            let rightGeometry = ComparisonPaneGeometry(
+                displayedPixelSize: CGSize(width: rightImage.width, height: rightImage.height),
+                viewSize: proxy.size,
+                backingScale: displayScale
+            )
+            let resolvedLeft = try? leftViewport.geometry(
+                displayedPixelSize: leftGeometry.displayedPixelSize,
+                viewSize: leftGeometry.viewSize,
+                backingScale: leftGeometry.backingScale
+            )
+            let resolvedRight = try? rightViewport.geometry(
+                displayedPixelSize: rightGeometry.displayedPixelSize,
+                viewSize: rightGeometry.viewSize,
+                backingScale: rightGeometry.backingScale
+            )
+
+            ZStack {
+                Color.black
+                if let resolvedRight {
+                    ComparisonImageLayer(
+                        image: rightImage,
+                        viewport: rightViewport,
+                        geometry: resolvedRight
+                    )
+                }
+                if let resolvedLeft {
+                    ZStack {
+                        ComparisonImageLayer(
+                            image: leftImage,
+                            viewport: leftViewport,
+                            geometry: resolvedLeft
+                        )
+                    }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .mask(
+                        ComparisonWipeMask(
+                            position: wipePosition,
+                            angleDegrees: wipeAngleDegrees
+                        )
+                    )
+                }
+
+                ComparisonWipeDivider(
+                    position: wipePosition,
+                    angleDegrees: wipeAngleDegrees
+                )
+                .stroke(.white.opacity(0.95), style: StrokeStyle(lineWidth: 2, dash: [7, 4]))
+                .shadow(color: .black.opacity(0.8), radius: 2)
+                .allowsHitTesting(false)
+
+                if let segment = ComparisonWipeGeometry.dividerSegment(
+                    in: rect,
+                    position: wipePosition,
+                    angleDegrees: wipeAngleDegrees
+                ) {
+                    Circle()
+                        .fill(.regularMaterial)
+                        .overlay {
+                            Image(systemName: "arrow.left.and.right")
+                                .font(.caption.bold())
+                        }
+                        .frame(width: 34, height: 34)
+                        .position(
+                            x: (segment.0.x + segment.1.x) / 2,
+                            y: (segment.0.y + segment.1.y) / 2
+                        )
+                        .gesture(wipeDragGesture(in: rect))
+                        .help("Drag to move the wipe")
+                }
+            }
+            .clipped()
+            .coordinateSpace(name: "comparisonWipe")
+            .contentShape(Rectangle())
+            .gesture(panGesture(geometry: focusedPane == .left ? leftGeometry : rightGeometry))
+            .simultaneousGesture(
+                magnifyGesture(geometry: focusedPane == .left ? leftGeometry : rightGeometry)
+            )
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                switch phase {
+                case let .active(location): pointerLocation = location
+                case .ended: pointerLocation = nil
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                sourceBadge(pane: .left, source: leftSource)
+                    .onTapGesture { onFocus(.left) }
+            }
+            .overlay(alignment: .topTrailing) {
+                sourceBadge(pane: .right, source: rightSource)
+                    .onTapGesture { onFocus(.right) }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 2)
+                    .stroke(Color.accentColor, lineWidth: 3)
+                    .allowsHitTesting(false)
+            }
+            .onAppear {
+                updateGeometries(left: leftGeometry, right: rightGeometry)
+                latestViewports = [.left: leftViewport, .right: rightViewport]
+                latestFocusedPane = focusedPane
+                installScrollEventMonitor()
+            }
+            .onDisappear { removeScrollEventMonitor() }
+            .onChange(of: proxy.size) { _, _ in
+                updateGeometries(left: leftGeometry, right: rightGeometry)
+            }
+            .onChange(of: displayScale) { _, _ in
+                updateGeometries(left: leftGeometry, right: rightGeometry)
+            }
+            .onChange(of: leftGeometry.displayedPixelSize) { _, _ in
+                updateGeometries(left: leftGeometry, right: rightGeometry)
+            }
+            .onChange(of: rightGeometry.displayedPixelSize) { _, _ in
+                updateGeometries(left: leftGeometry, right: rightGeometry)
+            }
+            .onChange(of: leftViewport) { _, newViewport in
+                latestViewports[.left] = newViewport
+            }
+            .onChange(of: rightViewport) { _, newViewport in
+                latestViewports[.right] = newViewport
+            }
+            .onChange(of: focusedPane) { _, newPane in
+                latestFocusedPane = newPane
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Image comparison wipe")
+    }
+
+    private func sourceBadge(pane: ComparisonPane, source: ComparisonSource) -> some View {
+        HStack(spacing: 6) {
+            Text(pane == .left ? "A" : "B").fontWeight(.bold)
+            Text(source.filename).lineLimit(1)
+            Text(source.representationLabel).foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(focusedPane == pane ? Color.accentColor : .clear, lineWidth: 2)
+        }
+        .padding(10)
+        .help("Focus image \(pane == .left ? "A" : "B")")
+    }
+
+    private func updateGeometries(
+        left: ComparisonPaneGeometry,
+        right: ComparisonPaneGeometry
+    ) {
+        latestGeometries = [.left: left, .right: right]
+        onGeometryChange(.left, left)
+        onGeometryChange(.right, right)
+    }
+
+    private func panGesture(geometry: ComparisonPaneGeometry) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                let viewport = focusedPane == .left ? leftViewport : rightViewport
+                let start = dragStart ?? viewport
+                if dragStart == nil { dragStart = start }
+                guard let resolved = try? start.geometry(
+                    displayedPixelSize: geometry.displayedPixelSize,
+                    viewSize: geometry.viewSize,
+                    backingScale: geometry.backingScale
+                ) else { return }
+                var requested = start
+                requested.mode = .custom(
+                    imagePixelsPerBackingPixel: resolved.imagePixelsPerBackingPixel
+                )
+                requested.normalizedCenter = CGPoint(
+                    x: start.normalizedCenter.x - value.translation.width / resolved.imageRectInView.width,
+                    y: start.normalizedCenter.y - value.translation.height / resolved.imageRectInView.height
+                )
+                onViewportChange(requested, focusedPane)
+            }
+            .onEnded { _ in dragStart = nil }
+    }
+
+    private func magnifyGesture(geometry: ComparisonPaneGeometry) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let viewport = focusedPane == .left ? leftViewport : rightViewport
+                let start = magnifyStart ?? viewport
+                if magnifyStart == nil { magnifyStart = start }
+                onViewportChange(
+                    zoomedViewport(
+                        start,
+                        by: max(value.magnification, 0.01),
+                        anchoredAt: CGPoint(
+                            x: geometry.viewSize.width / 2,
+                            y: geometry.viewSize.height / 2
+                        ),
+                        geometry: geometry
+                    ),
+                    focusedPane
+                )
+            }
+            .onEnded { _ in magnifyStart = nil }
+    }
+
+    private func wipeDragGesture(in rect: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named("comparisonWipe"))
+            .onChanged { value in
+                onWipePositionChange(
+                    ComparisonWipeGeometry.position(
+                        for: value.location,
+                        in: rect,
+                        angleDegrees: wipeAngleDegrees
+                    )
+                )
+            }
+    }
+
+    private func installScrollEventMonitor() {
+        guard scrollEventMonitor == nil else { return }
+        scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            guard let pointerLocation,
+                  let geometry = latestGeometries[latestFocusedPane],
+                  let viewport = latestViewports[latestFocusedPane] else { return event }
+            guard event.phase != [] || event.momentumPhase == [] else { return event }
+            let delta = event.scrollingDeltaY
+            guard abs(delta) > 0.01 else { return event }
+            onViewportChange(
+                zoomedViewport(
+                    viewport,
+                    by: exp(delta * 0.01),
+                    anchoredAt: pointerLocation,
+                    geometry: geometry
+                ),
+                latestFocusedPane
+            )
+            return nil
+        }
+    }
+
+    private func removeScrollEventMonitor() {
+        guard let scrollEventMonitor else { return }
+        NSEvent.removeMonitor(scrollEventMonitor)
+        self.scrollEventMonitor = nil
+    }
+}
+
+private struct ComparisonImageLayer: View {
+    let image: CGImage
+    let viewport: ViewportState
+    let geometry: ViewportGeometry
+
+    var body: some View {
+        Image(decorative: image, scale: 1)
+            .resizable()
+            .interpolation(viewport.interpolation == .nearest ? .none : .high)
+            .frame(
+                width: geometry.imageRectInView.width,
+                height: geometry.imageRectInView.height
+            )
+            .position(
+                x: geometry.imageRectInView.midX,
+                y: geometry.imageRectInView.midY
+            )
+    }
+}
+
+nonisolated private struct ComparisonWipeMask: Shape {
+    var position: CGFloat
+    var angleDegrees: CGFloat
+
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(position, angleDegrees) }
+        set {
+            position = newValue.first
+            angleDegrees = newValue.second
+        }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let points = ComparisonWipeGeometry.maskPolygon(
+            in: rect,
+            position: position,
+            angleDegrees: angleDegrees
+        )
+        var path = Path()
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        for point in points.dropFirst() { path.addLine(to: point) }
+        path.closeSubpath()
+        return path
+    }
+}
+
+nonisolated private struct ComparisonWipeDivider: Shape {
+    var position: CGFloat
+    var angleDegrees: CGFloat
+
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(position, angleDegrees) }
+        set {
+            position = newValue.first
+            angleDegrees = newValue.second
+        }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        guard let segment = ComparisonWipeGeometry.dividerSegment(
+            in: rect,
+            position: position,
+            angleDegrees: angleDegrees
+        ) else { return path }
+        path.move(to: segment.0)
+        path.addLine(to: segment.1)
+        return path
+    }
+}
+
+private func zoomedViewport(
+    _ viewport: ViewportState,
+    by magnification: CGFloat,
+    anchoredAt anchor: CGPoint,
+    geometry: ComparisonPaneGeometry
+) -> ViewportState {
+    guard let resolved = try? viewport.geometry(
+        displayedPixelSize: geometry.displayedPixelSize,
+        viewSize: geometry.viewSize,
+        backingScale: geometry.backingScale
+    ) else { return viewport }
+    let newScale = min(max(
+        resolved.imagePixelsPerBackingPixel / max(magnification, 0.01),
+        0.02
+    ), 64)
+    let normalizedAnchor = resolved.normalizedDisplayPoint(fromViewPoint: anchor)
+    let newImageSize = CGSize(
+        width: geometry.displayedPixelSize.width / newScale / geometry.backingScale,
+        height: geometry.displayedPixelSize.height / newScale / geometry.backingScale
+    )
+    let viewCenter = CGPoint(x: geometry.viewSize.width / 2, y: geometry.viewSize.height / 2)
+    var requested = viewport
+    requested.mode = .custom(imagePixelsPerBackingPixel: newScale)
+    requested.normalizedCenter = CGPoint(
+        x: normalizedAnchor.x - (anchor.x - viewCenter.x) / newImageSize.width,
+        y: normalizedAnchor.y - (anchor.y - viewCenter.y) / newImageSize.height
+    )
+    return requested
 }

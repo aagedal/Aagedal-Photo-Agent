@@ -53,8 +53,9 @@ nonisolated enum CleanFeedComparisonGeometry {
                     height: availableHeight - firstHeight
                 ))
             ]
-        case .singlePane:
-            return [(focusedPane, CGRect(origin: .zero, size: drawableSize))]
+        case .wipe:
+            let rect = CGRect(origin: .zero, size: drawableSize)
+            return [(.left, rect), (.right, rect)]
         }
     }
 }
