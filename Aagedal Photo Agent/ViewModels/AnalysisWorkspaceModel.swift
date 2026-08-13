@@ -544,6 +544,14 @@ final class AnalysisWorkspaceModel {
         persist(updatedCase)
     }
 
+    func setMap3DContentVisible(_ isVisible: Bool) {
+        guard var updatedCase = analysisCase,
+              !sourceChanged,
+              updatedCase.mapState.shows3DContent != isVisible else { return }
+        updatedCase.setMap3DContentVisible(isVisible)
+        persist(updatedCase)
+    }
+
     func setMapViewport(_ viewport: AnalysisMapViewport) {
         guard viewport.isValid,
               var updatedCase = analysisCase,

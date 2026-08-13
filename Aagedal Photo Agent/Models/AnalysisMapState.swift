@@ -386,6 +386,7 @@ nonisolated struct AnalysisMapDistanceMeasurement: Equatable, Sendable {
 nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
     var style: AnalysisMapStyle
     var showsTraffic: Bool
+    var shows3DContent: Bool
     var viewport: AnalysisMapViewport?
     var investigationLocation: AnalysisLocationEvidence?
     var annotations: [AnalysisMapAnnotation]
@@ -393,12 +394,14 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
     init(
         style: AnalysisMapStyle = .hybrid,
         showsTraffic: Bool = false,
+        shows3DContent: Bool = false,
         viewport: AnalysisMapViewport? = nil,
         investigationLocation: AnalysisLocationEvidence? = nil,
         annotations: [AnalysisMapAnnotation] = []
     ) {
         self.style = style
         self.showsTraffic = showsTraffic
+        self.shows3DContent = shows3DContent
         self.viewport = viewport
         self.investigationLocation = investigationLocation
         self.annotations = annotations
@@ -415,6 +418,7 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case style
         case showsTraffic
+        case shows3DContent
         case viewport
         case investigationLocation
         case annotations
@@ -424,6 +428,7 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         style = try container.decode(AnalysisMapStyle.self, forKey: .style)
         showsTraffic = try container.decodeIfPresent(Bool.self, forKey: .showsTraffic) ?? false
+        shows3DContent = try container.decodeIfPresent(Bool.self, forKey: .shows3DContent) ?? false
         viewport = try container.decodeIfPresent(AnalysisMapViewport.self, forKey: .viewport)
         investigationLocation = try container.decodeIfPresent(
             AnalysisLocationEvidence.self,

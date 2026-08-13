@@ -206,6 +206,11 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         updatedAt = max(now, createdAt)
     }
 
+    mutating func setMap3DContentVisible(_ isVisible: Bool, now: Date = Date()) {
+        mapState.shows3DContent = isVisible
+        updatedAt = max(now, createdAt)
+    }
+
     mutating func setMapViewport(_ viewport: AnalysisMapViewport, now: Date = Date()) {
         mapState.viewport = viewport
         updatedAt = max(now, createdAt)

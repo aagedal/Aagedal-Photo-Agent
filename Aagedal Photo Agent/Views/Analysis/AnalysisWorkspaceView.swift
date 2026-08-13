@@ -650,6 +650,7 @@ struct AnalysisWorkspaceView: View {
                             isReadOnly: model.sourceChanged,
                             onSetStyle: model.setMapStyle,
                             onSetTrafficVisible: model.setMapTrafficVisible,
+                            onSet3DContentVisible: model.setMap3DContentVisible,
                             onSetViewport: model.setMapViewport,
                             onSetInvestigationLocation: model.setInvestigationLocation,
                             onSetAnnotation: { annotation in

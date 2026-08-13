@@ -33,6 +33,7 @@ struct AnalysisMapEvidenceView: View {
     let isReadOnly: Bool
     let onSetStyle: (AnalysisMapStyle) -> Void
     let onSetTrafficVisible: (Bool) -> Void
+    let onSet3DContentVisible: (Bool) -> Void
     let onSetViewport: (AnalysisMapViewport) -> Void
     let onSetInvestigationLocation: (AnalysisLocationEvidence?) -> Void
     let onSetAnnotation: (AnalysisMapAnnotation) -> Void
@@ -85,6 +86,7 @@ struct AnalysisMapEvidenceView: View {
         isReadOnly: Bool,
         onSetStyle: @escaping (AnalysisMapStyle) -> Void,
         onSetTrafficVisible: @escaping (Bool) -> Void,
+        onSet3DContentVisible: @escaping (Bool) -> Void,
         onSetViewport: @escaping (AnalysisMapViewport) -> Void,
         onSetInvestigationLocation: @escaping (AnalysisLocationEvidence?) -> Void,
         onSetAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
@@ -109,6 +111,7 @@ struct AnalysisMapEvidenceView: View {
         self.isReadOnly = isReadOnly
         self.onSetStyle = onSetStyle
         self.onSetTrafficVisible = onSetTrafficVisible
+        self.onSet3DContentVisible = onSet3DContentVisible
         self.onSetViewport = onSetViewport
         self.onSetInvestigationLocation = onSetInvestigationLocation
         self.onSetAnnotation = onSetAnnotation
@@ -313,6 +316,20 @@ struct AnalysisMapEvidenceView: View {
                     mapState.style == .satellite || mapState.style == .openStreetMap
                         ? "Traffic is available on Standard, Muted, and Hybrid maps"
                         : "Show live traffic on the map"
+                )
+
+                Toggle(isOn: Binding(
+                    get: { mapState.shows3DContent },
+                    set: { onSet3DContentVisible($0) }
+                )) {
+                    Label("3D", systemImage: "cube.transparent")
+                }
+                .toggleStyle(.button)
+                .disabled(isReadOnly || mapState.style == .openStreetMap)
+                .help(
+                    mapState.style == .openStreetMap
+                        ? "3D buildings and terrain are available on Apple map styles"
+                        : "Show 3D buildings and terrain"
                 )
             }
 
@@ -630,23 +647,27 @@ struct AnalysisMapEvidenceView: View {
         switch appleMapStyle {
         case .standard:
             baseMap.mapStyle(.standard(
-                elevation: .realistic,
+                elevation: mapElevation,
                 showsTraffic: mapState.showsTraffic
             ))
         case .muted:
             baseMap.mapStyle(.standard(
-                elevation: .realistic,
+                elevation: mapElevation,
                 emphasis: .muted,
                 showsTraffic: mapState.showsTraffic
             ))
         case .hybrid:
             baseMap.mapStyle(.hybrid(
-                elevation: .realistic,
+                elevation: mapElevation,
                 showsTraffic: mapState.showsTraffic
             ))
         case .satellite:
-            baseMap.mapStyle(.imagery(elevation: .realistic))
+            baseMap.mapStyle(.imagery(elevation: mapElevation))
         }
+    }
+
+    private var mapElevation: MapStyle.Elevation {
+        mapState.shows3DContent ? .realistic : .flat
     }
 
     private var appleMapStyle: AppleMapStyleVariant {

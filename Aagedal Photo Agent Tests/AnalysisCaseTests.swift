@@ -451,6 +451,7 @@ struct AnalysisCaseTests {
         )
         analysisCase.setMapStyle(.satellite, now: Date(timeIntervalSince1970: 2))
         analysisCase.setMapTrafficVisible(true, now: Date(timeIntervalSince1970: 2))
+        analysisCase.setMap3DContentVisible(true, now: Date(timeIntervalSince1970: 2))
         analysisCase.setMapViewport(AnalysisMapViewport(
             center: AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522),
             latitudeDelta: 0.05,
@@ -475,6 +476,7 @@ struct AnalysisCaseTests {
         }
         #expect(reopened.mapState.style == .satellite)
         #expect(reopened.mapState.showsTraffic)
+        #expect(reopened.mapState.shows3DContent)
         #expect(reopened.mapState.viewport?.center.latitude == 59.9139)
         #expect(reopened.mapState.viewport?.cameraDistance == 4_500)
         #expect(reopened.mapState.viewport?.heading == 32)
@@ -485,6 +487,21 @@ struct AnalysisCaseTests {
         #expect(!FileManager.default.fileExists(
             atPath: fixture.fileURL.deletingPathExtension().appendingPathExtension("xmp").path
         ))
+    }
+
+    @Test("legacy map state defaults 3D content to off")
+    func legacyMapStateDefaults3DContentToOff() throws {
+        let encoder = JSONEncoder()
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(AnalysisMapState()))
+                as? [String: Any]
+        )
+        object.removeValue(forKey: "shows3DContent")
+
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(AnalysisMapState.self, from: legacyData)
+
+        #expect(!decoded.shows3DContent)
     }
 
     @Test("embedded GPS promotion keeps explicit provenance")
