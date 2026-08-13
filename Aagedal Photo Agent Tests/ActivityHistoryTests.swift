@@ -1,10 +1,40 @@
 import Foundation
+import CoreGraphics
 import Testing
 @testable import Aagedal_Photo_Agent
 
 @Suite("Activity History")
 @MainActor
 struct ActivityHistoryTests {
+    @Test("Partial face results remain available in the expanded manager")
+    func partialFaceResultsCanBeManaged() {
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+
+        #expect(!viewModel.canShowExpandedFaceManagement)
+
+        let folderURL = URL(fileURLWithPath: "/tmp/PartialFaceScan")
+        let face = DetectedFace(
+            id: UUID(),
+            imageURL: folderURL.appendingPathComponent("photo.jpg"),
+            faceRect: .zero,
+            featurePrintData: Data([1]),
+            detectedAt: Date()
+        )
+        viewModel.faceData = FolderFaceData(
+            folderURL: folderURL,
+            faces: [face],
+            groups: [],
+            lastScanDate: Date(),
+            scanComplete: false
+        )
+
+        #expect(!viewModel.scanComplete)
+        #expect(viewModel.canShowExpandedFaceManagement)
+    }
+
     @Test("Face scan entries use photo-specific completion and cancellation summaries")
     func faceScanSummaries() {
         let completed = ActivityEntry(

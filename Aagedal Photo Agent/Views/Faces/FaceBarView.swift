@@ -88,7 +88,7 @@ struct FaceBarView: View {
                 .help("Apply all named faces to metadata")
 
                 // Expand/collapse button
-                if viewModel.scanComplete {
+                if viewModel.canShowExpandedFaceManagement {
                     Button {
                         selectedGroup = nil
                         onToggleExpanded?()

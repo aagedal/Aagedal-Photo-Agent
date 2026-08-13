@@ -68,6 +68,11 @@ final class FaceRecognitionViewModel {
     /// The folder owned by the one background scan. This deliberately survives folder navigation.
     private(set) var scanningFolderURL: URL?
     var scanComplete = false
+    /// The expanded manager can work with partial results from a cancelled or interrupted scan.
+    /// Keep scan completion separate so the face bar can still offer to resume scanning.
+    var canShowExpandedFaceManagement: Bool {
+        scanComplete || faceData?.faces.isEmpty == false
+    }
     var errorMessage: String?
 
     // Thumbnail cache: faceID -> NSImage (NSCache with eviction, not observed to avoid re-render loops)
