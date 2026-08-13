@@ -389,7 +389,21 @@ final class AnalysisWorkspaceModel {
                 self.currentRevision = revision
 
                 switch match {
-                case .exact(let existing):
+                case .exact(var existing):
+                    let normalizationDate = Date()
+                    if AnalysisLinkedMapMarkerNaming.normalize(
+                        &existing.mapState.annotations,
+                        using: existing.annotations,
+                        now: normalizationDate
+                    ) {
+                        existing.replaceMapAnnotations(
+                            existing.mapState.annotations,
+                            now: normalizationDate
+                        )
+                        try await repository.save(existing)
+                        try Task.checkCancellation()
+                        guard self.sourceURL == url else { return }
+                    }
                     self.analysisCase = existing
                     self.sourceChanged = false
                     self.configureAnalysis(for: existing, autoStart: true)
@@ -577,7 +591,13 @@ final class AnalysisWorkspaceModel {
         let before = updatedCase.mapState.annotations
         let existing = before.first { $0.id == annotation.id }
         guard existing != annotation else { return }
-        updatedCase.setMapAnnotation(annotation)
+        let now = Date()
+        updatedCase.setMapAnnotation(annotation, now: now)
+        AnalysisLinkedMapMarkerNaming.normalize(
+            &updatedCase.mapState.annotations,
+            using: updatedCase.annotations,
+            now: now
+        )
         mapAnnotationHistory.record(
             before: before,
             after: updatedCase.mapState.annotations,
@@ -589,7 +609,13 @@ final class AnalysisWorkspaceModel {
     func removeMapAnnotation(id: UUID) {
         guard var updatedCase = analysisCase, !sourceChanged else { return }
         let before = updatedCase.mapState.annotations
-        guard updatedCase.removeMapAnnotation(id: id) else { return }
+        let now = Date()
+        guard updatedCase.removeMapAnnotation(id: id, now: now) else { return }
+        AnalysisLinkedMapMarkerNaming.normalize(
+            &updatedCase.mapState.annotations,
+            using: updatedCase.annotations,
+            now: now
+        )
         mapAnnotationHistory.record(
             before: before,
             after: updatedCase.mapState.annotations,
@@ -790,7 +816,13 @@ final class AnalysisWorkspaceModel {
         guard !sourceChanged,
               var updatedCase = analysisCase,
               let annotations = mapAnnotationHistory.undo() else { return }
-        updatedCase.replaceMapAnnotations(annotations)
+        let now = Date()
+        updatedCase.replaceMapAnnotations(annotations, now: now)
+        AnalysisLinkedMapMarkerNaming.normalize(
+            &updatedCase.mapState.annotations,
+            using: updatedCase.annotations,
+            now: now
+        )
         persist(updatedCase)
     }
 
@@ -798,7 +830,13 @@ final class AnalysisWorkspaceModel {
         guard !sourceChanged,
               var updatedCase = analysisCase,
               let annotations = mapAnnotationHistory.redo() else { return }
-        updatedCase.replaceMapAnnotations(annotations)
+        let now = Date()
+        updatedCase.replaceMapAnnotations(annotations, now: now)
+        AnalysisLinkedMapMarkerNaming.normalize(
+            &updatedCase.mapState.annotations,
+            using: updatedCase.annotations,
+            now: now
+        )
         persist(updatedCase)
     }
 
@@ -886,7 +924,13 @@ final class AnalysisWorkspaceModel {
         let before = updatedCase.annotations
         let existing = before.first { $0.id == annotation.id }
         guard existing != annotation else { return }
-        updatedCase.setAnnotation(annotation)
+        let now = Date()
+        updatedCase.setAnnotation(annotation, now: now)
+        AnalysisLinkedMapMarkerNaming.normalize(
+            &updatedCase.mapState.annotations,
+            using: updatedCase.annotations,
+            now: now
+        )
         photoAnnotationHistory.record(
             before: before,
             after: updatedCase.annotations,
@@ -898,7 +942,13 @@ final class AnalysisWorkspaceModel {
     func removeAnnotation(id: UUID) {
         guard var updatedCase = analysisCase, !sourceChanged else { return }
         let before = updatedCase.annotations
-        guard updatedCase.removeAnnotation(id: id) else { return }
+        let now = Date()
+        guard updatedCase.removeAnnotation(id: id, now: now) else { return }
+        AnalysisLinkedMapMarkerNaming.normalize(
+            &updatedCase.mapState.annotations,
+            using: updatedCase.annotations,
+            now: now
+        )
         photoAnnotationHistory.record(
             before: before,
             after: updatedCase.annotations,
@@ -911,7 +961,13 @@ final class AnalysisWorkspaceModel {
         guard !sourceChanged,
               var updatedCase = analysisCase,
               let annotations = photoAnnotationHistory.undo() else { return }
-        updatedCase.replaceAnnotations(annotations)
+        let now = Date()
+        updatedCase.replaceAnnotations(annotations, now: now)
+        AnalysisLinkedMapMarkerNaming.normalize(
+            &updatedCase.mapState.annotations,
+            using: updatedCase.annotations,
+            now: now
+        )
         persist(updatedCase)
     }
 
@@ -919,7 +975,13 @@ final class AnalysisWorkspaceModel {
         guard !sourceChanged,
               var updatedCase = analysisCase,
               let annotations = photoAnnotationHistory.redo() else { return }
-        updatedCase.replaceAnnotations(annotations)
+        let now = Date()
+        updatedCase.replaceAnnotations(annotations, now: now)
+        AnalysisLinkedMapMarkerNaming.normalize(
+            &updatedCase.mapState.annotations,
+            using: updatedCase.annotations,
+            now: now
+        )
         persist(updatedCase)
     }
 

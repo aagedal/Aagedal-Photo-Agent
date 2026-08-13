@@ -19,6 +19,26 @@ nonisolated struct AnalysisLookAroundLocation: Codable, Hashable, Sendable {
 }
 
 nonisolated enum AnalysisExternalMapLinks {
+    static func appleLookAroundURL(for coordinate: AnalysisGeoCoordinate) -> URL? {
+        guard coordinate.isValid else { return nil }
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "maps.apple.com"
+        components.path = "/look-around"
+        components.queryItems = [
+            URLQueryItem(
+                name: "coordinate",
+                value: String(
+                    format: "%.8f,%.8f",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    coordinate.latitude,
+                    coordinate.longitude
+                )
+            ),
+        ]
+        return components.url
+    }
+
     static func googleMapsURL(for coordinate: AnalysisGeoCoordinate) -> URL? {
         guard coordinate.isValid else { return nil }
         var components = URLComponents()
@@ -52,7 +72,22 @@ struct AnalysisLookAroundWindowView: View {
     var body: some View {
         Group {
             if let scene {
-                InteractiveLookAroundView(scene: scene)
+                EmbeddedLookAroundPreview(scene: scene)
+                    .overlay(alignment: .bottom) {
+                        HStack(spacing: 10) {
+                            Label(
+                                "Embedded Look Around is a static preview on macOS.",
+                                systemImage: "hand.draw"
+                            )
+                            .font(.caption)
+
+                            Button("Open Interactive Look Around", action: openInAppleMaps)
+                                .controlSize(.small)
+                        }
+                        .padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .padding(10)
+                    }
             } else if isLoading {
                 ContentUnavailableView {
                     Label("Loading Look Around", systemImage: "binoculars")
@@ -80,6 +115,13 @@ struct AnalysisLookAroundWindowView: View {
             sceneRequest = nil
         }
         .toolbar {
+            ToolbarItem {
+                Button(action: openInAppleMaps) {
+                    Label("Open Interactive Look Around", systemImage: "binoculars.fill")
+                }
+                .help("Navigate this Look Around scene interactively in Apple Maps")
+            }
+
             ToolbarItem {
                 Button(action: openInGoogleMaps) {
                     Label("Open in Google Maps", systemImage: "arrow.up.right.square")
@@ -126,6 +168,15 @@ struct AnalysisLookAroundWindowView: View {
         }
     }
 
+    private func openInAppleMaps() {
+        guard let url = AnalysisExternalMapLinks.appleLookAroundURL(
+            for: location.coordinate
+        ) else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
     private func openInGoogleMaps() {
         guard let url = AnalysisExternalMapLinks.googleMapsURL(for: location.coordinate) else {
             return
@@ -134,7 +185,7 @@ struct AnalysisLookAroundWindowView: View {
     }
 }
 
-private struct InteractiveLookAroundView: NSViewControllerRepresentable {
+private struct EmbeddedLookAroundPreview: NSViewControllerRepresentable {
     let scene: MKLookAroundScene
 
     func makeNSViewController(context: Context) -> MKLookAroundViewController {

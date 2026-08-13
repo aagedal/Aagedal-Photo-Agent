@@ -5,6 +5,79 @@ import Testing
 
 @Suite("Analysis case")
 struct AnalysisCaseTests {
+    @Test("linked map markers share photo annotation names with numbered suffixes")
+    func linkedMapMarkerNames() {
+        let firstPhotoAnnotation = AnalysisAnnotation(
+            kind: .label,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.2, y: 0.3)),
+            text: "  Doorway  "
+        )
+        let secondPhotoAnnotation = AnalysisAnnotation(
+            kind: .rectangle,
+            geometry: .bounds(AnalysisNormalizedBounds(
+                minimum: AnalysisNormalizedPoint(x: 0.1, y: 0.1),
+                maximum: AnalysisNormalizedPoint(x: 0.4, y: 0.4)
+            ))
+        )
+        let coordinate = AnalysisGeoCoordinate(latitude: 59.91, longitude: 10.75)
+        var markers = [
+            AnalysisMapAnnotation(
+                kind: .marker,
+                geometry: .point(coordinate),
+                text: "Old name",
+                linkedPhotoLabelID: firstPhotoAnnotation.id
+            ),
+            AnalysisMapAnnotation(
+                kind: .marker,
+                geometry: .point(coordinate),
+                linkedPhotoLabelID: firstPhotoAnnotation.id
+            ),
+            AnalysisMapAnnotation(
+                kind: .line,
+                geometry: .segment(
+                    start: coordinate,
+                    end: AnalysisGeoCoordinate(latitude: 59.92, longitude: 10.76)
+                ),
+                text: "Linked line name stays independent",
+                linkedPhotoLabelID: firstPhotoAnnotation.id
+            ),
+            AnalysisMapAnnotation(
+                kind: .marker,
+                geometry: .point(coordinate),
+                linkedPhotoLabelID: secondPhotoAnnotation.id
+            ),
+            AnalysisMapAnnotation(
+                kind: .marker,
+                geometry: .point(coordinate),
+                linkedPhotoLabelID: firstPhotoAnnotation.id
+            )
+        ]
+
+        let changed = AnalysisLinkedMapMarkerNaming.normalize(
+            &markers,
+            using: [firstPhotoAnnotation, secondPhotoAnnotation],
+            now: Date(timeIntervalSince1970: 100)
+        )
+
+        #expect(changed)
+        #expect(markers.map(\.text) == [
+            "Doorway",
+            "Doorway 2",
+            "Linked line name stays independent",
+            "Rectangle 2",
+            "Doorway 3"
+        ])
+
+        markers.removeFirst()
+        AnalysisLinkedMapMarkerNaming.normalize(
+            &markers,
+            using: [firstPhotoAnnotation, secondPhotoAnnotation],
+            now: Date(timeIntervalSince1970: 200)
+        )
+        #expect(markers[0].text == "Doorway")
+        #expect(markers[3].text == "Doorway 2")
+    }
+
     @Test("map annotation copies receive new identities and preserve destination-compatible links")
     func copiesMapAnnotationsBetweenPhotoAndGlobalOwners() throws {
         let caseID = UUID()
@@ -531,7 +604,7 @@ struct AnalysisCaseTests {
         #expect(viewport.isValid)
     }
 
-    @Test("all live map styles round-trip and Google Maps links preserve coordinates")
+    @Test("all live map styles and external map links preserve coordinates")
     func mapStylesAndExternalLinkRoundTrip() throws {
         let styles = AnalysisMapStyle.allCases
         let encoded = try JSONEncoder().encode(styles)
@@ -544,6 +617,17 @@ struct AnalysisCaseTests {
         #expect(components.path == "/maps/search/")
         #expect(components.queryItems?.first(where: { $0.name == "api" })?.value == "1")
         #expect(components.queryItems?.first(where: { $0.name == "query" })?.value
+            == "59.91390000,10.75220000")
+
+        let lookAroundURL = try #require(
+            AnalysisExternalMapLinks.appleLookAroundURL(for: coordinate)
+        )
+        let lookAroundComponents = try #require(
+            URLComponents(url: lookAroundURL, resolvingAgainstBaseURL: false)
+        )
+        #expect(lookAroundComponents.host == "maps.apple.com")
+        #expect(lookAroundComponents.path == "/look-around")
+        #expect(lookAroundComponents.queryItems?.first(where: { $0.name == "coordinate" })?.value
             == "59.91390000,10.75220000")
     }
 

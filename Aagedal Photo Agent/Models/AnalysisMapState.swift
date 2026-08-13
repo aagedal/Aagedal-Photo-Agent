@@ -348,6 +348,62 @@ nonisolated struct AnalysisMapAnnotation: Identifiable, Codable, Equatable, Send
     }
 }
 
+/// Keeps photo-local map markers named after the photo annotations they identify.
+///
+/// Map order is the stable tie-breaker when several markers identify the same photo annotation:
+/// the first uses the photo annotation's name and later markers receive a numeric suffix.
+nonisolated enum AnalysisLinkedMapMarkerNaming {
+    @discardableResult
+    static func normalize(
+        _ mapAnnotations: inout [AnalysisMapAnnotation],
+        using photoAnnotations: [AnalysisAnnotation],
+        now: Date = Date()
+    ) -> Bool {
+        let photoNames = Dictionary(uniqueKeysWithValues: photoAnnotations.enumerated().map {
+            ($0.element.id, photoAnnotationName($0.element, index: $0.offset))
+        })
+        var markerCounts: [UUID: Int] = [:]
+        var changed = false
+
+        for index in mapAnnotations.indices {
+            guard mapAnnotations[index].kind == .marker,
+                  let photoAnnotationID = mapAnnotations[index].linkedPhotoLabelID,
+                  let baseName = photoNames[photoAnnotationID] else { continue }
+
+            let count = markerCounts[photoAnnotationID, default: 0] + 1
+            markerCounts[photoAnnotationID] = count
+            let expectedName = count == 1 ? baseName : "\(baseName) \(count)"
+            guard mapAnnotations[index].text != expectedName else { continue }
+            mapAnnotations[index].text = expectedName
+            mapAnnotations[index].markUpdated(now: now)
+            changed = true
+        }
+
+        return changed
+    }
+
+    private static func photoAnnotationName(
+        _ annotation: AnalysisAnnotation,
+        index: Int
+    ) -> String {
+        if let text = annotation.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty {
+            return text
+        }
+
+        let kindName: String = switch annotation.kind {
+        case .line: "Line"
+        case .arrow: "Arrow"
+        case .distance: "Distance"
+        case .rectangle: "Rectangle"
+        case .ellipse: "Ellipse"
+        case .polygon: "Polygon"
+        case .label: "Label"
+        }
+        return "\(kindName) \(index + 1)"
+    }
+}
+
 nonisolated struct AnalysisMapDistanceMeasurement: Equatable, Sendable {
     let meters: Double
 
