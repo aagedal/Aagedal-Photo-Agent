@@ -889,9 +889,13 @@ struct AnalysisCaseTests {
         #expect(!rejectedDuplicate)
         #expect(addedSecond)
         #expect(annotation.photoAnnotationReferences == [firstReference, secondReference])
+        #expect(annotation.isLinked(to: firstReference))
+        #expect(annotation.isLinked(to: secondReference))
         let removedFirst = annotation.setPhotoAnnotationLinked(firstReference, isLinked: false)
         #expect(removedFirst)
         #expect(annotation.photoAnnotationReferences == [secondReference])
+        #expect(!annotation.isLinked(to: firstReference))
+        #expect(annotation.isLinked(to: secondReference))
         #expect(annotation.validate())
     }
 
@@ -1741,7 +1745,7 @@ struct AnalysisCaseTests {
         try copy.validate()
     }
 
-    @Test("pasting annotations appends independent copies to the target image case")
+    @Test("pasting photo annotations appends independent copies without changing map context")
     func pastesAnnotationsIntoTargetCase() async throws {
         let fixture = try AnalysisFixture(contents: "annotation paste target")
         defer { fixture.remove() }
@@ -1754,6 +1758,12 @@ struct AnalysisCaseTests {
         )
         var targetCase = AnalysisCase.create(for: revision, appBuild: "test")
         targetCase.setAnnotation(existing)
+        let existingPhotoMapMarker = AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.91, longitude: 10.75)),
+            text: "Existing map context"
+        )
+        targetCase.setMapAnnotation(existingPhotoMapMarker)
         let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
         try await repository.save(targetCase)
 
@@ -1782,6 +1792,7 @@ struct AnalysisCaseTests {
         #expect(pasted.geometry == source.geometry)
         #expect(pasted.note == source.note)
         #expect(pasted.findingIDs.isEmpty)
+        #expect(pastedCase.mapState.annotations.map(\.id) == [existingPhotoMapMarker.id])
         try pastedCase.validateForPersistence()
     }
 

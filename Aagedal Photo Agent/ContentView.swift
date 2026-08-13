@@ -722,6 +722,10 @@ struct ContentView: View {
                         browserViewModel.lastClickedImageURL = image.url
                         analysisWorkspaceModel.open(image, preferredWorkspaceMode: .osint)
                     },
+                    onOpenImportedProject: { folderURL in
+                        openFolderInActivePane(folderURL, addToOpenFolders: true)
+                        mainViewMode = .browser
+                    },
                     onClose: {
                         mainViewMode = .browser
                         browserViewModel.shouldRestoreGridFocus = true

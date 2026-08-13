@@ -224,6 +224,13 @@ final class AnalysisWorkspaceModel {
         return coordinate.isValid ? coordinate : nil
     }
 
+    /// Waits until the latest photo- and folder-owned documents are durable on disk.
+    /// Project export calls this before it snapshots the working folder.
+    func flushPendingSaves() async {
+        await saveTask?.value
+        await folderMapSaveTask?.value
+    }
+
     var canUndoPhotoAnnotation: Bool {
         !sourceChanged && photoAnnotationHistory.canUndo
     }

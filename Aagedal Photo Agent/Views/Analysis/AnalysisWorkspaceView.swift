@@ -7,6 +7,7 @@ struct AnalysisWorkspaceView: View {
     let folderImages: [ImageFile]
     let thumbnailService: ThumbnailService
     let onSelectImage: (ImageFile) -> Void
+    let onOpenImportedProject: (URL) -> Void
     let onClose: () -> Void
     @State private var selectedFindingID: String?
     @State private var pixelInspectionSample: ImageInspectionSample?
@@ -27,7 +28,10 @@ struct AnalysisWorkspaceView: View {
     @State private var photoPolygonCancelRequestID = 0
     @State private var isTimestampEditorPresented = false
     @State private var isObservationEditorPresented = false
-    @State private var mapLayerScope: AnalysisMapLayerScope = .currentPhoto
+    /// Geographic markup is project context by default. Photo-local map layers remain available
+    /// for older cases and deliberately image-specific exceptions, but are never part of photo
+    /// annotation copy/paste.
+    @State private var mapLayerScope: AnalysisMapLayerScope = .workingFolder
     @State private var mapDraftCoordinateCount = 0
     @State private var mapPrimaryActionRequestID = 0
     @State private var mapFinishShapeRequestID = 0
@@ -37,6 +41,7 @@ struct AnalysisWorkspaceView: View {
     @State private var reportExportError: String?
     @State private var reportExportTask: Task<Void, Never>?
     @State private var evidenceExportTask: Task<Void, Never>?
+    @State private var projectArchiveTask: Task<Void, Never>?
     @State private var copiedPhotoAnnotations: [AnalysisAnnotation] = []
     @State private var copiedAnnotationSourceName: String?
     @State private var annotationPasteError: String?
@@ -105,7 +110,7 @@ struct AnalysisWorkspaceView: View {
             )
         }
         .alert(
-            "Export Failed",
+            "Analysis Operation Failed",
             isPresented: Binding(
                 get: { reportExportError != nil },
                 set: { if !$0 { reportExportError = nil } }
@@ -129,6 +134,7 @@ struct AnalysisWorkspaceView: View {
         .onDisappear {
             reportExportTask?.cancel()
             evidenceExportTask?.cancel()
+            projectArchiveTask?.cancel()
         }
     }
 
@@ -317,11 +323,23 @@ struct AnalysisWorkspaceView: View {
                         chooseAnnotatedMapDestinationAndExport()
                     }
                     .disabled(model.mapState.viewport == nil || evidenceExportTask != nil)
+
+                    Divider()
+
+                    Button("Image Analysis Project (.pint)…", systemImage: "archivebox") {
+                        chooseProjectDestinationAndExport()
+                    }
+                    .disabled(projectArchiveTask != nil)
+
+                    Button("Import Image Analysis Project…", systemImage: "square.and.arrow.down") {
+                        chooseProjectArchiveAndImport()
+                    }
+                    .disabled(projectArchiveTask != nil)
                 } label: {
                     Label("Export…", systemImage: "square.and.arrow.up")
                 }
                 .disabled(model.analysisCase == nil)
-                .help("Export a PDF report or a separate annotated image or map JPEG")
+                .help("Export evidence, or export and import a portable Image Analysis Project")
             }
 
             Picker(
@@ -551,6 +569,94 @@ struct AnalysisWorkspaceView: View {
         panel.nameFieldStringValue = suggestedName
         guard panel.runModal() == .OK else { return nil }
         return panel.url
+    }
+
+    private func chooseProjectDestinationAndExport() {
+        guard let sourceURL = model.sourceURL, projectArchiveTask == nil else { return }
+        let sourceFolder = sourceURL.deletingLastPathComponent()
+        let panel = NSSavePanel()
+        panel.title = "Export Image Analysis Project"
+        panel.prompt = "Export"
+        panel.allowedContentTypes = [.photoIntelligenceProject]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "\(sourceFolder.lastPathComponent).pint"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        let appVersion = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "unknown"
+        let appBuild = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "unknown"
+        projectArchiveTask = Task { @MainActor in
+            defer { projectArchiveTask = nil }
+            do {
+                await model.flushPendingSaves()
+                _ = try await ImageAnalysisProjectArchive.export(
+                    sourceFolderURL: sourceFolder,
+                    imageURLs: folderImages.map(\.url),
+                    title: sourceFolder.lastPathComponent,
+                    destinationURL: destination,
+                    appVersion: appVersion,
+                    appBuild: appBuild
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                reportExportError = error.localizedDescription.isEmpty
+                    ? "The Image Analysis Project could not be exported."
+                    : error.localizedDescription
+            }
+        }
+    }
+
+    private func chooseProjectArchiveAndImport() {
+        guard projectArchiveTask == nil else { return }
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Import Image Analysis Project"
+        openPanel.prompt = "Open"
+        openPanel.allowedContentTypes = [.photoIntelligenceProject, .zip]
+        openPanel.canChooseFiles = true
+        openPanel.canChooseDirectories = false
+        openPanel.allowsMultipleSelection = false
+        guard openPanel.runModal() == .OK, let archiveURL = openPanel.url else { return }
+
+        projectArchiveTask = Task { @MainActor in
+            defer { projectArchiveTask = nil }
+            do {
+                let preview = try await ImageAnalysisProjectArchive.inspect(archiveURL)
+                try Task.checkCancellation()
+
+                let savePanel = NSSavePanel()
+                savePanel.title = "Choose Imported Project Folder"
+                savePanel.prompt = "Import"
+                savePanel.canCreateDirectories = true
+                savePanel.allowedContentTypes = [.folder]
+                savePanel.nameFieldStringValue = sanitizedProjectFolderName(preview.title)
+                guard savePanel.runModal() == .OK, let destination = savePanel.url else { return }
+
+                _ = try await ImageAnalysisProjectArchive.importProject(
+                    from: archiveURL,
+                    to: destination
+                )
+                try Task.checkCancellation()
+                onOpenImportedProject(destination)
+            } catch is CancellationError {
+                return
+            } catch {
+                reportExportError = error.localizedDescription.isEmpty
+                    ? "The Image Analysis Project could not be imported."
+                    : error.localizedDescription
+            }
+        }
+    }
+
+    private func sanitizedProjectFolderName(_ proposedName: String) -> String {
+        let invalid = CharacterSet(charactersIn: "/:")
+        let components = proposedName.components(separatedBy: invalid)
+        let cleaned = components.joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "Imported Photo Intelligence Project" : cleaned
     }
 
     private var pixelAnalysisBody: some View {
@@ -1916,7 +2022,8 @@ private struct AnalysisMapLayersView: View {
     }
 
     private func photoLayerRow(_ annotation: AnalysisAnnotation, index: Int) -> some View {
-        HStack(spacing: 8) {
+        let linkedMapAnnotations = globalMapAnnotationsLinked(to: annotation.id)
+        return HStack(spacing: 8) {
             Button {
                 selectedPhotoAnnotationID = annotation.id
             } label: {
@@ -1934,12 +2041,58 @@ private struct AnalysisMapLayersView: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
+                        if !linkedMapAnnotations.isEmpty {
+                            Label(
+                                "\(linkedMapAnnotations.count) linked map "
+                                    + (linkedMapAnnotations.count == 1
+                                        ? "annotation"
+                                        : "annotations"),
+                                systemImage: "link"
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        }
                     }
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+
+            Menu {
+                if globalAnnotations.isEmpty {
+                    Text("Add an annotation to the working-folder map first")
+                } else {
+                    ForEach(Array(globalAnnotations.enumerated()), id: \.element.id) {
+                        mapIndex, globalAnnotation in
+                        let isLinked = linkedMapAnnotations.contains {
+                            $0.id == globalAnnotation.id
+                        }
+                        Toggle(
+                            layerName(globalAnnotation.annotation, index: mapIndex),
+                            isOn: Binding(
+                                get: { isLinked },
+                                set: { linked in
+                                    onSetGlobalPhotoAnnotationLink(
+                                        globalAnnotation.id,
+                                        annotation.id,
+                                        linked
+                                    )
+                                }
+                            )
+                        )
+                    }
+                }
+            } label: {
+                Image(systemName: linkedMapAnnotations.isEmpty
+                    ? "link.badge.plus"
+                    : "link")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(isReadOnly || currentCaseID == nil)
+            .help("Connect this photo annotation to working-folder map annotations")
 
             Button {
                 onEditPhotoAnnotation(annotation.id)
@@ -1982,6 +2135,19 @@ private struct AnalysisMapLayersView: View {
                 }
             }
             .disabled(isReadOnly)
+        }
+    }
+
+    private func globalMapAnnotationsLinked(
+        to photoAnnotationID: UUID
+    ) -> [AnalysisGlobalMapAnnotation] {
+        guard let currentCaseID else { return [] }
+        let reference = AnalysisPhotoAnnotationReference(
+            caseID: currentCaseID,
+            annotationID: photoAnnotationID
+        )
+        return globalAnnotations.filter {
+            $0.isLinked(to: reference)
         }
     }
 
@@ -2130,8 +2296,8 @@ private struct AnalysisMapLayersView: View {
         to globalAnnotation: AnalysisGlobalMapAnnotation
     ) -> Bool {
         guard let currentCaseID else { return false }
-        return globalAnnotation.photoAnnotationReferences.contains(
-            AnalysisPhotoAnnotationReference(
+        return globalAnnotation.isLinked(
+            to: AnalysisPhotoAnnotationReference(
                 caseID: currentCaseID,
                 annotationID: photoAnnotationID
             )
@@ -2430,15 +2596,15 @@ private struct AnalysisImageRail: View {
                         .buttonStyle(.plain)
                         .contextMenu {
                             let count = annotationCount(image)
-                            Button("Copy All Annotations", systemImage: "doc.on.doc") {
+                            Button("Copy All Photo Annotations", systemImage: "doc.on.doc") {
                                 onCopyAnnotations(image)
                             }
                             .disabled(count == 0)
 
                             Button(
                                 copiedAnnotationCount == 1
-                                    ? "Paste 1 Annotation"
-                                    : "Paste \(copiedAnnotationCount) Annotations",
+                                    ? "Paste 1 Photo Annotation"
+                                    : "Paste \(copiedAnnotationCount) Photo Annotations",
                                 systemImage: "doc.on.clipboard"
                             ) {
                                 onPasteAnnotations(image)

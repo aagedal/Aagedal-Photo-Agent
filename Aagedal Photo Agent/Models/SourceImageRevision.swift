@@ -117,6 +117,25 @@ nonisolated struct SourceImageRevision: Codable, Hashable, Sendable {
         }
         return .unrelated
     }
+
+    /// Returns the same authoritative source revision with portable discovery hints for a
+    /// relocated byte-for-byte copy. The content hash and analysis-time file facts remain intact;
+    /// filesystem identity is deliberately cleared because it is not portable across volumes.
+    func relocated(to url: URL) -> SourceImageRevision {
+        let canonicalURL = url.standardizedFileURL.resolvingSymlinksInPath()
+        return SourceImageRevision(
+            canonicalURL: canonicalURL,
+            fileResourceIdentifier: nil,
+            filenameAtCreation: canonicalURL.lastPathComponent,
+            byteCount: byteCount,
+            contentModificationDate: contentModificationDate,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            exifOrientation: exifOrientation,
+            sha256: sha256,
+            hashCompletedAt: hashCompletedAt
+        )
+    }
 }
 
 enum SourceImageRevisionError: Error, Equatable, LocalizedError, Sendable {

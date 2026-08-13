@@ -64,7 +64,7 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
     let schemaVersion: Int
     let id: UUID
     var title: String
-    let source: SourceImageRevision
+    private(set) var source: SourceImageRevision
     let createdAt: Date
     var updatedAt: Date
     let createdByAppBuild: String
@@ -97,6 +97,12 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
             observations: [],
             mapState: AnalysisMapState()
         )
+    }
+
+    /// Refreshes only the non-authoritative path hint after a verified project import.
+    /// This is not an evidence edit, so case timestamps and analyzer results stay unchanged.
+    mutating func relocateSource(to url: URL) {
+        source = source.relocated(to: url)
     }
 
     mutating func setWorkspaceMode(_ mode: AnalysisWorkspaceMode, now: Date = Date()) {

@@ -11,6 +11,10 @@ nonisolated struct AnalysisPhotoAnnotationReference: Codable, Hashable, Sendable
 }
 
 /// Geographic markup owned by the working folder instead of by any individual photo.
+///
+/// `photoAnnotationReferences` is the canonical store for a bidirectional relationship. Keeping
+/// the edge in this folder-owned document lets either side present and edit the link without
+/// adding a second, potentially conflicting map ID to the source-bound photo document.
 nonisolated struct AnalysisGlobalMapAnnotation: Identifiable, Codable, Equatable, Sendable {
     var annotation: AnalysisMapAnnotation
     var photoAnnotationReferences: [AnalysisPhotoAnnotationReference]
@@ -31,12 +35,16 @@ nonisolated struct AnalysisGlobalMapAnnotation: Identifiable, Codable, Equatable
             && photoAnnotationReferences.count <= 5_000
     }
 
+    func isLinked(to photoAnnotation: AnalysisPhotoAnnotationReference) -> Bool {
+        photoAnnotationReferences.contains(photoAnnotation)
+    }
+
     @discardableResult
     mutating func setPhotoAnnotationLinked(
         _ reference: AnalysisPhotoAnnotationReference,
         isLinked: Bool
     ) -> Bool {
-        let containsReference = photoAnnotationReferences.contains(reference)
+        let containsReference = self.isLinked(to: reference)
         guard containsReference != isLinked else { return false }
         if isLinked {
             photoAnnotationReferences.append(reference)
