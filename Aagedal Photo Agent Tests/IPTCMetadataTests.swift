@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AppKit
 import Metal
 import CoreImage
 import ImageIO
@@ -321,6 +322,134 @@ struct DigitalSourceTypeNewsCodeTests {
             xmp.digitalSourceType
                 == "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
         )
+    }
+}
+
+@Suite("Editorial metadata interoperability fixtures")
+struct EditorialMetadataInteroperabilityTests {
+    private let newsroomNamespace = "https://aagedal.example/ns/newsroom/1.0/"
+
+    private var fixtureURL: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/EditorialMetadata/preservation-complex.xmp")
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("EditorialMetadata-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func makeJPEG(in directory: URL) throws -> URL {
+        let url = directory.appendingPathComponent("generated-no-metadata.jpg")
+        guard let representation = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 16,
+            pixelsHigh: 16,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let data = representation.representation(using: .jpeg, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: url)
+        return url
+    }
+
+    @Test("the complex XMP fixture is semantically stable through a no-op round trip")
+    func complexFixtureNoOpRoundTrip() throws {
+        let original = try XMPReader.readFromXML(Data(contentsOf: fixtureURL))
+        let rewritten = try XMPReader.readFromXML(Data(XMPWriter.generateXML(original).utf8))
+
+        #expect(Set(rewritten.allKeys) == Set(original.allKeys))
+        for key in original.allKeys {
+            #expect(
+                rewritten.value(forKey: key) == original.value(forKey: key),
+                "XMP property changed during no-op round trip: \(key)"
+            )
+        }
+    }
+
+    @Test("an unrelated caption edit preserves repeatable, structured, and unknown XMP")
+    func unrelatedCaptionEditPreservesFixtureMetadata() throws {
+        let service = XMPSidecarService()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = directory.appendingPathComponent("wire-photo.nef")
+        let sidecarURL = service.sidecarURL(for: imageURL)
+        try FileManager.default.copyItem(at: fixtureURL, to: sidecarURL)
+
+        var edited = try #require(service.loadSidecar(for: imageURL))
+        #expect(edited.creator == "Alex Example")
+        edited.description = "Updated caption only"
+        try service.saveSidecarPreservingDevelopSettings(metadata: edited, for: imageURL)
+
+        let xmp = try XMPReader.readFromXML(Data(contentsOf: sidecarURL))
+        #expect(xmp.description == "Updated caption only")
+        #expect(xmp.creator == ["Alex Example", "Sam Example"])
+        #expect(xmp.personInImage == ["Kari Nordmann", "Ola Nordmann"])
+        #expect(xmp.arrayValue(namespace: XMPNamespace.iptcCore, property: "Scene") == ["011200", "012900"])
+        #expect(xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "CaptionWriter") == "Night Desk")
+        #expect(xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "Urgency") == "2")
+        #expect(xmp.simpleValue(namespace: XMPNamespace.iptcCore, property: "CountryCode") == "NOR")
+        #expect(xmp.simpleValue(namespace: newsroomNamespace, property: "Desk") == "International")
+        #expect(xmp.arrayValue(namespace: newsroomNamespace, property: "WireIDs") == ["APA-2026-0001", "DESK-42"])
+        #expect(
+            xmp.structuredArrayValue(
+                namespace: XMPNamespace.iptcExt,
+                property: "LocationShown"
+            )?.count == 2
+        )
+        #expect(xmp.simpleValue(namespace: "http://ns.adobe.com/camera-raw-settings/1.0/", property: "Texture") == "+18")
+    }
+
+    @Test("the embedded JPEG writer preserves a foreign XMP property")
+    func embeddedJPEGPreservesForeignXMP() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = try makeJPEG(in: directory)
+
+        var planted = try SwiftExif.readMetadata(from: imageURL)
+        if planted.xmp == nil { planted.xmp = XMPData() }
+        planted.xmp?.setValue(
+            .simple("Do not remove"),
+            namespace: newsroomNamespace,
+            property: "RoutingNote"
+        )
+        try planted.write(to: imageURL)
+
+        try await SwiftExifWriteEngine().writeFields(
+            [.description: "A new editorial caption"],
+            to: [imageURL]
+        )
+
+        let rewritten = try SwiftExif.readMetadata(from: imageURL)
+        #expect(rewritten.xmp?.description == "A new editorial caption")
+        #expect(
+            rewritten.xmp?.simpleValue(
+                namespace: newsroomNamespace,
+                property: "RoutingNote"
+            ) == "Do not remove"
+        )
+    }
+
+    @Test("XMP description is proposed while an XMP-IIM conflict remains visible")
+    func descriptionConflictPolicy() throws {
+        let dict: [String: Any] = [
+            MetadataDictKey.description: "Modern XMP caption",
+            MetadataDictKey.captionAbstract: "Legacy IIM caption",
+        ]
+
+        #expect(iptcMetadataFromDict(dict).description == "Modern XMP caption")
+        let conflict = try #require(descriptionConflict(in: dict))
+        #expect(conflict.xmpDescription == "Modern XMP caption")
+        #expect(conflict.iptcCaptionAbstract == "Legacy IIM caption")
     }
 }
 

@@ -144,33 +144,37 @@ reference fixtures can detect unrelated metadata loss before the data model chan
   - Organisation and Person Shown.
   - Digital Image GUID and Image Supplier identifiers.
   - Current Digital Source Type NewsCodes.
-- [ ] Decide which legacy IPTC-IIM fields remain editable for wire-service compatibility even when
+- [x] Decide which legacy IPTC-IIM fields remain editable for wire-service compatibility even when
   modern XMP guidance discourages their use.
-- [ ] Add or acquire legally redistributable fixtures:
-  - IPTC reference image containing all current fields.
-  - No-metadata image for write coverage.
-  - Conflicting XMP/IIM values.
-  - Multiple creators/locations/people.
-  - Unknown XMP namespace and unknown properties inside known namespaces.
-  - Unicode, commas, semicolons, newlines, maximum legacy byte lengths, and timezone offsets.
-  - JPEG, TIFF, PNG, HEIC/HEIF, JPEG XL, and representative RAW plus XMP.
-- [ ] Snapshot the fixtures before and after a no-op save and fail tests if unrelated metadata is
-  changed or removed.
-- [ ] Record expected behavior when embedded XMP and IPTC-IIM disagree.
+- [ ] Complete the legally redistributable fixture corpus:
+  - [x] Generated complex XMP with multiple creators/locations/people, unknown properties, Unicode,
+    commas, semicolons, and newlines.
+  - [x] Generated no-metadata JPEG for embedded write coverage.
+  - [x] Deterministic conflicting XMP/IIM values for adapter precedence coverage.
+  - [ ] IPTC 2025.1 reference image containing all current fields; confirm redistribution terms
+    before committing the official image.
+  - [ ] Maximum legacy byte lengths and timezone-offset variants.
+  - [ ] TIFF, PNG, HEIC/HEIF, JPEG XL, and representative RAW plus XMP.
+- [x] Snapshot the current XMP/JPEG fixtures before and after no-op or unrelated-field writes and
+  fail tests if unrelated metadata is changed or removed.
+- [x] Record expected behavior when embedded XMP and IPTC-IIM disagree.
 - [x] Audit `DigitalSourceType`: accept legacy short tokens on read for compatibility, normalize
   known values internally, and write canonical IPTC NewsCodes URIs in XMP.
-- [ ] Decide how dates retain date, time, timezone-known, and precision rather than collapsing them
+- [x] Decide how dates retain date, time, timezone-known, and precision rather than collapsing them
   into a display string.
-- [ ] Document the format support boundary of SwiftExif and add upstream tasks for any missing
+- [x] Document the format support boundary of SwiftExif and add upstream tasks for any missing
   structures or container mappings.
 
 **Deliverables:** standards ADR, field support matrix, fixture README, baseline preservation tests.
 
 **Progress — 2026-08-18:** IPTC 2025.1 is frozen in ADR-005, the first editorial field set is
 tracked in `iptc-2025.1-editorial-support.md`, and Digital Source Type now reads legacy short
-tokens/URI/QCode forms while writing canonical IPTC NewsCodes URIs. The focused write and
-vocabulary suites pass (26 tests). Fixture acquisition and preservation testing remain the Phase 0
-exit-gate work.
+tokens/URI/QCode forms while writing canonical IPTC NewsCodes URIs. A CC0 synthetic XMP corpus and
+generated JPEG now prove semantic no-op and unrelated-edit preservation, including unknown
+namespaces, planned structured fields, and multi-creator sequences. Conflict precedence, legacy
+IIM editing, date precision, and container boundaries are documented. The focused standards suites
+pass 30 tests. Real cross-container fixtures and Bridge/Photo Mechanic/IPTC external round trips
+remain the Phase 0 exit-gate work.
 
 ## Phase 1 — metadata model, I/O, and validation foundation
 

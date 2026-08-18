@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "license": "CC0-1.0",
+  "fixtures": [
+    {
+      "filename": "preservation-complex.xmp",
+      "origin": "Generated for Aagedal Photo Agent",
+      "containsPersonalData": false,
+      "purpose": [
+        "semantic-no-op-round-trip",
+        "unrelated-edit-preservation",
+        "repeatable-values",
+        "structured-values",
+        "unknown-namespace",
+        "unknown-known-namespace-property",
+        "unicode-and-punctuation"
+      ]
+    }
+  ]
+}

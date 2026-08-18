@@ -33,7 +33,7 @@ enum XMPDataBuilder {
         xmp.rating = m.rating.map(Double.init)
         xmp.label = nilIfEmpty(m.label)
         xmp.digitalSourceType = nilIfEmpty(m.digitalSourceType?.newsCodeURI)
-        setArrayOrRemove(&xmp, m.creator.map { [$0] } ?? [], namespace: XMPNamespace.dc, property: "creator")
+        setCreatorOrRemove(&xmp, m.creator)
         xmp.credit = nilIfEmpty(m.credit)
         xmp.jobId = nilIfEmpty(m.jobId)
         xmp.rights = nilIfEmpty(m.copyright)
@@ -62,6 +62,22 @@ enum XMPDataBuilder {
             .info("sidecar write orientation=\(orientation ?? "nil", privacy: .public)")
         setSimpleOrRemove(&xmp, orientation, namespace: XMPNamespace.tiff, property: "Orientation")
         setSimpleOrRemove(&xmp, orientation, namespace: XMPNamespace.exif, property: "Orientation")
+    }
+
+    /// `IPTCMetadata` currently exposes the primary creator as a single string, while `dc:creator`
+    /// is an ordered array. When a sidecar with multiple creators is loaded, the model contains its
+    /// first item. Re-emitting that unchanged value during an unrelated edit must not collapse the
+    /// original sequence. A genuinely changed creator still replaces the sequence, and nil clears
+    /// it, matching the editor's existing overwrite semantics.
+    nonisolated private static func setCreatorOrRemove(_ xmp: inout XMPData, _ creator: String?) {
+        guard let creator = nilIfEmpty(creator) else {
+            xmp.removeValue(namespace: XMPNamespace.dc, property: "creator")
+            return
+        }
+
+        let existing = xmp.creator
+        if existing.count > 1, existing.first == creator { return }
+        setArrayOrRemove(&xmp, [creator], namespace: XMPNamespace.dc, property: "creator")
     }
 
     // MARK: - Camera Raw (crs) block
