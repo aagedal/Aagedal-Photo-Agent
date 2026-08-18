@@ -861,6 +861,53 @@ struct IPTCMetadataCodableTests {
 @Suite("IPTCMetadata.FieldKey")
 struct FieldKeyTests {
 
+    @Test("legacy FieldKey spelling aliases the stable field ID")
+    func legacyFieldKeySpellingRemainsCompatible() throws {
+        let legacy: IPTCMetadata.FieldKey = .title
+        #expect(legacy == MetadataFieldID.headline)
+        #expect(MetadataFieldID.headline.rawValue == "title")
+
+        let stored = Data(#"["title","description","provinceState"]"#.utf8)
+        let decoded = try JSONDecoder().decode([MetadataFieldID].self, from: stored)
+        #expect(decoded == [.headline, .description, .provinceState])
+        #expect(try JSONEncoder().encode(decoded) == stored)
+    }
+
+    @Test("stored requirement maps load through stable field IDs")
+    func storedRequirementMapsRemainCompatible() throws {
+        let suiteName = "MetadataFieldIDTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let levels = #"{"title":"require","description":"warnOnEmpty","unknownFutureField":"require"}"#
+        defaults.set(Data(levels.utf8), forKey: UserDefaultsKeys.metadataRequirementLevels)
+
+        #expect(MetadataRequirements.load(from: defaults) == [
+            .title: .require,
+            .description: .warnOnEmpty,
+        ])
+
+        MetadataRequirements.save([.headline: .require], to: defaults)
+        let saved = try #require(defaults.data(forKey: UserDefaultsKeys.metadataRequirementLevels))
+        let savedMap = try JSONDecoder().decode([String: String].self, from: saved)
+        #expect(savedMap == ["title": "require"])
+    }
+
+    @Test("legacy required-field arrays migrate without changing persisted values")
+    func legacyRequiredFieldArrayMigrates() throws {
+        let suiteName = "MetadataFieldIDLegacyTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let stored = Data(#"["title","copyright"]"#.utf8)
+        defaults.set(stored, forKey: UserDefaultsKeys.requiredMetadataFields)
+
+        #expect(MetadataRequirements.load(from: defaults) == [
+            .title: .require,
+            .copyright: .require,
+        ])
+    }
+
     @Test("isEmpty returns true for nil string fields")
     func isEmptyForNilStringFields() {
         let metadata = IPTCMetadata()

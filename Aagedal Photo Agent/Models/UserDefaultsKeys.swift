@@ -67,7 +67,7 @@ nonisolated enum UserDefaultsKeys {
     static let ftpAlwaysRenderRAW = "ftpAlwaysRenderRAW"
 
     // MARK: - Required Metadata
-    /// Legacy: JSON-encoded `[IPTCMetadata.FieldKey]` the user considered mandatory. Superseded by
+    /// Legacy: JSON-encoded `[MetadataFieldID]` the user considered mandatory. Superseded by
     /// `metadataRequirementLevels`; still read once to migrate those fields to `.require`.
     static let requiredMetadataFields = "requiredMetadataFields"
     /// JSON-encoded `[FieldKey.rawValue: MetadataRequirementLevel.rawValue]`. The global 3-state

@@ -1354,7 +1354,7 @@ struct ContentView: View {
                 }
             }
             Menu("Missing Field") {
-                ForEach(IPTCMetadata.FieldKey.userSelectable, id: \.self) { field in
+                ForEach(MetadataFieldID.userSelectable, id: \.self) { field in
                     Toggle(field.displayName, isOn: Binding(
                         get: { browserViewModel.missingFieldFilters.contains(field) },
                         set: { enabled in

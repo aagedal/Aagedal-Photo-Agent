@@ -142,7 +142,7 @@ final class BrowserViewModel {
     }
     /// Fields the browser should filter to "missing". OR semantics, matching color-label selection:
     /// an image passes when it's missing at least one of these. Empty → inactive.
-    var missingFieldFilters: Set<IPTCMetadata.FieldKey> = [] {
+    var missingFieldFilters: Set<MetadataFieldID> = [] {
         didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
     }
 
@@ -515,7 +515,7 @@ final class BrowserViewModel {
 
     private struct ImageFilterContext {
         let query: String
-        let requiredFields: Set<IPTCMetadata.FieldKey>
+        let requiredFields: Set<MetadataFieldID>
         let requiredLevels: MetadataRequirements.Levels
         let minimumLengths: MetadataRequirements.MinimumLengths
     }
@@ -2839,7 +2839,7 @@ final class BrowserViewModel {
         updated[index].keywords = edited.keywords
         updated[index].personShown = edited.personShown
         updated[index].hasPendingMetadataChanges = true
-        updated[index].pendingFieldNames = IPTCMetadata.FieldKey.userSelectable.compactMap { field in
+        updated[index].pendingFieldNames = MetadataFieldID.userSelectable.compactMap { field in
             field.textValue(in: previous) != field.textValue(in: edited) ? field.displayName : nil
         }
         images = updated
@@ -2847,7 +2847,7 @@ final class BrowserViewModel {
         let existing = sidecarService.loadSidecar(for: url, in: folderURL)
         var history = existing?.history ?? []
         let now = Date()
-        for field in IPTCMetadata.FieldKey.userSelectable {
+        for field in MetadataFieldID.userSelectable {
             let old = field.textValue(in: previous)
             let new = field.textValue(in: edited)
             if old != new {
@@ -3741,7 +3741,7 @@ final class BrowserViewModel {
         var personShownFilter: PersonShownFilter = .any
         var editedFilter: EditedFilter = .any
         var requiredMetadataFilter: RequiredMetadataFilter = .any
-        var missingFieldFilters: Set<IPTCMetadata.FieldKey> = []
+        var missingFieldFilters: Set<MetadataFieldID> = []
         var searchText: String = ""
     }
 

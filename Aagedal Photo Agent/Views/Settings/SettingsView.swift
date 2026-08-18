@@ -204,7 +204,7 @@ struct SettingsView: View {
     }
 
     private func iptcMetadataFieldVisibilityBinding(
-        _ field: IPTCMetadata.FieldKey
+        _ field: MetadataFieldID
     ) -> Binding<Bool> {
         Binding(
             get: { settingsViewModel.isIPTCMetadataFieldVisible(field) },
@@ -952,7 +952,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                ForEach(IPTCMetadata.FieldKey.optionalEditorFields, id: \.self) { field in
+                ForEach(MetadataFieldID.optionalEditorFields, id: \.self) { field in
                     Toggle(
                         field.displayName,
                         isOn: iptcMetadataFieldVisibilityBinding(field)

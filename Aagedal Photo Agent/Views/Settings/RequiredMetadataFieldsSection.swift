@@ -15,7 +15,7 @@ struct RequiredMetadataFieldsSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            ForEach(IPTCMetadata.FieldKey.userSelectable, id: \.self) { field in
+            ForEach(MetadataFieldID.userSelectable, id: \.self) { field in
                 Picker(field.displayName, selection: binding(for: field)) {
                     Text("Optional").tag(MetadataRequirementLevel.optional)
                     Text("Warn if empty").tag(MetadataRequirementLevel.warnOnEmpty)
@@ -31,7 +31,7 @@ struct RequiredMetadataFieldsSection: View {
         }
     }
 
-    private func binding(for field: IPTCMetadata.FieldKey) -> Binding<MetadataRequirementLevel> {
+    private func binding(for field: MetadataFieldID) -> Binding<MetadataRequirementLevel> {
         Binding(
             get: { levels[field] ?? .optional },
             set: { newValue in
@@ -42,7 +42,7 @@ struct RequiredMetadataFieldsSection: View {
     }
 
 
-    private func minimumLengthField(for field: IPTCMetadata.FieldKey) -> some View {
+    private func minimumLengthField(for field: MetadataFieldID) -> some View {
         HStack(spacing: 8) {
             Text("Characters")
                 .fixedSize(horizontal: true, vertical: false)

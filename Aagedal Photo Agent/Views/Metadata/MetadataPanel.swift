@@ -1341,7 +1341,7 @@ struct MetadataPanel: View {
 
     @ViewBuilder
     private var additionalFieldsSection: some View {
-        if IPTCMetadata.FieldKey.additionalEditorFields.contains(
+        if MetadataFieldID.additionalEditorFields.contains(
             where: { settingsViewModel.isIPTCMetadataFieldVisible($0) }
         ) {
             Section {
@@ -1516,7 +1516,7 @@ struct MetadataPanel: View {
     }
 
     private func simpleAdditionalField(
-        _ field: IPTCMetadata.FieldKey,
+        _ field: MetadataFieldID,
         keyPath: WritableKeyPath<IPTCMetadata, String?>,
         variableTarget: VariableInsertTarget
     ) -> some View {

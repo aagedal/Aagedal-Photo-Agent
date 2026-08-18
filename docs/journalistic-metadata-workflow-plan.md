@@ -184,7 +184,7 @@ ready.
 
 ### Model and persistence
 
-- [ ] Introduce stable `MetadataFieldID` values without invalidating existing
+- [x] Introduce stable `MetadataFieldID` values without invalidating existing
   `IPTCMetadata.FieldKey` data stored in UserDefaults or JSON.
 - [ ] Add typed models for creator contact information and created/shown locations.
 - [ ] Expand `IPTCMetadata` or introduce a versioned editorial metadata aggregate without turning
@@ -232,6 +232,13 @@ ready.
 - [ ] Run IPTC Interoperability Tests 1, 2, and 3 manually and store dated results in `docs/`.
 - [ ] Open representative outputs in current Bridge and Photo Mechanic and record discrepancies.
 - [ ] Add a CI-friendly generated support report so README claims cannot drift from tests.
+
+**Progress — 2026-08-18:** `MetadataFieldID` is now the top-level identity used by metadata
+settings, browser filters, Metadata Review, and upload validation. The semantic `.headline` case
+retains the previously shipped `"title"` persistence key, and `IPTCMetadata.FieldKey.title`
+remains source- and Codable-compatible. Requirement-level maps, minimum lengths, hidden-field
+preferences, and legacy required-field arrays retain their existing storage shapes. Nine focused
+compatibility tests pass.
 
 ## Phase 2 — Caption Workspace
 

@@ -413,7 +413,7 @@ struct FTPUploadView: View {
     /// True when the sidecar carries a value for a non-optional field that the embedded
     /// file is missing — i.e. syncing the sidecar into the file would reduce the warnings.
     nonisolated private static func sidecarFillsMissing(embedded: IPTCMetadata?, sidecar: IPTCMetadata, levels: MetadataRequirements.Levels, face: FaceInfo?) -> Bool {
-        for field in IPTCMetadata.FieldKey.userSelectable {
+        for field in MetadataFieldID.userSelectable {
             guard let level = levels[field], level != .optional else { continue }
             if field == .personShown, let face, face.scanned, face.faceCount == 0 { continue }
             let embeddedEmpty = embedded.map { field.isEmpty(in: $0) } ?? true
@@ -476,7 +476,7 @@ struct FTPUploadView: View {
         var missingRequired: [String] = []
         var missingWarn: [String] = []
         let minimumLengths = MetadataRequirements.loadMinimumLengths()
-        for field in IPTCMetadata.FieldKey.userSelectable {
+        for field in MetadataFieldID.userSelectable {
             guard let level = levels[field], level != .optional else { continue }
             let embeddedEmpty = embedded.map { MetadataRequirements.fieldFails(field, in: $0, levels: levels, minimumLengths: minimumLengths) } ?? true
             // For a rendered upload the sidecar's value reaches the output, so the field is

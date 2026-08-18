@@ -382,7 +382,7 @@ final class SettingsViewModel {
         }
     }
 
-    var hiddenIPTCMetadataFields: Set<IPTCMetadata.FieldKey> {
+    var hiddenIPTCMetadataFields: Set<MetadataFieldID> {
         didSet {
             UserDefaults.standard.set(
                 hiddenIPTCMetadataFields.map(\.rawValue).sorted(),
@@ -391,13 +391,13 @@ final class SettingsViewModel {
         }
     }
 
-    func isIPTCMetadataFieldVisible(_ field: IPTCMetadata.FieldKey) -> Bool {
-        IPTCMetadata.FieldKey.alwaysVisibleEditorFields.contains(field)
+    func isIPTCMetadataFieldVisible(_ field: MetadataFieldID) -> Bool {
+        MetadataFieldID.alwaysVisibleEditorFields.contains(field)
             || !hiddenIPTCMetadataFields.contains(field)
     }
 
-    func setIPTCMetadataField(_ field: IPTCMetadata.FieldKey, visible: Bool) {
-        guard !IPTCMetadata.FieldKey.alwaysVisibleEditorFields.contains(field) else {
+    func setIPTCMetadataField(_ field: MetadataFieldID, visible: Bool) {
+        guard !MetadataFieldID.alwaysVisibleEditorFields.contains(field) else {
             hiddenIPTCMetadataFields.remove(field)
             return
         }
@@ -945,7 +945,7 @@ final class SettingsViewModel {
         self.developSectionOrder = DevelopPanelSection.decodeOrder(
             UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.developSectionOrder) ?? []
         )
-        self.hiddenIPTCMetadataFields = IPTCMetadata.FieldKey.decodeHidden(
+        self.hiddenIPTCMetadataFields = MetadataFieldID.decodeHidden(
             UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields) ?? []
         )
 

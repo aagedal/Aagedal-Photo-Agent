@@ -59,7 +59,7 @@ private struct MetadataReviewRow: View {
     let isSelected: Bool
     let onSave: (IPTCMetadata) -> Void
     @State private var draft: IPTCMetadata
-    @FocusState private var focusedField: IPTCMetadata.FieldKey?
+    @FocusState private var focusedField: MetadataFieldID?
 
     private let columns = [GridItem(.adaptive(minimum: 185, maximum: 320), spacing: 8, alignment: .top)]
 
@@ -90,7 +90,7 @@ private struct MetadataReviewRow: View {
             .frame(width: 112, alignment: .leading)
 
             LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                ForEach(IPTCMetadata.FieldKey.userSelectable, id: \.self) { field in
+                ForEach(MetadataFieldID.userSelectable, id: \.self) { field in
                     fieldCell(field)
                 }
             }
@@ -111,7 +111,7 @@ private struct MetadataReviewRow: View {
     }
 
     @ViewBuilder
-    private func fieldCell(_ field: IPTCMetadata.FieldKey) -> some View {
+    private func fieldCell(_ field: MetadataFieldID) -> some View {
         let value = field.textValue(in: draft) ?? ""
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let level = levels[field] ?? .optional
@@ -146,7 +146,7 @@ private struct MetadataReviewRow: View {
         .help(failed ? validationHelp(field, value: trimmed, level: level) : value)
     }
 
-    private func binding(for field: IPTCMetadata.FieldKey) -> Binding<String> {
+    private func binding(for field: MetadataFieldID) -> Binding<String> {
         Binding(
             get: { field.textValue(in: draft) ?? "" },
             set: { field.setTextValue($0, in: &draft) }
@@ -158,7 +158,7 @@ private struct MetadataReviewRow: View {
         onSave(draft)
     }
 
-    private func validationHelp(_ field: IPTCMetadata.FieldKey, value: String,
+    private func validationHelp(_ field: MetadataFieldID, value: String,
                                 level: MetadataRequirementLevel) -> String {
         let prefix = level == .require ? "Required" : "Warning"
         if value.isEmpty { return "\(prefix): \(field.displayName) is missing" }
