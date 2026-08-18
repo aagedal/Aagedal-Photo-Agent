@@ -77,9 +77,9 @@ struct TemplateEditorView: View {
                     if field.fieldKey == "digitalSourceType" {
                         // Digital Source Type is an enum — offer its cases as a
                         // dropdown rather than free text. The template stores the
-                        // raw value, matching applyTemplateFields' DigitalSourceType(rawValue:).
+                        // short raw value for compatibility with existing template JSON.
                         Picker("", selection: Binding(
-                            get: { DigitalSourceType(rawValue: $field.templateValue.wrappedValue) },
+                            get: { DigitalSourceType(metadataValue: $field.templateValue.wrappedValue) },
                             set: { $field.templateValue.wrappedValue = $0?.rawValue ?? "" }
                         )) {
                             Text("None").tag(nil as DigitalSourceType?)

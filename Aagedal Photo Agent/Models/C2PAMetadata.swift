@@ -229,17 +229,7 @@ struct C2PAMetadata: Identifiable {
 
     /// Convert IPTC digital source type URI or short name to display name, reusing DigitalSourceType enum.
     static func formatDigitalSourceType(_ raw: String) -> String {
-        // Try short name first (e.g. "digitalCapture")
-        if let known = DigitalSourceType(rawValue: raw) {
-            return known.displayName
-        }
-        // Try extracting from IPTC URI (e.g. "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture")
-        if let lastSlash = raw.lastIndex(of: "/") {
-            let shortName = String(raw[raw.index(after: lastSlash)...])
-            if let known = DigitalSourceType(rawValue: shortName) {
-                return known.displayName
-            }
-        }
+        if let known = DigitalSourceType(metadataValue: raw) { return known.displayName }
         return raw
     }
 

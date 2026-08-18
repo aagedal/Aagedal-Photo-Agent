@@ -728,7 +728,7 @@ final class MetadataViewModel {
                     }
                     // Add mode personShown handled below via addRemoveListValues
 
-                    if let v = edited.digitalSourceType { fields[.digitalSourceType] = v.rawValue }
+                    if let v = edited.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
                     if let lat = edited.latitude, let lon = edited.longitude {
                         fields[.gpsLatitude] = String(abs(lat))
                         fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
@@ -762,7 +762,7 @@ final class MetadataViewModel {
                         fields[.personInImage] = edited.personShown.uniqued().joined(separator: ", ")
                     }
                     if edited.digitalSourceType != original?.digitalSourceType {
-                        fields[.digitalSourceType] = edited.digitalSourceType?.rawValue ?? ""
+                        fields[.digitalSourceType] = edited.digitalSourceType?.newsCodeURI ?? ""
                     }
                     if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
                         if let lat = edited.latitude, let lon = edited.longitude {
@@ -833,7 +833,7 @@ final class MetadataViewModel {
         if multiSelectMode(for: "personShown") == .overwrite, !metadata.personShown.isEmpty {
             fields[.personInImage] = metadata.personShown.joined(separator: ", ")
         }
-        if let v = metadata.digitalSourceType { fields[.digitalSourceType] = v.rawValue }
+        if let v = metadata.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = metadata.creator, !v.isEmpty { fields[.creator] = v }
         if let v = metadata.credit, !v.isEmpty { fields[.credit] = v }
         if let v = metadata.copyright, !v.isEmpty { fields[.rights] = v }
@@ -1043,7 +1043,7 @@ final class MetadataViewModel {
         fields[.extendedDescription] = metadata.extendedDescription ?? ""
         fields[.subject] = metadata.keywords.uniqued().joined(separator: ", ")
         fields[.personInImage] = metadata.personShown.uniqued().joined(separator: ", ")
-        fields[.digitalSourceType] = metadata.digitalSourceType?.rawValue ?? ""
+        fields[.digitalSourceType] = metadata.digitalSourceType?.newsCodeURI ?? ""
         fields[.creator] = metadata.creator ?? ""
         fields[.credit] = metadata.credit ?? ""
         fields[.rights] = metadata.copyright ?? ""
@@ -1295,7 +1295,7 @@ final class MetadataViewModel {
                     editingMetadata.personShown = newPersons
                 }
             case "digitalSourceType":
-                editingMetadata.digitalSourceType = DigitalSourceType(rawValue: value)
+                editingMetadata.digitalSourceType = DigitalSourceType(metadataValue: value)
             case "creator":
                 editingMetadata.creator = append ? appendString(editingMetadata.creator, value) : value
             case "credit":
@@ -2580,7 +2580,7 @@ final class MetadataViewModel {
         case "Source":
             metadata.source = entry.newValue
         case "Digital Source Type":
-            metadata.digitalSourceType = entry.newValue.flatMap { DigitalSourceType(rawValue: $0) }
+            metadata.digitalSourceType = entry.newValue.flatMap { DigitalSourceType(metadataValue: $0) }
         default:
             break
         }

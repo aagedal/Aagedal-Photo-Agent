@@ -32,7 +32,7 @@ enum XMPDataBuilder {
         setArrayOrRemove(&xmp, m.personShown, namespace: XMPNamespace.iptcExt, property: "PersonInImage")
         xmp.rating = m.rating.map(Double.init)
         xmp.label = nilIfEmpty(m.label)
-        xmp.digitalSourceType = nilIfEmpty(m.digitalSourceType?.rawValue)
+        xmp.digitalSourceType = nilIfEmpty(m.digitalSourceType?.newsCodeURI)
         setArrayOrRemove(&xmp, m.creator.map { [$0] } ?? [], namespace: XMPNamespace.dc, property: "creator")
         xmp.credit = nilIfEmpty(m.credit)
         xmp.jobId = nilIfEmpty(m.jobId)

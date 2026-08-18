@@ -987,7 +987,7 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         keywords: parseStringOrArray(dict[MetadataDictKey.subject] ?? dict[MetadataDictKey.keywords]),
         personShown: parseStringOrArray(dict[MetadataDictKey.personInImage]),
         digitalSourceType: (dict[MetadataDictKey.digitalSourceType] as? String)
-            .flatMap { DigitalSourceType(rawValue: $0) },
+            .flatMap { DigitalSourceType(metadataValue: $0) },
         latitude: dict[MetadataDictKey.gpsLatitude] as? Double,
         longitude: dict[MetadataDictKey.gpsLongitude] as? Double,
         creator: parseFirstString(dict[MetadataDictKey.creator] ?? dict[MetadataDictKey.byLine]),

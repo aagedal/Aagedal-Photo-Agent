@@ -1714,7 +1714,7 @@ extension IPTCMetadata {
         if let v = extendedDescription { fields[.extendedDescription] = v }
         if !keywords.isEmpty { fields[.subject] = keywords.joined(separator: ", ") }
         if !personShown.isEmpty { fields[.personInImage] = personShown.joined(separator: ", ") }
-        if let v = digitalSourceType { fields[.digitalSourceType] = v.rawValue }
+        if let v = digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = creator { fields[.creator] = v }
         if let v = credit { fields[.credit] = v }
         if let v = copyright { fields[.rights] = v }
@@ -1754,7 +1754,7 @@ extension IPTCMetadata {
         fields[.extendedDescription] = extendedDescription ?? ""
         fields[.subject] = keywords.uniqued().joined(separator: ", ")
         fields[.personInImage] = personShown.uniqued().joined(separator: ", ")
-        fields[.digitalSourceType] = digitalSourceType?.rawValue ?? ""
+        fields[.digitalSourceType] = digitalSourceType?.newsCodeURI ?? ""
         fields[.creator] = creator ?? ""
         fields[.credit] = credit ?? ""
         fields[.rights] = copyright ?? ""
@@ -1778,25 +1778,80 @@ extension IPTCMetadata {
 }
 
 nonisolated enum DigitalSourceType: String, Codable, CaseIterable, Sendable {
-    case trainedAlgorithmicMedia = "trainedAlgorithmicMedia"
     case digitalCapture = "digitalCapture"
+    case computationalCapture = "computationalCapture"
     case negativeFilm = "negativeFilm"
     case positiveFilm = "positiveFilm"
     case print = "print"
+    case humanEdits = "humanEdits"
+    case compositeWithTrainedAlgorithmicMedia = "compositeWithTrainedAlgorithmicMedia"
+    case algorithmicallyEnhanced = "algorithmicallyEnhanced"
+    case digitalCreation = "digitalCreation"
+    case dataDrivenMedia = "dataDrivenMedia"
+    case trainedAlgorithmicMedia = "trainedAlgorithmicMedia"
+    case algorithmicMedia = "algorithmicMedia"
+    case screenCapture = "screenCapture"
+    case virtualRecording = "virtualRecording"
+    case composite = "composite"
     case compositeCapture = "compositeCapture"
     case compositeSynthetic = "compositeSynthetic"
-    case compositeWithTrainedAlgorithmicMedia = "compositeWithTrainedAlgorithmicMedia"
+
+    /// IPTC Photo Metadata 2025.1 defines DigitalSourceType as an external URI from the required
+    /// Digital Source Type NewsCodes vocabulary. Keep the enum's short raw values for stable
+    /// app-side JSON/template compatibility, but always use this canonical URI at the XMP boundary.
+    static let newsCodeSchemeURI = "http://cv.iptc.org/newscodes/digitalsourcetype/"
+
+    var newsCodeURI: String {
+        Self.newsCodeSchemeURI + rawValue
+    }
+
+    /// Accept the canonical URI as well as legacy values written by older Photo Agent builds.
+    /// The HTTPS spelling and QCode form are tolerated because other tools may normalize the
+    /// vocabulary URL or expose the compact identifier instead of the stored URI.
+    init?(metadataValue: String) {
+        let value = metadataValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let direct = Self(rawValue: value) {
+            self = direct
+            return
+        }
+
+        let identifier: String?
+        if value.hasPrefix(Self.newsCodeSchemeURI) {
+            identifier = String(value.dropFirst(Self.newsCodeSchemeURI.count))
+        } else {
+            let httpsScheme = "https://cv.iptc.org/newscodes/digitalsourcetype/"
+            if value.hasPrefix(httpsScheme) {
+                identifier = String(value.dropFirst(httpsScheme.count))
+            } else if value.hasPrefix("digsrctype:") {
+                identifier = String(value.dropFirst("digsrctype:".count))
+            } else {
+                identifier = nil
+            }
+        }
+
+        guard let identifier, let parsed = Self(rawValue: identifier) else { return nil }
+        self = parsed
+    }
 
     var displayName: String {
         switch self {
-        case .trainedAlgorithmicMedia: return "AI-Generated"
         case .digitalCapture: return "Digital Capture"
+        case .computationalCapture: return "Computational Capture"
         case .negativeFilm: return "Scanned Negative"
         case .positiveFilm: return "Scanned Positive"
         case .print: return "Scanned Print"
+        case .humanEdits: return "Human-Edited"
+        case .compositeWithTrainedAlgorithmicMedia: return "Edited Using Generative AI"
+        case .algorithmicallyEnhanced: return "Algorithmically Altered"
+        case .digitalCreation: return "Digital Creation"
+        case .dataDrivenMedia: return "Data-Driven Media"
+        case .trainedAlgorithmicMedia: return "Created Using Generative AI"
+        case .algorithmicMedia: return "Pure Algorithmic Media"
+        case .screenCapture: return "Screen Capture"
+        case .virtualRecording: return "Virtual Event Recording"
+        case .composite: return "Composite (Unspecified Elements)"
         case .compositeCapture: return "Composite (Capture)"
-        case .compositeSynthetic: return "Composite (Synthetic)"
-        case .compositeWithTrainedAlgorithmicMedia: return "Composite (AI)"
+        case .compositeSynthetic: return "Composite (Includes Generative AI)"
         }
     }
 }

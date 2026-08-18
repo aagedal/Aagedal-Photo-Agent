@@ -4,6 +4,7 @@ import Metal
 import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
+import SwiftExif
 @testable import Aagedal_Photo_Agent
 
 private func grayscalePNG(_ bytes: [UInt8], width: Int, height: Int) -> Data? {
@@ -215,11 +216,14 @@ struct ToWriteFieldsTests {
         #expect(fields[MetadataFieldKey.event] == "World Cup 2026")
     }
 
-    @Test("digitalSourceType maps to raw value")
-    func digitalSourceTypeMapsToRawValue() {
+    @Test("digitalSourceType maps to the canonical IPTC NewsCodes URI")
+    func digitalSourceTypeMapsToNewsCodeURI() {
         let metadata = IPTCMetadata(digitalSourceType: .digitalCapture)
         let fields = metadata.toWriteFields()
-        #expect(fields[MetadataFieldKey.digitalSourceType] == "digitalCapture")
+        #expect(
+            fields[MetadataFieldKey.digitalSourceType]
+                == "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture"
+        )
     }
 
     @Test("northern GPS coordinates use N/E refs")
@@ -262,6 +266,61 @@ struct ToWriteFieldsTests {
         let metadata = IPTCMetadata(label: "Red")
         let fields = metadata.toWriteFields()
         #expect(fields[MetadataFieldKey.label] == nil)
+    }
+}
+
+@Suite("Digital Source Type NewsCodes")
+struct DigitalSourceTypeNewsCodeTests {
+    @Test("every active value accepts legacy, URI, HTTPS, and QCode spellings")
+    func allValuesRoundTrip() {
+        for value in DigitalSourceType.allCases {
+            #expect(DigitalSourceType(metadataValue: value.rawValue) == value)
+            #expect(DigitalSourceType(metadataValue: value.newsCodeURI) == value)
+            #expect(
+                DigitalSourceType(
+                    metadataValue: value.newsCodeURI.replacingOccurrences(
+                        of: "http://",
+                        with: "https://"
+                    )
+                ) == value
+            )
+            #expect(DigitalSourceType(metadataValue: "digsrctype:\(value.rawValue)") == value)
+        }
+    }
+
+    @Test("unknown or malformed values are rejected")
+    func unknownValuesAreRejected() {
+        #expect(DigitalSourceType(metadataValue: "") == nil)
+        #expect(DigitalSourceType(metadataValue: "digsrctype:notARealCode") == nil)
+        #expect(
+            DigitalSourceType(
+                metadataValue: "https://example.com/digitalsourcetype/digitalCapture"
+            ) == nil
+        )
+    }
+
+    @Test("canonical URI decodes from an external metadata dictionary")
+    func canonicalURIDecodesFromDictionary() {
+        let metadata = iptcMetadataFromDict([
+            MetadataDictKey.digitalSourceType:
+                "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+        ])
+
+        #expect(metadata.digitalSourceType == .trainedAlgorithmicMedia)
+    }
+
+    @Test("XMP builder emits the canonical URI")
+    func xmpBuilderWritesCanonicalURI() {
+        var xmp = XMPData()
+        XMPDataBuilder.applyDescriptive(
+            IPTCMetadata(digitalSourceType: .trainedAlgorithmicMedia),
+            into: &xmp
+        )
+
+        #expect(
+            xmp.digitalSourceType
+                == "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+        )
     }
 }
 

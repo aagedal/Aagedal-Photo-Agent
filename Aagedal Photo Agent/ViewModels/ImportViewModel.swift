@@ -431,7 +431,7 @@ final class ImportViewModel {
             case "personShown":
                 configuration.metadata.personShown = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             case "digitalSourceType":
-                configuration.metadata.digitalSourceType = DigitalSourceType(rawValue: value)
+                configuration.metadata.digitalSourceType = DigitalSourceType(metadataValue: value)
             case "creator": configuration.metadata.creator = value
             case "credit": configuration.metadata.credit = value
             case "copyright": configuration.metadata.copyright = value
@@ -944,7 +944,7 @@ final class ImportViewModel {
         if let v = meta.extendedDescription, !v.isEmpty { fields[.extendedDescription] = v }
         if !meta.keywords.isEmpty { fields[.subject] = meta.keywords.joined(separator: ", ") }
         if !meta.personShown.isEmpty { fields[.personInImage] = meta.personShown.joined(separator: ", ") }
-        if let v = meta.digitalSourceType { fields[.digitalSourceType] = v.rawValue }
+        if let v = meta.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = meta.creator, !v.isEmpty { fields[.creator] = v }
         if let v = meta.credit, !v.isEmpty { fields[.credit] = v }
         if let v = meta.copyright, !v.isEmpty { fields[.rights] = v }
