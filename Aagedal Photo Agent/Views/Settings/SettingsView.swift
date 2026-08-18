@@ -475,6 +475,20 @@ struct SettingsView: View {
     private var faceRecognitionTab: some View {
         Form {
             Section("Detection") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Picker("Scan Mode", selection: $settingsViewModel.faceTiledDetection) {
+                        Text("Fast").tag(false)
+                        Text("Thorough").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(settingsViewModel.faceTiledDetection
+                         ? "Thorough scans overlapping image regions to find more small and off-angle faces in group photos."
+                         : "Fast scans each photo once and is recommended for most shoots.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("Min Detection Confidence")
@@ -505,6 +519,10 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Text("Changes apply to new scans. Use a full rescan to apply the selected mode to photos already scanned.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Sports Tagging (Experimental)") {

@@ -512,9 +512,8 @@ final class FaceRecognitionViewModel {
         let minSize = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
         config.minFaceSize = minSize ?? 50
 
-        // Tiled detection recovers faces the single whole-image Vision pass misses (group shots).
-        // Defaults on; absent key reads as nil so we keep the `true` default rather than `false`.
-        config.tiledDetection = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? true
+        // Fast is the default. Thorough adds tiled detection for small/off-angle group-shot faces.
+        config.tiledDetection = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? false
 
         // Sports tagging
         config.sportsModeEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled)

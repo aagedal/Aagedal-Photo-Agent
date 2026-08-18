@@ -57,6 +57,50 @@ struct FaceEmbeddingTests {
         #expect(EmbeddingCodec.cosineDistance([], []) == nil)
     }
 
+    @Test func faceDetectionDefaultsToFastMode() {
+        #expect(FaceDetectionService.DetectionConfig().tiledDetection == false)
+    }
+
+    @Test func incrementalClusteringUsesExactAverageGroupDistance() {
+        func face(_ vector: [Float], groupID: UUID? = nil) -> DetectedFace {
+            DetectedFace(
+                id: UUID(),
+                imageURL: URL(fileURLWithPath: "/tmp/centroid-test.jpg"),
+                faceRect: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2),
+                featurePrintData: EmbeddingCodec.encode(vector),
+                groupID: groupID,
+                detectedAt: Date(),
+                qualityScore: 0.9
+            )
+        }
+
+        let groupID = UUID()
+        let memberA = face([1, 0, 0], groupID: groupID)
+        let memberB = face([0.8, 0.6, 0], groupID: groupID)
+        let firstNewFace = face([1, 0, 0])
+        let secondNewFace = face([0.8, 0.6, 0])
+        let existingGroup = FaceGroup(
+            id: groupID,
+            name: nil,
+            representativeFaceID: memberA.id,
+            faceIDs: [memberA.id, memberB.id]
+        )
+
+        var config = FaceDetectionService.DetectionConfig()
+        config.clusteringThreshold = 0.15
+        let groups = FaceDetectionService().clusterFacesWithAlgorithm(
+            [firstNewFace, secondNewFace],
+            allFaces: [memberA, memberB, firstNewFace, secondNewFace],
+            existingGroups: [existingGroup],
+            config: config
+        )
+
+        // Both new faces are 0.1 average cosine distance from the original two-member group.
+        // The second decision also includes the first newly attached face in the running average.
+        #expect(groups.count == 1)
+        #expect(Set(groups[0].faceIDs) == Set([memberA.id, memberB.id, firstNewFace.id, secondNewFace.id]))
+    }
+
     // MARK: - CoreMLFaceEmbedder (bundled model smoke test)
 
     @Test func embedderProducesNormalizedDeterministicVectors() async throws {

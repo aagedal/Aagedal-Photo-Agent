@@ -7,6 +7,11 @@ import Accelerate
 
 nonisolated struct FaceDetectionService: Sendable {
 
+    /// Vision, ArcFace (112 px), and persisted face thumbnails (120 px) do not benefit from
+    /// decoding a 24–60 MP source at full resolution. A 4096 px working image retains ample
+    /// detail for the Thorough tile pass while substantially reducing decode time and memory.
+    private static let maxWorkingImageDimension = 4096
+
     /// The face-identity embedder. Folder faces and (transitively, via copied face
     /// embeddings) the Known People gallery all run through this one embedder, so every
     /// comparison happens in the same embedding space.
@@ -50,7 +55,7 @@ nonisolated struct FaceDetectionService: Sendable {
         /// faces are dropped); restricting it to a sub-region recovers many of them. Costs extra Vision
         /// passes per image (one per tile). The hardest non-frontal/motion poses still aren't found —
         /// that's a detector limitation, not a tiling one.
-        var tiledDetection: Bool = true
+        var tiledDetection: Bool = false
 
         /// Maximum cosine distance (0...2) for two faces to be considered the same person.
         /// Default lives in `FaceRecognitionDefaults`; lower = stricter.
@@ -75,7 +80,7 @@ nonisolated struct FaceDetectionService: Sendable {
         nonisolated init(
             minConfidence: Float = 0.7,
             minFaceSize: Int = 50,
-            tiledDetection: Bool = true,
+            tiledDetection: Bool = false,
             clusteringThreshold: Float = FaceRecognitionDefaults.clusteringThreshold,
             qualityGateThreshold: Float = FaceRecognitionDefaults.qualityGateThreshold,
             recognitionMode: FaceRecognitionMode = .visionFeaturePrint,
@@ -117,15 +122,13 @@ nonisolated struct FaceDetectionService: Sendable {
                 userInfo: [NSLocalizedDescriptionKey: "Failed to create image source for \(imageURL.lastPathComponent)"]
             )
         }
-        guard let rawCGImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+        let originalOrientedWidth = orientedPixelWidth(from: imageSource)
+        guard let cgImage = makeWorkingImage(from: imageSource) else {
             throw NSError(
                 domain: "FaceDetectionService", code: 2,
                 userInfo: [NSLocalizedDescriptionKey: "Failed to decode image at index 0 for \(imageURL.lastPathComponent)"]
             )
         }
-
-        // Apply EXIF orientation to get correctly oriented image
-        let cgImage = applyEXIFOrientation(to: rawCGImage, from: imageSource)
 
         // Use face landmarks request for better quality detection. When tiling is enabled we also
         // scan overlapping sub-regions and merge — Apple's whole-image detector drops small/off-angle
@@ -156,7 +159,9 @@ nonisolated struct FaceDetectionService: Sendable {
             guard observation.confidence >= config.minConfidence else { continue }
 
             // Calculate face size in pixels
-            let facePixelWidth = Int(observation.boundingBox.width * CGFloat(cgImage.width))
+            // Preserve the setting's original-image pixel semantics even though detection uses
+            // a bounded working decode.
+            let facePixelWidth = Int(observation.boundingBox.width * CGFloat(originalOrientedWidth ?? cgImage.width))
             guard facePixelWidth >= config.minFaceSize else { continue }
 
             // Capture-quality is stored per face; the too-blurry filter is applied live at display
@@ -634,6 +639,35 @@ nonisolated struct FaceDetectionService: Sendable {
 
     // MARK: - Clustering Entry Point
 
+    /// Sum of the L2-normalized member embeddings for one group. For normalized embeddings,
+    /// `1 - dot(face, sum / count)` is exactly the same as averaging the cosine distance from
+    /// `face` to every member, but requires one 512-value dot product instead of one per face.
+    private struct GroupEmbeddingAccumulator {
+        private(set) var sum: [Float] = []
+        private(set) var count = 0
+
+        mutating func add(_ vector: [Float]) {
+            guard !vector.isEmpty else { return }
+            if sum.isEmpty {
+                sum = vector
+                count = 1
+                return
+            }
+            guard sum.count == vector.count else { return }
+            for index in sum.indices {
+                sum[index] += vector[index]
+            }
+            count += 1
+        }
+
+        func averageCosineDistance(to vector: [Float]) -> Float? {
+            guard count > 0, !sum.isEmpty, sum.count == vector.count else { return nil }
+            var dot: Float = 0
+            vDSP_dotpr(vector, 1, sum, 1, &dot, vDSP_Length(vector.count))
+            return max(0, min(2, 1 - dot / Float(count)))
+        }
+    }
+
     /// The single standardized clustering pipeline: incrementally assign each new face to the
     /// nearest existing group (average cosine linkage), then cluster the leftovers with the
     /// quality-gated agglomerative pass. Deterministic and order-independent.
@@ -651,6 +685,23 @@ nonisolated struct FaceDetectionService: Sendable {
         var groups = existingGroups
         let faceLookup = Dictionary(uniqueKeysWithValues: allFaces.map { ($0.id, $0) })
 
+        // Build once, then update when a new face joins a group. This preserves the exact
+        // average-cosine decision made by the previous member-by-member loop while changing
+        // incremental assignment from O(new faces × all existing faces) to O(new faces × groups).
+        var groupEmbeddings: [UUID: GroupEmbeddingAccumulator] = [:]
+        groupEmbeddings.reserveCapacity(groups.count)
+        for group in groups {
+            var accumulator = GroupEmbeddingAccumulator()
+            for faceID in group.faceIDs {
+                guard let memberFace = faceLookup[faceID],
+                      let memberEmbedding = fpCache.getFeaturePrint(for: memberFace) else { continue }
+                accumulator.add(memberEmbedding)
+            }
+            if accumulator.count > 0 {
+                groupEmbeddings[group.id] = accumulator
+            }
+        }
+
         // First, try to assign new faces to existing groups by average cosine distance to members.
         var remainingFaces: [DetectedFace] = []
 
@@ -664,20 +715,7 @@ nonisolated struct FaceDetectionService: Sendable {
             var bestDistance: Float = config.clusteringThreshold
 
             for (index, group) in groups.enumerated() {
-                let memberFaces = group.faceIDs.compactMap { faceLookup[$0] }
-                guard !memberFaces.isEmpty else { continue }
-
-                var totalDistance: Float = 0
-                var count = 0
-                for memberFace in memberFaces {
-                    if let memberFP = fpCache.getFeaturePrint(for: memberFace),
-                       let d = computeDistanceCached(faceFP, memberFP) {
-                        totalDistance += d
-                        count += 1
-                    }
-                }
-                guard count > 0 else { continue }
-                let distance = totalDistance / Float(count)
+                guard let distance = groupEmbeddings[group.id]?.averageCosineDistance(to: faceFP) else { continue }
 
                 if distance < bestDistance {
                     bestDistance = distance
@@ -686,7 +724,11 @@ nonisolated struct FaceDetectionService: Sendable {
             }
 
             if let index = bestGroupIndex {
+                let groupID = groups[index].id
                 groups[index].faceIDs.append(face.id)
+                var accumulator = groupEmbeddings[groupID] ?? GroupEmbeddingAccumulator()
+                accumulator.add(faceFP)
+                groupEmbeddings[groupID] = accumulator
             } else {
                 remainingFaces.append(face)
             }
@@ -804,23 +846,27 @@ nonisolated struct FaceDetectionService: Sendable {
 
     /// Detect faces with landmarks, optionally scanning overlapping tiles and merging the results.
     ///
-    /// Apple's whole-image detector under-detects on large group shots (small or slightly
-    /// off-angle faces get dropped). Re-running the request restricted to a `regionOfInterest`
-    /// lets Vision resolve those faces; because ROI results are reported in full-image normalized
-    /// coordinates with landmarks intact, the merged observations flow through the rest of the
-    /// pipeline (capture quality, eye alignment, crops) unchanged.
+    /// Fast mode lets the landmarks request perform its own single whole-image face search.
+    /// Thorough mode uses the cheaper rectangle request for the whole image and each tile, merges
+    /// those boxes, then asks Vision for landmarks once using the merged observations as input.
+    /// This preserves the tiled detector's recall without repeating landmark extraction seven times.
     private nonisolated func detectFaceLandmarksTiled(in cgImage: CGImage, tiled: Bool) async throws -> [VNFaceObservation] {
-        // Whole-image pass first; its detections are best-centered, so they win ties on merge.
-        var merged = try await detectFaceLandmarks(in: cgImage, regionOfInterest: nil)
-        guard tiled else { return merged }
+        guard tiled else {
+            return try await detectFaceLandmarks(in: cgImage)
+        }
+
+        // Whole-image boxes are best-centered, so they win duplicate ties over tile detections.
+        var merged = try await detectFaceRectangles(in: cgImage)
 
         for roi in Self.tileRegions() {
-            let tileFaces = try await detectFaceLandmarks(in: cgImage, regionOfInterest: roi)
+            let tileFaces = try await detectFaceRectangles(in: cgImage, regionOfInterest: roi)
             for face in tileFaces where !merged.contains(where: { Self.iou($0.boundingBox, face.boundingBox) >= Self.mergeIoUThreshold }) {
                 merged.append(face)
             }
         }
-        return merged
+
+        guard !merged.isEmpty else { return [] }
+        return try await detectFaceLandmarks(in: cgImage, inputFaceObservations: merged)
     }
 
     /// The set of overlapping regions-of-interest (normalized, bottom-left origin) tiling the image.
@@ -847,10 +893,11 @@ nonisolated struct FaceDetectionService: Sendable {
         return unionArea > 0 ? interArea / unionArea : 0
     }
 
-    /// Detect faces with landmarks for better quality filtering. When `regionOfInterest` is set
-    /// (normalized, bottom-left origin), Vision searches only that sub-region but still reports
-    /// results in full-image coordinates.
-    private nonisolated func detectFaceLandmarks(in cgImage: CGImage, regionOfInterest: CGRect? = nil) async throws -> [VNFaceObservation] {
+    /// Detect face landmarks, optionally restricted to boxes found by a prior rectangle pass.
+    private nonisolated func detectFaceLandmarks(
+        in cgImage: CGImage,
+        inputFaceObservations: [VNFaceObservation]? = nil
+    ) async throws -> [VNFaceObservation] {
         try await withCheckedThrowingContinuation { continuation in
             let request = VNDetectFaceLandmarksRequest { request, error in
                 if let error {
@@ -867,9 +914,7 @@ nonisolated struct FaceDetectionService: Sendable {
                 nonisolated(unsafe) let result = validFaces
                 continuation.resume(returning: result)
             }
-            if let regionOfInterest {
-                request.regionOfInterest = regionOfInterest
-            }
+            request.inputFaceObservations = inputFaceObservations
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
                 try handler.perform([request])
@@ -902,7 +947,10 @@ nonisolated struct FaceDetectionService: Sendable {
         }
     }
 
-    private nonisolated func detectFaceRectangles(in cgImage: CGImage) async throws -> [VNFaceObservation] {
+    private nonisolated func detectFaceRectangles(
+        in cgImage: CGImage,
+        regionOfInterest: CGRect? = nil
+    ) async throws -> [VNFaceObservation] {
         try await withCheckedThrowingContinuation { continuation in
             let request = VNDetectFaceRectanglesRequest { request, error in
                 if let error {
@@ -912,6 +960,9 @@ nonisolated struct FaceDetectionService: Sendable {
                 let faces = request.results as? [VNFaceObservation] ?? []
                 nonisolated(unsafe) let result = faces
                 continuation.resume(returning: result)
+            }
+            if let regionOfInterest {
+                request.regionOfInterest = regionOfInterest
             }
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
@@ -931,6 +982,62 @@ nonisolated struct FaceDetectionService: Sendable {
 
     // MARK: - Image Processing
 
+    /// Decode and orient a bounded working image in one ImageIO operation. The fallback keeps
+    /// compatibility with image formats for which ImageIO cannot synthesize a thumbnail.
+    private func makeWorkingImage(from imageSource: CGImageSource) -> CGImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: Self.maxWorkingImageDimension,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        if let image = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, options as CFDictionary) {
+            return image
+        }
+
+        guard let fullResolutionImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            return nil
+        }
+        return applyEXIFOrientation(to: fullResolutionImage, from: imageSource)
+    }
+
+    /// Width of the visually oriented source image. Detection operates on normalized boxes, but
+    /// `minFaceSize` and stored quality metadata remain expressed in original source pixels.
+    private func orientedPixelWidth(from imageSource: CGImageSource) -> Int? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue else {
+            return nil
+        }
+        switch Self.orientationValue(in: properties) {
+        case 5, 6, 7, 8:
+            return height
+        default:
+            return width
+        }
+    }
+
+    private static func orientationValue(in properties: [CFString: Any]) -> UInt32 {
+        func uint32(_ value: Any?) -> UInt32? {
+            if let value = value as? UInt32 { return value }
+            if let value = value as? Int { return UInt32(value) }
+            return (value as? NSNumber)?.uint32Value
+        }
+
+        if let orientation = uint32(properties[kCGImagePropertyOrientation]), orientation != 1 {
+            return orientation
+        }
+        if let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any],
+           let orientation = uint32(tiff[kCGImagePropertyTIFFOrientation]), orientation != 1 {
+            return orientation
+        }
+        if let heic = properties[kCGImagePropertyHEICSDictionary] as? [CFString: Any],
+           let orientation = uint32(heic[kCGImagePropertyOrientation]) {
+            return orientation
+        }
+        return 1
+    }
+
     /// Apply EXIF orientation to a CGImage to get the correctly oriented image.
     /// This ensures faces are detected and cropped from the visually correct orientation.
     private func applyEXIFOrientation(to cgImage: CGImage, from imageSource: CGImageSource) -> CGImage {
@@ -939,45 +1046,7 @@ nonisolated struct FaceDetectionService: Sendable {
             return cgImage
         }
 
-        // Try to get orientation from multiple locations (different formats store it differently)
-        var orientationValue: UInt32 = 1
-
-        // 1. Root level kCGImagePropertyOrientation (most common)
-        if let value = properties[kCGImagePropertyOrientation] {
-            if let uint32 = value as? UInt32 {
-                orientationValue = uint32
-            } else if let int = value as? Int {
-                orientationValue = UInt32(int)
-            } else if let number = value as? NSNumber {
-                orientationValue = number.uint32Value
-            }
-        }
-
-        // 2. TIFF dictionary (some formats including HEIC)
-        if orientationValue == 1,
-           let tiffDict = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any],
-           let value = tiffDict[kCGImagePropertyTIFFOrientation] {
-            if let uint32 = value as? UInt32 {
-                orientationValue = uint32
-            } else if let int = value as? Int {
-                orientationValue = UInt32(int)
-            } else if let number = value as? NSNumber {
-                orientationValue = number.uint32Value
-            }
-        }
-
-        // 3. HEIF/HEIC specific dictionary
-        if orientationValue == 1,
-           let heifDict = properties[kCGImagePropertyHEICSDictionary] as? [CFString: Any],
-           let value = heifDict[kCGImagePropertyOrientation] {
-            if let uint32 = value as? UInt32 {
-                orientationValue = uint32
-            } else if let int = value as? Int {
-                orientationValue = UInt32(int)
-            } else if let number = value as? NSNumber {
-                orientationValue = number.uint32Value
-            }
-        }
+        let orientationValue = Self.orientationValue(in: properties)
 
         // No rotation needed for normal orientation
         guard orientationValue != 1 else {

@@ -52,6 +52,7 @@ final class PreferencesSyncService {
         UserDefaultsKeys.faceMinConfidence,
         UserDefaultsKeys.faceMinFaceSize,
         UserDefaultsKeys.faceMinQuality,
+        UserDefaultsKeys.faceTiledDetection,
         UserDefaultsKeys.knownPeopleMinConfidence,
         // Format & compression
         UserDefaultsKeys.exportFormatSDR,

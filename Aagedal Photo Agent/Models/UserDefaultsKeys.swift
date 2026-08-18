@@ -23,7 +23,7 @@ nonisolated enum UserDefaultsKeys {
     static let faceMinQuality = "faceMinQuality"
     /// When true, face detection also runs Vision over overlapping image tiles and merges the
     /// results, recovering faces the single whole-image pass misses (small/off-angle faces in
-    /// group shots). Costs ~7× the detection passes per image. Default on.
+    /// group shots). This is the Thorough scan mode; Fast mode is the default.
     static let faceTiledDetection = "faceTiledDetection"
 
     // Retired in the v2.0 face-recognition rewrite (single CoreML embedder + one clustering

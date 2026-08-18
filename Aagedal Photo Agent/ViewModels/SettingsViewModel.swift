@@ -624,6 +624,12 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(faceMinFaceSize, forKey: UserDefaultsKeys.faceMinFaceSize) }
     }
 
+    /// Fast (false, default) scans the full frame once. Thorough (true) adds overlapping
+    /// tile passes to recover small and off-angle faces in group photos.
+    var faceTiledDetection: Bool {
+        didSet { UserDefaults.standard.set(faceTiledDetection, forKey: UserDefaultsKeys.faceTiledDetection) }
+    }
+
     /// Sports tagging (experimental): run jersey-number OCR alongside face detection.
     /// The scan pipeline reads the key from UserDefaults directly, so this takes effect
     /// on the next scan without a restart.
@@ -991,6 +997,8 @@ final class SettingsViewModel {
 
         let storedMinSize = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
         self.faceMinFaceSize = storedMinSize ?? 50
+
+        self.faceTiledDetection = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? false
 
         self.sportsModeEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled)
 
