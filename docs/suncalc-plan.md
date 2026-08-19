@@ -4,9 +4,10 @@
 
 ## Status
 
-**Planned next-release feature.** This plan replaces the previously rejected broad sun/shadow
+**Phase 1 implemented for 3.0.** This plan replaces the previously rejected broad sun/shadow
 analyzer with a narrower first release: an offline solar-position overlay with explicit inputs,
-reproducible calculations, and conservative evidence language.
+reproducible calculations, and conservative evidence language. The calculation contract, original
+Swift implementation, and first numerical corpus are complete; persistence and UI remain next.
 
 The first release is not an authenticity verdict, a capture-time inference tool, or a simulation of
 real shadows cast by terrain and structures.
@@ -177,21 +178,31 @@ limits rather than coarse minute-by-minute sampling.
 **Exit gate:** solar position and event calculations pass the reference corpus independently of UI
 and persistence.
 
-- [ ] Write the calculation-conventions note and choose the supported date range.
-- [ ] Add reference fixtures from published NOAA/NREL examples and record their provenance.
-- [ ] Implement Julian date/time conversion without using the current timezone.
-- [ ] Implement solar coordinates, local hour angle, azimuth, and elevation.
-- [ ] Implement the documented atmospheric-refraction correction.
-- [ ] Implement sunrise, solar-noon, sunset, and polar-condition solving.
-- [ ] Add invalid-input and non-convergence errors with useful descriptions.
-- [ ] Verify repeatability and Swift 6 concurrency safety.
+- [x] Write the calculation-conventions note and choose the supported date range.
+- [x] Add reference fixtures from published NOAA/NREL examples and record their provenance.
+- [x] Implement Julian date/time conversion without using the current timezone.
+- [x] Implement solar coordinates, local hour angle, azimuth, and elevation.
+- [x] Implement the documented atmospheric-refraction correction.
+- [x] Implement sunrise, solar-noon, sunset, and polar-condition solving.
+- [x] Add invalid-input and non-convergence errors with useful descriptions.
+- [x] Verify repeatability and Swift 6 concurrency safety.
+
+**Progress — 2026-08-19:** `AnalysisSolarPositionCalculator` now provides a pure, nonisolated,
+Foundation-only `meeusNOAAV1` implementation for 1800–2100. It computes geometric and apparent
+position, opposite shadow bearing, bounded iterative civil-day events, and explicit polar states
+without consulting the machine timezone. Ten Swift Testing tests cover the NREL position fixture,
+NOAA Greenwich event fixture, J2000 conversion, Oslo seasons, Tromsø polar states, leap-day/date-line
+offset behavior, supported-range boundaries, concurrent determinism, invalid inputs, and angle
+invariants. See
+[the calculation contract](solar-calculation-conventions.md).
 
 ### Phase 2 — state, validation, and migration
 
 **Exit gate:** solar settings round-trip without modifying source media and all version-8 cases
 migrate with the overlay disabled.
 
-- [ ] Add `AnalysisSolarOverlayState` and calculation-method types.
+- [ ] Add `AnalysisSolarOverlayState`; the calculation-method type now exists with the Phase 1
+  contract.
 - [ ] Add optional solar state to `AnalysisMapState` and its validation.
 - [ ] Bump `AnalysisCase.currentSchemaVersion` from 8 to 9.
 - [ ] Add an explicit version-8 migration with `solarOverlay = nil`.

@@ -3,10 +3,11 @@
 **Status:** living planning index  
 **Last reviewed:** 2026-08-19
 
-**Next release label:** to be decided before release packaging. The accumulated scope is larger
-than a 2.3 point release; 2.5 and 3.0 are the current reasonable candidates. Existing `v2.3/`
-paths retain their working name until that choice is made so links and implementation history stay
-stable. All three portfolio initiatives below are intended for the same next release.
+**Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
+and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
+`v2.3/` paths retain their historical working name so links and implementation history stay stable.
+All three portfolio initiatives below are intended for 3.0. The Xcode marketing version remains at
+its development value until the release-packaging gate.
 
 This document is the top-level index for product and implementation planning. It tracks the major
 initiatives, their order and dependencies, while each linked sub-plan remains authoritative for its
@@ -18,7 +19,7 @@ own scope, tasks, exit gates, and technical decisions.
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; release hardening in progress | Close remaining manual fixture, accessibility, performance, and cross-phase validation |
 | Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, and JSON schema safety established; I/O, validation, and fixture work remains | Complete the redistributable interoperability corpus, then finish the shared metadata I/O/validation foundation |
-| SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Planned for the next release; implementation not started | Approve calculation conventions and reference corpus before calculation code or UI work |
+| SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Phase 1 calculation contract implemented; persistence and UI not started | Add versioned overlay state and migrate analysis cases to schema 9 |
 
 ## Default delivery order
 
@@ -92,6 +93,9 @@ The [SunCalc-style solar overlay plan](suncalc-plan.md) owns its next-release wo
 the app-owned Swift calculator, explicit time/location inputs, map presentation, persistence,
 reports, numerical fixtures, and the boundary between a direction overlay and later forensic
 shadow comparison.
+
+The [calculation conventions and reference corpus](solar-calculation-conventions.md) freeze the
+`meeusNOAAV1` equations, supported range, event/refraction conventions, tolerances, and sources.
 
 Any future shadow-length, capture-time inference, terrain, or obstruction work requires a separate
 gate or ADR; it must not silently expand the first-release plan.

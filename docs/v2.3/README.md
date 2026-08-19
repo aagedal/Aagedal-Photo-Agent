@@ -1,10 +1,10 @@
-# Aagedal Photo Agent 2.3 — release plan
+# Aagedal Photo Agent 3.0 — release plan (historical `v2.3` path)
 
 > Project planning index: [../README.md](../README.md)
 >
-> **Version note (2026-08-19):** 2.3 is the working-plan label, not the final release number. The
-> combined next-release scope may warrant 2.5 or 3.0; keep this path stable until that decision is
-> made.
+> **Version decision (2026-08-19):** the combined next-release scope is now labelled 3.0. This
+> directory keeps its historical `v2.3` path so existing links and implementation history remain
+> stable.
 
 **Status:** implementation in progress
 
@@ -76,8 +76,9 @@ source overview plus an optional selected evidence crop taken directly from the 
 The snapshot freezes display-oriented and source-storage pixel bounds, and the report states that the
 crop uses 1:1 source-pixel extraction with no interpolation. Stress coverage includes long findings,
 Unicode, missing figures, many annotations, and organically flowing multi-page content.
-The conditional sun/shadow analyzer is not approved for 2.3 because terrain, clock/timezone, and
-measurement uncertainty have not yet passed an evidence-quality gate.
+The broad conditional sun/shadow analyzer is not approved for 3.0 because terrain, clock/timezone,
+and measurement uncertainty have not yet passed an evidence-quality gate. The separately planned
+solar-position direction overlay stays within the narrower approved boundary.
 Phase 7 now includes the reusable comparison session/coordinator and a Browser workspace for exactly
 two selected images. Side-by-side, stacked, and angled-wipe layouts share synchronized fit, true-pixel, and
 custom viewport state with deliberate alignment offsets. The focused pane can be replaced in visible
@@ -86,7 +87,7 @@ and leaving Compare restores the current comparison selection to the Browser. Pa
 identify Original, Committed Edit, Live Edit, or a named version. Comparison output is capped at a
 4096-pixel long edge, and RAW decodes share a cancellation-aware single-permit gate so two large RAW
 sources cannot create overlapping transient decode spikes. The difference layout remains deferred
-and do not block 2.3.
+and do not block 3.0.
 Phase 8 now includes Develop comparison entry. The inspector can compare the current image with the
 previous supported filmstrip image by default, or with a target chosen from a filmstrip context
 menu, without changing the active edit selection. The current pane is a debounced, revision-bound
@@ -96,7 +97,7 @@ and alignment semantics while the Develop inspector remains editable. Live outpu
 to the comparison memory budget, reuses the captured source revision after the first render, and
 reports render failure rather than mislabeling unedited fallback pixels as live evidence.
 
-Version 2.3 is a broad investigation and review release. It adds three connected
+The 3.0 investigation and review workstream adds three connected
 capabilities:
 
 1. an **Image Analysis** workspace for pixel forensics and OSINT-oriented review;
@@ -109,7 +110,7 @@ release plan and tracks progress as the application code is built.
 
 ## Product intent
 
-2.3 should help a photographer, editor, or investigator answer three different questions:
+3.0 should help a photographer, editor, or investigator answer three different questions:
 
 - **What does the file itself support?** Inspect pixels, compression, metadata, provenance,
   and internally inconsistent signals.
@@ -165,7 +166,7 @@ Image Analysis, Comparison, full-screen, Develop, and Clean Feed should share:
 
 ## Scope
 
-### Must ship in 2.3
+### Must ship in 3.0
 
 - A first-class Image Analysis entry in the main layout selector.
 - Pixel Analysis and OSINT modes within the analysis workspace.
@@ -211,7 +212,7 @@ Conditional work must not delay the evidence workspace, comparison, or versionin
 - Writing the complete named-version catalog to XMP.
 - Pixel-to-centimeter conversion inferred from DPI metadata alone.
 - A general vector illustration editor.
-- Collaborative cases, shared annotations, or multi-user merge in 2.3.
+- Collaborative cases, shared annotations, or multi-user merge in 3.0.
 
 ## Proposed user journeys
 
@@ -273,7 +274,7 @@ flowchart TD
 
 ## Architecture direction
 
-Do not add all 2.3 state directly to `ContentView`. Introduce bounded feature models and
+Do not add all 3.0 state directly to `ContentView`. Introduce bounded feature models and
 services, with `ContentView` responsible only for navigation and shared dependencies.
 
 ```mermaid
@@ -312,7 +313,7 @@ The names above describe responsibilities, not mandatory Swift type names.
 
 ## Existing components to reuse
 
-| Existing component | Reuse in 2.3 | Constraint |
+| Existing component | Reuse in 3.0 | Constraint |
 |---|---|---|
 | `MainViewMode` and layout menu | Add Image Analysis navigation | Keep mode-specific toolbars out of one giant branch |
 | `FullScreenImageCache` | Oriented/edited source loading | Analysis needs an explicit original-vs-developed policy |
@@ -347,7 +348,7 @@ Detailed sequencing and gates are in [delivery-plan.md](delivery-plan.md).
 
 ## Release gates
 
-2.3 is release-ready only when all of the following are true:
+3.0 is release-ready only when all of the following are true:
 
 1. Existing XMP edits open and save without semantic change.
 2. Analysis and version JSON survive interruption and a failed write without losing the
