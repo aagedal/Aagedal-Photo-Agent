@@ -59,7 +59,7 @@ enum AnalysisCaseValidationError: Error, Equatable, LocalizedError, Sendable {
 /// Map state shares this source-bound document; report state will join it in a later slice rather
 /// than creating separate Pixel Analysis and OSINT sessions.
 nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
-    static let currentSchemaVersion = 8
+    static let currentSchemaVersion = 9
 
     let schemaVersion: Int
     let id: UUID
@@ -232,6 +232,22 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         updatedAt = max(max(now, createdAt), updatedLocation?.updatedAt ?? createdAt)
     }
 
+    mutating func setSolarOverlay(
+        _ overlay: AnalysisSolarOverlayState,
+        now: Date = Date()
+    ) {
+        mapState.solarOverlay = overlay
+        updatedAt = max(now, createdAt)
+    }
+
+    @discardableResult
+    mutating func clearSolarOverlay(now: Date = Date()) -> Bool {
+        guard mapState.solarOverlay != nil else { return false }
+        mapState.solarOverlay = nil
+        updatedAt = max(now, createdAt)
+        return true
+    }
+
     mutating func setMapAnnotation(
         _ annotation: AnalysisMapAnnotation,
         now: Date = Date()
@@ -275,6 +291,32 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         switch schemaVersion {
         case currentSchemaVersion:
             return try decoder.decode(AnalysisCase.self, from: data)
+        case 8:
+            let legacy = try decoder.decode(LegacyAnalysisCaseV8.self, from: data)
+            return AnalysisCase(
+                schemaVersion: currentSchemaVersion,
+                id: legacy.id,
+                title: legacy.title,
+                source: legacy.source,
+                createdAt: legacy.createdAt,
+                updatedAt: legacy.updatedAt,
+                createdByAppBuild: legacy.createdByAppBuild,
+                workspaceMode: legacy.workspaceMode,
+                displayPreference: legacy.displayPreference,
+                analyzerRuns: legacy.analyzerRuns,
+                annotations: legacy.annotations,
+                timestampEvidence: legacy.timestampEvidence,
+                observations: legacy.observations,
+                mapState: AnalysisMapState(
+                    style: legacy.mapState.style,
+                    showsTraffic: legacy.mapState.showsTraffic,
+                    shows3DContent: legacy.mapState.shows3DContent,
+                    viewport: legacy.mapState.viewport,
+                    investigationLocation: legacy.mapState.investigationLocation,
+                    annotations: legacy.mapState.annotations,
+                    solarOverlay: nil
+                )
+            )
         case 7:
             let legacy = try decoder.decode(LegacyAnalysisCaseV7.self, from: data)
             return AnalysisCase(
@@ -452,6 +494,32 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
     private static var currentAppBuild: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
     }
+}
+
+nonisolated private struct LegacyAnalysisCaseV8: Codable {
+    let schemaVersion: Int
+    let id: UUID
+    var title: String
+    let source: SourceImageRevision
+    let createdAt: Date
+    var updatedAt: Date
+    let createdByAppBuild: String
+    var workspaceMode: AnalysisWorkspaceMode
+    var displayPreference: AnalysisSourceRepresentation
+    var analyzerRuns: [AnalysisAnalyzerRun]
+    var annotations: [AnalysisAnnotation]
+    var timestampEvidence: [AnalysisTimestampEvidence]
+    var observations: [AnalysisObservation]
+    var mapState: LegacyAnalysisMapStateV8
+}
+
+nonisolated private struct LegacyAnalysisMapStateV8: Codable {
+    var style: AnalysisMapStyle
+    var showsTraffic: Bool
+    var shows3DContent: Bool
+    var viewport: AnalysisMapViewport?
+    var investigationLocation: AnalysisLocationEvidence?
+    var annotations: [AnalysisMapAnnotation]
 }
 
 nonisolated private struct LegacyAnalysisCaseV7: Codable {

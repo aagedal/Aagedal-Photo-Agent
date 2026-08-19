@@ -591,6 +591,22 @@ final class AnalysisWorkspaceModel {
         persist(updatedCase)
     }
 
+    func setSolarOverlay(_ overlay: AnalysisSolarOverlayState) {
+        guard overlay.validate(),
+              var updatedCase = analysisCase,
+              !sourceChanged,
+              updatedCase.mapState.solarOverlay != overlay else { return }
+        updatedCase.setSolarOverlay(overlay)
+        persist(updatedCase)
+    }
+
+    func clearSolarOverlay() {
+        guard var updatedCase = analysisCase,
+              !sourceChanged,
+              updatedCase.clearSolarOverlay() else { return }
+        persist(updatedCase)
+    }
+
     func setMapAnnotation(_ annotation: AnalysisMapAnnotation) {
         guard (try? annotation.validate()) != nil,
               var updatedCase = analysisCase,

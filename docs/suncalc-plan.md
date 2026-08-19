@@ -4,10 +4,11 @@
 
 ## Status
 
-**Phase 1 implemented for 3.0.** This plan replaces the previously rejected broad sun/shadow
+**Phases 1–2 implemented for 3.0.** This plan replaces the previously rejected broad sun/shadow
 analyzer with a narrower first release: an offline solar-position overlay with explicit inputs,
 reproducible calculations, and conservative evidence language. The calculation contract, original
-Swift implementation, and first numerical corpus are complete; persistence and UI remain next.
+Swift implementation, first numerical corpus, and schema-9 persistence contract are complete;
+OSINT controls and map presentation remain next.
 
 The first release is not an authenticity verdict, a capture-time inference tool, or a simulation of
 real shadows cast by terrain and structures.
@@ -201,15 +202,23 @@ invariants. See
 **Exit gate:** solar settings round-trip without modifying source media and all version-8 cases
 migrate with the overlay disabled.
 
-- [ ] Add `AnalysisSolarOverlayState`; the calculation-method type now exists with the Phase 1
+- [x] Add `AnalysisSolarOverlayState`; the calculation-method type now exists with the Phase 1
   contract.
-- [ ] Add optional solar state to `AnalysisMapState` and its validation.
-- [ ] Bump `AnalysisCase.currentSchemaVersion` from 8 to 9.
-- [ ] Add an explicit version-8 migration with `solarOverlay = nil`.
-- [ ] Add `AnalysisCase` mutations for setting and clearing solar state.
-- [ ] Add `AnalysisWorkspaceModel` mutations routed through the existing repository.
-- [ ] Preserve source-changed read-only behavior.
-- [ ] Add round-trip, invalid-state, migration, unchanged-source, and no-sidecar-write tests.
+- [x] Add optional solar state to `AnalysisMapState` and its validation.
+- [x] Bump `AnalysisCase.currentSchemaVersion` from 8 to 9.
+- [x] Add an explicit version-8 migration with `solarOverlay = nil`.
+- [x] Add `AnalysisCase` mutations for setting and clearing solar state.
+- [x] Add `AnalysisWorkspaceModel` mutations routed through the existing repository.
+- [x] Preserve source-changed read-only behavior.
+- [x] Add round-trip, invalid-state, migration, unchanged-source, and no-sidecar-write tests.
+
+**Progress — 2026-08-19:** `AnalysisSolarOverlayState` now freezes the timezone-qualified,
+minute-or-better timestamp, optional provenance link, ray visibility, overlay visibility, and
+calculation method in `AnalysisMapState`. `AnalysisCase` schema 9 explicitly migrates schema-8 map
+state with no solar overlay. Case and workspace set/clear mutations use the existing folder-local
+repository and remain disabled for source-changed cases. The 59-test `AnalysisCaseTests` suite
+passes, including solar round-trip, invalid-state, migration, source-byte/sidecar immutability, and
+workspace read-only coverage.
 
 ### Phase 3 — OSINT controls
 

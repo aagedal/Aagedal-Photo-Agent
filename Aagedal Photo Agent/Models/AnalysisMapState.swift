@@ -446,6 +446,7 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
     var viewport: AnalysisMapViewport?
     var investigationLocation: AnalysisLocationEvidence?
     var annotations: [AnalysisMapAnnotation]
+    var solarOverlay: AnalysisSolarOverlayState?
 
     init(
         style: AnalysisMapStyle = .hybrid,
@@ -453,7 +454,8 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
         shows3DContent: Bool = false,
         viewport: AnalysisMapViewport? = nil,
         investigationLocation: AnalysisLocationEvidence? = nil,
-        annotations: [AnalysisMapAnnotation] = []
+        annotations: [AnalysisMapAnnotation] = [],
+        solarOverlay: AnalysisSolarOverlayState? = nil
     ) {
         self.style = style
         self.showsTraffic = showsTraffic
@@ -461,6 +463,7 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
         self.viewport = viewport
         self.investigationLocation = investigationLocation
         self.annotations = annotations
+        self.solarOverlay = solarOverlay
     }
 
     func validate() -> Bool {
@@ -469,6 +472,7 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
             && annotations.count <= 500
             && Set(annotations.map(\.id)).count == annotations.count
             && annotations.allSatisfy { (try? $0.validate()) != nil }
+            && (solarOverlay?.validate() ?? true)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -478,6 +482,7 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
         case viewport
         case investigationLocation
         case annotations
+        case solarOverlay
     }
 
     init(from decoder: Decoder) throws {
@@ -494,6 +499,10 @@ nonisolated struct AnalysisMapState: Codable, Equatable, Sendable {
             [AnalysisMapAnnotation].self,
             forKey: .annotations
         ) ?? []
+        solarOverlay = try container.decodeIfPresent(
+            AnalysisSolarOverlayState.self,
+            forKey: .solarOverlay
+        )
     }
 }
 

@@ -139,7 +139,7 @@ struct AnalysisCaseTests {
             now: Date(timeIntervalSince1970: 100)
         )
 
-        #expect(analysisCase.schemaVersion == 8)
+        #expect(analysisCase.schemaVersion == 9)
         #expect(analysisCase.source == revision)
         #expect(analysisCase.workspaceMode == .pixelAnalysis)
         #expect(analysisCase.displayPreference == .original)
@@ -264,7 +264,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version one case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 8)
+        #expect(migrated.schemaVersion == 9)
         #expect(migrated.analyzerRuns.isEmpty)
         #expect(migrated.annotations.isEmpty)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -301,7 +301,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version two case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 8)
+        #expect(migrated.schemaVersion == 9)
         #expect(migrated.analyzerRuns == analysisCase.analyzerRuns)
         #expect(migrated.annotations.isEmpty)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -344,7 +344,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version three case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 8)
+        #expect(migrated.schemaVersion == 9)
         #expect(migrated.annotations.count == 1)
         #expect(migrated.annotations.first?.measurementCalibration == nil)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -389,7 +389,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version four case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 8)
+        #expect(migrated.schemaVersion == 9)
         #expect(migrated.annotations.map(\.id) == analysisCase.annotations.map(\.id))
         #expect(migrated.annotations.map(\.kind) == analysisCase.annotations.map(\.kind))
         #expect(migrated.annotations.map(\.geometry) == analysisCase.annotations.map(\.geometry))
@@ -504,7 +504,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version five case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 8)
+        #expect(migrated.schemaVersion == 9)
         #expect(migrated.timestampEvidence == analysisCase.timestampEvidence)
         #expect(migrated.mapState == AnalysisMapState())
         try migrated.validateForPersistence()
@@ -560,6 +560,156 @@ struct AnalysisCaseTests {
         #expect(!FileManager.default.fileExists(
             atPath: fixture.fileURL.deletingPathExtension().appendingPathExtension("xmp").path
         ))
+    }
+
+    @Test("solar overlay round-trips frozen inputs without modifying source media")
+    func solarOverlayRoundTripDoesNotWriteSource() async throws {
+        let fixture = try AnalysisFixture(contents: "solar overlay source")
+        defer { fixture.remove() }
+        let sourceBytes = try Data(contentsOf: fixture.fileURL)
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let evidenceID = UUID()
+        let overlay = makeSolarOverlay(linkedTimestampEvidenceID: evidenceID)
+        var analysisCase = AnalysisCase.create(
+            for: revision,
+            appBuild: "test",
+            now: Date(timeIntervalSince1970: 1)
+        )
+
+        analysisCase.setSolarOverlay(overlay, now: Date(timeIntervalSince1970: 2))
+        try analysisCase.validateForPersistence()
+        try await repository.save(analysisCase)
+
+        guard case .exact(let reopened) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the solar overlay case to reopen")
+            return
+        }
+        #expect(reopened.mapState.solarOverlay == overlay)
+        #expect(reopened.mapState.solarOverlay?.linkedTimestampEvidenceID == evidenceID)
+        #expect(reopened.timestampEvidence.isEmpty)
+        #expect(try Data(contentsOf: fixture.fileURL) == sourceBytes)
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.fileURL.deletingPathExtension().appendingPathExtension("xmp").path
+        ))
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.directoryURL.appendingPathComponent(".photo_metadata").path
+        ))
+    }
+
+    @Test("version eight cases migrate with solar overlay disabled")
+    func migratesVersionEightCaseWithSolarDisabled() async throws {
+        let fixture = try AnalysisFixture(contents: "version eight solar source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        analysisCase.setSolarOverlay(makeSolarOverlay())
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(analysisCase)) as? [String: Any]
+        )
+        object["schemaVersion"] = 8
+
+        let caseDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: caseDirectory,
+            withIntermediateDirectories: true
+        )
+        let caseURL = caseDirectory.appendingPathComponent(
+            "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+        )
+        try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
+
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let migrated) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the version eight case to migrate")
+            return
+        }
+        #expect(migrated.schemaVersion == 9)
+        #expect(migrated.mapState.solarOverlay == nil)
+        try migrated.validateForPersistence()
+    }
+
+    @Test("solar overlay validation requires an absolute minute-or-better timestamp")
+    func rejectsInvalidSolarOverlayState() async throws {
+        let fixture = try AnalysisFixture(contents: "invalid solar overlay source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+
+        var unknownTimezone = makeSolarOverlay()
+        unknownTimezone.timestamp.utcOffsetMinutes = nil
+        analysisCase.mapState.solarOverlay = unknownTimezone
+        #expect(throws: AnalysisCaseValidationError.invalidMapState) {
+            try analysisCase.validateForPersistence()
+        }
+
+        var dayOnly = makeSolarOverlay()
+        dayOnly.timestamp = AnalysisTimestampValue(
+            year: 2026,
+            month: 8,
+            day: 19,
+            precision: .day,
+            utcOffsetMinutes: 120
+        )
+        analysisCase.mapState.solarOverlay = dayOnly
+        #expect(throws: AnalysisCaseValidationError.invalidMapState) {
+            try analysisCase.validateForPersistence()
+        }
+
+        var invalidMinute = makeSolarOverlay()
+        invalidMinute.timestamp.second = 1
+        analysisCase.mapState.solarOverlay = invalidMinute
+        #expect(throws: AnalysisCaseValidationError.invalidMapState) {
+            try analysisCase.validateForPersistence()
+        }
+    }
+
+    @Test("workspace persists and clears solar state but remains read-only for a changed source")
+    func workspaceSolarMutationsRespectSourceChangedState() async throws {
+        let fixture = try AnalysisFixture(contents: "workspace solar source")
+        defer { fixture.remove() }
+        let image = ImageFile(url: fixture.fileURL)
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        let overlay = makeSolarOverlay()
+
+        model.open(image)
+        try await waitForAnalysisState { model.loadState == .ready }
+        let originalRevision = try #require(model.currentRevision)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+
+        model.setSolarOverlay(overlay)
+        #expect(model.mapState.solarOverlay == overlay)
+        try await waitForPersistedSolarOverlay(
+            overlay,
+            repository: repository,
+            revision: originalRevision
+        )
+
+        model.clearSolarOverlay()
+        #expect(model.mapState.solarOverlay == nil)
+        try await waitForPersistedSolarOverlay(
+            nil,
+            repository: repository,
+            revision: originalRevision
+        )
+
+        try Data("changed workspace solar source".utf8).write(to: fixture.fileURL)
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.sourceChanged)
+
+        model.setSolarOverlay(overlay)
+        #expect(model.mapState.solarOverlay == nil)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(
+            for: originalRevision
+        ) else {
+            Issue.record("Expected the unchanged persisted source revision")
+            return
+        }
+        #expect(persisted.mapState.solarOverlay == nil)
     }
 
     @Test("legacy map state defaults 3D content to off")
@@ -668,7 +818,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version six case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 8)
+        #expect(migrated.schemaVersion == 9)
         #expect(migrated.mapState.viewport == analysisCase.mapState.viewport)
         #expect(migrated.mapState.annotations.isEmpty)
         try migrated.validateForPersistence()
@@ -708,7 +858,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version seven case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 8)
+        #expect(migrated.schemaVersion == 9)
         #expect(migrated.mapState.annotations.map(\.id) == analysisCase.mapState.annotations.map(\.id))
         #expect(migrated.mapState.annotations.map(\.kind) == analysisCase.mapState.annotations.map(\.kind))
         #expect(migrated.mapState.annotations.map(\.geometry) == analysisCase.mapState.annotations.map(\.geometry))
@@ -2182,4 +2332,38 @@ private func waitForAnalysisState(
         try await Task.sleep(for: .milliseconds(5))
     }
     throw AnalysisTestTimeout.timedOut
+}
+
+private func waitForPersistedSolarOverlay(
+    _ expected: AnalysisSolarOverlayState?,
+    repository: AnalysisCaseRepository,
+    revision: SourceImageRevision
+) async throws {
+    for _ in 0..<200 {
+        if case .exact(let analysisCase) = await repository.loadMostRelevantCase(for: revision),
+           analysisCase.mapState.solarOverlay == expected {
+            return
+        }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    throw AnalysisTestTimeout.timedOut
+}
+
+private func makeSolarOverlay(
+    linkedTimestampEvidenceID: UUID? = nil
+) -> AnalysisSolarOverlayState {
+    AnalysisSolarOverlayState(
+        timestamp: AnalysisTimestampValue(
+            year: 2026,
+            month: 8,
+            day: 19,
+            hour: 14,
+            minute: 35,
+            precision: .minute,
+            utcOffsetMinutes: 120
+        ),
+        linkedTimestampEvidenceID: linkedTimestampEvidenceID,
+        showsSunriseDirection: false,
+        calculationMethod: .meeusNOAAV1
+    )
 }
