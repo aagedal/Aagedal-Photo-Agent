@@ -4,8 +4,14 @@ import os
 nonisolated private let templateStorageLog = Logger(subsystem: "com.aagedal.photo-agent", category: "TemplateStorageService")
 
 struct TemplateStorageService: Sendable {
+    private let directoryOverride: URL?
+
+    init(directoryURL: URL? = nil) {
+        directoryOverride = directoryURL
+    }
+
     func loadAll() throws -> [MetadataTemplate] {
-        let (directory, release) = AppPaths.templatesDirectory()
+        let (directory, release) = resolvedDirectory()
         defer { release() }
         let files = try CloudCoordinatedIO.contentsOfDirectory(at: directory)
             .filter { $0.pathExtension == "json" }
@@ -23,15 +29,24 @@ struct TemplateStorageService: Sendable {
     }
 
     func save(_ template: MetadataTemplate) throws {
-        let (directory, release) = AppPaths.templatesDirectory()
+        let (directory, release) = resolvedDirectory()
         defer { release() }
-        let data = try JSONEncoder().encode(template)
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
+        if CloudCoordinatedIO.itemExists(at: url) {
+            let existingData = try CloudCoordinatedIO.readData(at: url)
+            try EditorialJSONSchema.requireWritableVersion(
+                in: existingData,
+                supportedVersion: MetadataTemplate.currentSchemaVersion,
+                documentName: "metadata template",
+                unversionedLegacyVersion: 1
+            )
+        }
+        let data = try JSONEncoder().encode(template)
         try CloudCoordinatedIO.writeData(data, to: url)
     }
 
     func delete(_ template: MetadataTemplate) throws {
-        let (directory, release) = AppPaths.templatesDirectory()
+        let (directory, release) = resolvedDirectory()
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
         try CloudCoordinatedIO.removeItem(at: url)
@@ -51,6 +66,13 @@ struct TemplateStorageService: Sendable {
 
     func loadBundle(from source: URL) throws -> TemplateBundle {
         let data = try Data(contentsOf: source)
+        try EditorialJSONSchema.requireWritableVersion(
+            in: data,
+            supportedVersion: TemplateBundle.currentSchemaVersion,
+            documentName: "template bundle",
+            legacyKey: "version",
+            unversionedLegacyVersion: 1
+        )
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(TemplateBundle.self, from: data)
@@ -89,5 +111,12 @@ struct TemplateStorageService: Sendable {
             }
         }
         return TemplateImportResult(added: added, overwritten: overwritten)
+    }
+
+    private func resolvedDirectory() -> (url: URL, release: () -> Void) {
+        if let directoryOverride {
+            return (directoryOverride, {})
+        }
+        return AppPaths.templatesDirectory()
     }
 }

@@ -1,8 +1,8 @@
-# Version 2.3 — delivery plan
+# Next release — delivery plan (historical `v2.3` working path)
 
 ## Delivery strategy
 
-Build 2.3 as independently shippable vertical slices. The shared foundation comes first;
+Build the next release as independently shippable vertical slices. The shared foundation comes first;
 metadata/provenance analysis, comparison, and version storage can then proceed without waiting for
 the highest-risk forensic algorithms.
 
@@ -14,7 +14,7 @@ tests, error states, accessibility, and a manual validation note.
 **Exit gate:** the project can make evidence claims and distribute every required dependency/fixture
 legally and reproducibly.
 
-- [ ] Define the exact 2.3 must/conditional scope from the release plan.
+- [ ] Define the exact next-release must/conditional scope from the release plan.
 - [ ] Create architecture decision records for storage location, source identity, map imagery in
   reports, and named-version save semantics.
 - [ ] Build the redistributable analysis fixture corpus and provenance README.

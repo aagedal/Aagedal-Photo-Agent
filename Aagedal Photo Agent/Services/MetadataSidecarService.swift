@@ -50,6 +50,11 @@ struct MetadataSidecarService: Sendable {
                     continue
                 }
                 return sidecar
+            } catch let error as EditorialJSONSchemaError where error.isNewerSchema {
+                sidecarLogger.warning(
+                    "Leaving newer sidecar \(fileURL.lastPathComponent, privacy: .public) untouched: \(error.localizedDescription, privacy: .public)"
+                )
+                continue
             } catch {
                 sidecarLogger.error("Failed to decode sidecar \(fileURL.lastPathComponent): \(error.localizedDescription)")
                 // Move corrupt file aside so it doesn't block future loads
@@ -173,6 +178,11 @@ struct MetadataSidecarService: Sendable {
             }
             let imageURL = folderURL.appendingPathComponent(sidecar.sourceFile)
             return (imageURL, sidecar)
+        } catch let error as EditorialJSONSchemaError where error.isNewerSchema {
+            sidecarLogger.warning(
+                "Leaving newer sidecar \(file.lastPathComponent, privacy: .public) untouched: \(error.localizedDescription, privacy: .public)"
+            )
+            return nil
         } catch {
             sidecarLogger.error("Failed to decode sidecar \(file.lastPathComponent): \(error.localizedDescription)")
             moveCorruptSidecarAside(file: file)
@@ -231,13 +241,33 @@ struct MetadataSidecarService: Sendable {
         let dir = sidecarDirectory(for: folderURL)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
+        var existingCurrentData: Data?
+        for existingURL in sidecarCandidateURLs(for: imageURL, in: folderURL)
+            where FileManager.default.fileExists(atPath: existingURL.path) {
+            let existingData = try Data(contentsOf: existingURL)
+            try EditorialJSONSchema.requireWritableVersion(
+                in: existingData,
+                supportedVersion: MetadataSidecar.currentSchemaVersion,
+                documentName: "metadata sidecar",
+                legacyKey: "version",
+                unversionedLegacyVersion: 1
+            )
+            if existingCurrentData == nil {
+                existingCurrentData = existingData
+            }
+        }
+
         var updatedSidecar = sidecar
+        updatedSidecar.schemaVersion = MetadataSidecar.currentSchemaVersion
         updatedSidecar.lastModified = Date()
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(updatedSidecar)
+        var data = try encoder.encode(updatedSidecar)
+        if let existingCurrentData {
+            data = Self.preservingUnknownFields(from: existingCurrentData, in: data)
+        }
         let currentURL = sidecarFileURL(for: imageURL, in: folderURL)
         try data.write(to: currentURL, options: .atomic)
 
@@ -276,10 +306,21 @@ struct MetadataSidecarService: Sendable {
         }
         guard !sourceURLs.isEmpty else { return }
 
-        // Load existing sidecar, update sourceFile to match the new filename, and save at new path
+        // Load existing sidecar, update sourceFile to match the new filename, and save at new path.
+        // If this build cannot decode the document (including a newer schema), preserve its
+        // complete JSON graph and rewrite only the association field.
         if var sidecar = loadSidecar(for: oldImageURL, in: folderURL) {
             sidecar.sourceFile = newImageURL.lastPathComponent
             try saveSidecar(sidecar, for: newImageURL, in: folderURL)
+        } else if let first = sourceURLs.first {
+            let originalData = try Data(contentsOf: first)
+            let destinationData = Self.updatingSourceFile(
+                in: originalData,
+                to: newImageURL.lastPathComponent,
+                sourceURL: first
+            )
+            let destinationURL = sidecarFileURL(for: newImageURL, in: folderURL)
+            try destinationData.write(to: destinationURL, options: .atomic)
         }
 
         // Remove all old sidecar files (current + legacy)
@@ -380,5 +421,54 @@ struct MetadataSidecarService: Sendable {
             return data
         }
         return updated
+    }
+
+    /// Overlay unknown extension fields from a same-schema sidecar onto freshly encoded data.
+    /// Known keys are intentionally not merged: if the current model omits a known optional key,
+    /// that represents an explicit clear and the old value must stay removed.
+    private nonisolated static func preservingUnknownFields(
+        from existingData: Data,
+        in encodedData: Data
+    ) -> Data {
+        guard let existing = try? JSONSerialization.jsonObject(with: existingData) as? [String: Any],
+              var encoded = try? JSONSerialization.jsonObject(with: encodedData) as? [String: Any]
+        else {
+            return encodedData
+        }
+
+        for (key, value) in existing where !MetadataSidecar.persistedJSONFieldNames.contains(key) {
+            encoded[key] = value
+        }
+        preserveUnknownMetadataFields(key: "metadata", from: existing, in: &encoded)
+        preserveUnknownMetadataFields(key: "imageMetadataSnapshot", from: existing, in: &encoded)
+
+        return (try? JSONSerialization.data(
+            withJSONObject: encoded,
+            options: [.prettyPrinted, .sortedKeys]
+        )) ?? encodedData
+    }
+
+    private nonisolated static func preserveUnknownMetadataFields(
+        key: String,
+        from existingSidecar: [String: Any],
+        in encodedSidecar: inout [String: Any]
+    ) {
+        guard let existingMetadata = existingSidecar[key] as? [String: Any],
+              var encodedMetadata = encodedSidecar[key] as? [String: Any]
+        else {
+            return
+        }
+        for (field, value) in existingMetadata
+            where !IPTCMetadata.persistedJSONFieldNames.contains(field) {
+            encodedMetadata[field] = value
+        }
+        encodedSidecar[key] = encodedMetadata
+    }
+}
+
+private extension EditorialJSONSchemaError {
+    var isNewerSchema: Bool {
+        if case .newerSchemaRequiresReadOnly = self { return true }
+        return false
     }
 }

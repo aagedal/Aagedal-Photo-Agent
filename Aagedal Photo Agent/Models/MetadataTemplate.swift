@@ -1,6 +1,9 @@
 import Foundation
 
 struct MetadataTemplate: Codable, Identifiable, Sendable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
     var id: UUID
     var name: String
     var templateType: TemplateType
@@ -12,6 +15,7 @@ struct MetadataTemplate: Codable, Identifiable, Sendable {
     var processInstantly: Bool
 
     init(id: UUID = UUID(), name: String = "", templateType: TemplateType = .full, fields: [TemplateField] = [], shortcutSlot: Int? = nil, processInstantly: Bool = false) {
+        self.schemaVersion = Self.currentSchemaVersion
         self.id = id
         self.name = name
         self.templateType = templateType
@@ -21,18 +25,45 @@ struct MetadataTemplate: Codable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, templateType, fields, shortcutSlot, processInstantly
+        case schemaVersion, id, name, templateType, presetType, fields, shortcutSlot, processInstantly
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        guard decodedVersion > 0 else {
+            throw EditorialJSONSchemaError.missingOrInvalidSchemaVersion
+        }
+        guard decodedVersion <= Self.currentSchemaVersion else {
+            throw EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
+                document: "metadata template",
+                found: decodedVersion,
+                supported: Self.currentSchemaVersion
+            )
+        }
+        schemaVersion = Self.currentSchemaVersion
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
-        templateType = try container.decode(TemplateType.self, forKey: .templateType)
-        fields = try container.decode([TemplateField].self, forKey: .fields)
+        if let currentType = try container.decodeIfPresent(TemplateType.self, forKey: .templateType) {
+            templateType = currentType
+        } else {
+            templateType = try container.decode(TemplateType.self, forKey: .presetType)
+        }
+        fields = try container.decodeIfPresent([TemplateField].self, forKey: .fields) ?? []
         shortcutSlot = try container.decodeIfPresent(Int.self, forKey: .shortcutSlot)
         // Default to false for templates saved before this flag existed.
         processInstantly = try container.decodeIfPresent(Bool.self, forKey: .processInstantly) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(templateType, forKey: .templateType)
+        try container.encode(fields, forKey: .fields)
+        try container.encodeIfPresent(shortcutSlot, forKey: .shortcutSlot)
+        try container.encode(processInstantly, forKey: .processInstantly)
     }
 
     enum TemplateType: String, Codable, CaseIterable, Sendable {

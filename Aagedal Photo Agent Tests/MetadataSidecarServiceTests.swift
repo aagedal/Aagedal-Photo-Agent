@@ -112,6 +112,98 @@ struct MetadataSidecarServiceTests {
         #expect(loaded.metadata.locationsShown == [shown])
     }
 
+    @Test("legacy version-key sidecars migrate with defaults and save using schemaVersion")
+    func legacySidecarMigration() throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let metadataDirectory = folder.appendingPathComponent(".photo_metadata")
+        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
+        let sidecarURL = metadataDirectory.appendingPathComponent("photo.jpg.meta.json")
+        let legacyData = Data(
+            #"{"version":1,"sourceFile":"photo.jpg","metadata":{"title":"Legacy headline"}}"#.utf8
+        )
+        try legacyData.write(to: sidecarURL)
+
+        let service = MetadataSidecarService()
+        let imageURL = makeImageURL(in: folder)
+        let loaded = try #require(service.loadSidecar(for: imageURL, in: folder))
+        #expect(loaded.schemaVersion == MetadataSidecar.currentSchemaVersion)
+        #expect(loaded.metadata.title == "Legacy headline")
+        #expect(loaded.pendingChanges == false)
+        #expect(loaded.history.isEmpty)
+
+        try service.saveSidecar(loaded, for: imageURL, in: folder)
+        let savedObject = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: sidecarURL)) as? [String: Any]
+        )
+        #expect(savedObject["schemaVersion"] as? Int == MetadataSidecar.currentSchemaVersion)
+        #expect(savedObject["version"] == nil)
+    }
+
+    @Test("newer sidecars remain in place and cannot be overwritten")
+    func newerSidecarIsReadOnly() throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let metadataDirectory = folder.appendingPathComponent(".photo_metadata")
+        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
+        let sidecarURL = metadataDirectory.appendingPathComponent("photo.jpg.meta.json")
+        let futureData = Data(
+            #"{"schemaVersion":2,"sourceFile":"photo.jpg","future":{"keep":true}}"#.utf8
+        )
+        try futureData.write(to: sidecarURL)
+
+        let service = MetadataSidecarService()
+        let imageURL = makeImageURL(in: folder)
+        #expect(service.loadSidecar(for: imageURL, in: folder) == nil)
+        #expect(try Data(contentsOf: sidecarURL) == futureData)
+
+        #expect(throws: EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
+            document: "metadata sidecar",
+            found: 2,
+            supported: MetadataSidecar.currentSchemaVersion
+        )) {
+            try service.saveSidecar(makeSidecar(), for: imageURL, in: folder)
+        }
+        #expect(try Data(contentsOf: sidecarURL) == futureData)
+        let files = try FileManager.default.contentsOfDirectory(
+            at: metadataDirectory,
+            includingPropertiesForKeys: nil
+        )
+        #expect(!files.contains { $0.lastPathComponent.contains(".corrupt.") })
+    }
+
+    @Test("same-schema unknown fields survive edits while known fields can be cleared")
+    func unknownFieldsSurviveCurrentSchemaSave() throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let metadataDirectory = folder.appendingPathComponent(".photo_metadata")
+        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
+        let sidecarURL = metadataDirectory.appendingPathComponent("photo.jpg.meta.json")
+        try Data(
+            #"{"schemaVersion":1,"sourceFile":"photo.jpg","metadata":{"title":"Before","description":"Clear me","extensionField":{"value":7}},"sidecarExtension":["keep"]}"#.utf8
+        ).write(to: sidecarURL)
+
+        let service = MetadataSidecarService()
+        let imageURL = makeImageURL(in: folder)
+        var sidecar = try #require(service.loadSidecar(for: imageURL, in: folder))
+        sidecar.metadata.title = "After"
+        sidecar.metadata.description = nil
+        try service.saveSidecar(sidecar, for: imageURL, in: folder)
+
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: sidecarURL)) as? [String: Any]
+        )
+        #expect(object["sidecarExtension"] as? [String] == ["keep"])
+        let metadata = try #require(object["metadata"] as? [String: Any])
+        #expect(metadata["title"] as? String == "After")
+        #expect(metadata["description"] == nil)
+        let extensionField = try #require(metadata["extensionField"] as? [String: Any])
+        #expect(extensionField["value"] as? Int == 7)
+    }
+
     @Test("load returns nil for non-existent sidecar")
     func loadNonExistentReturnsNil() throws {
         let folder = try makeTempFolder()
@@ -356,6 +448,35 @@ struct MetadataSidecarServiceTests {
         let newURL = makeImageURL(in: folder, name: "also_nonexistent.jpg")
         // Should not throw
         try service.renameSidecar(from: oldURL, to: newURL, in: folder)
+    }
+
+    @Test("rename preserves unknown fields in a newer sidecar")
+    func renameNewerSidecarPreservesUnknownFields() throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let metadataDirectory = folder.appendingPathComponent(".photo_metadata")
+        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
+        let oldSidecarURL = metadataDirectory.appendingPathComponent("old.jpg.meta.json")
+        let futureData = Data(
+            #"{"schemaVersion":2,"sourceFile":"old.jpg","future":{"nested":[1,2,3]}}"#.utf8
+        )
+        try futureData.write(to: oldSidecarURL)
+
+        let service = MetadataSidecarService()
+        let oldImageURL = makeImageURL(in: folder, name: "old.jpg")
+        let newImageURL = makeImageURL(in: folder, name: "new.jpg")
+        try service.renameSidecar(from: oldImageURL, to: newImageURL, in: folder)
+
+        let newSidecarURL = metadataDirectory.appendingPathComponent("new.jpg.meta.json")
+        #expect(!FileManager.default.fileExists(atPath: oldSidecarURL.path))
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: newSidecarURL)) as? [String: Any]
+        )
+        #expect(object["schemaVersion"] as? Int == 2)
+        #expect(object["sourceFile"] as? String == "new.jpg")
+        let future = try #require(object["future"] as? [String: Any])
+        #expect(future["nested"] as? [Int] == [1, 2, 3])
     }
 
     // MARK: - Corrupt File Handling

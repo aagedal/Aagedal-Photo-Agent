@@ -191,9 +191,9 @@ ready.
 - [x] Add typed models for creator contact information and created/shown locations.
 - [x] Expand `IPTCMetadata` or introduce a versioned editorial metadata aggregate without turning
   structured fields into delimiter-dependent strings.
-- [ ] Version JSON sidecars and templates; add decoding defaults and migration tests for all
+- [x] Version JSON sidecars and templates; add decoding defaults and migration tests for all
   previously shipped shapes.
-- [ ] Preserve unknown/newer sidecar fields through read-modify-write where feasible; otherwise
+- [x] Preserve unknown/newer sidecar fields through read-modify-write where feasible; otherwise
   reject a newer schema without overwriting it.
 - [ ] Separate canonical stored values from localized display labels for controlled vocabularies.
 - [ ] Update metadata history so new fields produce human-readable changes without logging
@@ -247,6 +247,15 @@ channels, identifiers, address parts, coordinates, and created/shown location ro
 Codable values. `IPTCMetadata` carries these structures through JSON round trips, additive merges,
 authoritative sidecar clears, descriptive-content detection, and reconciliation without flattening
 repeated values. XMP/IIM mapping and editor exposure remain separate Phase 1 work.
+
+**Progress — 2026-08-19:** Metadata sidecars, metadata templates, and template export bundles now
+write explicit `schemaVersion` markers. The decoders migrate the shipped `version` and unversioned
+shapes, including the earliest `presetType` template key and later optional template flags. A newer
+document remains in place, is excluded from editing, and blocks overwrite with a specific error;
+same-schema sidecar saves preserve unknown top-level and metadata extension fields without reviving
+known values that were cleared, and filename-only relocation preserves an otherwise unknown JSON
+graph. The focused persistence suites pass 31 tests; see
+[the dated validation record](metadata-json-persistence-validation.md).
 
 ## Phase 2 — Caption Workspace
 

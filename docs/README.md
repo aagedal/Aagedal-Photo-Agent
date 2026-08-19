@@ -17,7 +17,7 @@ own scope, tasks, exit gates, and technical decisions.
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; release hardening in progress | Close remaining manual fixture, accessibility, performance, and cross-phase validation |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions largely established; foundation and fixture work remains | Complete the redistributable interoperability corpus, then finish the shared metadata model/I/O/validation foundation |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, and JSON schema safety established; I/O, validation, and fixture work remains | Complete the redistributable interoperability corpus, then finish the shared metadata I/O/validation foundation |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Planned for the next release; implementation not started | Approve calculation conventions and reference corpus before calculation code or UI work |
 
 ## Default delivery order
@@ -83,6 +83,8 @@ Supporting documents:
   selected standard and compatibility baseline.
 - [Metadata conflict and container policy](metadata-conflict-and-container-policy.md) — canonical
   values, conflicting representations, and preservation behavior.
+- [Metadata JSON persistence validation](metadata-json-persistence-validation.md) — migration and
+  newer-schema overwrite protection evidence for app sidecars and metadata templates.
 
 ## Solar overlay document set
 

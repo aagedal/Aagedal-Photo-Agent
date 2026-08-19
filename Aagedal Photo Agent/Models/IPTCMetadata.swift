@@ -1618,7 +1618,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
 
     // Exclude cameraRaw and exifOrientation from JSON sidecar serialization.
     // These are sourced exclusively from XMP (embedded in image or XMP sidecar file).
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case title, description, extendedDescription, keywords, personShown
         case digitalSourceType
         case creator, credit, copyright, jobId, dateCreated, captureDate
@@ -1627,6 +1627,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         case latitude, longitude
         case rating, label
     }
+
+    static let persistedJSONFieldNames = Set(CodingKeys.allCases.map(\.rawValue))
 
     init(
         title: String? = nil,
