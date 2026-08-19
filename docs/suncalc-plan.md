@@ -4,11 +4,12 @@
 
 ## Status
 
-**Phases 1–2 implemented for 3.0.** This plan replaces the previously rejected broad sun/shadow
-analyzer with a narrower first release: an offline solar-position overlay with explicit inputs,
-reproducible calculations, and conservative evidence language. The calculation contract, original
-Swift implementation, first numerical corpus, and schema-9 persistence contract are complete;
-OSINT controls and map presentation remain next.
+**Phases 1–3 and Phase 4 implementation complete for 3.0.** This plan replaces the previously
+rejected broad sun/shadow analyzer with a narrower first release: an offline solar-position overlay
+with explicit inputs, reproducible calculations, and conservative evidence language. The
+calculation contract, original Swift implementation, first numerical corpus, schema-9 persistence
+contract, and OSINT controls are complete. Apple Maps and OpenStreetMap now share the same derived
+solar-ray geometry; interactive map validation remains before the immutable report phase.
 
 The first release is not an authenticity verdict, a capture-time inference tool, or a simulation of
 real shadows cast by terrain and structures.
@@ -225,32 +226,53 @@ workspace read-only coverage.
 **Exit gate:** a keyboard user can create, adjust, hide, and remove a valid calculation without any
 implicit timezone assumption.
 
-- [ ] Pass eligible timeline evidence into `AnalysisMapEvidenceView`.
-- [ ] Add a Solar Position button beside the field-of-view control.
-- [ ] Build a focused `AnalysisSolarControls` popover.
-- [ ] Show Photo Location coordinate and provenance as a read-only input.
-- [ ] Offer only timezone-qualified, minute-or-better timeline rows in the source picker.
-- [ ] Add manual date, time, and explicit UTC-offset controls.
-- [ ] Add a **Use Capture Time** action only when capture evidence resolves to an instant.
-- [ ] Add a selected-civil-day time slider.
-- [ ] Show solar values, events, polar states, and calculation limitations.
-- [ ] Add per-ray visibility controls and a clear/remove action.
-- [ ] Add accessibility labels, help text, focus order, and keyboard adjustment behavior.
+- [x] Pass eligible timeline evidence into `AnalysisMapEvidenceView`.
+- [x] Add a Solar Position button beside the field-of-view control.
+- [x] Build a focused `AnalysisSolarControls` popover.
+- [x] Show Photo Location coordinate and provenance as a read-only input.
+- [x] Offer only timezone-qualified, minute-or-better timeline rows in the source picker.
+- [x] Add manual date, time, and explicit UTC-offset controls.
+- [x] Add a **Use Capture Time** action only when capture evidence resolves to an instant.
+- [x] Add a selected-civil-day time slider.
+- [x] Show solar values, events, polar states, and calculation limitations.
+- [x] Add per-ray visibility controls and a clear/remove action.
+- [x] Add accessibility labels, help text, focus order, and keyboard adjustment behavior.
+
+**Progress — 2026-08-19:** The OSINT map now passes its resolved timeline into a focused Solar
+Position popover beside the field-of-view control. The popover exposes the Photo Location and its
+provenance without making it editable, filters source rows to timezone-qualified minute-or-better
+timestamps, offers a conditional **Use Capture Time** shortcut, and supports fixed-offset manual
+civil time plus a keyboard-adjustable time-of-day slider. It previews position, event, polar, and
+below-horizon results with the calculation boundary stated in the UI; overlay and individual ray
+visibility choices can be persisted or removed through the existing source-change-safe workspace
+mutations. A removed timeline row does not invalidate its frozen persisted timestamp. The focused
+Analysis Case and Solar Calculator suites pass 70 tests, including the new eligibility rule.
 
 ### Phase 4 — live map rendering
 
 **Exit gate:** Apple and OpenStreetMap styles render equivalent derived geometry while all current
 map interactions continue to work.
 
-- [ ] Extract or share the existing great-circle destination-coordinate helper used by the
+- [x] Extract or share the existing great-circle destination-coordinate helper used by the
   field-of-view cone.
-- [ ] Derive a legible ray length from the visible region rather than persisting a distance.
-- [ ] Add solar polylines and legend content to the SwiftUI `Map` path.
-- [ ] Pass a small derived render model into `AnalysisOpenStreetMapView`.
-- [ ] Add dedicated `MKPolyline` types and renderers above OSM tiles.
-- [ ] Keep solar geometry out of map annotation selection, layer undo, and evidence counts.
+- [x] Derive a legible ray length from the visible region rather than persisting a distance.
+- [x] Add solar polylines and legend content to the SwiftUI `Map` path.
+- [x] Pass a small derived render model into `AnalysisOpenStreetMapView`.
+- [x] Add dedicated `MKPolyline` types and renderers above OSM tiles.
+- [x] Keep solar geometry out of map annotation selection, layer undo, and evidence counts.
 - [ ] Verify panning, zooming, selection, map rotation, pitch, and style switching.
-- [ ] Avoid recalculating rise/set events unnecessarily during slider movement.
+- [x] Avoid recalculating rise/set events unnecessarily during slider movement.
+
+**Progress — 2026-08-19:** A pure `AnalysisSolarMapRenderModel` now turns the persisted input and
+one cached civil-day calculation into true-north sun, expected-shadow, sunrise, and sunset rays.
+It shares the field-of-view geodesic helper, derives display-only ray length from the current
+visible region, suppresses current sun/shadow rays below the apparent horizon, and feeds identical
+coordinates to SwiftUI `Map` and dedicated non-selectable `MKPolyline` overlays above OSM tiles. A
+compact legend states that length follows zoom and is direction-only. The controls cache rise/set
+events by location, civil day, and UTC offset while recalculating only instantaneous position as
+the minute slider moves. The focused Analysis Case and Solar Calculator suites pass 73 tests,
+including viewport scaling, visibility selection, below-horizon suppression, persistence, and
+migration. Manual camera/style interaction validation remains open.
 
 ### Phase 5 — immutable report evidence
 

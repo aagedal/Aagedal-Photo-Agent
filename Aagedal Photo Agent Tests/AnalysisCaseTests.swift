@@ -667,6 +667,41 @@ struct AnalysisCaseTests {
         }
     }
 
+    @Test("solar source eligibility rejects day-only and timezone-unknown timeline rows")
+    func filtersSolarTimestampEvidence() {
+        let eligible = AnalysisTimestampEvidence(
+            kind: .capture,
+            value: AnalysisTimestampValue(
+                year: 2026,
+                month: 8,
+                day: 19,
+                hour: 14,
+                minute: 35,
+                precision: .minute,
+                utcOffsetMinutes: 120
+            ),
+            source: .embeddedMetadata,
+            sourceDetail: "Timezone-qualified EXIF capture timestamp"
+        )
+        var timezoneUnknown = eligible
+        timezoneUnknown.value.utcOffsetMinutes = nil
+        var dayOnly = eligible
+        dayOnly.value = AnalysisTimestampValue(
+            year: 2026,
+            month: 8,
+            day: 19,
+            precision: .day,
+            utcOffsetMinutes: 120
+        )
+        var invalid = eligible
+        invalid.value.minute = 75
+
+        #expect(eligible.isEligibleForSolarPosition)
+        #expect(!timezoneUnknown.isEligibleForSolarPosition)
+        #expect(!dayOnly.isEligibleForSolarPosition)
+        #expect(!invalid.isEligibleForSolarPosition)
+    }
+
     @Test("workspace persists and clears solar state but remains read-only for a changed source")
     func workspaceSolarMutationsRespectSourceChangedState() async throws {
         let fixture = try AnalysisFixture(contents: "workspace solar source")

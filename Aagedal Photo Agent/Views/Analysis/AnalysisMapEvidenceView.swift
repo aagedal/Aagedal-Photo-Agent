@@ -23,6 +23,9 @@ struct AnalysisMapEvidenceView: View {
     let onSet3DContentVisible: (Bool) -> Void
     let onSetViewport: (AnalysisMapViewport) -> Void
     let onSetInvestigationLocation: (AnalysisLocationEvidence?) -> Void
+    let timestampEvidence: [AnalysisTimestampEvidence]
+    let onSetSolarOverlay: (AnalysisSolarOverlayState) -> Void
+    let onClearSolarOverlay: () -> Void
     let onSetAnnotation: (AnalysisMapAnnotation) -> Void
     let onSetLocalAnnotation: (AnalysisMapAnnotation) -> Void
     let onDeleteAnnotation: (UUID) -> Void
@@ -49,10 +52,12 @@ struct AnalysisMapEvidenceView: View {
     @State private var labelInput = ""
     @State private var isLabelPromptPresented = false
     @State private var isFieldOfViewSettingsPresented = false
+    @State private var isSolarControlsPresented = false
     @State private var addsFieldOfViewCone: Bool
     @State private var fieldOfViewBearing: Double
     @State private var fieldOfViewAngle: Double
     @State private var fieldOfViewRangeMeters: Double
+    @State private var solarDay: AnalysisSolarDay?
     @State private var mapAvailability = AnalysisMapAvailabilityMonitor()
     private static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 50, longitude: 10),
@@ -72,6 +77,9 @@ struct AnalysisMapEvidenceView: View {
         onSet3DContentVisible: @escaping (Bool) -> Void,
         onSetViewport: @escaping (AnalysisMapViewport) -> Void,
         onSetInvestigationLocation: @escaping (AnalysisLocationEvidence?) -> Void,
+        timestampEvidence: [AnalysisTimestampEvidence],
+        onSetSolarOverlay: @escaping (AnalysisSolarOverlayState) -> Void,
+        onClearSolarOverlay: @escaping () -> Void,
         onSetAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
         onSetLocalAnnotation: @escaping (AnalysisMapAnnotation) -> Void,
         onDeleteAnnotation: @escaping (UUID) -> Void,
@@ -95,6 +103,9 @@ struct AnalysisMapEvidenceView: View {
         self.onSet3DContentVisible = onSet3DContentVisible
         self.onSetViewport = onSetViewport
         self.onSetInvestigationLocation = onSetInvestigationLocation
+        self.timestampEvidence = timestampEvidence
+        self.onSetSolarOverlay = onSetSolarOverlay
+        self.onClearSolarOverlay = onClearSolarOverlay
         self.onSetAnnotation = onSetAnnotation
         self.onSetLocalAnnotation = onSetLocalAnnotation
         self.onDeleteAnnotation = onDeleteAnnotation
@@ -117,6 +128,10 @@ struct AnalysisMapEvidenceView: View {
         _fieldOfViewBearing = State(initialValue: fieldOfView?.bearing ?? 0)
         _fieldOfViewAngle = State(initialValue: fieldOfView?.angle ?? 60)
         _fieldOfViewRangeMeters = State(initialValue: fieldOfView?.rangeMeters ?? 100)
+        _solarDay = State(initialValue: Self.calculateSolarDay(
+            overlay: mapState.solarOverlay,
+            location: mapState.investigationLocation
+        ))
     }
 
     var body: some View {
@@ -203,6 +218,18 @@ struct AnalysisMapEvidenceView: View {
         .onDisappear(perform: mapAvailability.cancelCurrentCheck)
         .onChange(of: mapState.style) { _, style in
             mapAvailability.checkImagery(region: visibleRegion, style: style, force: true)
+        }
+        .onChange(of: mapState.solarOverlay) { _, overlay in
+            solarDay = Self.calculateSolarDay(
+                overlay: overlay,
+                location: mapState.investigationLocation
+            )
+        }
+        .onChange(of: mapState.investigationLocation) { _, location in
+            solarDay = Self.calculateSolarDay(
+                overlay: mapState.solarOverlay,
+                location: location
+            )
         }
         .alert("Map Label", isPresented: $isLabelPromptPresented) {
             TextField("Label text", text: $labelInput)
@@ -372,6 +399,9 @@ struct AnalysisMapEvidenceView: View {
                 }
 
                 HStack(spacing: 6) {
+                    if let solarRenderModel {
+                        solarLegend(solarRenderModel)
+                    }
                     Spacer()
                     Button(action: openMapCenterInAppleLookAround) {
                         Label("Open in Apple Maps Look Around", systemImage: "binoculars")
@@ -435,6 +465,29 @@ struct AnalysisMapEvidenceView: View {
                     .help("Photo-location and field-of-view options")
                     .popover(isPresented: $isFieldOfViewSettingsPresented, arrowEdge: .bottom) {
                         fieldOfViewSettings
+                    }
+
+                    Button {
+                        isSolarControlsPresented.toggle()
+                    } label: {
+                        Image(systemName: mapState.solarOverlay == nil ? "sun.max" : "sun.max.fill")
+                            .font(.caption)
+                            .padding(6)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Configure a reproducible solar-position calculation")
+                    .accessibilityLabel("Solar Position")
+                    .accessibilityValue(mapState.solarOverlay == nil ? "Not configured" : "Configured")
+                    .popover(isPresented: $isSolarControlsPresented, arrowEdge: .bottom) {
+                        AnalysisSolarControls(
+                            location: mapState.investigationLocation,
+                            timestampEvidence: timestampEvidence,
+                            overlay: mapState.solarOverlay,
+                            isReadOnly: isReadOnly,
+                            onApply: onSetSolarOverlay,
+                            onClear: onClearSolarOverlay
+                        )
                     }
 
                     if let photoAnnotationToLocate {
@@ -600,6 +653,7 @@ struct AnalysisMapEvidenceView: View {
             annotations: activeMapAnnotations,
             folderAnnotations: folderContextAnnotations,
             fieldOfViewPreview: fieldOfViewPreviewCoordinates,
+            solarRenderModel: solarRenderModel,
             selectedAnnotationID: selectedAnnotationID,
             onCameraChanged: { region, camera in
                 visibleRegion = region
@@ -689,6 +743,16 @@ struct AnalysisMapEvidenceView: View {
                     Color.cyan,
                     style: StrokeStyle(lineWidth: 2, dash: [6, 4])
                 )
+            }
+
+            if let solarRenderModel {
+                ForEach(solarRenderModel.rays) { ray in
+                    MapPolyline(coordinates: [
+                        ray.origin.clLocationCoordinate,
+                        ray.destination.clLocationCoordinate,
+                    ])
+                    .stroke(ray.kind.swiftUIColor, style: ray.kind.strokeStyle)
+                }
             }
 
             ForEach(activeMapAnnotations.filter(\.isVisible)) { annotation in
@@ -1283,6 +1347,19 @@ struct AnalysisMapEvidenceView: View {
         return fieldOfViewCoordinates(at: origin)
     }
 
+    private var solarRenderModel: AnalysisSolarMapRenderModel? {
+        guard let overlay = mapState.solarOverlay,
+              let origin = mapState.investigationLocation?.coordinate,
+              let solarDay else { return nil }
+        return AnalysisSolarMapRenderModel(
+            overlay: overlay,
+            origin: origin,
+            latitudeDelta: visibleRegion.span.latitudeDelta,
+            longitudeDelta: visibleRegion.span.longitudeDelta,
+            day: solarDay
+        )
+    }
+
     private func fieldOfViewCoordinates(
         at origin: AnalysisGeoCoordinate
     ) -> [AnalysisGeoCoordinate] {
@@ -1291,39 +1368,13 @@ struct AnalysisMapEvidenceView: View {
         let angle = min(170, max(5, fieldOfViewAngle))
         let range = min(100_000, max(1, fieldOfViewRangeMeters))
         let arcCoordinates = (0...8).map { step in
-            destinationCoordinate(
+            AnalysisMapGeometry.destinationCoordinate(
                 from: origin,
                 bearingDegrees: normalizedBearing - angle / 2 + angle * Double(step) / 8,
                 distanceMeters: range
             )
         }
         return [origin] + arcCoordinates
-    }
-
-    private func destinationCoordinate(
-        from origin: AnalysisGeoCoordinate,
-        bearingDegrees: Double,
-        distanceMeters: Double
-    ) -> AnalysisGeoCoordinate {
-        let earthRadiusMeters = 6_371_000.0
-        let angularDistance = distanceMeters / earthRadiusMeters
-        let bearing = bearingDegrees * .pi / 180
-        let latitude = origin.latitude * .pi / 180
-        let longitude = origin.longitude * .pi / 180
-        let destinationLatitude = asin(
-            sin(latitude) * cos(angularDistance)
-                + cos(latitude) * sin(angularDistance) * cos(bearing)
-        )
-        let destinationLongitude = longitude + atan2(
-            sin(bearing) * sin(angularDistance) * cos(latitude),
-            cos(angularDistance) - sin(latitude) * sin(destinationLatitude)
-        )
-        var longitudeDegrees = destinationLongitude * 180 / .pi
-        longitudeDegrees = (longitudeDegrees + 540).truncatingRemainder(dividingBy: 360) - 180
-        return AnalysisGeoCoordinate(
-            latitude: destinationLatitude * 180 / .pi,
-            longitude: longitudeDegrees
-        )
     }
 
     private func setInvestigationLocation(
@@ -1482,6 +1533,43 @@ struct AnalysisMapEvidenceView: View {
         )
     }
 
+    private func solarLegend(_ model: AnalysisSolarMapRenderModel) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Solar directions")
+                .font(.caption.weight(.semibold))
+            ForEach(model.rays) { ray in
+                HStack(spacing: 6) {
+                    Capsule()
+                        .fill(ray.kind.swiftUIColor)
+                        .frame(width: 22, height: 3)
+                    Text(ray.kind.displayName)
+                        .font(.caption2)
+                }
+            }
+            if model.isBelowHorizon {
+                Text("Sun below horizon · current rays hidden")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if let condition = model.polarCondition {
+                Text(condition == .polarDay ? "Polar day" : "Polar night")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text("Direction only · length follows zoom")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Solar directions. "
+                + model.rays.map { $0.kind.displayName }.joined(separator: ", ")
+                + ". Direction only; length follows map zoom."
+        )
+    }
+
     private func normalizedHeading(_ heading: Double) -> Double {
         guard heading.isFinite else { return 0 }
         let value = heading.truncatingRemainder(dividingBy: 360)
@@ -1535,7 +1623,7 @@ struct AnalysisMapEvidenceView: View {
         let angle = min(170, max(5, abs(signedAngle)))
         let centerBearing = normalizedBearing(startBearing + signedAngle / 2)
         let range = coordinates.dropFirst().map {
-            distanceMeters(from: origin, to: $0)
+            AnalysisMapGeometry.greatCircleDistanceMeters(from: origin, to: $0)
         }.reduce(0, +) / Double(coordinates.count - 1)
         guard centerBearing.isFinite, angle.isFinite, range.isFinite else { return nil }
         return (centerBearing, angle, min(100_000, max(1, range)))
@@ -1552,20 +1640,6 @@ struct AnalysisMapEvidenceView: View {
         let x = cos(latitude1) * sin(latitude2)
             - sin(latitude1) * cos(latitude2) * cos(longitudeDelta)
         return normalizedBearing(atan2(y, x) * 180 / .pi)
-    }
-
-    private static func distanceMeters(
-        from origin: AnalysisGeoCoordinate,
-        to destination: AnalysisGeoCoordinate
-    ) -> Double {
-        let latitudeDelta = (destination.latitude - origin.latitude) * .pi / 180
-        let longitudeDelta = (destination.longitude - origin.longitude) * .pi / 180
-        let latitude1 = origin.latitude * .pi / 180
-        let latitude2 = destination.latitude * .pi / 180
-        let a = sin(latitudeDelta / 2) * sin(latitudeDelta / 2)
-            + cos(latitude1) * cos(latitude2)
-                * sin(longitudeDelta / 2) * sin(longitudeDelta / 2)
-        return 6_371_000 * 2 * atan2(sqrt(a), sqrt(max(0, 1 - a)))
     }
 
     private static func normalizedBearing(_ bearing: Double) -> Double {
@@ -1588,6 +1662,597 @@ struct AnalysisMapEvidenceView: View {
             heading: viewport.heading,
             pitch: viewport.pitch
         ))
+    }
+
+    private static func calculateSolarDay(
+        overlay: AnalysisSolarOverlayState?,
+        location: AnalysisLocationEvidence?
+    ) -> AnalysisSolarDay? {
+        guard let overlay,
+              overlay.isVisible,
+              overlay.validate(),
+              let coordinate = location?.coordinate,
+              let instant = overlay.timestamp.resolvedInstant else { return nil }
+        switch overlay.calculationMethod {
+        case .meeusNOAAV1:
+            return try? AnalysisSolarPositionCalculator.calculate(
+                input: AnalysisSolarInput(instant: instant, coordinate: coordinate),
+                civilDayOffsetMinutes: overlay.timestamp.utcOffsetMinutes ?? 0
+            )
+        }
+    }
+}
+
+private extension AnalysisSolarMapRayKind {
+    var swiftUIColor: Color {
+        switch self {
+        case .sun: .yellow
+        case .shadow: .purple
+        case .sunrise: .orange
+        case .sunset: .red
+        }
+    }
+
+    var strokeStyle: StrokeStyle {
+        switch self {
+        case .sun:
+            StrokeStyle(lineWidth: 4, lineCap: .round)
+        case .shadow:
+            StrokeStyle(lineWidth: 3, lineCap: .round, dash: [7, 5])
+        case .sunrise, .sunset:
+            StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [3, 4])
+        }
+    }
+}
+
+nonisolated private struct AnalysisSolarDayRequest: Equatable, Sendable {
+    let coordinate: AnalysisGeoCoordinate
+    let civilDayRepresentativeInstant: Date
+    let utcOffsetMinutes: Int
+}
+
+nonisolated private struct AnalysisSolarPreviewError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+private struct AnalysisSolarControls: View {
+    let location: AnalysisLocationEvidence?
+    let timestampEvidence: [AnalysisTimestampEvidence]
+    let overlay: AnalysisSolarOverlayState?
+    let isReadOnly: Bool
+    let onApply: (AnalysisSolarOverlayState) -> Void
+    let onClear: () -> Void
+
+    @State private var civilDateTime: Date
+    @State private var utcOffsetMinutes: Int
+    @State private var selectedEvidenceID: UUID?
+    @State private var isVisible: Bool
+    @State private var showsSunDirection: Bool
+    @State private var showsShadowDirection: Bool
+    @State private var showsSunriseDirection: Bool
+    @State private var showsSunsetDirection: Bool
+    @State private var calculatedDay: AnalysisSolarDay?
+    @State private var calculatedDayRequest: AnalysisSolarDayRequest?
+    @State private var calculationErrorMessage: String?
+
+    private static let utc = TimeZone(secondsFromGMT: 0)!
+
+    init(
+        location: AnalysisLocationEvidence?,
+        timestampEvidence: [AnalysisTimestampEvidence],
+        overlay: AnalysisSolarOverlayState?,
+        isReadOnly: Bool,
+        onApply: @escaping (AnalysisSolarOverlayState) -> Void,
+        onClear: @escaping () -> Void
+    ) {
+        self.location = location
+        self.timestampEvidence = timestampEvidence
+        self.overlay = overlay
+        self.isReadOnly = isReadOnly
+        self.onApply = onApply
+        self.onClear = onClear
+
+        let initialTimestamp = overlay?.timestamp ?? AnalysisTimestampValue(
+            date: Date(),
+            precision: .minute,
+            timeZone: Self.utc
+        )
+        _civilDateTime = State(
+            initialValue: initialTimestamp.wallClockSortDate ?? Date()
+        )
+        _utcOffsetMinutes = State(initialValue: initialTimestamp.utcOffsetMinutes ?? 0)
+        let eligibleEvidenceIDs = Set(
+            timestampEvidence.filter(\.isEligibleForSolarPosition).map(\.id)
+        )
+        _selectedEvidenceID = State(initialValue: overlay?.linkedTimestampEvidenceID.flatMap {
+            eligibleEvidenceIDs.contains($0) ? $0 : nil
+        })
+        _isVisible = State(initialValue: overlay?.isVisible ?? true)
+        _showsSunDirection = State(initialValue: overlay?.showsSunDirection ?? true)
+        _showsShadowDirection = State(initialValue: overlay?.showsShadowDirection ?? true)
+        _showsSunriseDirection = State(initialValue: overlay?.showsSunriseDirection ?? true)
+        _showsSunsetDirection = State(initialValue: overlay?.showsSunsetDirection ?? true)
+        let request = Self.dayRequest(location: location, timestamp: initialTimestamp)
+        _calculatedDayRequest = State(initialValue: request)
+        _calculatedDay = State(initialValue: request.flatMap(Self.calculateDay))
+        _calculationErrorMessage = State(initialValue: nil)
+    }
+
+    private var eligibleEvidence: [AnalysisTimestampEvidence] {
+        timestampEvidence.filter(\.isEligibleForSolarPosition)
+    }
+
+    private var selectedEvidence: AnalysisTimestampEvidence? {
+        guard let selectedEvidenceID else { return nil }
+        return eligibleEvidence.first { $0.id == selectedEvidenceID }
+    }
+
+    private var captureEvidence: AnalysisTimestampEvidence? {
+        eligibleEvidence.first { $0.kind == .capture }
+    }
+
+    private var manualTimestamp: AnalysisTimestampValue {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = Self.utc
+        let components = calendar.dateComponents(
+            [.year, .month, .day, .hour, .minute],
+            from: civilDateTime
+        )
+        return AnalysisTimestampValue(
+            year: components.year ?? 0,
+            month: components.month ?? 0,
+            day: components.day ?? 0,
+            hour: components.hour ?? 0,
+            minute: components.minute ?? 0,
+            precision: .minute,
+            utcOffsetMinutes: utcOffsetMinutes
+        )
+    }
+
+    private var effectiveTimestamp: AnalysisTimestampValue {
+        selectedEvidence?.value ?? manualTimestamp
+    }
+
+    private var calculation: Result<AnalysisSolarDay, Error>? {
+        guard let coordinate = location?.coordinate,
+              let instant = effectiveTimestamp.resolvedInstant,
+              let request = solarDayRequest else { return nil }
+        if let calculationErrorMessage {
+            return .failure(AnalysisSolarPreviewError(message: calculationErrorMessage))
+        }
+        guard calculatedDayRequest == request,
+              let calculatedDay else { return nil }
+        return Result {
+            let position = try AnalysisSolarPositionCalculator.position(
+                at: instant,
+                coordinate: coordinate
+            )
+            return AnalysisSolarDay(
+                position: position,
+                sunrise: calculatedDay.sunrise,
+                solarNoon: calculatedDay.solarNoon,
+                sunset: calculatedDay.sunset,
+                polarCondition: calculatedDay.polarCondition,
+                method: calculatedDay.method
+            )
+        }
+    }
+
+    private var solarDayRequest: AnalysisSolarDayRequest? {
+        Self.dayRequest(location: location, timestamp: effectiveTimestamp)
+    }
+
+    private var canApply: Bool {
+        guard location != nil,
+              effectiveTimestamp.validate(),
+              effectiveTimestamp.timezoneKnown,
+              effectiveTimestamp.precision != .day,
+              case .success = calculation else { return false }
+        return true
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Solar Position")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+
+                locationSection
+                Divider()
+                timeSection
+                Divider()
+                calculationSection
+                Divider()
+                visibilitySection
+
+                Text(
+                    "Directions assume a flat, unobstructed horizon and standard atmospheric "
+                        + "refraction. They do not model terrain, buildings, weather, photographed "
+                        + "shadows, or camera orientation."
+                )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack {
+                    if overlay != nil {
+                        Button("Remove", role: .destructive) {
+                            onClear()
+                        }
+                        .disabled(isReadOnly)
+                        .help("Remove the saved solar-position calculation from this case")
+                    }
+                    Spacer()
+                    Button(overlay == nil ? "Add Overlay" : "Update Overlay") {
+                        onApply(AnalysisSolarOverlayState(
+                            isVisible: isVisible,
+                            timestamp: effectiveTimestamp,
+                            linkedTimestampEvidenceID: selectedEvidence?.id,
+                            showsSunDirection: showsSunDirection,
+                            showsShadowDirection: showsShadowDirection,
+                            showsSunriseDirection: showsSunriseDirection,
+                            showsSunsetDirection: showsSunsetDirection
+                        ))
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isReadOnly || !canApply)
+                    .help("Save these calculation inputs and overlay visibility choices")
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 500, height: 620)
+        .environment(\.timeZone, Self.utc)
+        .task(id: solarDayRequest) {
+            refreshCalculatedDay()
+        }
+        .onChange(of: selectedEvidenceID) { _, identifier in
+            guard let identifier,
+                  let evidence = eligibleEvidence.first(where: { $0.id == identifier }) else {
+                return
+            }
+            load(evidence.value)
+        }
+    }
+
+    @ViewBuilder
+    private var locationSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Photo Location")
+                .font(.subheadline.weight(.semibold))
+            if let location {
+                Text(CoordinateParser.format(
+                    latitude: location.coordinate.latitude,
+                    longitude: location.coordinate.longitude,
+                    format: .decimalDegrees
+                ))
+                .font(.callout.monospaced())
+                .textSelection(.enabled)
+                Text(location.placeName.map { "\($0) · \(location.source.displayName)" }
+                    ?? location.source.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(location.sourceDetail)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Label(
+                    "Set a Photo Location on the map before calculating solar position.",
+                    systemImage: "location.slash"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var timeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Time Input")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if let captureEvidence {
+                    Button("Use Capture Time") {
+                        selectedEvidenceID = captureEvidence.id
+                    }
+                    .controlSize(.small)
+                    .disabled(isReadOnly)
+                    .help("Use the timezone-qualified capture timestamp from the timeline")
+                }
+            }
+
+            Picker("Timeline source", selection: $selectedEvidenceID) {
+                Text("Manual date and time").tag(UUID?.none)
+                ForEach(eligibleEvidence) { evidence in
+                    Text("\(evidence.title) — \(evidence.value.formatted)")
+                        .tag(Optional(evidence.id))
+                }
+            }
+            .disabled(isReadOnly)
+            .help("Only timezone-qualified timeline rows with minute-or-better precision are listed")
+
+            if overlay?.linkedTimestampEvidenceID != nil,
+               selectedEvidence == nil {
+                Label(
+                    "The original timeline row is unavailable; the saved timestamp remains reproducible.",
+                    systemImage: "link.badge.plus"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                GridRow {
+                    Text("Date")
+                    DatePicker(
+                        "Civil date",
+                        selection: manualDateBinding,
+                        displayedComponents: .date
+                    )
+                    .labelsHidden()
+                    .accessibilityLabel("Solar calculation civil date")
+                }
+                GridRow {
+                    Text("Time")
+                    DatePicker(
+                        "Civil time",
+                        selection: manualDateBinding,
+                        displayedComponents: .hourAndMinute
+                    )
+                    .labelsHidden()
+                    .accessibilityLabel("Solar calculation civil time")
+                }
+                GridRow {
+                    Text("UTC offset")
+                    Stepper(
+                        formattedUTCOffset,
+                        value: manualOffsetBinding,
+                        in: (-14 * 60)...(14 * 60),
+                        step: 15
+                    )
+                    .accessibilityLabel("Solar calculation UTC offset")
+                    .accessibilityValue(formattedUTCOffset)
+                }
+            }
+            .disabled(isReadOnly || selectedEvidence != nil)
+
+            HStack(spacing: 10) {
+                Text("Time of day")
+                Slider(value: timeOfDayBinding, in: 0...1_439, step: 1)
+                    .accessibilityLabel("Solar calculation time of day")
+                    .accessibilityValue(formattedCivilTime)
+                Text(formattedCivilTime)
+                    .font(.caption.monospacedDigit())
+                    .frame(width: 44, alignment: .trailing)
+            }
+            .disabled(isReadOnly)
+            .help("Adjust the case-only time within the selected civil day")
+
+            Text("The controls use the displayed fixed UTC offset; they never substitute the Mac's current timezone.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder
+    private var calculationSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Calculated Values")
+                .font(.subheadline.weight(.semibold))
+            switch calculation {
+            case .success(let day):
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 5) {
+                    solarValueRow("Sun azimuth", value: degrees(day.position.azimuthDegrees))
+                    solarValueRow(
+                        "Expected shadow direction",
+                        value: degrees(day.position.expectedShadowAzimuthDegrees)
+                    )
+                    solarValueRow(
+                        "Geometric elevation",
+                        value: signedDegrees(day.position.geometricElevationDegrees)
+                    )
+                    solarValueRow(
+                        "Apparent elevation",
+                        value: signedDegrees(day.position.apparentElevationDegrees)
+                    )
+                    solarValueRow("Sunrise", value: event(day.sunrise))
+                    solarValueRow("Solar noon", value: event(day.solarNoon))
+                    solarValueRow("Sunset", value: event(day.sunset))
+                }
+                if let polarCondition = day.polarCondition {
+                    Label(
+                        polarCondition == .polarDay ? "Polar day" : "Polar night",
+                        systemImage: polarCondition == .polarDay ? "sun.max.fill" : "moon.stars.fill"
+                    )
+                    .font(.caption.weight(.medium))
+                } else if day.position.isBelowHorizon {
+                    Label("The Sun is below the apparent horizon at this time.", systemImage: "sun.horizon")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Method: Meeus/NOAA v1")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            case .failure(let error):
+                Label(error.localizedDescription, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            case nil:
+                Text(
+                    solarDayRequest == nil
+                        ? "A Photo Location and an absolute time are required."
+                        : "Calculating civil-day solar events…"
+                )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var visibilitySection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Visibility")
+                .font(.subheadline.weight(.semibold))
+            Toggle("Show solar overlay", isOn: $isVisible)
+            Toggle("Direction toward the Sun", isOn: $showsSunDirection)
+            Toggle("Expected shadow direction", isOn: $showsShadowDirection)
+            Toggle("Sunrise direction", isOn: $showsSunriseDirection)
+            Toggle("Sunset direction", isOn: $showsSunsetDirection)
+        }
+        .disabled(isReadOnly)
+    }
+
+    private var manualDateBinding: Binding<Date> {
+        Binding(
+            get: { civilDateTime },
+            set: {
+                selectedEvidenceID = nil
+                civilDateTime = $0
+            }
+        )
+    }
+
+    private var manualOffsetBinding: Binding<Int> {
+        Binding(
+            get: { utcOffsetMinutes },
+            set: {
+                selectedEvidenceID = nil
+                utcOffsetMinutes = $0
+            }
+        )
+    }
+
+    private var timeOfDayBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(effectiveTimestamp.hour * 60 + effectiveTimestamp.minute)
+            },
+            set: { minutes in
+                selectedEvidenceID = nil
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = Self.utc
+                let totalMinutes = Int(minutes.rounded())
+                civilDateTime = calendar.date(
+                    bySettingHour: totalMinutes / 60,
+                    minute: totalMinutes % 60,
+                    second: 0,
+                    of: civilDateTime
+                ) ?? civilDateTime
+            }
+        )
+    }
+
+    private var formattedUTCOffset: String {
+        let sign = utcOffsetMinutes < 0 ? "−" : "+"
+        let magnitude = abs(utcOffsetMinutes)
+        return String(format: "UTC%@%02d:%02d", sign, magnitude / 60, magnitude % 60)
+    }
+
+    private var formattedCivilTime: String {
+        String(format: "%02d:%02d", effectiveTimestamp.hour, effectiveTimestamp.minute)
+    }
+
+    private func load(_ timestamp: AnalysisTimestampValue) {
+        guard let date = timestamp.wallClockSortDate else { return }
+        civilDateTime = date
+        utcOffsetMinutes = timestamp.utcOffsetMinutes ?? 0
+    }
+
+    private func refreshCalculatedDay() {
+        guard let request = solarDayRequest else {
+            calculatedDay = nil
+            calculatedDayRequest = nil
+            calculationErrorMessage = nil
+            return
+        }
+        guard calculatedDayRequest != request || calculatedDay == nil else { return }
+        do {
+            calculatedDay = try Self.calculateDayThrowing(request)
+            calculatedDayRequest = request
+            calculationErrorMessage = nil
+        } catch {
+            calculatedDay = nil
+            calculatedDayRequest = request
+            calculationErrorMessage = error.localizedDescription
+        }
+    }
+
+    private static func dayRequest(
+        location: AnalysisLocationEvidence?,
+        timestamp: AnalysisTimestampValue
+    ) -> AnalysisSolarDayRequest? {
+        guard let coordinate = location?.coordinate,
+              coordinate.isValid,
+              timestamp.validate(),
+              timestamp.timezoneKnown,
+              timestamp.precision != .day else { return nil }
+        var representative = timestamp
+        representative.hour = 12
+        representative.minute = 0
+        representative.second = 0
+        representative.nanosecond = 0
+        representative.precision = .minute
+        guard let instant = representative.resolvedInstant,
+              let utcOffsetMinutes = representative.utcOffsetMinutes else { return nil }
+        return AnalysisSolarDayRequest(
+            coordinate: coordinate,
+            civilDayRepresentativeInstant: instant,
+            utcOffsetMinutes: utcOffsetMinutes
+        )
+    }
+
+    private static func calculateDay(_ request: AnalysisSolarDayRequest) -> AnalysisSolarDay? {
+        try? calculateDayThrowing(request)
+    }
+
+    private static func calculateDayThrowing(
+        _ request: AnalysisSolarDayRequest
+    ) throws -> AnalysisSolarDay {
+        try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(
+                instant: request.civilDayRepresentativeInstant,
+                coordinate: request.coordinate
+            ),
+            civilDayOffsetMinutes: request.utcOffsetMinutes
+        )
+    }
+
+    private func event(_ event: AnalysisSolarEvent?) -> String {
+        guard let event else { return "Does not occur" }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(
+            secondsFromGMT: (effectiveTimestamp.utcOffsetMinutes ?? 0) * 60
+        ) ?? Self.utc
+        let values = calendar.dateComponents([.hour, .minute], from: event.instant)
+        return String(
+            format: "%02d:%02d · %@",
+            values.hour ?? 0,
+            values.minute ?? 0,
+            degrees(event.azimuthDegrees)
+        )
+    }
+
+    private func degrees(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(1))) + "°"
+    }
+
+    private func signedDegrees(_ value: Double) -> String {
+        value.formatted(.number.sign(strategy: .always()).precision(.fractionLength(1))) + "°"
+    }
+
+    private func solarValueRow(_ label: String, value: String) -> some View {
+        GridRow {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.callout.monospacedDigit())
+                .textSelection(.enabled)
+        }
     }
 }
 

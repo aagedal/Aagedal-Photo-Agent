@@ -190,6 +190,98 @@ struct AnalysisSolarPositionCalculatorTests {
         #expect(results.allSatisfy { $0 == expected })
     }
 
+    @Test("shared map geometry preserves bearing and scales solar rays with the viewport")
+    func solarMapGeometryScalesWithViewport() {
+        let origin = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)
+        let shortLength = AnalysisMapGeometry.solarRayLengthMeters(
+            latitudeDelta: 0.01,
+            longitudeDelta: 0.01,
+            at: origin
+        )
+        let longLength = AnalysisMapGeometry.solarRayLengthMeters(
+            latitudeDelta: 1,
+            longitudeDelta: 1,
+            at: origin
+        )
+        let destination = AnalysisMapGeometry.destinationCoordinate(
+            from: origin,
+            bearingDegrees: 90,
+            distanceMeters: 1_000
+        )
+
+        #expect(shortLength != nil)
+        #expect(longLength != nil)
+        #expect((longLength ?? 0) > (shortLength ?? 0) * 90)
+        #expect(abs(
+            AnalysisMapGeometry.greatCircleDistanceMeters(from: origin, to: destination) - 1_000
+        ) < 0.01)
+        #expect(destination.longitude > origin.longitude)
+    }
+
+    @Test("solar render model honors ray choices without creating persisted geometry")
+    func solarRenderModelBuildsSelectedDirections() throws {
+        let instant = try utcDate(2024, 6, 20, 12, 0, 0)
+        let origin = AnalysisGeoCoordinate(latitude: 51.4779, longitude: 0)
+        let day = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(instant: instant, coordinate: origin),
+            civilDayOffsetMinutes: 0
+        )
+        let overlay = AnalysisSolarOverlayState(
+            timestamp: AnalysisTimestampValue(
+                date: instant,
+                precision: .minute,
+                timeZone: TimeZone(secondsFromGMT: 0)!
+            ),
+            showsShadowDirection: false,
+            showsSunsetDirection: false
+        )
+
+        let model = try #require(AnalysisSolarMapRenderModel(
+            overlay: overlay,
+            origin: origin,
+            latitudeDelta: 0.2,
+            longitudeDelta: 0.2,
+            day: day
+        ))
+
+        #expect(model.rays.map(\.kind) == [.sun, .sunrise])
+        #expect(model.rays.allSatisfy {
+            abs(AnalysisMapGeometry.greatCircleDistanceMeters(
+                from: $0.origin,
+                to: $0.destination
+            ) - model.rayLengthMeters) < 0.01
+        })
+    }
+
+    @Test("below-horizon render model hides current sun and shadow rays")
+    func solarRenderModelHidesInactiveCurrentDirections() throws {
+        let instant = try utcDate(2024, 6, 20, 0, 0, 0)
+        let origin = AnalysisGeoCoordinate(latitude: 51.4779, longitude: 0)
+        let day = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(instant: instant, coordinate: origin),
+            civilDayOffsetMinutes: 0
+        )
+        let overlay = AnalysisSolarOverlayState(
+            timestamp: AnalysisTimestampValue(
+                date: instant,
+                precision: .minute,
+                timeZone: TimeZone(secondsFromGMT: 0)!
+            )
+        )
+
+        let model = try #require(AnalysisSolarMapRenderModel(
+            overlay: overlay,
+            origin: origin,
+            latitudeDelta: 0.2,
+            longitudeDelta: 0.2,
+            day: day
+        ))
+
+        #expect(model.isBelowHorizon)
+        #expect(!model.rays.contains { $0.kind == .sun || $0.kind == .shadow })
+        #expect(model.rays.map(\.kind) == [.sunrise, .sunset])
+    }
+
     @Test("Invalid input returns specific errors")
     func invalidInputErrors() throws {
         let instant = try utcDate(2024, 1, 1, 0, 0, 0)

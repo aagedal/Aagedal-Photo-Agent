@@ -241,6 +241,16 @@ nonisolated struct AnalysisTimestampEvidence: Identifiable, Codable, Equatable, 
             && value.validate()
             && updatedAt >= createdAt
     }
+
+    /// Whether this row can supply the absolute, minute-or-better input required by the solar
+    /// position calculator. Keeping this rule with the timestamp model prevents the OSINT UI from
+    /// accidentally treating a timezone-less camera clock or day-only value as an instant.
+    var isEligibleForSolarPosition: Bool {
+        value.validate()
+            && value.timezoneKnown
+            && value.precision != .day
+            && value.resolvedInstant != nil
+    }
 }
 
 nonisolated struct AnalysisTimestampConflict: Identifiable, Equatable, Sendable {

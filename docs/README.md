@@ -19,7 +19,7 @@ own scope, tasks, exit gates, and technical decisions.
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; release hardening in progress | Close remaining manual fixture, accessibility, performance, and cross-phase validation |
 | Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, and JSON schema safety established; I/O, validation, and fixture work remains | Complete the redistributable interoperability corpus, then finish the shared metadata I/O/validation foundation |
-| SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation and schema-9 persistence contracts implemented; UI not started | Add keyboard-accessible OSINT controls for explicit location and timezone-qualified time inputs |
+| SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, and equivalent Apple/OpenStreetMap ray rendering implemented; interactive map validation remains | Validate solar rays across map styles, camera interactions, and rapid time changes, then freeze report evidence |
 
 ## Default delivery order
 

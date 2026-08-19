@@ -78,7 +78,13 @@ crop uses 1:1 source-pixel extraction with no interpolation. Stress coverage inc
 Unicode, missing figures, many annotations, and organically flowing multi-page content.
 The broad conditional sun/shadow analyzer is not approved for 3.0 because terrain, clock/timezone,
 and measurement uncertainty have not yet passed an evidence-quality gate. The separately planned
-solar-position direction overlay stays within the narrower approved boundary.
+solar-position direction overlay stays within the narrower approved boundary. Its OSINT controls
+now accept only an explicit Photo Location and timezone-qualified minute-or-better timestamp,
+including eligible timeline evidence or a fixed-offset manual civil time. The popover previews
+solar/event values and preserves per-ray visibility without consulting the Mac's current timezone;
+Apple Maps and OpenStreetMap now render the same viewport-scaled, true-north direction rays without
+adding them to evidence annotations or undo history. Manual map-camera and style-switch validation
+remains before report snapshot work.
 Phase 7 now includes the reusable comparison session/coordinator and a Browser workspace for exactly
 two selected images. Side-by-side, stacked, and angled-wipe layouts share synchronized fit, true-pixel, and
 custom viewport state with deliberate alignment offsets. The focused pane can be replaced in visible

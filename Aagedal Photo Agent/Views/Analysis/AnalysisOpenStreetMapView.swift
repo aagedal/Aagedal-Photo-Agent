@@ -14,6 +14,7 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
     let annotations: [AnalysisMapAnnotation]
     let folderAnnotations: [AnalysisImageMapAnnotation]
     let fieldOfViewPreview: [AnalysisGeoCoordinate]?
+    let solarRenderModel: AnalysisSolarMapRenderModel?
     let selectedAnnotationID: UUID?
     let onCameraChanged: (MKCoordinateRegion, MKMapCamera) -> Void
     let onSelectAnnotation: (UUID) -> Void
@@ -101,6 +102,19 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
                     title: nil,
                     to: mapView
                 )
+            }
+            if let solarRenderModel = parent.solarRenderModel {
+                for ray in solarRenderModel.rays {
+                    let overlay = AnalysisOSMSolarPolyline(
+                        coordinates: [
+                            ray.origin.clLocationCoordinate,
+                            ray.destination.clLocationCoordinate,
+                        ],
+                        count: 2
+                    )
+                    overlay.kind = ray.kind
+                    mapView.addOverlay(overlay, level: .aboveLabels)
+                }
             }
             for annotation in parent.annotations where annotation.isVisible {
                 add(annotation, dimmed: false, to: mapView)
@@ -255,6 +269,14 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
             if let tileOverlay = overlay as? MKTileOverlay {
                 return MKTileOverlayRenderer(tileOverlay: tileOverlay)
             }
+            if let solarPolyline = overlay as? AnalysisOSMSolarPolyline {
+                let renderer = MKPolylineRenderer(polyline: solarPolyline)
+                renderer.strokeColor = solarPolyline.kind.nsColor
+                renderer.lineWidth = solarPolyline.kind.lineWidth
+                renderer.lineCap = .round
+                renderer.lineDashPattern = solarPolyline.kind.lineDashPattern
+                return renderer
+            }
             if let polyline = overlay as? AnalysisOSMPolyline {
                 let renderer = MKPolylineRenderer(polyline: polyline)
                 renderer.strokeColor = polyline.style.color.nsColor.withAlphaComponent(
@@ -334,6 +356,10 @@ nonisolated private final class AnalysisOSMPolyline: MKPolyline {
     var isDimmed = false
 }
 
+nonisolated private final class AnalysisOSMSolarPolyline: MKPolyline {
+    var kind = AnalysisSolarMapRayKind.sun
+}
+
 nonisolated private final class AnalysisOSMPolygon: MKPolygon {
     var style = AnalysisMapAnnotationStyle.default
     var isDimmed = false
@@ -361,6 +387,33 @@ private extension AnalysisAnnotationColor {
             case .white: .white
             case .black: .black
             }
+        }
+    }
+}
+
+private extension AnalysisSolarMapRayKind {
+    var nsColor: NSColor {
+        switch self {
+        case .sun: .systemYellow
+        case .shadow: .systemPurple
+        case .sunrise: .systemOrange
+        case .sunset: .systemRed
+        }
+    }
+
+    var lineWidth: CGFloat {
+        switch self {
+        case .sun: 4
+        case .shadow: 3
+        case .sunrise, .sunset: 2.5
+        }
+    }
+
+    var lineDashPattern: [NSNumber]? {
+        switch self {
+        case .sun: nil
+        case .shadow: [7, 5]
+        case .sunrise, .sunset: [3, 4]
         }
     }
 }
