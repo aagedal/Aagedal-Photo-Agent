@@ -1,5 +1,7 @@
 # Aagedal Photo Agent 2.3 — release plan
 
+> Project planning index: [../README.md](../README.md)
+
 **Status:** implementation in progress
 
 **Plan date:** 2026-07-26

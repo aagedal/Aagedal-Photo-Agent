@@ -1,5 +1,7 @@
 # Journalistic metadata workflow — implementation plan
 
+> Project planning index: [README.md](README.md)
+
 ## Objective
 
 Make Aagedal Photo Agent a credible replacement for Adobe Bridge and Photo Mechanic for
