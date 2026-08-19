@@ -441,6 +441,28 @@ struct SidecarReconciliationTests {
         let b = IPTCMetadata(title: "T", latitude: -10, longitude: -20)
         #expect(!SidecarReconciliation.descriptiveFieldsDiffer(a, b))
     }
+
+    @Test("structured location bags compare order-insensitively")
+    func structuredLocationsIgnoreOrder() {
+        let oslo = EditorialLocation(city: "Oslo", countryCode: "NOR")
+        let bergen = EditorialLocation(city: "Bergen", countryCode: "NOR")
+        let a = IPTCMetadata(locationsShown: [oslo, bergen])
+        let b = IPTCMetadata(locationsShown: [bergen, oslo])
+
+        #expect(!SidecarReconciliation.descriptiveFieldsDiffer(a, b))
+    }
+
+    @Test("structured contact changes are descriptive")
+    func structuredContactChanges() {
+        let a = IPTCMetadata(
+            creatorContactInfo: CreatorContactInfo(emails: ["desk@example.test"])
+        )
+        let b = IPTCMetadata(
+            creatorContactInfo: CreatorContactInfo(emails: ["newsroom@example.test"])
+        )
+
+        #expect(SidecarReconciliation.descriptiveFieldsDiffer(a, b))
+    }
 }
 
 @Suite("EditedImageRenderer.customSubfolder containment")

@@ -1431,6 +1431,148 @@ nonisolated struct DescriptionConflict: Sendable {
     let iptcCaptionAbstract: String
 }
 
+/// IPTC Creator Contact Info as structured values rather than a display-formatted string.
+///
+/// The collection fields deliberately retain separate values. Email addresses, telephone
+/// numbers, and web URLs must not be joined with commas or semicolons because those characters
+/// can be valid data and different metadata containers represent repeated values differently.
+nonisolated struct CreatorContactInfo: Codable, Sendable, Equatable {
+    var addressLines: [String]
+    var city: String?
+    var region: String?
+    var postalCode: String?
+    var country: String?
+    var emails: [String]
+    var phoneNumbers: [String]
+    var webURLs: [String]
+
+    init(
+        addressLines: [String] = [],
+        city: String? = nil,
+        region: String? = nil,
+        postalCode: String? = nil,
+        country: String? = nil,
+        emails: [String] = [],
+        phoneNumbers: [String] = [],
+        webURLs: [String] = []
+    ) {
+        self.addressLines = addressLines
+        self.city = city
+        self.region = region
+        self.postalCode = postalCode
+        self.country = country
+        self.emails = emails
+        self.phoneNumbers = phoneNumbers
+        self.webURLs = webURLs
+    }
+
+    var isEmpty: Bool {
+        addressLines.allSatisfy(\.isEmpty)
+            && (city?.isEmpty ?? true)
+            && (region?.isEmpty ?? true)
+            && (postalCode?.isEmpty ?? true)
+            && (country?.isEmpty ?? true)
+            && emails.allSatisfy(\.isEmpty)
+            && phoneNumbers.allSatisfy(\.isEmpty)
+            && webURLs.allSatisfy(\.isEmpty)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case addressLines, city, region, postalCode, country, emails, phoneNumbers, webURLs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        addressLines = try container.decodeIfPresent([String].self, forKey: .addressLines) ?? []
+        city = try container.decodeIfPresent(String.self, forKey: .city)
+        region = try container.decodeIfPresent(String.self, forKey: .region)
+        postalCode = try container.decodeIfPresent(String.self, forKey: .postalCode)
+        country = try container.decodeIfPresent(String.self, forKey: .country)
+        emails = try container.decodeIfPresent([String].self, forKey: .emails) ?? []
+        phoneNumbers = try container.decodeIfPresent([String].self, forKey: .phoneNumbers) ?? []
+        webURLs = try container.decodeIfPresent([String].self, forKey: .webURLs) ?? []
+    }
+}
+
+/// One IPTC Location structure used independently by Location Created and Location Shown.
+///
+/// Legacy City/Sublocation/State/Country fields remain on `IPTCMetadata`; callers must choose an
+/// explicit precedence policy instead of silently flattening either structured location into the
+/// legacy scalar fields.
+nonisolated struct EditorialLocation: Codable, Sendable, Equatable, Hashable {
+    var identifiers: [String]
+    var name: String?
+    var sublocation: String?
+    var city: String?
+    var provinceState: String?
+    var countryName: String?
+    var countryCode: String?
+    var worldRegion: String?
+    var latitude: Double?
+    var longitude: Double?
+    var altitudeMeters: Double?
+
+    init(
+        identifiers: [String] = [],
+        name: String? = nil,
+        sublocation: String? = nil,
+        city: String? = nil,
+        provinceState: String? = nil,
+        countryName: String? = nil,
+        countryCode: String? = nil,
+        worldRegion: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        altitudeMeters: Double? = nil
+    ) {
+        self.identifiers = identifiers
+        self.name = name
+        self.sublocation = sublocation
+        self.city = city
+        self.provinceState = provinceState
+        self.countryName = countryName
+        self.countryCode = countryCode
+        self.worldRegion = worldRegion
+        self.latitude = latitude
+        self.longitude = longitude
+        self.altitudeMeters = altitudeMeters
+    }
+
+    var isEmpty: Bool {
+        identifiers.allSatisfy(\.isEmpty)
+            && (name?.isEmpty ?? true)
+            && (sublocation?.isEmpty ?? true)
+            && (city?.isEmpty ?? true)
+            && (provinceState?.isEmpty ?? true)
+            && (countryName?.isEmpty ?? true)
+            && (countryCode?.isEmpty ?? true)
+            && (worldRegion?.isEmpty ?? true)
+            && latitude == nil
+            && longitude == nil
+            && altitudeMeters == nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case identifiers, name, sublocation, city, provinceState, countryName, countryCode
+        case worldRegion, latitude, longitude, altitudeMeters
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        identifiers = try container.decodeIfPresent([String].self, forKey: .identifiers) ?? []
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        sublocation = try container.decodeIfPresent(String.self, forKey: .sublocation)
+        city = try container.decodeIfPresent(String.self, forKey: .city)
+        provinceState = try container.decodeIfPresent(String.self, forKey: .provinceState)
+        countryName = try container.decodeIfPresent(String.self, forKey: .countryName)
+        countryCode = try container.decodeIfPresent(String.self, forKey: .countryCode)
+        worldRegion = try container.decodeIfPresent(String.self, forKey: .worldRegion)
+        latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+        altitudeMeters = try container.decodeIfPresent(Double.self, forKey: .altitudeMeters)
+    }
+}
+
 nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     // Priority fields (always visible)
     var title: String?
@@ -1457,6 +1599,11 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     var instructions: String?
     var source: String?
 
+    // Structured editorial metadata. These remain distinct from legacy location scalars.
+    var creatorContactInfo: CreatorContactInfo?
+    var locationsCreated: [EditorialLocation]
+    var locationsShown: [EditorialLocation]
+
     // GPS
     var latitude: Double?
     var longitude: Double?
@@ -1476,6 +1623,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         case digitalSourceType
         case creator, credit, copyright, jobId, dateCreated, captureDate
         case city, sublocation, provinceState, country, event, instructions, source
+        case creatorContactInfo, locationsCreated, locationsShown
         case latitude, longitude
         case rating, label
     }
@@ -1502,6 +1650,9 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         event: String? = nil,
         instructions: String? = nil,
         source: String? = nil,
+        creatorContactInfo: CreatorContactInfo? = nil,
+        locationsCreated: [EditorialLocation] = [],
+        locationsShown: [EditorialLocation] = [],
         rating: Int? = nil,
         label: String? = nil,
         cameraRaw: CameraRawSettings? = nil,
@@ -1528,6 +1679,9 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.event = event
         self.instructions = instructions
         self.source = source
+        self.creatorContactInfo = creatorContactInfo
+        self.locationsCreated = locationsCreated
+        self.locationsShown = locationsShown
         self.rating = rating
         self.label = label
         self.cameraRaw = cameraRaw
@@ -1555,6 +1709,18 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         event = try container.decodeIfPresent(String.self, forKey: .event)
         instructions = try container.decodeIfPresent(String.self, forKey: .instructions)
         source = try container.decodeIfPresent(String.self, forKey: .source)
+        creatorContactInfo = try container.decodeIfPresent(
+            CreatorContactInfo.self,
+            forKey: .creatorContactInfo
+        )
+        locationsCreated = try container.decodeIfPresent(
+            [EditorialLocation].self,
+            forKey: .locationsCreated
+        ) ?? []
+        locationsShown = try container.decodeIfPresent(
+            [EditorialLocation].self,
+            forKey: .locationsShown
+        ) ?? []
         latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
         longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
         rating = try container.decodeIfPresent(Int.self, forKey: .rating)
@@ -1583,6 +1749,9 @@ extension IPTCMetadata {
             || event != other.event
             || instructions != other.instructions
             || source != other.source
+            || creatorContactInfo != other.creatorContactInfo
+            || Set(locationsCreated) != Set(other.locationsCreated)
+            || Set(locationsShown) != Set(other.locationsShown)
     }
 
     /// Whether any descriptive (editor-managed) field carries a value. The field set
@@ -1609,6 +1778,9 @@ extension IPTCMetadata {
         if let event, !event.isEmpty { return true }
         if let instructions, !instructions.isEmpty { return true }
         if let source, !source.isEmpty { return true }
+        if let creatorContactInfo, !creatorContactInfo.isEmpty { return true }
+        if locationsCreated.contains(where: { !$0.isEmpty }) { return true }
+        if locationsShown.contains(where: { !$0.isEmpty }) { return true }
         return false
     }
 
@@ -1642,6 +1814,9 @@ extension IPTCMetadata {
         result.event = record.event
         result.instructions = record.instructions
         result.source = record.source
+        result.creatorContactInfo = record.creatorContactInfo
+        result.locationsCreated = record.locationsCreated
+        result.locationsShown = record.locationsShown
 
         if let value = record.captureDate, !value.isEmpty { result.captureDate = value }
         if let value = record.latitude { result.latitude = value }
@@ -1684,6 +1859,15 @@ extension IPTCMetadata {
         if let value = override.event, !value.isEmpty { result.event = value }
         if let value = override.instructions, !value.isEmpty { result.instructions = value }
         if let value = override.source, !value.isEmpty { result.source = value }
+        if let value = override.creatorContactInfo, !value.isEmpty {
+            result.creatorContactInfo = value
+        }
+        if override.locationsCreated.contains(where: { !$0.isEmpty }) {
+            result.locationsCreated = override.locationsCreated
+        }
+        if override.locationsShown.contains(where: { !$0.isEmpty }) {
+            result.locationsShown = override.locationsShown
+        }
         if let value = override.latitude { result.latitude = value }
         if let value = override.longitude { result.longitude = value }
         if let value = override.rating { result.rating = value }

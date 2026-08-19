@@ -550,6 +550,29 @@ struct HasIPTCDifferencesTests {
         #expect(a.hasIPTCDifferences(from: b) == true)
     }
 
+    @Test("structured editorial differences are detected without location bag ordering")
+    func structuredEditorialDifferencesDetected() {
+        let cityHall = EditorialLocation(name: "City Hall", city: "Oslo", countryCode: "NOR")
+        let harbor = EditorialLocation(name: "Harbor", city: "Oslo", countryCode: "NOR")
+        let contact = CreatorContactInfo(emails: ["desk@example.test"])
+
+        let a = IPTCMetadata(
+            creatorContactInfo: contact,
+            locationsShown: [cityHall, harbor]
+        )
+        let reordered = IPTCMetadata(
+            creatorContactInfo: contact,
+            locationsShown: [harbor, cityHall]
+        )
+        let changed = IPTCMetadata(
+            creatorContactInfo: CreatorContactInfo(emails: ["newsroom@example.test"]),
+            locationsShown: [cityHall, harbor]
+        )
+
+        #expect(!a.hasIPTCDifferences(from: reordered))
+        #expect(a.hasIPTCDifferences(from: changed))
+    }
+
     @Test("rating difference alone not detected by hasIPTCDifferences")
     func ratingDifferenceNotDetected() {
         let a = IPTCMetadata(rating: 3)
@@ -659,6 +682,42 @@ struct MergedTests {
         let result = base.merged(preferring: override)
         #expect(result.digitalSourceType == .trainedAlgorithmicMedia)
     }
+
+    @Test("non-empty structured metadata merges without flattening locations")
+    func structuredMetadataMerged() {
+        let base = IPTCMetadata(
+            creatorContactInfo: CreatorContactInfo(emails: ["old@example.test"]),
+            locationsCreated: [EditorialLocation(city: "Bergen", countryCode: "NOR")]
+        )
+        let override = IPTCMetadata(
+            creatorContactInfo: CreatorContactInfo(phoneNumbers: ["+47 22 00 00 00"]),
+            locationsCreated: [EditorialLocation(city: "Oslo", countryCode: "NOR")]
+        )
+        let result = base.merged(preferring: override)
+
+        #expect(result.creatorContactInfo?.emails.isEmpty == true)
+        #expect(result.creatorContactInfo?.phoneNumbers == ["+47 22 00 00 00"])
+        #expect(result.locationsCreated == [EditorialLocation(city: "Oslo", countryCode: "NOR")])
+        #expect(result.city == nil)
+        #expect(result.country == nil)
+    }
+
+    @Test("empty structured override does not erase base values")
+    func emptyStructuredOverrideIgnored() {
+        let base = IPTCMetadata(
+            creatorContactInfo: CreatorContactInfo(emails: ["desk@example.test"]),
+            locationsShown: [EditorialLocation(city: "Oslo")]
+        )
+        let result = base.merged(
+            preferring: IPTCMetadata(
+                creatorContactInfo: CreatorContactInfo(),
+                locationsShown: [EditorialLocation()]
+            )
+        )
+
+        #expect(result.creatorContactInfo == base.creatorContactInfo)
+        #expect(result.locationsShown == base.locationsShown)
+    }
 }
 
 // MARK: - descriptive record (Photo Mechanic semantics)
@@ -685,6 +744,17 @@ struct DescriptiveRecordTests {
         #expect(IPTCMetadata(personShown: ["P"]).hasDescriptiveContent)
         #expect(IPTCMetadata(creator: "C").hasDescriptiveContent)
         #expect(IPTCMetadata(city: "Oslo").hasDescriptiveContent)
+        #expect(IPTCMetadata(
+            creatorContactInfo: CreatorContactInfo(emails: ["desk@example.test"])
+        ).hasDescriptiveContent)
+        #expect(IPTCMetadata(
+            locationsCreated: [EditorialLocation(city: "Oslo")]
+        ).hasDescriptiveContent)
+        #expect(IPTCMetadata(
+            locationsShown: [EditorialLocation(latitude: 59.91, longitude: 10.75)]
+        ).hasDescriptiveContent)
+        #expect(!IPTCMetadata(creatorContactInfo: CreatorContactInfo()).hasDescriptiveContent)
+        #expect(!IPTCMetadata(locationsShown: [EditorialLocation()]).hasDescriptiveContent)
         #expect(!IPTCMetadata(title: "").hasDescriptiveContent)
     }
 
@@ -726,6 +796,21 @@ struct DescriptiveRecordTests {
         // …the record read does not: the clear sticks.
         #expect(embedded.replacingDescriptiveFields(from: record).title == nil)
     }
+
+    @Test("replacing descriptive fields preserves explicit structured clears")
+    func structuredClearsStick() {
+        let embedded = IPTCMetadata(
+            creatorContactInfo: CreatorContactInfo(emails: ["desk@example.test"]),
+            locationsCreated: [EditorialLocation(city: "Oslo")],
+            locationsShown: [EditorialLocation(city: "Bergen")]
+        )
+        let record = IPTCMetadata(title: "Sidecar record")
+        let result = embedded.replacingDescriptiveFields(from: record)
+
+        #expect(result.creatorContactInfo == nil)
+        #expect(result.locationsCreated.isEmpty)
+        #expect(result.locationsShown.isEmpty)
+    }
 }
 
 // MARK: - Codable
@@ -743,6 +828,35 @@ struct IPTCMetadataCodableTests {
 
     @Test("all IPTC fields survive encode/decode roundtrip")
     func allFieldsRoundtrip() throws {
+        let contact = CreatorContactInfo(
+            addressLines: ["News House", "1 Example Street"],
+            city: "Oslo",
+            region: "Oslo",
+            postalCode: "0001",
+            country: "Norway",
+            emails: ["photo@example.test", "desk@example.test"],
+            phoneNumbers: ["+47 22 00 00 00"],
+            webURLs: ["https://example.test/contact"]
+        )
+        let createdLocation = EditorialLocation(
+            identifiers: ["https://example.test/places/city-hall"],
+            name: "Oslo City Hall",
+            sublocation: "Council chamber",
+            city: "Oslo",
+            provinceState: "Oslo",
+            countryName: "Norway",
+            countryCode: "NOR",
+            worldRegion: "Europe",
+            latitude: 59.9111,
+            longitude: 10.7339,
+            altitudeMeters: 12
+        )
+        let shownLocation = EditorialLocation(
+            name: "Oslo Harbor",
+            city: "Oslo",
+            countryName: "Norway",
+            countryCode: "NOR"
+        )
         let original = IPTCMetadata(
             title: "Test Title",
             description: "A description",
@@ -765,6 +879,9 @@ struct IPTCMetadataCodableTests {
             event: "Test Event",
             instructions: "Editorial use only",
             source: "Aagedal News",
+            creatorContactInfo: contact,
+            locationsCreated: [createdLocation],
+            locationsShown: [shownLocation],
             rating: 4,
             label: "Red"
         )
@@ -792,6 +909,9 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.event == "Test Event")
         #expect(decoded.instructions == "Editorial use only")
         #expect(decoded.source == "Aagedal News")
+        #expect(decoded.creatorContactInfo == contact)
+        #expect(decoded.locationsCreated == [createdLocation])
+        #expect(decoded.locationsShown == [shownLocation])
         #expect(decoded.rating == 4)
         #expect(decoded.label == "Red")
     }
@@ -852,7 +972,29 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.title == nil)
         #expect(decoded.keywords.isEmpty)
         #expect(decoded.personShown.isEmpty)
+        #expect(decoded.creatorContactInfo == nil)
+        #expect(decoded.locationsCreated.isEmpty)
+        #expect(decoded.locationsShown.isEmpty)
         #expect(decoded.rating == nil)
+    }
+
+    @Test("older structured shapes decode missing repeated values as empty arrays")
+    func partialStructuredShapesDecodeDefaults() throws {
+        let json = """
+        {
+          "creatorContactInfo": { "city": "Oslo" },
+          "locationsCreated": [{ "city": "Oslo", "countryCode": "NOR" }],
+          "locationsShown": [{ "name": "Harbor" }]
+        }
+        """.data(using: .utf8)!
+        let decoded = try decoder.decode(IPTCMetadata.self, from: json)
+
+        #expect(decoded.creatorContactInfo?.city == "Oslo")
+        #expect(decoded.creatorContactInfo?.addressLines.isEmpty == true)
+        #expect(decoded.creatorContactInfo?.emails.isEmpty == true)
+        #expect(decoded.locationsCreated.first?.identifiers.isEmpty == true)
+        #expect(decoded.locationsCreated.first?.countryCode == "NOR")
+        #expect(decoded.locationsShown.first?.name == "Harbor")
     }
 }
 

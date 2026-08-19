@@ -188,8 +188,8 @@ ready.
 
 - [x] Introduce stable `MetadataFieldID` values without invalidating existing
   `IPTCMetadata.FieldKey` data stored in UserDefaults or JSON.
-- [ ] Add typed models for creator contact information and created/shown locations.
-- [ ] Expand `IPTCMetadata` or introduce a versioned editorial metadata aggregate without turning
+- [x] Add typed models for creator contact information and created/shown locations.
+- [x] Expand `IPTCMetadata` or introduce a versioned editorial metadata aggregate without turning
   structured fields into delimiter-dependent strings.
 - [ ] Version JSON sidecars and templates; add decoding defaults and migration tests for all
   previously shipped shapes.
@@ -241,6 +241,12 @@ retains the previously shipped `"title"` persistence key, and `IPTCMetadata.Fiel
 remains source- and Codable-compatible. Requirement-level maps, minimum lengths, hidden-field
 preferences, and legacy required-field arrays retain their existing storage shapes. Nine focused
 compatibility tests pass.
+
+**Progress — 2026-08-19:** `CreatorContactInfo` and `EditorialLocation` now preserve contact
+channels, identifiers, address parts, coordinates, and created/shown location roles as typed
+Codable values. `IPTCMetadata` carries these structures through JSON round trips, additive merges,
+authoritative sidecar clears, descriptive-content detection, and reconciliation without flattening
+repeated values. XMP/IIM mapping and editor exposure remain separate Phase 1 work.
 
 ## Phase 2 — Caption Workspace
 

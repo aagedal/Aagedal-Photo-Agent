@@ -3,6 +3,11 @@
 **Status:** living planning index  
 **Last reviewed:** 2026-08-19
 
+**Next release label:** to be decided before release packaging. The accumulated scope is larger
+than a 2.3 point release; 2.5 and 3.0 are the current reasonable candidates. Existing `v2.3/`
+paths retain their working name until that choice is made so links and implementation history stay
+stable. All three portfolio initiatives below are intended for the same next release.
+
 This document is the top-level index for product and implementation planning. It tracks the major
 initiatives, their order and dependencies, while each linked sub-plan remains authoritative for its
 own scope, tasks, exit gates, and technical decisions.
@@ -11,24 +16,25 @@ own scope, tasks, exit gates, and technical decisions.
 
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
-| Version 2.3 | [Release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Implementation and release hardening in progress | Close remaining manual fixture, accessibility, performance, and cross-phase validation |
+| Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; release hardening in progress | Close remaining manual fixture, accessibility, performance, and cross-phase validation |
 | Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions largely established; foundation and fixture work remains | Complete the redistributable interoperability corpus, then finish the shared metadata model/I/O/validation foundation |
-| SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Proposed post-2.3; implementation not started | Approve calculation conventions and reference corpus before calculation code or UI work |
+| SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Planned for the next release; implementation not started | Approve calculation conventions and reference corpus before calculation code or UI work |
 
 ## Default delivery order
 
-1. Close the Version 2.3 release gates. Its source identity, case persistence, OSINT map/timeline,
+1. Close the investigation/review release gates. Its source identity, case persistence, OSINT map/timeline,
    immutable report snapshot, and rendering behavior are foundations for later analysis features.
 2. Continue the journalistic metadata standards foundation. Caption Workspace, Batch Rename, and
    Deadline Mode depend on one consistent field model, preservation policy, validation engine, and
    interoperability corpus.
-3. Start the solar overlay after the 2.3 OSINT foundations are stable, unless it is explicitly
+3. Start the solar overlay after the OSINT foundations are stable, unless it is explicitly
    reprioritized. It is a bounded map/report feature and does not block the journalistic workflow.
 
-After the 2.3 gate, the journalistic workflow and solar overlay can proceed independently:
+These are workstreams of the same next release. Once their shared foundations are stable, the
+journalistic workflow and solar overlay can proceed independently:
 
 ```text
-Version 2.3 foundations and release hardening
+Investigation/review foundations and release hardening
 ├── Journalistic metadata workflow
 │   └── Standards → Caption → Rename → Deadline → Verified delivery
 └── Solar-position overlay
@@ -47,10 +53,11 @@ Version 2.3 foundations and release hardening
 - When status changes materially, update this table and the affected detailed plan in the same
   change.
 
-## Version 2.3 document set
+## Investigation and review document set
 
-The [2.3 release plan](v2.3/README.md) is the entry point for this release. Its supporting documents
-remain grouped under `docs/v2.3/`:
+The [working release plan](v2.3/README.md) is the entry point for this workstream. Its supporting
+documents remain grouped under the historical `docs/v2.3/` path until the final release number is
+selected:
 
 - [Delivery plan](v2.3/delivery-plan.md) — phase checklists and release gates.
 - [Image Analysis](v2.3/image-analysis.md) — evidence workspace, pixel tools, OSINT map/timeline,
@@ -79,7 +86,7 @@ Supporting documents:
 
 ## Solar overlay document set
 
-The [SunCalc-style solar overlay plan](suncalc-plan.md) owns the post-2.3 first release. It defines
+The [SunCalc-style solar overlay plan](suncalc-plan.md) owns its next-release workstream. It defines
 the app-owned Swift calculator, explicit time/location inputs, map presentation, persistence,
 reports, numerical fixtures, and the boundary between a direction overlay and later forensic
 shadow comparison.
@@ -111,4 +118,3 @@ They should not be used as the top-level project backlog unless promoted into th
 
 Avoid renaming existing documents solely for consistency; stable links and history are more useful
 than cosmetic uniformity. New documents should follow this convention.
-

@@ -69,6 +69,49 @@ struct MetadataSidecarServiceTests {
         #expect(loaded.sourceFile == "photo.jpg")
     }
 
+    @Test("structured editorial metadata survives the sidecar service roundtrip")
+    func structuredEditorialMetadataRoundtrip() throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let service = MetadataSidecarService()
+        let imageURL = makeImageURL(in: folder)
+        let contact = CreatorContactInfo(
+            addressLines: ["News House", "1 Example Street"],
+            city: "Oslo",
+            country: "Norway",
+            emails: ["desk@example.test"],
+            phoneNumbers: ["+47 22 00 00 00"],
+            webURLs: ["https://example.test/contact"]
+        )
+        let created = EditorialLocation(
+            name: "City Hall",
+            city: "Oslo",
+            countryName: "Norway",
+            countryCode: "NOR"
+        )
+        let shown = EditorialLocation(
+            identifiers: ["https://example.test/places/harbor"],
+            name: "Harbor",
+            latitude: 59.90,
+            longitude: 10.75
+        )
+        let sidecar = makeSidecar(
+            metadata: IPTCMetadata(
+                creatorContactInfo: contact,
+                locationsCreated: [created],
+                locationsShown: [shown]
+            )
+        )
+
+        try service.saveSidecar(sidecar, for: imageURL, in: folder)
+        let loaded = try #require(service.loadSidecar(for: imageURL, in: folder))
+
+        #expect(loaded.metadata.creatorContactInfo == contact)
+        #expect(loaded.metadata.locationsCreated == [created])
+        #expect(loaded.metadata.locationsShown == [shown])
+    }
+
     @Test("load returns nil for non-existent sidecar")
     func loadNonExistentReturnsNil() throws {
         let folder = try makeTempFolder()

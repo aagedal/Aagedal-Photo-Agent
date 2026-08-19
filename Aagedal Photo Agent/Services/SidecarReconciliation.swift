@@ -70,6 +70,9 @@ nonisolated enum SidecarReconciliation {
         if a.event != b.event { return true }
         if a.instructions != b.instructions { return true }
         if a.source != b.source { return true }
+        if a.creatorContactInfo != b.creatorContactInfo { return true }
+        if Set(a.locationsCreated) != Set(b.locationsCreated) { return true }
+        if Set(a.locationsShown) != Set(b.locationsShown) { return true }
         return false
     }
 

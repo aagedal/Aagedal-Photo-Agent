@@ -1,6 +1,10 @@
 # Aagedal Photo Agent 2.3 — release plan
 
 > Project planning index: [../README.md](../README.md)
+>
+> **Version note (2026-08-19):** 2.3 is the working-plan label, not the final release number. The
+> combined next-release scope may warrant 2.5 or 3.0; keep this path stable until that decision is
+> made.
 
 **Status:** implementation in progress
 

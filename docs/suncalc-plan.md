@@ -4,9 +4,9 @@
 
 ## Status
 
-**Proposed post-2.3 feature.** This plan replaces the previously rejected broad sun/shadow analyzer
-with a narrower first release: an offline solar-position overlay with explicit inputs, reproducible
-calculations, and conservative evidence language.
+**Planned next-release feature.** This plan replaces the previously rejected broad sun/shadow
+analyzer with a narrower first release: an offline solar-position overlay with explicit inputs,
+reproducible calculations, and conservative evidence language.
 
 The first release is not an authenticity verdict, a capture-time inference tool, or a simulation of
 real shadows cast by terrain and structures.
