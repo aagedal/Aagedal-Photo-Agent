@@ -436,7 +436,15 @@ struct FTPUploadView: View {
             if let label = sidecar.label, !label.isEmpty { fields[.label] = label }
             guard !fields.isEmpty else { return }
             do {
-                try await writeEngine.writeFields(fields, to: [url])
+                try await writeEngine.writeFields(
+                    fields,
+                    to: [url],
+                    structuredData: StructuredWriteData(
+                        editorial: sidecar.hasDescriptiveContent
+                            ? EditorialStructuredWriteData(metadata: sidecar)
+                            : nil
+                    )
+                )
             } catch {
                 preprocessErrors.append("Failed to sync sidecar metadata into \(url.lastPathComponent): \(error.localizedDescription)")
             }

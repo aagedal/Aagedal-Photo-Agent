@@ -56,13 +56,14 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
     func writeFieldsToRenderedFiles(
         _ fields: [MetadataFieldKey: String],
-        to urls: [URL]
+        to urls: [URL],
+        structuredData: StructuredWriteData
     ) async throws {
         // Keep the ordinary RAW-extension guard even at this explicit render boundary.
         // The opt-in below exists only for normal raster outputs whose copied camera Make
         // tag can make SwiftExif's byte heuristic mistake a generated TIFF for an ARW.
         let urls = embeddableURLs(urls)
-        guard !urls.isEmpty, !fields.isEmpty else { return }
+        guard !urls.isEmpty, !fields.isEmpty || !structuredData.isEmpty else { return }
 
         for url in urls {
             try Task.checkCancellation()
@@ -71,7 +72,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 defer { restoreCreationDates(creationDates) }
                 try self.writeFieldsToFile(
                     fields,
-                    structuredData: .empty,
+                    structuredData: structuredData,
                     url: url,
                     allowRenderedTIFFRewrite: true
                 )
@@ -373,6 +374,12 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
         if let anon = structuredData.anonymizer {
             applyAnonymizer(anon, metadata: &metadata)
+        }
+
+        if let editorial = structuredData.editorial {
+            var xmp = metadata.xmp ?? XMPData()
+            XMPDataBuilder.applyStructuredEditorial(editorial, into: &xmp)
+            metadata.xmp = xmp
         }
 
         // After a block replacement that carries settings, re-stamp the edited

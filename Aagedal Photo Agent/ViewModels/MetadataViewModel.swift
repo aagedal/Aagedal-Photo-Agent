@@ -793,8 +793,18 @@ final class MetadataViewModel {
                     if edited.source != original?.source { fields[.source] = edited.source ?? "" }
                 }
 
-                if !fields.isEmpty {
-                    try await writeEngine.writeFields(fields, to: urls)
+                let structuredEditorialChanged = !isBatch && (
+                    edited.creatorContactInfo != original?.creatorContactInfo
+                        || Set(edited.locationsCreated) != Set(original?.locationsCreated ?? [])
+                        || Set(edited.locationsShown) != Set(original?.locationsShown ?? [])
+                )
+                if !fields.isEmpty || structuredEditorialChanged {
+                    let structuredData = StructuredWriteData(
+                        editorial: structuredEditorialChanged
+                            ? EditorialStructuredWriteData(metadata: edited)
+                            : nil
+                    )
+                    try await writeEngine.writeFields(fields, to: urls, structuredData: structuredData)
                 }
 
                 // Handle additive list fields via += / -=
@@ -1187,9 +1197,10 @@ final class MetadataViewModel {
                         layerOrder: edited.cameraRaw?.layerOrder,
                         anonymizer: edited.cameraRaw?.anonymizer,
                         unparsedMaskCorrections: edited.cameraRaw?.unparsedMaskCorrections,
+                        editorial: EditorialStructuredWriteData(metadata: edited),
                         replaceCameraRawBlock: true
                     )
-                    : .empty
+                    : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited))
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
                 var sidecarMirrored = false
                 if alsoWriteXMPSidecar || xmpSidecarService.sidecarExists(for: imageURL) {
@@ -1510,8 +1521,14 @@ final class MetadataViewModel {
             return .writtenToXMPSidecar
 
         case .writeToFile, .writeToFileAndXMPSidecar:
-            if !fields.isEmpty {
-                try await writeEngine.writeFields(fields, to: [url])
+            if !fields.isEmpty || resolved.hasDescriptiveContent {
+                try await writeEngine.writeFields(
+                    fields,
+                    to: [url],
+                    structuredData: StructuredWriteData(
+                        editorial: EditorialStructuredWriteData(metadata: resolved)
+                    )
+                )
             }
             // Dual-write keeps a matching full .xmp record. In PM-style writeToFile
             // mode any existing .xmp must mirror the file (full resolved record), or
@@ -2248,9 +2265,10 @@ final class MetadataViewModel {
                         layerOrder: edited.cameraRaw?.layerOrder,
                         anonymizer: edited.cameraRaw?.anonymizer,
                         unparsedMaskCorrections: edited.cameraRaw?.unparsedMaskCorrections,
+                        editorial: EditorialStructuredWriteData(metadata: edited),
                         replaceCameraRawBlock: true
                     )
-                    : .empty
+                    : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited))
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
 
                 do {
@@ -2327,9 +2345,10 @@ final class MetadataViewModel {
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         layerOrder: edited.cameraRaw?.layerOrder,
                         anonymizer: edited.cameraRaw?.anonymizer,
+                        editorial: EditorialStructuredWriteData(metadata: edited),
                         replaceCameraRawBlock: true
                     )
-                    : .empty
+                    : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited))
 
                 do {
                     try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)

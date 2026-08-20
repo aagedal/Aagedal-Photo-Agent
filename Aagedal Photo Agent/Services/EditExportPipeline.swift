@@ -242,7 +242,15 @@ enum SidecarIPTCOverlay {
             }
             guard !fields.isEmpty else { return .noPendingEdits }
             do {
-                try await writeEngine.writeFieldsToRenderedFiles(fields, to: [renderedURL])
+                try await writeEngine.writeFieldsToRenderedFiles(
+                    fields,
+                    to: [renderedURL],
+                    structuredData: StructuredWriteData(
+                        editorial: xmpMeta.hasDescriptiveContent
+                            ? EditorialStructuredWriteData(metadata: xmpMeta)
+                            : nil
+                    )
+                )
                 return .applied
             } catch {
                 exportPipelineLog.error(
@@ -272,7 +280,15 @@ enum SidecarIPTCOverlay {
         guard !fields.isEmpty else { return .noPendingEdits }
 
         do {
-            try await writeEngine.writeFieldsToRenderedFiles(fields, to: [renderedURL])
+            try await writeEngine.writeFieldsToRenderedFiles(
+                fields,
+                to: [renderedURL],
+                structuredData: StructuredWriteData(
+                    editorial: sidecar.metadata.hasDescriptiveContent
+                        ? EditorialStructuredWriteData(metadata: sidecar.metadata)
+                        : nil
+                )
+            )
             return .applied
         } catch {
             exportPipelineLog.error(

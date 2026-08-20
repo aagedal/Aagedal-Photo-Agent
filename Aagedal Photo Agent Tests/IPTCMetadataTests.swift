@@ -445,6 +445,10 @@ struct EditorialMetadataInteroperabilityTests {
 
         var edited = try #require(service.loadSidecar(for: imageURL))
         #expect(edited.creator == "Alex Example")
+        #expect(edited.locationsShown == [
+            EditorialLocation(sublocation: "City Hall", city: "Oslo", countryCode: "NOR"),
+            EditorialLocation(sublocation: "Harbor", city: "Oslo", countryCode: "NOR"),
+        ])
         edited.description = "Updated caption only"
         try service.saveSidecarPreservingDevelopSettings(metadata: edited, for: imageURL)
 
@@ -465,6 +469,157 @@ struct EditorialMetadataInteroperabilityTests {
             )?.count == 2
         )
         #expect(xmp.simpleValue(namespace: "http://ns.adobe.com/camera-raw-settings/1.0/", property: "Texture") == "+18")
+    }
+
+    @Test("creator contact and created/shown locations round-trip through standards-shaped XMP")
+    func structuredEditorialXMPRoundTrip() throws {
+        let service = XMPSidecarService()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = directory.appendingPathComponent("structured.nef")
+        let expected = IPTCMetadata(
+            description: "Structured editorial record",
+            creatorContactInfo: CreatorContactInfo(
+                addressLines: ["News House", "1 Example Street"],
+                city: "Oslo",
+                region: "Oslo",
+                postalCode: "0001",
+                country: "Norway",
+                emails: ["photo@example.test", "desk@example.test"],
+                phoneNumbers: ["+47 22 00 00 00"],
+                webURLs: ["https://example.test/contact"]
+            ),
+            locationsCreated: [EditorialLocation(
+                identifiers: ["https://example.test/places/city-hall"],
+                name: "Oslo City Hall",
+                sublocation: "Council chamber",
+                city: "Oslo",
+                provinceState: "Oslo",
+                countryName: "Norway",
+                countryCode: "NOR",
+                worldRegion: "Europe",
+                latitude: 59.9111,
+                longitude: 10.7339,
+                altitudeMeters: 12.5
+            )],
+            locationsShown: [
+                EditorialLocation(name: "Harbor", city: "Oslo", countryCode: "NOR"),
+                EditorialLocation(name: "News House", city: "Bergen", altitudeMeters: -4.25),
+            ]
+        )
+
+        try service.saveSidecar(metadata: expected, for: imageURL)
+        let sidecarURL = service.sidecarURL(for: imageURL)
+        let xmp = try XMPReader.readFromXML(Data(contentsOf: sidecarURL))
+
+        guard case .structure(let contactFields)? = xmp.value(
+            forKey: XMPNamespace.iptcCore + "CreatorContactInfo"
+        ) else {
+            Issue.record("CreatorContactInfo should be a single XMP structure")
+            return
+        }
+        #expect(contactFields[XMPNamespace.iptcCore + "CiEmailWork"] == .array([
+            "photo@example.test", "desk@example.test",
+        ]))
+
+        let created = try #require(xmp.structuredArrayValue(
+            namespace: XMPNamespace.iptcExt,
+            property: "LocationCreated"
+        )?.first)
+        #expect(created[XMPNamespace.iptcExt + "LocationName"] == .langAlternative("Oslo City Hall"))
+        #expect(created[XMPNamespace.iptcExt + "LocationId"] == .array([
+            "https://example.test/places/city-hall",
+        ]))
+        #expect(created[XMPNamespace.exif + "GPSAltitude"] == .simple("25/2"))
+        #expect(created[XMPNamespace.exif + "GPSAltitudeRef"] == .simple("0"))
+
+        let shown = try #require(xmp.structuredArrayValue(
+            namespace: XMPNamespace.iptcExt,
+            property: "LocationShown"
+        ))
+        #expect(shown[1][XMPNamespace.exif + "GPSAltitude"] == .simple("17/4"))
+        #expect(shown[1][XMPNamespace.exif + "GPSAltitudeRef"] == .simple("1"))
+
+        let loaded = try #require(service.loadSidecar(for: imageURL))
+        #expect(loaded.creatorContactInfo == expected.creatorContactInfo)
+        #expect(loaded.locationsCreated.count == 1)
+        #expect(abs((loaded.locationsCreated[0].latitude ?? 0) - 59.9111) < 0.000_001)
+        #expect(abs((loaded.locationsCreated[0].longitude ?? 0) - 10.7339) < 0.000_001)
+        #expect(loaded.locationsCreated[0].altitudeMeters == 12.5)
+        #expect(loaded.locationsShown == expected.locationsShown)
+    }
+
+    @Test("structured editorial rewrites preserve unknown member properties")
+    func structuredEditorialUnknownMembersSurvive() throws {
+        let service = XMPSidecarService()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = directory.appendingPathComponent("future-fields.nef")
+        let sidecarURL = service.sidecarURL(for: imageURL)
+        let metadata = IPTCMetadata(
+            description: "Before",
+            creatorContactInfo: CreatorContactInfo(emails: ["desk@example.test"]),
+            locationsShown: [EditorialLocation(name: "Harbor", city: "Oslo")]
+        )
+        try service.saveSidecar(metadata: metadata, for: imageURL)
+
+        var planted = try XMPReader.readFromXML(Data(contentsOf: sidecarURL))
+        if case .structure(var contact)? = planted.value(
+            forKey: XMPNamespace.iptcCore + "CreatorContactInfo"
+        ) {
+            contact[newsroomNamespace + "ContactID"] = .simple("contact-42")
+            planted.setValue(
+                .structure(contact),
+                namespace: XMPNamespace.iptcCore,
+                property: "CreatorContactInfo"
+            )
+        }
+        var shown = try #require(planted.structuredArrayValue(
+            namespace: XMPNamespace.iptcExt,
+            property: "LocationShown"
+        ))
+        shown[0][newsroomNamespace + "Confidence"] = .simple("confirmed")
+        planted.setValue(
+            .structuredArray(shown),
+            namespace: XMPNamespace.iptcExt,
+            property: "LocationShown"
+        )
+        try Data(XMPWriter.generateXML(planted).utf8).write(to: sidecarURL, options: .atomic)
+
+        var edited = try #require(service.loadSidecar(for: imageURL))
+        edited.description = "After"
+        try service.saveSidecarPreservingDevelopSettings(metadata: edited, for: imageURL)
+
+        let rewritten = try XMPReader.readFromXML(Data(contentsOf: sidecarURL))
+        guard case .structure(let contact)? = rewritten.value(
+            forKey: XMPNamespace.iptcCore + "CreatorContactInfo"
+        ) else {
+            Issue.record("CreatorContactInfo disappeared")
+            return
+        }
+        #expect(contact[newsroomNamespace + "ContactID"] == .simple("contact-42"))
+        #expect(rewritten.structuredArrayValue(
+            namespace: XMPNamespace.iptcExt,
+            property: "LocationShown"
+        )?.first?[newsroomNamespace + "Confidence"] == .simple("confirmed"))
+    }
+
+    @Test("clearing structured editorial values removes their XMP properties")
+    func structuredEditorialClear() {
+        var xmp = XMPData()
+        XMPDataBuilder.applyDescriptive(
+            IPTCMetadata(
+                creatorContactInfo: CreatorContactInfo(emails: ["desk@example.test"]),
+                locationsCreated: [EditorialLocation(city: "Oslo")],
+                locationsShown: [EditorialLocation(city: "Bergen")]
+            ),
+            into: &xmp
+        )
+        XMPDataBuilder.applyDescriptive(IPTCMetadata(), into: &xmp)
+
+        #expect(xmp.value(forKey: XMPNamespace.iptcCore + "CreatorContactInfo") == nil)
+        #expect(xmp.value(forKey: XMPNamespace.iptcExt + "LocationCreated") == nil)
+        #expect(xmp.value(forKey: XMPNamespace.iptcExt + "LocationShown") == nil)
     }
 
     @Test("the embedded JPEG writer preserves a foreign XMP property")
@@ -495,6 +650,48 @@ struct EditorialMetadataInteroperabilityTests {
                 property: "RoutingNote"
             ) == "Do not remove"
         )
+    }
+
+    @Test("the embedded raster writer carries structured editorial XMP")
+    func embeddedJPEGStructuredEditorialRoundTrip() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = try makeJPEG(in: directory)
+        let expected = IPTCMetadata(
+            creatorContactInfo: CreatorContactInfo(
+                emails: ["photo@example.test", "desk@example.test"]
+            ),
+            locationsCreated: [EditorialLocation(
+                name: "City Hall", city: "Oslo", countryCode: "NOR"
+            )],
+            locationsShown: [EditorialLocation(
+                name: "Harbor", latitude: -33.8688, longitude: 151.2093,
+                altitudeMeters: -3.5
+            )]
+        )
+
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields(
+            [.description: "Embedded structured record"],
+            to: [imageURL],
+            structuredData: StructuredWriteData(
+                editorial: EditorialStructuredWriteData(metadata: expected)
+            )
+        )
+
+        let written = try SwiftExif.readMetadata(from: imageURL)
+        let decoded = iptcMetadataFromDict(written.asMetadataDict(fileURL: imageURL))
+        #expect(decoded.creatorContactInfo == expected.creatorContactInfo)
+        #expect(decoded.locationsCreated == expected.locationsCreated)
+        #expect(decoded.locationsShown == expected.locationsShown)
+
+        // A later scalar-only edit has merge semantics and must not clear the structures.
+        try await engine.writeFields([.headline: "Updated headline"], to: [imageURL])
+        let rewritten = try SwiftExif.readMetadata(from: imageURL)
+        let afterScalarEdit = iptcMetadataFromDict(rewritten.asMetadataDict(fileURL: imageURL))
+        #expect(afterScalarEdit.creatorContactInfo == expected.creatorContactInfo)
+        #expect(afterScalarEdit.locationsCreated == expected.locationsCreated)
+        #expect(afterScalarEdit.locationsShown == expected.locationsShown)
     }
 
     @Test("XMP description is proposed while an XMP-IIM conflict remains visible")

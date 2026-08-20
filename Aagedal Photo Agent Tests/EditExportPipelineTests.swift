@@ -98,6 +98,53 @@ struct EditExportPipelineTests {
         #expect(meta.title == "Aurora over the fjord")
     }
 
+    @Test("renderItem embeds structured creator contact and locations from the XMP sidecar")
+    func renderItemAppliesStructuredSidecarIPTC() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let expected = IPTCMetadata(
+            creatorContactInfo: CreatorContactInfo(
+                addressLines: ["News House", "1 Example Street"],
+                city: "Oslo",
+                emails: ["photo@example.test", "desk@example.test"]
+            ),
+            locationsCreated: [EditorialLocation(
+                identifiers: ["https://example.test/places/city-hall"],
+                name: "City Hall",
+                city: "Oslo",
+                countryCode: "NOR",
+                latitude: 59.9111,
+                longitude: 10.7339
+            )],
+            locationsShown: [EditorialLocation(
+                name: "Harbor",
+                city: "Bergen",
+                altitudeMeters: -4.25
+            )]
+        )
+        try XMPSidecarService().saveSidecar(metadata: expected, for: source)
+
+        let outDir = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source,
+            cameraRaw: nil,
+            kind: .jpeg,
+            outputFolder: outDir,
+            folderURL: dir,
+            writeEngine: SwiftExifWriteEngine(),
+            failureTracker: tracker
+        )
+
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+        let actual = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        #expect(actual.creatorContactInfo == expected.creatorContactInfo)
+        #expect(actual.locationsCreated == expected.locationsCreated)
+        #expect(actual.locationsShown == expected.locationsShown)
+    }
+
     @Test("rendered Sony TIFF accepts sidecar IPTC without weakening ordinary RAW writes")
     func renderedSonyTIFFAcceptsSidecarIPTC() async throws {
         let (dir, source) = try makeSonyTIFFWorkspace()

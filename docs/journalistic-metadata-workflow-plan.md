@@ -288,6 +288,18 @@ validation suites pass 19 tests; see
 [the dated validation record](metadata-interoperability-corpus-validation.md). Real cross-container
 and external-tool fixtures remain the Phase 0 gate.
 
+**Progress — 2026-08-20:** Creator Contact Info and repeatable Location Created/Shown now read and
+write their IPTC 2025.1 structured XMP representations in sidecars and embedded JPEG metadata.
+Location identifiers remain bags, localized location names remain language alternatives, GPS
+coordinates use XMP coordinate syntax, and signed model altitudes map to XMP rational altitude plus
+reference. The write boundary distinguishes untouched structured values from authoritative replace
+or clear operations; scalar-only edits and structured rewrites preserve unmodeled XMP members. The
+same structured write data now flows through ordinary saves, rendered exports, and FTP/SFTP
+sidecar preparation. Ten focused interoperability tests and all 11 real-file export/sidecar tests
+pass; see
+[the dated validation record](metadata-structured-xmp-validation.md). UI exposure, the remaining
+support-matrix mappings, and external-tool/cross-container fixtures remain open.
+
 ## Phase 2 — Caption Workspace
 
 **Exit gate:** a photographer can caption a folder image by image using the keyboard, never lose an

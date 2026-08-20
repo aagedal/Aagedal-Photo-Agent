@@ -1,5 +1,20 @@
 import Foundation
 
+/// The authoritative structured editorial portion of a descriptive write. Keeping this wrapper
+/// optional on `StructuredWriteData` distinguishes "leave these properties untouched" from an
+/// explicit record whose nil/empty values clear them.
+nonisolated struct EditorialStructuredWriteData: Sendable {
+    var creatorContactInfo: CreatorContactInfo?
+    var locationsCreated: [EditorialLocation]
+    var locationsShown: [EditorialLocation]
+
+    nonisolated init(metadata: IPTCMetadata) {
+        creatorContactInfo = metadata.creatorContactInfo
+        locationsCreated = metadata.locationsCreated
+        locationsShown = metadata.locationsShown
+    }
+}
+
 /// Structured data for writes that go beyond simple key-value pairs (tone curves, masks).
 struct StructuredWriteData: Sendable {
     var toneCurve: ToneCurve?
@@ -21,6 +36,10 @@ struct StructuredWriteData: Sendable {
     /// them. See `PreservedMaskCorrection`.
     var unparsedMaskCorrections: [PreservedMaskCorrection]?
 
+    /// Creator Contact Info and Location Created/Shown. nil means "do not touch"; a present
+    /// wrapper with empty values means clear the corresponding XMP properties.
+    var editorial: EditorialStructuredWriteData?
+
     /// Replace the file's ENTIRE Camera Raw (crs) namespace block with this
     /// write's content — Adobe-faithful semantics: ACR drops settings it isn't
     /// carrying (Texture, vignette, HSL, …) when it saves, so stale baked
@@ -37,6 +56,7 @@ struct StructuredWriteData: Sendable {
             && (hslAdjustments == nil || (hslAdjustments?.isEmpty ?? true))
             && (anonymizer == nil || (anonymizer?.isEmpty ?? true))
             && (unparsedMaskCorrections?.isEmpty ?? true)
+            && editorial == nil
     }
 
     nonisolated static let empty = StructuredWriteData()
@@ -60,7 +80,8 @@ protocol MetadataWriteEngine: AnyObject, Sendable {
     /// trust boundary to permit that otherwise-refused metadata rewrite.
     func writeFieldsToRenderedFiles(
         _ fields: [MetadataFieldKey: String],
-        to urls: [URL]
+        to urls: [URL],
+        structuredData: StructuredWriteData
     ) async throws
 
     /// Add and/or remove individual list values (keywords, persons) with deduplication.
@@ -111,7 +132,7 @@ extension MetadataWriteEngine {
         _ fields: [MetadataFieldKey: String],
         to urls: [URL]
     ) async throws {
-        try await writeFields(fields, to: urls)
+        try await writeFieldsToRenderedFiles(fields, to: urls, structuredData: .empty)
     }
 }
 

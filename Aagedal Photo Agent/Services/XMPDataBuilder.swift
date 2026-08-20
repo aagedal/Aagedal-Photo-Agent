@@ -47,6 +47,8 @@ enum XMPDataBuilder {
         setSimpleOrRemove(&xmp, m.instructions, namespace: XMPNamespace.photoshop, property: "Instructions")
         xmp.source = nilIfEmpty(m.source)
 
+        applyStructuredEditorial(EditorialStructuredWriteData(metadata: m), into: &xmp)
+
         // GPS is additive/paired: write both as %.6f decimal degrees (the old wire format), or clear both.
         if let lat = m.latitude, let lon = m.longitude {
             xmp.setValue(.simple(String(format: "%.6f", lat)), namespace: XMPNamespace.exif, property: "GPSLatitude")
@@ -78,6 +80,230 @@ enum XMPDataBuilder {
         let existing = xmp.creator
         if existing.count > 1, existing.first == creator { return }
         setArrayOrRemove(&xmp, [creator], namespace: XMPNamespace.dc, property: "creator")
+    }
+
+    // MARK: - Structured IPTC editorial fields
+
+    nonisolated static func applyStructuredEditorial(
+        _ editorial: EditorialStructuredWriteData,
+        into xmp: inout XMPData
+    ) {
+        applyCreatorContactInfo(editorial.creatorContactInfo, into: &xmp)
+        applyLocations(editorial.locationsCreated, property: "LocationCreated", into: &xmp)
+        applyLocations(editorial.locationsShown, property: "LocationShown", into: &xmp)
+    }
+
+    /// CreatorContactInfo is a single IPTC Core structure. Managed members are updated in place
+    /// so an unrelated descriptive edit retains future or third-party siblings in that structure.
+    nonisolated private static func applyCreatorContactInfo(
+        _ contact: CreatorContactInfo?,
+        into xmp: inout XMPData
+    ) {
+        guard let contact, !contact.isEmpty else {
+            xmp.removeValue(namespace: XMPNamespace.iptcCore, property: "CreatorContactInfo")
+            return
+        }
+
+        let key = XMPNamespace.iptcCore + "CreatorContactInfo"
+        var fields: [String: XMPValue]
+        if case .structure(let existing)? = xmp.value(forKey: key) {
+            fields = existing
+        } else {
+            fields = [:]
+        }
+
+        setStructuredList(
+            &fields, contact.addressLines,
+            namespace: XMPNamespace.iptcCore, property: "CiAdrExtadr"
+        )
+        setStructuredText(&fields, contact.city, namespace: XMPNamespace.iptcCore, property: "CiAdrCity")
+        setStructuredText(&fields, contact.region, namespace: XMPNamespace.iptcCore, property: "CiAdrRegion")
+        setStructuredText(&fields, contact.postalCode, namespace: XMPNamespace.iptcCore, property: "CiAdrPcode")
+        setStructuredText(&fields, contact.country, namespace: XMPNamespace.iptcCore, property: "CiAdrCtry")
+        setStructuredList(
+            &fields, contact.emails,
+            namespace: XMPNamespace.iptcCore, property: "CiEmailWork"
+        )
+        setStructuredList(
+            &fields, contact.phoneNumbers,
+            namespace: XMPNamespace.iptcCore, property: "CiTelWork"
+        )
+        setStructuredList(
+            &fields, contact.webURLs,
+            namespace: XMPNamespace.iptcCore, property: "CiUrlWork"
+        )
+        xmp.setValue(.structure(fields), namespace: XMPNamespace.iptcCore, property: "CreatorContactInfo")
+    }
+
+    /// Location Created and Location Shown are bags of IPTC Extension Location structures. Each
+    /// rewritten item starts with its same-index raw structure, retaining unmodeled siblings.
+    nonisolated private static func applyLocations(
+        _ locations: [EditorialLocation],
+        property: String,
+        into xmp: inout XMPData
+    ) {
+        let locations = locations.filter { !$0.isEmpty }
+        guard !locations.isEmpty else {
+            xmp.removeValue(namespace: XMPNamespace.iptcExt, property: property)
+            return
+        }
+        let existing = xmp.structuredArrayValue(
+            namespace: XMPNamespace.iptcExt,
+            property: property
+        ) ?? []
+        let encoded = locations.enumerated().map { index, location in
+            encodeLocation(location, preserving: existing.indices.contains(index) ? existing[index] : [:])
+        }
+        xmp.setValue(.structuredArray(encoded), namespace: XMPNamespace.iptcExt, property: property)
+    }
+
+    nonisolated private static func encodeLocation(
+        _ location: EditorialLocation,
+        preserving existing: [String: XMPValue]
+    ) -> [String: XMPValue] {
+        var fields = existing
+        setStructuredArray(
+            &fields, location.identifiers,
+            namespace: XMPNamespace.iptcExt, property: "LocationId"
+        )
+        setStructuredLanguageAlternative(
+            &fields, location.name,
+            namespace: XMPNamespace.iptcExt, property: "LocationName"
+        )
+        setStructuredText(&fields, location.sublocation, namespace: XMPNamespace.iptcExt, property: "Sublocation")
+        setStructuredText(&fields, location.city, namespace: XMPNamespace.iptcExt, property: "City")
+        setStructuredText(&fields, location.provinceState, namespace: XMPNamespace.iptcExt, property: "ProvinceState")
+        setStructuredText(&fields, location.countryName, namespace: XMPNamespace.iptcExt, property: "CountryName")
+        setStructuredText(&fields, location.countryCode, namespace: XMPNamespace.iptcExt, property: "CountryCode")
+        setStructuredText(&fields, location.worldRegion, namespace: XMPNamespace.iptcExt, property: "WorldRegion")
+        setStructuredText(
+            &fields,
+            location.latitude.flatMap { formatXMPGPSCoordinate($0, latitude: true) },
+            namespace: XMPNamespace.exif,
+            property: "GPSLatitude"
+        )
+        setStructuredText(
+            &fields,
+            location.longitude.flatMap { formatXMPGPSCoordinate($0, latitude: false) },
+            namespace: XMPNamespace.exif,
+            property: "GPSLongitude"
+        )
+        setStructuredText(
+            &fields,
+            location.altitudeMeters.flatMap { formatXMPRational(abs($0)) },
+            namespace: XMPNamespace.exif,
+            property: "GPSAltitude"
+        )
+        setStructuredText(
+            &fields,
+            location.altitudeMeters.map { $0 < 0 ? "1" : "0" },
+            namespace: XMPNamespace.exif,
+            property: "GPSAltitudeRef"
+        )
+        return fields
+    }
+
+    nonisolated private static func setStructuredText(
+        _ fields: inout [String: XMPValue],
+        _ value: String?,
+        namespace: String,
+        property: String
+    ) {
+        let key = namespace + property
+        if let value = nilIfEmpty(value?.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            fields[key] = .simple(value)
+        } else {
+            fields.removeValue(forKey: key)
+        }
+    }
+
+    nonisolated private static func setStructuredLanguageAlternative(
+        _ fields: inout [String: XMPValue],
+        _ value: String?,
+        namespace: String,
+        property: String
+    ) {
+        let key = namespace + property
+        if let value = nilIfEmpty(value?.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            fields[key] = .langAlternative(value)
+        } else {
+            fields.removeValue(forKey: key)
+        }
+    }
+
+    /// Repeatable ContactInfo members are represented as a scalar when singular and an RDF
+    /// collection when multiple values are required, avoiding delimiter-based data loss.
+    nonisolated private static func setStructuredList(
+        _ fields: inout [String: XMPValue],
+        _ values: [String],
+        namespace: String,
+        property: String
+    ) {
+        let cleaned = cleanedStructuredStrings(values)
+        let key = namespace + property
+        switch cleaned.count {
+        case 0: fields.removeValue(forKey: key)
+        case 1: fields[key] = .simple(cleaned[0])
+        default: fields[key] = .array(cleaned)
+        }
+    }
+
+    nonisolated private static func setStructuredArray(
+        _ fields: inout [String: XMPValue],
+        _ values: [String],
+        namespace: String,
+        property: String
+    ) {
+        let cleaned = cleanedStructuredStrings(values)
+        let key = namespace + property
+        if cleaned.isEmpty {
+            fields.removeValue(forKey: key)
+        } else {
+            fields[key] = .array(cleaned)
+        }
+    }
+
+    nonisolated private static func cleanedStructuredStrings(_ values: [String]) -> [String] {
+        values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .uniqued()
+    }
+
+    nonisolated private static func formatXMPGPSCoordinate(
+        _ coordinate: Double,
+        latitude: Bool
+    ) -> String? {
+        let limit = latitude ? 90.0 : 180.0
+        guard coordinate.isFinite, abs(coordinate) <= limit else { return nil }
+        let magnitude = abs(coordinate)
+        let degrees = Int(floor(magnitude))
+        let minutes = (magnitude - Double(degrees)) * 60
+        let direction: String
+        if latitude {
+            direction = coordinate < 0 ? "S" : "N"
+        } else {
+            direction = coordinate < 0 ? "W" : "E"
+        }
+        return String(
+            format: "%d,%.6f%@",
+            locale: Locale(identifier: "en_US_POSIX"),
+            degrees, minutes, direction
+        )
+    }
+
+    nonisolated private static func formatXMPRational(_ value: Double) -> String? {
+        guard value.isFinite, value >= 0, value <= Double(Int64.max) / 1000 else { return nil }
+        let denominator: Int64 = 1000
+        let numerator = Int64((value * Double(denominator)).rounded())
+        let divisor = greatestCommonDivisor(numerator, denominator)
+        return "\(numerator / divisor)/\(denominator / divisor)"
+    }
+
+    nonisolated private static func greatestCommonDivisor(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        var a = abs(lhs)
+        var b = abs(rhs)
+        while b != 0 { (a, b) = (b, a % b) }
+        return max(a, 1)
     }
 
     // MARK: - Camera Raw (crs) block

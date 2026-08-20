@@ -106,6 +106,23 @@ extension ImageMetadata {
             }
             if let v = xmp.digitalSourceType { dict[MetadataDictKey.digitalSourceType] = v }
             if let v = xmp.event { dict[MetadataDictKey.event] = v }
+            if let value = xmp.value(
+                forKey: XMPNamespace.iptcCore + MetadataDictKey.creatorContactInfo
+            ) {
+                dict[MetadataDictKey.creatorContactInfo] = unwrapXMPValue(value)
+            }
+            if let values = xmp.structuredArrayValue(
+                namespace: XMPNamespace.iptcExt,
+                property: MetadataDictKey.locationCreated
+            ) {
+                dict[MetadataDictKey.locationCreated] = values.map(unwrapXMPStruct)
+            }
+            if let values = xmp.structuredArrayValue(
+                namespace: XMPNamespace.iptcExt,
+                property: MetadataDictKey.locationShown
+            ) {
+                dict[MetadataDictKey.locationShown] = values.map(unwrapXMPStruct)
+            }
             if let v = xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "Instructions") {
                 dict[MetadataDictKey.instructions] = v
             }

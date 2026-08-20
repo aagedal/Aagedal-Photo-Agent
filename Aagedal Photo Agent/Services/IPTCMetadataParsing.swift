@@ -18,6 +18,9 @@ nonisolated enum MetadataDictKey {
     static let keywords = "Keywords"
     static let personInImage = "PersonInImage"
     static let digitalSourceType = "DigitalSourceType"
+    static let creatorContactInfo = "CreatorContactInfo"
+    static let locationCreated = "LocationCreated"
+    static let locationShown = "LocationShown"
     static let gpsLatitude = "GPSLatitude"
     static let gpsLongitude = "GPSLongitude"
     static let creator = "Creator"
@@ -137,6 +140,171 @@ nonisolated func parseDoubleValue(_ value: Any?) -> Double? {
         return Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     return nil
+}
+
+// MARK: - Structured IPTC editorial values
+
+nonisolated private let iptcCoreXMPNamespace = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
+nonisolated private let iptcExtensionXMPNamespace = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
+nonisolated private let exifXMPNamespace = "http://ns.adobe.com/exif/1.0/"
+
+/// SwiftExif unwraps an XMP structure with namespace-qualified dictionary keys. Accept local
+/// names too so generated fixtures and callers that already normalized the structure stay usable.
+nonisolated private func structuredXMPValue(
+    _ fields: [String: Any],
+    namespace: String,
+    property: String
+) -> Any? {
+    fields[namespace + property] ?? fields[property]
+}
+
+nonisolated private func nonemptyStrings(_ value: Any?) -> [String] {
+    parseStringOrArray(value)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+}
+
+/// Decode the single IPTC Core CreatorContactInfo structure without flattening its repeatable
+/// address/contact channels into a delimiter-dependent display string.
+nonisolated func parseCreatorContactInfo(_ value: Any?) -> CreatorContactInfo? {
+    guard let fields = value as? [String: Any] else { return nil }
+    let contact = CreatorContactInfo(
+        addressLines: nonemptyStrings(structuredXMPValue(
+            fields, namespace: iptcCoreXMPNamespace, property: "CiAdrExtadr"
+        )),
+        city: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcCoreXMPNamespace, property: "CiAdrCity"
+        )),
+        region: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcCoreXMPNamespace, property: "CiAdrRegion"
+        )),
+        postalCode: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcCoreXMPNamespace, property: "CiAdrPcode"
+        )),
+        country: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcCoreXMPNamespace, property: "CiAdrCtry"
+        )),
+        emails: nonemptyStrings(structuredXMPValue(
+            fields, namespace: iptcCoreXMPNamespace, property: "CiEmailWork"
+        )),
+        phoneNumbers: nonemptyStrings(structuredXMPValue(
+            fields, namespace: iptcCoreXMPNamespace, property: "CiTelWork"
+        )),
+        webURLs: nonemptyStrings(structuredXMPValue(
+            fields, namespace: iptcCoreXMPNamespace, property: "CiUrlWork"
+        ))
+    )
+    return contact.isEmpty ? nil : contact
+}
+
+/// Parse decimal, Adobe/XMP degree-minute, and common human-readable coordinate spellings.
+/// XMP's canonical GPSCoordinate lexical form is `degrees,minutesN|S|E|W`.
+nonisolated func parseXMPGPSCoordinate(_ value: Any?) -> Double? {
+    guard let raw = value as? String else { return parseDoubleValue(value) }
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let direct = Double(trimmed) { return direct }
+
+    let decimalWithDirection = /^\s*(-?\d+\.?\d*)\s*([NSEWnsew])\s*$/
+    if let match = trimmed.firstMatch(of: decimalWithDirection), let base = Double(match.1) {
+        let direction = String(match.2).uppercased()
+        return direction == "S" || direction == "W" ? -abs(base) : abs(base)
+    }
+
+    let xmpDegreesMinutes = /^\s*(\d+)\s*,\s*(\d+(?:\.\d+)?)\s*([NSEWnsew])\s*$/
+    if let match = trimmed.firstMatch(of: xmpDegreesMinutes),
+       let degrees = Double(match.1), let minutes = Double(match.2), minutes < 60 {
+        let decimal = degrees + minutes / 60
+        let direction = String(match.3).uppercased()
+        return direction == "S" || direction == "W" ? -decimal : decimal
+    }
+
+    let dms = /(-?\d+)\s*°\s*(\d+)\s*[''′]\s*([\d.]+)\s*[""″]?\s*([NSEWnsew])?/
+    if let match = trimmed.firstMatch(of: dms),
+       let degrees = Int(match.1), let minutes = Int(match.2),
+       let seconds = Double(match.3), minutes < 60, seconds < 60 {
+        var decimal = Double(abs(degrees)) + Double(minutes) / 60 + seconds / 3600
+        if degrees < 0 { decimal = -decimal }
+        if let direction = match.4.map({ String($0).uppercased() }),
+           direction == "S" || direction == "W" {
+            decimal = -abs(decimal)
+        }
+        return decimal
+    }
+
+    let ddm = /(-?\d+)\s*°\s*([\d.]+)\s*[''′]\s*([NSEWnsew])?/
+    if let match = trimmed.firstMatch(of: ddm),
+       let degrees = Int(match.1), let minutes = Double(match.2), minutes < 60 {
+        var decimal = Double(abs(degrees)) + minutes / 60
+        if degrees < 0 { decimal = -decimal }
+        if let direction = match.3.map({ String($0).uppercased() }),
+           direction == "S" || direction == "W" {
+            decimal = -abs(decimal)
+        }
+        return decimal
+    }
+    return nil
+}
+
+nonisolated private func parseXMPAltitude(_ value: Any?) -> Double? {
+    if let number = parseDoubleValue(value) { return number }
+    guard let raw = value as? String else { return nil }
+    let parts = raw.split(separator: "/", omittingEmptySubsequences: false)
+    guard parts.count == 2, let numerator = Double(parts[0]),
+          let denominator = Double(parts[1]), denominator != 0 else { return nil }
+    return numerator / denominator
+}
+
+nonisolated private func parseEditorialLocation(_ value: Any?) -> EditorialLocation? {
+    guard let fields = value as? [String: Any] else { return nil }
+    let altitudeMagnitude = parseXMPAltitude(structuredXMPValue(
+        fields, namespace: exifXMPNamespace, property: "GPSAltitude"
+    ))
+    let altitudeReference = parseIntValue(structuredXMPValue(
+        fields, namespace: exifXMPNamespace, property: "GPSAltitudeRef"
+    ))
+    let location = EditorialLocation(
+        identifiers: nonemptyStrings(structuredXMPValue(
+            fields, namespace: iptcExtensionXMPNamespace, property: "LocationId"
+        )),
+        name: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcExtensionXMPNamespace, property: "LocationName"
+        )),
+        sublocation: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcExtensionXMPNamespace, property: "Sublocation"
+        )),
+        city: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcExtensionXMPNamespace, property: "City"
+        )),
+        provinceState: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcExtensionXMPNamespace, property: "ProvinceState"
+        )),
+        countryName: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcExtensionXMPNamespace, property: "CountryName"
+        )),
+        countryCode: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcExtensionXMPNamespace, property: "CountryCode"
+        )),
+        worldRegion: parseFirstString(structuredXMPValue(
+            fields, namespace: iptcExtensionXMPNamespace, property: "WorldRegion"
+        )),
+        latitude: parseXMPGPSCoordinate(structuredXMPValue(
+            fields, namespace: exifXMPNamespace, property: "GPSLatitude"
+        )),
+        longitude: parseXMPGPSCoordinate(structuredXMPValue(
+            fields, namespace: exifXMPNamespace, property: "GPSLongitude"
+        )),
+        altitudeMeters: altitudeMagnitude.map {
+            altitudeReference == 1 ? -abs($0) : abs($0)
+        }
+    )
+    return location.isEmpty ? nil : location
+}
+
+nonisolated func parseEditorialLocations(_ value: Any?) -> [EditorialLocation] {
+    if let values = value as? [[String: Any]] {
+        return values.compactMap(parseEditorialLocation)
+    }
+    return parseEditorialLocation(value).map { [$0] } ?? []
 }
 
 /// Sensor-frame (un-oriented) pixel aspect ratio (width/height) from a metadata
@@ -1011,6 +1179,9 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         instructions: dict[MetadataDictKey.instructions] as? String
             ?? dict[MetadataDictKey.specialInstructions] as? String,
         source: dict[MetadataDictKey.source] as? String,
+        creatorContactInfo: parseCreatorContactInfo(dict[MetadataDictKey.creatorContactInfo]),
+        locationsCreated: parseEditorialLocations(dict[MetadataDictKey.locationCreated]),
+        locationsShown: parseEditorialLocations(dict[MetadataDictKey.locationShown]),
         rating: dict[MetadataDictKey.rating] as? Int,
         label: ColorLabel.canonicalMetadataLabel(dict[MetadataDictKey.label] as? String),
         cameraRaw: (cameraRaw.isEmpty || crsIsAlreadyApplied(in: dict)) ? nil : cameraRaw,
