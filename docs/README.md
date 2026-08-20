@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-08-19
+**Last reviewed:** 2026-08-20
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -19,7 +19,7 @@ own scope, tasks, exit gates, and technical decisions.
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; release hardening in progress | Close remaining manual fixture, accessibility, performance, and cross-phase validation |
 | Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, and JSON schema safety established; I/O, validation, and fixture work remains | Complete the redistributable interoperability corpus, then finish the shared metadata I/O/validation foundation |
-| SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, and equivalent Apple/OpenStreetMap ray rendering implemented; interactive map validation remains | Validate solar rays across map styles, camera interactions, and rapid time changes, then freeze report evidence |
+| SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, and immutable report evidence implemented; release validation remains | Validate live and reported rays across paper/map styles, camera interactions, rapid time changes, architectures, and accessibility paths |
 
 ## Default delivery order
 
@@ -28,8 +28,9 @@ own scope, tasks, exit gates, and technical decisions.
 2. Continue the journalistic metadata standards foundation. Caption Workspace, Batch Rename, and
    Deadline Mode depend on one consistent field model, preservation policy, validation engine, and
    interoperability corpus.
-3. Start the solar overlay after the OSINT foundations are stable, unless it is explicitly
-   reprioritized. It is a bounded map/report feature and does not block the journalistic workflow.
+3. Finish solar-overlay release validation after the implemented calculator, persistence, controls,
+   live-map rendering, and report-evidence phases. It remains a bounded map/report feature and does
+   not block the journalistic workflow.
 
 These are workstreams of the same next release. Once their shared foundations are stable, the
 journalistic workflow and solar overlay can proceed independently:
@@ -89,10 +90,11 @@ Supporting documents:
 
 ## Solar overlay document set
 
-The [SunCalc-style solar overlay plan](suncalc-plan.md) owns its next-release workstream. It defines
-the app-owned Swift calculator, explicit time/location inputs, map presentation, persistence,
-reports, numerical fixtures, and the boundary between a direction overlay and later forensic
-shadow comparison.
+The [SunCalc-style solar overlay plan](suncalc-plan.md) owns its next-release workstream. Its first
+five phases now provide the app-owned Swift calculator, explicit time/location inputs, map
+presentation, persistence, immutable report evidence, numerical fixtures, and the boundary between
+a direction overlay and later forensic shadow comparison. Phase 6 owns the remaining release
+validation.
 
 The [calculation conventions and reference corpus](solar-calculation-conventions.md) freeze the
 `meeusNOAAV1` equations, supported range, event/refraction conventions, tolerances, and sources.

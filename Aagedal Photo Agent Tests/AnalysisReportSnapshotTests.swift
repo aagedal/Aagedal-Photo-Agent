@@ -73,6 +73,206 @@ struct AnalysisReportSnapshotTests {
         #expect(try JSONDecoder().decode(AnalysisReportSnapshot.self, from: encoded) == snapshot)
     }
 
+    @Test("freezes and independently reproduces saved solar evidence")
+    func freezesReproducibleSolarEvidence() async throws {
+        let fixture = try AnalysisReportFixture(contents: "solar report source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let coordinate = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)
+        let location = AnalysisLocationEvidence(
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!,
+            coordinate: coordinate,
+            source: .manualCoordinates,
+            sourceDetail: "Surveyed photo location",
+            placeName: "Oslo",
+            placeNameSource: .placeSearch,
+            now: Date(timeIntervalSince1970: 10)
+        )
+        let timestamp = AnalysisTimestampValue(
+            year: 2026,
+            month: 6,
+            day: 21,
+            hour: 12,
+            minute: 30,
+            precision: .minute,
+            utcOffsetMinutes: 120
+        )
+        let timelineEvidence = AnalysisTimestampEvidence(
+            id: UUID(uuidString: "20000000-0000-0000-0000-000000000002")!,
+            kind: .capture,
+            title: "Qualified capture time",
+            value: timestamp,
+            source: .userEntered,
+            sourceDetail: "Confirmed timeline entry",
+            now: Date(timeIntervalSince1970: 11)
+        )
+        let overlay = AnalysisSolarOverlayState(
+            timestamp: timestamp,
+            linkedTimestampEvidenceID: timelineEvidence.id,
+            showsSunsetDirection: false
+        )
+        analysisCase.setMapViewport(AnalysisMapViewport(
+            center: coordinate,
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.06
+        ))
+        analysisCase.setInvestigationLocation(location, now: Date(timeIntervalSince1970: 12))
+        analysisCase.setTimestampEvidence(timelineEvidence, now: Date(timeIntervalSince1970: 13))
+        analysisCase.setSolarOverlay(overlay, now: Date(timeIntervalSince1970: 14))
+
+        let snapshot = try await AnalysisReportSnapshot.capture(
+            from: analysisCase,
+            sourceURL: fixture.fileURL,
+            appVersion: "3.0",
+            appBuild: "test",
+            now: Date(timeIntervalSince1970: 20)
+        )
+        let solar = try #require(snapshot.mapEvidence?.solarEvidence)
+        let fresh = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(
+                instant: try #require(timestamp.resolvedInstant),
+                coordinate: coordinate
+            ),
+            civilDayOffsetMinutes: 120
+        )
+
+        #expect(snapshot.schemaVersion == 4)
+        #expect(solar.coordinate == coordinate)
+        #expect(solar.locationEvidenceID == location.id)
+        #expect(solar.locationSourceDetail == "Surveyed photo location")
+        #expect(solar.overlay == overlay)
+        #expect(solar.linkedTimestampEvidence == analysisCase.timestampEvidence.first)
+        #expect(solar.linkedTimestampEvidenceIsAvailable)
+        #expect(solar.day == fresh)
+
+        let encoded = try JSONEncoder().encode(snapshot)
+        #expect(try JSONDecoder().decode(AnalysisReportSnapshot.self, from: encoded) == snapshot)
+
+        let removedTimelineEvidence = analysisCase.removeTimestampEvidence(
+            id: timelineEvidence.id,
+            now: Date(timeIntervalSince1970: 21)
+        )
+        #expect(removedTimelineEvidence)
+        let withoutLinkedRow = try await AnalysisReportSnapshot.capture(
+            from: analysisCase,
+            sourceURL: fixture.fileURL,
+            appVersion: "3.0",
+            appBuild: "test",
+            now: Date(timeIntervalSince1970: 22)
+        )
+        let unlinkedSolar = try #require(withoutLinkedRow.mapEvidence?.solarEvidence)
+        #expect(unlinkedSolar.overlay.timestamp == timestamp)
+        #expect(unlinkedSolar.overlay.linkedTimestampEvidenceID == timelineEvidence.id)
+        #expect(unlinkedSolar.linkedTimestampEvidence == nil)
+        #expect(!unlinkedSolar.linkedTimestampEvidenceIsAvailable)
+        #expect(unlinkedSolar.day == fresh)
+    }
+
+    @Test("rejects a solar report input outside the supported method range")
+    func rejectsUnreproducibleSolarEvidence() async throws {
+        let fixture = try AnalysisReportFixture(contents: "unsupported solar report source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let coordinate = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)
+        analysisCase.setMapViewport(AnalysisMapViewport(
+            center: coordinate,
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.06
+        ))
+        analysisCase.setInvestigationLocation(AnalysisLocationEvidence(
+            coordinate: coordinate,
+            source: .manualCoordinates,
+            sourceDetail: "Investigator entry"
+        ))
+        analysisCase.setSolarOverlay(AnalysisSolarOverlayState(
+            timestamp: AnalysisTimestampValue(
+                year: 2201,
+                month: 6,
+                day: 21,
+                hour: 12,
+                minute: 0,
+                precision: .minute,
+                utcOffsetMinutes: 0
+            )
+        ))
+
+        do {
+            _ = try await AnalysisReportSnapshot.capture(
+                from: analysisCase,
+                sourceURL: fixture.fileURL,
+                appVersion: "3.0",
+                appBuild: "test"
+            )
+            Issue.record("Expected an unreproducible solar calculation to block report capture")
+        } catch let error as AnalysisReportSnapshotError {
+            guard case .solarCalculationFailed(let detail) = error else {
+                Issue.record("Unexpected snapshot error: \(error)")
+                return
+            }
+            #expect(detail.contains("outside the supported 1800–2100"))
+        }
+    }
+
+    @Test("renders solar rays, calculation values, method, and limitations")
+    func rendersSolarReportEvidence() async throws {
+        let fixture = try AnalysisReportFixture(contents: "solar PDF source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let coordinate = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)
+        let timestamp = AnalysisTimestampValue(
+            year: 2026,
+            month: 6,
+            day: 21,
+            hour: 12,
+            minute: 30,
+            precision: .minute,
+            utcOffsetMinutes: 120
+        )
+        analysisCase.setMapViewport(AnalysisMapViewport(
+            center: coordinate,
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.06
+        ))
+        analysisCase.setInvestigationLocation(AnalysisLocationEvidence(
+            coordinate: coordinate,
+            source: .manualCoordinates,
+            sourceDetail: "Investigator entry",
+            placeName: "Oslo",
+            placeNameSource: .placeSearch
+        ))
+        analysisCase.setSolarOverlay(AnalysisSolarOverlayState(timestamp: timestamp))
+        let snapshot = try await AnalysisReportSnapshot.capture(
+            from: analysisCase,
+            sourceURL: fixture.fileURL,
+            appVersion: "3.0",
+            appBuild: "test"
+        )
+
+        let data = try await AnalysisPDFReportRenderer.makePDF(snapshot: snapshot)
+        let document = try #require(PDFDocument(data: data))
+        let text = (0..<document.pageCount)
+            .compactMap { document.page(at: $0)?.string }
+            .joined(separator: "\n")
+
+        #expect(text.contains("Solar position calculation"))
+        #expect(text.contains("2026-06-21 12:30 UTC+02:00"))
+        #expect(text.contains("Meeus/NOAA v1"))
+        #expect(text.contains("Sun direction"))
+        #expect(text.contains("Expected shadow direction"))
+        #expect(text.contains("Sunrise direction"))
+        #expect(text.contains("Sunset direction"))
+        #expect(text.contains("Ray length is derived"))
+        #expect(text.contains("flat, unobstructed horizon"))
+        #expect(text.contains("terrain, buildings, vegetation"))
+        #expect(text.contains("source clock"))
+        #expect(text.contains("camera orientation"))
+
+        try writeQAReportIfRequested(data, filename: "analysis-report-solar.pdf")
+    }
+
     @Test("rejects a source whose bytes changed after the case was created")
     func rejectsChangedSource() async throws {
         let fixture = try AnalysisReportFixture(contents: "original")

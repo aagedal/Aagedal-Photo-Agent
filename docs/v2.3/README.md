@@ -83,8 +83,10 @@ now accept only an explicit Photo Location and timezone-qualified minute-or-bett
 including eligible timeline evidence or a fixed-offset manual civil time. The popover previews
 solar/event values and preserves per-ray visibility without consulting the Mac's current timezone;
 Apple Maps and OpenStreetMap now render the same viewport-scaled, true-north direction rays without
-adding them to evidence annotations or undo history. Manual map-camera and style-switch validation
-remains before report snapshot work.
+adding them to evidence annotations or undo history. Immutable schema-4 report snapshots now freeze
+validated solar inputs, outputs, method, and provenance, and the PDF uses the shared ray geometry
+with a calculation table, methodology, and explicit limitations. Manual map-camera, style-switch,
+accessibility, architecture, and live-versus-report validation remains before release.
 Phase 7 now includes the reusable comparison session/coordinator and a Browser workspace for exactly
 two selected images. Side-by-side, stacked, and angled-wipe layouts share synchronized fit, true-pixel, and
 custom viewport state with deliberate alignment offsets. The focused pane can be replaced in visible

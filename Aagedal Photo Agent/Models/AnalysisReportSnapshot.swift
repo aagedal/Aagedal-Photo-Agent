@@ -4,6 +4,7 @@ import Foundation
 nonisolated enum AnalysisReportSnapshotError: Error, Equatable, LocalizedError, Sendable {
     case invalidCase
     case sourceRevisionChanged
+    case solarCalculationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -11,6 +12,8 @@ nonisolated enum AnalysisReportSnapshotError: Error, Equatable, LocalizedError, 
             "The analysis case is not valid and cannot be frozen for a report."
         case .sourceRevisionChanged:
             "The source bytes no longer match the revision used by this analysis case."
+        case .solarCalculationFailed(let detail):
+            "The saved solar-position calculation could not be reproduced: \(detail)"
         }
     }
 }
@@ -24,6 +27,67 @@ nonisolated enum AnalysisReportMapRendering: String, Codable, Sendable {
     case schematicWGS84
 }
 
+/// Frozen, reproducible solar-position evidence derived from the saved case input.
+///
+/// The location and timestamp are copied here even though the surrounding report also contains
+/// map and timeline evidence. This keeps the calculation self-contained when a linked timeline
+/// row is later removed and makes the exact calculator input unambiguous to downstream renderers.
+nonisolated struct AnalysisReportSolarEvidence: Codable, Equatable, Sendable {
+    let coordinate: AnalysisGeoCoordinate
+    let locationEvidenceID: UUID
+    let locationSource: AnalysisLocationEvidenceSource
+    let locationSourceDetail: String
+    let locationPlaceName: String?
+    let overlay: AnalysisSolarOverlayState
+    let linkedTimestampEvidence: AnalysisTimestampEvidence?
+    let day: AnalysisSolarDay
+
+    var linkedTimestampEvidenceIsAvailable: Bool {
+        guard overlay.linkedTimestampEvidenceID != nil else { return false }
+        return linkedTimestampEvidence != nil
+    }
+
+    static func capture(
+        from state: AnalysisMapState,
+        timestampEvidence: [AnalysisTimestampEvidence]
+    ) throws -> AnalysisReportSolarEvidence? {
+        guard let overlay = state.solarOverlay,
+              let location = state.investigationLocation else { return nil }
+        guard overlay.validate(), location.validate(),
+              let instant = overlay.timestamp.resolvedInstant,
+              let utcOffsetMinutes = overlay.timestamp.utcOffsetMinutes else {
+            throw AnalysisReportSnapshotError.invalidCase
+        }
+
+        let day = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(
+                instant: instant,
+                coordinate: location.coordinate
+            ),
+            civilDayOffsetMinutes: utcOffsetMinutes
+        )
+        guard day.method == overlay.calculationMethod else {
+            throw AnalysisReportSnapshotError.solarCalculationFailed(
+                "The calculator returned a different method version."
+            )
+        }
+
+        let linkedEvidence = overlay.linkedTimestampEvidenceID.flatMap { identifier in
+            timestampEvidence.first { $0.id == identifier }
+        }
+        return AnalysisReportSolarEvidence(
+            coordinate: location.coordinate,
+            locationEvidenceID: location.id,
+            locationSource: location.source,
+            locationSourceDetail: location.sourceDetail,
+            locationPlaceName: location.placeName,
+            overlay: overlay,
+            linkedTimestampEvidence: linkedEvidence,
+            day: day
+        )
+    }
+}
+
 nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
     static let coordinateReferenceSystem = "WGS 84 (EPSG:4326)"
     static let imageryDisclosure =
@@ -34,6 +98,7 @@ nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
     let liveMapStyle: AnalysisMapStyle
     let investigationLocation: AnalysisLocationEvidence?
     let visibleAnnotations: [AnalysisMapAnnotation]
+    let solarEvidence: AnalysisReportSolarEvidence?
     let liveMapReference: URL
     let coordinateSystem: String
     let disclosure: String
@@ -41,6 +106,7 @@ nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
 
     init?(
         state: AnalysisMapState,
+        solarEvidence: AnalysisReportSolarEvidence? = nil,
         capturedAt: Date
     ) {
         guard let viewport = state.viewport, viewport.isValid else { return nil }
@@ -50,6 +116,7 @@ nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
         self.investigationLocation = state.investigationLocation
         self.visibleAnnotations = state.annotations
             .filter(\.isVisible)
+        self.solarEvidence = solarEvidence
         self.liveMapReference = Self.makeLiveMapReference(
             viewport: viewport,
             style: state.style
@@ -240,7 +307,7 @@ nonisolated struct AnalysisReportEvidenceCrop: Codable, Equatable, Sendable {
 /// findings, and establishes deterministic ordering. Edits made after creation cannot mix with an
 /// export already in progress.
 nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     let schemaVersion: Int
     let id: UUID
@@ -321,6 +388,39 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
                 if $0.analyzerID != $1.analyzerID { return $0.analyzerID < $1.analyzerID }
                 return $0.id < $1.id
             }
+        let sourceFacts = orderedRuns.lazy.compactMap { $0.output?.sourceFacts }.first
+        let rawMetadata = orderedRuns
+            .flatMap { $0.output?.rawMetadata ?? [] }
+            .sorted {
+                if $0.origin.rawValue != $1.origin.rawValue {
+                    return $0.origin.rawValue < $1.origin.rawValue
+                }
+                if $0.namespace != $1.namespace { return $0.namespace < $1.namespace }
+                if $0.key != $1.key { return $0.key < $1.key }
+                if $0.id != $1.id { return $0.id < $1.id }
+                return $0.value < $1.value
+            }
+        let resolvedTimestampEvidence = AnalysisTimelineResolver.sorted(
+            (sourceFacts.map {
+                AnalysisTimelineResolver.sourceEvidence(
+                    from: $0,
+                    rawMetadata: rawMetadata,
+                    now: now
+                )
+            } ?? []) + analysisCase.timestampEvidence
+        )
+
+        let solarEvidence: AnalysisReportSolarEvidence?
+        do {
+            solarEvidence = try AnalysisReportSolarEvidence.capture(
+                from: analysisCase.mapState,
+                timestampEvidence: resolvedTimestampEvidence
+            )
+        } catch let error as AnalysisReportSnapshotError {
+            throw error
+        } catch {
+            throw AnalysisReportSnapshotError.solarCalculationFailed(error.localizedDescription)
+        }
 
         return AnalysisReportSnapshot(
             schemaVersion: currentSchemaVersion,
@@ -334,18 +434,8 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
             source: validatedSource,
             representation: analysisCase.displayPreference,
             analyzerRuns: orderedRuns.map(AnalysisReportAnalyzerRun.init),
-            sourceFacts: orderedRuns.lazy.compactMap { $0.output?.sourceFacts }.first,
-            rawMetadata: orderedRuns
-                .flatMap { $0.output?.rawMetadata ?? [] }
-                .sorted {
-                    if $0.origin.rawValue != $1.origin.rawValue {
-                        return $0.origin.rawValue < $1.origin.rawValue
-                    }
-                    if $0.namespace != $1.namespace { return $0.namespace < $1.namespace }
-                    if $0.key != $1.key { return $0.key < $1.key }
-                    if $0.id != $1.id { return $0.id < $1.id }
-                    return $0.value < $1.value
-                },
+            sourceFacts: sourceFacts,
+            rawMetadata: rawMetadata,
             includedFindings: findings,
             evidenceCrop: originalDisplayEvidenceCrop.flatMap {
                 AnalysisReportEvidenceCrop(
@@ -355,15 +445,14 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
             },
             // Annotation order is user-authored layer order and must not be normalized away.
             photoAnnotations: analysisCase.annotations,
-            timestampEvidence: analysisCase.timestampEvidence.sorted {
-                $0.id.uuidString < $1.id.uuidString
-            },
+            timestampEvidence: resolvedTimestampEvidence,
             observations: analysisCase.observations.sorted {
                 if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
                 return $0.id.uuidString < $1.id.uuidString
             },
             mapEvidence: AnalysisReportMapEvidence(
                 state: analysisCase.mapState,
+                solarEvidence: solarEvidence,
                 capturedAt: now
             )
         )

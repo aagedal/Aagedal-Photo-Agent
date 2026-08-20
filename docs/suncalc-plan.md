@@ -4,12 +4,13 @@
 
 ## Status
 
-**Phases 1–3 and Phase 4 implementation complete for 3.0.** This plan replaces the previously
+**Phases 1–5 implementation complete for 3.0.** This plan replaces the previously
 rejected broad sun/shadow analyzer with a narrower first release: an offline solar-position overlay
 with explicit inputs, reproducible calculations, and conservative evidence language. The
 calculation contract, original Swift implementation, first numerical corpus, schema-9 persistence
 contract, and OSINT controls are complete. Apple Maps and OpenStreetMap now share the same derived
-solar-ray geometry; interactive map validation remains before the immutable report phase.
+solar-ray geometry, and schema-4 report snapshots freeze validated inputs, outputs, provenance, and
+matching report rays. Interactive and cross-format release validation remains in Phase 6.
 
 The first release is not an authenticity verdict, a capture-time inference tool, or a simulation of
 real shadows cast by terrain and structures.
@@ -278,13 +279,24 @@ migration. Manual camera/style interaction validation remains open.
 
 **Exit gate:** a report freezes and explains the same solar calculation shown in the workspace.
 
-- [ ] Add frozen solar input and output data to `AnalysisReportMapEvidence`.
-- [ ] Verify the frozen output against a fresh calculation during snapshot creation.
-- [ ] Draw solar, shadow-direction, sunrise, and sunset rays in the report map.
-- [ ] Add a compact table for time, offset, coordinate provenance, azimuth, elevation, and events.
-- [ ] Add calculation method/version to report methodology.
-- [ ] Add flat-horizon, obstruction, atmosphere, clock, terrain, and camera-orientation limitations.
-- [ ] Add deterministic snapshot, report-structure, and report-rendering tests.
+- [x] Add frozen solar input and output data to `AnalysisReportMapEvidence`.
+- [x] Verify the frozen output against a fresh calculation during snapshot creation.
+- [x] Draw solar, shadow-direction, sunrise, and sunset rays in the report map.
+- [x] Add a compact table for time, offset, coordinate provenance, azimuth, elevation, and events.
+- [x] Add calculation method/version to report methodology.
+- [x] Add flat-horizon, obstruction, atmosphere, clock, terrain, and camera-orientation limitations.
+- [x] Add deterministic snapshot, report-structure, and report-rendering tests.
+
+**Progress — 2026-08-20:** Schema-4 `AnalysisReportSnapshot` now freezes the validated solar
+coordinate, location and optional timestamp provenance, persisted overlay settings, method version,
+and complete calculated day. Snapshot capture recalculates from the frozen input and blocks export
+when the calculation cannot be reproduced; removal of linked timeline evidence preserves the
+frozen timestamp and records the unavailable link. The PDF renderer uses the shared solar map
+geometry for sun, expected-shadow, sunrise, and sunset rays and includes exact inputs, outputs,
+events, method, direction-only ray disclosure, methodology, and material limitations. Snapshot JSON
+round-trip, failed-reproduction, report-structure, and report-rendering tests are included. A
+page-by-page raster review of the 11-page A4 fixture verified the new solar map, continuation table,
+methodology, limitations, and footer clearance.
 
 ### Phase 6 — release validation
 

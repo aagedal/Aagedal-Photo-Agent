@@ -3,6 +3,12 @@ import Foundation
 /// Versioned calculation method persisted with a solar overlay and frozen in reports.
 nonisolated enum AnalysisSolarCalculationMethod: String, Codable, CaseIterable, Sendable {
     case meeusNOAAV1
+
+    var displayName: String {
+        switch self {
+        case .meeusNOAAV1: "Meeus/NOAA v1"
+        }
+    }
 }
 
 nonisolated struct AnalysisSolarInput: Equatable, Sendable {
@@ -10,7 +16,7 @@ nonisolated struct AnalysisSolarInput: Equatable, Sendable {
     let coordinate: AnalysisGeoCoordinate
 }
 
-nonisolated struct AnalysisSolarPosition: Equatable, Sendable {
+nonisolated struct AnalysisSolarPosition: Codable, Equatable, Sendable {
     let azimuthDegrees: Double
     let geometricElevationDegrees: Double
     let apparentElevationDegrees: Double
@@ -22,7 +28,7 @@ nonisolated struct AnalysisSolarPosition: Equatable, Sendable {
     }
 }
 
-nonisolated struct AnalysisSolarEvent: Equatable, Sendable {
+nonisolated struct AnalysisSolarEvent: Codable, Equatable, Sendable {
     let instant: Date
     let azimuthDegrees: Double
 }
@@ -32,7 +38,7 @@ nonisolated enum AnalysisSolarPolarCondition: String, Codable, Equatable, Sendab
     case polarNight
 }
 
-nonisolated struct AnalysisSolarDay: Equatable, Sendable {
+nonisolated struct AnalysisSolarDay: Codable, Equatable, Sendable {
     let position: AnalysisSolarPosition
     let sunrise: AnalysisSolarEvent?
     let solarNoon: AnalysisSolarEvent

@@ -294,7 +294,8 @@ nonisolated struct AnalysisObservation: Identifiable, Codable, Equatable, Sendab
 nonisolated enum AnalysisTimelineResolver {
     static func sourceEvidence(
         from facts: AnalysisSourceFacts,
-        rawMetadata: [AnalysisRawMetadataEntry] = []
+        rawMetadata: [AnalysisRawMetadataEntry] = [],
+        now: Date = Date()
     ) -> [AnalysisTimestampEvidence] {
         var evidence: [AnalysisTimestampEvidence] = []
         if let captureDate = facts.captureDate,
@@ -304,7 +305,8 @@ nonisolated enum AnalysisTimelineResolver {
                 kind: .capture,
                 value: value,
                 source: .embeddedMetadata,
-                sourceDetail: "EXIF/XMP capture timestamp"
+                sourceDetail: "EXIF/XMP capture timestamp",
+                now: now
             ))
         }
         if let value = gpsTimestampValue(facts: facts, rawMetadata: rawMetadata) {
@@ -313,7 +315,8 @@ nonisolated enum AnalysisTimelineResolver {
                 kind: .gps,
                 value: value,
                 source: .gpsMetadata,
-                sourceDetail: "GPS date/time metadata"
+                sourceDetail: "GPS date/time metadata",
+                now: now
             ))
         }
         if let date = facts.fileCreationDate {
@@ -321,7 +324,8 @@ nonisolated enum AnalysisTimelineResolver {
                 id: "file-creation",
                 kind: .fileCreation,
                 date: date,
-                detail: "Source file creation date"
+                detail: "Source file creation date",
+                now: now
             ))
         }
         if let date = facts.fileModificationDate {
@@ -329,7 +333,8 @@ nonisolated enum AnalysisTimelineResolver {
                 id: "file-modification",
                 kind: .fileModification,
                 date: date,
-                detail: "Source file modification date"
+                detail: "Source file modification date",
+                now: now
             ))
         }
         if let date = facts.sidecarModificationDate {
@@ -342,7 +347,8 @@ nonisolated enum AnalysisTimelineResolver {
                     timeZone: TimeZone(secondsFromGMT: 0)!
                 ),
                 source: .sidecar,
-                sourceDetail: "XMP sidecar modification date"
+                sourceDetail: "XMP sidecar modification date",
+                now: now
             ))
         }
         return evidence
@@ -400,7 +406,8 @@ nonisolated enum AnalysisTimelineResolver {
         id: String,
         kind: AnalysisTimestampKind,
         date: Date,
-        detail: String
+        detail: String,
+        now: Date
     ) -> AnalysisTimestampEvidence {
         AnalysisTimestampEvidence(
             id: stableID(id),
@@ -411,7 +418,8 @@ nonisolated enum AnalysisTimelineResolver {
                 timeZone: TimeZone(secondsFromGMT: 0)!
             ),
             source: .fileSystem,
-            sourceDetail: detail
+            sourceDetail: detail,
+            now: now
         )
     }
 
