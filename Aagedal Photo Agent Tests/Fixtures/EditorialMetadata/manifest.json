@@ -17,6 +17,17 @@
       ]
     },
     {
+      "filename": "legacy-boundaries.json",
+      "origin": "Generated for Aagedal Photo Agent",
+      "containsPersonalData": false,
+      "purpose": [
+        "iptc-iim-maximum-byte-lengths",
+        "unicode-byte-counting",
+        "date-precision",
+        "timezone-offset-variants"
+      ]
+    },
+    {
       "filename": "newsroom-validation-profile.json",
       "origin": "Generated for Aagedal Photo Agent",
       "containsPersonalData": false,

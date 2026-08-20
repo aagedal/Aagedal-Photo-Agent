@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "license": "CC0-1.0",
+  "iimTextBoundaries": [
+    { "fieldID": "title", "dataset": "2:105", "maxBytes": 256, "unit": "H", "repetitions": 256 },
+    { "fieldID": "description", "dataset": "2:120", "maxBytes": 2000, "unit": "C", "repetitions": 2000 },
+    { "fieldID": "keywords", "dataset": "2:25", "maxBytes": 64, "unit": "ø", "repetitions": 32 },
+    { "fieldID": "creator", "dataset": "2:80", "maxBytes": 32, "unit": "ø", "repetitions": 16 },
+    { "fieldID": "credit", "dataset": "2:110", "maxBytes": 32, "unit": "R", "repetitions": 32 },
+    { "fieldID": "copyright", "dataset": "2:116", "maxBytes": 128, "unit": "©", "repetitions": 64 },
+    { "fieldID": "jobId", "dataset": "2:103", "maxBytes": 32, "unit": "J", "repetitions": 32 },
+    { "fieldID": "city", "dataset": "2:90", "maxBytes": 32, "unit": "B", "repetitions": 32 },
+    { "fieldID": "sublocation", "dataset": "2:92", "maxBytes": 32, "unit": "S", "repetitions": 32 },
+    { "fieldID": "provinceState", "dataset": "2:95", "maxBytes": 32, "unit": "P", "repetitions": 32 },
+    { "fieldID": "country", "dataset": "2:101", "maxBytes": 64, "unit": "N", "repetitions": 64 },
+    { "fieldID": "instructions", "dataset": "2:40", "maxBytes": 256, "unit": "I", "repetitions": 256 },
+    { "fieldID": "source", "dataset": "2:115", "maxBytes": 32, "unit": "A", "repetitions": 32 }
+  ],
+  "timestampVariants": [
+    {
+      "id": "date-only",
+      "xmpValue": "2026-08-20",
+      "iimDate": "20260820",
+      "iimTime": null,
+      "precision": "day",
+      "timezoneState": "absent"
+    },
+    {
+      "id": "second-unknown-zone",
+      "xmpValue": "2026-08-20T13:45:01",
+      "iimDate": "20260820",
+      "iimTime": "134501",
+      "precision": "second",
+      "timezoneState": "unknown"
+    },
+    {
+      "id": "utc",
+      "xmpValue": "2026-08-20T13:45:01Z",
+      "iimDate": "20260820",
+      "iimTime": "134501+0000",
+      "precision": "second",
+      "timezoneState": "known"
+    },
+    {
+      "id": "positive-half-hour",
+      "xmpValue": "2026-08-20T13:45:01+05:30",
+      "iimDate": "20260820",
+      "iimTime": "134501+0530",
+      "precision": "second",
+      "timezoneState": "known"
+    },
+    {
+      "id": "negative-half-hour",
+      "xmpValue": "2026-08-20T13:45:01-02:30",
+      "iimDate": "20260820",
+      "iimTime": "134501-0230",
+      "precision": "second",
+      "timezoneState": "known"
+    },
+    {
+      "id": "maximum-positive-offset",
+      "xmpValue": "2026-08-20T13:45:01+14:00",
+      "iimDate": "20260820",
+      "iimTime": "134501+1400",
+      "precision": "second",
+      "timezoneState": "known"
+    },
+    {
+      "id": "maximum-negative-offset",
+      "xmpValue": "2026-08-20T13:45:01-12:00",
+      "iimDate": "20260820",
+      "iimTime": "134501-1200",
+      "precision": "second",
+      "timezoneState": "known"
+    }
+  ]
+}

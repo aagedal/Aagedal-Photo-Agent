@@ -29,6 +29,18 @@ A portable, versioned example desk profile covering every validation rule repres
 only fictional policy values and stable generated identifiers. Import/export tests decode it,
 validate its semantics, and require byte-stable JSON after a canonical export.
 
+### `legacy-boundaries.json`
+
+A deterministic recipe corpus for every currently editable IPTC-IIM text mapping. Each recipe
+produces a value exactly at the dataset's UTF-8 byte limit, including multibyte Unicode cases for
+Keywords, Creator, and Copyright Notice. Tests compare these limits with the app's built-in IIM
+compatibility profile and SwiftExif's dataset definitions, then prove that exact-limit values
+round-trip while one additional byte produces a warning without being truncated.
+
+The same fixture carries date-only, timezone-unknown, UTC, positive/negative half-hour, and
+maximum civil-offset variants. Tests preserve the XMP lexical values and the paired IIM 2:55/2:60
+values without inventing a timezone for date-only or timezone-unknown input.
+
 ## Generated-at-test-time fixtures
 
 Tests generate a minimal JPEG in memory for the no-metadata and embedded-XMP cases. This avoids
@@ -38,6 +50,7 @@ dictionary because the precedence rule belongs to the app adapter, not to a part
 
 ## Corpus still needed
 
-Before Phase 0 can close, add legally redistributable real-file samples for TIFF, PNG, HEIC/HEIF,
-JPEG XL, and representative RAW+XMP pairs, plus external round-trip outputs from Adobe Bridge and
-Photo Mechanic. Those files must document provenance and redistribution permission here.
+Before Phase 0 can close, add a confirmed-redistributable IPTC 2025.1 reference image and real-file
+samples for TIFF, PNG, HEIC/HEIF, JPEG XL, and representative RAW+XMP pairs, plus external
+round-trip outputs from Adobe Bridge and Photo Mechanic. Those files must document provenance and
+redistribution permission here.

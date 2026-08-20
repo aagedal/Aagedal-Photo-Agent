@@ -155,7 +155,7 @@ reference fixtures can detect unrelated metadata loss before the data model chan
   - [x] Deterministic conflicting XMP/IIM values for adapter precedence coverage.
   - [ ] IPTC 2025.1 reference image containing all current fields; confirm redistribution terms
     before committing the official image.
-  - [ ] Maximum legacy byte lengths and timezone-offset variants.
+  - [x] Maximum legacy byte lengths and timezone-offset variants.
   - [ ] TIFF, PNG, HEIC/HEIF, JPEG XL, and representative RAW plus XMP.
 - [x] Snapshot the current XMP/JPEG fixtures before and after no-op or unrelated-field writes and
   fail tests if unrelated metadata is changed or removed.
@@ -272,10 +272,21 @@ than Swift's synthesized enum representation. The reusable import/export boundar
 sorted JSON atomically; rejects missing/newer schemas, oversized documents, duplicate or empty rule
 identities, invalid length bounds or regular expressions, empty controlled vocabularies, and
 self-dependencies; migrates the short-lived synthesized version-one rule shape; and round-trips a
-CC0 example desk profile byte-for-byte. The focused validation suite passes 12 tests; see
+CC0 example desk profile byte-for-byte. The focused validation suite passes 13 tests; see
 [the dated validation record](metadata-validation-profile-validation.md).
 Profile selection/editing UI remains part of the later workflow surfaces, while assignment packages
 can reuse this file boundary without changing the validation engine.
+
+**Progress — 2026-08-20:** A CC0 recipe corpus now covers the exact UTF-8 byte ceiling for all 13
+editable IPTC-IIM text mappings and seven date/time variants spanning date-only, unknown timezone,
+UTC, half-hour offsets, and the civil-offset edges. The shared validation contract distinguishes
+character limits from byte limits, checks repeatable values independently, and provides a stable
+built-in IIM compatibility warning profile without truncating richer XMP values. Exact-limit and
+one-byte-over values exercise SwiftExif's real IIM writer/reader; XMP and paired IIM timestamp
+values retain their lexical precision and timezone state. The focused interoperability and
+validation suites pass 19 tests; see
+[the dated validation record](metadata-interoperability-corpus-validation.md). Real cross-container
+and external-tool fixtures remain the Phase 0 gate.
 
 ## Phase 2 — Caption Workspace
 

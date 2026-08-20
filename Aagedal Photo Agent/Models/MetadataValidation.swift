@@ -21,6 +21,7 @@ nonisolated enum MetadataValidationRequirement: Codable, Equatable, Sendable {
     case required(field: MetadataFieldID)
     case minimumLength(field: MetadataFieldID, count: Int)
     case maximumLength(field: MetadataFieldID, count: Int)
+    case maximumUTF8Bytes(field: MetadataFieldID, count: Int)
     case pattern(field: MetadataFieldID, expression: String)
     case allowedValues(field: MetadataFieldID, values: [String])
     case requires(field: MetadataFieldID, whenPresent: MetadataFieldID)
@@ -29,7 +30,8 @@ nonisolated enum MetadataValidationRequirement: Codable, Equatable, Sendable {
     var field: MetadataFieldID {
         switch self {
         case let .required(field), let .minimumLength(field, _),
-             let .maximumLength(field, _), let .pattern(field, _),
+             let .maximumLength(field, _), let .maximumUTF8Bytes(field, _),
+             let .pattern(field, _),
              let .allowedValues(field, _), let .requires(field, _),
              let .forbidsPlaceholder(field):
             return field
@@ -43,14 +45,14 @@ nonisolated enum MetadataValidationRequirement: Codable, Equatable, Sendable {
     }
 
     private enum Kind: String, Codable {
-        case required, minimumLength, maximumLength, pattern, allowedValues, requires
+        case required, minimumLength, maximumLength, maximumUTF8Bytes, pattern, allowedValues, requires
         case forbidsPlaceholder
     }
 
     /// The first implementation briefly relied on Swift's synthesized associated-value encoding.
     /// Accept that shape on read so development profiles migrate to the explicit public contract.
     private enum LegacyCodingKeys: String, CodingKey {
-        case required, minimumLength, maximumLength, pattern, allowedValues, requires
+        case required, minimumLength, maximumLength, maximumUTF8Bytes, pattern, allowedValues, requires
         case forbidsPlaceholder
     }
 
@@ -68,6 +70,11 @@ nonisolated enum MetadataValidationRequirement: Codable, Equatable, Sendable {
                 )
             case .maximumLength:
                 self = .maximumLength(
+                    field: field,
+                    count: try container.decode(Int.self, forKey: .count)
+                )
+            case .maximumUTF8Bytes:
+                self = .maximumUTF8Bytes(
                     field: field,
                     count: try container.decode(Int.self, forKey: .count)
                 )
@@ -106,6 +113,11 @@ nonisolated enum MetadataValidationRequirement: Codable, Equatable, Sendable {
                 )
             case .maximumLength:
                 self = .maximumLength(
+                    field: field,
+                    count: try values.decode(Int.self, forKey: .count)
+                )
+            case .maximumUTF8Bytes:
+                self = .maximumUTF8Bytes(
                     field: field,
                     count: try values.decode(Int.self, forKey: .count)
                 )
@@ -153,6 +165,10 @@ nonisolated enum MetadataValidationRequirement: Codable, Equatable, Sendable {
             try container.encode(Kind.maximumLength, forKey: .type)
             try container.encode(field, forKey: .field)
             try container.encode(count, forKey: .count)
+        case let .maximumUTF8Bytes(field, count):
+            try container.encode(Kind.maximumUTF8Bytes, forKey: .type)
+            try container.encode(field, forKey: .field)
+            try container.encode(count, forKey: .count)
         case let .pattern(field, expression):
             try container.encode(Kind.pattern, forKey: .type)
             try container.encode(field, forKey: .field)
@@ -195,7 +211,8 @@ nonisolated struct MetadataValidationRule: Codable, Equatable, Sendable {
 
 /// Versioned, portable configuration for the shared validation engine.
 nonisolated struct MetadataValidationProfile: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    /// Version 2 adds `maximumUTF8Bytes`; version 1 remains readable and is upgraded on export.
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
     var id: UUID
@@ -311,6 +328,13 @@ nonisolated struct MetadataValidationEngine: Sendable {
             defaultMessage = "\(field.displayName) must contain no more than \(count) characters."
             detail = "Current length: \(value.count)."
 
+        case let .maximumUTF8Bytes(_, count):
+            let byteCounts = values.map { $0.lengthOfBytes(using: .utf8) }
+            guard let largest = byteCounts.max(), largest > count else { return nil }
+            let rejectedCount = byteCounts.count { $0 > count }
+            defaultMessage = "\(field.displayName) exceeds the \(count)-byte IPTC-IIM limit."
+            detail = "Largest UTF-8 value: \(largest) bytes; values over limit: \(rejectedCount)."
+
         case let .pattern(_, expression):
             guard let value, !value.isEmpty else { return nil }
             guard let regex = try? NSRegularExpression(pattern: expression) else {
@@ -410,6 +434,43 @@ nonisolated enum MetadataTemplatePlaceholderDetector {
 }
 
 extension MetadataValidationProfile {
+    /// Compatibility warnings for the legacy IPTC-IIM representations currently dual-written by
+    /// Photo Agent. Limits are encoded bytes, not Swift character counts; repeatable values such
+    /// as Keywords are checked independently. Modern XMP values remain richer and are not clipped.
+    nonisolated static let iptcIIMCompatibility = MetadataValidationProfile(
+        id: UUID(uuidString: "B6CBF166-6A36-4A9D-B4BB-E1CC0A6783E5")!,
+        name: "IPTC-IIM Compatibility",
+        rules: [
+            iimByteRule("headline", field: .headline, dataset: "2:105", count: 256),
+            iimByteRule("description", field: .description, dataset: "2:120", count: 2_000),
+            iimByteRule("keywords", field: .keywords, dataset: "2:25", count: 64),
+            iimByteRule("creator", field: .creator, dataset: "2:80", count: 32),
+            iimByteRule("credit", field: .credit, dataset: "2:110", count: 32),
+            iimByteRule("copyright", field: .copyright, dataset: "2:116", count: 128),
+            iimByteRule("job-id", field: .jobId, dataset: "2:103", count: 32),
+            iimByteRule("city", field: .city, dataset: "2:90", count: 32),
+            iimByteRule("sublocation", field: .sublocation, dataset: "2:92", count: 32),
+            iimByteRule("province-state", field: .provinceState, dataset: "2:95", count: 32),
+            iimByteRule("country", field: .country, dataset: "2:101", count: 64),
+            iimByteRule("instructions", field: .instructions, dataset: "2:40", count: 256),
+            iimByteRule("source", field: .source, dataset: "2:115", count: 32),
+        ]
+    )
+
+    private nonisolated static func iimByteRule(
+        _ id: String,
+        field: MetadataFieldID,
+        dataset: String,
+        count: Int
+    ) -> MetadataValidationRule {
+        MetadataValidationRule(
+            id: "iptc-iim.\(id).maximum-utf8-bytes",
+            severity: .warning,
+            requirement: .maximumUTF8Bytes(field: field, count: count),
+            message: "\(field.displayName) exceeds the \(count)-byte IPTC-IIM \(dataset) limit."
+        )
+    }
+
     /// Bridges the shipped Settings model into the generalized rule engine. Sparse optional fields
     /// remain absent, preserving current browser and upload behavior.
     nonisolated static func currentRequirements(

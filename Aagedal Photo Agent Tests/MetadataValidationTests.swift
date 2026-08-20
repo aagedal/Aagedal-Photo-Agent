@@ -212,7 +212,7 @@ struct MetadataValidationTests {
 
         let newer = Data("""
         {
-          "schemaVersion": 2,
+          "schemaVersion": 3,
           "id": "4F9AC8E2-418E-48B1-96E6-50637D72A960",
           "name": "Future",
           "rules": []
@@ -236,6 +236,7 @@ struct MetadataValidationTests {
         let canonical = try #require(String(data: io.encode(profile), encoding: .utf8))
         #expect(canonical.contains(#""type" : "minimumLength""#))
         #expect(!canonical.contains(#""minimumLength" : {"#))
+        #expect(canonical.contains(#""schemaVersion" : 2"#))
     }
 
     @Test("Portable profile fixture uses the stable public rule schema")
@@ -246,11 +247,12 @@ struct MetadataValidationTests {
 
         #expect(profile.id == UUID(uuidString: "7A70A73D-5A60-480A-91CB-965CE2D10BA9"))
         #expect(profile.name == "Example News Desk")
-        #expect(profile.rules.count == 7)
+        #expect(profile.rules.count == 8)
         #expect(profile.rules.map(\.requirement) == [
             .required(field: .headline),
             .minimumLength(field: .description, count: 30),
             .maximumLength(field: .description, count: 1800),
+            .maximumUTF8Bytes(field: .description, count: 2000),
             .pattern(field: .country, expression: "[A-Z]{3}"),
             .allowedValues(field: .digitalSourceType, values: [
                 DigitalSourceType.digitalCapture.newsCodeURI,
@@ -267,6 +269,36 @@ struct MetadataValidationTests {
         let firstRequirement = try #require(rules.first?["requirement"] as? [String: Any])
         #expect(firstRequirement["type"] as? String == "required")
         #expect(firstRequirement["field"] as? String == "title")
+    }
+
+    @Test("IPTC-IIM byte limits count UTF-8 bytes and repeated values independently")
+    func iimCompatibilityByteLimits() {
+        let engine = MetadataValidationEngine()
+        let exact = IPTCMetadata(
+            keywords: [String(repeating: "ø", count: 32), "short"],
+            creator: String(repeating: "ø", count: 16)
+        )
+        let over = IPTCMetadata(
+            keywords: [String(repeating: "ø", count: 32), String(repeating: "K", count: 65)],
+            creator: String(repeating: "ø", count: 16) + "X"
+        )
+
+        let exactReport = engine.validate(
+            exact,
+            imageURL: imageURL,
+            profile: .iptcIIMCompatibility
+        )
+        let overReport = engine.validate(
+            over,
+            imageURL: imageURL,
+            profile: .iptcIIMCompatibility
+        )
+
+        #expect(exactReport.issues.isEmpty)
+        #expect(overReport.issues.map(\.field) == [.keywords, .creator])
+        #expect(overReport.warningCount == 2)
+        #expect(overReport.issues[0].technicalDetail?.contains("65 bytes") == true)
+        #expect(overReport.issues[1].message.contains("IPTC-IIM 2:80"))
     }
 
     @Test("Portable profile export atomically replaces and imports a file")
@@ -358,11 +390,11 @@ struct MetadataValidationTests {
             try io.decode(unversioned)
         }
 
-        let newer = Data(#"{"schemaVersion":2,"id":"7A70A73D-5A60-480A-91CB-965CE2D10BA9","name":"Desk","rules":[]}"#.utf8)
+        let newer = Data(#"{"schemaVersion":3,"id":"7A70A73D-5A60-480A-91CB-965CE2D10BA9","name":"Desk","rules":[]}"#.utf8)
         #expect(throws: EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
             document: "metadata validation profile",
-            found: 2,
-            supported: 1
+            found: 3,
+            supported: 2
         )) {
             try io.decode(newer)
         }

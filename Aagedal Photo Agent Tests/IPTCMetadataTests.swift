@@ -329,10 +329,68 @@ struct DigitalSourceTypeNewsCodeTests {
 struct EditorialMetadataInteroperabilityTests {
     private let newsroomNamespace = "https://aagedal.example/ns/newsroom/1.0/"
 
+    private struct LegacyBoundaryCorpus: Decodable {
+        let schemaVersion: Int
+        let license: String
+        let iimTextBoundaries: [IIMTextBoundary]
+        let timestampVariants: [TimestampVariant]
+    }
+
+    private struct IIMTextBoundary: Decodable {
+        let fieldID: MetadataFieldID
+        let dataset: String
+        let maxBytes: Int
+        let unit: String
+        let repetitions: Int
+
+        var value: String { String(repeating: unit, count: repetitions) }
+    }
+
+    private struct TimestampVariant: Decodable {
+        let id: String
+        let xmpValue: String
+        let iimDate: String
+        let iimTime: String?
+        let precision: String
+        let timezoneState: String
+    }
+
     private var fixtureURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .appendingPathComponent("Fixtures/EditorialMetadata/preservation-complex.xmp")
+    }
+
+    private var legacyBoundaryFixtureURL: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/EditorialMetadata/legacy-boundaries.json")
+    }
+
+    private func loadLegacyBoundaryCorpus() throws -> LegacyBoundaryCorpus {
+        try JSONDecoder().decode(
+            LegacyBoundaryCorpus.self,
+            from: Data(contentsOf: legacyBoundaryFixtureURL)
+        )
+    }
+
+    private func iimTag(for field: MetadataFieldID) -> IPTCTag? {
+        switch field {
+        case .headline: .headline
+        case .description: .captionAbstract
+        case .keywords: .keywords
+        case .creator: .byline
+        case .credit: .credit
+        case .copyright: .copyrightNotice
+        case .jobId: .originalTransmissionReference
+        case .city: .city
+        case .sublocation: .sublocation
+        case .provinceState: .provinceState
+        case .country: .countryPrimaryLocationName
+        case .instructions: .specialInstructions
+        case .source: .source
+        case .extendedDescription, .personShown, .digitalSourceType, .dateCreated, .event: nil
+        }
     }
 
     private func makeTemporaryDirectory() throws -> URL {
@@ -450,6 +508,108 @@ struct EditorialMetadataInteroperabilityTests {
         let conflict = try #require(descriptionConflict(in: dict))
         #expect(conflict.xmpDescription == "Modern XMP caption")
         #expect(conflict.iptcCaptionAbstract == "Legacy IIM caption")
+    }
+
+    @Test("legacy text recipes reach exact UTF-8 limits and round-trip without truncation")
+    func legacyTextBoundaries() throws {
+        let corpus = try loadLegacyBoundaryCorpus()
+        #expect(corpus.schemaVersion == 1)
+        #expect(corpus.license == "CC0-1.0")
+        #expect(corpus.iimTextBoundaries.count == 13)
+
+        for boundary in corpus.iimTextBoundaries {
+            let tag = try #require(iimTag(for: boundary.fieldID))
+            let value = boundary.value
+            #expect("\(tag.record):\(tag.dataSet)" == boundary.dataset)
+            #expect(tag.maxLength == boundary.maxBytes)
+            #expect(value.lengthOfBytes(using: .utf8) == boundary.maxBytes)
+
+            let compatibilityRule = try #require(
+                MetadataValidationProfile.iptcIIMCompatibility.rules.first {
+                    $0.requirement.field == boundary.fieldID
+                }
+            )
+            guard case let .maximumUTF8Bytes(ruleField, ruleLimit) = compatibilityRule.requirement else {
+                Issue.record("Expected a UTF-8 byte rule for \(boundary.fieldID)")
+                continue
+            }
+            #expect(ruleField == boundary.fieldID)
+            #expect(ruleLimit == boundary.maxBytes)
+
+            var exactMetadata = IPTCMetadata()
+            boundary.fieldID.setTextValue(value, in: &exactMetadata)
+            #expect(MetadataValidationEngine().validate(
+                exactMetadata,
+                imageURL: URL(fileURLWithPath: "/fixtures/exact.jpg"),
+                profile: .iptcIIMCompatibility
+            ).issues.allSatisfy { $0.field != boundary.fieldID })
+
+            var overMetadata = IPTCMetadata()
+            boundary.fieldID.setTextValue(value + "X", in: &overMetadata)
+            #expect(MetadataValidationEngine().validate(
+                overMetadata,
+                imageURL: URL(fileURLWithPath: "/fixtures/over.jpg"),
+                profile: .iptcIIMCompatibility
+            ).issues.contains { $0.field == boundary.fieldID })
+
+            var exact = IPTCData()
+            try exact.setValue(value, for: tag)
+            try exact.validate()
+            var exactWarnings: [String] = []
+            let encoded = try IPTCWriter.write(exact, warnings: &exactWarnings)
+            let decoded = try IPTCReader.read(from: encoded)
+            #expect(exactWarnings.isEmpty)
+            #expect(decoded.value(for: tag) == value)
+
+            var over = IPTCData()
+            try over.setValue(value + "X", for: tag)
+            var overWarnings: [String] = []
+            let overEncoded = try IPTCWriter.write(over, warnings: &overWarnings)
+            #expect(overWarnings.count == 1)
+            #expect(try IPTCReader.read(from: overEncoded).value(for: tag) == value + "X")
+        }
+    }
+
+    @Test("timezone and precision variants preserve XMP and paired IIM values")
+    func timestampVariants() throws {
+        let corpus = try loadLegacyBoundaryCorpus()
+        #expect(corpus.timestampVariants.count == 7)
+
+        for variant in corpus.timestampVariants {
+            var iim = IPTCData()
+            iim.dateCreated = variant.iimDate
+            iim.timeCreated = variant.iimTime
+            try iim.validate()
+            let decodedIIM = try IPTCReader.read(from: IPTCWriter.write(iim))
+            #expect(decodedIIM.dateCreated == variant.iimDate, Comment(rawValue: variant.id))
+            #expect(decodedIIM.timeCreated == variant.iimTime, Comment(rawValue: variant.id))
+
+            switch variant.timezoneState {
+            case "absent":
+                #expect(variant.iimTime == nil)
+                #expect(variant.precision == "day")
+            case "unknown":
+                #expect(variant.iimTime?.count == 6)
+            case "known":
+                #expect(variant.iimTime?.count == 11)
+            default:
+                Issue.record("Unknown timezone state in fixture: \(variant.timezoneState)")
+            }
+
+            var xmp = XMPData()
+            XMPDataBuilder.applyDescriptive(
+                IPTCMetadata(dateCreated: variant.xmpValue),
+                into: &xmp
+            )
+            let decodedXMP = try XMPReader.readFromXML(Data(XMPWriter.generateXML(xmp).utf8))
+            #expect(
+                decodedXMP.simpleValue(
+                    namespace: XMPNamespace.photoshop,
+                    property: "DateCreated"
+                ) == variant.xmpValue,
+                Comment(rawValue: variant.id)
+            )
+        }
     }
 }
 

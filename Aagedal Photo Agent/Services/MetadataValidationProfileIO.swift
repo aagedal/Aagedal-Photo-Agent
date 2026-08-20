@@ -74,7 +74,7 @@ nonisolated struct MetadataValidationProfileIO: Sendable {
                         count: count
                     )
                 }
-            case let .maximumLength(_, count):
+            case let .maximumLength(_, count), let .maximumUTF8Bytes(_, count):
                 guard count >= 0 else {
                     throw MetadataValidationProfileIOError.invalidMaximumLength(
                         ruleID: ruleID,

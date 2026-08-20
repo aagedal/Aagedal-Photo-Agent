@@ -12,13 +12,15 @@
   synthesized associated-value enum representation.
 - The short-lived synthesized version-one rule representation remains readable and is migrated to
   the explicit contract on the next export.
+- Schema 2 adds UTF-8 byte-limit rules. Schema-1 profiles remain readable and are upgraded on
+  export; genuinely newer schemas are still rejected before decoding.
 - Export validates the complete profile, emits pretty-printed sorted JSON with a final newline, and
   atomically replaces the chosen destination.
 - Import checks the one-megabyte size boundary before parsing, requires a supported positive schema
   version, decodes the profile, and then validates its semantics.
 - Imports reject an empty profile name; empty or duplicate rule IDs; non-positive minimum lengths;
-  negative maximum lengths; invalid regular expressions; missing or empty allowed values; and a
-  dependency that points a field at itself.
+  negative maximum character or UTF-8 byte lengths; invalid regular expressions; missing or empty
+  allowed values; and a dependency that points a field at itself.
 - Newer schemas are rejected with the shared read-only schema error instead of being interpreted by
   an older build.
 
@@ -29,7 +31,7 @@ validated file boundary.
 ## Reference fixture
 
 `Aagedal Photo Agent Tests/Fixtures/EditorialMetadata/newsroom-validation-profile.json` is a CC0
-synthetic desk profile. It contains all seven rule kinds and fictional policy values. The fixture is
+synthetic desk profile. It contains all eight rule kinds and fictional policy values. The fixture is
 listed in the corpus manifest and its canonical export must remain byte-identical, making accidental
 JSON contract drift visible in tests.
 
@@ -45,7 +47,8 @@ xcodebuild test \
   -only-testing:'Aagedal Photo Agent Tests/MetadataValidationTests'
 ```
 
-Result: `MetadataValidationTests` passed 12 tests with no failures. Coverage includes the shared rule
+Result: `MetadataValidationTests` passed 13 tests with no failures. Coverage includes the shared rule
 engine, legacy requirement migration, canonical Digital Source Type comparison, placeholder
 detection, schema safety, synthesized-rule migration, canonical fixture encoding, atomic file
-replacement, semantic rejection, and size/schema boundaries.
+replacement, semantic rejection, size/schema boundaries, and UTF-8 byte limits for scalar and
+repeatable IIM values.
