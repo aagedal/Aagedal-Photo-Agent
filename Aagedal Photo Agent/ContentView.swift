@@ -2104,6 +2104,8 @@ struct ContentView: View {
             descriptionWriter: source.descriptionWriter,
             credit: source.credit,
             copyright: source.copyright,
+            rightsUsageTerms: source.rightsUsageTerms,
+            webStatementOfRights: source.webStatementOfRights,
             jobId: source.jobId,
             dateCreated: source.dateCreated,
             city: source.city,

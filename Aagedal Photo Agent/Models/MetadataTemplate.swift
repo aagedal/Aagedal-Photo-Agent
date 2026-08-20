@@ -97,6 +97,8 @@ struct TemplateField: Codable, Identifiable, Sendable, Hashable {
         ("descriptionWriter", "Description Writer"),
         ("credit", "Credit"),
         ("copyright", "Copyright"),
+        ("rightsUsageTerms", "Rights Usage Terms"),
+        ("webStatementOfRights", "Web Statement of Rights"),
         ("jobId", "Job ID"),
         ("dateCreated", "Date Created"),
         ("city", "City"),

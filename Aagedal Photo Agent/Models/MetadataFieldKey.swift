@@ -17,6 +17,8 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case descriptionWriter
     case credit
     case rights
+    case rightsUsageTerms
+    case webStatementOfRights
     case transmissionReference
     case dateCreated
     case city

@@ -34,6 +34,8 @@ nonisolated enum MetadataDictKey {
     static let credit = "Credit"
     static let rights = "Rights"
     static let copyrightNotice = "CopyrightNotice"
+    static let rightsUsageTerms = "UsageTerms"
+    static let webStatementOfRights = "WebStatement"
     static let transmissionReference = "TransmissionReference"
     static let jobID = "JobID"
     static let originalTransmissionReference = "OriginalTransmissionReference"
@@ -1176,6 +1178,8 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         credit: dict[MetadataDictKey.credit] as? String,
         copyright: dict[MetadataDictKey.rights] as? String
             ?? dict[MetadataDictKey.copyrightNotice] as? String,
+        rightsUsageTerms: dict[MetadataDictKey.rightsUsageTerms] as? String,
+        webStatementOfRights: dict[MetadataDictKey.webStatementOfRights] as? String,
         jobId: dict[MetadataDictKey.transmissionReference] as? String
             ?? dict[MetadataDictKey.jobID] as? String
             ?? dict[MetadataDictKey.originalTransmissionReference] as? String,

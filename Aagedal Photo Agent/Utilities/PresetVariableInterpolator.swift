@@ -11,7 +11,8 @@ struct PresetVariableInterpolator: Sendable {
         let strings = [
             metadata.title, metadata.description, metadata.extendedDescription,
             metadata.creator, metadata.creatorJobTitle, metadata.descriptionWriter,
-            metadata.credit, metadata.copyright, metadata.jobId,
+            metadata.credit, metadata.copyright, metadata.rightsUsageTerms,
+            metadata.webStatementOfRights, metadata.jobId,
             metadata.dateCreated, metadata.city, metadata.country, metadata.event,
         ].compactMap { $0 } + metadata.keywords + metadata.personShown
             + metadata.organisationsShownNames + metadata.organisationsShownCodes
@@ -55,6 +56,8 @@ struct PresetVariableInterpolator: Sendable {
         result.descriptionWriter = replace(result.descriptionWriter)
         result.credit = replace(result.credit)
         result.copyright = replace(result.copyright)
+        result.rightsUsageTerms = replace(result.rightsUsageTerms)
+        result.webStatementOfRights = replace(result.webStatementOfRights)
         result.jobId = replace(result.jobId)
         result.dateCreated = replace(result.dateCreated)
         result.city = replace(result.city)
@@ -375,6 +378,8 @@ struct PresetVariableInterpolator: Sendable {
         case "descriptionwriter", "captionwriter": return metadata.descriptionWriter ?? ""
         case "credit": return metadata.credit ?? ""
         case "copyright": return metadata.copyright ?? ""
+        case "rightsusageterms", "usageterms": return metadata.rightsUsageTerms ?? ""
+        case "webstatementofrights", "webstatement": return metadata.webStatementOfRights ?? ""
         case "jobid": return metadata.jobId ?? ""
         case "datecreated": return metadata.dateCreated ?? ""
         case "city": return metadata.city ?? ""

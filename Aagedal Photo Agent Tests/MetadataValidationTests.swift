@@ -25,8 +25,32 @@ struct MetadataValidationTests {
             "legacy.required.description",
             "legacy.minimumLength.description",
             "editorial.country-code.iso-3166-alpha-3",
+            "editorial.web-statement-of-rights.http-url",
         ])
-        #expect(profile.rules.map(\.severity) == [.blocker, .blocker, .warning, .warning, .blocker])
+        #expect(profile.rules.map(\.severity) == [.blocker, .blocker, .warning, .warning, .blocker, .blocker])
+    }
+
+    @Test("Web Statement of Rights accepts HTTP URLs and blocks malformed values")
+    func webStatementURLValidation() {
+        let profile = MetadataValidationProfile.currentRequirements(levels: [:], minimumLengths: [:])
+        let empty = MetadataValidationEngine().validate(
+            IPTCMetadata(), imageURL: imageURL, profile: profile
+        )
+        let valid = MetadataValidationEngine().validate(
+            IPTCMetadata(webStatementOfRights: "HTTPS://example.test/rights/42"),
+            imageURL: imageURL,
+            profile: profile
+        )
+        let invalid = MetadataValidationEngine().validate(
+            IPTCMetadata(webStatementOfRights: "example.test/rights"),
+            imageURL: imageURL,
+            profile: profile
+        )
+
+        #expect(empty.issues.isEmpty)
+        #expect(valid.issues.isEmpty)
+        #expect(invalid.blockerCount == 1)
+        #expect(invalid.issues.first?.field == .webStatementOfRights)
     }
 
     @Test("Country Code stores canonical alpha-3 values and rejects unknown codes")

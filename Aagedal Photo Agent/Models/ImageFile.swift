@@ -147,6 +147,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         guard let metadata else { return "" }
         let fields = [metadata.title, metadata.description, metadata.creator,
                       metadata.creatorJobTitle, metadata.descriptionWriter,
+                      metadata.rightsUsageTerms, metadata.webStatementOfRights,
                       metadata.city, metadata.country, metadata.countryCode, metadata.event]
         return (fields.compactMap { $0 }
             + metadata.organisationsShownNames

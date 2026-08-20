@@ -755,6 +755,8 @@ struct FTPUploadView: View {
                 resolved.descriptionWriter = resolveIfChanged(meta.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.rightsUsageTerms = resolveIfChanged(meta.rightsUsageTerms, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.webStatementOfRights = resolveIfChanged(meta.webStatementOfRights, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
@@ -778,6 +780,8 @@ struct FTPUploadView: View {
                     if resolved.descriptionWriter != meta.descriptionWriter { fields[.descriptionWriter] = resolved.descriptionWriter ?? "" }
                     if resolved.credit != meta.credit { fields[.credit] = resolved.credit ?? "" }
                     if resolved.copyright != meta.copyright { fields[.rights] = resolved.copyright ?? "" }
+                    if resolved.rightsUsageTerms != meta.rightsUsageTerms { fields[.rightsUsageTerms] = resolved.rightsUsageTerms ?? "" }
+                    if resolved.webStatementOfRights != meta.webStatementOfRights { fields[.webStatementOfRights] = resolved.webStatementOfRights ?? "" }
                     if resolved.jobId != meta.jobId {
                         fields[.transmissionReference] = resolved.jobId ?? ""
                     }

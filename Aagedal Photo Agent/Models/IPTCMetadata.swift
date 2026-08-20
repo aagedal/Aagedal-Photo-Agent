@@ -1592,6 +1592,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     var descriptionWriter: String?
     var credit: String?
     var copyright: String?
+    var rightsUsageTerms: String?
+    var webStatementOfRights: String?
     var jobId: String?
     var dateCreated: String?
     var captureDate: String?
@@ -1627,7 +1629,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         case title, description, extendedDescription, keywords, personShown
         case organisationsShownNames, organisationsShownCodes
         case digitalSourceType
-        case creator, creatorJobTitle, descriptionWriter, credit, copyright, jobId, dateCreated, captureDate
+        case creator, creatorJobTitle, descriptionWriter, credit, copyright
+        case rightsUsageTerms, webStatementOfRights, jobId, dateCreated, captureDate
         case city, sublocation, provinceState, country, countryCode, event, instructions, source
         case creatorContactInfo, locationsCreated, locationsShown
         case latitude, longitude
@@ -1652,6 +1655,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         descriptionWriter: String? = nil,
         credit: String? = nil,
         copyright: String? = nil,
+        rightsUsageTerms: String? = nil,
+        webStatementOfRights: String? = nil,
         jobId: String? = nil,
         dateCreated: String? = nil,
         captureDate: String? = nil,
@@ -1686,6 +1691,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.descriptionWriter = descriptionWriter
         self.credit = credit
         self.copyright = copyright
+        self.rightsUsageTerms = rightsUsageTerms
+        self.webStatementOfRights = webStatementOfRights
         self.jobId = jobId
         self.dateCreated = dateCreated
         self.captureDate = captureDate
@@ -1721,6 +1728,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         descriptionWriter = try container.decodeIfPresent(String.self, forKey: .descriptionWriter)
         credit = try container.decodeIfPresent(String.self, forKey: .credit)
         copyright = try container.decodeIfPresent(String.self, forKey: .copyright)
+        rightsUsageTerms = try container.decodeIfPresent(String.self, forKey: .rightsUsageTerms)
+        webStatementOfRights = try container.decodeIfPresent(String.self, forKey: .webStatementOfRights)
         jobId = try container.decodeIfPresent(String.self, forKey: .jobId)
         dateCreated = try container.decodeIfPresent(String.self, forKey: .dateCreated)
         captureDate = try container.decodeIfPresent(String.self, forKey: .captureDate)
@@ -1770,6 +1779,8 @@ extension IPTCMetadata {
             || descriptionWriter != other.descriptionWriter
             || credit != other.credit
             || copyright != other.copyright
+            || rightsUsageTerms != other.rightsUsageTerms
+            || webStatementOfRights != other.webStatementOfRights
             || jobId != other.jobId
             || city != other.city
             || sublocation != other.sublocation
@@ -1803,6 +1814,8 @@ extension IPTCMetadata {
         if let descriptionWriter, !descriptionWriter.isEmpty { return true }
         if let credit, !credit.isEmpty { return true }
         if let copyright, !copyright.isEmpty { return true }
+        if let rightsUsageTerms, !rightsUsageTerms.isEmpty { return true }
+        if let webStatementOfRights, !webStatementOfRights.isEmpty { return true }
         if let jobId, !jobId.isEmpty { return true }
         if let dateCreated, !dateCreated.isEmpty { return true }
         if let city, !city.isEmpty { return true }
@@ -1844,6 +1857,8 @@ extension IPTCMetadata {
         result.descriptionWriter = record.descriptionWriter
         result.credit = record.credit
         result.copyright = record.copyright
+        result.rightsUsageTerms = record.rightsUsageTerms
+        result.webStatementOfRights = record.webStatementOfRights
         result.jobId = record.jobId
         result.dateCreated = record.dateCreated
         result.city = record.city
@@ -1893,6 +1908,8 @@ extension IPTCMetadata {
         if let value = override.descriptionWriter, !value.isEmpty { result.descriptionWriter = value }
         if let value = override.credit, !value.isEmpty { result.credit = value }
         if let value = override.copyright, !value.isEmpty { result.copyright = value }
+        if let value = override.rightsUsageTerms, !value.isEmpty { result.rightsUsageTerms = value }
+        if let value = override.webStatementOfRights, !value.isEmpty { result.webStatementOfRights = value }
         if let value = override.jobId, !value.isEmpty { result.jobId = value }
         if let value = override.dateCreated, !value.isEmpty { result.dateCreated = value }
         if let value = override.captureDate, !value.isEmpty { result.captureDate = value }
@@ -1951,6 +1968,8 @@ extension IPTCMetadata {
         if let v = descriptionWriter { fields[.descriptionWriter] = v }
         if let v = credit { fields[.credit] = v }
         if let v = copyright { fields[.rights] = v }
+        if let v = rightsUsageTerms { fields[.rightsUsageTerms] = v }
+        if let v = webStatementOfRights { fields[.webStatementOfRights] = v }
         if let v = jobId { fields[.transmissionReference] = v }
         if let v = dateCreated { fields[.dateCreated] = v }
         if let v = city { fields[.city] = v }
@@ -1996,6 +2015,8 @@ extension IPTCMetadata {
         fields[.descriptionWriter] = descriptionWriter ?? ""
         fields[.credit] = credit ?? ""
         fields[.rights] = copyright ?? ""
+        fields[.rightsUsageTerms] = rightsUsageTerms ?? ""
+        fields[.webStatementOfRights] = webStatementOfRights ?? ""
         fields[.transmissionReference] = jobId ?? ""
         fields[.dateCreated] = dateCreated ?? ""
         fields[.city] = city ?? ""

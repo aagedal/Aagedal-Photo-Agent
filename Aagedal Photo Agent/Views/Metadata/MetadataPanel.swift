@@ -48,6 +48,8 @@ struct MetadataPanel: View {
         case descriptionWriter
         case credit
         case copyright
+        case rightsUsageTerms
+        case webStatementOfRights
         case jobId
         case dateCreated
         case city
@@ -68,6 +70,8 @@ struct MetadataPanel: View {
             case .descriptionWriter: return "descriptionWriter"
             case .credit: return "credit"
             case .copyright: return "copyright"
+            case .rightsUsageTerms: return "rightsUsageTerms"
+            case .webStatementOfRights: return "webStatementOfRights"
             case .jobId: return "jobId"
             case .dateCreated: return "dateCreated"
             case .city: return "city"
@@ -428,6 +432,8 @@ struct MetadataPanel: View {
         case "descriptionWriter": return .descriptionWriter
         case "credit": return .credit
         case "copyright": return .copyright
+        case "rightsUsageTerms": return .rightsUsageTerms
+        case "webStatementOfRights": return .webStatementOfRights
         case "jobId": return .jobId
         case "dateCreated": return .dateCreated
         case "city": return .city
@@ -468,6 +474,8 @@ struct MetadataPanel: View {
         case .descriptionWriter: return viewModel.editingMetadata.descriptionWriter ?? ""
         case .credit: return viewModel.editingMetadata.credit ?? ""
         case .copyright: return viewModel.editingMetadata.copyright ?? ""
+        case .rightsUsageTerms: return viewModel.editingMetadata.rightsUsageTerms ?? ""
+        case .webStatementOfRights: return viewModel.editingMetadata.webStatementOfRights ?? ""
         case .jobId: return viewModel.editingMetadata.jobId ?? ""
         case .dateCreated: return viewModel.editingMetadata.dateCreated ?? ""
         case .city: return viewModel.editingMetadata.city ?? ""
@@ -491,6 +499,8 @@ struct MetadataPanel: View {
         case .descriptionWriter: viewModel.editingMetadata.descriptionWriter = normalized
         case .credit: viewModel.editingMetadata.credit = normalized
         case .copyright: viewModel.editingMetadata.copyright = normalized
+        case .rightsUsageTerms: viewModel.editingMetadata.rightsUsageTerms = normalized
+        case .webStatementOfRights: viewModel.editingMetadata.webStatementOfRights = normalized
         case .jobId: viewModel.editingMetadata.jobId = normalized
         case .dateCreated: viewModel.editingMetadata.dateCreated = normalized
         case .city: viewModel.editingMetadata.city = normalized
@@ -1009,6 +1019,42 @@ struct MetadataPanel: View {
                 focusedField: $focusedField
             )
             .id("copyright")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.rightsUsageTerms) {
+            EditableTextField(
+                label: "Rights Usage Terms",
+                text: Binding(
+                    get: { viewModel.editingMetadata.rightsUsageTerms ?? "" },
+                    set: { viewModel.editingMetadata.rightsUsageTerms = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "rightsUsageTerms") : "Enter permitted uses or restrictions",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.rightsUsageTerms),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("rightsUsageTerms"),
+                onInsertVariable: { openVariableReference(for: .rightsUsageTerms) },
+                focusKey: "rightsUsageTerms",
+                focusedField: $focusedField
+            )
+            .id("rightsUsageTerms")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.webStatementOfRights) {
+            EditableTextField(
+                label: "Web Statement of Rights",
+                text: Binding(
+                    get: { viewModel.editingMetadata.webStatementOfRights ?? "" },
+                    set: { viewModel.editingMetadata.webStatementOfRights = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "webStatementOfRights") : "https://example.com/rights",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.webStatementOfRights),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("webStatementOfRights"),
+                onInsertVariable: { openVariableReference(for: .webStatementOfRights) },
+                focusKey: "webStatementOfRights",
+                focusedField: $focusedField
+            )
+            .id("webStatementOfRights")
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.jobId) {

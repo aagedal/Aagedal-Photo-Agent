@@ -666,6 +666,22 @@ struct ImportView: View {
             )
 
             EditableTextField(
+                label: "Rights Usage Terms",
+                text: Binding(
+                    get: { viewModel.configuration.metadata.rightsUsageTerms ?? "" },
+                    set: { viewModel.configuration.metadata.rightsUsageTerms = $0.isEmpty ? nil : $0 }
+                )
+            )
+
+            EditableTextField(
+                label: "Web Statement of Rights",
+                text: Binding(
+                    get: { viewModel.configuration.metadata.webStatementOfRights ?? "" },
+                    set: { viewModel.configuration.metadata.webStatementOfRights = $0.isEmpty ? nil : $0 }
+                )
+            )
+
+            EditableTextField(
                 label: "Job ID",
                 text: Binding(
                     get: { viewModel.configuration.metadata.jobId ?? "" },

@@ -14,6 +14,7 @@ enum XMPDataBuilder {
     /// App-private XMP namespace for settings ACR can't represent — the global node's position in
     /// the reorderable layer chain and app-native render controls. (crs uses `XMPNamespace.crs`.)
     nonisolated static let aaphotoNamespace = "http://aagedal.me/ns/photo/1.0/"
+    nonisolated static let xmpRightsNamespace = "http://ns.adobe.com/xap/1.0/rights/"
 
     // MARK: - Descriptive fields
 
@@ -41,6 +42,18 @@ enum XMPDataBuilder {
         xmp.credit = nilIfEmpty(m.credit)
         xmp.jobId = nilIfEmpty(m.jobId)
         xmp.rights = nilIfEmpty(m.copyright)
+        setLanguageAlternativeOrRemove(
+            &xmp,
+            m.rightsUsageTerms,
+            namespace: xmpRightsNamespace,
+            property: "UsageTerms"
+        )
+        setSimpleOrRemove(
+            &xmp,
+            m.webStatementOfRights,
+            namespace: xmpRightsNamespace,
+            property: "WebStatement"
+        )
         // photoshop:DateCreated (the IPTC date) — distinct from xmp:CreateDate; no convenience setter.
         setSimpleOrRemove(&xmp, m.dateCreated, namespace: XMPNamespace.photoshop, property: "DateCreated")
         xmp.city = nilIfEmpty(m.city)
@@ -613,6 +626,19 @@ enum XMPDataBuilder {
     nonisolated private static func setSimpleOrRemove(_ xmp: inout XMPData, _ value: String?, namespace: String, property: String) {
         if let value, !value.isEmpty {
             xmp.setValue(.simple(value), namespace: namespace, property: property)
+        } else {
+            xmp.removeValue(namespace: namespace, property: property)
+        }
+    }
+
+    nonisolated private static func setLanguageAlternativeOrRemove(
+        _ xmp: inout XMPData,
+        _ value: String?,
+        namespace: String,
+        property: String
+    ) {
+        if let value, !value.isEmpty {
+            xmp.setValue(.langAlternative(value), namespace: namespace, property: property)
         } else {
             xmp.removeValue(namespace: namespace, property: property)
         }

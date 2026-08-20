@@ -327,6 +327,16 @@ authoritative clears; reads retain unknown incoming values for newsroom-specific
 The CC0 preservation fixture and focused sidecar/embedded tests cover multiple values and unrelated
 metadata preservation. External-tool and cross-container fixtures remain open.
 
+**Progress — 2026-08-21:** Rights Usage Terms and Web Statement of Rights now flow through typed
+metadata, versioned JSON, history, batch editing, import, templates and variables, browser search,
+rendered export, and FTP/SFTP preparation. XMP sidecar and embedded JPEG writes use
+`xmpRights:UsageTerms` as a language alternative and `xmpRights:WebStatement` as a URL, including
+authoritative clears and unrelated-property preservation. The default validation profile blocks
+malformed non-empty web statements while leaving the field optional. Focused model,
+interoperability, validation, template-variable, and real-file export suites pass; see
+[the dated validation record](metadata-rights-xmp-validation.md). Additional language alternatives,
+external-tool checks, and cross-container fixtures remain open.
+
 ## Phase 2 — Caption Workspace
 
 **Exit gate:** a photographer can caption a folder image by image using the keyboard, never lose an

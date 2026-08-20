@@ -82,6 +82,8 @@ struct EditExportPipelineTests {
             creator: "Tester",
             creatorJobTitle: "Staff Photographer",
             descriptionWriter: "Night Desk",
+            rightsUsageTerms: "Editorial use only",
+            webStatementOfRights: "https://example.test/rights",
             countryCode: "NOR"
         )
         try XMPSidecarService().saveSidecar(metadata: sidecar, for: source)
@@ -105,6 +107,8 @@ struct EditExportPipelineTests {
         #expect(meta.title == "Aurora over the fjord")
         #expect(meta.creatorJobTitle == "Staff Photographer")
         #expect(meta.descriptionWriter == "Night Desk")
+        #expect(meta.rightsUsageTerms == "Editorial use only")
+        #expect(meta.webStatementOfRights == "https://example.test/rights")
         #expect(meta.countryCode == "NOR")
         #expect(meta.organisationsShownNames == ["Example News", "Harbor Authority"])
         #expect(meta.organisationsShownCodes == ["EXNEWS", "NO-HARBOR"])

@@ -26,6 +26,7 @@ Names: Kari Nordmann, Ola Nordmann; punctuation survives.</rdf:li></rdf:Alt></dc
    <Iptc4xmpExt:OrganisationInImageCode><rdf:Bag><rdf:li>OCC</rdf:li><rdf:li>NO-HARBOR</rdf:li></rdf:Bag></Iptc4xmpExt:OrganisationInImageCode>
    <Iptc4xmpCore:Scene><rdf:Bag><rdf:li>011200</rdf:li><rdf:li>012900</rdf:li></rdf:Bag></Iptc4xmpCore:Scene>
    <xmpRights:UsageTerms><rdf:Alt><rdf:li xml:lang="x-default">Editorial use only</rdf:li></rdf:Alt></xmpRights:UsageTerms>
+   <xmpRights:WebStatement>https://aagedal.example/rights/APA-2026-0001</xmpRights:WebStatement>
    <newsroom:WireIDs><rdf:Bag><rdf:li>APA-2026-0001</rdf:li><rdf:li>DESK-42</rdf:li></rdf:Bag></newsroom:WireIDs>
    <Iptc4xmpExt:LocationShown><rdf:Bag>
     <rdf:li><rdf:Description Iptc4xmpExt:City="Oslo" Iptc4xmpExt:CountryCode="NOR" Iptc4xmpExt:Sublocation="City Hall"/></rdf:li>

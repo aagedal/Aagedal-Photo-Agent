@@ -509,6 +509,15 @@ extension MetadataValidationProfile {
             ),
             message: "Country Code must be a current ISO 3166-1 alpha-3 code."
         ))
+        rules.append(MetadataValidationRule(
+            id: "editorial.web-statement-of-rights.http-url",
+            severity: .blocker,
+            requirement: .pattern(
+                field: .webStatementOfRights,
+                expression: #"(?i)https?://[^\s]+"#
+            ),
+            message: "Web Statement of Rights must be an HTTP or HTTPS URL."
+        ))
         return MetadataValidationProfile(
             id: UUID(uuidString: "605C608F-D256-4A31-A986-51EB878FA699")!,
             name: "Photo Agent Default",

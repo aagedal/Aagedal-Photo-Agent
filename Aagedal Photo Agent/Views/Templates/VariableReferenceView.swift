@@ -246,6 +246,18 @@ enum VariableCatalog {
         example: ""
     ),
     VariableDefinition(
+        variable: "{field:rightsUsageTerms}",
+        category: "Field Reference",
+        description: "Value of the Rights Usage Terms field.",
+        example: ""
+    ),
+    VariableDefinition(
+        variable: "{field:webStatementOfRights}",
+        category: "Field Reference",
+        description: "URL from the Web Statement of Rights field.",
+        example: ""
+    ),
+    VariableDefinition(
         variable: "{field:jobId}",
         category: "Field Reference",
         description: "Value of the Job ID field.",

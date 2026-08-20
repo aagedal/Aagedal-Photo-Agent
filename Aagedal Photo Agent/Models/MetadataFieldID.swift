@@ -11,7 +11,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     case headline = "title"
     case description, extendedDescription, keywords, personShown
     case organisationShownName, organisationShownCode, digitalSourceType
-    case creator, creatorJobTitle, descriptionWriter, credit, copyright, jobId, dateCreated
+    case creator, creatorJobTitle, descriptionWriter, credit, copyright
+    case rightsUsageTerms, webStatementOfRights, jobId, dateCreated
     case city, sublocation, provinceState, country, countryCode, event, instructions, source
 
     var displayName: String {
@@ -29,6 +30,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .descriptionWriter: return "Description Writer"
         case .credit: return "Credit"
         case .copyright: return "Copyright"
+        case .rightsUsageTerms: return "Rights Usage Terms"
+        case .webStatementOfRights: return "Web Statement of Rights"
         case .jobId: return "Job ID"
         case .dateCreated: return "Date Created"
         case .city: return "City"
@@ -57,6 +60,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .descriptionWriter: return metadata.descriptionWriter?.isEmpty ?? true
         case .credit: return metadata.credit?.isEmpty ?? true
         case .copyright: return metadata.copyright?.isEmpty ?? true
+        case .rightsUsageTerms: return metadata.rightsUsageTerms?.isEmpty ?? true
+        case .webStatementOfRights: return metadata.webStatementOfRights?.isEmpty ?? true
         case .jobId: return metadata.jobId?.isEmpty ?? true
         case .dateCreated: return metadata.dateCreated?.isEmpty ?? true
         case .city: return metadata.city?.isEmpty ?? true
@@ -85,6 +90,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .descriptionWriter: return metadata.descriptionWriter
         case .credit: return metadata.credit
         case .copyright: return metadata.copyright
+        case .rightsUsageTerms: return metadata.rightsUsageTerms
+        case .webStatementOfRights: return metadata.webStatementOfRights
         case .jobId: return metadata.jobId
         case .dateCreated: return metadata.dateCreated
         case .city: return metadata.city
@@ -132,6 +139,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .descriptionWriter: metadata.descriptionWriter = scalar
         case .credit: metadata.credit = scalar
         case .copyright: metadata.copyright = scalar
+        case .rightsUsageTerms: metadata.rightsUsageTerms = scalar
+        case .webStatementOfRights: metadata.webStatementOfRights = scalar
         case .jobId: metadata.jobId = scalar
         case .dateCreated: metadata.dateCreated = scalar
         case .city: metadata.city = scalar
@@ -151,7 +160,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     static let primaryEditorFields: [Self] = [
         .headline, .description, .extendedDescription, .keywords, .personShown,
         .organisationShownName, .organisationShownCode,
-        .copyright, .jobId,
+        .copyright, .rightsUsageTerms, .webStatementOfRights, .jobId,
     ]
 
     /// Fields displayed in the Additional Fields section of the editor.

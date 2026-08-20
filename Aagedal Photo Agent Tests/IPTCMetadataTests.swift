@@ -157,6 +157,17 @@ struct ToWriteFieldsTests {
         #expect(fields[MetadataFieldKey.rights] == "© 2026 Photographer")
     }
 
+    @Test("rights statements map to their XMP-only fields")
+    func rightsStatementsMapToXMPFields() {
+        let metadata = IPTCMetadata(
+            rightsUsageTerms: "Editorial use only",
+            webStatementOfRights: "https://example.test/rights"
+        )
+        let fields = metadata.toWriteFields()
+        #expect(fields[.rightsUsageTerms] == "Editorial use only")
+        #expect(fields[.webStatementOfRights] == "https://example.test/rights")
+    }
+
     @Test("creator maps to XMP creator tag")
     func creatorMapsToCreator() {
         let metadata = IPTCMetadata(creator: "Jane Doe")
@@ -404,7 +415,7 @@ struct EditorialMetadataInteroperabilityTests {
         case .instructions: .specialInstructions
         case .source: .source
         case .extendedDescription, .personShown, .organisationShownName, .organisationShownCode,
-             .digitalSourceType, .dateCreated, .event: nil
+             .digitalSourceType, .rightsUsageTerms, .webStatementOfRights, .dateCreated, .event: nil
         }
     }
 
@@ -845,6 +856,58 @@ struct EditorialMetadataInteroperabilityTests {
         #expect(cleared.xmp?.simpleValue(
             namespace: XMPNamespace.iptcCore,
             property: "CountryCode"
+        ) == nil)
+    }
+
+    @Test("rights usage terms and web statement round-trip through XMP")
+    func rightsStatementsRoundTrip() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sidecarService = XMPSidecarService()
+        let rawURL = directory.appendingPathComponent("rights.nef")
+        let expected = IPTCMetadata(
+            rightsUsageTerms: "Editorial use only — contact the picture desk.",
+            webStatementOfRights: "https://example.test/rights/photo-42"
+        )
+        try sidecarService.saveSidecar(metadata: expected, for: rawURL)
+        let sidecarXMP = try XMPReader.readFromXML(
+            Data(contentsOf: sidecarService.sidecarURL(for: rawURL))
+        )
+        #expect(sidecarXMP.simpleValue(
+            namespace: XMPDataBuilder.xmpRightsNamespace,
+            property: "UsageTerms"
+        ) == expected.rightsUsageTerms)
+        #expect(sidecarXMP.simpleValue(
+            namespace: XMPDataBuilder.xmpRightsNamespace,
+            property: "WebStatement"
+        ) == expected.webStatementOfRights)
+        #expect(sidecarService.loadSidecar(for: rawURL)?.rightsUsageTerms == expected.rightsUsageTerms)
+        #expect(sidecarService.loadSidecar(for: rawURL)?.webStatementOfRights == expected.webStatementOfRights)
+
+        let imageURL = try makeJPEG(in: directory)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([
+            .rightsUsageTerms: expected.rightsUsageTerms!,
+            .webStatementOfRights: expected.webStatementOfRights!,
+        ], to: [imageURL])
+        let embedded = try SwiftExif.readMetadata(from: imageURL)
+        let embeddedDecoded = iptcMetadataFromDict(embedded.asMetadataDict(fileURL: imageURL))
+        #expect(embeddedDecoded.rightsUsageTerms == expected.rightsUsageTerms)
+        #expect(embeddedDecoded.webStatementOfRights == expected.webStatementOfRights)
+
+        try await engine.writeFields([
+            .rightsUsageTerms: "",
+            .webStatementOfRights: "",
+        ], to: [imageURL])
+        let cleared = try SwiftExif.readMetadata(from: imageURL)
+        #expect(cleared.xmp?.simpleValue(
+            namespace: XMPDataBuilder.xmpRightsNamespace,
+            property: "UsageTerms"
+        ) == nil)
+        #expect(cleared.xmp?.simpleValue(
+            namespace: XMPDataBuilder.xmpRightsNamespace,
+            property: "WebStatement"
         ) == nil)
     }
 
@@ -1442,6 +1505,8 @@ struct IPTCMetadataCodableTests {
             descriptionWriter: "Night Desk",
             credit: "Credit Line",
             copyright: "© 2026",
+            rightsUsageTerms: "Editorial use only",
+            webStatementOfRights: "https://example.test/rights",
             jobId: "JOB123",
             dateCreated: "2026-01-01",
             captureDate: "2026-01-01T12:00:00",
@@ -1477,6 +1542,8 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.descriptionWriter == "Night Desk")
         #expect(decoded.credit == "Credit Line")
         #expect(decoded.copyright == "© 2026")
+        #expect(decoded.rightsUsageTerms == "Editorial use only")
+        #expect(decoded.webStatementOfRights == "https://example.test/rights")
         #expect(decoded.jobId == "JOB123")
         #expect(decoded.dateCreated == "2026-01-01")
         #expect(decoded.captureDate == "2026-01-01T12:00:00")

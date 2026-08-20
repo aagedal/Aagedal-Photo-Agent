@@ -65,6 +65,8 @@ nonisolated enum SidecarReconciliation {
         if a.descriptionWriter != b.descriptionWriter { return true }
         if a.credit != b.credit { return true }
         if a.copyright != b.copyright { return true }
+        if a.rightsUsageTerms != b.rightsUsageTerms { return true }
+        if a.webStatementOfRights != b.webStatementOfRights { return true }
         if a.jobId != b.jobId { return true }
         if a.dateCreated != b.dateCreated { return true }
         if a.city != b.city { return true }

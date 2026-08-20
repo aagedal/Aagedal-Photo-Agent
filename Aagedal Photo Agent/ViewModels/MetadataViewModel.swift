@@ -453,6 +453,8 @@ final class MetadataViewModel {
         compareOptionalField(allMetadata, keyPath: \.description, fieldName: "description", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.extendedDescription, fieldName: "extendedDescription", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.copyright, fieldName: "copyright", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.rightsUsageTerms, fieldName: "rightsUsageTerms", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.webStatementOfRights, fieldName: "webStatementOfRights", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.jobId, fieldName: "jobId", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.creator, fieldName: "creator", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.creatorJobTitle, fieldName: "creatorJobTitle", common: &common, differing: &differing)
@@ -757,6 +759,8 @@ final class MetadataViewModel {
                     if let v = edited.descriptionWriter, !v.isEmpty { fields[.descriptionWriter] = v }
                     if let v = edited.credit, !v.isEmpty { fields[.credit] = v }
                     if let v = edited.copyright, !v.isEmpty { fields[.rights] = v }
+                    if let v = edited.rightsUsageTerms, !v.isEmpty { fields[.rightsUsageTerms] = v }
+                    if let v = edited.webStatementOfRights, !v.isEmpty { fields[.webStatementOfRights] = v }
                     if let v = edited.jobId, !v.isEmpty { fields[.transmissionReference] = v }
                     if let v = edited.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
                     if let v = edited.city, !v.isEmpty { fields[.city] = v }
@@ -808,6 +812,8 @@ final class MetadataViewModel {
                     if edited.descriptionWriter != original?.descriptionWriter { fields[.descriptionWriter] = edited.descriptionWriter ?? "" }
                     if edited.credit != original?.credit { fields[.credit] = edited.credit ?? "" }
                     if edited.copyright != original?.copyright { fields[.rights] = edited.copyright ?? "" }
+                    if edited.rightsUsageTerms != original?.rightsUsageTerms { fields[.rightsUsageTerms] = edited.rightsUsageTerms ?? "" }
+                    if edited.webStatementOfRights != original?.webStatementOfRights { fields[.webStatementOfRights] = edited.webStatementOfRights ?? "" }
                     if edited.jobId != original?.jobId {
                         fields[.transmissionReference] = edited.jobId ?? ""
                     }
@@ -878,6 +884,8 @@ final class MetadataViewModel {
         if let v = metadata.descriptionWriter, !v.isEmpty { fields[.descriptionWriter] = v }
         if let v = metadata.credit, !v.isEmpty { fields[.credit] = v }
         if let v = metadata.copyright, !v.isEmpty { fields[.rights] = v }
+        if let v = metadata.rightsUsageTerms, !v.isEmpty { fields[.rightsUsageTerms] = v }
+        if let v = metadata.webStatementOfRights, !v.isEmpty { fields[.webStatementOfRights] = v }
         if let v = metadata.jobId, !v.isEmpty { fields[.transmissionReference] = v }
         if let v = metadata.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
         if let v = metadata.city, !v.isEmpty { fields[.city] = v }
@@ -1107,6 +1115,8 @@ final class MetadataViewModel {
         fields[.descriptionWriter] = metadata.descriptionWriter ?? ""
         fields[.credit] = metadata.credit ?? ""
         fields[.rights] = metadata.copyright ?? ""
+        fields[.rightsUsageTerms] = metadata.rightsUsageTerms ?? ""
+        fields[.webStatementOfRights] = metadata.webStatementOfRights ?? ""
         fields[.transmissionReference] = metadata.jobId ?? ""
         fields[.dateCreated] = metadata.dateCreated ?? ""
         fields[.city] = metadata.city ?? ""
@@ -1384,6 +1394,10 @@ final class MetadataViewModel {
                 editingMetadata.credit = append ? appendString(editingMetadata.credit, value) : value
             case "copyright":
                 editingMetadata.copyright = append ? appendString(editingMetadata.copyright, value) : value
+            case "rightsUsageTerms":
+                editingMetadata.rightsUsageTerms = append ? appendString(editingMetadata.rightsUsageTerms, value) : value
+            case "webStatementOfRights":
+                editingMetadata.webStatementOfRights = append ? appendString(editingMetadata.webStatementOfRights, value) : value
             case "jobId":
                 editingMetadata.jobId = append ? appendString(editingMetadata.jobId, value) : value
             case "dateCreated":
@@ -1451,6 +1465,8 @@ final class MetadataViewModel {
             editingMetadata.descriptionWriter,
             editingMetadata.credit,
             editingMetadata.copyright,
+            editingMetadata.rightsUsageTerms,
+            editingMetadata.webStatementOfRights,
             editingMetadata.jobId,
             editingMetadata.dateCreated,
             editingMetadata.city,
@@ -1491,6 +1507,8 @@ final class MetadataViewModel {
         editingMetadata.descriptionWriter = resolveIfPresent(editingMetadata.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.credit = resolveIfPresent(editingMetadata.credit, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.copyright = resolveIfPresent(editingMetadata.copyright, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.rightsUsageTerms = resolveIfPresent(editingMetadata.rightsUsageTerms, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.webStatementOfRights = resolveIfPresent(editingMetadata.webStatementOfRights, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.jobId = resolveIfPresent(editingMetadata.jobId, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.dateCreated = resolveIfPresent(editingMetadata.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.city = resolveIfPresent(editingMetadata.city, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
@@ -1554,6 +1572,8 @@ final class MetadataViewModel {
         if resolved.descriptionWriter != original.descriptionWriter { fields[.descriptionWriter] = resolved.descriptionWriter ?? "" }
         if resolved.credit != original.credit { fields[.credit] = resolved.credit ?? "" }
         if resolved.copyright != original.copyright { fields[.rights] = resolved.copyright ?? "" }
+        if resolved.rightsUsageTerms != original.rightsUsageTerms { fields[.rightsUsageTerms] = resolved.rightsUsageTerms ?? "" }
+        if resolved.webStatementOfRights != original.webStatementOfRights { fields[.webStatementOfRights] = resolved.webStatementOfRights ?? "" }
         if resolved.jobId != original.jobId {
             fields[.transmissionReference] = resolved.jobId ?? ""
         }
@@ -1787,6 +1807,8 @@ final class MetadataViewModel {
                 resolvedMeta.descriptionWriter = resolveIfChanged(meta.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
+                resolvedMeta.rightsUsageTerms = resolveIfChanged(meta.rightsUsageTerms, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
+                resolvedMeta.webStatementOfRights = resolveIfChanged(meta.webStatementOfRights, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
@@ -2146,6 +2168,8 @@ final class MetadataViewModel {
         recordArrayChange("Organisation Shown Name", old: previous.organisationsShownNames, new: edited.organisationsShownNames)
         recordArrayChange("Organisation Shown Code", old: previous.organisationsShownCodes, new: edited.organisationsShownCodes)
         recordChange("Copyright", old: previous.copyright, new: edited.copyright)
+        recordChange("Rights Usage Terms", old: previous.rightsUsageTerms, new: edited.rightsUsageTerms)
+        recordChange("Web Statement of Rights", old: previous.webStatementOfRights, new: edited.webStatementOfRights)
         recordChange("Job ID", old: previous.jobId, new: edited.jobId)
         recordChange("Creator", old: previous.creator, new: edited.creator)
         recordChange("Creator Job Title", old: previous.creatorJobTitle, new: edited.creatorJobTitle)
@@ -2302,6 +2326,12 @@ final class MetadataViewModel {
 
         if let copyright = batchMeta.copyright, !copyright.isEmpty {
             metadata.copyright = copyright
+        }
+        if let rightsUsageTerms = batchMeta.rightsUsageTerms, !rightsUsageTerms.isEmpty {
+            metadata.rightsUsageTerms = rightsUsageTerms
+        }
+        if let webStatementOfRights = batchMeta.webStatementOfRights, !webStatementOfRights.isEmpty {
+            metadata.webStatementOfRights = webStatementOfRights
         }
         if let jobId = batchMeta.jobId, !jobId.isEmpty {
             metadata.jobId = jobId
@@ -2548,6 +2578,8 @@ final class MetadataViewModel {
         if editingMetadata.organisationsShownNames != original.organisationsShownNames { names.append("Organisation Shown Name") }
         if editingMetadata.organisationsShownCodes != original.organisationsShownCodes { names.append("Organisation Shown Code") }
         if editingMetadata.copyright != original.copyright { names.append("Copyright") }
+        if editingMetadata.rightsUsageTerms != original.rightsUsageTerms { names.append("Rights Usage Terms") }
+        if editingMetadata.webStatementOfRights != original.webStatementOfRights { names.append("Web Statement of Rights") }
         if editingMetadata.jobId != original.jobId { names.append("Job ID") }
         if editingMetadata.creator != original.creator { names.append("Creator") }
         if editingMetadata.creatorJobTitle != original.creatorJobTitle { names.append("Creator Job Title") }
@@ -2722,6 +2754,10 @@ final class MetadataViewModel {
             metadata.organisationsShownCodes = entry.newValue?.components(separatedBy: ", ") ?? []
         case "Copyright":
             metadata.copyright = entry.newValue
+        case "Rights Usage Terms":
+            metadata.rightsUsageTerms = entry.newValue
+        case "Web Statement of Rights":
+            metadata.webStatementOfRights = entry.newValue
         case "Job ID", "Job-ID":
             metadata.jobId = entry.newValue
         case "Creator":

@@ -67,6 +67,21 @@ struct PresetVariableInterpolatorTests {
         #expect(result == "Example News, Example Sport|EXNEWS, EXSPORT")
     }
 
+    @Test("Rights fields resolve by key and display label")
+    func rightsFieldAliases() {
+        let metadata = IPTCMetadata(
+            rightsUsageTerms: "Editorial use only",
+            webStatementOfRights: "https://example.test/rights"
+        )
+
+        let result = interpolator.resolve(
+            "{field:Usage Terms}|{field:Web Statement of Rights}",
+            existingMetadata: metadata
+        )
+
+        #expect(result == "Editorial use only|https://example.test/rights")
+    }
+
     @Test("Metadata dates support friendly compact and dashed aliases")
     func metadataDateAliases() {
         var metadata = IPTCMetadata()

@@ -92,6 +92,18 @@ extension ImageMetadata {
                 dict[MetadataDictKey.descriptionWriter] = v
             }
             if let v = xmp.rights { dict[MetadataDictKey.rights] = v }
+            if let v = xmp.simpleValue(
+                namespace: XMPDataBuilder.xmpRightsNamespace,
+                property: MetadataDictKey.rightsUsageTerms
+            ) {
+                dict[MetadataDictKey.rightsUsageTerms] = v
+            }
+            if let v = xmp.simpleValue(
+                namespace: XMPDataBuilder.xmpRightsNamespace,
+                property: MetadataDictKey.webStatementOfRights
+            ) {
+                dict[MetadataDictKey.webStatementOfRights] = v
+            }
             if let v = xmp.headline, dict[MetadataDictKey.headline] == nil {
                 dict[MetadataDictKey.headline] = v
             }

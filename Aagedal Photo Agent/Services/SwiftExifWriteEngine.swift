@@ -525,6 +525,22 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 metadata.iptc.copyright = value
             }
 
+        case .rightsUsageTerms:
+            setXMPField(
+                &metadata,
+                namespace: XMPDataBuilder.xmpRightsNamespace,
+                property: "UsageTerms",
+                value: isEmpty ? nil : .langAlternative(value)
+            )
+
+        case .webStatementOfRights:
+            setXMPField(
+                &metadata,
+                namespace: XMPDataBuilder.xmpRightsNamespace,
+                property: "WebStatement",
+                value: isEmpty ? nil : .simple(value)
+            )
+
         case .transmissionReference:
             if isEmpty {
                 metadata.iptc.removeAll(for: .originalTransmissionReference)
