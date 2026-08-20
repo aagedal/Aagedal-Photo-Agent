@@ -18,7 +18,7 @@ own scope, tasks, exit gates, and technical decisions.
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; release hardening in progress | Close remaining manual fixture, accessibility, performance, and cross-phase validation |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, and JSON schema safety established; I/O, validation, and fixture work remains | Complete the redistributable interoperability corpus, then finish the shared metadata I/O/validation foundation |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, JSON schema safety, and shared validation engine established; I/O and fixture work remains | Complete the redistributable interoperability corpus, then finish the shared metadata I/O foundation and portable validation profiles |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, and immutable report evidence implemented; release validation remains | Validate live and reported rays across paper/map styles, camera interactions, rapid time changes, architectures, and accessibility paths |
 
 ## Default delivery order

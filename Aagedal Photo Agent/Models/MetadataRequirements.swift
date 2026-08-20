@@ -80,11 +80,15 @@ nonisolated enum MetadataRequirements {
 
     static func fieldFails(_ field: MetadataFieldID, in metadata: IPTCMetadata,
                            levels: Levels, minimumLengths: MinimumLengths) -> Bool {
-        guard (levels[field] ?? .optional) != .optional else { return false }
-        if field.isEmpty(in: metadata) { return true }
-        guard let minimum = minimumLengths[field], minimum > 0,
-              let value = field.textValue(in: metadata) else { return false }
-        return value.trimmingCharacters(in: .whitespacesAndNewlines).count < minimum
+        let profile = MetadataValidationProfile.currentRequirements(
+            levels: levels.filter { $0.key == field },
+            minimumLengths: minimumLengths.filter { $0.key == field }
+        )
+        return MetadataValidationEngine().validate(
+            metadata,
+            imageURL: URL(fileURLWithPath: "/validation/field"),
+            profile: profile
+        ).issues.contains { $0.field == field }
     }
 
     private static func legacyRequiredSet(from defaults: UserDefaults) -> Set<MetadataFieldID> {

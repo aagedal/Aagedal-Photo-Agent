@@ -215,12 +215,12 @@ ready.
 
 ### Validation
 
-- [ ] Implement the generalized rule engine and severity model.
-- [ ] Migrate current requirement levels and minimum lengths into the default profile.
-- [ ] Add dependencies and controlled-vocabulary validation, including canonical NewsCodes URIs.
-- [ ] Flag unresolved template variables separately from ordinary punctuation containing braces.
-- [ ] Expose aggregate counts and “next blocking issue” ordering.
-- [ ] Use the same engine in the browser missing-metadata filter, Metadata Review, and FTP/SFTP
+- [x] Implement the generalized rule engine and severity model.
+- [x] Migrate current requirement levels and minimum lengths into the default profile.
+- [x] Add dependencies and controlled-vocabulary validation, including canonical NewsCodes URIs.
+- [x] Flag unresolved template variables separately from ordinary punctuation containing braces.
+- [x] Expose aggregate counts and “next blocking issue” ordering.
+- [x] Use the same engine in the browser missing-metadata filter, Metadata Review, and FTP/SFTP
   preflight.
 - [ ] Add profile import/export as versioned JSON. Portable assignment packages can build on this
   later without changing the rule engine.
@@ -256,6 +256,16 @@ same-schema sidecar saves preserve unknown top-level and metadata extension fiel
 known values that were cleared, and filename-only relocation preserves an otherwise unknown JSON
 graph. The focused persistence suites pass 31 tests; see
 [the dated validation record](metadata-json-persistence-validation.md).
+
+**Progress — 2026-08-20:** The shared metadata validation engine now emits stable field/rule issue
+identities with information, warning, and blocker severities; supports required, length, pattern,
+allowed-value, dependency, and unresolved-template rules; and provides deterministic aggregate
+counts plus next-blocker ordering. Existing requirement levels and minimum lengths are bridged into
+the default profile, so the browser missing-metadata filter, Metadata Review, and FTP/SFTP preflight
+now use the same engine without changing their stored settings. Digital Source Type rules compare
+canonical NewsCodes URIs while accepting supported URI/QCode/legacy aliases, and brace punctuation
+is not mistaken for a template variable. Seven focused tests pass. Versioned profile import/export
+and the remaining cross-container field verification remain open.
 
 ## Phase 2 — Caption Workspace
 

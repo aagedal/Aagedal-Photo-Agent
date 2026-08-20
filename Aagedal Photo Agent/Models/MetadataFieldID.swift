@@ -9,7 +9,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     /// The raw value remains `title` because older builds persisted the headline field under that
     /// key. The case name reflects its actual IPTC meaning and leaves room for a distinct Title.
     case headline = "title"
-    case description, extendedDescription, keywords, personShown
+    case description, extendedDescription, keywords, personShown, digitalSourceType
     case creator, credit, copyright, jobId, dateCreated
     case city, sublocation, provinceState, country, event, instructions, source
 
@@ -20,6 +20,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .extendedDescription: return "Extended Description"
         case .keywords: return "Keywords"
         case .personShown: return "Person Shown"
+        case .digitalSourceType: return "Digital Source Type"
         case .creator: return "Creator"
         case .credit: return "Credit"
         case .copyright: return "Copyright"
@@ -42,6 +43,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .extendedDescription: return metadata.extendedDescription?.isEmpty ?? true
         case .keywords: return metadata.keywords.isEmpty
         case .personShown: return metadata.personShown.isEmpty
+        case .digitalSourceType: return metadata.digitalSourceType == nil
         case .creator: return metadata.creator?.isEmpty ?? true
         case .credit: return metadata.credit?.isEmpty ?? true
         case .copyright: return metadata.copyright?.isEmpty ?? true
@@ -64,6 +66,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .extendedDescription: return metadata.extendedDescription
         case .keywords: return metadata.keywords.joined(separator: ", ")
         case .personShown: return metadata.personShown.joined(separator: ", ")
+        case .digitalSourceType: return metadata.digitalSourceType?.newsCodeURI
         case .creator: return metadata.creator
         case .credit: return metadata.credit
         case .copyright: return metadata.copyright
@@ -96,6 +99,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
                 .uniqued()
+        case .digitalSourceType:
+            metadata.digitalSourceType = scalar.flatMap(DigitalSourceType.init(metadataValue:))
         case .creator: metadata.creator = scalar
         case .credit: metadata.credit = scalar
         case .copyright: metadata.copyright = scalar
@@ -140,7 +145,9 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     }
 
     /// Fields offered in required-metadata settings and the browser's Missing Field filter.
-    static let userSelectable = allCases.filter { $0 != .dateCreated }
+    // Digital Source Type has a dedicated controlled-vocabulary editor. Keep it out of the
+    // legacy required-field settings until that screen can present vocabulary-aware rules.
+    static let userSelectable = allCases.filter { $0 != .dateCreated && $0 != .digitalSourceType }
 
     static func decodeHidden(_ rawValues: [String]) -> Set<Self> {
         Set(rawValues.compactMap(Self.init(rawValue:)))
