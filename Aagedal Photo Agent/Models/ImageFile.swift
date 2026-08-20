@@ -148,7 +148,11 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         let fields = [metadata.title, metadata.description, metadata.creator,
                       metadata.creatorJobTitle, metadata.descriptionWriter,
                       metadata.city, metadata.country, metadata.countryCode, metadata.event]
-        return fields.compactMap { $0 }.joined(separator: "\n").lowercased()
+        return (fields.compactMap { $0 }
+            + metadata.organisationsShownNames
+            + metadata.organisationsShownCodes)
+            .joined(separator: "\n")
+            .lowercased()
     }
 
     /// Compute next EXIF orientation after 90° CW rotation.

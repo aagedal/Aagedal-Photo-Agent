@@ -479,6 +479,20 @@ final class MetadataViewModel {
         if !partialPS.isEmpty { differing.insert("personShown") }
         self.batchPartialPersonShown = partialPS
 
+        let (commonOrganisationNames, partialOrganisationNames) = computeArrayFieldPartials(
+            allMetadata,
+            keyPath: \.organisationsShownNames
+        )
+        common.organisationsShownNames = commonOrganisationNames
+        if !partialOrganisationNames.isEmpty { differing.insert("organisationShownName") }
+
+        let (commonOrganisationCodes, partialOrganisationCodes) = computeArrayFieldPartials(
+            allMetadata,
+            keyPath: \.organisationsShownCodes
+        )
+        common.organisationsShownCodes = commonOrganisationCodes
+        if !partialOrganisationCodes.isEmpty { differing.insert("organisationShownCode") }
+
         // GPS - check if all have the same coordinates
         let latitudes = allMetadata.compactMap(\.latitude)
         let longitudes = allMetadata.compactMap(\.longitude)
@@ -767,6 +781,12 @@ final class MetadataViewModel {
                     if edited.personShown != original?.personShown {
                         fields[.personInImage] = edited.personShown.uniqued().joined(separator: ", ")
                     }
+                    if edited.organisationsShownNames != original?.organisationsShownNames {
+                        fields[.organisationInImageName] = edited.organisationsShownNames.uniqued().joined(separator: ", ")
+                    }
+                    if edited.organisationsShownCodes != original?.organisationsShownCodes {
+                        fields[.organisationInImageCode] = edited.organisationsShownCodes.uniqued().joined(separator: ", ")
+                    }
                     if edited.digitalSourceType != original?.digitalSourceType {
                         fields[.digitalSourceType] = edited.digitalSourceType?.newsCodeURI ?? ""
                     }
@@ -899,6 +919,20 @@ final class MetadataViewModel {
             if !added.isEmpty { addTags[.personInImage] = added }
             if !removed.isEmpty { removeTags[.personInImage] = removed }
         }
+
+        let previousOrganisationNames = Set(previous.organisationsShownNames)
+        let editedOrganisationNames = Set(edited.organisationsShownNames)
+        let addedOrganisationNames = edited.organisationsShownNames.filter { !previousOrganisationNames.contains($0) }
+        let removedOrganisationNames = previous.organisationsShownNames.filter { !editedOrganisationNames.contains($0) }
+        if !addedOrganisationNames.isEmpty { addTags[.organisationInImageName] = addedOrganisationNames }
+        if !removedOrganisationNames.isEmpty { removeTags[.organisationInImageName] = removedOrganisationNames }
+
+        let previousOrganisationCodes = Set(previous.organisationsShownCodes)
+        let editedOrganisationCodes = Set(edited.organisationsShownCodes)
+        let addedOrganisationCodes = edited.organisationsShownCodes.filter { !previousOrganisationCodes.contains($0) }
+        let removedOrganisationCodes = previous.organisationsShownCodes.filter { !editedOrganisationCodes.contains($0) }
+        if !addedOrganisationCodes.isEmpty { addTags[.organisationInImageCode] = addedOrganisationCodes }
+        if !removedOrganisationCodes.isEmpty { removeTags[.organisationInImageCode] = removedOrganisationCodes }
 
         return (addTags, removeTags)
     }
@@ -1065,6 +1099,8 @@ final class MetadataViewModel {
         fields[.extendedDescription] = metadata.extendedDescription ?? ""
         fields[.subject] = metadata.keywords.uniqued().joined(separator: ", ")
         fields[.personInImage] = metadata.personShown.uniqued().joined(separator: ", ")
+        fields[.organisationInImageName] = metadata.organisationsShownNames.uniqued().joined(separator: ", ")
+        fields[.organisationInImageCode] = metadata.organisationsShownCodes.uniqued().joined(separator: ", ")
         fields[.digitalSourceType] = metadata.digitalSourceType?.newsCodeURI ?? ""
         fields[.creator] = metadata.creator ?? ""
         fields[.creatorJobTitle] = metadata.creatorJobTitle ?? ""
@@ -1320,6 +1356,22 @@ final class MetadataViewModel {
                 } else {
                     editingMetadata.personShown = newPersons
                 }
+            case "organisationShownName":
+                let values = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                if append {
+                    let existing = Set(editingMetadata.organisationsShownNames)
+                    editingMetadata.organisationsShownNames += values.filter { !existing.contains($0) }
+                } else {
+                    editingMetadata.organisationsShownNames = values
+                }
+            case "organisationShownCode":
+                let values = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                if append {
+                    let existing = Set(editingMetadata.organisationsShownCodes)
+                    editingMetadata.organisationsShownCodes += values.filter { !existing.contains($0) }
+                } else {
+                    editingMetadata.organisationsShownCodes = values
+                }
             case "digitalSourceType":
                 editingMetadata.digitalSourceType = DigitalSourceType(metadataValue: value)
             case "creator":
@@ -1412,6 +1464,7 @@ final class MetadataViewModel {
             return true
         }
         let listValues = editingMetadata.keywords + editingMetadata.personShown
+            + editingMetadata.organisationsShownNames + editingMetadata.organisationsShownCodes
         return listValues.contains { $0.contains(Self.variablePattern) }
     }
 
@@ -1450,6 +1503,8 @@ final class MetadataViewModel {
 
         editingMetadata.keywords = resolveListField(editingMetadata.keywords, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials, validateField: .keywords)
         editingMetadata.personShown = resolveListField(editingMetadata.personShown, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.organisationsShownNames = resolveListField(editingMetadata.organisationsShownNames, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.organisationsShownCodes = resolveListField(editingMetadata.organisationsShownCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
 
         // Add resolved Job ID to keywords if enabled (after all variables are resolved)
         if UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
@@ -1516,6 +1571,12 @@ final class MetadataViewModel {
         }
         if resolved.personShown != original.personShown {
             fields[.personInImage] = resolved.personShown.joined(separator: ", ")
+        }
+        if resolved.organisationsShownNames != original.organisationsShownNames {
+            fields[.organisationInImageName] = resolved.organisationsShownNames.joined(separator: ", ")
+        }
+        if resolved.organisationsShownCodes != original.organisationsShownCodes {
+            fields[.organisationInImageCode] = resolved.organisationsShownCodes.joined(separator: ", ")
         }
 
         // Build JSON sidecar with history entry
@@ -1740,6 +1801,10 @@ final class MetadataViewModel {
                 if newKeywords != meta.keywords { resolvedMeta.keywords = newKeywords; changed = true }
                 let newPersons = resolveListField(meta.personShown, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials)
                 if newPersons != meta.personShown { resolvedMeta.personShown = newPersons; changed = true }
+                let newOrganisationNames = resolveListField(meta.organisationsShownNames, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials)
+                if newOrganisationNames != meta.organisationsShownNames { resolvedMeta.organisationsShownNames = newOrganisationNames; changed = true }
+                let newOrganisationCodes = resolveListField(meta.organisationsShownCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials)
+                if newOrganisationCodes != meta.organisationsShownCodes { resolvedMeta.organisationsShownCodes = newOrganisationCodes; changed = true }
 
                 // Add resolved Job ID to keywords if enabled (after all variables are resolved)
                 if UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
@@ -2078,6 +2143,8 @@ final class MetadataViewModel {
         recordChange("Extended Description", old: previous.extendedDescription, new: edited.extendedDescription)
         recordArrayChange("Keywords", old: previous.keywords, new: edited.keywords)
         recordArrayChange("Person Shown", old: previous.personShown, new: edited.personShown)
+        recordArrayChange("Organisation Shown Name", old: previous.organisationsShownNames, new: edited.organisationsShownNames)
+        recordArrayChange("Organisation Shown Code", old: previous.organisationsShownCodes, new: edited.organisationsShownCodes)
         recordChange("Copyright", old: previous.copyright, new: edited.copyright)
         recordChange("Job ID", old: previous.jobId, new: edited.jobId)
         recordChange("Creator", old: previous.creator, new: edited.creator)
@@ -2215,6 +2282,22 @@ final class MetadataViewModel {
         } else if !batchMeta.personShown.isEmpty {
             let existing = Set(metadata.personShown)
             metadata.personShown += batchMeta.personShown.filter { !existing.contains($0) }
+        }
+
+        if let prev = previousCommon {
+            let previousNames = Set(prev.organisationsShownNames)
+            let added = batchMeta.organisationsShownNames.filter { !previousNames.contains($0) }
+            let removed = Set(prev.organisationsShownNames).subtracting(batchMeta.organisationsShownNames)
+            metadata.organisationsShownNames.removeAll { removed.contains($0) }
+            let existing = Set(metadata.organisationsShownNames)
+            metadata.organisationsShownNames += added.filter { !existing.contains($0) }
+
+            let previousCodes = Set(prev.organisationsShownCodes)
+            let addedCodes = batchMeta.organisationsShownCodes.filter { !previousCodes.contains($0) }
+            let removedCodes = Set(prev.organisationsShownCodes).subtracting(batchMeta.organisationsShownCodes)
+            metadata.organisationsShownCodes.removeAll { removedCodes.contains($0) }
+            let existingCodes = Set(metadata.organisationsShownCodes)
+            metadata.organisationsShownCodes += addedCodes.filter { !existingCodes.contains($0) }
         }
 
         if let copyright = batchMeta.copyright, !copyright.isEmpty {
@@ -2434,6 +2517,16 @@ final class MetadataViewModel {
         return editingMetadata.personShown != original.personShown
     }
 
+    func organisationShownNamesDiffer() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.organisationsShownNames != original.organisationsShownNames
+    }
+
+    func organisationShownCodesDiffer() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.organisationsShownCodes != original.organisationsShownCodes
+    }
+
     func digitalSourceTypeDiffers() -> Bool {
         guard let original = originalImageMetadata else { return false }
         return editingMetadata.digitalSourceType != original.digitalSourceType
@@ -2452,6 +2545,8 @@ final class MetadataViewModel {
         if editingMetadata.extendedDescription != original.extendedDescription { names.append("Extended Description") }
         if editingMetadata.keywords != original.keywords { names.append("Keywords") }
         if editingMetadata.personShown != original.personShown { names.append("Person Shown") }
+        if editingMetadata.organisationsShownNames != original.organisationsShownNames { names.append("Organisation Shown Name") }
+        if editingMetadata.organisationsShownCodes != original.organisationsShownCodes { names.append("Organisation Shown Code") }
         if editingMetadata.copyright != original.copyright { names.append("Copyright") }
         if editingMetadata.jobId != original.jobId { names.append("Job ID") }
         if editingMetadata.creator != original.creator { names.append("Creator") }
@@ -2621,6 +2716,10 @@ final class MetadataViewModel {
             metadata.keywords = entry.newValue?.components(separatedBy: ", ") ?? []
         case "Person Shown":
             metadata.personShown = entry.newValue?.components(separatedBy: ", ") ?? []
+        case "Organisation Shown Name":
+            metadata.organisationsShownNames = entry.newValue?.components(separatedBy: ", ") ?? []
+        case "Organisation Shown Code":
+            metadata.organisationsShownCodes = entry.newValue?.components(separatedBy: ", ") ?? []
         case "Copyright":
             metadata.copyright = entry.newValue
         case "Job ID", "Job-ID":

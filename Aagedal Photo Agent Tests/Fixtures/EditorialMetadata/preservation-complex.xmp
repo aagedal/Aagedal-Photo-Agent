@@ -22,6 +22,8 @@ Names: Kari Nordmann, Ola Nordmann; punctuation survives.</rdf:li></rdf:Alt></dc
    <dc:creator><rdf:Seq><rdf:li>Alex Example</rdf:li><rdf:li>Sam Example</rdf:li></rdf:Seq></dc:creator>
    <dc:subject><rdf:Bag><rdf:li>politics</rdf:li><rdf:li>Oslo</rdf:li><rdf:li>harbor, planning</rdf:li></rdf:Bag></dc:subject>
    <Iptc4xmpExt:PersonInImage><rdf:Bag><rdf:li>Kari Nordmann</rdf:li><rdf:li>Ola Nordmann</rdf:li></rdf:Bag></Iptc4xmpExt:PersonInImage>
+   <Iptc4xmpExt:OrganisationInImageName><rdf:Bag><rdf:li>Oslo City Council</rdf:li><rdf:li>Harbor Authority</rdf:li></rdf:Bag></Iptc4xmpExt:OrganisationInImageName>
+   <Iptc4xmpExt:OrganisationInImageCode><rdf:Bag><rdf:li>OCC</rdf:li><rdf:li>NO-HARBOR</rdf:li></rdf:Bag></Iptc4xmpExt:OrganisationInImageCode>
    <Iptc4xmpCore:Scene><rdf:Bag><rdf:li>011200</rdf:li><rdf:li>012900</rdf:li></rdf:Bag></Iptc4xmpCore:Scene>
    <xmpRights:UsageTerms><rdf:Alt><rdf:li xml:lang="x-default">Editorial use only</rdf:li></rdf:Alt></xmpRights:UsageTerms>
    <newsroom:WireIDs><rdf:Bag><rdf:li>APA-2026-0001</rdf:li><rdf:li>DESK-42</rdf:li></rdf:Bag></newsroom:WireIDs>

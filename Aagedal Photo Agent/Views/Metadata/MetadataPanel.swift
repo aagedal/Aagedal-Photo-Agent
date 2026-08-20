@@ -257,6 +257,36 @@ struct MetadataPanel: View {
         }
     }
 
+    private var organisationShownNameEditor: some View {
+        KeywordsEditorWithDiff(
+            label: "Organisation Shown Name",
+            keywords: $viewModel.editingMetadata.organisationsShownNames,
+            differs: viewModel.organisationShownNamesDiffer(),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("organisationShownName"),
+            placeholder: "Add organisation name",
+            onChange: { viewModel.markChanged() },
+            onCommit: { commitEdits() },
+            focusKey: "organisationShownName",
+            focusedField: $focusedField,
+            hideQuickListMenu: true
+        )
+    }
+
+    private var organisationShownCodeEditor: some View {
+        KeywordsEditorWithDiff(
+            label: "Organisation Shown Code",
+            keywords: $viewModel.editingMetadata.organisationsShownCodes,
+            differs: viewModel.organisationShownCodesDiffer(),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("organisationShownCode"),
+            placeholder: "Add organisation code",
+            onChange: { viewModel.markChanged() },
+            onCommit: { commitEdits() },
+            focusKey: "organisationShownCode",
+            focusedField: $focusedField,
+            hideQuickListMenu: true
+        )
+    }
+
     /// Merges suggestion sources into one candidate list, deduplicated
     /// case-insensitively. First occurrence wins, so earlier sources control
     /// the casing shown in the suggestions popover.
@@ -941,6 +971,16 @@ struct MetadataPanel: View {
         if settingsViewModel.isIPTCMetadataFieldVisible(.personShown) {
             personShownEditor
                 .id("personShown")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.organisationShownName) {
+            organisationShownNameEditor
+                .id("organisationShownName")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.organisationShownCode) {
+            organisationShownCodeEditor
+                .id("organisationShownCode")
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.copyright) {

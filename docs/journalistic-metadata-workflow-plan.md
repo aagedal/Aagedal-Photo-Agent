@@ -318,6 +318,15 @@ The field participates in JSON persistence, history, batch editing, templates, b
 rendered export, FTP/SFTP preparation, and the 16-field IIM boundary corpus. Five focused suites
 pass 56 tests; external-tool and cross-container fixtures remain open.
 
+**Progress — 2026-08-21:** Organisation Shown Name and Organisation Shown Code now use distinct,
+ordered repeatable values across the metadata model, versioned JSON, templates and variables,
+import, single and additive batch editing, metadata history, browser search, rendered export, and
+FTP/SFTP preparation. Sidecar and embedded JPEG writes use independent
+`Iptc4xmpExt:OrganisationInImageName` and `Iptc4xmpExt:OrganisationInImageCode` bags, including
+authoritative clears; reads retain unknown incoming values for newsroom-specific code profiles.
+The CC0 preservation fixture and focused sidecar/embedded tests cover multiple values and unrelated
+metadata preservation. External-tool and cross-container fixtures remain open.
+
 ## Phase 2 — Caption Workspace
 
 **Exit gate:** a photographer can caption a folder image by image using the keyboard, never lose an

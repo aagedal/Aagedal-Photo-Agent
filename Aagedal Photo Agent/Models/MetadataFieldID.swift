@@ -9,7 +9,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     /// The raw value remains `title` because older builds persisted the headline field under that
     /// key. The case name reflects its actual IPTC meaning and leaves room for a distinct Title.
     case headline = "title"
-    case description, extendedDescription, keywords, personShown, digitalSourceType
+    case description, extendedDescription, keywords, personShown
+    case organisationShownName, organisationShownCode, digitalSourceType
     case creator, creatorJobTitle, descriptionWriter, credit, copyright, jobId, dateCreated
     case city, sublocation, provinceState, country, countryCode, event, instructions, source
 
@@ -20,6 +21,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .extendedDescription: return "Extended Description"
         case .keywords: return "Keywords"
         case .personShown: return "Person Shown"
+        case .organisationShownName: return "Organisation Shown Name"
+        case .organisationShownCode: return "Organisation Shown Code"
         case .digitalSourceType: return "Digital Source Type"
         case .creator: return "Creator"
         case .creatorJobTitle: return "Creator Job Title"
@@ -46,6 +49,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .extendedDescription: return metadata.extendedDescription?.isEmpty ?? true
         case .keywords: return metadata.keywords.isEmpty
         case .personShown: return metadata.personShown.isEmpty
+        case .organisationShownName: return metadata.organisationsShownNames.isEmpty
+        case .organisationShownCode: return metadata.organisationsShownCodes.isEmpty
         case .digitalSourceType: return metadata.digitalSourceType == nil
         case .creator: return metadata.creator?.isEmpty ?? true
         case .creatorJobTitle: return metadata.creatorJobTitle?.isEmpty ?? true
@@ -72,6 +77,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .extendedDescription: return metadata.extendedDescription
         case .keywords: return metadata.keywords.joined(separator: ", ")
         case .personShown: return metadata.personShown.joined(separator: ", ")
+        case .organisationShownName: return metadata.organisationsShownNames.joined(separator: ", ")
+        case .organisationShownCode: return metadata.organisationsShownCodes.joined(separator: ", ")
         case .digitalSourceType: return metadata.digitalSourceType?.newsCodeURI
         case .creator: return metadata.creator
         case .creatorJobTitle: return metadata.creatorJobTitle
@@ -108,6 +115,16 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
                 .uniqued()
+        case .organisationShownName:
+            metadata.organisationsShownNames = value.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .uniqued()
+        case .organisationShownCode:
+            metadata.organisationsShownCodes = value.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .uniqued()
         case .digitalSourceType:
             metadata.digitalSourceType = scalar.flatMap(DigitalSourceType.init(metadataValue:))
         case .creator: metadata.creator = scalar
@@ -133,6 +150,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     /// Fields displayed in the main Metadata section of the editor.
     static let primaryEditorFields: [Self] = [
         .headline, .description, .extendedDescription, .keywords, .personShown,
+        .organisationShownName, .organisationShownCode,
         .copyright, .jobId,
     ]
 

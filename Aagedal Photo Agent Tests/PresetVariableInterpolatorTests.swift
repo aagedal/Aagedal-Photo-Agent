@@ -52,6 +52,21 @@ struct PresetVariableInterpolatorTests {
         #expect(result == "Staff Photographer|Staff Photographer|Night Desk|Night Desk|NOR")
     }
 
+    @Test("Organisation shown fields resolve by key and display label")
+    func organisationShownFieldAliases() {
+        let metadata = IPTCMetadata(
+            organisationsShownNames: ["Example News", "Example Sport"],
+            organisationsShownCodes: ["EXNEWS", "EXSPORT"]
+        )
+
+        let result = interpolator.resolve(
+            "{field:organisationShownName}|{field:Organisation Shown Code}",
+            existingMetadata: metadata
+        )
+
+        #expect(result == "Example News, Example Sport|EXNEWS, EXSPORT")
+    }
+
     @Test("Metadata dates support friendly compact and dashed aliases")
     func metadataDateAliases() {
         var metadata = IPTCMetadata()

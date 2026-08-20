@@ -30,6 +30,8 @@ enum XMPDataBuilder {
         xmp.extendedDescription = nilIfEmpty(m.extendedDescription)
         setArrayOrRemove(&xmp, m.keywords, namespace: XMPNamespace.dc, property: "subject")
         setArrayOrRemove(&xmp, m.personShown, namespace: XMPNamespace.iptcExt, property: "PersonInImage")
+        setArrayOrRemove(&xmp, m.organisationsShownNames, namespace: XMPNamespace.iptcExt, property: "OrganisationInImageName")
+        setArrayOrRemove(&xmp, m.organisationsShownCodes, namespace: XMPNamespace.iptcExt, property: "OrganisationInImageCode")
         xmp.rating = m.rating.map(Double.init)
         xmp.label = nilIfEmpty(m.label)
         xmp.digitalSourceType = nilIfEmpty(m.digitalSourceType?.newsCodeURI)

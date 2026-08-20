@@ -430,6 +430,10 @@ final class ImportViewModel {
                 configuration.metadata.keywords = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             case "personShown":
                 configuration.metadata.personShown = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            case "organisationShownName":
+                configuration.metadata.organisationsShownNames = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            case "organisationShownCode":
+                configuration.metadata.organisationsShownCodes = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             case "digitalSourceType":
                 configuration.metadata.digitalSourceType = DigitalSourceType(metadataValue: value)
             case "creator": configuration.metadata.creator = value
@@ -932,6 +936,8 @@ final class ImportViewModel {
         resolved.event = Self.resolveField(metadata.event, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.instructions = Self.resolveField(metadata.instructions, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.source = Self.resolveField(metadata.source, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.organisationsShownNames = Self.resolveListField(metadata.organisationsShownNames, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.organisationsShownCodes = Self.resolveListField(metadata.organisationsShownCodes, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
 
         return resolved
     }
@@ -942,6 +948,20 @@ final class ImportViewModel {
         return resolved.isEmpty ? nil : resolved
     }
 
+    private static func resolveListField(_ values: [String], filename: String, ref: IPTCMetadata, interpolator: PresetVariableInterpolator, sequenceIndex: Int) -> [String] {
+        values.flatMap { value in
+            interpolator.resolve(
+                value,
+                filename: filename,
+                existingMetadata: ref,
+                sequenceIndex: sequenceIndex
+            )
+            .components(separatedBy: CharacterSet(charactersIn: ",;"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        }.uniqued()
+    }
+
     static func buildMetadataFields(from meta: IPTCMetadata) -> [MetadataFieldKey: String] {
         var fields: [MetadataFieldKey: String] = [:]
 
@@ -950,6 +970,8 @@ final class ImportViewModel {
         if let v = meta.extendedDescription, !v.isEmpty { fields[.extendedDescription] = v }
         if !meta.keywords.isEmpty { fields[.subject] = meta.keywords.joined(separator: ", ") }
         if !meta.personShown.isEmpty { fields[.personInImage] = meta.personShown.joined(separator: ", ") }
+        if !meta.organisationsShownNames.isEmpty { fields[.organisationInImageName] = meta.organisationsShownNames.joined(separator: ", ") }
+        if !meta.organisationsShownCodes.isEmpty { fields[.organisationInImageCode] = meta.organisationsShownCodes.joined(separator: ", ") }
         if let v = meta.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = meta.creator, !v.isEmpty { fields[.creator] = v }
         if let v = meta.creatorJobTitle, !v.isEmpty { fields[.creatorJobTitle] = v }

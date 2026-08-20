@@ -139,6 +139,17 @@ struct ToWriteFieldsTests {
         #expect(fields[MetadataFieldKey.personInImage] == "Alice, Bob")
     }
 
+    @Test("organisations shown map to the two IPTC Extension bags")
+    func organisationsShownMapToXMPFields() {
+        let metadata = IPTCMetadata(
+            organisationsShownNames: ["Oslo City Council", "Harbor Authority"],
+            organisationsShownCodes: ["OCC", "NO-HARBOR"]
+        )
+        let fields = metadata.toWriteFields()
+        #expect(fields[.organisationInImageName] == "Oslo City Council, Harbor Authority")
+        #expect(fields[.organisationInImageCode] == "OCC, NO-HARBOR")
+    }
+
     @Test("copyright maps to XMP rights tag")
     func copyrightMapsToRights() {
         let metadata = IPTCMetadata(copyright: "© 2026 Photographer")
@@ -392,7 +403,8 @@ struct EditorialMetadataInteroperabilityTests {
         case .countryCode: .countryPrimaryLocationCode
         case .instructions: .specialInstructions
         case .source: .source
-        case .extendedDescription, .personShown, .digitalSourceType, .dateCreated, .event: nil
+        case .extendedDescription, .personShown, .organisationShownName, .organisationShownCode,
+             .digitalSourceType, .dateCreated, .event: nil
         }
     }
 
@@ -459,6 +471,8 @@ struct EditorialMetadataInteroperabilityTests {
         #expect(xmp.description == "Updated caption only")
         #expect(xmp.creator == ["Alex Example", "Sam Example"])
         #expect(xmp.personInImage == ["Kari Nordmann", "Ola Nordmann"])
+        #expect(xmp.arrayValue(namespace: XMPNamespace.iptcExt, property: "OrganisationInImageName") == ["Oslo City Council", "Harbor Authority"])
+        #expect(xmp.arrayValue(namespace: XMPNamespace.iptcExt, property: "OrganisationInImageCode") == ["OCC", "NO-HARBOR"])
         #expect(xmp.arrayValue(namespace: XMPNamespace.iptcCore, property: "Scene") == ["011200", "012900"])
         #expect(xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "CaptionWriter") == "Night Desk")
         #expect(xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "Urgency") == "2")
@@ -472,6 +486,44 @@ struct EditorialMetadataInteroperabilityTests {
             )?.count == 2
         )
         #expect(xmp.simpleValue(namespace: "http://ns.adobe.com/camera-raw-settings/1.0/", property: "Texture") == "+18")
+    }
+
+    @Test("organisation shown bags round-trip and clear through sidecar and embedded JPEG writers")
+    func organisationShownRoundTripAndClear() async throws {
+        let service = XMPSidecarService()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let rawURL = directory.appendingPathComponent("organisations.nef")
+        let expectedNames = ["Oslo City Council", "Harbor Authority"]
+        let expectedCodes = ["OCC", "NO-HARBOR"]
+        let expected = IPTCMetadata(
+            description: "Editorial organizations",
+            organisationsShownNames: expectedNames,
+            organisationsShownCodes: expectedCodes
+        )
+
+        try service.saveSidecar(metadata: expected, for: rawURL)
+        let sidecarXMP = try XMPReader.readFromXML(Data(contentsOf: service.sidecarURL(for: rawURL)))
+        #expect(sidecarXMP.arrayValue(namespace: XMPNamespace.iptcExt, property: "OrganisationInImageName") == expectedNames)
+        #expect(sidecarXMP.arrayValue(namespace: XMPNamespace.iptcExt, property: "OrganisationInImageCode") == expectedCodes)
+        let sidecarMetadata = try #require(service.loadSidecar(for: rawURL))
+        #expect(sidecarMetadata.organisationsShownNames == expectedNames)
+        #expect(sidecarMetadata.organisationsShownCodes == expectedCodes)
+
+        let jpegURL = try makeJPEG(in: directory)
+        let writer = SwiftExifWriteEngine()
+        try await writer.writeFields(expected.toWriteFields(), to: [jpegURL])
+        let embedded = try await SwiftExifReadService().readFullMetadata(url: jpegURL)
+        #expect(embedded.organisationsShownNames == expectedNames)
+        #expect(embedded.organisationsShownCodes == expectedCodes)
+
+        try await writer.writeFields([
+            .organisationInImageName: "",
+            .organisationInImageCode: "",
+        ], to: [jpegURL])
+        let cleared = try await SwiftExifReadService().readFullMetadata(url: jpegURL)
+        #expect(cleared.organisationsShownNames.isEmpty)
+        #expect(cleared.organisationsShownCodes.isEmpty)
     }
 
     @Test("creator contact and created/shown locations round-trip through standards-shaped XMP")
@@ -1051,6 +1103,16 @@ struct HasIPTCDifferencesTests {
         #expect(a.hasIPTCDifferences(from: b) == true)
     }
 
+    @Test("different organisations shown are detected")
+    func differentOrganisationsDetected() {
+        let names = IPTCMetadata(organisationsShownNames: ["Example News"])
+        let changedNames = IPTCMetadata(organisationsShownNames: ["Example Sport"])
+        let codes = IPTCMetadata(organisationsShownCodes: ["EXNEWS"])
+        let changedCodes = IPTCMetadata(organisationsShownCodes: ["EXSPORT"])
+        #expect(names.hasIPTCDifferences(from: changedNames))
+        #expect(codes.hasIPTCDifferences(from: changedCodes))
+    }
+
     @Test("structured editorial differences are detected without location bag ordering")
     func structuredEditorialDifferencesDetected() {
         let cityHall = EditorialLocation(name: "City Hall", city: "Oslo", countryCode: "NOR")
@@ -1243,6 +1305,8 @@ struct DescriptiveRecordTests {
         #expect(IPTCMetadata(title: "T").hasDescriptiveContent)
         #expect(IPTCMetadata(keywords: ["k"]).hasDescriptiveContent)
         #expect(IPTCMetadata(personShown: ["P"]).hasDescriptiveContent)
+        #expect(IPTCMetadata(organisationsShownNames: ["Example News"]).hasDescriptiveContent)
+        #expect(IPTCMetadata(organisationsShownCodes: ["EXNEWS"]).hasDescriptiveContent)
         #expect(IPTCMetadata(creator: "C").hasDescriptiveContent)
         #expect(IPTCMetadata(city: "Oslo").hasDescriptiveContent)
         #expect(IPTCMetadata(
@@ -1301,6 +1365,8 @@ struct DescriptiveRecordTests {
     @Test("replacing descriptive fields preserves explicit structured clears")
     func structuredClearsStick() {
         let embedded = IPTCMetadata(
+            organisationsShownNames: ["Example News"],
+            organisationsShownCodes: ["EXNEWS"],
             creatorContactInfo: CreatorContactInfo(emails: ["desk@example.test"]),
             locationsCreated: [EditorialLocation(city: "Oslo")],
             locationsShown: [EditorialLocation(city: "Bergen")]
@@ -1309,6 +1375,8 @@ struct DescriptiveRecordTests {
         let result = embedded.replacingDescriptiveFields(from: record)
 
         #expect(result.creatorContactInfo == nil)
+        #expect(result.organisationsShownNames.isEmpty)
+        #expect(result.organisationsShownCodes.isEmpty)
         #expect(result.locationsCreated.isEmpty)
         #expect(result.locationsShown.isEmpty)
     }
@@ -1364,6 +1432,8 @@ struct IPTCMetadataCodableTests {
             extendedDescription: "Extended",
             keywords: ["kw1", "kw2"],
             personShown: ["Alice"],
+            organisationsShownNames: ["Example News", "Example Sport"],
+            organisationsShownCodes: ["EXNEWS", "EXSPORT"],
             digitalSourceType: .digitalCapture,
             latitude: 59.913,
             longitude: 10.752,
@@ -1397,6 +1467,8 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.extendedDescription == "Extended")
         #expect(decoded.keywords == ["kw1", "kw2"])
         #expect(decoded.personShown == ["Alice"])
+        #expect(decoded.organisationsShownNames == ["Example News", "Example Sport"])
+        #expect(decoded.organisationsShownCodes == ["EXNEWS", "EXSPORT"])
         #expect(decoded.digitalSourceType == .digitalCapture)
         #expect(decoded.latitude == 59.913)
         #expect(decoded.longitude == 10.752)

@@ -134,6 +134,34 @@ struct MetadataValidationTests {
         #expect(report.warningCount == 1)
     }
 
+    @Test("Organisation codes validate as independent repeated values")
+    func organisationCodeValidation() {
+        let profile = MetadataValidationProfile(
+            name: "Agency codes",
+            rules: [
+                .init(
+                    id: "organisation.codes.allowed",
+                    severity: .blocker,
+                    requirement: .allowedValues(
+                        field: .organisationShownCode,
+                        values: ["OCC", "NO-HARBOR"]
+                    )
+                ),
+            ]
+        )
+        let report = MetadataValidationEngine().validate(
+            IPTCMetadata(organisationsShownCodes: ["OCC", "UNKNOWN"]),
+            imageURL: imageURL,
+            profile: profile
+        )
+
+        #expect(report.blockerCount == 1)
+        #expect(report.issues.first?.field == .organisationShownCode)
+        // Validation diagnostics deliberately report counts rather than potentially sensitive
+        // field values; the field identity still points the user to the rejected code list.
+        #expect(report.issues.first?.technicalDetail == "Rejected canonical value count: 1.")
+    }
+
     @Test("Digital Source Type compares canonical NewsCodes values, not display labels")
     func canonicalVocabularyValidation() {
         let profile = MetadataValidationProfile(

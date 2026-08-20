@@ -1580,6 +1580,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     var extendedDescription: String?
     var keywords: [String]
     var personShown: [String]
+    var organisationsShownNames: [String]
+    var organisationsShownCodes: [String]
 
     // Classification
     var digitalSourceType: DigitalSourceType?
@@ -1623,6 +1625,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     // These are sourced exclusively from XMP (embedded in image or XMP sidecar file).
     enum CodingKeys: String, CodingKey, CaseIterable {
         case title, description, extendedDescription, keywords, personShown
+        case organisationsShownNames, organisationsShownCodes
         case digitalSourceType
         case creator, creatorJobTitle, descriptionWriter, credit, copyright, jobId, dateCreated, captureDate
         case city, sublocation, provinceState, country, countryCode, event, instructions, source
@@ -1639,6 +1642,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         extendedDescription: String? = nil,
         keywords: [String] = [],
         personShown: [String] = [],
+        organisationsShownNames: [String] = [],
+        organisationsShownCodes: [String] = [],
         digitalSourceType: DigitalSourceType? = nil,
         latitude: Double? = nil,
         longitude: Double? = nil,
@@ -1671,6 +1676,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.extendedDescription = extendedDescription
         self.keywords = keywords
         self.personShown = personShown
+        self.organisationsShownNames = organisationsShownNames.uniqued()
+        self.organisationsShownCodes = organisationsShownCodes.uniqued()
         self.digitalSourceType = digitalSourceType
         self.latitude = latitude
         self.longitude = longitude
@@ -1706,6 +1713,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         extendedDescription = try container.decodeIfPresent(String.self, forKey: .extendedDescription)
         keywords = (try container.decodeIfPresent([String].self, forKey: .keywords) ?? []).uniqued()
         personShown = (try container.decodeIfPresent([String].self, forKey: .personShown) ?? []).uniqued()
+        organisationsShownNames = (try container.decodeIfPresent([String].self, forKey: .organisationsShownNames) ?? []).uniqued()
+        organisationsShownCodes = (try container.decodeIfPresent([String].self, forKey: .organisationsShownCodes) ?? []).uniqued()
         digitalSourceType = try container.decodeIfPresent(DigitalSourceType.self, forKey: .digitalSourceType)
         creator = try container.decodeIfPresent(String.self, forKey: .creator)
         creatorJobTitle = try container.decodeIfPresent(String.self, forKey: .creatorJobTitle)
@@ -1753,6 +1762,8 @@ extension IPTCMetadata {
             || extendedDescription != other.extendedDescription
             || keywords != other.keywords
             || personShown != other.personShown
+            || organisationsShownNames != other.organisationsShownNames
+            || organisationsShownCodes != other.organisationsShownCodes
             || digitalSourceType != other.digitalSourceType
             || creator != other.creator
             || creatorJobTitle != other.creatorJobTitle
@@ -1784,6 +1795,8 @@ extension IPTCMetadata {
         if let extendedDescription, !extendedDescription.isEmpty { return true }
         if !keywords.isEmpty { return true }
         if !personShown.isEmpty { return true }
+        if !organisationsShownNames.isEmpty { return true }
+        if !organisationsShownCodes.isEmpty { return true }
         if digitalSourceType != nil { return true }
         if let creator, !creator.isEmpty { return true }
         if let creatorJobTitle, !creatorJobTitle.isEmpty { return true }
@@ -1823,6 +1836,8 @@ extension IPTCMetadata {
         result.extendedDescription = record.extendedDescription
         result.keywords = record.keywords
         result.personShown = record.personShown
+        result.organisationsShownNames = record.organisationsShownNames
+        result.organisationsShownCodes = record.organisationsShownCodes
         result.digitalSourceType = record.digitalSourceType
         result.creator = record.creator
         result.creatorJobTitle = record.creatorJobTitle
@@ -1870,6 +1885,8 @@ extension IPTCMetadata {
         if let value = override.extendedDescription, !value.isEmpty { result.extendedDescription = value }
         if !override.keywords.isEmpty { result.keywords = override.keywords }
         if !override.personShown.isEmpty { result.personShown = override.personShown }
+        if !override.organisationsShownNames.isEmpty { result.organisationsShownNames = override.organisationsShownNames }
+        if !override.organisationsShownCodes.isEmpty { result.organisationsShownCodes = override.organisationsShownCodes }
         if let value = override.digitalSourceType { result.digitalSourceType = value }
         if let value = override.creator, !value.isEmpty { result.creator = value }
         if let value = override.creatorJobTitle, !value.isEmpty { result.creatorJobTitle = value }
@@ -1926,6 +1943,8 @@ extension IPTCMetadata {
         if let v = extendedDescription { fields[.extendedDescription] = v }
         if !keywords.isEmpty { fields[.subject] = keywords.joined(separator: ", ") }
         if !personShown.isEmpty { fields[.personInImage] = personShown.joined(separator: ", ") }
+        if !organisationsShownNames.isEmpty { fields[.organisationInImageName] = organisationsShownNames.joined(separator: ", ") }
+        if !organisationsShownCodes.isEmpty { fields[.organisationInImageCode] = organisationsShownCodes.joined(separator: ", ") }
         if let v = digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = creator { fields[.creator] = v }
         if let v = creatorJobTitle { fields[.creatorJobTitle] = v }
@@ -1969,6 +1988,8 @@ extension IPTCMetadata {
         fields[.extendedDescription] = extendedDescription ?? ""
         fields[.subject] = keywords.uniqued().joined(separator: ", ")
         fields[.personInImage] = personShown.uniqued().joined(separator: ", ")
+        fields[.organisationInImageName] = organisationsShownNames.uniqued().joined(separator: ", ")
+        fields[.organisationInImageCode] = organisationsShownCodes.uniqued().joined(separator: ", ")
         fields[.digitalSourceType] = digitalSourceType?.newsCodeURI ?? ""
         fields[.creator] = creator ?? ""
         fields[.creatorJobTitle] = creatorJobTitle ?? ""

@@ -116,6 +116,20 @@ extension ImageMetadata {
             if !xmp.personInImage.isEmpty {
                 dict[MetadataDictKey.personInImage] = xmp.personInImage
             }
+            let organisationNames = xmp.arrayValue(
+                namespace: XMPNamespace.iptcExt,
+                property: MetadataDictKey.organisationInImageName
+            )
+            if !organisationNames.isEmpty {
+                dict[MetadataDictKey.organisationInImageName] = organisationNames
+            }
+            let organisationCodes = xmp.arrayValue(
+                namespace: XMPNamespace.iptcExt,
+                property: MetadataDictKey.organisationInImageCode
+            )
+            if !organisationCodes.isEmpty {
+                dict[MetadataDictKey.organisationInImageCode] = organisationCodes
+            }
             if let v = xmp.digitalSourceType { dict[MetadataDictKey.digitalSourceType] = v }
             if let v = xmp.event { dict[MetadataDictKey.event] = v }
             if let value = xmp.value(

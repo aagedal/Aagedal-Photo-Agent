@@ -17,6 +17,8 @@ nonisolated enum MetadataDictKey {
     static let subject = "Subject"
     static let keywords = "Keywords"
     static let personInImage = "PersonInImage"
+    static let organisationInImageName = "OrganisationInImageName"
+    static let organisationInImageCode = "OrganisationInImageCode"
     static let digitalSourceType = "DigitalSourceType"
     static let creatorContactInfo = "CreatorContactInfo"
     static let locationCreated = "LocationCreated"
@@ -1160,6 +1162,8 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         extendedDescription: dict[MetadataDictKey.extDescrAccessibility] as? String,
         keywords: parseStringOrArray(dict[MetadataDictKey.subject] ?? dict[MetadataDictKey.keywords]),
         personShown: parseStringOrArray(dict[MetadataDictKey.personInImage]),
+        organisationsShownNames: parseStringOrArray(dict[MetadataDictKey.organisationInImageName]),
+        organisationsShownCodes: parseStringOrArray(dict[MetadataDictKey.organisationInImageCode]),
         digitalSourceType: (dict[MetadataDictKey.digitalSourceType] as? String)
             .flatMap { DigitalSourceType(metadataValue: $0) },
         latitude: dict[MetadataDictKey.gpsLatitude] as? Double,

@@ -77,6 +77,8 @@ struct EditExportPipelineTests {
         let sidecar = IPTCMetadata(
             title: "Aurora over the fjord",
             keywords: ["aurora", "fjord"],
+            organisationsShownNames: ["Example News", "Harbor Authority"],
+            organisationsShownCodes: ["EXNEWS", "NO-HARBOR"],
             creator: "Tester",
             creatorJobTitle: "Staff Photographer",
             descriptionWriter: "Night Desk",
@@ -104,6 +106,8 @@ struct EditExportPipelineTests {
         #expect(meta.creatorJobTitle == "Staff Photographer")
         #expect(meta.descriptionWriter == "Night Desk")
         #expect(meta.countryCode == "NOR")
+        #expect(meta.organisationsShownNames == ["Example News", "Harbor Authority"])
+        #expect(meta.organisationsShownCodes == ["EXNEWS", "NO-HARBOR"])
     }
 
     @Test("renderItem embeds structured creator contact and locations from the XMP sidecar")

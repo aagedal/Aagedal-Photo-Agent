@@ -12,9 +12,9 @@ production metadata.
 A synthetic XMP packet containing:
 
 - Supported editorial fields and a canonical Digital Source Type NewsCodes URI.
-- Two ordered creators and multiple people shown.
-- Planned IPTC fields in known namespaces, including Caption Writer, Urgency, Country Code, Scene,
-  Usage Terms, and two structured Location Shown entries.
+- Two ordered creators, multiple people shown, and multiple Organisation Shown names and codes.
+- Planned IPTC fields in known namespaces, including Urgency, Scene, Usage Terms, and two
+  structured Location Shown entries.
 - A foreign newsroom namespace with both a scalar and an array.
 - Unicode, punctuation, commas, a semicolon, and a multiline caption.
 - An unmodeled Camera Raw property.

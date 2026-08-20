@@ -410,6 +410,8 @@ nonisolated struct MetadataValidationEngine: Sendable {
         switch field {
         case .keywords: return metadata.keywords
         case .personShown: return metadata.personShown
+        case .organisationShownName: return metadata.organisationsShownNames
+        case .organisationShownCode: return metadata.organisationsShownCodes
         default: return field.textValue(in: metadata).map { [$0] } ?? []
         }
     }

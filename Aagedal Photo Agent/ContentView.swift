@@ -2094,6 +2094,8 @@ struct ContentView: View {
             extendedDescription: source.extendedDescription,
             keywords: source.keywords,
             personShown: source.personShown,
+            organisationsShownNames: source.organisationsShownNames,
+            organisationsShownCodes: source.organisationsShownCodes,
             digitalSourceType: source.digitalSourceType,
             latitude: source.latitude,
             longitude: source.longitude,

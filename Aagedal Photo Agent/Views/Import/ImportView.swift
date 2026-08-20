@@ -647,6 +647,16 @@ struct ImportView: View {
                 keywords: $viewModel.configuration.metadata.personShown
             )
 
+            KeywordsEditor(
+                label: "Organisation Shown Name",
+                keywords: $viewModel.configuration.metadata.organisationsShownNames
+            )
+
+            KeywordsEditor(
+                label: "Organisation Shown Code",
+                keywords: $viewModel.configuration.metadata.organisationsShownCodes
+            )
+
             EditableTextField(
                 label: "Copyright",
                 text: Binding(

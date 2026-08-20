@@ -57,6 +57,8 @@ nonisolated enum SidecarReconciliation {
         if a.extendedDescription != b.extendedDescription { return true }
         if Set(a.keywords) != Set(b.keywords) { return true }
         if Set(a.personShown) != Set(b.personShown) { return true }
+        if Set(a.organisationsShownNames) != Set(b.organisationsShownNames) { return true }
+        if Set(a.organisationsShownCodes) != Set(b.organisationsShownCodes) { return true }
         if a.digitalSourceType != b.digitalSourceType { return true }
         if a.creator != b.creator { return true }
         if a.creatorJobTitle != b.creatorJobTitle { return true }
