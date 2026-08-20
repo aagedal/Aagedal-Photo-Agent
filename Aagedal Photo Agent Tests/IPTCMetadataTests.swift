@@ -355,6 +355,7 @@ struct EditorialMetadataInteroperabilityTests {
         let schemaVersion: Int
         let license: String
         let iimTextBoundaries: [IIMTextBoundary]
+        let iimUrgencyBoundary: IIMUrgencyBoundary
         let timestampVariants: [TimestampVariant]
     }
 
@@ -366,6 +367,12 @@ struct EditorialMetadataInteroperabilityTests {
         let repetitions: Int
 
         var value: String { String(repeating: unit, count: repetitions) }
+    }
+
+    private struct IIMUrgencyBoundary: Decodable {
+        let dataset: String
+        let acceptedValues: [Int]
+        let rejectedValues: [Int]
     }
 
     private struct TimestampVariant: Decodable {
@@ -412,6 +419,7 @@ struct EditorialMetadataInteroperabilityTests {
         case .provinceState: .provinceState
         case .country: .countryPrimaryLocationName
         case .countryCode: .countryPrimaryLocationCode
+        case .urgency: .urgency
         case .instructions: .specialInstructions
         case .source: .source
         case .extendedDescription, .personShown, .organisationShownName, .organisationShownCode,
@@ -475,6 +483,7 @@ struct EditorialMetadataInteroperabilityTests {
             EditorialLocation(sublocation: "City Hall", city: "Oslo", countryCode: "NOR"),
             EditorialLocation(sublocation: "Harbor", city: "Oslo", countryCode: "NOR"),
         ])
+        #expect(edited.urgency == 2)
         edited.description = "Updated caption only"
         try service.saveSidecarPreservingDevelopSettings(metadata: edited, for: imageURL)
 
@@ -911,6 +920,57 @@ struct EditorialMetadataInteroperabilityTests {
         ) == nil)
     }
 
+    @Test("urgency round-trips through Photoshop XMP and IPTC-IIM with XMP precedence")
+    func urgencyRoundTrip() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sidecarService = XMPSidecarService()
+        let rawURL = directory.appendingPathComponent("urgency.nef")
+        try sidecarService.saveSidecar(metadata: IPTCMetadata(urgency: 2), for: rawURL)
+        let sidecarXMP = try XMPReader.readFromXML(
+            Data(contentsOf: sidecarService.sidecarURL(for: rawURL))
+        )
+        #expect(sidecarXMP.simpleValue(
+            namespace: XMPNamespace.photoshop,
+            property: "Urgency"
+        ) == "2")
+        #expect(sidecarService.loadSidecar(for: rawURL)?.urgency == 2)
+
+        let imageURL = try makeJPEG(in: directory)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.urgency: "3"], to: [imageURL])
+
+        let embedded = try SwiftExif.readMetadata(from: imageURL)
+        #expect(embedded.iptc.urgency == 3)
+        #expect(embedded.xmp?.simpleValue(
+            namespace: XMPNamespace.photoshop,
+            property: "Urgency"
+        ) == "3")
+        #expect(iptcMetadataFromDict(embedded.asMetadataDict()).urgency == 3)
+
+        var conflicting = embedded
+        conflicting.iptc.urgency = 5
+        conflicting.xmp?.setValue(
+            .simple("1"),
+            namespace: XMPNamespace.photoshop,
+            property: "Urgency"
+        )
+        #expect(iptcMetadataFromDict(conflicting.asMetadataDict()).urgency == 1)
+
+        var iimOnly = conflicting
+        iimOnly.xmp = nil
+        #expect(iptcMetadataFromDict(iimOnly.asMetadataDict()).urgency == 5)
+
+        try await engine.writeFields([.urgency: ""], to: [imageURL])
+        let cleared = try SwiftExif.readMetadata(from: imageURL)
+        #expect(cleared.iptc.urgency == nil)
+        #expect(cleared.xmp?.simpleValue(
+            namespace: XMPNamespace.photoshop,
+            property: "Urgency"
+        ) == nil)
+    }
+
     @Test("the embedded raster writer carries structured editorial XMP")
     func embeddedJPEGStructuredEditorialRoundTrip() async throws {
         let directory = try makeTemporaryDirectory()
@@ -1023,6 +1083,45 @@ struct EditorialMetadataInteroperabilityTests {
             let overEncoded = try IPTCWriter.write(over, warnings: &overWarnings)
             #expect(overWarnings.count == 1)
             #expect(try IPTCReader.read(from: overEncoded).value(for: tag) == value + "X")
+        }
+    }
+
+    @Test("legacy urgency values use IIM 2:10 and the supported 1 through 8 range")
+    func legacyUrgencyBoundary() throws {
+        let boundary = try loadLegacyBoundaryCorpus().iimUrgencyBoundary
+        let tag = IPTCTag.urgency
+        #expect("\(tag.record):\(tag.dataSet)" == boundary.dataset)
+        #expect(tag.maxLength == 1)
+        #expect(boundary.acceptedValues == Array(1...8))
+        #expect(boundary.rejectedValues == [0, 9])
+
+        let validator = MetadataValidationEngine()
+        let profile = MetadataValidationProfile.currentRequirements(
+            levels: [:],
+            minimumLengths: [:]
+        )
+        let imageURL = URL(fileURLWithPath: "/fixtures/urgency.jpg")
+        for value in boundary.acceptedValues {
+            let metadata = IPTCMetadata(urgency: value)
+            #expect(validator.validate(
+                metadata,
+                imageURL: imageURL,
+                profile: profile
+            ).issues.allSatisfy { $0.field != .urgency })
+
+            var iim = IPTCData()
+            iim.urgency = value
+            let decoded = try IPTCReader.read(from: IPTCWriter.write(iim))
+            #expect(decoded.urgency == value)
+        }
+
+        for value in boundary.rejectedValues {
+            let metadata = IPTCMetadata(urgency: value)
+            #expect(validator.validate(
+                metadata,
+                imageURL: imageURL,
+                profile: profile
+            ).issues.contains { $0.field == .urgency })
         }
     }
 
@@ -1309,6 +1408,14 @@ struct MergedTests {
         #expect(result.digitalSourceType == .trainedAlgorithmicMedia)
     }
 
+    @Test("urgency merged from override")
+    func urgencyMerged() {
+        let base = IPTCMetadata(urgency: 5)
+        let override = IPTCMetadata(urgency: 2)
+        #expect(base.merged(preferring: override).urgency == 2)
+        #expect(base.merged(preferring: IPTCMetadata()).urgency == 5)
+    }
+
     @Test("non-empty structured metadata merges without flattening locations")
     func structuredMetadataMerged() {
         let base = IPTCMetadata(
@@ -1498,6 +1605,7 @@ struct IPTCMetadataCodableTests {
             organisationsShownNames: ["Example News", "Example Sport"],
             organisationsShownCodes: ["EXNEWS", "EXSPORT"],
             digitalSourceType: .digitalCapture,
+            urgency: 2,
             latitude: 59.913,
             longitude: 10.752,
             creator: "Creator Name",
@@ -1535,6 +1643,7 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.organisationsShownNames == ["Example News", "Example Sport"])
         #expect(decoded.organisationsShownCodes == ["EXNEWS", "EXSPORT"])
         #expect(decoded.digitalSourceType == .digitalCapture)
+        #expect(decoded.urgency == 2)
         #expect(decoded.latitude == 59.913)
         #expect(decoded.longitude == 10.752)
         #expect(decoded.creator == "Creator Name")

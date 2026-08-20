@@ -1585,6 +1585,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
 
     // Classification
     var digitalSourceType: DigitalSourceType?
+    var urgency: Int?
 
     // Secondary fields (collapsible)
     var creator: String?
@@ -1628,7 +1629,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey, CaseIterable {
         case title, description, extendedDescription, keywords, personShown
         case organisationsShownNames, organisationsShownCodes
-        case digitalSourceType
+        case digitalSourceType, urgency
         case creator, creatorJobTitle, descriptionWriter, credit, copyright
         case rightsUsageTerms, webStatementOfRights, jobId, dateCreated, captureDate
         case city, sublocation, provinceState, country, countryCode, event, instructions, source
@@ -1648,6 +1649,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         organisationsShownNames: [String] = [],
         organisationsShownCodes: [String] = [],
         digitalSourceType: DigitalSourceType? = nil,
+        urgency: Int? = nil,
         latitude: Double? = nil,
         longitude: Double? = nil,
         creator: String? = nil,
@@ -1684,6 +1686,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.organisationsShownNames = organisationsShownNames.uniqued()
         self.organisationsShownCodes = organisationsShownCodes.uniqued()
         self.digitalSourceType = digitalSourceType
+        self.urgency = urgency
         self.latitude = latitude
         self.longitude = longitude
         self.creator = creator
@@ -1723,6 +1726,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         organisationsShownNames = (try container.decodeIfPresent([String].self, forKey: .organisationsShownNames) ?? []).uniqued()
         organisationsShownCodes = (try container.decodeIfPresent([String].self, forKey: .organisationsShownCodes) ?? []).uniqued()
         digitalSourceType = try container.decodeIfPresent(DigitalSourceType.self, forKey: .digitalSourceType)
+        urgency = try container.decodeIfPresent(Int.self, forKey: .urgency)
         creator = try container.decodeIfPresent(String.self, forKey: .creator)
         creatorJobTitle = try container.decodeIfPresent(String.self, forKey: .creatorJobTitle)
         descriptionWriter = try container.decodeIfPresent(String.self, forKey: .descriptionWriter)
@@ -1774,6 +1778,7 @@ extension IPTCMetadata {
             || organisationsShownNames != other.organisationsShownNames
             || organisationsShownCodes != other.organisationsShownCodes
             || digitalSourceType != other.digitalSourceType
+            || urgency != other.urgency
             || creator != other.creator
             || creatorJobTitle != other.creatorJobTitle
             || descriptionWriter != other.descriptionWriter
@@ -1809,6 +1814,7 @@ extension IPTCMetadata {
         if !organisationsShownNames.isEmpty { return true }
         if !organisationsShownCodes.isEmpty { return true }
         if digitalSourceType != nil { return true }
+        if urgency != nil { return true }
         if let creator, !creator.isEmpty { return true }
         if let creatorJobTitle, !creatorJobTitle.isEmpty { return true }
         if let descriptionWriter, !descriptionWriter.isEmpty { return true }
@@ -1852,6 +1858,7 @@ extension IPTCMetadata {
         result.organisationsShownNames = record.organisationsShownNames
         result.organisationsShownCodes = record.organisationsShownCodes
         result.digitalSourceType = record.digitalSourceType
+        result.urgency = record.urgency
         result.creator = record.creator
         result.creatorJobTitle = record.creatorJobTitle
         result.descriptionWriter = record.descriptionWriter
@@ -1903,6 +1910,7 @@ extension IPTCMetadata {
         if !override.organisationsShownNames.isEmpty { result.organisationsShownNames = override.organisationsShownNames }
         if !override.organisationsShownCodes.isEmpty { result.organisationsShownCodes = override.organisationsShownCodes }
         if let value = override.digitalSourceType { result.digitalSourceType = value }
+        if let value = override.urgency { result.urgency = value }
         if let value = override.creator, !value.isEmpty { result.creator = value }
         if let value = override.creatorJobTitle, !value.isEmpty { result.creatorJobTitle = value }
         if let value = override.descriptionWriter, !value.isEmpty { result.descriptionWriter = value }
@@ -1963,6 +1971,7 @@ extension IPTCMetadata {
         if !organisationsShownNames.isEmpty { fields[.organisationInImageName] = organisationsShownNames.joined(separator: ", ") }
         if !organisationsShownCodes.isEmpty { fields[.organisationInImageCode] = organisationsShownCodes.joined(separator: ", ") }
         if let v = digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
+        if let v = urgency { fields[.urgency] = String(v) }
         if let v = creator { fields[.creator] = v }
         if let v = creatorJobTitle { fields[.creatorJobTitle] = v }
         if let v = descriptionWriter { fields[.descriptionWriter] = v }
@@ -2010,6 +2019,7 @@ extension IPTCMetadata {
         fields[.organisationInImageName] = organisationsShownNames.uniqued().joined(separator: ", ")
         fields[.organisationInImageCode] = organisationsShownCodes.uniqued().joined(separator: ", ")
         fields[.digitalSourceType] = digitalSourceType?.newsCodeURI ?? ""
+        fields[.urgency] = urgency.map(String.init) ?? ""
         fields[.creator] = creator ?? ""
         fields[.creatorJobTitle] = creatorJobTitle ?? ""
         fields[.descriptionWriter] = descriptionWriter ?? ""

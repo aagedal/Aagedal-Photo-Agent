@@ -469,6 +469,7 @@ final class MetadataViewModel {
         compareOptionalField(allMetadata, keyPath: \.instructions, fieldName: "instructions", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.source, fieldName: "source", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.digitalSourceType, fieldName: "digitalSourceType", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.urgency, fieldName: "urgency", common: &common, differing: &differing)
 
         // Array fields — compute intersection (common to all) and partial (some but not all)
         let (commonKW, partialKW) = computeArrayFieldPartials(allMetadata, keyPath: \.keywords)
@@ -748,6 +749,7 @@ final class MetadataViewModel {
                     // Add mode personShown handled below via addRemoveListValues
 
                     if let v = edited.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
+                    if let v = edited.urgency { fields[.urgency] = String(v) }
                     if let lat = edited.latitude, let lon = edited.longitude {
                         fields[.gpsLatitude] = String(abs(lat))
                         fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
@@ -793,6 +795,9 @@ final class MetadataViewModel {
                     }
                     if edited.digitalSourceType != original?.digitalSourceType {
                         fields[.digitalSourceType] = edited.digitalSourceType?.newsCodeURI ?? ""
+                    }
+                    if edited.urgency != original?.urgency {
+                        fields[.urgency] = edited.urgency.map(String.init) ?? ""
                     }
                     if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
                         if let lat = edited.latitude, let lon = edited.longitude {
@@ -879,6 +884,7 @@ final class MetadataViewModel {
             fields[.personInImage] = metadata.personShown.joined(separator: ", ")
         }
         if let v = metadata.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
+        if let v = metadata.urgency { fields[.urgency] = String(v) }
         if let v = metadata.creator, !v.isEmpty { fields[.creator] = v }
         if let v = metadata.creatorJobTitle, !v.isEmpty { fields[.creatorJobTitle] = v }
         if let v = metadata.descriptionWriter, !v.isEmpty { fields[.descriptionWriter] = v }
@@ -1110,6 +1116,7 @@ final class MetadataViewModel {
         fields[.organisationInImageName] = metadata.organisationsShownNames.uniqued().joined(separator: ", ")
         fields[.organisationInImageCode] = metadata.organisationsShownCodes.uniqued().joined(separator: ", ")
         fields[.digitalSourceType] = metadata.digitalSourceType?.newsCodeURI ?? ""
+        fields[.urgency] = metadata.urgency.map(String.init) ?? ""
         fields[.creator] = metadata.creator ?? ""
         fields[.creatorJobTitle] = metadata.creatorJobTitle ?? ""
         fields[.descriptionWriter] = metadata.descriptionWriter ?? ""
@@ -1384,6 +1391,8 @@ final class MetadataViewModel {
                 }
             case "digitalSourceType":
                 editingMetadata.digitalSourceType = DigitalSourceType(metadataValue: value)
+            case "urgency":
+                editingMetadata.urgency = Int(value)
             case "creator":
                 editingMetadata.creator = append ? appendString(editingMetadata.creator, value) : value
             case "creatorJobTitle":
@@ -2185,6 +2194,11 @@ final class MetadataViewModel {
             old: previous.digitalSourceType?.rawValue,
             new: edited.digitalSourceType?.rawValue
         )
+        recordChange(
+            "Urgency",
+            old: previous.urgency.map(String.init),
+            new: edited.urgency.map(String.init)
+        )
 
         func formatGPS(_ lat: Double?, _ lon: Double?) -> String? {
             guard let lat, let lon else { return nil }
@@ -2375,6 +2389,9 @@ final class MetadataViewModel {
         if batchMeta.digitalSourceType != nil {
             metadata.digitalSourceType = batchMeta.digitalSourceType
         }
+        if batchMeta.urgency != nil {
+            metadata.urgency = batchMeta.urgency
+        }
 
         // GPS — apply only when both coordinates are set, mirroring the batch
         // file-write path in writeMetadata(). When GPS differs across the
@@ -2562,6 +2579,11 @@ final class MetadataViewModel {
         return editingMetadata.digitalSourceType != original.digitalSourceType
     }
 
+    func urgencyDiffers() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.urgency != original.urgency
+    }
+
     func gpsDiffers() -> Bool {
         guard let original = originalImageMetadata else { return false }
         return editingMetadata.latitude != original.latitude || editingMetadata.longitude != original.longitude
@@ -2594,6 +2616,7 @@ final class MetadataViewModel {
         if editingMetadata.instructions != original.instructions { names.append("Instructions") }
         if editingMetadata.source != original.source { names.append("Source") }
         if editingMetadata.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
+        if editingMetadata.urgency != original.urgency { names.append("Urgency") }
         if editingMetadata.rating != original.rating { names.append("Rating") }
         if editingMetadata.label != original.label { names.append("Label") }
         if editingMetadata.latitude != original.latitude || editingMetadata.longitude != original.longitude { names.append("GPS Coordinates") }
@@ -2786,6 +2809,8 @@ final class MetadataViewModel {
             metadata.source = entry.newValue
         case "Digital Source Type":
             metadata.digitalSourceType = entry.newValue.flatMap { DigitalSourceType(metadataValue: $0) }
+        case "Urgency":
+            metadata.urgency = entry.newValue.flatMap(Int.init)
         default:
             break
         }

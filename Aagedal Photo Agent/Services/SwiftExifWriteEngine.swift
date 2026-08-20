@@ -597,6 +597,20 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 metadata.iptc.countryCode = ISO3166Country.normalizedAlpha3(value)
             }
 
+        case .urgency:
+            if isEmpty {
+                metadata.iptc.removeAll(for: .urgency)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "Urgency")
+            } else if let urgency = Int(value) {
+                metadata.iptc.urgency = urgency
+                setXMPField(
+                    &metadata,
+                    namespace: XMPNamespace.photoshop,
+                    property: "Urgency",
+                    value: .simple(String(urgency))
+                )
+            }
+
         case .instructions:
             if isEmpty {
                 metadata.iptc.removeAll(for: .specialInstructions)

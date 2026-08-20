@@ -25,9 +25,10 @@ struct MetadataValidationTests {
             "legacy.required.description",
             "legacy.minimumLength.description",
             "editorial.country-code.iso-3166-alpha-3",
+            "editorial.urgency.one-through-eight",
             "editorial.web-statement-of-rights.http-url",
         ])
-        #expect(profile.rules.map(\.severity) == [.blocker, .blocker, .warning, .warning, .blocker, .blocker])
+        #expect(profile.rules.map(\.severity) == [.blocker, .blocker, .warning, .warning, .blocker, .blocker, .blocker])
     }
 
     @Test("Web Statement of Rights accepts HTTP URLs and blocks malformed values")
@@ -76,6 +77,25 @@ struct MetadataValidationTests {
         #expect(valid.issues.isEmpty)
         #expect(invalid.blockerCount == 1)
         #expect(invalid.issues.first?.field == .countryCode)
+    }
+
+    @Test("Urgency accepts 1 through 8 and blocks out-of-range values")
+    func urgencyValidation() {
+        let profile = MetadataValidationProfile.currentRequirements(levels: [:], minimumLengths: [:])
+        for value in 1...8 {
+            let report = MetadataValidationEngine().validate(
+                IPTCMetadata(urgency: value), imageURL: imageURL, profile: profile
+            )
+            #expect(report.issues.isEmpty)
+        }
+
+        for value in [0, 9] {
+            let report = MetadataValidationEngine().validate(
+                IPTCMetadata(urgency: value), imageURL: imageURL, profile: profile
+            )
+            #expect(report.blockerCount == 1)
+            #expect(report.issues.first?.field == .urgency)
+        }
     }
 
     @Test("Required and length rules produce stable aggregate results")

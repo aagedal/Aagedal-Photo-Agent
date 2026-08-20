@@ -82,6 +82,12 @@ struct PresetVariableInterpolatorTests {
         #expect(result == "Editorial use only|https://example.test/rights")
     }
 
+    @Test("Urgency resolves by field key")
+    func urgencyFieldAlias() {
+        let metadata = IPTCMetadata(urgency: 2)
+        #expect(interpolator.resolve("{field:urgency}", existingMetadata: metadata) == "2")
+    }
+
     @Test("Metadata dates support friendly compact and dashed aliases")
     func metadataDateAliases() {
         var metadata = IPTCMetadata()

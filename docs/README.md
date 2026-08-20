@@ -18,7 +18,7 @@ own scope, tasks, exit gates, and technical decisions.
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; release hardening in progress | Close remaining manual fixture, accessibility, performance, and cross-phase validation |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, structured contact/location plus editorial role, organisation, country-code, and rights XMP/IIM I/O, JSON schema safety, shared validation, portable profiles, and legacy boundary fixtures established; remaining field mappings and cross-container fixtures remain | Complete the redistributable interoperability corpus, then finish the remaining shared metadata I/O foundation |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, structured contact/location plus editorial role, organisation, country-code, rights, and urgency XMP/IIM I/O, JSON schema safety, shared validation, portable profiles, and legacy boundary fixtures established; remaining field mappings and cross-container fixtures remain | Complete the redistributable interoperability corpus, then finish the remaining shared metadata I/O foundation |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, and immutable report evidence implemented; release validation remains | Validate live and reported rays across paper/map styles, camera interactions, rapid time changes, architectures, and accessibility paths |
 
 ## Default delivery order
@@ -95,6 +95,8 @@ Supporting documents:
   created/shown-location mappings, embedded/sidecar round trips, and preservation evidence.
 - [Editorial rights XMP validation](metadata-rights-xmp-validation.md) — usage-terms and web-rights
   mappings, URL validation, embedded/sidecar round trips, and delivery-path evidence.
+- [Editorial urgency validation](metadata-urgency-validation.md) — bounded integer semantics,
+  XMP/IIM conflict precedence, validation, and embedded/sidecar round trips.
 
 ## Solar overlay document set
 

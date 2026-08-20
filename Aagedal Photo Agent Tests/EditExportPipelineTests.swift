@@ -79,6 +79,7 @@ struct EditExportPipelineTests {
             keywords: ["aurora", "fjord"],
             organisationsShownNames: ["Example News", "Harbor Authority"],
             organisationsShownCodes: ["EXNEWS", "NO-HARBOR"],
+            urgency: 2,
             creator: "Tester",
             creatorJobTitle: "Staff Photographer",
             descriptionWriter: "Night Desk",
@@ -110,6 +111,7 @@ struct EditExportPipelineTests {
         #expect(meta.rightsUsageTerms == "Editorial use only")
         #expect(meta.webStatementOfRights == "https://example.test/rights")
         #expect(meta.countryCode == "NOR")
+        #expect(meta.urgency == 2)
         #expect(meta.organisationsShownNames == ["Example News", "Harbor Authority"])
         #expect(meta.organisationsShownCodes == ["EXNEWS", "NO-HARBOR"])
     }

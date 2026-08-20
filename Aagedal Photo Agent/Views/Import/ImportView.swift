@@ -703,6 +703,24 @@ struct ImportView: View {
                 .labelsHidden()
             }
 
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Urgency")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $viewModel.configuration.metadata.urgency) {
+                    Text("None").tag(nil as Int?)
+                    if let current = viewModel.configuration.metadata.urgency,
+                       !(1...8).contains(current) {
+                        Text("Invalid value (\(current))").tag(current as Int?)
+                    }
+                    ForEach(1...8, id: \.self) { urgency in
+                        Text(urgency == 1 ? "1 — Most urgent" : urgency == 8 ? "8 — Least urgent" : String(urgency))
+                            .tag(urgency as Int?)
+                    }
+                }
+                .labelsHidden()
+            }
+
             // Additional fields
             DisclosureGroup("Additional Fields", isExpanded: $showAdditionalFields) {
                 VStack(alignment: .leading, spacing: 6) {

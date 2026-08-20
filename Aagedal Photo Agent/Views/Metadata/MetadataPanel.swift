@@ -1454,6 +1454,35 @@ struct MetadataPanel: View {
     private var editableAdditionalFields: some View {
         let _ = settingsViewModel.quickListVersion
 
+        if settingsViewModel.isIPTCMetadataFieldVisible(.urgency) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Urgency")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: Binding(
+                    get: { viewModel.editingMetadata.urgency },
+                    set: {
+                        viewModel.editingMetadata.urgency = $0
+                        viewModel.markChanged()
+                        commitEdits()
+                    }
+                )) {
+                    Text("None").tag(nil as Int?)
+                    if let current = viewModel.editingMetadata.urgency,
+                       !(1...8).contains(current) {
+                        Text("Invalid value (\(current))").tag(current as Int?)
+                    }
+                    ForEach(1...8, id: \.self) { urgency in
+                        Text(urgency == 1 ? "1 — Most urgent" : urgency == 8 ? "8 — Least urgent" : String(urgency))
+                            .tag(urgency as Int?)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
+            .id("urgency")
+        }
+
         if settingsViewModel.isIPTCMetadataFieldVisible(.creator) {
             EditableTextField(
                 label: "Creator",

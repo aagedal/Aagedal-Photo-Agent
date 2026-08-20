@@ -311,6 +311,12 @@ enum VariableCatalog {
         description: "Display name of the Digital Source Type.",
         example: ""
     ),
+    VariableDefinition(
+        variable: "{field:urgency}",
+        category: "Field Reference",
+        description: "Numeric editorial urgency from 1 (most urgent) through 8 (least urgent).",
+        example: "2"
+    ),
     ]
 
     static var grouped: [(category: String, items: [VariableDefinition])] {

@@ -398,6 +398,7 @@ struct PresetVariableInterpolator: Sendable {
         case "instructions": return metadata.instructions ?? ""
         case "source": return metadata.source ?? ""
         case "digitalsourcetype": return metadata.digitalSourceType?.displayName ?? ""
+        case "urgency": return metadata.urgency.map(String.init) ?? ""
         default: return ""
         }
     }

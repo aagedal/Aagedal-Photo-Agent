@@ -436,6 +436,8 @@ final class ImportViewModel {
                 configuration.metadata.organisationsShownCodes = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             case "digitalSourceType":
                 configuration.metadata.digitalSourceType = DigitalSourceType(metadataValue: value)
+            case "urgency":
+                configuration.metadata.urgency = Int(value)
             case "creator": configuration.metadata.creator = value
             case "creatorJobTitle": configuration.metadata.creatorJobTitle = value
             case "descriptionWriter": configuration.metadata.descriptionWriter = value

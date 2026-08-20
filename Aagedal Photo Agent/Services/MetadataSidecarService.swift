@@ -233,6 +233,7 @@ struct MetadataSidecarService: Sendable {
         if edited.provinceState != original.provinceState { names.append("State / Province") }
         if edited.country != original.country { names.append("Country") }
         if edited.countryCode != original.countryCode { names.append("Country Code") }
+        if edited.urgency != original.urgency { names.append("Urgency") }
         if edited.event != original.event { names.append("Event") }
         if edited.instructions != original.instructions { names.append("Instructions") }
         if edited.source != original.source { names.append("Source") }

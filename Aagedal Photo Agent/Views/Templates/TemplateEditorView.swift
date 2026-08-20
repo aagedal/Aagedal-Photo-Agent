@@ -90,6 +90,20 @@ struct TemplateEditorView: View {
                         .pickerStyle(.menu)
                         .labelsHidden()
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    } else if field.fieldKey == "urgency" {
+                        Picker("", selection: Binding(
+                            get: { Int($field.templateValue.wrappedValue) },
+                            set: { $field.templateValue.wrappedValue = $0.map(String.init) ?? "" }
+                        )) {
+                            Text("None").tag(nil as Int?)
+                            ForEach(1...8, id: \.self) { urgency in
+                                Text(urgency == 1 ? "1 — Most urgent" : urgency == 8 ? "8 — Least urgent" : String(urgency))
+                                    .tag(urgency as Int?)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
                         let fieldID = field.id
                         templateValueField(for: $field, fieldID: fieldID)

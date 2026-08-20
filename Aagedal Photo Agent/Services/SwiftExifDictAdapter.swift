@@ -70,6 +70,7 @@ extension ImageMetadata {
         if let v = iptc.provinceState { dict[MetadataDictKey.provinceState] = v }
         if let v = iptc.countryName { dict[MetadataDictKey.countryPrimaryLocationName] = v }
         if let v = iptc.countryCode { dict[MetadataDictKey.countryPrimaryLocationCode] = v }
+        if let v = iptc.urgency { dict[MetadataDictKey.urgency] = v }
         if let v = iptc.specialInstructions { dict[MetadataDictKey.specialInstructions] = v }
         if let v = iptc.source { dict[MetadataDictKey.source] = v }
         if let v = iptc.value(for: .originalTransmissionReference) {
@@ -92,6 +93,9 @@ extension ImageMetadata {
                 dict[MetadataDictKey.descriptionWriter] = v
             }
             if let v = xmp.rights { dict[MetadataDictKey.rights] = v }
+            if let v = xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "Urgency") {
+                dict[MetadataDictKey.urgency] = v
+            }
             if let v = xmp.simpleValue(
                 namespace: XMPDataBuilder.xmpRightsNamespace,
                 property: MetadataDictKey.rightsUsageTerms

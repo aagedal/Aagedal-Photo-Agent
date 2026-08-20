@@ -457,6 +457,7 @@ extension MetadataValidationProfile {
             iimByteRule("province-state", field: .provinceState, dataset: "2:95", count: 32),
             iimByteRule("country", field: .country, dataset: "2:101", count: 64),
             iimByteRule("country-code", field: .countryCode, dataset: "2:100", count: 3),
+            iimByteRule("urgency", field: .urgency, dataset: "2:10", count: 1),
             iimByteRule("instructions", field: .instructions, dataset: "2:40", count: 256),
             iimByteRule("source", field: .source, dataset: "2:115", count: 32),
         ]
@@ -508,6 +509,15 @@ extension MetadataValidationProfile {
                 values: ISO3166Country.all.map(\.alpha3)
             ),
             message: "Country Code must be a current ISO 3166-1 alpha-3 code."
+        ))
+        rules.append(MetadataValidationRule(
+            id: "editorial.urgency.one-through-eight",
+            severity: .blocker,
+            requirement: .allowedValues(
+                field: .urgency,
+                values: (1...8).map(String.init)
+            ),
+            message: "Urgency must be a value from 1 (most urgent) through 8 (least urgent)."
         ))
         rules.append(MetadataValidationRule(
             id: "editorial.web-statement-of-rights.http-url",

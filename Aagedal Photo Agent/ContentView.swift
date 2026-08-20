@@ -2097,6 +2097,7 @@ struct ContentView: View {
             organisationsShownNames: source.organisationsShownNames,
             organisationsShownCodes: source.organisationsShownCodes,
             digitalSourceType: source.digitalSourceType,
+            urgency: source.urgency,
             latitude: source.latitude,
             longitude: source.longitude,
             creator: source.creator,

@@ -2782,6 +2782,7 @@ final class BrowserViewModel {
         if edited.instructions != original.instructions { names.append("Instructions") }
         if edited.source != original.source { names.append("Source") }
         if edited.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
+        if edited.urgency != original.urgency { names.append("Urgency") }
         if edited.exifOrientation != original.exifOrientation { names.append("Orientation") }
         if edited.latitude != original.latitude || edited.longitude != original.longitude { names.append("GPS Coordinates") }
         if edited.captureDate != original.captureDate { names.append("Capture Date") }

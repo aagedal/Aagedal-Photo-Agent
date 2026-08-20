@@ -318,6 +318,15 @@ The field participates in JSON persistence, history, batch editing, templates, b
 rendered export, FTP/SFTP preparation, and the 16-field IIM boundary corpus. Five focused suites
 pass 56 tests; external-tool and cross-container fixtures remain open.
 
+**Progress — 2026-08-21:** Editorial Urgency now uses integer storage separate from the labels in
+its bounded 1–8 pickers and participates in JSON persistence, history, batch editing, import,
+templates, variables, browser search, rendered export, and FTP/SFTP preparation. XMP sidecars and
+embedded JPEGs dual-write `photoshop:Urgency` and IIM 2:10, prefer XMP on conflicts, and clear both
+representations authoritatively. The default validation profile blocks out-of-range values, and
+the generated IIM boundary corpus covers the one-byte dataset. Focused model, interoperability,
+template, variable, validation, and export tests pass; external-tool and cross-container fixtures
+remain open.
+
 **Progress — 2026-08-21:** Organisation Shown Name and Organisation Shown Code now use distinct,
 ordered repeatable values across the metadata model, versioned JSON, templates and variables,
 import, single and additive batch editing, metadata history, browser search, rendered export, and
