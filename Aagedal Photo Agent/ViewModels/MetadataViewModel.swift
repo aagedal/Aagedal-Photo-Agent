@@ -462,6 +462,7 @@ final class MetadataViewModel {
         compareOptionalField(allMetadata, keyPath: \.sublocation, fieldName: "sublocation", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.provinceState, fieldName: "provinceState", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.country, fieldName: "country", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.countryCode, fieldName: "countryCode", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.event, fieldName: "event", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.instructions, fieldName: "instructions", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.source, fieldName: "source", common: &common, differing: &differing)
@@ -748,6 +749,7 @@ final class MetadataViewModel {
                     if let v = edited.sublocation, !v.isEmpty { fields[.sublocation] = v }
                     if let v = edited.provinceState, !v.isEmpty { fields[.provinceState] = v }
                     if let v = edited.country, !v.isEmpty { fields[.country] = v }
+                    if let v = edited.countryCode, !v.isEmpty { fields[.countryCode] = v }
                     if let v = edited.event, !v.isEmpty { fields[.event] = v }
                     if let v = edited.instructions, !v.isEmpty { fields[.instructions] = v }
                     if let v = edited.source, !v.isEmpty { fields[.source] = v }
@@ -794,6 +796,7 @@ final class MetadataViewModel {
                     if edited.sublocation != original?.sublocation { fields[.sublocation] = edited.sublocation ?? "" }
                     if edited.provinceState != original?.provinceState { fields[.provinceState] = edited.provinceState ?? "" }
                     if edited.country != original?.country { fields[.country] = edited.country ?? "" }
+                    if edited.countryCode != original?.countryCode { fields[.countryCode] = edited.countryCode ?? "" }
                     if edited.event != original?.event { fields[.event] = edited.event ?? "" }
                     if edited.instructions != original?.instructions { fields[.instructions] = edited.instructions ?? "" }
                     if edited.source != original?.source { fields[.source] = edited.source ?? "" }
@@ -861,6 +864,7 @@ final class MetadataViewModel {
         if let v = metadata.sublocation, !v.isEmpty { fields[.sublocation] = v }
         if let v = metadata.provinceState, !v.isEmpty { fields[.provinceState] = v }
         if let v = metadata.country, !v.isEmpty { fields[.country] = v }
+        if let v = metadata.countryCode, !v.isEmpty { fields[.countryCode] = v }
         if let v = metadata.event, !v.isEmpty { fields[.event] = v }
         if let v = metadata.instructions, !v.isEmpty { fields[.instructions] = v }
         if let v = metadata.source, !v.isEmpty { fields[.source] = v }
@@ -1073,6 +1077,7 @@ final class MetadataViewModel {
         fields[.sublocation] = metadata.sublocation ?? ""
         fields[.provinceState] = metadata.provinceState ?? ""
         fields[.country] = metadata.country ?? ""
+        fields[.countryCode] = metadata.countryCode ?? ""
         fields[.event] = metadata.event ?? ""
         fields[.instructions] = metadata.instructions ?? ""
         fields[.source] = metadata.source ?? ""
@@ -1339,6 +1344,8 @@ final class MetadataViewModel {
                 editingMetadata.provinceState = append ? appendString(editingMetadata.provinceState, value) : value
             case "country":
                 editingMetadata.country = append ? appendString(editingMetadata.country, value) : value
+            case "countryCode":
+                editingMetadata.countryCode = ISO3166Country.normalizedAlpha3(value)
             case "event":
                 editingMetadata.event = append ? appendString(editingMetadata.event, value) : value
             case "instructions":
@@ -1500,6 +1507,7 @@ final class MetadataViewModel {
         if resolved.sublocation != original.sublocation { fields[.sublocation] = resolved.sublocation ?? "" }
         if resolved.provinceState != original.provinceState { fields[.provinceState] = resolved.provinceState ?? "" }
         if resolved.country != original.country { fields[.country] = resolved.country ?? "" }
+        if resolved.countryCode != original.countryCode { fields[.countryCode] = resolved.countryCode ?? "" }
         if resolved.event != original.event { fields[.event] = resolved.event ?? "" }
         if resolved.instructions != original.instructions { fields[.instructions] = resolved.instructions ?? "" }
         if resolved.source != original.source { fields[.source] = resolved.source ?? "" }
@@ -2079,6 +2087,7 @@ final class MetadataViewModel {
         recordChange("Date Created", old: previous.dateCreated, new: edited.dateCreated)
         recordChange("City", old: previous.city, new: edited.city)
         recordChange("Country", old: previous.country, new: edited.country)
+        recordChange("Country Code", old: previous.countryCode, new: edited.countryCode)
         recordChange("Event", old: previous.event, new: edited.event)
         recordChange(
             "Digital Source Type",
@@ -2237,6 +2246,9 @@ final class MetadataViewModel {
         }
         if let country = batchMeta.country, !country.isEmpty {
             metadata.country = country
+        }
+        if let countryCode = batchMeta.countryCode, !countryCode.isEmpty {
+            metadata.countryCode = countryCode
         }
         if let event = batchMeta.event, !event.isEmpty {
             metadata.event = event
@@ -2450,6 +2462,7 @@ final class MetadataViewModel {
         if editingMetadata.sublocation != original.sublocation { names.append("Sublocation") }
         if editingMetadata.provinceState != original.provinceState { names.append("State / Province") }
         if editingMetadata.country != original.country { names.append("Country") }
+        if editingMetadata.countryCode != original.countryCode { names.append("Country Code") }
         if editingMetadata.event != original.event { names.append("Event") }
         if editingMetadata.instructions != original.instructions { names.append("Instructions") }
         if editingMetadata.source != original.source { names.append("Source") }
@@ -2628,6 +2641,8 @@ final class MetadataViewModel {
             metadata.provinceState = entry.newValue
         case "Country":
             metadata.country = entry.newValue
+        case "Country Code":
+            metadata.countryCode = ISO3166Country.normalizedAlpha3(entry.newValue)
         case "Event":
             metadata.event = entry.newValue
         case "Instructions":

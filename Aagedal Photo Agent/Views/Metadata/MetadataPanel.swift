@@ -1508,6 +1508,37 @@ struct MetadataPanel: View {
             .id("country")
         }
 
+        if settingsViewModel.isIPTCMetadataFieldVisible(.countryCode) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Country Code")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: Binding(
+                    get: { viewModel.editingMetadata.countryCode },
+                    set: {
+                        viewModel.editingMetadata.countryCode = $0
+                        viewModel.markChanged()
+                        commitEdits()
+                    }
+                )) {
+                    Text("None").tag(nil as String?)
+                    if let current = viewModel.editingMetadata.countryCode,
+                       !ISO3166Country.isValidAlpha3(current) {
+                        Text("Unknown code (\(current))").tag(current as String?)
+                    }
+                    ForEach(ISO3166Country.all.sorted {
+                        $0.localizedName().localizedStandardCompare($1.localizedName()) == .orderedAscending
+                    }) { country in
+                        Text("\(country.localizedName()) (\(country.alpha3))")
+                            .tag(country.alpha3 as String?)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
+            .id("countryCode")
+        }
+
         if settingsViewModel.isIPTCMetadataFieldVisible(.event) {
             EditableTextField(
                 label: "Event",

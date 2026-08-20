@@ -40,15 +40,16 @@ struct PresetVariableInterpolatorTests {
     func editorialRoleFieldAliases() {
         let metadata = IPTCMetadata(
             creatorJobTitle: "Staff Photographer",
-            descriptionWriter: "Night Desk"
+            descriptionWriter: "Night Desk",
+            countryCode: "NOR"
         )
 
         let result = interpolator.resolve(
-            "{field:creatorJobTitle}|{field:Authors Position}|{field:descriptionWriter}|{field:Caption Writer}",
+            "{field:creatorJobTitle}|{field:Authors Position}|{field:descriptionWriter}|{field:Caption Writer}|{field:Country Code}",
             existingMetadata: metadata
         )
 
-        #expect(result == "Staff Photographer|Staff Photographer|Night Desk|Night Desk")
+        #expect(result == "Staff Photographer|Staff Photographer|Night Desk|Night Desk|NOR")
     }
 
     @Test("Metadata dates support friendly compact and dashed aliases")

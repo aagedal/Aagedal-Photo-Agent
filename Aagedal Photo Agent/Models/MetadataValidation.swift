@@ -454,6 +454,7 @@ extension MetadataValidationProfile {
             iimByteRule("sublocation", field: .sublocation, dataset: "2:92", count: 32),
             iimByteRule("province-state", field: .provinceState, dataset: "2:95", count: 32),
             iimByteRule("country", field: .country, dataset: "2:101", count: 64),
+            iimByteRule("country-code", field: .countryCode, dataset: "2:100", count: 3),
             iimByteRule("instructions", field: .instructions, dataset: "2:40", count: 256),
             iimByteRule("source", field: .source, dataset: "2:115", count: 32),
         ]
@@ -497,6 +498,15 @@ extension MetadataValidationProfile {
                 ))
             }
         }
+        rules.append(MetadataValidationRule(
+            id: "editorial.country-code.iso-3166-alpha-3",
+            severity: .blocker,
+            requirement: .allowedValues(
+                field: .countryCode,
+                values: ISO3166Country.all.map(\.alpha3)
+            ),
+            message: "Country Code must be a current ISO 3166-1 alpha-3 code."
+        ))
         return MetadataValidationProfile(
             id: UUID(uuidString: "605C608F-D256-4A31-A986-51EB878FA699")!,
             name: "Photo Agent Default",

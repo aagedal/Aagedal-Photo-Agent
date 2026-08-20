@@ -309,6 +309,15 @@ read boundary prefers XMP and falls back to IIM. Focused interoperability, Codab
 template-variable, and real-file export coverage guards the complete path. Caption Workspace
 placement, remaining support-matrix fields, and external-tool/cross-container fixtures remain open.
 
+**Progress — 2026-08-21:** Country Code now stores a canonical uppercase ISO 3166-1 alpha-3 value
+separately from its localized picker label. The 249 current assignments drive the metadata and
+import pickers plus a default blocker rule; unknown incoming values remain visible and preserved
+until corrected. Sidecar and embedded JPEG writes dual-write `Iptc4xmpCore:CountryCode` and IIM
+2:100, reads prefer XMP and fall back to IIM, and authoritative clears remove both representations.
+The field participates in JSON persistence, history, batch editing, templates, browser search,
+rendered export, FTP/SFTP preparation, and the 16-field IIM boundary corpus. Five focused suites
+pass 56 tests; external-tool and cross-container fixtures remain open.
+
 ## Phase 2 — Caption Workspace
 
 **Exit gate:** a photographer can caption a folder image by image using the keyboard, never lose an

@@ -21,6 +21,7 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case sublocation
     case provinceState
     case country
+    case countryCode
     case event
     case instructions
     case source

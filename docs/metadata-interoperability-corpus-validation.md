@@ -6,7 +6,7 @@
 ## Implemented behavior
 
 - `legacy-boundaries.json` is a CC0, deterministic recipe corpus covering the UTF-8 byte ceiling
-  for all 15 IPTC-IIM text datasets currently dual-written by Photo Agent.
+  for all 16 IPTC-IIM text datasets currently dual-written by Photo Agent.
 - The corpus includes ASCII and multibyte Unicode boundaries. Limits are checked against
   SwiftExif's dataset definitions rather than copied only into tests.
 - Exact-limit values serialize and deserialize through SwiftExif's real IIM writer/reader without
@@ -14,7 +14,7 @@
   writer still preserves the supplied value.
 - The shared validation rule contract now distinguishes character limits from
   `maximumUTF8Bytes`. Repeatable fields such as Keywords are measured item by item.
-- A stable built-in `IPTC-IIM Compatibility` profile exposes warning rules for the 15 editable
+- A stable built-in `IPTC-IIM Compatibility` profile exposes warning rules for the 16 editable
   legacy mappings. XMP values remain unmodified; the validator reports compatibility risk instead
   of clipping modern metadata.
 - The corpus includes date-only, timezone-unknown, UTC, positive and negative half-hour offsets,

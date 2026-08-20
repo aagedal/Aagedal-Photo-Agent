@@ -79,7 +79,8 @@ struct EditExportPipelineTests {
             keywords: ["aurora", "fjord"],
             creator: "Tester",
             creatorJobTitle: "Staff Photographer",
-            descriptionWriter: "Night Desk"
+            descriptionWriter: "Night Desk",
+            countryCode: "NOR"
         )
         try XMPSidecarService().saveSidecar(metadata: sidecar, for: source)
 
@@ -102,6 +103,7 @@ struct EditExportPipelineTests {
         #expect(meta.title == "Aurora over the fjord")
         #expect(meta.creatorJobTitle == "Staff Photographer")
         #expect(meta.descriptionWriter == "Night Desk")
+        #expect(meta.countryCode == "NOR")
     }
 
     @Test("renderItem embeds structured creator contact and locations from the XMP sidecar")

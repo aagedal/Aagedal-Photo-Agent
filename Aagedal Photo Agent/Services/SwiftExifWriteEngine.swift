@@ -573,6 +573,14 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 metadata.iptc.countryName = value
             }
 
+        case .countryCode:
+            if isEmpty {
+                metadata.iptc.removeAll(for: .countryPrimaryLocationCode)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.iptcCore, property: "CountryCode")
+            } else {
+                metadata.iptc.countryCode = ISO3166Country.normalizedAlpha3(value)
+            }
+
         case .instructions:
             if isEmpty {
                 metadata.iptc.removeAll(for: .specialInstructions)

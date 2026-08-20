@@ -374,6 +374,7 @@ struct PresetVariableInterpolator: Sendable {
         case "sublocation", "location": return metadata.sublocation ?? ""
         case "provincestate", "state", "province": return metadata.provinceState ?? ""
         case "country": return metadata.country ?? ""
+        case "countrycode": return metadata.countryCode ?? ""
         case "gps", "gpscoordinates":
             guard let latitude = metadata.latitude, let longitude = metadata.longitude else { return "" }
             return String(format: "%.6f, %.6f", latitude, longitude)

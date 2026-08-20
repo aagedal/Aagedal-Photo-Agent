@@ -101,6 +101,7 @@ struct TemplateField: Codable, Identifiable, Sendable, Hashable {
         ("sublocation", "Sublocation"),
         ("provinceState", "State / Province"),
         ("country", "Country"),
+        ("countryCode", "Country Code"),
         ("event", "Event"),
         ("instructions", "Instructions"),
         ("source", "Source"),

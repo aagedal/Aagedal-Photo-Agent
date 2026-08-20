@@ -69,6 +69,7 @@ nonisolated enum SidecarReconciliation {
         if a.sublocation != b.sublocation { return true }
         if a.provinceState != b.provinceState { return true }
         if a.country != b.country { return true }
+        if a.countryCode != b.countryCode { return true }
         if a.event != b.event { return true }
         if a.instructions != b.instructions { return true }
         if a.source != b.source { return true }

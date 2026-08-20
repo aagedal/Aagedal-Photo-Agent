@@ -69,6 +69,7 @@ struct MetadataTemplatePersistenceTests {
         let expectedFields = [
             TemplateField(fieldKey: "creatorJobTitle", templateValue: "Staff Photographer"),
             TemplateField(fieldKey: "descriptionWriter", templateValue: "Night Desk"),
+            TemplateField(fieldKey: "countryCode", templateValue: "NOR"),
         ]
         let template = MetadataTemplate(name: "Editorial roles", fields: expectedFields)
         let service = TemplateStorageService(directoryURL: folder)
@@ -79,6 +80,7 @@ struct MetadataTemplatePersistenceTests {
         #expect(loaded.fields == expectedFields)
         #expect(TemplateField.label(for: "creatorJobTitle") == "Creator Job Title")
         #expect(TemplateField.label(for: "descriptionWriter") == "Description Writer")
+        #expect(TemplateField.label(for: "countryCode") == "Country Code")
     }
 
     @Test("newer templates are skipped and protected from overwrite")

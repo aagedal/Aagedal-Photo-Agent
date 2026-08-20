@@ -11,7 +11,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     case headline = "title"
     case description, extendedDescription, keywords, personShown, digitalSourceType
     case creator, creatorJobTitle, descriptionWriter, credit, copyright, jobId, dateCreated
-    case city, sublocation, provinceState, country, event, instructions, source
+    case city, sublocation, provinceState, country, countryCode, event, instructions, source
 
     var displayName: String {
         switch self {
@@ -32,6 +32,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .sublocation: return "Sublocation"
         case .provinceState: return "State / Province"
         case .country: return "Country"
+        case .countryCode: return "Country Code"
         case .event: return "Event"
         case .instructions: return "Instructions"
         case .source: return "Source"
@@ -57,6 +58,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .sublocation: return metadata.sublocation?.isEmpty ?? true
         case .provinceState: return metadata.provinceState?.isEmpty ?? true
         case .country: return metadata.country?.isEmpty ?? true
+        case .countryCode: return metadata.countryCode?.isEmpty ?? true
         case .event: return metadata.event?.isEmpty ?? true
         case .instructions: return metadata.instructions?.isEmpty ?? true
         case .source: return metadata.source?.isEmpty ?? true
@@ -82,6 +84,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .sublocation: return metadata.sublocation
         case .provinceState: return metadata.provinceState
         case .country: return metadata.country
+        case .countryCode: return metadata.countryCode
         case .event: return metadata.event
         case .instructions: return metadata.instructions
         case .source: return metadata.source
@@ -118,6 +121,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .sublocation: metadata.sublocation = scalar
         case .provinceState: metadata.provinceState = scalar
         case .country: metadata.country = scalar
+        case .countryCode: metadata.countryCode = ISO3166Country.normalizedAlpha3(scalar)
         case .event: metadata.event = scalar
         case .instructions: metadata.instructions = scalar
         case .source: metadata.source = scalar
@@ -135,7 +139,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     /// Fields displayed in the Additional Fields section of the editor.
     static let additionalEditorFields: [Self] = [
         .creator, .creatorJobTitle, .descriptionWriter, .credit, .source, .city, .sublocation,
-        .provinceState, .country, .event, .instructions,
+        .provinceState, .country, .countryCode, .event, .instructions,
     ]
 
     /// Every field that can be shown or hidden in the editable metadata panel.

@@ -761,6 +761,7 @@ struct FTPUploadView: View {
                 resolved.sublocation = resolveIfChanged(meta.sublocation, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.provinceState = resolveIfChanged(meta.provinceState, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.countryCode = ISO3166Country.normalizedAlpha3(meta.countryCode)
                 resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.instructions = resolveIfChanged(meta.instructions, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.source = resolveIfChanged(meta.source, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
@@ -785,6 +786,7 @@ struct FTPUploadView: View {
                     if resolved.sublocation != meta.sublocation { fields[.sublocation] = resolved.sublocation ?? "" }
                     if resolved.provinceState != meta.provinceState { fields[.provinceState] = resolved.provinceState ?? "" }
                     if resolved.country != meta.country { fields[.country] = resolved.country ?? "" }
+                    if resolved.countryCode != meta.countryCode { fields[.countryCode] = resolved.countryCode ?? "" }
                     if resolved.event != meta.event { fields[.event] = resolved.event ?? "" }
                     if resolved.instructions != meta.instructions { fields[.instructions] = resolved.instructions ?? "" }
                     if resolved.source != meta.source { fields[.source] = resolved.source ?? "" }

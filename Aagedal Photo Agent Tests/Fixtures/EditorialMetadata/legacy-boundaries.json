@@ -15,6 +15,7 @@
     { "fieldID": "sublocation", "dataset": "2:92", "maxBytes": 32, "unit": "S", "repetitions": 32 },
     { "fieldID": "provinceState", "dataset": "2:95", "maxBytes": 32, "unit": "P", "repetitions": 32 },
     { "fieldID": "country", "dataset": "2:101", "maxBytes": 64, "unit": "N", "repetitions": 64 },
+    { "fieldID": "countryCode", "dataset": "2:100", "maxBytes": 3, "unit": "N", "repetitions": 3 },
     { "fieldID": "instructions", "dataset": "2:40", "maxBytes": 256, "unit": "I", "repetitions": 256 },
     { "fieldID": "source", "dataset": "2:115", "maxBytes": 32, "unit": "A", "repetitions": 32 }
   ],

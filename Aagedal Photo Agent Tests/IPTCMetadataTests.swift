@@ -389,6 +389,7 @@ struct EditorialMetadataInteroperabilityTests {
         case .sublocation: .sublocation
         case .provinceState: .provinceState
         case .country: .countryPrimaryLocationName
+        case .countryCode: .countryPrimaryLocationCode
         case .instructions: .specialInstructions
         case .source: .source
         case .extendedDescription, .personShown, .digitalSourceType, .dateCreated, .event: nil
@@ -744,6 +745,57 @@ struct EditorialMetadataInteroperabilityTests {
         ) == nil)
     }
 
+    @Test("country code is canonical and round-trips through XMP and IPTC-IIM")
+    func countryCodeRoundTrip() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sidecarService = XMPSidecarService()
+        let rawURL = directory.appendingPathComponent("country.nef")
+        try sidecarService.saveSidecar(metadata: IPTCMetadata(countryCode: "nor"), for: rawURL)
+        let sidecarXMP = try XMPReader.readFromXML(
+            Data(contentsOf: sidecarService.sidecarURL(for: rawURL))
+        )
+        #expect(sidecarXMP.simpleValue(
+            namespace: XMPNamespace.iptcCore,
+            property: "CountryCode"
+        ) == "NOR")
+        #expect(sidecarService.loadSidecar(for: rawURL)?.countryCode == "NOR")
+
+        let imageURL = try makeJPEG(in: directory)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.countryCode: "NOR"], to: [imageURL])
+
+        let embedded = try SwiftExif.readMetadata(from: imageURL)
+        #expect(embedded.iptc.countryCode == "NOR")
+        #expect(embedded.xmp?.simpleValue(
+            namespace: XMPNamespace.iptcCore,
+            property: "CountryCode"
+        ) == "NOR")
+        #expect(iptcMetadataFromDict(embedded.asMetadataDict(fileURL: imageURL)).countryCode == "NOR")
+
+        var conflicting = embedded
+        conflicting.iptc.countryCode = "SWE"
+        conflicting.xmp?.setValue(
+            .simple("DNK"),
+            namespace: XMPNamespace.iptcCore,
+            property: "CountryCode"
+        )
+        #expect(iptcMetadataFromDict(conflicting.asMetadataDict()).countryCode == "DNK")
+
+        var iimOnly = conflicting
+        iimOnly.xmp = nil
+        #expect(iptcMetadataFromDict(iimOnly.asMetadataDict()).countryCode == "SWE")
+
+        try await engine.writeFields([.countryCode: ""], to: [imageURL])
+        let cleared = try SwiftExif.readMetadata(from: imageURL)
+        #expect(cleared.iptc.countryCode == nil)
+        #expect(cleared.xmp?.simpleValue(
+            namespace: XMPNamespace.iptcCore,
+            property: "CountryCode"
+        ) == nil)
+    }
+
     @Test("the embedded raster writer carries structured editorial XMP")
     func embeddedJPEGStructuredEditorialRoundTrip() async throws {
         let directory = try makeTemporaryDirectory()
@@ -804,7 +856,7 @@ struct EditorialMetadataInteroperabilityTests {
         let corpus = try loadLegacyBoundaryCorpus()
         #expect(corpus.schemaVersion == 1)
         #expect(corpus.license == "CC0-1.0")
-        #expect(corpus.iimTextBoundaries.count == 15)
+        #expect(corpus.iimTextBoundaries.count == 16)
 
         for boundary in corpus.iimTextBoundaries {
             let tag = try #require(iimTag(for: boundary.fieldID))
@@ -1327,6 +1379,7 @@ struct IPTCMetadataCodableTests {
             sublocation: "Ullevaal Stadion",
             provinceState: "Oslo",
             country: "Norway",
+            countryCode: "NOR",
             event: "Test Event",
             instructions: "Editorial use only",
             source: "Aagedal News",
@@ -1359,6 +1412,7 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.sublocation == "Ullevaal Stadion")
         #expect(decoded.provinceState == "Oslo")
         #expect(decoded.country == "Norway")
+        #expect(decoded.countryCode == "NOR")
         #expect(decoded.event == "Test Event")
         #expect(decoded.instructions == "Editorial use only")
         #expect(decoded.source == "Aagedal News")

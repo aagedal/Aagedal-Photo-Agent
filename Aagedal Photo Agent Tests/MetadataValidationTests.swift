@@ -24,8 +24,34 @@ struct MetadataValidationTests {
             "legacy.minimumLength.title",
             "legacy.required.description",
             "legacy.minimumLength.description",
+            "editorial.country-code.iso-3166-alpha-3",
         ])
-        #expect(profile.rules.map(\.severity) == [.blocker, .blocker, .warning, .warning])
+        #expect(profile.rules.map(\.severity) == [.blocker, .blocker, .warning, .warning, .blocker])
+    }
+
+    @Test("Country Code stores canonical alpha-3 values and rejects unknown codes")
+    func countryCodeValidation() {
+        #expect(ISO3166Country.all.count == 249)
+        #expect(ISO3166Country.normalizedAlpha3(" nor ") == "NOR")
+        #expect(ISO3166Country.isValidAlpha3("NOR"))
+        #expect(!ISO3166Country.isValidAlpha3("XKX"))
+        #expect(!ISO3166Country.isValidAlpha3("ZZZ"))
+
+        let profile = MetadataValidationProfile.currentRequirements(levels: [:], minimumLengths: [:])
+        let valid = MetadataValidationEngine().validate(
+            IPTCMetadata(countryCode: "nor"),
+            imageURL: imageURL,
+            profile: profile
+        )
+        let invalid = MetadataValidationEngine().validate(
+            IPTCMetadata(countryCode: "zzz"),
+            imageURL: imageURL,
+            profile: profile
+        )
+
+        #expect(valid.issues.isEmpty)
+        #expect(invalid.blockerCount == 1)
+        #expect(invalid.issues.first?.field == .countryCode)
     }
 
     @Test("Required and length rules produce stable aggregate results")

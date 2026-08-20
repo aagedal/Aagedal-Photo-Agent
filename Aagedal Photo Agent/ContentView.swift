@@ -2106,6 +2106,7 @@ struct ContentView: View {
             dateCreated: source.dateCreated,
             city: source.city,
             country: source.country,
+            countryCode: source.countryCode,
             event: source.event
         )
     }

@@ -44,6 +44,8 @@ nonisolated enum MetadataDictKey {
     static let provinceState = "Province-State"
     static let state = "State"
     static let country = "Country"
+    static let countryCode = "CountryCode"
+    static let countryPrimaryLocationCode = "Country-PrimaryLocationCode"
     static let countryPrimaryLocationName = "Country-PrimaryLocationName"
     static let event = "Event"
     static let specialInstructions = "SpecialInstructions"
@@ -1183,6 +1185,8 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
             ?? dict[MetadataDictKey.provinceState] as? String,
         country: dict[MetadataDictKey.country] as? String
             ?? dict[MetadataDictKey.countryPrimaryLocationName] as? String,
+        countryCode: dict[MetadataDictKey.countryCode] as? String
+            ?? dict[MetadataDictKey.countryPrimaryLocationCode] as? String,
         event: dict[MetadataDictKey.event] as? String,
         instructions: dict[MetadataDictKey.instructions] as? String
             ?? dict[MetadataDictKey.specialInstructions] as? String,

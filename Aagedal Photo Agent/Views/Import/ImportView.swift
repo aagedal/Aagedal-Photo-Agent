@@ -760,6 +760,26 @@ struct ImportView: View {
                         )
                     )
 
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Country Code")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker("", selection: $viewModel.configuration.metadata.countryCode) {
+                            Text("None").tag(nil as String?)
+                            if let current = viewModel.configuration.metadata.countryCode,
+                               !ISO3166Country.isValidAlpha3(current) {
+                                Text("Unknown code (\(current))").tag(current as String?)
+                            }
+                            ForEach(ISO3166Country.all.sorted {
+                                $0.localizedName().localizedStandardCompare($1.localizedName()) == .orderedAscending
+                            }) { country in
+                                Text("\(country.localizedName()) (\(country.alpha3))")
+                                    .tag(country.alpha3 as String?)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+
                     EditableTextField(
                         label: "Event",
                         text: Binding(

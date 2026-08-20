@@ -45,6 +45,7 @@ enum XMPDataBuilder {
         setSimpleOrRemove(&xmp, m.sublocation, namespace: XMPNamespace.iptcCore, property: "Location")
         xmp.state = nilIfEmpty(m.provinceState)
         xmp.country = nilIfEmpty(m.country)
+        setSimpleOrRemove(&xmp, m.countryCode, namespace: XMPNamespace.iptcCore, property: "CountryCode")
         xmp.event = nilIfEmpty(m.event)
         setSimpleOrRemove(&xmp, m.instructions, namespace: XMPNamespace.photoshop, property: "Instructions")
         xmp.source = nilIfEmpty(m.source)

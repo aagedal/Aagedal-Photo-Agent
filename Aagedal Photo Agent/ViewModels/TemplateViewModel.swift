@@ -85,6 +85,7 @@ final class TemplateViewModel {
         if let v = metadata.sublocation, !v.isEmpty { fields.append(TemplateField(fieldKey: "sublocation", templateValue: v)) }
         if let v = metadata.provinceState, !v.isEmpty { fields.append(TemplateField(fieldKey: "provinceState", templateValue: v)) }
         if let v = metadata.country, !v.isEmpty { fields.append(TemplateField(fieldKey: "country", templateValue: v)) }
+        if let v = metadata.countryCode, !v.isEmpty { fields.append(TemplateField(fieldKey: "countryCode", templateValue: v)) }
         if let v = metadata.event, !v.isEmpty { fields.append(TemplateField(fieldKey: "event", templateValue: v)) }
         if let v = metadata.instructions, !v.isEmpty { fields.append(TemplateField(fieldKey: "instructions", templateValue: v)) }
         if let v = metadata.source, !v.isEmpty { fields.append(TemplateField(fieldKey: "source", templateValue: v)) }

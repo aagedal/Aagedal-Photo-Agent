@@ -1597,6 +1597,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     var sublocation: String?
     var provinceState: String?
     var country: String?
+    var countryCode: String?
     var event: String?
     var instructions: String?
     var source: String?
@@ -1624,7 +1625,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         case title, description, extendedDescription, keywords, personShown
         case digitalSourceType
         case creator, creatorJobTitle, descriptionWriter, credit, copyright, jobId, dateCreated, captureDate
-        case city, sublocation, provinceState, country, event, instructions, source
+        case city, sublocation, provinceState, country, countryCode, event, instructions, source
         case creatorContactInfo, locationsCreated, locationsShown
         case latitude, longitude
         case rating, label
@@ -1653,6 +1654,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         sublocation: String? = nil,
         provinceState: String? = nil,
         country: String? = nil,
+        countryCode: String? = nil,
         event: String? = nil,
         instructions: String? = nil,
         source: String? = nil,
@@ -1684,6 +1686,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.sublocation = sublocation
         self.provinceState = provinceState
         self.country = country
+        self.countryCode = ISO3166Country.normalizedAlpha3(countryCode)
         self.event = event
         self.instructions = instructions
         self.source = source
@@ -1716,6 +1719,9 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         sublocation = try container.decodeIfPresent(String.self, forKey: .sublocation)
         provinceState = try container.decodeIfPresent(String.self, forKey: .provinceState)
         country = try container.decodeIfPresent(String.self, forKey: .country)
+        countryCode = ISO3166Country.normalizedAlpha3(
+            try container.decodeIfPresent(String.self, forKey: .countryCode)
+        )
         event = try container.decodeIfPresent(String.self, forKey: .event)
         instructions = try container.decodeIfPresent(String.self, forKey: .instructions)
         source = try container.decodeIfPresent(String.self, forKey: .source)
@@ -1758,6 +1764,7 @@ extension IPTCMetadata {
             || sublocation != other.sublocation
             || provinceState != other.provinceState
             || country != other.country
+            || countryCode != other.countryCode
             || event != other.event
             || instructions != other.instructions
             || source != other.source
@@ -1789,6 +1796,7 @@ extension IPTCMetadata {
         if let sublocation, !sublocation.isEmpty { return true }
         if let provinceState, !provinceState.isEmpty { return true }
         if let country, !country.isEmpty { return true }
+        if let countryCode, !countryCode.isEmpty { return true }
         if let event, !event.isEmpty { return true }
         if let instructions, !instructions.isEmpty { return true }
         if let source, !source.isEmpty { return true }
@@ -1827,6 +1835,7 @@ extension IPTCMetadata {
         result.sublocation = record.sublocation
         result.provinceState = record.provinceState
         result.country = record.country
+        result.countryCode = record.countryCode
         result.event = record.event
         result.instructions = record.instructions
         result.source = record.source
@@ -1874,6 +1883,7 @@ extension IPTCMetadata {
         if let value = override.sublocation, !value.isEmpty { result.sublocation = value }
         if let value = override.provinceState, !value.isEmpty { result.provinceState = value }
         if let value = override.country, !value.isEmpty { result.country = value }
+        if let value = override.countryCode, !value.isEmpty { result.countryCode = value }
         if let value = override.event, !value.isEmpty { result.event = value }
         if let value = override.instructions, !value.isEmpty { result.instructions = value }
         if let value = override.source, !value.isEmpty { result.source = value }
@@ -1928,6 +1938,7 @@ extension IPTCMetadata {
         if let v = sublocation { fields[.sublocation] = v }
         if let v = provinceState { fields[.provinceState] = v }
         if let v = country { fields[.country] = v }
+        if let v = countryCode { fields[.countryCode] = v }
         if let v = event { fields[.event] = v }
         if let v = instructions { fields[.instructions] = v }
         if let v = source { fields[.source] = v }
@@ -1970,6 +1981,7 @@ extension IPTCMetadata {
         fields[.sublocation] = sublocation ?? ""
         fields[.provinceState] = provinceState ?? ""
         fields[.country] = country ?? ""
+        fields[.countryCode] = countryCode ?? ""
         fields[.event] = event ?? ""
         fields[.instructions] = instructions ?? ""
         fields[.source] = source ?? ""
