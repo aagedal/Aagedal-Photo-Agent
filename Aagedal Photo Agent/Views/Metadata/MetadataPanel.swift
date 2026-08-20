@@ -627,9 +627,7 @@ struct MetadataPanel: View {
                                 actionButtons
                                 Divider()
                                 priorityFieldsSection
-                                Divider()
                                 classificationSection
-                                Divider()
                                 additionalFieldsSection
                                 Divider()
                                 gpsSection
@@ -1051,6 +1049,34 @@ struct MetadataPanel: View {
             .id("copyright")
         }
 
+        if settingsViewModel.isIPTCMetadataFieldVisible(.creator) {
+            EditableTextField(
+                label: "Creator",
+                text: Binding(
+                    get: { viewModel.editingMetadata.creator ?? "" },
+                    set: { viewModel.editingMetadata.creator = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "creator") : "",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.creator),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
+                onInsertVariable: {
+                    openVariableReference(for: .creator)
+                },
+                onAddCurrentToQuickList: {
+                    addCurrentToQuickList(type: .creator, value: viewModel.editingMetadata.creator)
+                },
+                presetList: settingsViewModel.loadCreatorList(),
+                onChooseListFile: {
+                    listFilePickerTarget = .creator
+                    showingListFilePicker = true
+                },
+                focusKey: "creator",
+                focusedField: $focusedField
+            )
+            .id("creator")
+        }
+
         if settingsViewModel.isIPTCMetadataFieldVisible(.rightsUsageTerms) {
             EditableTextField(
                 label: "Rights Usage Terms",
@@ -1463,20 +1489,14 @@ struct MetadataPanel: View {
         }
     }
 
-    // MARK: - Additional Fields
+    // MARK: - Remaining Metadata Fields
 
     @ViewBuilder
     private var additionalFieldsSection: some View {
         if MetadataFieldID.additionalEditorFields.contains(
             where: { settingsViewModel.isIPTCMetadataFieldVisible($0) }
         ) {
-            Section {
-                editableAdditionalFields
-            } header: {
-                Text("Additional Fields")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            editableAdditionalFields
         }
     }
 
@@ -1516,34 +1536,6 @@ struct MetadataPanel: View {
         if settingsViewModel.isIPTCMetadataFieldVisible(.sceneCode) {
             sceneCodeEditor
                 .id("sceneCode")
-        }
-
-        if settingsViewModel.isIPTCMetadataFieldVisible(.creator) {
-            EditableTextField(
-                label: "Creator",
-                text: Binding(
-                    get: { viewModel.editingMetadata.creator ?? "" },
-                    set: { viewModel.editingMetadata.creator = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                ),
-                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "creator") : "",
-                onCommit: { commitEdits() },
-                showsDifference: viewModel.fieldDiffers(\.creator),
-                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
-                onInsertVariable: {
-                    openVariableReference(for: .creator)
-                },
-                onAddCurrentToQuickList: {
-                    addCurrentToQuickList(type: .creator, value: viewModel.editingMetadata.creator)
-                },
-                presetList: settingsViewModel.loadCreatorList(),
-                onChooseListFile: {
-                    listFilePickerTarget = .creator
-                    showingListFilePicker = true
-                },
-                focusKey: "creator",
-                focusedField: $focusedField
-            )
-            .id("creator")
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.creatorJobTitle) {

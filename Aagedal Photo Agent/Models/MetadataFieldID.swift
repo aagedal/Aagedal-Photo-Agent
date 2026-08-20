@@ -171,12 +171,12 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     static let primaryEditorFields: [Self] = [
         .headline, .description, .extendedDescription, .keywords, .personShown,
         .organisationShownName, .organisationShownCode,
-        .copyright, .rightsUsageTerms, .webStatementOfRights, .jobId,
+        .copyright, .creator, .rightsUsageTerms, .webStatementOfRights, .jobId,
     ]
 
-    /// Fields displayed in the Additional Fields section of the editor.
+    /// Fields displayed after the primary metadata and classification editors.
     static let additionalEditorFields: [Self] = [
-        .urgency, .sceneCode, .creator, .creatorJobTitle, .descriptionWriter, .credit, .source, .city, .sublocation,
+        .urgency, .sceneCode, .creatorJobTitle, .descriptionWriter, .credit, .source, .city, .sublocation,
         .provinceState, .country, .countryCode, .event, .instructions,
     ]
 
