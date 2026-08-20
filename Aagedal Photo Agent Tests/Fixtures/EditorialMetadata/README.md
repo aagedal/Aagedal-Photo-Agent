@@ -13,7 +13,7 @@ A synthetic XMP packet containing:
 
 - Supported editorial fields, rights statements, and a canonical Digital Source Type NewsCodes URI.
 - Two ordered creators, multiple people shown, and multiple Organisation Shown names and codes.
-- Selected and planned IPTC fields in known namespaces, including Urgency, Scene, and two
+- Selected IPTC fields in known namespaces, including Urgency, two current Scene NewsCodes, and two
   structured Location Shown entries.
 - A foreign newsroom namespace with both a scalar and an array.
 - Unicode, punctuation, commas, a semicolon, and a multiline caption.

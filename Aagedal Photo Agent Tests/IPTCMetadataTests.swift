@@ -422,7 +422,7 @@ struct EditorialMetadataInteroperabilityTests {
         case .urgency: .urgency
         case .instructions: .specialInstructions
         case .source: .source
-        case .extendedDescription, .personShown, .organisationShownName, .organisationShownCode,
+        case .extendedDescription, .personShown, .organisationShownName, .organisationShownCode, .sceneCode,
              .digitalSourceType, .rightsUsageTerms, .webStatementOfRights, .dateCreated, .event: nil
         }
     }
@@ -484,6 +484,7 @@ struct EditorialMetadataInteroperabilityTests {
             EditorialLocation(sublocation: "Harbor", city: "Oslo", countryCode: "NOR"),
         ])
         #expect(edited.urgency == 2)
+        #expect(edited.sceneCodes == ["011200", "012400"])
         edited.description = "Updated caption only"
         try service.saveSidecarPreservingDevelopSettings(metadata: edited, for: imageURL)
 
@@ -493,7 +494,7 @@ struct EditorialMetadataInteroperabilityTests {
         #expect(xmp.personInImage == ["Kari Nordmann", "Ola Nordmann"])
         #expect(xmp.arrayValue(namespace: XMPNamespace.iptcExt, property: "OrganisationInImageName") == ["Oslo City Council", "Harbor Authority"])
         #expect(xmp.arrayValue(namespace: XMPNamespace.iptcExt, property: "OrganisationInImageCode") == ["OCC", "NO-HARBOR"])
-        #expect(xmp.arrayValue(namespace: XMPNamespace.iptcCore, property: "Scene") == ["011200", "012900"])
+        #expect(xmp.arrayValue(namespace: XMPNamespace.iptcCore, property: "Scene") == ["011200", "012400"])
         #expect(xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "CaptionWriter") == "Night Desk")
         #expect(xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "Urgency") == "2")
         #expect(xmp.simpleValue(namespace: XMPNamespace.iptcCore, property: "CountryCode") == "NOR")
@@ -544,6 +545,47 @@ struct EditorialMetadataInteroperabilityTests {
         let cleared = try await SwiftExifReadService().readFullMetadata(url: jpegURL)
         #expect(cleared.organisationsShownNames.isEmpty)
         #expect(cleared.organisationsShownCodes.isEmpty)
+    }
+
+    @Test("scene code bags normalize aliases, preserve unknown values, and clear through sidecar and embedded writers")
+    func sceneCodeRoundTripAndClear() async throws {
+        #expect(IPTCSceneCode.all.count == 24)
+        #expect(IPTCSceneCode.entry(for: "scn:011200")?.name == "Aerial view")
+        #expect(IPTCSceneCode.normalizedEditorValue("011200 — Aerial view") == "011200")
+        #expect(IPTCSceneCode.normalizedValue("011200-not-a-code") == "011200-not-a-code")
+
+        let expectedCodes = ["011200", "012400", "099999"]
+        let expected = IPTCMetadata(
+            description: "Editorial scenes",
+            sceneCodes: [
+                "scn:011200",
+                "https://cv.iptc.org/newscodes/scene/012400",
+                "099999",
+                "011200",
+            ]
+        )
+        #expect(expected.sceneCodes == expectedCodes)
+
+        let service = XMPSidecarService()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let rawURL = directory.appendingPathComponent("scenes.nef")
+
+        try service.saveSidecar(metadata: expected, for: rawURL)
+        let sidecarURL = service.sidecarURL(for: rawURL)
+        let sidecarXMP = try XMPReader.readFromXML(Data(contentsOf: sidecarURL))
+        #expect(sidecarXMP.arrayValue(namespace: XMPNamespace.iptcCore, property: "Scene") == expectedCodes)
+        #expect(service.loadSidecar(for: rawURL)?.sceneCodes == expectedCodes)
+
+        let jpegURL = try makeJPEG(in: directory)
+        let writer = SwiftExifWriteEngine()
+        try await writer.writeFields(expected.toWriteFields(), to: [jpegURL])
+        let embedded = try await SwiftExifReadService().readFullMetadata(url: jpegURL)
+        #expect(embedded.sceneCodes == expectedCodes)
+
+        try await writer.writeFields([.scene: ""], to: [jpegURL])
+        let cleared = try await SwiftExifReadService().readFullMetadata(url: jpegURL)
+        #expect(cleared.sceneCodes.isEmpty)
     }
 
     @Test("creator contact and created/shown locations round-trip through standards-shaped XMP")

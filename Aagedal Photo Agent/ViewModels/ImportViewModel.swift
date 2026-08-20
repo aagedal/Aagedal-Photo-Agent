@@ -438,6 +438,10 @@ final class ImportViewModel {
                 configuration.metadata.digitalSourceType = DigitalSourceType(metadataValue: value)
             case "urgency":
                 configuration.metadata.urgency = Int(value)
+            case "sceneCode":
+                configuration.metadata.sceneCodes = IPTCSceneCode.normalizedValues(
+                    value.components(separatedBy: CharacterSet(charactersIn: ",;"))
+                )
             case "creator": configuration.metadata.creator = value
             case "creatorJobTitle": configuration.metadata.creatorJobTitle = value
             case "descriptionWriter": configuration.metadata.descriptionWriter = value
@@ -944,6 +948,9 @@ final class ImportViewModel {
         resolved.source = Self.resolveField(metadata.source, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.organisationsShownNames = Self.resolveListField(metadata.organisationsShownNames, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.organisationsShownCodes = Self.resolveListField(metadata.organisationsShownCodes, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.sceneCodes = IPTCSceneCode.normalizedValues(
+            Self.resolveListField(metadata.sceneCodes, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        )
 
         return resolved
     }
@@ -978,6 +985,7 @@ final class ImportViewModel {
         if !meta.personShown.isEmpty { fields[.personInImage] = meta.personShown.joined(separator: ", ") }
         if !meta.organisationsShownNames.isEmpty { fields[.organisationInImageName] = meta.organisationsShownNames.joined(separator: ", ") }
         if !meta.organisationsShownCodes.isEmpty { fields[.organisationInImageCode] = meta.organisationsShownCodes.joined(separator: ", ") }
+        if !meta.sceneCodes.isEmpty { fields[.scene] = meta.sceneCodes.joined(separator: ", ") }
         if let v = meta.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = meta.creator, !v.isEmpty { fields[.creator] = v }
         if let v = meta.creatorJobTitle, !v.isEmpty { fields[.creatorJobTitle] = v }

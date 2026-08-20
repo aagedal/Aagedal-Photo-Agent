@@ -10,7 +10,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     /// key. The case name reflects its actual IPTC meaning and leaves room for a distinct Title.
     case headline = "title"
     case description, extendedDescription, keywords, personShown
-    case organisationShownName, organisationShownCode, digitalSourceType, urgency
+    case organisationShownName, organisationShownCode, digitalSourceType, urgency, sceneCode
     case creator, creatorJobTitle, descriptionWriter, credit, copyright
     case rightsUsageTerms, webStatementOfRights, jobId, dateCreated
     case city, sublocation, provinceState, country, countryCode, event, instructions, source
@@ -26,6 +26,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .organisationShownCode: return "Organisation Shown Code"
         case .digitalSourceType: return "Digital Source Type"
         case .urgency: return "Urgency"
+        case .sceneCode: return "Scene Code"
         case .creator: return "Creator"
         case .creatorJobTitle: return "Creator Job Title"
         case .descriptionWriter: return "Description Writer"
@@ -57,6 +58,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .organisationShownCode: return metadata.organisationsShownCodes.isEmpty
         case .digitalSourceType: return metadata.digitalSourceType == nil
         case .urgency: return metadata.urgency == nil
+        case .sceneCode: return metadata.sceneCodes.isEmpty
         case .creator: return metadata.creator?.isEmpty ?? true
         case .creatorJobTitle: return metadata.creatorJobTitle?.isEmpty ?? true
         case .descriptionWriter: return metadata.descriptionWriter?.isEmpty ?? true
@@ -88,6 +90,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .organisationShownCode: return metadata.organisationsShownCodes.joined(separator: ", ")
         case .digitalSourceType: return metadata.digitalSourceType?.newsCodeURI
         case .urgency: return metadata.urgency.map(String.init)
+        case .sceneCode: return metadata.sceneCodes.joined(separator: ", ")
         case .creator: return metadata.creator
         case .creatorJobTitle: return metadata.creatorJobTitle
         case .descriptionWriter: return metadata.descriptionWriter
@@ -138,6 +141,10 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .digitalSourceType:
             metadata.digitalSourceType = scalar.flatMap(DigitalSourceType.init(metadataValue:))
         case .urgency: metadata.urgency = scalar.flatMap(Int.init)
+        case .sceneCode:
+            metadata.sceneCodes = IPTCSceneCode.normalizedValues(
+                value.components(separatedBy: CharacterSet(charactersIn: ",;"))
+            )
         case .creator: metadata.creator = scalar
         case .creatorJobTitle: metadata.creatorJobTitle = scalar
         case .descriptionWriter: metadata.descriptionWriter = scalar
@@ -169,7 +176,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
 
     /// Fields displayed in the Additional Fields section of the editor.
     static let additionalEditorFields: [Self] = [
-        .urgency, .creator, .creatorJobTitle, .descriptionWriter, .credit, .source, .city, .sublocation,
+        .urgency, .sceneCode, .creator, .creatorJobTitle, .descriptionWriter, .credit, .source, .city, .sublocation,
         .provinceState, .country, .countryCode, .event, .instructions,
     ]
 

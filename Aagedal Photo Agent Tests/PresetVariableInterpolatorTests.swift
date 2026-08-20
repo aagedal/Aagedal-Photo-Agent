@@ -88,6 +88,15 @@ struct PresetVariableInterpolatorTests {
         #expect(interpolator.resolve("{field:urgency}", existingMetadata: metadata) == "2")
     }
 
+    @Test("Scene Codes resolve by key and display label")
+    func sceneCodeFieldAliases() {
+        let metadata = IPTCMetadata(sceneCodes: ["011200", "012400"])
+        #expect(interpolator.resolve(
+            "{field:scene}|{field:Scene Code}",
+            existingMetadata: metadata
+        ) == "011200, 012400|011200, 012400")
+    }
+
     @Test("Metadata dates support friendly compact and dashed aliases")
     func metadataDateAliases() {
         var metadata = IPTCMetadata()

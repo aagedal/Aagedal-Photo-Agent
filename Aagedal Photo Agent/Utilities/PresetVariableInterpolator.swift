@@ -15,7 +15,7 @@ struct PresetVariableInterpolator: Sendable {
             metadata.webStatementOfRights, metadata.jobId,
             metadata.dateCreated, metadata.city, metadata.country, metadata.event,
         ].compactMap { $0 } + metadata.keywords + metadata.personShown
-            + metadata.organisationsShownNames + metadata.organisationsShownCodes
+            + metadata.organisationsShownNames + metadata.organisationsShownCodes + metadata.sceneCodes
         guard strings.contains(where: {
             $0.contains(Self.gpsCityToken) || $0.contains(Self.gpsCountryToken)
         }) else { return metadata }
@@ -71,6 +71,7 @@ struct PresetVariableInterpolator: Sendable {
         result.personShown = result.personShown.compactMap { replace($0) }
         result.organisationsShownNames = result.organisationsShownNames.compactMap { replace($0) }
         result.organisationsShownCodes = result.organisationsShownCodes.compactMap { replace($0) }
+        result.sceneCodes = result.sceneCodes.compactMap { replace($0) }
         return result
     }
 
@@ -373,6 +374,8 @@ struct PresetVariableInterpolator: Sendable {
             return metadata.organisationsShownNames.joined(separator: ", ")
         case "organisationshowncode", "organisationsshowncodes":
             return metadata.organisationsShownCodes.joined(separator: ", ")
+        case "scenecode", "scenecodes", "scene":
+            return metadata.sceneCodes.joined(separator: ", ")
         case "creator": return metadata.creator ?? ""
         case "creatorjobtitle", "authorsposition": return metadata.creatorJobTitle ?? ""
         case "descriptionwriter", "captionwriter": return metadata.descriptionWriter ?? ""

@@ -26,9 +26,10 @@ struct MetadataValidationTests {
             "legacy.minimumLength.description",
             "editorial.country-code.iso-3166-alpha-3",
             "editorial.urgency.one-through-eight",
+            "editorial.scene-code.iptc-newscodes",
             "editorial.web-statement-of-rights.http-url",
         ])
-        #expect(profile.rules.map(\.severity) == [.blocker, .blocker, .warning, .warning, .blocker, .blocker, .blocker])
+        #expect(profile.rules.map(\.severity) == [.blocker, .blocker, .warning, .warning, .blocker, .blocker, .blocker, .blocker])
     }
 
     @Test("Web Statement of Rights accepts HTTP URLs and blocks malformed values")
@@ -96,6 +97,26 @@ struct MetadataValidationTests {
             #expect(report.blockerCount == 1)
             #expect(report.issues.first?.field == .urgency)
         }
+    }
+
+    @Test("Scene Codes use the frozen IPTC vocabulary and validate each repeated value")
+    func sceneCodeValidation() {
+        let profile = MetadataValidationProfile.currentRequirements(levels: [:], minimumLengths: [:])
+        let valid = MetadataValidationEngine().validate(
+            IPTCMetadata(sceneCodes: ["scn:011200", IPTCSceneCode.schemeURI + "012400"]),
+            imageURL: imageURL,
+            profile: profile
+        )
+        let invalid = MetadataValidationEngine().validate(
+            IPTCMetadata(sceneCodes: ["011200", "012900"]),
+            imageURL: imageURL,
+            profile: profile
+        )
+
+        #expect(valid.issues.isEmpty)
+        #expect(invalid.blockerCount == 1)
+        #expect(invalid.issues.first?.field == .sceneCode)
+        #expect(invalid.issues.first?.technicalDetail == "Rejected canonical value count: 1.")
     }
 
     @Test("Required and length rules produce stable aggregate results")

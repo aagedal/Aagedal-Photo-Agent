@@ -644,6 +644,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .organisationInImageName:
             setXMPListField(
                 &metadata,
+                namespace: XMPNamespace.iptcExt,
                 property: "OrganisationInImageName",
                 commaSeparatedValue: value
             )
@@ -651,8 +652,18 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .organisationInImageCode:
             setXMPListField(
                 &metadata,
+                namespace: XMPNamespace.iptcExt,
                 property: "OrganisationInImageCode",
                 commaSeparatedValue: value
+            )
+
+        case .scene:
+            setXMPListField(
+                &metadata,
+                namespace: XMPNamespace.iptcCore,
+                property: "Scene",
+                commaSeparatedValue: value,
+                normalize: IPTCSceneCode.normalizedValue
             )
 
         case .digitalSourceType:
@@ -879,10 +890,18 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             }
 
         case .organisationInImageName:
-            removeXMPListValues(values, property: "OrganisationInImageName", metadata: &metadata)
+            removeXMPListValues(values, namespace: XMPNamespace.iptcExt, property: "OrganisationInImageName", metadata: &metadata)
 
         case .organisationInImageCode:
-            removeXMPListValues(values, property: "OrganisationInImageCode", metadata: &metadata)
+            removeXMPListValues(values, namespace: XMPNamespace.iptcExt, property: "OrganisationInImageCode", metadata: &metadata)
+
+        case .scene:
+            removeXMPListValues(
+                IPTCSceneCode.normalizedValues(values),
+                namespace: XMPNamespace.iptcCore,
+                property: "Scene",
+                metadata: &metadata
+            )
 
         default:
             swiftExifLog.warning("addRemoveListValues: unsupported key \(key.rawValue, privacy: .public) for remove")
@@ -910,10 +929,18 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             metadata.xmp?.setValue(.array(existing), namespace: XMPNamespace.iptcExt, property: "PersonInImage")
 
         case .organisationInImageName:
-            addXMPListValues(values, property: "OrganisationInImageName", metadata: &metadata)
+            addXMPListValues(values, namespace: XMPNamespace.iptcExt, property: "OrganisationInImageName", metadata: &metadata)
 
         case .organisationInImageCode:
-            addXMPListValues(values, property: "OrganisationInImageCode", metadata: &metadata)
+            addXMPListValues(values, namespace: XMPNamespace.iptcExt, property: "OrganisationInImageCode", metadata: &metadata)
+
+        case .scene:
+            addXMPListValues(
+                IPTCSceneCode.normalizedValues(values),
+                namespace: XMPNamespace.iptcCore,
+                property: "Scene",
+                metadata: &metadata
+            )
 
         default:
             swiftExifLog.warning("addRemoveListValues: unsupported key \(key.rawValue, privacy: .public) for add")
@@ -922,53 +949,58 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
     private func setXMPListField(
         _ metadata: inout ImageMetadata,
+        namespace: String,
         property: String,
-        commaSeparatedValue value: String
+        commaSeparatedValue value: String,
+        normalize: (String) -> String = { $0 }
     ) {
         let values = value.components(separatedBy: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map(normalize)
             .filter { !$0.isEmpty }
             .uniqued()
         if values.isEmpty {
-            metadata.xmp?.removeValue(namespace: XMPNamespace.iptcExt, property: property)
+            metadata.xmp?.removeValue(namespace: namespace, property: property)
         } else {
             if metadata.xmp == nil { metadata.xmp = XMPData() }
-            metadata.xmp?.setValue(.array(values), namespace: XMPNamespace.iptcExt, property: property)
+            metadata.xmp?.setValue(.array(values), namespace: namespace, property: property)
         }
     }
 
     private func removeXMPListValues(
         _ values: [String],
+        namespace: String,
         property: String,
         metadata: inout ImageMetadata
     ) {
         var existing = metadata.xmp?.arrayValue(
-            namespace: XMPNamespace.iptcExt,
+            namespace: namespace,
             property: property
         ) ?? []
         guard !existing.isEmpty else { return }
         existing.removeAll { values.contains($0) }
         if existing.isEmpty {
-            metadata.xmp?.removeValue(namespace: XMPNamespace.iptcExt, property: property)
+            metadata.xmp?.removeValue(namespace: namespace, property: property)
         } else {
-            metadata.xmp?.setValue(.array(existing), namespace: XMPNamespace.iptcExt, property: property)
+            metadata.xmp?.setValue(.array(existing), namespace: namespace, property: property)
         }
     }
 
     private func addXMPListValues(
         _ values: [String],
+        namespace: String,
         property: String,
         metadata: inout ImageMetadata
     ) {
         if metadata.xmp == nil { metadata.xmp = XMPData() }
         var existing = metadata.xmp?.arrayValue(
-            namespace: XMPNamespace.iptcExt,
+            namespace: namespace,
             property: property
         ) ?? []
         for value in values {
             existing.removeAll { $0 == value }
             existing.append(value)
         }
-        metadata.xmp?.setValue(.array(existing), namespace: XMPNamespace.iptcExt, property: property)
+        metadata.xmp?.setValue(.array(existing), namespace: namespace, property: property)
     }
 }

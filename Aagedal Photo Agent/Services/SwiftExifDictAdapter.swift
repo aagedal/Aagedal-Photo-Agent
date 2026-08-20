@@ -96,6 +96,13 @@ extension ImageMetadata {
             if let v = xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "Urgency") {
                 dict[MetadataDictKey.urgency] = v
             }
+            let sceneCodes = xmp.arrayValue(
+                namespace: XMPNamespace.iptcCore,
+                property: MetadataDictKey.scene
+            )
+            if !sceneCodes.isEmpty {
+                dict[MetadataDictKey.scene] = sceneCodes
+            }
             if let v = xmp.simpleValue(
                 namespace: XMPDataBuilder.xmpRightsNamespace,
                 property: MetadataDictKey.rightsUsageTerms

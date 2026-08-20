@@ -359,6 +359,9 @@ nonisolated struct MetadataValidationEngine: Sendable {
                 if field == .digitalSourceType {
                     return canonicalVocabularyValue(candidate)
                 }
+                if field == .sceneCode {
+                    return IPTCSceneCode.normalizedValue(candidate)
+                }
                 return candidate.trimmingCharacters(in: .whitespacesAndNewlines)
             }
             let allowed = Set(allowedValues.map(normalized))
@@ -412,6 +415,7 @@ nonisolated struct MetadataValidationEngine: Sendable {
         case .personShown: return metadata.personShown
         case .organisationShownName: return metadata.organisationsShownNames
         case .organisationShownCode: return metadata.organisationsShownCodes
+        case .sceneCode: return metadata.sceneCodes
         default: return field.textValue(in: metadata).map { [$0] } ?? []
         }
     }
@@ -518,6 +522,15 @@ extension MetadataValidationProfile {
                 values: (1...8).map(String.init)
             ),
             message: "Urgency must be a value from 1 (most urgent) through 8 (least urgent)."
+        ))
+        rules.append(MetadataValidationRule(
+            id: "editorial.scene-code.iptc-newscodes",
+            severity: .blocker,
+            requirement: .allowedValues(
+                field: .sceneCode,
+                values: IPTCSceneCode.all.map(\.code)
+            ),
+            message: "Scene Code must be a current six-digit IPTC Scene NewsCode."
         ))
         rules.append(MetadataValidationRule(
             id: "editorial.web-statement-of-rights.http-url",

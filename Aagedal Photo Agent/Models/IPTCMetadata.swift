@@ -1586,6 +1586,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     // Classification
     var digitalSourceType: DigitalSourceType?
     var urgency: Int?
+    var sceneCodes: [String]
 
     // Secondary fields (collapsible)
     var creator: String?
@@ -1629,7 +1630,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey, CaseIterable {
         case title, description, extendedDescription, keywords, personShown
         case organisationsShownNames, organisationsShownCodes
-        case digitalSourceType, urgency
+        case digitalSourceType, urgency, sceneCodes
         case creator, creatorJobTitle, descriptionWriter, credit, copyright
         case rightsUsageTerms, webStatementOfRights, jobId, dateCreated, captureDate
         case city, sublocation, provinceState, country, countryCode, event, instructions, source
@@ -1650,6 +1651,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         organisationsShownCodes: [String] = [],
         digitalSourceType: DigitalSourceType? = nil,
         urgency: Int? = nil,
+        sceneCodes: [String] = [],
         latitude: Double? = nil,
         longitude: Double? = nil,
         creator: String? = nil,
@@ -1687,6 +1689,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.organisationsShownCodes = organisationsShownCodes.uniqued()
         self.digitalSourceType = digitalSourceType
         self.urgency = urgency
+        self.sceneCodes = IPTCSceneCode.normalizedValues(sceneCodes)
         self.latitude = latitude
         self.longitude = longitude
         self.creator = creator
@@ -1727,6 +1730,9 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         organisationsShownCodes = (try container.decodeIfPresent([String].self, forKey: .organisationsShownCodes) ?? []).uniqued()
         digitalSourceType = try container.decodeIfPresent(DigitalSourceType.self, forKey: .digitalSourceType)
         urgency = try container.decodeIfPresent(Int.self, forKey: .urgency)
+        sceneCodes = IPTCSceneCode.normalizedValues(
+            try container.decodeIfPresent([String].self, forKey: .sceneCodes) ?? []
+        )
         creator = try container.decodeIfPresent(String.self, forKey: .creator)
         creatorJobTitle = try container.decodeIfPresent(String.self, forKey: .creatorJobTitle)
         descriptionWriter = try container.decodeIfPresent(String.self, forKey: .descriptionWriter)
@@ -1779,6 +1785,7 @@ extension IPTCMetadata {
             || organisationsShownCodes != other.organisationsShownCodes
             || digitalSourceType != other.digitalSourceType
             || urgency != other.urgency
+            || sceneCodes != other.sceneCodes
             || creator != other.creator
             || creatorJobTitle != other.creatorJobTitle
             || descriptionWriter != other.descriptionWriter
@@ -1815,6 +1822,7 @@ extension IPTCMetadata {
         if !organisationsShownCodes.isEmpty { return true }
         if digitalSourceType != nil { return true }
         if urgency != nil { return true }
+        if !sceneCodes.isEmpty { return true }
         if let creator, !creator.isEmpty { return true }
         if let creatorJobTitle, !creatorJobTitle.isEmpty { return true }
         if let descriptionWriter, !descriptionWriter.isEmpty { return true }
@@ -1859,6 +1867,7 @@ extension IPTCMetadata {
         result.organisationsShownCodes = record.organisationsShownCodes
         result.digitalSourceType = record.digitalSourceType
         result.urgency = record.urgency
+        result.sceneCodes = record.sceneCodes
         result.creator = record.creator
         result.creatorJobTitle = record.creatorJobTitle
         result.descriptionWriter = record.descriptionWriter
@@ -1911,6 +1920,7 @@ extension IPTCMetadata {
         if !override.organisationsShownCodes.isEmpty { result.organisationsShownCodes = override.organisationsShownCodes }
         if let value = override.digitalSourceType { result.digitalSourceType = value }
         if let value = override.urgency { result.urgency = value }
+        if !override.sceneCodes.isEmpty { result.sceneCodes = override.sceneCodes }
         if let value = override.creator, !value.isEmpty { result.creator = value }
         if let value = override.creatorJobTitle, !value.isEmpty { result.creatorJobTitle = value }
         if let value = override.descriptionWriter, !value.isEmpty { result.descriptionWriter = value }
@@ -1972,6 +1982,7 @@ extension IPTCMetadata {
         if !organisationsShownCodes.isEmpty { fields[.organisationInImageCode] = organisationsShownCodes.joined(separator: ", ") }
         if let v = digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = urgency { fields[.urgency] = String(v) }
+        if !sceneCodes.isEmpty { fields[.scene] = sceneCodes.joined(separator: ", ") }
         if let v = creator { fields[.creator] = v }
         if let v = creatorJobTitle { fields[.creatorJobTitle] = v }
         if let v = descriptionWriter { fields[.descriptionWriter] = v }
@@ -2020,6 +2031,7 @@ extension IPTCMetadata {
         fields[.organisationInImageCode] = organisationsShownCodes.uniqued().joined(separator: ", ")
         fields[.digitalSourceType] = digitalSourceType?.newsCodeURI ?? ""
         fields[.urgency] = urgency.map(String.init) ?? ""
+        fields[.scene] = sceneCodes.uniqued().joined(separator: ", ")
         fields[.creator] = creator ?? ""
         fields[.creatorJobTitle] = creatorJobTitle ?? ""
         fields[.descriptionWriter] = descriptionWriter ?? ""
@@ -2123,6 +2135,100 @@ nonisolated enum DigitalSourceType: String, Codable, CaseIterable, Sendable {
         case .compositeCapture: return "Composite (Capture)"
         case .compositeSynthetic: return "Composite (Includes Generative AI)"
         }
+    }
+}
+
+/// One entry from the IPTC Scene NewsCodes controlled vocabulary.
+///
+/// IPTC Photo Metadata 2025.1 stores Scene as an unordered XMP bag of six-digit codes. The
+/// vocabulary names are presentation-only: JSON, templates, XMP, verification, and validation
+/// keep the stable code so a localized label can never leak into metadata.
+nonisolated struct IPTCSceneCode: Hashable, Sendable {
+    let code: String
+    let name: String
+
+    static let schemeURI = "http://cv.iptc.org/newscodes/scene/"
+
+    /// IPTC Scene NewsCodes snapshot used by the 2025.1 editorial baseline (CC BY 4.0).
+    static let all: [Self] = [
+        .init(code: "010100", name: "Headshot"),
+        .init(code: "010200", name: "Half-length"),
+        .init(code: "010300", name: "Full-length"),
+        .init(code: "010400", name: "Profile"),
+        .init(code: "010500", name: "Rear view"),
+        .init(code: "010600", name: "Single"),
+        .init(code: "010700", name: "Couple"),
+        .init(code: "010800", name: "Two"),
+        .init(code: "010900", name: "Group"),
+        .init(code: "011000", name: "General view"),
+        .init(code: "011100", name: "Panoramic view"),
+        .init(code: "011200", name: "Aerial view"),
+        .init(code: "011300", name: "Under-water"),
+        .init(code: "011400", name: "Night scene"),
+        .init(code: "011500", name: "Satellite"),
+        .init(code: "011600", name: "Exterior view"),
+        .init(code: "011700", name: "Interior view"),
+        .init(code: "011800", name: "Close-up"),
+        .init(code: "011900", name: "Action"),
+        .init(code: "012000", name: "Performing"),
+        .init(code: "012100", name: "Posing"),
+        .init(code: "012200", name: "Symbolic"),
+        .init(code: "012300", name: "Off-beat"),
+        .init(code: "012400", name: "Movie scene"),
+    ]
+
+    static let currentCodes = Set(all.map(\.code))
+
+    var displayValue: String { "\(code) — \(name)" }
+
+    /// Accept common URI and QCode projections on read, but always store the six-digit value
+    /// required by the Photo Metadata standard. Unknown plain values remain unchanged so an
+    /// unrelated edit cannot silently erase third-party metadata; validation surfaces them.
+    static func normalizedValue(_ rawValue: String) -> String {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return "" }
+
+        let candidate: String
+        if value.hasPrefix(schemeURI) {
+            candidate = String(value.dropFirst(schemeURI.count))
+        } else {
+            let httpsScheme = "https://cv.iptc.org/newscodes/scene/"
+            if value.hasPrefix(httpsScheme) {
+                candidate = String(value.dropFirst(httpsScheme.count))
+            } else if value.hasPrefix("scn:") {
+                candidate = String(value.dropFirst("scn:".count))
+            } else {
+                candidate = value
+            }
+        }
+
+        if candidate.count == 6, candidate.allSatisfy(\.isNumber) {
+            return candidate
+        }
+        return value
+    }
+
+    /// Converts a type-ahead display label back to its code without broadening the normalization
+    /// accepted at metadata boundaries. This keeps unknown third-party strings lossless.
+    static func normalizedEditorValue(_ rawValue: String) -> String {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let entry = all.first(where: { $0.displayValue == value }) {
+            return entry.code
+        }
+        return normalizedValue(value)
+    }
+
+    static func normalizedValues(_ values: [String]) -> [String] {
+        values.map(normalizedValue).filter { !$0.isEmpty }.uniqued()
+    }
+
+    static func isCurrent(_ value: String) -> Bool {
+        currentCodes.contains(normalizedValue(value))
+    }
+
+    static func entry(for value: String) -> Self? {
+        let code = normalizedValue(value)
+        return all.first { $0.code == code }
     }
 }
 

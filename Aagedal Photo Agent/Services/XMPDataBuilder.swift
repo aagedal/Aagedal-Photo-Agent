@@ -37,6 +37,7 @@ enum XMPDataBuilder {
         xmp.label = nilIfEmpty(m.label)
         xmp.digitalSourceType = nilIfEmpty(m.digitalSourceType?.newsCodeURI)
         setSimpleOrRemove(&xmp, m.urgency.map(String.init), namespace: XMPNamespace.photoshop, property: "Urgency")
+        setArrayOrRemove(&xmp, m.sceneCodes, namespace: XMPNamespace.iptcCore, property: "Scene")
         setCreatorOrRemove(&xmp, m.creator)
         setSimpleOrRemove(&xmp, m.creatorJobTitle, namespace: XMPNamespace.photoshop, property: "AuthorsPosition")
         setSimpleOrRemove(&xmp, m.descriptionWriter, namespace: XMPNamespace.photoshop, property: "CaptionWriter")

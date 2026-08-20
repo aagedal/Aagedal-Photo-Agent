@@ -93,6 +93,7 @@ struct TemplateField: Codable, Identifiable, Sendable, Hashable {
         ("organisationShownCode", "Organisation Shown Code"),
         ("digitalSourceType", "Digital Source Type"),
         ("urgency", "Urgency"),
+        ("sceneCode", "Scene Code"),
         ("creator", "Creator"),
         ("creatorJobTitle", "Creator Job Title"),
         ("descriptionWriter", "Description Writer"),

@@ -346,6 +346,16 @@ interoperability, validation, template-variable, and real-file export suites pas
 [the dated validation record](metadata-rights-xmp-validation.md). Additional language alternatives,
 external-tool checks, and cross-container fixtures remain open.
 
+**Progress — 2026-08-21:** Scene Codes now use a frozen 24-entry IPTC Scene NewsCodes vocabulary
+with canonical six-digit storage and human-readable type-ahead labels. Common Scene URI and `scn:`
+projections normalize at the model boundary; unknown incoming values remain visible and survive
+unrelated edits while the default validation profile blocks them. Ordered, deduplicated values flow
+through JSON, history, batch editing, import, templates, variables, browser search, copy/paste,
+rendered export, and FTP/SFTP preparation. Sidecar and embedded JPEG writes use an
+`Iptc4xmpCore:Scene` bag with authoritative clear behavior. The focused suites pass 69 tests; see
+[the dated validation record](metadata-scene-code-validation.md). External-tool and cross-container
+verification remains open.
+
 ## Phase 2 — Caption Workspace
 
 **Exit gate:** a photographer can caption a folder image by image using the keyboard, never lose an

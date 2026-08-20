@@ -77,6 +77,7 @@ final class TemplateViewModel {
         if !metadata.organisationsShownCodes.isEmpty { fields.append(TemplateField(fieldKey: "organisationShownCode", templateValue: metadata.organisationsShownCodes.joined(separator: ", "))) }
         if let v = metadata.digitalSourceType { fields.append(TemplateField(fieldKey: "digitalSourceType", templateValue: v.rawValue)) }
         if let v = metadata.urgency { fields.append(TemplateField(fieldKey: "urgency", templateValue: String(v))) }
+        if !metadata.sceneCodes.isEmpty { fields.append(TemplateField(fieldKey: "sceneCode", templateValue: metadata.sceneCodes.joined(separator: ", "))) }
         if let v = metadata.creator, !v.isEmpty { fields.append(TemplateField(fieldKey: "creator", templateValue: v)) }
         if let v = metadata.creatorJobTitle, !v.isEmpty { fields.append(TemplateField(fieldKey: "creatorJobTitle", templateValue: v)) }
         if let v = metadata.descriptionWriter, !v.isEmpty { fields.append(TemplateField(fieldKey: "descriptionWriter", templateValue: v)) }

@@ -496,6 +496,13 @@ final class MetadataViewModel {
         common.organisationsShownCodes = commonOrganisationCodes
         if !partialOrganisationCodes.isEmpty { differing.insert("organisationShownCode") }
 
+        let (commonSceneCodes, partialSceneCodes) = computeArrayFieldPartials(
+            allMetadata,
+            keyPath: \.sceneCodes
+        )
+        common.sceneCodes = commonSceneCodes
+        if !partialSceneCodes.isEmpty { differing.insert("sceneCode") }
+
         // GPS - check if all have the same coordinates
         let latitudes = allMetadata.compactMap(\.latitude)
         let longitudes = allMetadata.compactMap(\.longitude)
@@ -793,6 +800,9 @@ final class MetadataViewModel {
                     if edited.organisationsShownCodes != original?.organisationsShownCodes {
                         fields[.organisationInImageCode] = edited.organisationsShownCodes.uniqued().joined(separator: ", ")
                     }
+                    if edited.sceneCodes != original?.sceneCodes {
+                        fields[.scene] = edited.sceneCodes.uniqued().joined(separator: ", ")
+                    }
                     if edited.digitalSourceType != original?.digitalSourceType {
                         fields[.digitalSourceType] = edited.digitalSourceType?.newsCodeURI ?? ""
                     }
@@ -947,6 +957,13 @@ final class MetadataViewModel {
         let removedOrganisationCodes = previous.organisationsShownCodes.filter { !editedOrganisationCodes.contains($0) }
         if !addedOrganisationCodes.isEmpty { addTags[.organisationInImageCode] = addedOrganisationCodes }
         if !removedOrganisationCodes.isEmpty { removeTags[.organisationInImageCode] = removedOrganisationCodes }
+
+        let previousSceneCodes = Set(previous.sceneCodes)
+        let editedSceneCodes = Set(edited.sceneCodes)
+        let addedSceneCodes = edited.sceneCodes.filter { !previousSceneCodes.contains($0) }
+        let removedSceneCodes = previous.sceneCodes.filter { !editedSceneCodes.contains($0) }
+        if !addedSceneCodes.isEmpty { addTags[.scene] = addedSceneCodes }
+        if !removedSceneCodes.isEmpty { removeTags[.scene] = removedSceneCodes }
 
         return (addTags, removeTags)
     }
@@ -1115,6 +1132,7 @@ final class MetadataViewModel {
         fields[.personInImage] = metadata.personShown.uniqued().joined(separator: ", ")
         fields[.organisationInImageName] = metadata.organisationsShownNames.uniqued().joined(separator: ", ")
         fields[.organisationInImageCode] = metadata.organisationsShownCodes.uniqued().joined(separator: ", ")
+        fields[.scene] = metadata.sceneCodes.uniqued().joined(separator: ", ")
         fields[.digitalSourceType] = metadata.digitalSourceType?.newsCodeURI ?? ""
         fields[.urgency] = metadata.urgency.map(String.init) ?? ""
         fields[.creator] = metadata.creator ?? ""
@@ -1389,6 +1407,16 @@ final class MetadataViewModel {
                 } else {
                     editingMetadata.organisationsShownCodes = values
                 }
+            case "sceneCode":
+                let values = IPTCSceneCode.normalizedValues(
+                    value.components(separatedBy: CharacterSet(charactersIn: ",;"))
+                )
+                if append {
+                    let existing = Set(editingMetadata.sceneCodes)
+                    editingMetadata.sceneCodes += values.filter { !existing.contains($0) }
+                } else {
+                    editingMetadata.sceneCodes = values
+                }
             case "digitalSourceType":
                 editingMetadata.digitalSourceType = DigitalSourceType(metadataValue: value)
             case "urgency":
@@ -1490,6 +1518,7 @@ final class MetadataViewModel {
         }
         let listValues = editingMetadata.keywords + editingMetadata.personShown
             + editingMetadata.organisationsShownNames + editingMetadata.organisationsShownCodes
+            + editingMetadata.sceneCodes
         return listValues.contains { $0.contains(Self.variablePattern) }
     }
 
@@ -1532,6 +1561,7 @@ final class MetadataViewModel {
         editingMetadata.personShown = resolveListField(editingMetadata.personShown, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.organisationsShownNames = resolveListField(editingMetadata.organisationsShownNames, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.organisationsShownCodes = resolveListField(editingMetadata.organisationsShownCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.sceneCodes = IPTCSceneCode.normalizedValues(resolveListField(editingMetadata.sceneCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials))
 
         // Add resolved Job ID to keywords if enabled (after all variables are resolved)
         if UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
@@ -1606,6 +1636,9 @@ final class MetadataViewModel {
         }
         if resolved.organisationsShownCodes != original.organisationsShownCodes {
             fields[.organisationInImageCode] = resolved.organisationsShownCodes.joined(separator: ", ")
+        }
+        if resolved.sceneCodes != original.sceneCodes {
+            fields[.scene] = resolved.sceneCodes.joined(separator: ", ")
         }
 
         // Build JSON sidecar with history entry
@@ -1836,6 +1869,8 @@ final class MetadataViewModel {
                 if newOrganisationNames != meta.organisationsShownNames { resolvedMeta.organisationsShownNames = newOrganisationNames; changed = true }
                 let newOrganisationCodes = resolveListField(meta.organisationsShownCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials)
                 if newOrganisationCodes != meta.organisationsShownCodes { resolvedMeta.organisationsShownCodes = newOrganisationCodes; changed = true }
+                let newSceneCodes = IPTCSceneCode.normalizedValues(resolveListField(meta.sceneCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials))
+                if newSceneCodes != meta.sceneCodes { resolvedMeta.sceneCodes = newSceneCodes; changed = true }
 
                 // Add resolved Job ID to keywords if enabled (after all variables are resolved)
                 if UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
@@ -2176,6 +2211,7 @@ final class MetadataViewModel {
         recordArrayChange("Person Shown", old: previous.personShown, new: edited.personShown)
         recordArrayChange("Organisation Shown Name", old: previous.organisationsShownNames, new: edited.organisationsShownNames)
         recordArrayChange("Organisation Shown Code", old: previous.organisationsShownCodes, new: edited.organisationsShownCodes)
+        recordArrayChange("Scene Code", old: previous.sceneCodes, new: edited.sceneCodes)
         recordChange("Copyright", old: previous.copyright, new: edited.copyright)
         recordChange("Rights Usage Terms", old: previous.rightsUsageTerms, new: edited.rightsUsageTerms)
         recordChange("Web Statement of Rights", old: previous.webStatementOfRights, new: edited.webStatementOfRights)
@@ -2336,6 +2372,13 @@ final class MetadataViewModel {
             metadata.organisationsShownCodes.removeAll { removedCodes.contains($0) }
             let existingCodes = Set(metadata.organisationsShownCodes)
             metadata.organisationsShownCodes += addedCodes.filter { !existingCodes.contains($0) }
+
+            let previousScenes = Set(prev.sceneCodes)
+            let addedScenes = batchMeta.sceneCodes.filter { !previousScenes.contains($0) }
+            let removedScenes = Set(prev.sceneCodes).subtracting(batchMeta.sceneCodes)
+            metadata.sceneCodes.removeAll { removedScenes.contains($0) }
+            let existingScenes = Set(metadata.sceneCodes)
+            metadata.sceneCodes += addedScenes.filter { !existingScenes.contains($0) }
         }
 
         if let copyright = batchMeta.copyright, !copyright.isEmpty {
@@ -2574,6 +2617,11 @@ final class MetadataViewModel {
         return editingMetadata.organisationsShownCodes != original.organisationsShownCodes
     }
 
+    func sceneCodesDiffer() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.sceneCodes != original.sceneCodes
+    }
+
     func digitalSourceTypeDiffers() -> Bool {
         guard let original = originalImageMetadata else { return false }
         return editingMetadata.digitalSourceType != original.digitalSourceType
@@ -2599,6 +2647,7 @@ final class MetadataViewModel {
         if editingMetadata.personShown != original.personShown { names.append("Person Shown") }
         if editingMetadata.organisationsShownNames != original.organisationsShownNames { names.append("Organisation Shown Name") }
         if editingMetadata.organisationsShownCodes != original.organisationsShownCodes { names.append("Organisation Shown Code") }
+        if editingMetadata.sceneCodes != original.sceneCodes { names.append("Scene Code") }
         if editingMetadata.copyright != original.copyright { names.append("Copyright") }
         if editingMetadata.rightsUsageTerms != original.rightsUsageTerms { names.append("Rights Usage Terms") }
         if editingMetadata.webStatementOfRights != original.webStatementOfRights { names.append("Web Statement of Rights") }
@@ -2775,6 +2824,10 @@ final class MetadataViewModel {
             metadata.organisationsShownNames = entry.newValue?.components(separatedBy: ", ") ?? []
         case "Organisation Shown Code":
             metadata.organisationsShownCodes = entry.newValue?.components(separatedBy: ", ") ?? []
+        case "Scene Code":
+            metadata.sceneCodes = IPTCSceneCode.normalizedValues(
+                entry.newValue?.components(separatedBy: ", ") ?? []
+            )
         case "Copyright":
             metadata.copyright = entry.newValue
         case "Rights Usage Terms":

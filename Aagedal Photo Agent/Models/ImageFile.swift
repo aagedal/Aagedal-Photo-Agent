@@ -152,7 +152,8 @@ struct ImageFile: Identifiable, Hashable, Sendable {
                       metadata.urgency.map(String.init)]
         return (fields.compactMap { $0 }
             + metadata.organisationsShownNames
-            + metadata.organisationsShownCodes)
+            + metadata.organisationsShownCodes
+            + metadata.sceneCodes)
             .joined(separator: "\n")
             .lowercased()
     }

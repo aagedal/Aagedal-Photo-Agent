@@ -291,6 +291,36 @@ struct MetadataPanel: View {
         )
     }
 
+    private var sceneCodeEditor: some View {
+        let suggestions = IPTCSceneCode.all.map(\.displayValue)
+        return KeywordsEditorWithDiff(
+            label: "Scene Code",
+            keywords: $viewModel.editingMetadata.sceneCodes,
+            differs: viewModel.sceneCodesDiffer(),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("sceneCode"),
+            placeholder: "Add 6-digit code or scene name",
+            onChange: { viewModel.markChanged() },
+            onCommit: { commitEdits() },
+            focusKey: "sceneCode",
+            focusedField: $focusedField,
+            suggestionProvider: { prefix in
+                ApprovedListService.suggestions(prefix: prefix, in: suggestions)
+            },
+            validator: { value in
+                let code = IPTCSceneCode.normalizedEditorValue(value)
+                guard IPTCSceneCode.isCurrent(code) else {
+                    return .reject(reason: "Use a current six-digit IPTC Scene NewsCode.")
+                }
+                return .acceptCanonical(code)
+            },
+            flaggedKeywords: Set(viewModel.editingMetadata.sceneCodes.filter {
+                !IPTCSceneCode.isCurrent($0)
+            }),
+            hideQuickListMenu: true,
+            autoHighlightFirstSuggestion: true
+        )
+    }
+
     /// Merges suggestion sources into one candidate list, deduplicated
     /// case-insensitively. First occurrence wins, so earlier sources control
     /// the casing shown in the suggestions popover.
@@ -1481,6 +1511,11 @@ struct MetadataPanel: View {
                 .labelsHidden()
             }
             .id("urgency")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.sceneCode) {
+            sceneCodeEditor
+                .id("sceneCode")
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.creator) {
