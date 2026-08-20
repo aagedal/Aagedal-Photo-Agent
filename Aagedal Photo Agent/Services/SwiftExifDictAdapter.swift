@@ -60,6 +60,8 @@ extension ImageMetadata {
         if let v = iptc.caption { dict[MetadataDictKey.captionAbstract] = v }
         if !iptc.keywords.isEmpty { dict[MetadataDictKey.keywords] = iptc.keywords }
         if let v = iptc.byline { dict[MetadataDictKey.byLine] = v }
+        if let v = iptc.bylineTitle { dict[MetadataDictKey.byLineTitle] = v }
+        if let v = iptc.writerEditor { dict[MetadataDictKey.writerEditor] = v }
         if let v = iptc.credit { dict[MetadataDictKey.credit] = v }
         if let v = iptc.copyright { dict[MetadataDictKey.copyrightNotice] = v }
         if let v = iptc.dateCreated { dict[MetadataDictKey.dateCreated] = v }
@@ -82,6 +84,12 @@ extension ImageMetadata {
             if let v = xmp.extendedDescription { dict[MetadataDictKey.extDescrAccessibility] = v }
             if !xmp.subject.isEmpty { dict[MetadataDictKey.subject] = xmp.subject }
             if !xmp.creator.isEmpty { dict[MetadataDictKey.creator] = xmp.creator }
+            if let v = xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "AuthorsPosition") {
+                dict[MetadataDictKey.creatorJobTitle] = v
+            }
+            if let v = xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "CaptionWriter") {
+                dict[MetadataDictKey.descriptionWriter] = v
+            }
             if let v = xmp.rights { dict[MetadataDictKey.rights] = v }
             if let v = xmp.headline, dict[MetadataDictKey.headline] == nil {
                 dict[MetadataDictKey.headline] = v

@@ -751,6 +751,8 @@ struct FTPUploadView: View {
                 resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.creatorJobTitle = resolveIfChanged(meta.creatorJobTitle, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.descriptionWriter = resolveIfChanged(meta.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
@@ -771,6 +773,8 @@ struct FTPUploadView: View {
                         fields[.extendedDescription] = resolved.extendedDescription ?? ""
                     }
                     if resolved.creator != meta.creator { fields[.creator] = resolved.creator ?? "" }
+                    if resolved.creatorJobTitle != meta.creatorJobTitle { fields[.creatorJobTitle] = resolved.creatorJobTitle ?? "" }
+                    if resolved.descriptionWriter != meta.descriptionWriter { fields[.descriptionWriter] = resolved.descriptionWriter ?? "" }
                     if resolved.credit != meta.credit { fields[.credit] = resolved.credit ?? "" }
                     if resolved.copyright != meta.copyright { fields[.rights] = resolved.copyright ?? "" }
                     if resolved.jobId != meta.jobId {

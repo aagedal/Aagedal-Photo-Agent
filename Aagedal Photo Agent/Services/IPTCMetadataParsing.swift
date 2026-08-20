@@ -25,6 +25,10 @@ nonisolated enum MetadataDictKey {
     static let gpsLongitude = "GPSLongitude"
     static let creator = "Creator"
     static let byLine = "By-line"
+    static let creatorJobTitle = "AuthorsPosition"
+    static let byLineTitle = "By-lineTitle"
+    static let descriptionWriter = "CaptionWriter"
+    static let writerEditor = "Writer-Editor"
     static let credit = "Credit"
     static let rights = "Rights"
     static let copyrightNotice = "CopyrightNotice"
@@ -1159,6 +1163,10 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         latitude: dict[MetadataDictKey.gpsLatitude] as? Double,
         longitude: dict[MetadataDictKey.gpsLongitude] as? Double,
         creator: parseFirstString(dict[MetadataDictKey.creator] ?? dict[MetadataDictKey.byLine]),
+        creatorJobTitle: dict[MetadataDictKey.creatorJobTitle] as? String
+            ?? dict[MetadataDictKey.byLineTitle] as? String,
+        descriptionWriter: dict[MetadataDictKey.descriptionWriter] as? String
+            ?? dict[MetadataDictKey.writerEditor] as? String,
         credit: dict[MetadataDictKey.credit] as? String,
         copyright: dict[MetadataDictKey.rights] as? String
             ?? dict[MetadataDictKey.copyrightNotice] as? String,

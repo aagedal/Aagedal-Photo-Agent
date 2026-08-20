@@ -6,6 +6,8 @@
     { "fieldID": "description", "dataset": "2:120", "maxBytes": 2000, "unit": "C", "repetitions": 2000 },
     { "fieldID": "keywords", "dataset": "2:25", "maxBytes": 64, "unit": "ø", "repetitions": 32 },
     { "fieldID": "creator", "dataset": "2:80", "maxBytes": 32, "unit": "ø", "repetitions": 16 },
+    { "fieldID": "creatorJobTitle", "dataset": "2:85", "maxBytes": 32, "unit": "T", "repetitions": 32 },
+    { "fieldID": "descriptionWriter", "dataset": "2:122", "maxBytes": 32, "unit": "W", "repetitions": 32 },
     { "fieldID": "credit", "dataset": "2:110", "maxBytes": 32, "unit": "R", "repetitions": 32 },
     { "fieldID": "copyright", "dataset": "2:116", "maxBytes": 128, "unit": "©", "repetitions": 64 },
     { "fieldID": "jobId", "dataset": "2:103", "maxBytes": 32, "unit": "J", "repetitions": 32 },

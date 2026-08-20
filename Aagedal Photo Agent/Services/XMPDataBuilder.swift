@@ -34,6 +34,8 @@ enum XMPDataBuilder {
         xmp.label = nilIfEmpty(m.label)
         xmp.digitalSourceType = nilIfEmpty(m.digitalSourceType?.newsCodeURI)
         setCreatorOrRemove(&xmp, m.creator)
+        setSimpleOrRemove(&xmp, m.creatorJobTitle, namespace: XMPNamespace.photoshop, property: "AuthorsPosition")
+        setSimpleOrRemove(&xmp, m.descriptionWriter, namespace: XMPNamespace.photoshop, property: "CaptionWriter")
         xmp.credit = nilIfEmpty(m.credit)
         xmp.jobId = nilIfEmpty(m.jobId)
         xmp.rights = nilIfEmpty(m.copyright)

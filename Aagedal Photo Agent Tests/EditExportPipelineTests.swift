@@ -74,9 +74,13 @@ struct EditExportPipelineTests {
         let (dir, source) = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let sidecar = IPTCMetadata(title: "Aurora over the fjord",
-                                   keywords: ["aurora", "fjord"],
-                                   creator: "Tester")
+        let sidecar = IPTCMetadata(
+            title: "Aurora over the fjord",
+            keywords: ["aurora", "fjord"],
+            creator: "Tester",
+            creatorJobTitle: "Staff Photographer",
+            descriptionWriter: "Night Desk"
+        )
         try XMPSidecarService().saveSidecar(metadata: sidecar, for: source)
 
         let outDir = dir.appendingPathComponent("out", isDirectory: true)
@@ -96,6 +100,8 @@ struct EditExportPipelineTests {
         let meta = try await SwiftExifReadService().readFullMetadata(url: rendered)
         #expect(Set(meta.keywords) == Set(["aurora", "fjord"]))
         #expect(meta.title == "Aurora over the fjord")
+        #expect(meta.creatorJobTitle == "Staff Photographer")
+        #expect(meta.descriptionWriter == "Night Desk")
     }
 
     @Test("renderItem embeds structured creator contact and locations from the XMP sidecar")

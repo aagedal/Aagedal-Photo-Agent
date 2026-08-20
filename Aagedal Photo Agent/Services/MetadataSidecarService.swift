@@ -221,6 +221,8 @@ struct MetadataSidecarService: Sendable {
         if edited.copyright != original.copyright { names.append("Copyright") }
         if edited.jobId != original.jobId { names.append("Job ID") }
         if edited.creator != original.creator { names.append("Creator") }
+        if edited.creatorJobTitle != original.creatorJobTitle { names.append("Creator Job Title") }
+        if edited.descriptionWriter != original.descriptionWriter { names.append("Description Writer") }
         if edited.credit != original.credit { names.append("Credit") }
         if edited.city != original.city { names.append("City") }
         if edited.sublocation != original.sublocation { names.append("Sublocation") }

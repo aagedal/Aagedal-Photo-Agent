@@ -445,6 +445,8 @@ extension MetadataValidationProfile {
             iimByteRule("description", field: .description, dataset: "2:120", count: 2_000),
             iimByteRule("keywords", field: .keywords, dataset: "2:25", count: 64),
             iimByteRule("creator", field: .creator, dataset: "2:80", count: 32),
+            iimByteRule("creator-job-title", field: .creatorJobTitle, dataset: "2:85", count: 32),
+            iimByteRule("description-writer", field: .descriptionWriter, dataset: "2:122", count: 32),
             iimByteRule("credit", field: .credit, dataset: "2:110", count: 32),
             iimByteRule("copyright", field: .copyright, dataset: "2:116", count: 128),
             iimByteRule("job-id", field: .jobId, dataset: "2:103", count: 32),

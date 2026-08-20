@@ -433,6 +433,8 @@ final class ImportViewModel {
             case "digitalSourceType":
                 configuration.metadata.digitalSourceType = DigitalSourceType(metadataValue: value)
             case "creator": configuration.metadata.creator = value
+            case "creatorJobTitle": configuration.metadata.creatorJobTitle = value
+            case "descriptionWriter": configuration.metadata.descriptionWriter = value
             case "credit": configuration.metadata.credit = value
             case "copyright": configuration.metadata.copyright = value
             case "dateCreated": configuration.metadata.dateCreated = value
@@ -915,6 +917,8 @@ final class ImportViewModel {
         resolved.description = Self.resolveField(metadata.description, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.extendedDescription = Self.resolveField(metadata.extendedDescription, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.creator = Self.resolveField(metadata.creator, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.creatorJobTitle = Self.resolveField(metadata.creatorJobTitle, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.descriptionWriter = Self.resolveField(metadata.descriptionWriter, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.credit = Self.resolveField(metadata.credit, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.copyright = Self.resolveField(metadata.copyright, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.jobId = Self.resolveField(metadata.jobId, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
@@ -946,6 +950,8 @@ final class ImportViewModel {
         if !meta.personShown.isEmpty { fields[.personInImage] = meta.personShown.joined(separator: ", ") }
         if let v = meta.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = meta.creator, !v.isEmpty { fields[.creator] = v }
+        if let v = meta.creatorJobTitle, !v.isEmpty { fields[.creatorJobTitle] = v }
+        if let v = meta.descriptionWriter, !v.isEmpty { fields[.descriptionWriter] = v }
         if let v = meta.credit, !v.isEmpty { fields[.credit] = v }
         if let v = meta.copyright, !v.isEmpty { fields[.rights] = v }
         if let v = meta.jobId, !v.isEmpty { fields[.transmissionReference] = v }

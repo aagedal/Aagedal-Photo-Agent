@@ -395,6 +395,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
         // Sync IPTC → XMP to ensure both sides are consistent.
         metadata.syncIPTCToXMP()
+        normalizeEditorialRoleXMP(for: fields, metadata: &metadata)
 
         if allowRenderedTIFFRewrite,
            ["tif", "tiff"].contains(url.pathExtension.lowercased()) {
@@ -404,6 +405,33 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             )
         } else {
             try metadata.write(to: url)
+        }
+    }
+
+    /// SwiftExif models the legacy IIM datasets as repeatable and therefore mirrors them to
+    /// XMP arrays. IPTC Photo Metadata defines the corresponding Photoshop properties as scalar
+    /// text, so normalize only the fields touched by this write after the general IIM→XMP sync.
+    private func normalizeEditorialRoleXMP(
+        for fields: [MetadataFieldKey: String],
+        metadata: inout ImageMetadata
+    ) {
+        let mappings: [(MetadataFieldKey, String)] = [
+            (.creatorJobTitle, "AuthorsPosition"),
+            (.descriptionWriter, "CaptionWriter"),
+        ]
+
+        for (key, property) in mappings {
+            guard let value = fields[key] else { continue }
+            if value.isEmpty {
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: property)
+            } else {
+                if metadata.xmp == nil { metadata.xmp = XMPData() }
+                metadata.xmp?.setValue(
+                    .simple(value),
+                    namespace: XMPNamespace.photoshop,
+                    property: property
+                )
+            }
         }
     }
 
@@ -463,6 +491,22 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "creator")
             } else {
                 metadata.iptc.byline = value
+            }
+
+        case .creatorJobTitle:
+            if isEmpty {
+                metadata.iptc.removeAll(for: .bylineTitle)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "AuthorsPosition")
+            } else {
+                metadata.iptc.bylineTitle = value
+            }
+
+        case .descriptionWriter:
+            if isEmpty {
+                metadata.iptc.removeAll(for: .writerEditor)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "CaptionWriter")
+            } else {
+                metadata.iptc.writerEditor = value
             }
 
         case .credit:

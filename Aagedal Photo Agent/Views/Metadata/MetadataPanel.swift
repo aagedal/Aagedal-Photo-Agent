@@ -44,6 +44,8 @@ struct MetadataPanel: View {
         case description
         case extendedDescription
         case creator
+        case creatorJobTitle
+        case descriptionWriter
         case credit
         case copyright
         case jobId
@@ -62,6 +64,8 @@ struct MetadataPanel: View {
             case .description: return "description"
             case .extendedDescription: return "extendedDescription"
             case .creator: return "creator"
+            case .creatorJobTitle: return "creatorJobTitle"
+            case .descriptionWriter: return "descriptionWriter"
             case .credit: return "credit"
             case .copyright: return "copyright"
             case .jobId: return "jobId"
@@ -390,6 +394,8 @@ struct MetadataPanel: View {
         case "description": return .description
         case "extendedDescription": return .extendedDescription
         case "creator": return .creator
+        case "creatorJobTitle": return .creatorJobTitle
+        case "descriptionWriter": return .descriptionWriter
         case "credit": return .credit
         case "copyright": return .copyright
         case "jobId": return .jobId
@@ -428,6 +434,8 @@ struct MetadataPanel: View {
         case .description: return viewModel.editingMetadata.description ?? ""
         case .extendedDescription: return viewModel.editingMetadata.extendedDescription ?? ""
         case .creator: return viewModel.editingMetadata.creator ?? ""
+        case .creatorJobTitle: return viewModel.editingMetadata.creatorJobTitle ?? ""
+        case .descriptionWriter: return viewModel.editingMetadata.descriptionWriter ?? ""
         case .credit: return viewModel.editingMetadata.credit ?? ""
         case .copyright: return viewModel.editingMetadata.copyright ?? ""
         case .jobId: return viewModel.editingMetadata.jobId ?? ""
@@ -449,6 +457,8 @@ struct MetadataPanel: View {
         case .description: viewModel.editingMetadata.description = normalized
         case .extendedDescription: viewModel.editingMetadata.extendedDescription = normalized
         case .creator: viewModel.editingMetadata.creator = normalized
+        case .creatorJobTitle: viewModel.editingMetadata.creatorJobTitle = normalized
+        case .descriptionWriter: viewModel.editingMetadata.descriptionWriter = normalized
         case .credit: viewModel.editingMetadata.credit = normalized
         case .copyright: viewModel.editingMetadata.copyright = normalized
         case .jobId: viewModel.editingMetadata.jobId = normalized
@@ -1384,6 +1394,22 @@ struct MetadataPanel: View {
                 focusedField: $focusedField
             )
             .id("creator")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.creatorJobTitle) {
+            simpleAdditionalField(
+                .creatorJobTitle,
+                keyPath: \.creatorJobTitle,
+                variableTarget: .creatorJobTitle
+            )
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.descriptionWriter) {
+            simpleAdditionalField(
+                .descriptionWriter,
+                keyPath: \.descriptionWriter,
+                variableTarget: .descriptionWriter
+            )
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.credit) {

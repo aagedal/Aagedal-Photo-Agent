@@ -1586,6 +1586,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
 
     // Secondary fields (collapsible)
     var creator: String?
+    var creatorJobTitle: String?
+    var descriptionWriter: String?
     var credit: String?
     var copyright: String?
     var jobId: String?
@@ -1621,7 +1623,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey, CaseIterable {
         case title, description, extendedDescription, keywords, personShown
         case digitalSourceType
-        case creator, credit, copyright, jobId, dateCreated, captureDate
+        case creator, creatorJobTitle, descriptionWriter, credit, copyright, jobId, dateCreated, captureDate
         case city, sublocation, provinceState, country, event, instructions, source
         case creatorContactInfo, locationsCreated, locationsShown
         case latitude, longitude
@@ -1640,6 +1642,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         latitude: Double? = nil,
         longitude: Double? = nil,
         creator: String? = nil,
+        creatorJobTitle: String? = nil,
+        descriptionWriter: String? = nil,
         credit: String? = nil,
         copyright: String? = nil,
         jobId: String? = nil,
@@ -1669,6 +1673,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.latitude = latitude
         self.longitude = longitude
         self.creator = creator
+        self.creatorJobTitle = creatorJobTitle
+        self.descriptionWriter = descriptionWriter
         self.credit = credit
         self.copyright = copyright
         self.jobId = jobId
@@ -1699,6 +1705,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         personShown = (try container.decodeIfPresent([String].self, forKey: .personShown) ?? []).uniqued()
         digitalSourceType = try container.decodeIfPresent(DigitalSourceType.self, forKey: .digitalSourceType)
         creator = try container.decodeIfPresent(String.self, forKey: .creator)
+        creatorJobTitle = try container.decodeIfPresent(String.self, forKey: .creatorJobTitle)
+        descriptionWriter = try container.decodeIfPresent(String.self, forKey: .descriptionWriter)
         credit = try container.decodeIfPresent(String.self, forKey: .credit)
         copyright = try container.decodeIfPresent(String.self, forKey: .copyright)
         jobId = try container.decodeIfPresent(String.self, forKey: .jobId)
@@ -1741,6 +1749,8 @@ extension IPTCMetadata {
             || personShown != other.personShown
             || digitalSourceType != other.digitalSourceType
             || creator != other.creator
+            || creatorJobTitle != other.creatorJobTitle
+            || descriptionWriter != other.descriptionWriter
             || credit != other.credit
             || copyright != other.copyright
             || jobId != other.jobId
@@ -1769,6 +1779,8 @@ extension IPTCMetadata {
         if !personShown.isEmpty { return true }
         if digitalSourceType != nil { return true }
         if let creator, !creator.isEmpty { return true }
+        if let creatorJobTitle, !creatorJobTitle.isEmpty { return true }
+        if let descriptionWriter, !descriptionWriter.isEmpty { return true }
         if let credit, !credit.isEmpty { return true }
         if let copyright, !copyright.isEmpty { return true }
         if let jobId, !jobId.isEmpty { return true }
@@ -1805,6 +1817,8 @@ extension IPTCMetadata {
         result.personShown = record.personShown
         result.digitalSourceType = record.digitalSourceType
         result.creator = record.creator
+        result.creatorJobTitle = record.creatorJobTitle
+        result.descriptionWriter = record.descriptionWriter
         result.credit = record.credit
         result.copyright = record.copyright
         result.jobId = record.jobId
@@ -1849,6 +1863,8 @@ extension IPTCMetadata {
         if !override.personShown.isEmpty { result.personShown = override.personShown }
         if let value = override.digitalSourceType { result.digitalSourceType = value }
         if let value = override.creator, !value.isEmpty { result.creator = value }
+        if let value = override.creatorJobTitle, !value.isEmpty { result.creatorJobTitle = value }
+        if let value = override.descriptionWriter, !value.isEmpty { result.descriptionWriter = value }
         if let value = override.credit, !value.isEmpty { result.credit = value }
         if let value = override.copyright, !value.isEmpty { result.copyright = value }
         if let value = override.jobId, !value.isEmpty { result.jobId = value }
@@ -1902,6 +1918,8 @@ extension IPTCMetadata {
         if !personShown.isEmpty { fields[.personInImage] = personShown.joined(separator: ", ") }
         if let v = digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = creator { fields[.creator] = v }
+        if let v = creatorJobTitle { fields[.creatorJobTitle] = v }
+        if let v = descriptionWriter { fields[.descriptionWriter] = v }
         if let v = credit { fields[.credit] = v }
         if let v = copyright { fields[.rights] = v }
         if let v = jobId { fields[.transmissionReference] = v }
@@ -1942,6 +1960,8 @@ extension IPTCMetadata {
         fields[.personInImage] = personShown.uniqued().joined(separator: ", ")
         fields[.digitalSourceType] = digitalSourceType?.newsCodeURI ?? ""
         fields[.creator] = creator ?? ""
+        fields[.creatorJobTitle] = creatorJobTitle ?? ""
+        fields[.descriptionWriter] = descriptionWriter ?? ""
         fields[.credit] = credit ?? ""
         fields[.rights] = copyright ?? ""
         fields[.transmissionReference] = jobId ?? ""

@@ -62,6 +62,25 @@ struct MetadataTemplatePersistenceTests {
         #expect(try service.loadAll().map(\.name) == ["Desk"])
     }
 
+    @Test("editorial role fields survive template persistence")
+    func editorialRoleFieldsRoundTrip() throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let expectedFields = [
+            TemplateField(fieldKey: "creatorJobTitle", templateValue: "Staff Photographer"),
+            TemplateField(fieldKey: "descriptionWriter", templateValue: "Night Desk"),
+        ]
+        let template = MetadataTemplate(name: "Editorial roles", fields: expectedFields)
+        let service = TemplateStorageService(directoryURL: folder)
+
+        try service.save(template)
+        let loaded = try #require(service.loadAll().first)
+
+        #expect(loaded.fields == expectedFields)
+        #expect(TemplateField.label(for: "creatorJobTitle") == "Creator Job Title")
+        #expect(TemplateField.label(for: "descriptionWriter") == "Description Writer")
+    }
+
     @Test("newer templates are skipped and protected from overwrite")
     func newerTemplateIsReadOnly() throws {
         let folder = try makeTempFolder()

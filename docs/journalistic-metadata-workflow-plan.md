@@ -277,7 +277,7 @@ CC0 example desk profile byte-for-byte. The focused validation suite passes 13 t
 Profile selection/editing UI remains part of the later workflow surfaces, while assignment packages
 can reuse this file boundary without changing the validation engine.
 
-**Progress — 2026-08-20:** A CC0 recipe corpus now covers the exact UTF-8 byte ceiling for all 13
+**Progress — 2026-08-20:** A CC0 recipe corpus now covers the exact UTF-8 byte ceiling for all 15
 editable IPTC-IIM text mappings and seven date/time variants spanning date-only, unknown timezone,
 UTC, half-hour offsets, and the civil-offset edges. The shared validation contract distinguishes
 character limits from byte limits, checks repeatable values independently, and provides a stable
@@ -299,6 +299,15 @@ sidecar preparation. Ten focused interoperability tests and all 11 real-file exp
 pass; see
 [the dated validation record](metadata-structured-xmp-validation.md). UI exposure, the remaining
 support-matrix mappings, and external-tool/cross-container fixtures remain open.
+
+**Progress — 2026-08-20:** Description Writer and Creator Job Title now share stable field IDs and
+flow through typed metadata, JSON persistence, history, batch editing, import, templates and
+variables, rendered export, and FTP/SFTP preparation. The Additional Fields editors expose both
+roles. Sidecar and embedded writes use the IPTC 2025.1 scalar Photoshop XMP properties alongside
+legacy IIM 2:122 and 2:85, including authoritative clears and 32-byte compatibility warnings; the
+read boundary prefers XMP and falls back to IIM. Focused interoperability, Codable, validation,
+template-variable, and real-file export coverage guards the complete path. Caption Workspace
+placement, remaining support-matrix fields, and external-tool/cross-container fixtures remain open.
 
 ## Phase 2 — Caption Workspace
 

@@ -689,6 +689,22 @@ struct ImportView: View {
                     )
 
                     EditableTextField(
+                        label: "Creator Job Title",
+                        text: Binding(
+                            get: { viewModel.configuration.metadata.creatorJobTitle ?? "" },
+                            set: { viewModel.configuration.metadata.creatorJobTitle = $0.isEmpty ? nil : $0 }
+                        )
+                    )
+
+                    EditableTextField(
+                        label: "Description Writer",
+                        text: Binding(
+                            get: { viewModel.configuration.metadata.descriptionWriter ?? "" },
+                            set: { viewModel.configuration.metadata.descriptionWriter = $0.isEmpty ? nil : $0 }
+                        )
+                    )
+
+                    EditableTextField(
                         label: "Credit",
                         text: Binding(
                             get: { viewModel.configuration.metadata.credit ?? "" },

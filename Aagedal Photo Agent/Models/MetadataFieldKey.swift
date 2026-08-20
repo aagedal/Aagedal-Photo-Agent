@@ -11,6 +11,8 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case personInImage
     case digitalSourceType
     case creator
+    case creatorJobTitle
+    case descriptionWriter
     case credit
     case rights
     case transmissionReference

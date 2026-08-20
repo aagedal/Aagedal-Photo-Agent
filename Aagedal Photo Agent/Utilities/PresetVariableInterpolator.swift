@@ -10,7 +10,8 @@ struct PresetVariableInterpolator: Sendable {
     func resolvingGPSPlaceVariables(in metadata: IPTCMetadata) async -> IPTCMetadata {
         let strings = [
             metadata.title, metadata.description, metadata.extendedDescription,
-            metadata.creator, metadata.credit, metadata.copyright, metadata.jobId,
+            metadata.creator, metadata.creatorJobTitle, metadata.descriptionWriter,
+            metadata.credit, metadata.copyright, metadata.jobId,
             metadata.dateCreated, metadata.city, metadata.country, metadata.event,
         ].compactMap { $0 } + metadata.keywords + metadata.personShown
         guard strings.contains(where: {
@@ -49,6 +50,8 @@ struct PresetVariableInterpolator: Sendable {
         result.description = replace(result.description)
         result.extendedDescription = replace(result.extendedDescription)
         result.creator = replace(result.creator)
+        result.creatorJobTitle = replace(result.creatorJobTitle)
+        result.descriptionWriter = replace(result.descriptionWriter)
         result.credit = replace(result.credit)
         result.copyright = replace(result.copyright)
         result.jobId = replace(result.jobId)
@@ -361,6 +364,8 @@ struct PresetVariableInterpolator: Sendable {
         case "keywords": return metadata.keywords.joined(separator: ", ")
         case "personshown", "persons": return metadata.personShown.joined(separator: ", ")
         case "creator": return metadata.creator ?? ""
+        case "creatorjobtitle", "authorsposition": return metadata.creatorJobTitle ?? ""
+        case "descriptionwriter", "captionwriter": return metadata.descriptionWriter ?? ""
         case "credit": return metadata.credit ?? ""
         case "copyright": return metadata.copyright ?? ""
         case "jobid": return metadata.jobId ?? ""

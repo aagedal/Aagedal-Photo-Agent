@@ -289,8 +289,18 @@ struct MetadataSidecarServiceTests {
         let service = MetadataSidecarService()
         let imageURL = makeImageURL(in: folder)
 
-        let original = IPTCMetadata(title: "Original", creator: "Original Creator")
-        let edited = IPTCMetadata(title: "Edited Title", creator: "Original Creator")
+        let original = IPTCMetadata(
+            title: "Original",
+            creator: "Original Creator",
+            creatorJobTitle: "Photographer",
+            descriptionWriter: "Day Desk"
+        )
+        let edited = IPTCMetadata(
+            title: "Edited Title",
+            creator: "Original Creator",
+            creatorJobTitle: "Staff Photographer",
+            descriptionWriter: "Night Desk"
+        )
         let sidecar = MetadataSidecar(
             sourceFile: "photo.jpg",
             pendingChanges: true,
@@ -301,6 +311,8 @@ struct MetadataSidecarServiceTests {
 
         let names = service.pendingFieldNames(for: imageURL, in: folder)
         #expect(names.contains("Headline"))
+        #expect(names.contains("Creator Job Title"))
+        #expect(names.contains("Description Writer"))
         #expect(!names.contains("Creator"))
     }
 

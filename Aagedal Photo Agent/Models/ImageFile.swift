@@ -146,6 +146,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     static func searchableText(from metadata: IPTCMetadata?) -> String {
         guard let metadata else { return "" }
         let fields = [metadata.title, metadata.description, metadata.creator,
+                      metadata.creatorJobTitle, metadata.descriptionWriter,
                       metadata.city, metadata.country, metadata.event]
         return fields.compactMap { $0 }.joined(separator: "\n").lowercased()
     }

@@ -455,6 +455,8 @@ final class MetadataViewModel {
         compareOptionalField(allMetadata, keyPath: \.copyright, fieldName: "copyright", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.jobId, fieldName: "jobId", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.creator, fieldName: "creator", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.creatorJobTitle, fieldName: "creatorJobTitle", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.descriptionWriter, fieldName: "descriptionWriter", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.credit, fieldName: "credit", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.city, fieldName: "city", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.sublocation, fieldName: "sublocation", common: &common, differing: &differing)
@@ -736,6 +738,8 @@ final class MetadataViewModel {
                         fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
                     }
                     if let v = edited.creator, !v.isEmpty { fields[.creator] = v }
+                    if let v = edited.creatorJobTitle, !v.isEmpty { fields[.creatorJobTitle] = v }
+                    if let v = edited.descriptionWriter, !v.isEmpty { fields[.descriptionWriter] = v }
                     if let v = edited.credit, !v.isEmpty { fields[.credit] = v }
                     if let v = edited.copyright, !v.isEmpty { fields[.rights] = v }
                     if let v = edited.jobId, !v.isEmpty { fields[.transmissionReference] = v }
@@ -778,6 +782,8 @@ final class MetadataViewModel {
                         }
                     }
                     if edited.creator != original?.creator { fields[.creator] = edited.creator ?? "" }
+                    if edited.creatorJobTitle != original?.creatorJobTitle { fields[.creatorJobTitle] = edited.creatorJobTitle ?? "" }
+                    if edited.descriptionWriter != original?.descriptionWriter { fields[.descriptionWriter] = edited.descriptionWriter ?? "" }
                     if edited.credit != original?.credit { fields[.credit] = edited.credit ?? "" }
                     if edited.copyright != original?.copyright { fields[.rights] = edited.copyright ?? "" }
                     if edited.jobId != original?.jobId {
@@ -845,6 +851,8 @@ final class MetadataViewModel {
         }
         if let v = metadata.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = metadata.creator, !v.isEmpty { fields[.creator] = v }
+        if let v = metadata.creatorJobTitle, !v.isEmpty { fields[.creatorJobTitle] = v }
+        if let v = metadata.descriptionWriter, !v.isEmpty { fields[.descriptionWriter] = v }
         if let v = metadata.credit, !v.isEmpty { fields[.credit] = v }
         if let v = metadata.copyright, !v.isEmpty { fields[.rights] = v }
         if let v = metadata.jobId, !v.isEmpty { fields[.transmissionReference] = v }
@@ -1055,6 +1063,8 @@ final class MetadataViewModel {
         fields[.personInImage] = metadata.personShown.uniqued().joined(separator: ", ")
         fields[.digitalSourceType] = metadata.digitalSourceType?.newsCodeURI ?? ""
         fields[.creator] = metadata.creator ?? ""
+        fields[.creatorJobTitle] = metadata.creatorJobTitle ?? ""
+        fields[.descriptionWriter] = metadata.descriptionWriter ?? ""
         fields[.credit] = metadata.credit ?? ""
         fields[.rights] = metadata.copyright ?? ""
         fields[.transmissionReference] = metadata.jobId ?? ""
@@ -1309,6 +1319,10 @@ final class MetadataViewModel {
                 editingMetadata.digitalSourceType = DigitalSourceType(metadataValue: value)
             case "creator":
                 editingMetadata.creator = append ? appendString(editingMetadata.creator, value) : value
+            case "creatorJobTitle":
+                editingMetadata.creatorJobTitle = append ? appendString(editingMetadata.creatorJobTitle, value) : value
+            case "descriptionWriter":
+                editingMetadata.descriptionWriter = append ? appendString(editingMetadata.descriptionWriter, value) : value
             case "credit":
                 editingMetadata.credit = append ? appendString(editingMetadata.credit, value) : value
             case "copyright":
@@ -1374,6 +1388,8 @@ final class MetadataViewModel {
             editingMetadata.description,
             editingMetadata.extendedDescription,
             editingMetadata.creator,
+            editingMetadata.creatorJobTitle,
+            editingMetadata.descriptionWriter,
             editingMetadata.credit,
             editingMetadata.copyright,
             editingMetadata.jobId,
@@ -1411,6 +1427,8 @@ final class MetadataViewModel {
         editingMetadata.description = resolveIfPresent(editingMetadata.description, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.extendedDescription = resolveIfPresent(editingMetadata.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.creator = resolveIfPresent(editingMetadata.creator, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.creatorJobTitle = resolveIfPresent(editingMetadata.creatorJobTitle, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.descriptionWriter = resolveIfPresent(editingMetadata.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.credit = resolveIfPresent(editingMetadata.credit, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.copyright = resolveIfPresent(editingMetadata.copyright, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.jobId = resolveIfPresent(editingMetadata.jobId, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
@@ -1470,6 +1488,8 @@ final class MetadataViewModel {
             fields[.extendedDescription] = resolved.extendedDescription ?? ""
         }
         if resolved.creator != original.creator { fields[.creator] = resolved.creator ?? "" }
+        if resolved.creatorJobTitle != original.creatorJobTitle { fields[.creatorJobTitle] = resolved.creatorJobTitle ?? "" }
+        if resolved.descriptionWriter != original.descriptionWriter { fields[.descriptionWriter] = resolved.descriptionWriter ?? "" }
         if resolved.credit != original.credit { fields[.credit] = resolved.credit ?? "" }
         if resolved.copyright != original.copyright { fields[.rights] = resolved.copyright ?? "" }
         if resolved.jobId != original.jobId {
@@ -1694,6 +1714,8 @@ final class MetadataViewModel {
                 resolvedMeta.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
+                resolvedMeta.creatorJobTitle = resolveIfChanged(meta.creatorJobTitle, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
+                resolvedMeta.descriptionWriter = resolveIfChanged(meta.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
@@ -2051,6 +2073,8 @@ final class MetadataViewModel {
         recordChange("Copyright", old: previous.copyright, new: edited.copyright)
         recordChange("Job ID", old: previous.jobId, new: edited.jobId)
         recordChange("Creator", old: previous.creator, new: edited.creator)
+        recordChange("Creator Job Title", old: previous.creatorJobTitle, new: edited.creatorJobTitle)
+        recordChange("Description Writer", old: previous.descriptionWriter, new: edited.descriptionWriter)
         recordChange("Credit", old: previous.credit, new: edited.credit)
         recordChange("Date Created", old: previous.dateCreated, new: edited.dateCreated)
         recordChange("City", old: previous.city, new: edited.city)
@@ -2192,6 +2216,12 @@ final class MetadataViewModel {
         }
         if let creator = batchMeta.creator, !creator.isEmpty {
             metadata.creator = creator
+        }
+        if let creatorJobTitle = batchMeta.creatorJobTitle, !creatorJobTitle.isEmpty {
+            metadata.creatorJobTitle = creatorJobTitle
+        }
+        if let descriptionWriter = batchMeta.descriptionWriter, !descriptionWriter.isEmpty {
+            metadata.descriptionWriter = descriptionWriter
         }
         if let credit = batchMeta.credit, !credit.isEmpty {
             metadata.credit = credit
@@ -2413,6 +2443,8 @@ final class MetadataViewModel {
         if editingMetadata.copyright != original.copyright { names.append("Copyright") }
         if editingMetadata.jobId != original.jobId { names.append("Job ID") }
         if editingMetadata.creator != original.creator { names.append("Creator") }
+        if editingMetadata.creatorJobTitle != original.creatorJobTitle { names.append("Creator Job Title") }
+        if editingMetadata.descriptionWriter != original.descriptionWriter { names.append("Description Writer") }
         if editingMetadata.credit != original.credit { names.append("Credit") }
         if editingMetadata.city != original.city { names.append("City") }
         if editingMetadata.sublocation != original.sublocation { names.append("Sublocation") }
@@ -2582,6 +2614,10 @@ final class MetadataViewModel {
             metadata.jobId = entry.newValue
         case "Creator":
             metadata.creator = entry.newValue
+        case "Creator Job Title":
+            metadata.creatorJobTitle = entry.newValue
+        case "Description Writer":
+            metadata.descriptionWriter = entry.newValue
         case "Credit":
             metadata.credit = entry.newValue
         case "City":

@@ -36,6 +36,21 @@ struct PresetVariableInterpolatorTests {
         #expect(result == "TA-Oslo")
     }
 
+    @Test("Editorial role fields resolve by key and IPTC display alias")
+    func editorialRoleFieldAliases() {
+        let metadata = IPTCMetadata(
+            creatorJobTitle: "Staff Photographer",
+            descriptionWriter: "Night Desk"
+        )
+
+        let result = interpolator.resolve(
+            "{field:creatorJobTitle}|{field:Authors Position}|{field:descriptionWriter}|{field:Caption Writer}",
+            existingMetadata: metadata
+        )
+
+        #expect(result == "Staff Photographer|Staff Photographer|Night Desk|Night Desk")
+    }
+
     @Test("Metadata dates support friendly compact and dashed aliases")
     func metadataDateAliases() {
         var metadata = IPTCMetadata()

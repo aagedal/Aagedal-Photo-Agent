@@ -380,6 +380,8 @@ struct EditorialMetadataInteroperabilityTests {
         case .description: .captionAbstract
         case .keywords: .keywords
         case .creator: .byline
+        case .creatorJobTitle: .bylineTitle
+        case .descriptionWriter: .writerEditor
         case .credit: .credit
         case .copyright: .copyrightNotice
         case .jobId: .originalTransmissionReference
@@ -652,6 +654,96 @@ struct EditorialMetadataInteroperabilityTests {
         )
     }
 
+    @Test("creator job title and description writer round-trip through XMP and IPTC-IIM")
+    func editorialRoleRoundTrip() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sidecarService = XMPSidecarService()
+        let rawURL = directory.appendingPathComponent("roles.nef")
+        let expected = IPTCMetadata(
+            creator: "Alex Example",
+            creatorJobTitle: "Staff Photographer",
+            descriptionWriter: "Night Desk"
+        )
+        try sidecarService.saveSidecar(metadata: expected, for: rawURL)
+        let sidecarXMP = try XMPReader.readFromXML(
+            Data(contentsOf: sidecarService.sidecarURL(for: rawURL))
+        )
+        #expect(sidecarXMP.simpleValue(
+            namespace: XMPNamespace.photoshop,
+            property: "AuthorsPosition"
+        ) == "Staff Photographer")
+        #expect(sidecarXMP.simpleValue(
+            namespace: XMPNamespace.photoshop,
+            property: "CaptionWriter"
+        ) == "Night Desk")
+        let sidecarDecoded = try #require(sidecarService.loadSidecar(for: rawURL))
+        #expect(sidecarDecoded.creatorJobTitle == "Staff Photographer")
+        #expect(sidecarDecoded.descriptionWriter == "Night Desk")
+
+        let imageURL = try makeJPEG(in: directory)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([
+            .creatorJobTitle: "Staff Photographer",
+            .descriptionWriter: "Night Desk",
+        ], to: [imageURL])
+
+        let embedded = try SwiftExif.readMetadata(from: imageURL)
+        #expect(embedded.iptc.bylineTitle == "Staff Photographer")
+        #expect(embedded.iptc.writerEditor == "Night Desk")
+        #expect(embedded.xmp?.simpleValue(
+            namespace: XMPNamespace.photoshop,
+            property: "AuthorsPosition"
+        ) == "Staff Photographer")
+        #expect(embedded.xmp?.simpleValue(
+            namespace: XMPNamespace.photoshop,
+            property: "CaptionWriter"
+        ) == "Night Desk")
+        let embeddedDecoded = iptcMetadataFromDict(embedded.asMetadataDict(fileURL: imageURL))
+        #expect(embeddedDecoded.creatorJobTitle == "Staff Photographer")
+        #expect(embeddedDecoded.descriptionWriter == "Night Desk")
+
+        var conflicting = embedded
+        conflicting.iptc.bylineTitle = "IIM Photographer"
+        conflicting.iptc.writerEditor = "IIM Desk"
+        conflicting.xmp?.setValue(
+            .simple("XMP Photographer"),
+            namespace: XMPNamespace.photoshop,
+            property: "AuthorsPosition"
+        )
+        conflicting.xmp?.setValue(
+            .simple("XMP Desk"),
+            namespace: XMPNamespace.photoshop,
+            property: "CaptionWriter"
+        )
+        let preferred = iptcMetadataFromDict(conflicting.asMetadataDict(fileURL: imageURL))
+        #expect(preferred.creatorJobTitle == "XMP Photographer")
+        #expect(preferred.descriptionWriter == "XMP Desk")
+
+        var iimOnly = conflicting
+        iimOnly.xmp = nil
+        let fallback = iptcMetadataFromDict(iimOnly.asMetadataDict(fileURL: imageURL))
+        #expect(fallback.creatorJobTitle == "IIM Photographer")
+        #expect(fallback.descriptionWriter == "IIM Desk")
+
+        try await engine.writeFields([
+            .creatorJobTitle: "",
+            .descriptionWriter: "",
+        ], to: [imageURL])
+        let cleared = try SwiftExif.readMetadata(from: imageURL)
+        #expect(cleared.iptc.bylineTitle == nil)
+        #expect(cleared.iptc.writerEditor == nil)
+        #expect(cleared.xmp?.simpleValue(
+            namespace: XMPNamespace.photoshop,
+            property: "AuthorsPosition"
+        ) == nil)
+        #expect(cleared.xmp?.simpleValue(
+            namespace: XMPNamespace.photoshop,
+            property: "CaptionWriter"
+        ) == nil)
+    }
+
     @Test("the embedded raster writer carries structured editorial XMP")
     func embeddedJPEGStructuredEditorialRoundTrip() async throws {
         let directory = try makeTemporaryDirectory()
@@ -712,7 +804,7 @@ struct EditorialMetadataInteroperabilityTests {
         let corpus = try loadLegacyBoundaryCorpus()
         #expect(corpus.schemaVersion == 1)
         #expect(corpus.license == "CC0-1.0")
-        #expect(corpus.iimTextBoundaries.count == 13)
+        #expect(corpus.iimTextBoundaries.count == 15)
 
         for boundary in corpus.iimTextBoundaries {
             let tag = try #require(iimTag(for: boundary.fieldID))
@@ -1224,6 +1316,8 @@ struct IPTCMetadataCodableTests {
             latitude: 59.913,
             longitude: 10.752,
             creator: "Creator Name",
+            creatorJobTitle: "Staff Photographer",
+            descriptionWriter: "Night Desk",
             credit: "Credit Line",
             copyright: "© 2026",
             jobId: "JOB123",
@@ -1254,6 +1348,8 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.latitude == 59.913)
         #expect(decoded.longitude == 10.752)
         #expect(decoded.creator == "Creator Name")
+        #expect(decoded.creatorJobTitle == "Staff Photographer")
+        #expect(decoded.descriptionWriter == "Night Desk")
         #expect(decoded.credit == "Credit Line")
         #expect(decoded.copyright == "© 2026")
         #expect(decoded.jobId == "JOB123")

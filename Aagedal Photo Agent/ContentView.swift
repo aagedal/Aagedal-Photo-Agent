@@ -2098,6 +2098,8 @@ struct ContentView: View {
             latitude: source.latitude,
             longitude: source.longitude,
             creator: source.creator,
+            creatorJobTitle: source.creatorJobTitle,
+            descriptionWriter: source.descriptionWriter,
             credit: source.credit,
             copyright: source.copyright,
             jobId: source.jobId,
