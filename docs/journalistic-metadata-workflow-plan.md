@@ -222,7 +222,7 @@ ready.
 - [x] Expose aggregate counts and “next blocking issue” ordering.
 - [x] Use the same engine in the browser missing-metadata filter, Metadata Review, and FTP/SFTP
   preflight.
-- [ ] Add profile import/export as versioned JSON. Portable assignment packages can build on this
+- [x] Add profile import/export as versioned JSON. Portable assignment packages can build on this
   later without changing the rule engine.
 
 ### Verification
@@ -266,6 +266,16 @@ now use the same engine without changing their stored settings. Digital Source T
 canonical NewsCodes URIs while accepting supported URI/QCode/legacy aliases, and brace punctuation
 is not mistaken for a template variable. Seven focused tests pass. Versioned profile import/export
 and the remaining cross-container field verification remain open.
+
+**Progress — 2026-08-20:** Validation profiles now use an explicit, stable JSON rule schema rather
+than Swift's synthesized enum representation. The reusable import/export boundary writes canonical
+sorted JSON atomically; rejects missing/newer schemas, oversized documents, duplicate or empty rule
+identities, invalid length bounds or regular expressions, empty controlled vocabularies, and
+self-dependencies; migrates the short-lived synthesized version-one rule shape; and round-trips a
+CC0 example desk profile byte-for-byte. The focused validation suite passes 12 tests; see
+[the dated validation record](metadata-validation-profile-validation.md).
+Profile selection/editing UI remains part of the later workflow surfaces, while assignment packages
+can reuse this file boundary without changing the validation engine.
 
 ## Phase 2 — Caption Workspace
 

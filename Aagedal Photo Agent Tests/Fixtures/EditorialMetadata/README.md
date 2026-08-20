@@ -23,6 +23,12 @@ Tests compare every parsed XMP property before and after a reader/writer round t
 only the caption and verify that the multi-creator sequence, structured locations, controlled
 terms, and foreign properties survive.
 
+### `newsroom-validation-profile.json`
+
+A portable, versioned example desk profile covering every validation rule representation. It uses
+only fictional policy values and stable generated identifiers. Import/export tests decode it,
+validate its semantics, and require byte-stable JSON after a canonical export.
+
 ## Generated-at-test-time fixtures
 
 Tests generate a minimal JPEG in memory for the no-metadata and embedded-XMP cases. This avoids
@@ -35,4 +41,3 @@ dictionary because the precedence rule belongs to the app adapter, not to a part
 Before Phase 0 can close, add legally redistributable real-file samples for TIFF, PNG, HEIC/HEIF,
 JPEG XL, and representative RAW+XMP pairs, plus external round-trip outputs from Adobe Bridge and
 Photo Mechanic. Those files must document provenance and redistribution permission here.
-

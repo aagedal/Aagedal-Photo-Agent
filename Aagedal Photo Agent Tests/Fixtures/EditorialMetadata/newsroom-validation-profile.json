@@ -1,0 +1,72 @@
+{
+  "id" : "7A70A73D-5A60-480A-91CB-965CE2D10BA9",
+  "name" : "Example News Desk",
+  "rules" : [
+    {
+      "id" : "headline.required",
+      "requirement" : {
+        "field" : "title",
+        "type" : "required"
+      },
+      "severity" : "blocker"
+    },
+    {
+      "id" : "description.minimum",
+      "requirement" : {
+        "count" : 30,
+        "field" : "description",
+        "type" : "minimumLength"
+      },
+      "severity" : "blocker"
+    },
+    {
+      "id" : "description.maximum",
+      "requirement" : {
+        "count" : 1800,
+        "field" : "description",
+        "type" : "maximumLength"
+      },
+      "severity" : "warning"
+    },
+    {
+      "id" : "country.iso-alpha-3",
+      "message" : "Country must use an uppercase ISO 3166-1 alpha-3 code.",
+      "requirement" : {
+        "expression" : "[A-Z]{3}",
+        "field" : "country",
+        "type" : "pattern"
+      },
+      "severity" : "blocker"
+    },
+    {
+      "id" : "digital-source.allowed",
+      "requirement" : {
+        "field" : "digitalSourceType",
+        "type" : "allowedValues",
+        "values" : [
+          "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture",
+          "http://cv.iptc.org/newscodes/digitalsourcetype/humanEdits"
+        ]
+      },
+      "severity" : "blocker"
+    },
+    {
+      "id" : "credit.requires-creator",
+      "requirement" : {
+        "field" : "creator",
+        "type" : "requires",
+        "whenPresent" : "credit"
+      },
+      "severity" : "warning"
+    },
+    {
+      "id" : "description.no-placeholders",
+      "requirement" : {
+        "field" : "description",
+        "type" : "forbidsPlaceholder"
+      },
+      "severity" : "blocker"
+    }
+  ],
+  "schemaVersion" : 1
+}

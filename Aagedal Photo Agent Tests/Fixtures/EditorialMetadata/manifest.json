@@ -15,6 +15,16 @@
         "unknown-known-namespace-property",
         "unicode-and-punctuation"
       ]
+    },
+    {
+      "filename": "newsroom-validation-profile.json",
+      "origin": "Generated for Aagedal Photo Agent",
+      "containsPersonalData": false,
+      "purpose": [
+        "portable-validation-profile",
+        "versioned-json-import-export",
+        "validation-rule-schema"
+      ]
     }
   ]
 }

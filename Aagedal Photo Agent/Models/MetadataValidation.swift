@@ -35,6 +35,141 @@ nonisolated enum MetadataValidationRequirement: Codable, Equatable, Sendable {
             return field
         }
     }
+
+    /// Keep the portable profile representation independent of Swift's synthesized enum layout.
+    /// These keys are the public JSON contract consumed by newsroom profile files.
+    private enum CodingKeys: String, CodingKey {
+        case type, field, count, expression, values, whenPresent
+    }
+
+    private enum Kind: String, Codable {
+        case required, minimumLength, maximumLength, pattern, allowedValues, requires
+        case forbidsPlaceholder
+    }
+
+    /// The first implementation briefly relied on Swift's synthesized associated-value encoding.
+    /// Accept that shape on read so development profiles migrate to the explicit public contract.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case required, minimumLength, maximumLength, pattern, allowedValues, requires
+        case forbidsPlaceholder
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let kind = try container.decodeIfPresent(Kind.self, forKey: .type) {
+            let field = try container.decode(MetadataFieldID.self, forKey: .field)
+            switch kind {
+            case .required:
+                self = .required(field: field)
+            case .minimumLength:
+                self = .minimumLength(
+                    field: field,
+                    count: try container.decode(Int.self, forKey: .count)
+                )
+            case .maximumLength:
+                self = .maximumLength(
+                    field: field,
+                    count: try container.decode(Int.self, forKey: .count)
+                )
+            case .pattern:
+                self = .pattern(
+                    field: field,
+                    expression: try container.decode(String.self, forKey: .expression)
+                )
+            case .allowedValues:
+                self = .allowedValues(
+                    field: field,
+                    values: try container.decode([String].self, forKey: .values)
+                )
+            case .requires:
+                self = .requires(
+                    field: field,
+                    whenPresent: try container.decode(MetadataFieldID.self, forKey: .whenPresent)
+                )
+            case .forbidsPlaceholder:
+                self = .forbidsPlaceholder(field: field)
+            }
+            return
+        }
+
+        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        for key in legacy.allKeys {
+            let values = try legacy.nestedContainer(keyedBy: CodingKeys.self, forKey: key)
+            let field = try values.decode(MetadataFieldID.self, forKey: .field)
+            switch key {
+            case .required:
+                self = .required(field: field)
+            case .minimumLength:
+                self = .minimumLength(
+                    field: field,
+                    count: try values.decode(Int.self, forKey: .count)
+                )
+            case .maximumLength:
+                self = .maximumLength(
+                    field: field,
+                    count: try values.decode(Int.self, forKey: .count)
+                )
+            case .pattern:
+                self = .pattern(
+                    field: field,
+                    expression: try values.decode(String.self, forKey: .expression)
+                )
+            case .allowedValues:
+                self = .allowedValues(
+                    field: field,
+                    values: try values.decode([String].self, forKey: .values)
+                )
+            case .requires:
+                self = .requires(
+                    field: field,
+                    whenPresent: try values.decode(MetadataFieldID.self, forKey: .whenPresent)
+                )
+            case .forbidsPlaceholder:
+                self = .forbidsPlaceholder(field: field)
+            }
+            return
+        }
+
+        throw DecodingError.keyNotFound(
+            CodingKeys.type,
+            DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "A validation requirement must contain a type."
+            )
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .required(field):
+            try container.encode(Kind.required, forKey: .type)
+            try container.encode(field, forKey: .field)
+        case let .minimumLength(field, count):
+            try container.encode(Kind.minimumLength, forKey: .type)
+            try container.encode(field, forKey: .field)
+            try container.encode(count, forKey: .count)
+        case let .maximumLength(field, count):
+            try container.encode(Kind.maximumLength, forKey: .type)
+            try container.encode(field, forKey: .field)
+            try container.encode(count, forKey: .count)
+        case let .pattern(field, expression):
+            try container.encode(Kind.pattern, forKey: .type)
+            try container.encode(field, forKey: .field)
+            try container.encode(expression, forKey: .expression)
+        case let .allowedValues(field, values):
+            try container.encode(Kind.allowedValues, forKey: .type)
+            try container.encode(field, forKey: .field)
+            try container.encode(values, forKey: .values)
+        case let .requires(field, whenPresent):
+            try container.encode(Kind.requires, forKey: .type)
+            try container.encode(field, forKey: .field)
+            try container.encode(whenPresent, forKey: .whenPresent)
+        case let .forbidsPlaceholder(field):
+            try container.encode(Kind.forbidsPlaceholder, forKey: .type)
+            try container.encode(field, forKey: .field)
+        }
+    }
 }
 
 /// A stable rule definition. `id` is persisted and becomes part of issue identity so callers can
