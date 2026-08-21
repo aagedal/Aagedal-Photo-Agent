@@ -2108,6 +2108,7 @@ struct ContentView: View {
             copyright: source.copyright,
             rightsUsageTerms: source.rightsUsageTerms,
             webStatementOfRights: source.webStatementOfRights,
+            digitalImageGUID: source.digitalImageGUID,
             jobId: source.jobId,
             dateCreated: source.dateCreated,
             city: source.city,

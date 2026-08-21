@@ -449,6 +449,7 @@ final class ImportViewModel {
             case "copyright": configuration.metadata.copyright = value
             case "rightsUsageTerms": configuration.metadata.rightsUsageTerms = value
             case "webStatementOfRights": configuration.metadata.webStatementOfRights = value
+            case "digitalImageGUID": configuration.metadata.digitalImageGUID = value
             case "dateCreated": configuration.metadata.dateCreated = value
             case "city": configuration.metadata.city = value
             case "sublocation": configuration.metadata.sublocation = value
@@ -936,6 +937,7 @@ final class ImportViewModel {
         resolved.copyright = Self.resolveField(metadata.copyright, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.rightsUsageTerms = Self.resolveField(metadata.rightsUsageTerms, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.webStatementOfRights = Self.resolveField(metadata.webStatementOfRights, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.digitalImageGUID = Self.resolveField(metadata.digitalImageGUID, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.jobId = Self.resolveField(metadata.jobId, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.dateCreated = Self.resolveField(metadata.dateCreated, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.city = Self.resolveField(metadata.city, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
@@ -994,6 +996,7 @@ final class ImportViewModel {
         if let v = meta.copyright, !v.isEmpty { fields[.rights] = v }
         if let v = meta.rightsUsageTerms, !v.isEmpty { fields[.rightsUsageTerms] = v }
         if let v = meta.webStatementOfRights, !v.isEmpty { fields[.webStatementOfRights] = v }
+        if let v = meta.digitalImageGUID, !v.isEmpty { fields[.digitalImageGUID] = v }
         if let v = meta.jobId, !v.isEmpty { fields[.transmissionReference] = v }
         if let v = meta.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
         if let v = meta.city, !v.isEmpty { fields[.city] = v }

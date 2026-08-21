@@ -82,6 +82,15 @@ struct PresetVariableInterpolatorTests {
         #expect(result == "Editorial use only|https://example.test/rights")
     }
 
+    @Test("Digital Image GUID resolves by key and display label")
+    func digitalImageGUIDFieldAliases() {
+        let metadata = IPTCMetadata(digitalImageGUID: "urn:uuid:photo-42")
+        #expect(interpolator.resolve(
+            "{field:digitalImageGUID}|{field:Digital Image GUID}",
+            existingMetadata: metadata
+        ) == "urn:uuid:photo-42|urn:uuid:photo-42")
+    }
+
     @Test("Urgency resolves by field key")
     func urgencyFieldAlias() {
         let metadata = IPTCMetadata(urgency: 2)

@@ -541,6 +541,14 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 value: isEmpty ? nil : .simple(value)
             )
 
+        case .digitalImageGUID:
+            setXMPField(
+                &metadata,
+                namespace: XMPNamespace.iptcExt,
+                property: "DigImageGUID",
+                value: isEmpty ? nil : .simple(value)
+            )
+
         case .transmissionReference:
             if isEmpty {
                 metadata.iptc.removeAll(for: .originalTransmissionReference)

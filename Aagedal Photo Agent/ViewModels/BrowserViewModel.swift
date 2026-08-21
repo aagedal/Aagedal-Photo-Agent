@@ -2768,6 +2768,7 @@ final class BrowserViewModel {
         if edited.copyright != original.copyright { names.append("Copyright") }
         if edited.rightsUsageTerms != original.rightsUsageTerms { names.append("Rights Usage Terms") }
         if edited.webStatementOfRights != original.webStatementOfRights { names.append("Web Statement of Rights") }
+        if edited.digitalImageGUID != original.digitalImageGUID { names.append("Digital Image GUID") }
         if edited.jobId != original.jobId { names.append("Job ID") }
         if edited.creator != original.creator { names.append("Creator") }
         if edited.creatorJobTitle != original.creatorJobTitle { names.append("Creator Job Title") }

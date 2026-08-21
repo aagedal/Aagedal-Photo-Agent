@@ -356,6 +356,17 @@ rendered export, and FTP/SFTP preparation. Sidecar and embedded JPEG writes use 
 [the dated validation record](metadata-scene-code-validation.md). External-tool and cross-container
 verification remains open.
 
+**Progress — 2026-08-21:** Digital Image GUID now remains a stable, explicitly managed identifier
+across typed metadata, versioned JSON, history, batch editing, import, templates and variables,
+browser search, rendered export, and FTP/SFTP preparation. XMP sidecars and embedded JPEGs read and
+write `Iptc4xmpExt:DigImageGUID`, including authoritative clears and preservation through unrelated
+caption edits. Empty images stay empty: ordinary metadata editing never generates or rotates a
+GUID; assignment through an editor, import configuration, or template is always explicit. The
+focused model, persistence, validation, variable, interoperability, and real-file export suites
+pass 160 tests across two focused runs; see
+[the dated validation record](metadata-digital-image-guid-validation.md). External-tool and
+cross-container verification remains open.
+
 ## Phase 2 — Caption Workspace
 
 **Exit gate:** a photographer can caption a folder image by image using the keyboard, never lose an

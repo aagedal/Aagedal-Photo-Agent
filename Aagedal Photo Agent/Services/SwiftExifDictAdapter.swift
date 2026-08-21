@@ -115,6 +115,12 @@ extension ImageMetadata {
             ) {
                 dict[MetadataDictKey.webStatementOfRights] = v
             }
+            if let v = xmp.simpleValue(
+                namespace: XMPNamespace.iptcExt,
+                property: MetadataDictKey.digitalImageGUID
+            ) {
+                dict[MetadataDictKey.digitalImageGUID] = v
+            }
             if let v = xmp.headline, dict[MetadataDictKey.headline] == nil {
                 dict[MetadataDictKey.headline] = v
             }

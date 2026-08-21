@@ -1596,6 +1596,9 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     var copyright: String?
     var rightsUsageTerms: String?
     var webStatementOfRights: String?
+    /// Stable image identifier supplied by the photographer, agency, or ingest workflow.
+    /// Metadata edits never synthesize or rotate this value implicitly.
+    var digitalImageGUID: String?
     var jobId: String?
     var dateCreated: String?
     var captureDate: String?
@@ -1632,7 +1635,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         case organisationsShownNames, organisationsShownCodes
         case digitalSourceType, urgency, sceneCodes
         case creator, creatorJobTitle, descriptionWriter, credit, copyright
-        case rightsUsageTerms, webStatementOfRights, jobId, dateCreated, captureDate
+        case rightsUsageTerms, webStatementOfRights, digitalImageGUID, jobId, dateCreated, captureDate
         case city, sublocation, provinceState, country, countryCode, event, instructions, source
         case creatorContactInfo, locationsCreated, locationsShown
         case latitude, longitude
@@ -1661,6 +1664,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         copyright: String? = nil,
         rightsUsageTerms: String? = nil,
         webStatementOfRights: String? = nil,
+        digitalImageGUID: String? = nil,
         jobId: String? = nil,
         dateCreated: String? = nil,
         captureDate: String? = nil,
@@ -1699,6 +1703,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.copyright = copyright
         self.rightsUsageTerms = rightsUsageTerms
         self.webStatementOfRights = webStatementOfRights
+        self.digitalImageGUID = digitalImageGUID
         self.jobId = jobId
         self.dateCreated = dateCreated
         self.captureDate = captureDate
@@ -1740,6 +1745,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         copyright = try container.decodeIfPresent(String.self, forKey: .copyright)
         rightsUsageTerms = try container.decodeIfPresent(String.self, forKey: .rightsUsageTerms)
         webStatementOfRights = try container.decodeIfPresent(String.self, forKey: .webStatementOfRights)
+        digitalImageGUID = try container.decodeIfPresent(String.self, forKey: .digitalImageGUID)
         jobId = try container.decodeIfPresent(String.self, forKey: .jobId)
         dateCreated = try container.decodeIfPresent(String.self, forKey: .dateCreated)
         captureDate = try container.decodeIfPresent(String.self, forKey: .captureDate)
@@ -1793,6 +1799,7 @@ extension IPTCMetadata {
             || copyright != other.copyright
             || rightsUsageTerms != other.rightsUsageTerms
             || webStatementOfRights != other.webStatementOfRights
+            || digitalImageGUID != other.digitalImageGUID
             || jobId != other.jobId
             || city != other.city
             || sublocation != other.sublocation
@@ -1830,6 +1837,7 @@ extension IPTCMetadata {
         if let copyright, !copyright.isEmpty { return true }
         if let rightsUsageTerms, !rightsUsageTerms.isEmpty { return true }
         if let webStatementOfRights, !webStatementOfRights.isEmpty { return true }
+        if let digitalImageGUID, !digitalImageGUID.isEmpty { return true }
         if let jobId, !jobId.isEmpty { return true }
         if let dateCreated, !dateCreated.isEmpty { return true }
         if let city, !city.isEmpty { return true }
@@ -1875,6 +1883,7 @@ extension IPTCMetadata {
         result.copyright = record.copyright
         result.rightsUsageTerms = record.rightsUsageTerms
         result.webStatementOfRights = record.webStatementOfRights
+        result.digitalImageGUID = record.digitalImageGUID
         result.jobId = record.jobId
         result.dateCreated = record.dateCreated
         result.city = record.city
@@ -1928,6 +1937,7 @@ extension IPTCMetadata {
         if let value = override.copyright, !value.isEmpty { result.copyright = value }
         if let value = override.rightsUsageTerms, !value.isEmpty { result.rightsUsageTerms = value }
         if let value = override.webStatementOfRights, !value.isEmpty { result.webStatementOfRights = value }
+        if let value = override.digitalImageGUID, !value.isEmpty { result.digitalImageGUID = value }
         if let value = override.jobId, !value.isEmpty { result.jobId = value }
         if let value = override.dateCreated, !value.isEmpty { result.dateCreated = value }
         if let value = override.captureDate, !value.isEmpty { result.captureDate = value }
@@ -1990,6 +2000,7 @@ extension IPTCMetadata {
         if let v = copyright { fields[.rights] = v }
         if let v = rightsUsageTerms { fields[.rightsUsageTerms] = v }
         if let v = webStatementOfRights { fields[.webStatementOfRights] = v }
+        if let v = digitalImageGUID { fields[.digitalImageGUID] = v }
         if let v = jobId { fields[.transmissionReference] = v }
         if let v = dateCreated { fields[.dateCreated] = v }
         if let v = city { fields[.city] = v }
@@ -2039,6 +2050,7 @@ extension IPTCMetadata {
         fields[.rights] = copyright ?? ""
         fields[.rightsUsageTerms] = rightsUsageTerms ?? ""
         fields[.webStatementOfRights] = webStatementOfRights ?? ""
+        fields[.digitalImageGUID] = digitalImageGUID ?? ""
         fields[.transmissionReference] = jobId ?? ""
         fields[.dateCreated] = dateCreated ?? ""
         fields[.city] = city ?? ""

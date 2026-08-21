@@ -168,6 +168,13 @@ struct ToWriteFieldsTests {
         #expect(fields[.webStatementOfRights] == "https://example.test/rights")
     }
 
+    @Test("digital image GUID maps without implicit generation")
+    func digitalImageGUIDMapsToXMPField() {
+        #expect(IPTCMetadata().toWriteFields()[.digitalImageGUID] == nil)
+        let metadata = IPTCMetadata(digitalImageGUID: "urn:uuid:01234567-89ab-cdef-0123-456789abcdef")
+        #expect(metadata.toWriteFields()[.digitalImageGUID] == metadata.digitalImageGUID)
+    }
+
     @Test("creator maps to XMP creator tag")
     func creatorMapsToCreator() {
         let metadata = IPTCMetadata(creator: "Jane Doe")
@@ -423,7 +430,8 @@ struct EditorialMetadataInteroperabilityTests {
         case .instructions: .specialInstructions
         case .source: .source
         case .extendedDescription, .personShown, .organisationShownName, .organisationShownCode, .sceneCode,
-             .digitalSourceType, .rightsUsageTerms, .webStatementOfRights, .dateCreated, .event: nil
+             .digitalSourceType, .rightsUsageTerms, .webStatementOfRights, .digitalImageGUID,
+             .dateCreated, .event: nil
         }
     }
 
@@ -960,6 +968,43 @@ struct EditorialMetadataInteroperabilityTests {
             namespace: XMPDataBuilder.xmpRightsNamespace,
             property: "WebStatement"
         ) == nil)
+    }
+
+    @Test("digital image GUID round-trips, survives unrelated edits, and clears explicitly")
+    func digitalImageGUIDRoundTripAndPreservation() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let expectedGUID = "urn:uuid:01234567-89ab-cdef-0123-456789abcdef"
+        let expected = IPTCMetadata(
+            description: "Original caption",
+            digitalImageGUID: expectedGUID
+        )
+        let sidecarService = XMPSidecarService()
+        let rawURL = directory.appendingPathComponent("identified.nef")
+        try sidecarService.saveSidecar(metadata: expected, for: rawURL)
+
+        let sidecarXMP = try XMPReader.readFromXML(
+            Data(contentsOf: sidecarService.sidecarURL(for: rawURL))
+        )
+        #expect(sidecarXMP.simpleValue(
+            namespace: XMPNamespace.iptcExt,
+            property: "DigImageGUID"
+        ) == expectedGUID)
+        #expect(sidecarService.loadSidecar(for: rawURL)?.digitalImageGUID == expectedGUID)
+
+        let imageURL = try makeJPEG(in: directory)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields(expected.toWriteFields(), to: [imageURL])
+        #expect(try await SwiftExifReadService().readFullMetadata(url: imageURL).digitalImageGUID == expectedGUID)
+
+        try await engine.writeFields([.description: "Updated caption"], to: [imageURL])
+        let afterUnrelatedEdit = try await SwiftExifReadService().readFullMetadata(url: imageURL)
+        #expect(afterUnrelatedEdit.description == "Updated caption")
+        #expect(afterUnrelatedEdit.digitalImageGUID == expectedGUID)
+
+        try await engine.writeFields([.digitalImageGUID: ""], to: [imageURL])
+        #expect(try await SwiftExifReadService().readFullMetadata(url: imageURL).digitalImageGUID == nil)
     }
 
     @Test("urgency round-trips through Photoshop XMP and IPTC-IIM with XMP precedence")
@@ -1657,6 +1702,7 @@ struct IPTCMetadataCodableTests {
             copyright: "© 2026",
             rightsUsageTerms: "Editorial use only",
             webStatementOfRights: "https://example.test/rights",
+            digitalImageGUID: "urn:uuid:01234567-89ab-cdef-0123-456789abcdef",
             jobId: "JOB123",
             dateCreated: "2026-01-01",
             captureDate: "2026-01-01T12:00:00",
@@ -1695,6 +1741,7 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.copyright == "© 2026")
         #expect(decoded.rightsUsageTerms == "Editorial use only")
         #expect(decoded.webStatementOfRights == "https://example.test/rights")
+        #expect(decoded.digitalImageGUID == "urn:uuid:01234567-89ab-cdef-0123-456789abcdef")
         #expect(decoded.jobId == "JOB123")
         #expect(decoded.dateCreated == "2026-01-01")
         #expect(decoded.captureDate == "2026-01-01T12:00:00")

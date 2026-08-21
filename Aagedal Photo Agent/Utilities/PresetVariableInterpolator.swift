@@ -12,7 +12,7 @@ struct PresetVariableInterpolator: Sendable {
             metadata.title, metadata.description, metadata.extendedDescription,
             metadata.creator, metadata.creatorJobTitle, metadata.descriptionWriter,
             metadata.credit, metadata.copyright, metadata.rightsUsageTerms,
-            metadata.webStatementOfRights, metadata.jobId,
+            metadata.webStatementOfRights, metadata.digitalImageGUID, metadata.jobId,
             metadata.dateCreated, metadata.city, metadata.country, metadata.event,
         ].compactMap { $0 } + metadata.keywords + metadata.personShown
             + metadata.organisationsShownNames + metadata.organisationsShownCodes + metadata.sceneCodes
@@ -58,6 +58,7 @@ struct PresetVariableInterpolator: Sendable {
         result.copyright = replace(result.copyright)
         result.rightsUsageTerms = replace(result.rightsUsageTerms)
         result.webStatementOfRights = replace(result.webStatementOfRights)
+        result.digitalImageGUID = replace(result.digitalImageGUID)
         result.jobId = replace(result.jobId)
         result.dateCreated = replace(result.dateCreated)
         result.city = replace(result.city)
@@ -383,6 +384,7 @@ struct PresetVariableInterpolator: Sendable {
         case "copyright": return metadata.copyright ?? ""
         case "rightsusageterms", "usageterms": return metadata.rightsUsageTerms ?? ""
         case "webstatementofrights", "webstatement": return metadata.webStatementOfRights ?? ""
+        case "digitalimageguid", "digimageguid": return metadata.digitalImageGUID ?? ""
         case "jobid": return metadata.jobId ?? ""
         case "datecreated": return metadata.dateCreated ?? ""
         case "city": return metadata.city ?? ""
