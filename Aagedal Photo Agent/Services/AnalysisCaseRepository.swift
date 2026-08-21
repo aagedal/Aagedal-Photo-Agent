@@ -103,6 +103,31 @@ actor AnalysisCaseRepository {
         try await store.save(document)
     }
 
+    /// Refreshes only path/filename discovery hints for cases whose exact source was renamed.
+    /// Case IDs, source hashes, evidence, analyzer output, and timestamps are unchanged.
+    @discardableResult
+    func relocateSourceHints(
+        using mappings: [BatchRenameExecutionPresentation.Mapping]
+    ) async throws -> Int {
+        let destinations = Dictionary(uniqueKeysWithValues: mappings.map {
+            (renameReassociationLookupURL($0.sourceURL), $0.destinationURL.standardizedFileURL)
+        })
+        guard !destinations.isEmpty else { return 0 }
+
+        var relocatedCount = 0
+        for var analysisCase in await loadAllCases() {
+            guard let destination = destinations[
+                renameReassociationLookupURL(analysisCase.source.canonicalURL)
+            ]
+            else { continue }
+            analysisCase.relocateSource(to: destination)
+            try analysisCase.validateForPersistence()
+            try await save(analysisCase)
+            relocatedCount += 1
+        }
+        return relocatedCount
+    }
+
     private func caseURL(for id: UUID) -> URL {
         casesDirectoryURL.appendingPathComponent(
             "\(id.uuidString.lowercased()).analysis.json"

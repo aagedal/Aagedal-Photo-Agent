@@ -411,11 +411,15 @@ nonisolated struct MetadataValidationEngine: Sendable {
 
     private func validationValues(for field: MetadataFieldID, in metadata: IPTCMetadata) -> [String] {
         switch field {
+        case .creator: return metadata.creators
         case .keywords: return metadata.keywords
         case .personShown: return metadata.personShown
         case .organisationShownName: return metadata.organisationsShownNames
         case .organisationShownCode: return metadata.organisationsShownCodes
         case .sceneCode: return metadata.sceneCodes
+        case .subjectCode: return metadata.subjectCodes
+        case .mediaTopic: return metadata.mediaTopics.map(\.termIdentifier)
+        case .genre: return metadata.genres.map(\.termIdentifier)
         default: return field.textValue(in: metadata).map { [$0] } ?? []
         }
     }

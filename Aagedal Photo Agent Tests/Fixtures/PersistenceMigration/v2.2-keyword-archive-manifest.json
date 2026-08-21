@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2024-03-01T03:04:05Z",
+  "files": [
+    {
+      "path": "quick/personShown.txt",
+      "kind": "quick.personShown",
+      "entryCount": 5
+    },
+    {
+      "path": "structured/personShown.txt",
+      "kind": "structuredPersonShown",
+      "entryCount": 2
+    }
+  ]
+}

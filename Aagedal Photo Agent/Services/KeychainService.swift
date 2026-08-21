@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-struct KeychainService: Sendable {
+nonisolated struct KeychainService: Sendable {
     private static let serviceName = "Aagedal Photo Agent"
 
     static func save(password: String, forKey key: String) throws {

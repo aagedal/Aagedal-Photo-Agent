@@ -20,6 +20,9 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
         thumbnailLoadTask = nil
         currentURL = nil
         thumbnailView.reset()
+        thumbnailView.setAccessibilityLabel(nil)
+        thumbnailView.setAccessibilityValue(nil)
+        thumbnailView.setAccessibilityHelp(nil)
     }
 
     func configure(
@@ -33,6 +36,13 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
         currentURL = data.url
         thumbnailView.configure(with: data)
         thumbnailView.updateSelection(isSelected: isSelected, isActive: isActive)
+        thumbnailView.setAccessibilityElement(true)
+        thumbnailView.setAccessibilityRole(.button)
+        thumbnailView.setAccessibilityLabel(imageFile.filename)
+        thumbnailView.setAccessibilityValue(isSelected ? "Selected" : "Not selected")
+        thumbnailView.setAccessibilityHelp(
+            "Rating \(imageFile.starRating.rawValue) of 5, \(imageFile.colorLabel.displayName) label. Use arrow keys to navigate and Space to open Full Screen."
+        )
 
         thumbnailLoadTask?.cancel()
         let url = data.url

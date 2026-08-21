@@ -155,8 +155,9 @@ enum ImageAnalysisProjectArchive {
             guard FileManager.default.fileExists(atPath: directoryURL.path) else { continue }
             for fileURL in try regularFilesRecursively(in: directoryURL) {
                 try Task.checkCancellation()
-                let suffix = String(fileURL.path.dropFirst(directoryURL.path.count))
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                guard let suffix = relativePath(of: fileURL, inside: directoryURL) else {
+                    throw ArchiveError.invalidSource(fileURL.lastPathComponent)
+                }
                 try await stageFile(
                     at: fileURL,
                     relativePath: "\(metadataDirectory.name)/\(suffix)",
@@ -181,13 +182,17 @@ enum ImageAnalysisProjectArchive {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(manifest).write(
+        let encodedManifest = try encoder.encode(manifest)
+        try encodedManifest.write(
             to: stagingRoot.appendingPathComponent(manifestFileName),
             options: .atomic
         )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persistedManifest = try decoder.decode(Manifest.self, from: encodedManifest)
 
         try createZipAtomically(from: stagingRoot, at: destinationURL)
-        return manifest
+        return persistedManifest
     }
 
     static func inspect(_ archiveURL: URL) async throws -> Preview {
@@ -334,6 +339,16 @@ enum ImageAnalysisProjectArchive {
             if values.isRegularFile == true { files.append(url) }
         }
         return files.sorted { $0.path < $1.path }
+    }
+
+    private static func relativePath(of fileURL: URL, inside directoryURL: URL) -> String? {
+        let rootComponents = directoryURL.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        let fileComponents = fileURL.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        guard fileComponents.count > rootComponents.count,
+              fileComponents.prefix(rootComponents.count).elementsEqual(rootComponents) else {
+            return nil
+        }
+        return fileComponents.dropFirst(rootComponents.count).joined(separator: "/")
     }
 
     private static func stageFile(

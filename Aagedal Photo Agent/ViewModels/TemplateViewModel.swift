@@ -78,9 +78,21 @@ final class TemplateViewModel {
         if let v = metadata.digitalSourceType { fields.append(TemplateField(fieldKey: "digitalSourceType", templateValue: v.rawValue)) }
         if let v = metadata.urgency { fields.append(TemplateField(fieldKey: "urgency", templateValue: String(v))) }
         if !metadata.sceneCodes.isEmpty { fields.append(TemplateField(fieldKey: "sceneCode", templateValue: metadata.sceneCodes.joined(separator: ", "))) }
+        if !metadata.subjectCodes.isEmpty { fields.append(TemplateField(fieldKey: "subjectCode", templateValue: metadata.subjectCodes.joined(separator: ", "))) }
+        if let value = IPTCControlledVocabularyTerm.templateValue(for: metadata.mediaTopics) {
+            fields.append(TemplateField(fieldKey: "mediaTopic", templateValue: value))
+        }
+        if let value = IPTCControlledVocabularyTerm.templateValue(for: metadata.genres) {
+            fields.append(TemplateField(fieldKey: "genre", templateValue: value))
+        }
         if let v = metadata.digitalImageGUID, !v.isEmpty { fields.append(TemplateField(fieldKey: "digitalImageGUID", templateValue: v)) }
         if let v = metadata.imageSupplierImageID, !v.isEmpty { fields.append(TemplateField(fieldKey: "imageSupplierImageID", templateValue: v)) }
-        if let v = metadata.creator, !v.isEmpty { fields.append(TemplateField(fieldKey: "creator", templateValue: v)) }
+        if let value = EditorialImageSupplier.canonicalJSONString(for: metadata.imageSuppliers) {
+            fields.append(TemplateField(fieldKey: "imageSupplier", templateValue: value))
+        }
+        if let v = metadata.creatorTransportValue {
+            fields.append(TemplateField(fieldKey: "creator", templateValue: v))
+        }
         if let v = metadata.creatorJobTitle, !v.isEmpty { fields.append(TemplateField(fieldKey: "creatorJobTitle", templateValue: v)) }
         if let v = metadata.descriptionWriter, !v.isEmpty { fields.append(TemplateField(fieldKey: "descriptionWriter", templateValue: v)) }
         if let v = metadata.credit, !v.isEmpty { fields.append(TemplateField(fieldKey: "credit", templateValue: v)) }
@@ -109,7 +121,15 @@ final class TemplateViewModel {
     func resolveTemplate(_ template: MetadataTemplate, filename: String = "", existingMetadata: IPTCMetadata? = nil) -> [String: String] {
         var result: [String: String] = [:]
         for field in template.fields {
-            let resolved = interpolator.resolve(field.templateValue, filename: filename, existingMetadata: existingMetadata)
+            // Structured supplier JSON is an atomic typed payload. Its object braces are not
+            // variable delimiters and supplier member text is never interpolated implicitly.
+            let resolved = field.fieldKey == "imageSupplier"
+                ? field.templateValue
+                : interpolator.resolve(
+                    field.templateValue,
+                    filename: filename,
+                    existingMetadata: existingMetadata
+                )
             result[field.fieldKey] = resolved
         }
         return result

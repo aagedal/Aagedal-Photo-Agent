@@ -1,0 +1,12 @@
+{
+  "id": "10000000-0000-0000-0000-000000000001",
+  "name": "Wire desk",
+  "templateType": "Full",
+  "fields": [{
+    "id": "20000000-0000-0000-0000-000000000002",
+    "fieldKey": "title",
+    "templateValue": "Wire {date}"
+  }],
+  "shortcutSlot": 2,
+  "processInstantly": true
+}

@@ -442,7 +442,22 @@ final class ImportViewModel {
                 configuration.metadata.sceneCodes = IPTCSceneCode.normalizedValues(
                     value.components(separatedBy: CharacterSet(charactersIn: ",;"))
                 )
-            case "creator": configuration.metadata.creator = value
+            case "subjectCode":
+                configuration.metadata.subjectCodes = IPTCSubjectCode.normalizedValues(
+                    value.components(separatedBy: CharacterSet(charactersIn: ",;"))
+                )
+            case "mediaTopic":
+                configuration.metadata.mediaTopics = IPTCControlledVocabularyTerm.terms(
+                    fromTemplateValue: value,
+                    fallback: { IPTCControlledVocabularyTerm.mediaTopic(metadataValue: $0) }
+                )
+            case "genre":
+                configuration.metadata.genres = IPTCControlledVocabularyTerm.terms(
+                    fromTemplateValue: value,
+                    fallback: { IPTCControlledVocabularyTerm.genre(metadataValue: $0) }
+                )
+            case "creator":
+                configuration.metadata.creators = IPTCMetadata.creators(fromTransportValue: value)
             case "creatorJobTitle": configuration.metadata.creatorJobTitle = value
             case "descriptionWriter": configuration.metadata.descriptionWriter = value
             case "credit": configuration.metadata.credit = value
@@ -451,7 +466,15 @@ final class ImportViewModel {
             case "webStatementOfRights": configuration.metadata.webStatementOfRights = value
             case "digitalImageGUID": configuration.metadata.digitalImageGUID = value
             case "imageSupplierImageID": configuration.metadata.imageSupplierImageID = value
-            case "dateCreated": configuration.metadata.dateCreated = value
+            case "imageSupplier":
+                if let values = EditorialImageSupplier.values(fromCanonicalJSONString: value) {
+                    configuration.metadata.imageSuppliers = values
+                }
+            case "dateCreated":
+                if MetadataTemplatePlaceholderDetector.containsPlaceholder(value)
+                    || (try? EditorialDateCreated(parsing: value)) != nil {
+                    configuration.metadata.dateCreated = value
+                }
             case "city": configuration.metadata.city = value
             case "sublocation": configuration.metadata.sublocation = value
             case "provinceState": configuration.metadata.provinceState = value
@@ -726,7 +749,13 @@ final class ImportViewModel {
                             sequenceNumber += 1
                             let fields = await Self.buildMetadataFields(from: resolved)
                             if !fields.isEmpty {
-                                try await self.writeEngine.writeFields(fields, to: [url])
+                                try await self.writeEngine.writeFields(
+                                    fields,
+                                    to: [url],
+                                    structuredData: StructuredWriteData(
+                                        editorial: EditorialStructuredWriteData(metadata: resolved)
+                                    )
+                                )
                             }
                         }
                     } else {
@@ -737,7 +766,13 @@ final class ImportViewModel {
                                 try Task.checkCancellation()
                                 let batchEnd = min(batchStart + batchSize, copiedURLs.count)
                                 let batch = Array(copiedURLs[batchStart..<batchEnd])
-                                try await self.writeEngine.writeFields(fields, to: batch)
+                                try await self.writeEngine.writeFields(
+                                    fields,
+                                    to: batch,
+                                    structuredData: StructuredWriteData(
+                                        editorial: EditorialStructuredWriteData(metadata: metadata)
+                                    )
+                                )
                             }
                         }
                     }
@@ -931,7 +966,9 @@ final class ImportViewModel {
         resolved.title = Self.resolveField(metadata.title, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.description = Self.resolveField(metadata.description, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.extendedDescription = Self.resolveField(metadata.extendedDescription, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
-        resolved.creator = Self.resolveField(metadata.creator, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.creators = IPTCMetadata.normalizedCreators(metadata.creators.compactMap {
+            Self.resolveField($0, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        })
         resolved.creatorJobTitle = Self.resolveField(metadata.creatorJobTitle, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.descriptionWriter = Self.resolveField(metadata.descriptionWriter, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.credit = Self.resolveField(metadata.credit, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
@@ -940,6 +977,26 @@ final class ImportViewModel {
         resolved.webStatementOfRights = Self.resolveField(metadata.webStatementOfRights, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.digitalImageGUID = Self.resolveField(metadata.digitalImageGUID, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.imageSupplierImageID = Self.resolveField(metadata.imageSupplierImageID, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.imageSuppliers = EditorialImageSupplier.normalizedValues(
+            metadata.imageSuppliers.map { supplier in
+                EditorialImageSupplier(
+                    identifier: Self.resolveField(
+                        supplier.identifier,
+                        filename: filename,
+                        ref: reference,
+                        interpolator: interpolator,
+                        sequenceIndex: sequenceIndex
+                    ),
+                    name: Self.resolveField(
+                        supplier.name,
+                        filename: filename,
+                        ref: reference,
+                        interpolator: interpolator,
+                        sequenceIndex: sequenceIndex
+                    )
+                )
+            }
+        )
         resolved.jobId = Self.resolveField(metadata.jobId, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.dateCreated = Self.resolveField(metadata.dateCreated, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.city = Self.resolveField(metadata.city, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
@@ -954,6 +1011,9 @@ final class ImportViewModel {
         resolved.organisationsShownCodes = Self.resolveListField(metadata.organisationsShownCodes, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.sceneCodes = IPTCSceneCode.normalizedValues(
             Self.resolveListField(metadata.sceneCodes, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        )
+        resolved.subjectCodes = IPTCSubjectCode.normalizedValues(
+            Self.resolveListField(metadata.subjectCodes, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         )
 
         return resolved
@@ -990,8 +1050,11 @@ final class ImportViewModel {
         if !meta.organisationsShownNames.isEmpty { fields[.organisationInImageName] = meta.organisationsShownNames.joined(separator: ", ") }
         if !meta.organisationsShownCodes.isEmpty { fields[.organisationInImageCode] = meta.organisationsShownCodes.joined(separator: ", ") }
         if !meta.sceneCodes.isEmpty { fields[.scene] = meta.sceneCodes.joined(separator: ", ") }
+        if !meta.subjectCodes.isEmpty { fields[.subjectCode] = meta.subjectCodes.joined(separator: ", ") }
+        if !meta.mediaTopics.isEmpty { fields[.mediaTopic] = meta.mediaTopics.map(\.termIdentifier).joined(separator: ", ") }
+        if !meta.genres.isEmpty { fields[.genre] = meta.genres.map(\.termIdentifier).joined(separator: ", ") }
         if let v = meta.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
-        if let v = meta.creator, !v.isEmpty { fields[.creator] = v }
+        if let v = meta.creatorTransportValue { fields[.creator] = v }
         if let v = meta.creatorJobTitle, !v.isEmpty { fields[.creatorJobTitle] = v }
         if let v = meta.descriptionWriter, !v.isEmpty { fields[.descriptionWriter] = v }
         if let v = meta.credit, !v.isEmpty { fields[.credit] = v }
@@ -1000,6 +1063,9 @@ final class ImportViewModel {
         if let v = meta.webStatementOfRights, !v.isEmpty { fields[.webStatementOfRights] = v }
         if let v = meta.digitalImageGUID, !v.isEmpty { fields[.digitalImageGUID] = v }
         if let v = meta.imageSupplierImageID, !v.isEmpty { fields[.imageSupplierImageID] = v }
+        if let v = EditorialImageSupplier.canonicalJSONString(for: meta.imageSuppliers) {
+            fields[.imageSupplier] = v
+        }
         if let v = meta.jobId, !v.isEmpty { fields[.transmissionReference] = v }
         if let v = meta.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
         if let v = meta.city, !v.isEmpty { fields[.city] = v }

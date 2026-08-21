@@ -18,16 +18,17 @@ own scope, tasks, exit gates, and technical decisions.
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; release hardening in progress | Close remaining manual fixture, accessibility, performance, and cross-phase validation |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, structured contact/location plus editorial role, organisation, country-code, rights, urgency, Scene Code, Digital Image GUID, and Image Supplier Image ID I/O, JSON schema safety, shared validation, portable profiles, and legacy boundary fixtures established; remaining field mappings and cross-container fixtures remain | Complete the redistributable interoperability corpus, then finish the remaining shared metadata I/O foundation |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, Batch Rename, Deadline preflight/delivery, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; release hardening and the final support-ledger gaps are in progress | Finish the remaining structured/precision metadata decisions, rerun the complete current-source suite, and perform the external interoperability, real-server, device, and accessibility drills |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, and immutable report evidence implemented; release validation remains | Validate live and reported rays across paper/map styles, camera interactions, rapid time changes, architectures, and accessibility paths |
 
 ## Default delivery order
 
 1. Close the investigation/review release gates. Its source identity, case persistence, OSINT map/timeline,
    immutable report snapshot, and rendering behavior are foundations for later analysis features.
-2. Continue the journalistic metadata standards foundation. Caption Workspace, Batch Rename, and
-   Deadline Mode depend on one consistent field model, preservation policy, validation engine, and
-   interoperability corpus.
+2. Close journalistic workflow release hardening. Caption Workspace, Batch Rename, Deadline Mode,
+   and verified delivery now share the field model, preservation policy, validation engine, and
+   recovery boundaries; remaining work is the final support-ledger model decisions plus external
+   interoperability, real-environment, accessibility, and current-source full-suite evidence.
 3. Finish solar-overlay release validation after the implemented calculator, persistence, controls,
    live-map rendering, and report-evidence phases. It remains a bounded map/report feature and does
    not block the journalistic workflow.
@@ -79,6 +80,9 @@ Caption Workspace, standards coverage, Batch Rename, Deadline Mode, and verified
 
 Supporting documents:
 
+- [Generated metadata field and delivery support](metadata-field-support.md) — current stable field IDs,
+  writer mappings, semantic read-back rules, and exact carrier/write-mode boundaries; checked for drift
+  by `scripts/generate_metadata_field_support.py --check`.
 - [IPTC 2025.1 editorial support matrix](iptc-2025.1-editorial-support.md) — field-level support
   ledger and next conformance work.
 - [ADR-005: IPTC 2025.1 editorial metadata baseline](adr-005-iptc-2025-1-editorial-metadata.md) —
@@ -103,6 +107,29 @@ Supporting documents:
   ownership, XMP I/O, clear semantics, and unrelated-edit preservation.
 - [Image Supplier Image ID validation](metadata-image-supplier-id-validation.md) — supplier-ID
   separation, XMP I/O, workflow propagation, clear semantics, and unrelated-edit preservation.
+- [Full test-suite validation](full-test-suite-validation.md) — fresh-build, complete-suite,
+  parameterized-execution, stress-repeat, and static release-gate evidence.
+- [Deadline maximum output-size validation](deadline-maximum-output-size-validation.md) — frozen
+  per-file limits, honest estimate semantics, final-byte enforcement, and receipt evidence.
+- [Metadata field-operation contract validation](metadata-field-operation-contract-validation.md) —
+  exhaustive stable-field mappings, explicit mutation semantics, canonical values, and round trips.
+- [Controlled editorial structures validation](metadata-controlled-structures-validation.md) —
+  Subject Codes, Media Topics, separate Genre, canonical PLUS Supplier mappings, migration, and
+  exact structured-XMP evidence.
+- [Ordered Creator and typed Date Created validation](metadata-creator-date-validation.md) — ordered
+  XMP/IIM creators, compatibility aliases, precision/timezone semantics, and embedded read-back.
+- [Accessibility and keyboard audit](accessibility-keyboard-audit-validation.md) — workspace
+  semantics, adaptive controls, assignable culling profiles, conflict routing, and manual limits.
+- [Batch Rename original-filename validation](batch-rename-original-filename-validation.md) —
+  standards-correct XMP mapping, transaction order, RAW safety, and exact rollback evidence.
+- [Manual release-prerequisite audit](manual-release-prerequisite-audit.md) — sanitized local
+  availability matrix and the smallest external actions for the remaining real-world gates.
+- [Caption Workspace speed-tools validation](caption-workspace-speed-tools-validation.md) — edited
+  preview, profile navigator, durable actions, shortcuts, confirmed people, and prose checking.
+- [Editorial container fixture validation](editorial-container-fixture-validation.md) — generated
+  TIFF/PNG/JPEG XL and RAW-sidecar corpus, pixel/codestream preservation, and HEIC boundary.
+- [Caption termination durability validation](caption-termination-durability-validation.md) —
+  deferred AppKit termination, FIFO retry, Caption-before-Develop ordering, and focus evidence.
 
 ## Solar overlay document set
 

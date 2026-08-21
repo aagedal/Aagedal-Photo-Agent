@@ -7,16 +7,22 @@ nonisolated struct EditorialStructuredWriteData: Sendable {
     var creatorContactInfo: CreatorContactInfo?
     var locationsCreated: [EditorialLocation]
     var locationsShown: [EditorialLocation]
+    var mediaTopics: [IPTCControlledVocabularyTerm]
+    var genres: [IPTCControlledVocabularyTerm]
+    var imageSuppliers: [EditorialImageSupplier]
 
     nonisolated init(metadata: IPTCMetadata) {
         creatorContactInfo = metadata.creatorContactInfo
         locationsCreated = metadata.locationsCreated
         locationsShown = metadata.locationsShown
+        mediaTopics = metadata.mediaTopics
+        genres = metadata.genres
+        imageSuppliers = metadata.imageSuppliers
     }
 }
 
 /// Structured data for writes that go beyond simple key-value pairs (tone curves, masks).
-struct StructuredWriteData: Sendable {
+nonisolated struct StructuredWriteData: Sendable {
     var toneCurve: ToneCurve?
     var masks: [MaskAdjustment]?
     /// Watermark layers — app-private, carried alongside `masks` through the same

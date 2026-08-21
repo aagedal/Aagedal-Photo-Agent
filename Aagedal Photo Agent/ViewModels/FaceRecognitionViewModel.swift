@@ -37,6 +37,25 @@ nonisolated private struct FaceScanWorkerResult: @unchecked Sendable {
     let failureCount: Int
 }
 
+nonisolated private struct FaceScanCompletion: Sendable {
+    let folderURL: URL
+    let persistenceError: String?
+}
+
+enum FaceScanQuiescenceError: LocalizedError, Equatable {
+    case persistenceFailed(String)
+    case replacementScanStarted
+
+    var errorDescription: String? {
+        switch self {
+        case .persistenceFailed(let detail):
+            "The face scan finished, but its final data could not be saved: \(detail)"
+        case .replacementScanStarted:
+            "A new face scan started before rename could begin. Wait for it to finish and try again."
+        }
+    }
+}
+
 @Observable
 final class FaceRecognitionViewModel {
     /// Stable ID for the synthetic "Unmatched Faces" group (singletons with no match)
@@ -67,6 +86,9 @@ final class FaceRecognitionViewModel {
     private(set) var displayedFolderURL: URL?
     /// The folder owned by the one background scan. This deliberately survives folder navigation.
     private(set) var scanningFolderURL: URL?
+    /// While a browser rename sheet is executing, this reservation prevents any programmatic
+    /// scan start from reopening the writer race after the current scan has been drained.
+    @ObservationIgnored private var renameQuiescenceFolderURL: URL?
     var scanComplete = false
     /// The expanded manager can work with partial results from a cancelled or interrupted scan.
     /// Keep scan completion separate so the face bar can still offer to resume scanning.
@@ -525,7 +547,7 @@ final class FaceRecognitionViewModel {
         return config
     }
 
-    @ObservationIgnored private var activeScanTask: Task<Void, Never>?
+    @ObservationIgnored private var activeScanTask: Task<FaceScanCompletion, Never>?
     @ObservationIgnored private var activeScanWorkerTask: Task<FaceScanWorkerResult, Never>?
     /// Folders whose UI-bound Known People/Sports finishing pass was deferred because another
     /// folder was displayed when their background scan completed.
@@ -709,6 +731,10 @@ final class FaceRecognitionViewModel {
     ///   - forceFullScan: If true, deletes existing data and rescans all images
     func scanFolder(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false) {
         guard !isScanning else { return }
+        guard renameQuiescenceFolderURL != folderURL.standardizedFileURL else {
+            errorMessage = "Face scanning is paused while files in this folder are being renamed."
+            return
+        }
 
         // A scan invalidates the face set the prewarm was working from.
         lensPrewarmTask?.cancel()
@@ -817,7 +843,10 @@ final class FaceRecognitionViewModel {
                         self.updateMergeSuggestions()
                     }
                 }
-                return
+                return FaceScanCompletion(
+                    folderURL: folderURL.standardizedFileURL,
+                    persistenceError: nil
+                )
             }
 
             let scanLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FaceRecognitionViewModel")
@@ -1015,9 +1044,11 @@ final class FaceRecognitionViewModel {
                 numberDetections: result.numbers
             )
 
+            var finalPersistenceError: String?
             do {
                 try storageService.saveFaceData(folderData)
             } catch {
+                finalPersistenceError = error.localizedDescription
                 await MainActor.run {
                     self.errorMessage = "Failed to save face data: \(error.localizedDescription)"
                 }
@@ -1061,18 +1092,20 @@ final class FaceRecognitionViewModel {
                 ))
             }
 
-            guard !isCancelled else { return }
+            if !isCancelled,
+               self.displayedFolderURL == folderURL.standardizedFileURL {
+                // Known People matching is always automatic now. `applyKnownPeopleMatches`
+                // no-ops when the database is empty, so this is safe to always call.
+                await self.matchKnownPeopleIntegrated()
 
-            // Post-scan UI services operate on `faceData`; if the user is viewing another
-            // folder, `loadFaceData` runs this finishing pass when they return.
-            guard self.displayedFolderURL == folderURL.standardizedFileURL else { return }
+                // Face results are live; compute the secondary lenses in the background.
+                self.prewarmSecondaryLensesIfNeeded()
+            }
 
-            // Known People matching is always automatic now. `applyKnownPeopleMatches`
-            // no-ops when the database is empty, so this is safe to always call.
-            await self.matchKnownPeopleIntegrated()
-
-            // Face results are live; compute the secondary lenses in the background.
-            self.prewarmSecondaryLensesIfNeeded()
+            return FaceScanCompletion(
+                folderURL: folderURL.standardizedFileURL,
+                persistenceError: finalPersistenceError
+            )
         }
     }
 
@@ -1081,7 +1114,46 @@ final class FaceRecognitionViewModel {
     /// wall-clock duration for Vision work under system load.
     func waitForCurrentScan() async {
         let task = activeScanTask
-        await task?.value
+        _ = await task?.value
+    }
+
+    /// Cancels only the scan currently writing the requested folder and waits for that exact
+    /// task's final persistence before returning. The caller may safely mutate image paths only
+    /// after this method succeeds.
+    func quiesceScanForRename(in folderURL: URL) async throws {
+        let normalizedFolder = folderURL.standardizedFileURL
+        renameQuiescenceFolderURL = normalizedFolder
+        if isScanning(folderURL: normalizedFolder), let task = activeScanTask {
+            cancelScan()
+            let completion = await task.value
+            if isScanning(folderURL: normalizedFolder) {
+                renameQuiescenceFolderURL = nil
+                throw FaceScanQuiescenceError.replacementScanStarted
+            }
+            if completion.folderURL == normalizedFolder,
+               let persistenceError = completion.persistenceError {
+                renameQuiescenceFolderURL = nil
+                throw FaceScanQuiescenceError.persistenceFailed(persistenceError)
+            }
+        }
+
+        // Secondary-lens prewarming can also persist the folder's face document after a scan.
+        // Drain it under the same reservation so no delayed face-data writer survives the barrier.
+        if faceData?.folderURL.standardizedFileURL == normalizedFolder {
+            let prewarm = lensPrewarmTask
+            prewarm?.cancel()
+            await prewarm?.value
+        }
+
+        // Face-name propagation writes the image and/or its XMP sidecar. Finish the task that
+        // existed when the reservation was acquired; new starts are refused while reserved.
+        let pendingMetadataWrite = metadataWriteTask
+        await pendingMetadataWrite?.value
+    }
+
+    func endRenameQuiescence(in folderURL: URL) {
+        guard renameQuiescenceFolderURL == folderURL.standardizedFileURL else { return }
+        renameQuiescenceFolderURL = nil
     }
 
     func cancelScan() {
@@ -2123,6 +2195,7 @@ final class FaceRecognitionViewModel {
 
     func applyNameToMetadata(groupID: UUID) {
         guard let data = faceData,
+              renameQuiescenceFolderURL != data.folderURL.standardizedFileURL,
               let group = groupLookup[groupID],
               let name = group.name, !name.isEmpty else { return }
 
@@ -2198,6 +2271,11 @@ final class FaceRecognitionViewModel {
         onComplete: (() -> Void)? = nil
     ) {
         guard let data = faceData else {
+            onComplete?()
+            return
+        }
+        guard renameQuiescenceFolderURL != data.folderURL.standardizedFileURL else {
+            errorMessage = "Face metadata writing is paused while files in this folder are being renamed."
             onComplete?()
             return
         }
@@ -2388,21 +2466,20 @@ final class FaceRecognitionViewModel {
         let merged = mergePersons(existing: baseMetadata.personShown, adding: names)
         guard merged != baseMetadata.personShown else { return }
 
-        let oldValue = baseMetadata.personShown.isEmpty ? nil : baseMetadata.personShown.joined(separator: ", ")
-        let newValue = merged.isEmpty ? nil : merged.joined(separator: ", ")
+        var updatedMetadata = baseMetadata
+        updatedMetadata.personShown = merged
+        let oldValue = MetadataFieldID.personShown.historyValue(in: baseMetadata)
+        let newValue = MetadataFieldID.personShown.historyValue(in: updatedMetadata)
 
         if oldValue != newValue {
             history.append(MetadataHistoryEntry(
                 timestamp: Date(),
-                fieldName: "Person Shown",
+                fieldID: .personShown,
                 oldValue: oldValue,
                 newValue: newValue
             ))
             history.trimToHistoryLimit()
         }
-
-        var updatedMetadata = baseMetadata
-        updatedMetadata.personShown = merged
 
         let sidecar = MetadataSidecar(
             sourceFile: url.lastPathComponent,

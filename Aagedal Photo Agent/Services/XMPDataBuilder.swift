@@ -38,7 +38,8 @@ enum XMPDataBuilder {
         xmp.digitalSourceType = nilIfEmpty(m.digitalSourceType?.newsCodeURI)
         setSimpleOrRemove(&xmp, m.urgency.map(String.init), namespace: XMPNamespace.photoshop, property: "Urgency")
         setArrayOrRemove(&xmp, m.sceneCodes, namespace: XMPNamespace.iptcCore, property: "Scene")
-        setCreatorOrRemove(&xmp, m.creator)
+        setArrayOrRemove(&xmp, m.subjectCodes, namespace: XMPNamespace.iptcCore, property: "SubjectCode")
+        setArrayOrRemove(&xmp, m.creators, namespace: XMPNamespace.dc, property: "creator")
         setSimpleOrRemove(&xmp, m.creatorJobTitle, namespace: XMPNamespace.photoshop, property: "AuthorsPosition")
         setSimpleOrRemove(&xmp, m.descriptionWriter, namespace: XMPNamespace.photoshop, property: "CaptionWriter")
         xmp.credit = nilIfEmpty(m.credit)
@@ -65,9 +66,12 @@ enum XMPDataBuilder {
         setSimpleOrRemove(
             &xmp,
             m.imageSupplierImageID,
-            namespace: XMPNamespace.iptcExt,
+            namespace: XMPNamespace.plus,
             property: "ImageSupplierImageID"
         )
+        // This app previously shipped the scalar under the IPTC Extension namespace. Canonical
+        // writes migrate it to PLUS and remove the legacy duplicate; the read path remains dual.
+        xmp.removeValue(namespace: XMPNamespace.iptcExt, property: "ImageSupplierImageID")
         // photoshop:DateCreated (the IPTC date) — distinct from xmp:CreateDate; no convenience setter.
         setSimpleOrRemove(&xmp, m.dateCreated, namespace: XMPNamespace.photoshop, property: "DateCreated")
         xmp.city = nilIfEmpty(m.city)
@@ -98,22 +102,6 @@ enum XMPDataBuilder {
         setSimpleOrRemove(&xmp, orientation, namespace: XMPNamespace.exif, property: "Orientation")
     }
 
-    /// `IPTCMetadata` currently exposes the primary creator as a single string, while `dc:creator`
-    /// is an ordered array. When a sidecar with multiple creators is loaded, the model contains its
-    /// first item. Re-emitting that unchanged value during an unrelated edit must not collapse the
-    /// original sequence. A genuinely changed creator still replaces the sequence, and nil clears
-    /// it, matching the editor's existing overwrite semantics.
-    nonisolated private static func setCreatorOrRemove(_ xmp: inout XMPData, _ creator: String?) {
-        guard let creator = nilIfEmpty(creator) else {
-            xmp.removeValue(namespace: XMPNamespace.dc, property: "creator")
-            return
-        }
-
-        let existing = xmp.creator
-        if existing.count > 1, existing.first == creator { return }
-        setArrayOrRemove(&xmp, [creator], namespace: XMPNamespace.dc, property: "creator")
-    }
-
     // MARK: - Structured IPTC editorial fields
 
     nonisolated static func applyStructuredEditorial(
@@ -123,6 +111,109 @@ enum XMPDataBuilder {
         applyCreatorContactInfo(editorial.creatorContactInfo, into: &xmp)
         applyLocations(editorial.locationsCreated, property: "LocationCreated", into: &xmp)
         applyLocations(editorial.locationsShown, property: "LocationShown", into: &xmp)
+        applyControlledVocabularyTerms(editorial.mediaTopics, property: "AboutCvTerm", into: &xmp)
+        applyControlledVocabularyTerms(editorial.genres, property: "Genre", into: &xmp)
+        applyImageSuppliers(editorial.imageSuppliers, into: &xmp)
+    }
+
+    /// Image Supplier is an ordered PLUS sequence. Same-index raw structures are the only
+    /// evidence-backed correspondence available when IDs are absent, so preserve their unknown
+    /// children while replacing the two managed PLUS members.
+    nonisolated static func applyImageSuppliers(
+        _ values: [EditorialImageSupplier],
+        into xmp: inout XMPData
+    ) {
+        let suppliers = EditorialImageSupplier.normalizedValues(values)
+        guard !suppliers.isEmpty else {
+            xmp.removeValue(namespace: XMPNamespace.plus, property: "ImageSupplier")
+            xmp.removeValue(namespace: XMPNamespace.iptcExt, property: "ImageSupplier")
+            return
+        }
+        // Capture the source structures before seeding PLUS. The seed necessarily introduces a
+        // placeholder PLUS ImageSupplier value, which must not mask a legacy IPTC Extension
+        // structure during canonical migration.
+        let existing = xmp.structuredArrayValue(
+            namespace: XMPNamespace.plus,
+            property: "ImageSupplier"
+        ) ?? xmp.structuredArrayValue(
+            namespace: XMPNamespace.iptcExt,
+            property: "ImageSupplier"
+        ) ?? []
+        PLUSImageSupplierXMP.enforceSequenceForm(in: &xmp)
+        let encoded = suppliers.enumerated().map { index, supplier in
+            var fields = existing.indices.contains(index) ? existing[index] : [:]
+            fields.removeValue(forKey: XMPNamespace.iptcExt + "ImageSupplierID")
+            fields.removeValue(forKey: XMPNamespace.iptcExt + "ImageSupplierName")
+            setStructuredText(
+                &fields, supplier.identifier,
+                namespace: XMPNamespace.plus, property: "ImageSupplierID"
+            )
+            setStructuredText(
+                &fields, supplier.name,
+                namespace: XMPNamespace.plus, property: "ImageSupplierName"
+            )
+            return fields
+        }
+        xmp.setValue(
+            .structuredArray(encoded),
+            namespace: XMPNamespace.plus,
+            property: "ImageSupplier"
+        )
+        xmp.removeValue(namespace: XMPNamespace.iptcExt, property: "ImageSupplier")
+    }
+
+    /// CV-Term About Image is a bag of IPTC Extension CV-Term structures. Existing structures are
+    /// matched by term URI before managed members are replaced, preserving future/third-party
+    /// siblings on concepts the app understands.
+    nonisolated private static func applyControlledVocabularyTerms(
+        _ terms: [IPTCControlledVocabularyTerm],
+        property: String,
+        into xmp: inout XMPData
+    ) {
+        let terms = IPTCControlledVocabularyTerm.normalizedValues(terms)
+        guard !terms.isEmpty else {
+            xmp.removeValue(namespace: XMPNamespace.iptcExt, property: property)
+            return
+        }
+        let existing = xmp.structuredArrayValue(
+            namespace: XMPNamespace.iptcExt,
+            property: property
+        ) ?? []
+        let existingByIdentifier = Dictionary(
+            existing.compactMap { fields -> (String, [String: XMPValue])? in
+                guard let identifier = fields.simpleField(
+                    namespace: XMPNamespace.iptcExt,
+                    property: "CvTermId"
+                ) else { return nil }
+                return (identifier, fields)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let encoded = terms.map { term -> [String: XMPValue] in
+            var fields = existingByIdentifier[term.termIdentifier] ?? [:]
+            setStructuredText(
+                &fields, term.vocabularyIdentifier,
+                namespace: XMPNamespace.iptcExt, property: "CvId"
+            )
+            setStructuredText(
+                &fields, term.termIdentifier,
+                namespace: XMPNamespace.iptcExt, property: "CvTermId"
+            )
+            setStructuredLanguageAlternative(
+                &fields, term.name,
+                namespace: XMPNamespace.iptcExt, property: "CvTermName"
+            )
+            setStructuredText(
+                &fields, term.refinedAbout,
+                namespace: XMPNamespace.iptcExt, property: "CvTermRefinedAbout"
+            )
+            return fields
+        }
+        xmp.setValue(
+            .structuredArray(encoded),
+            namespace: XMPNamespace.iptcExt,
+            property: property
+        )
     }
 
     /// CreatorContactInfo is a single IPTC Core structure. Managed members are updated in place

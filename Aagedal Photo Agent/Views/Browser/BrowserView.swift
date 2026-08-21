@@ -13,6 +13,7 @@ struct BrowserView: View {
 
     var body: some View {
         browserContent
+            .accessibilityIdentifier("browser.workspace")
             // Action failures should not evict a successfully loaded grid. Keep the
             // user's selection and scroll position intact and surface the error as a
             // recoverable banner instead. Folder-load failures still use the dedicated
@@ -50,6 +51,9 @@ struct BrowserView: View {
                             Image(systemName: viewModel.sortReversed ? "arrow.up" : "arrow.down")
                         }
                         .help(viewModel.sortReversed ? "Sort ascending" : "Sort descending")
+                        .accessibilityLabel(
+                            viewModel.sortReversed ? "Sort ascending" : "Sort descending"
+                        )
                         .disabled(viewModel.sortOrder == .manual)
 
                         Picker("Sort", selection: Binding(
@@ -313,6 +317,7 @@ struct BrowserView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Clear search")
+                .accessibilityLabel("Clear image search")
             }
         }
         .disabled(viewModel.images.isEmpty)

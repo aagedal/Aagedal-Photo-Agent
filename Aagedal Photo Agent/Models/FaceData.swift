@@ -14,7 +14,7 @@ import CoreGraphics
 /// same-event clustering where clothing is consistent.
 nonisolated struct DetectedFace: Codable, Identifiable {
     let id: UUID
-    let imageURL: URL
+    var imageURL: URL
     let faceRect: CGRect
 
     /// Face-only Vision VNFeaturePrintObservation. Always present.
@@ -293,5 +293,48 @@ nonisolated struct FolderFaceData: Codable {
         var states = lensStates ?? [:]
         states[lens.rawValue] = state
         lensStates = states
+    }
+
+    /// Replaces filename-derived image references simultaneously, so swaps and longer rename
+    /// cycles cannot collapse through an intermediate path. Face/group identities and embedding
+    /// bytes are deliberately left untouched.
+    @discardableResult
+    mutating func reassociateImageURLs(
+        using mappings: [BatchRenameExecutionPresentation.Mapping]
+    ) -> Int {
+        let destinations = Dictionary(uniqueKeysWithValues: mappings.map {
+            (renameReassociationLookupURL($0.sourceURL), $0.destinationURL.standardizedFileURL)
+        })
+        guard !destinations.isEmpty else { return 0 }
+
+        func destination(for url: URL) -> URL? {
+            destinations[renameReassociationLookupURL(url)]
+        }
+
+        var changedReferenceCount = 0
+        for index in faces.indices {
+            guard let renamed = destination(for: faces[index].imageURL) else { continue }
+            faces[index].imageURL = renamed
+            changedReferenceCount += 1
+        }
+        if var detections = numberDetections {
+            for index in detections.indices {
+                guard let renamed = destination(for: detections[index].imageURL) else { continue }
+                detections[index].imageURL = renamed
+                changedReferenceCount += 1
+            }
+            numberDetections = detections
+        }
+
+        var reassociatedScannedFiles: [String: FileSignature] = [:]
+        reassociatedScannedFiles.reserveCapacity(scannedFiles.count)
+        for (path, signature) in scannedFiles {
+            let source = URL(fileURLWithPath: path).standardizedFileURL
+            let reassociated = destinations[renameReassociationLookupURL(source)] ?? source
+            reassociatedScannedFiles[reassociated.path] = signature
+            if reassociated != source { changedReferenceCount += 1 }
+        }
+        scannedFiles = reassociatedScannedFiles
+        return changedReferenceCount
     }
 }

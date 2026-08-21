@@ -662,6 +662,35 @@ struct ImportView: View {
                 keywords: $viewModel.configuration.metadata.sceneCodes
             )
 
+            KeywordsEditor(
+                label: "Subject Code",
+                keywords: $viewModel.configuration.metadata.subjectCodes
+            )
+
+            KeywordsEditor(
+                label: "Media Topic",
+                keywords: Binding(
+                    get: { viewModel.configuration.metadata.mediaTopics.map(\.editorValue) },
+                    set: { values in
+                        viewModel.configuration.metadata.mediaTopics = IPTCControlledVocabularyTerm.normalizedValues(
+                            values.compactMap { IPTCControlledVocabularyTerm.mediaTopic(metadataValue: $0) }
+                        )
+                    }
+                )
+            )
+
+            KeywordsEditor(
+                label: "Genre",
+                keywords: Binding(
+                    get: { viewModel.configuration.metadata.genres.map { $0.genreCode ?? $0.termIdentifier } },
+                    set: { values in
+                        viewModel.configuration.metadata.genres = IPTCControlledVocabularyTerm.normalizedValues(
+                            values.compactMap { IPTCControlledVocabularyTerm.genre(metadataValue: $0) }
+                        )
+                    }
+                )
+            )
+
             EditableTextField(
                 label: "Copyright",
                 text: Binding(

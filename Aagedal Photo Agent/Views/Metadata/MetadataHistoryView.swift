@@ -6,11 +6,6 @@ struct MetadataHistoryView: View {
     var onRestoreOriginal: (() -> Void)?
     var onClearHistory: (() -> Void)?
 
-    private func displayName(for fieldName: String) -> String {
-        if fieldName == "Title" { return "Headline" }
-        return fieldName
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -53,12 +48,13 @@ struct MetadataHistoryView: View {
                 }
 
                 List(Array(history.enumerated().reversed()), id: \.element.id) { index, entry in
+                    let canRestoreThroughEntry = history.prefix(index + 1).allSatisfy(\.isRestorable)
                     Button {
                         onRestoreToPoint?(index)
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack {
-                                Text(displayName(for: entry.fieldName))
+                                Text(entry.displayName)
                                     .fontWeight(.medium)
                                 Spacer()
                                 Text(entry.timestamp, style: .relative)
@@ -66,12 +62,12 @@ struct MetadataHistoryView: View {
                                     .foregroundStyle(.secondary)
                             }
                             HStack {
-                                Text(entry.oldValue ?? "(empty)")
+                                Text(entry.displayOldValue ?? "(empty)")
                                     .strikethrough()
                                     .foregroundStyle(.red)
                                 Image(systemName: "arrow.right")
                                     .font(.caption)
-                                Text(entry.newValue ?? "(empty)")
+                                Text(entry.displayNewValue ?? "(empty)")
                                     .foregroundStyle(.green)
                             }
                             .font(.caption)
@@ -79,6 +75,10 @@ struct MetadataHistoryView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(!canRestoreThroughEntry)
+                    .help(canRestoreThroughEntry
+                        ? "Restore to this point"
+                        : "This point includes summarized or hidden metadata and cannot be restored safely")
                 }
                 .listStyle(.plain)
 

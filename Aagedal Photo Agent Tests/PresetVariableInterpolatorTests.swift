@@ -67,6 +67,32 @@ struct PresetVariableInterpolatorTests {
         #expect(result == "Example News, Example Sport|EXNEWS, EXSPORT")
     }
 
+    @Test("Ordered creators participate in field references and GPS-place discovery")
+    func orderedCreatorsParticipateInVariables() async {
+        let metadata = IPTCMetadata(
+            creators: ["First Creator", "{gps:city}"]
+        )
+
+        #expect(interpolator.resolve(
+            "{field:creator}",
+            existingMetadata: metadata
+        ) == "First Creator, {gps:city}")
+
+        let resolved = await interpolator.resolvingGPSPlaceVariables(in: metadata)
+        #expect(resolved.creators == ["First Creator"])
+    }
+
+    @Test("Variable discovery inspects every ordered creator")
+    func variableDiscoveryInspectsEveryCreator() {
+        let model = MetadataViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        model.editingMetadata.creators = ["First Creator", "{filename}"]
+
+        #expect(model.hasVariables)
+    }
+
     @Test("Rights fields resolve by key and display label")
     func rightsFieldAliases() {
         let metadata = IPTCMetadata(

@@ -225,8 +225,9 @@ struct MetadataSidecarService: Sendable {
         if edited.webStatementOfRights != original.webStatementOfRights { names.append("Web Statement of Rights") }
         if edited.digitalImageGUID != original.digitalImageGUID { names.append("Digital Image GUID") }
         if edited.imageSupplierImageID != original.imageSupplierImageID { names.append("Image Supplier Image ID") }
+        if edited.imageSuppliers != original.imageSuppliers { names.append("Image Supplier") }
         if edited.jobId != original.jobId { names.append("Job ID") }
-        if edited.creator != original.creator { names.append("Creator") }
+        if edited.creators != original.creators { names.append("Creator") }
         if edited.creatorJobTitle != original.creatorJobTitle { names.append("Creator Job Title") }
         if edited.descriptionWriter != original.descriptionWriter { names.append("Description Writer") }
         if edited.credit != original.credit { names.append("Credit") }
@@ -237,6 +238,9 @@ struct MetadataSidecarService: Sendable {
         if edited.countryCode != original.countryCode { names.append("Country Code") }
         if edited.urgency != original.urgency { names.append("Urgency") }
         if edited.sceneCodes != original.sceneCodes { names.append("Scene Code") }
+        if edited.subjectCodes != original.subjectCodes { names.append("Subject Code") }
+        if edited.mediaTopics != original.mediaTopics { names.append("Media Topic") }
+        if edited.genres != original.genres { names.append("Genre") }
         if edited.event != original.event { names.append("Event") }
         if edited.instructions != original.instructions { names.append("Instructions") }
         if edited.source != original.source { names.append("Source") }
@@ -248,7 +252,7 @@ struct MetadataSidecarService: Sendable {
 
     // MARK: - Save
 
-    func saveSidecar(_ sidecar: MetadataSidecar, for imageURL: URL, in folderURL: URL) throws {
+    nonisolated func saveSidecar(_ sidecar: MetadataSidecar, for imageURL: URL, in folderURL: URL) throws {
         let dir = sidecarDirectory(for: folderURL)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 

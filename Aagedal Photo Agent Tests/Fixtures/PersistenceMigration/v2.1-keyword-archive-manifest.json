@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2024-02-01T03:04:05Z",
+  "files": [{
+    "path": "approved/keywords.txt",
+    "kind": "approved.keywords",
+    "entryCount": 4
+  }]
+}

@@ -259,11 +259,11 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             // camera's original EXIF/TIFF Software string copied above.
             self.stampCreatorTool(into: &destMetadata)
 
-            // Drop the IFD1 thumbnail and ICC profile from the source — the renderer
-            // is expected to set its own profile and produce a fresh thumbnail when
-            // emitting the new file.
+            // Drop the source thumbnail. Keep `destMetadata.iccProfile`: it was parsed from the
+            // freshly rendered destination and is the authoritative profile for these pixels.
+            // Only EXIF/IPTC/XMP were replaced from `sourceMetadata`, so clearing ICC here would
+            // remove the renderer's frozen target-gamut evidence rather than a source profile.
             destMetadata.exif?.ifd1 = nil
-            destMetadata.stripICCProfile()
 
             // Drop the source's Exif pixel-dimension tags (PixelXDimension/Y,
             // 0xA002/0xA003). They describe the *source* frame and drift from the
@@ -396,6 +396,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         // Sync IPTC → XMP to ensure both sides are consistent.
         metadata.syncIPTCToXMP()
         normalizeEditorialRoleXMP(for: fields, metadata: &metadata)
+        normalizeDateCreatedXMP(for: fields, metadata: &metadata)
 
         if allowRenderedTIFFRewrite,
            ["tif", "tiff"].contains(url.pathExtension.lowercased()) {
@@ -432,6 +433,25 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                     property: property
                 )
             }
+        }
+    }
+
+    /// IIM can carry only a subset of ISO 8601 Date Created precision. The full lexical value is
+    /// authoritative in photoshop:DateCreated and must be restored after SwiftExif's IIM→XMP sync.
+    private func normalizeDateCreatedXMP(
+        for fields: [MetadataFieldKey: String],
+        metadata: inout ImageMetadata
+    ) {
+        guard let value = fields[.dateCreated] else { return }
+        if value.isEmpty {
+            metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "DateCreated")
+        } else {
+            if metadata.xmp == nil { metadata.xmp = XMPData() }
+            metadata.xmp?.setValue(
+                .simple(value),
+                namespace: XMPNamespace.photoshop,
+                property: "DateCreated"
+            )
         }
     }
 
@@ -490,7 +510,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 metadata.iptc.removeAll(for: .byline)
                 metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "creator")
             } else {
-                metadata.iptc.byline = value
+                metadata.iptc.bylines = IPTCMetadata.creators(fromTransportValue: value)
             }
 
         case .creatorJobTitle:
@@ -552,10 +572,31 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .imageSupplierImageID:
             setXMPField(
                 &metadata,
-                namespace: XMPNamespace.iptcExt,
+                namespace: XMPNamespace.plus,
                 property: "ImageSupplierImageID",
                 value: isEmpty ? nil : .simple(value)
             )
+            metadata.xmp?.removeValue(
+                namespace: XMPNamespace.iptcExt,
+                property: "ImageSupplierImageID"
+            )
+
+        case .imageSupplier:
+            if metadata.xmp == nil { metadata.xmp = XMPData() }
+            if var xmp = metadata.xmp {
+                let suppliers: [EditorialImageSupplier]
+                if isEmpty {
+                    suppliers = []
+                } else if let decoded = EditorialImageSupplier.values(fromCanonicalJSONString: value) {
+                    suppliers = decoded
+                } else {
+                    // The low-level key is structured JSON, never delimiter text. A malformed
+                    // payload must not acquire clear semantics.
+                    break
+                }
+                XMPDataBuilder.applyImageSuppliers(suppliers, into: &xmp)
+                metadata.xmp = xmp
+            }
 
         case .transmissionReference:
             if isEmpty {
@@ -568,9 +609,18 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .dateCreated:
             if isEmpty {
                 metadata.iptc.removeAll(for: .dateCreated)
+                metadata.iptc.removeAll(for: .timeCreated)
                 metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "DateCreated")
             } else {
-                metadata.iptc.dateCreated = value
+                let parsed = try? EditorialDateCreated(parsing: value)
+                metadata.iptc.dateCreated = parsed?.iimDateValue
+                metadata.iptc.timeCreated = parsed?.iimTimeValue
+                if metadata.xmp == nil { metadata.xmp = XMPData() }
+                metadata.xmp?.setValue(
+                    .simple(value),
+                    namespace: XMPNamespace.photoshop,
+                    property: "DateCreated"
+                )
             }
 
         case .city:
@@ -681,6 +731,33 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 commaSeparatedValue: value,
                 normalize: IPTCSceneCode.normalizedValue
             )
+
+        case .subjectCode:
+            let values = IPTCSubjectCode.normalizedValues(
+                value.components(separatedBy: ",")
+            )
+            metadata.iptc.removeAll(for: .subjectReference)
+            if values.isEmpty {
+                metadata.xmp?.removeValue(namespace: XMPNamespace.iptcCore, property: "SubjectCode")
+            } else {
+                try? metadata.iptc.setValues(values.map(IPTCSubjectCode.iimValue), for: .subjectReference)
+                if metadata.xmp == nil { metadata.xmp = XMPData() }
+                metadata.xmp?.setValue(
+                    .array(values),
+                    namespace: XMPNamespace.iptcCore,
+                    property: "SubjectCode"
+                )
+            }
+
+        case .mediaTopic:
+            if isEmpty {
+                metadata.xmp?.removeValue(namespace: XMPNamespace.iptcExt, property: "AboutCvTerm")
+            }
+
+        case .genre:
+            if isEmpty {
+                metadata.xmp?.removeValue(namespace: XMPNamespace.iptcExt, property: "Genre")
+            }
 
         case .digitalSourceType:
             setXMPField(&metadata, namespace: XMPNamespace.iptcExt, property: "DigitalSourceType",
@@ -888,6 +965,11 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
     private func applyListRemove(key: MetadataFieldKey, values: [String], metadata: inout ImageMetadata) {
         switch key {
+        case .creator:
+            var existing = metadata.iptc.bylines
+            existing.removeAll { values.contains($0) }
+            metadata.iptc.bylines = existing
+
         case .subject:
             var existing = metadata.iptc.keywords
             existing.removeAll { values.contains($0) }
@@ -919,6 +1001,19 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 metadata: &metadata
             )
 
+        case .subjectCode:
+            removeXMPListValues(
+                IPTCSubjectCode.normalizedValues(values),
+                namespace: XMPNamespace.iptcCore,
+                property: "SubjectCode",
+                metadata: &metadata
+            )
+            let remaining = metadata.xmp?.arrayValue(
+                namespace: XMPNamespace.iptcCore,
+                property: "SubjectCode"
+            ) ?? []
+            try? metadata.iptc.setValues(remaining.map(IPTCSubjectCode.iimValue), for: .subjectReference)
+
         default:
             swiftExifLog.warning("addRemoveListValues: unsupported key \(key.rawValue, privacy: .public) for remove")
         }
@@ -926,6 +1021,13 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
     private func applyListAdd(key: MetadataFieldKey, values: [String], metadata: inout ImageMetadata) {
         switch key {
+        case .creator:
+            var existing = metadata.iptc.bylines
+            for value in IPTCMetadata.normalizedCreators(values) where !existing.contains(value) {
+                existing.append(value)
+            }
+            metadata.iptc.bylines = existing
+
         case .subject:
             var existing = metadata.iptc.keywords
             for value in values {
@@ -957,6 +1059,19 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 property: "Scene",
                 metadata: &metadata
             )
+
+        case .subjectCode:
+            addXMPListValues(
+                IPTCSubjectCode.normalizedValues(values),
+                namespace: XMPNamespace.iptcCore,
+                property: "SubjectCode",
+                metadata: &metadata
+            )
+            let updated = metadata.xmp?.arrayValue(
+                namespace: XMPNamespace.iptcCore,
+                property: "SubjectCode"
+            ) ?? []
+            try? metadata.iptc.setValues(updated.map(IPTCSubjectCode.iimValue), for: .subjectReference)
 
         default:
             swiftExifLog.warning("addRemoveListValues: unsupported key \(key.rawValue, privacy: .public) for add")

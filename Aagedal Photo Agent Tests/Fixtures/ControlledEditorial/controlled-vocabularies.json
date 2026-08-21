@@ -1,0 +1,27 @@
+{
+  "subjectCodes": [
+    "subj:01000000",
+    "https://cv.iptc.org/newscodes/subjectcode/15000000",
+    "newsroom:legacy-subject"
+  ],
+  "mediaTopics": [
+    {
+      "cvId": "http://cv.iptc.org/newscodes/mediatopic/",
+      "cvTermId": "http://cv.iptc.org/newscodes/mediatopic/20000587",
+      "cvTermName": "Photography",
+      "cvTermRefinedAbout": "https://example.test/topics/editorial-photography"
+    },
+    {
+      "cvId": "https://example.test/vocab/",
+      "cvTermId": "https://example.test/vocab/concept-42",
+      "cvTermName": "Newsroom concept"
+    }
+  ],
+  "genres": [
+    {
+      "cvId": "http://cv.iptc.org/newscodes/genre/",
+      "cvTermId": "http://cv.iptc.org/newscodes/genre/Feature",
+      "cvTermName": "Feature"
+    }
+  ]
+}

@@ -2,20 +2,24 @@
 
 **Validated:** 2026-08-21  
 **Standard baseline:** IPTC Photo Metadata Standard 2025.1  
-**Property:** `Iptc4xmpExt:ImageSupplierImageID`
+**Canonical property:** `plus:ImageSupplierImageID`
+
+**Legacy Photo Agent read compatibility:** `Iptc4xmpExt:ImageSupplierImageID`
 
 ## Implemented contract
 
 - `IPTCMetadata.imageSupplierImageID` is a distinct optional scalar. It is not derived from the
-  Digital Image GUID, Job ID, filename, application-side record identity, or the planned structured
+  Digital Image GUID, Job ID, filename, application-side record identity, or the structured
   Image Supplier value.
 - Existing values survive JSON sidecars, history, copy/reconciliation, batch editing, rendering,
   and delivery preparation.
 - The field accepts agency-specific text values without rewriting them into UUID or URI syntax.
 - Template append mode treats the identifier as atomic and replaces it instead of concatenating
   identifiers.
-- An explicit empty write removes `Iptc4xmpExt:ImageSupplierImageID`; an unrelated write leaves it
-  intact and does not alter the Digital Image GUID.
+- New writes use the standards-defined PLUS namespace. Reads prefer PLUS and fall back to the
+  namespace used by earlier Photo Agent builds so existing values migrate without being stranded.
+- An explicit empty write removes both representations; an unrelated write leaves the value intact
+  and does not alter the Digital Image GUID.
 
 ## Interoperability evidence
 
@@ -23,7 +27,7 @@ Focused tests cover:
 
 - Sparse write dictionaries and independence from Digital Image GUID.
 - Codable and metadata-sidecar persistence, field labels, and variable interpolation.
-- XMP sidecar and embedded JPEG read/write using the IPTC Extension namespace.
+- XMP sidecar and embedded JPEG canonical PLUS read/write plus legacy-namespace migration.
 - Preservation during an unrelated caption edit.
 - Authoritative clear behavior without clearing Digital Image GUID.
 - Metadata difference, additive merge, and descriptive replacement semantics.
@@ -53,5 +57,5 @@ Result: **166 tests passed** across the two focused runs (89 + 77).
 ## Remaining evidence
 
 - Confirm current Adobe Bridge and Photo Mechanic display/write behavior.
-- Add the field to TIFF, PNG, HEIC/HEIF, JPEG XL, and representative RAW+XMP fixtures.
-- Include it in the generated support report once that Phase 1 deliverable exists.
+- Add current Bridge/Photo Mechanic evidence and the remaining licensed HEIC/RAW fixtures. The CC0
+  TIFF, PNG, JPEG XL, and RAW-sidecar corpus is already covered by the container gate.

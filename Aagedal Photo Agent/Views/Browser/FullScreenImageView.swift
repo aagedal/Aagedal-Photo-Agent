@@ -218,32 +218,23 @@ private class FullScreenWindow: NSWindow {
             return
         }
 
-        // Menu-equivalent modified shortcuts plus bare Photo Mechanic-style
-        // culling: 0–5 rate, while 6–9 apply color-label slots 1–4.
-        if let shortcut = FullScreenNumberShortcut.resolve(
-            keyCode: keyCode,
-            command: hasCmd,
-            option: hasOption
-        ) {
-            switch shortcut {
-            case .rating(let rating):
-                onSetRating?(rating)
-            case .colorLabel(let index):
-                onSetLabel?(index)
+        let inputState = keyboardTextInputState(in: self)
+        if let key = event.charactersIgnoringModifiers?.first,
+           let action = KeyboardShortcutRouter.resolve(
+            KeyboardShortcutRouteInput(
+                key: String(key),
+                modifiers: KeyboardShortcutModifiers(flags),
+                textEditorOwnsInput: inputState.textEditorOwnsInput,
+                imeHasMarkedText: inputState.imeHasMarkedText,
+                isRepeat: event.isARepeat
+            ),
+            profile: KeyboardShortcutProfileRegistry.shared.selectedProfile
+           ) {
+            switch action {
+            case let .rating(value): onSetRating?(value)
+            case let .colorLabel(index): onSetLabel?(index)
             }
             return
-        }
-
-        if !hasCmd && !hasOption {
-            // X (keyCode 7) → trash label, S (keyCode 1) → red/select.
-            if keyCode == 7 && !event.isARepeat {
-                onSetLabel?(8) // ColorLabel.trash → shortcutIndex 8
-                return
-            }
-            if keyCode == 1 && !event.isARepeat {
-                onSetLabel?(1) // ColorLabel.red → shortcutIndex 1
-                return
-            }
         }
 
         super.keyDown(with: event)

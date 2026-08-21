@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "sourceFile": "wire.jpg",
+  "lastModified": "2024-01-02T03:04:05Z",
+  "pendingChanges": true,
+  "metadata": {
+    "title": "Wire headline",
+    "description": "Desk caption",
+    "keywords": ["wire", "oslo"]
+  },
+  "imageMetadataSnapshot": {
+    "title": "Old headline"
+  },
+  "history": [{
+    "timestamp": "2024-01-02T03:00:00Z",
+    "fieldName": "Title",
+    "oldValue": "Old headline",
+    "newValue": "Wire headline"
+  }]
+}

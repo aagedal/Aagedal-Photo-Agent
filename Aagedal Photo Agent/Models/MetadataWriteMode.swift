@@ -99,6 +99,11 @@ enum MetadataWriteMode: String, CaseIterable, Identifiable, Sendable {
         [.historyOnly, .writeToFile, .writeToXMPSidecar, .writeToFileAndXMPSidecar]
     }
 
+    /// Proprietary RAW containers are never offered an embedded destination.
+    static var rawOptions: [MetadataWriteMode] {
+        [.historyOnly, .writeToXMPSidecar]
+    }
+
     static var defaultNonC2PA: MetadataWriteMode { .writeToFile }
     static var defaultC2PA: MetadataWriteMode { .writeToXMPSidecar }
     static var defaultRaw: MetadataWriteMode { .writeToXMPSidecar }
@@ -131,7 +136,10 @@ enum MetadataWriteMode: String, CaseIterable, Identifiable, Sendable {
             if isRaw || forC2PA { return .writeToXMPSidecar }
             return .writeToFile
         case .custom:
-            if isRaw { return customMode(key: UserDefaultsKeys.metadataWriteModeRaw, default: .defaultRaw) }
+            if isRaw {
+                let configured = customMode(key: UserDefaultsKeys.metadataWriteModeRaw, default: .defaultRaw)
+                return configured.writesEmbedded ? .writeToXMPSidecar : configured
+            }
             if forC2PA { return customC2PAMode() }
             return customNonC2PAMode()
         }

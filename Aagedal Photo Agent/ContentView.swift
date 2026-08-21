@@ -8,6 +8,8 @@ import UniformTypeIdentifiers
 
 enum MainViewMode {
     case browser           // Normal photo browsing
+    case caption           // Keyboard-first, sidecar-safe captioning workspace
+    case deadline          // Delivery preflight and fix-next workspace
     case metadataReview    // Folder-wide metadata comparison list
     case imageAnalysis     // Source-bound evidence and OSINT workspace
     case comparison        // Revision-bound two-image comparison workspace
@@ -105,10 +107,15 @@ struct ContentView: View {
     @State private var importViewModel: ImportViewModel
     /// Shared, persisted log of recent imports and uploads.
     @State private var activityHistory: ActivityHistoryStore
+    /// Privacy-preserving, immutable delivery evidence surfaced alongside Activity history.
+    @State private var deliveryReceiptLibrary = DeliveryReceiptLibraryModel()
+    /// Privacy-safe discovery and explicit recovery/cleanup for retained delivery workflows.
+    @State private var deliveryWorkflowActivity: DeliveryWorkflowActivityModel
 
     @State private var isShowingTemplateEditor = false
     @State private var isShowingTemplatePicker = false
     @State private var isShowingTemplatePalette = false
+    @State private var captionTemplateAppendOverride: Bool?
     @State private var isShowingDevelopTemplatePalette = false
     @State private var ftpUploadItem: FTPUploadItem?
     @State private var isShowingSaveTemplateName = false
@@ -126,6 +133,15 @@ struct ContentView: View {
     @State private var saveDevelopTemplateIncludesCrop = true
     @AppStorage(UserDefaultsKeys.metadataPanelWidth) private var metadataPanelWidth: Double = 320
     @State private var mainViewMode: MainViewMode = .browser
+    @State private var deadlineProfileLibrary = DeadlineProfileLibraryModel()
+    @State private var deadlineRenameRecipeLibrary = BatchRenameRecipeLibraryModel()
+    @State private var deadlineLiveSnapshot = DeadlinePreflightLiveSnapshotModel()
+    @State private var deadlineDeliverySession: DeadlineDeliveryProductionSession
+    @State private var pendingDeadlineResumeWorkflowIdentifier: UUID?
+    @State private var pendingDeadlineCaptionField: MetadataFieldID?
+    @State private var isShowingDeadlineStagingActivity = false
+    @State private var deadlineLiveSettingsRevision: UInt64 = 0
+    @State private var isShowingDeadlineProfileManager = false
     @State private var lastNonPeopleViewMode: MainViewMode = .browser
     @State private var navigationSplitViewVisibility: NavigationSplitViewVisibility = .all
     @State private var navigationSplitViewVisibilityBeforeAnalysis: NavigationSplitViewVisibility?
@@ -154,6 +170,7 @@ struct ContentView: View {
     @State private var scopeImageTask: Task<Void, Never>?
     @State private var analysisWorkspaceModel = AnalysisWorkspaceModel()
     @State private var comparisonImages: [ImageFile] = []
+    @State private var comparisonRenameEvent: ComparisonRenameEvent?
     @State private var comparisonOrigin: ComparisonOriginWorkspace = .browser
     @State private var comparisonInitialLeftRepresentation: ComparisonRepresentation?
 
@@ -166,6 +183,7 @@ struct ContentView: View {
     @State private var listRecoveryAffectedNames: [String] = []
 
     init(settingsViewModel: SettingsViewModel) {
+        let deliverySession = DeadlineDeliveryProductionSession()
         let thumbnailService = ThumbnailService()
         let fullScreenImageCache = FullScreenImageCache()
         let browser = BrowserViewModel(thumbnailService: thumbnailService, fullScreenImageCache: fullScreenImageCache)
@@ -191,6 +209,11 @@ struct ContentView: View {
         _faceRecognitionViewModel = State(initialValue: faceRecognition)
         _settingsViewModel = State(initialValue: settingsViewModel)
         _activityHistory = State(initialValue: history)
+        _deadlineDeliverySession = State(initialValue: deliverySession)
+        _deliveryWorkflowActivity = State(initialValue: DeliveryWorkflowActivityModel(
+            dependencies: .production(session: deliverySession)
+        ))
+        _pendingDeadlineResumeWorkflowIdentifier = State(initialValue: nil)
         _importViewModel = State(initialValue: ImportViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine, activityHistory: history))
     }
 
@@ -198,6 +221,28 @@ struct ContentView: View {
 
     var body: some View {
         contentWithStateHandlers
+            .task {
+                await deadlineProfileLibrary.loadIfNeeded()
+                await deadlineRenameRecipeLibrary.loadIfNeeded()
+                await deliveryReceiptLibrary.reload()
+                await deliveryWorkflowActivity.reload()
+            }
+            .task(id: deadlineLiveCaptureRevision) {
+                guard let request = makeDeadlineLiveCaptureRequest() else {
+                    await deadlineLiveSnapshot.clear()
+                    return
+                }
+                await deadlineLiveSnapshot.refresh(request)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+                deadlineLiveSettingsRevision &+= 1
+            }
+            .sheet(isPresented: $isShowingDeadlineProfileManager) {
+                DeadlineProfileManagementView(
+                    model: deadlineProfileLibrary,
+                    onClose: { isShowingDeadlineProfileManager = false }
+                )
+            }
             .onChange(of: browserViewModel.selectedImageIDs) { _, _ in
                 // Closing the inspector cancels its validation task; validation is only
                 // meaningful for the image that opened it.
@@ -256,6 +301,7 @@ struct ContentView: View {
                 faceRecognitionViewModel: faceRecognitionViewModel,
                 settingsViewModel: settingsViewModel,
                 importViewModel: importViewModel,
+                mainViewMode: mainViewMode,
                 loadTechnicalMetadata: loadTechnicalMetadata,
                 technicalMetadataCache: $technicalMetadataCache,
                 technicalMetadata: $technicalMetadata
@@ -270,8 +316,8 @@ struct ContentView: View {
                 browserViewModel.fullScreenImageCache.setEditingMemoryProfile(editing)
             }
             .onChange(of: mainViewMode) { oldMode, newMode in
-                let oldUsesFocusedWorkspace = oldMode == .imageAnalysis || oldMode == .comparison
-                let newUsesFocusedWorkspace = newMode == .imageAnalysis || newMode == .comparison
+                let oldUsesFocusedWorkspace = oldMode == .caption || oldMode == .imageAnalysis || oldMode == .comparison
+                let newUsesFocusedWorkspace = newMode == .caption || newMode == .imageAnalysis || newMode == .comparison
                 if !oldUsesFocusedWorkspace, newUsesFocusedWorkspace {
                     navigationSplitViewVisibilityBeforeAnalysis = navigationSplitViewVisibility
                     navigationSplitViewVisibility = .detailOnly
@@ -307,6 +353,23 @@ struct ContentView: View {
                     onStartUpload: { ftpUploadItem = nil }
                 )
             }
+            .sheet(isPresented: $ftpViewModel.isShowingServerForm) {
+                FTPServerForm(viewModel: ftpViewModel)
+            }
+            .sheet(isPresented: $isShowingDeadlineStagingActivity) {
+                ActivityHistoryView(
+                    history: activityHistory,
+                    faceViewModel: faceRecognitionViewModel,
+                    receiptLibrary: deliveryReceiptLibrary,
+                    workflowActivity: deliveryWorkflowActivity,
+                    onResumeWorkflow: { workflowIdentifier in
+                        pendingDeadlineResumeWorkflowIdentifier = workflowIdentifier
+                        isShowingDeadlineStagingActivity = false
+                        mainViewMode = .deadline
+                        return true
+                    }
+                )
+            }
             .sheet(item: $advancedExportSession, onDismiss: {
                 guard let request = pendingAdvancedExportRequest else { return }
                 pendingAdvancedExportRequest = nil
@@ -330,6 +393,113 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $isShowingImport) { importSheet }
+            .sheet(item: Bindable(browserViewModel).batchRenameSheetRequest) { request in
+                BatchRenameSheet(
+                    request: request,
+                    executionQuiescence: BatchRenameExecutionQuiescence(
+                        prepare: {
+                            do {
+                                try await faceRecognitionViewModel.quiesceScanForRename(
+                                    in: request.folderURL
+                                )
+                            } catch {
+                                throw BatchRenameExecutionQuiescenceError.faceScan(
+                                    error.localizedDescription
+                                )
+                            }
+                            do {
+                                try await analysisWorkspaceModel.beginRenameQuiescence(
+                                    in: request.folderURL
+                                )
+                            } catch {
+                                faceRecognitionViewModel.endRenameQuiescence(
+                                    in: request.folderURL
+                                )
+                                throw BatchRenameExecutionQuiescenceError.analysis(
+                                    error.localizedDescription
+                                )
+                            }
+                        },
+                        complete: { completion in
+                            defer {
+                                faceRecognitionViewModel.endRenameQuiescence(
+                                    in: request.folderURL
+                                )
+                            }
+                            switch completion {
+                            case .succeeded(let mappings):
+                                do {
+                                    try await analysisWorkspaceModel.finishRenameQuiescence(
+                                        using: mappings
+                                    )
+                                } catch {
+                                    throw BatchRenameExecutionQuiescenceError.analysis(
+                                        error.localizedDescription
+                                    )
+                                }
+                            case .abortedBeforeExecution:
+                                do {
+                                    try await analysisWorkspaceModel
+                                        .cancelRenameQuiescenceBeforeExecution()
+                                } catch {
+                                    throw BatchRenameExecutionQuiescenceError.analysis(
+                                        error.localizedDescription
+                                    )
+                                }
+                            case .executionFailed:
+                                await analysisWorkspaceModel.invalidateAfterRenameExecutionFailure()
+                            }
+                        }
+                    ),
+                    onSuccess: { presentation, reassociation in
+                        for mapping in presentation.mappings {
+                            technicalMetadataCache.removeValue(forKey: mapping.sourceURL)
+                            technicalMetadataCache.removeValue(forKey: mapping.destinationURL)
+                        }
+                        let destinations = Dictionary(uniqueKeysWithValues: presentation.mappings.map {
+                            ($0.sourceURL.standardizedFileURL, $0.destinationURL.standardizedFileURL)
+                        })
+                        comparisonImages = comparisonImages.map { image in
+                            guard let destination = destinations[image.url.standardizedFileURL] else {
+                                return image
+                            }
+                            return ImageFile(url: destination, copyingFrom: image)
+                        }
+                        comparisonRenameEvent = ComparisonRenameEvent(mappings: presentation.mappings)
+                        browserViewModel.applySuccessfulRename(presentation)
+                        faceRecognitionViewModel.loadFaceData(
+                            for: request.folderURL,
+                            cleanupPolicy: settingsViewModel.faceCleanupPolicy
+                        )
+                        if !reassociation.succeeded,
+                           browserViewModel.currentFolderURL?.standardizedFileURL
+                            == request.folderURL.standardizedFileURL {
+                            browserViewModel.loadFolder(
+                                url: request.folderURL,
+                                addToOpenFolders: false
+                            )
+                        }
+                    },
+                    onFailureOrCancellation: { result in
+                        for item in request.items {
+                            technicalMetadataCache.removeValue(forKey: item.sourceImageURL)
+                        }
+                        for bundle in result.bundles {
+                            if let destination = bundle.destinationImageURL {
+                                technicalMetadataCache.removeValue(forKey: destination)
+                            }
+                        }
+                        for residual in result.residuals {
+                            technicalMetadataCache.removeValue(forKey: residual.expectedSourceURL)
+                            technicalMetadataCache.removeValue(forKey: residual.intendedDestinationURL)
+                            if let current = residual.currentURL {
+                                technicalMetadataCache.removeValue(forKey: current)
+                            }
+                        }
+                        browserViewModel.recoverAfterRenameFailure(result, request: request)
+                    }
+                )
+            }
             .sheet(item: $backupEditedFolderItem) { item in
                 BackupEditedFilesSheet(
                     sourceFolder: item.url,
@@ -469,7 +639,10 @@ struct ContentView: View {
                     TemplatePaletteView(
                         templates: templateViewModel.templates,
                         onApply: { template, append in
-                            applyTemplate(template, append: append)
+                            applyTemplate(
+                                template,
+                                append: captionTemplateAppendOverride ?? append
+                            )
                             closeTemplatePalette(restoringGridFocus: true)
                         },
                         onSaveNew: {
@@ -572,7 +745,9 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .showTemplatePalette)) { _ in
                 switch mainViewMode.templateCommandTarget {
                 case .metadata:
-                    isShowingTemplatePalette = true
+                    performAfterCaptionFlush {
+                        isShowingTemplatePalette = true
+                    }
                 case .develop:
                     isShowingDevelopTemplatePalette = true
                 }
@@ -581,10 +756,12 @@ struct ContentView: View {
                 guard let slot = notification.object as? Int else { return }
                 switch mainViewMode.templateCommandTarget {
                 case .metadata:
-                    templateViewModel.loadTemplates()
-                    if let template = templateViewModel.template(forSlot: slot) {
-                        applyTemplate(template)
-                        restoreGridFocus()
+                    performAfterCaptionFlush {
+                        templateViewModel.loadTemplates()
+                        if let template = templateViewModel.template(forSlot: slot) {
+                            applyTemplate(template)
+                            restoreGridFocus()
+                        }
                     }
                 case .develop:
                     developTemplateViewModel.loadTemplates()
@@ -610,6 +787,9 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .openInInternalEditor)) { _ in
                 openEditWorkspace()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openCaptionWorkspace)) { _ in
+                openCaptionWorkspace()
             }
             .onReceive(NotificationCenter.default.publisher(for: .renderAndSignSelected)) { _ in
                 renderAndSignSelected()
@@ -710,6 +890,42 @@ struct ContentView: View {
             switch mainViewMode {
             case .browser:
                 browserAndMetadataPanel
+            case .caption:
+                CaptionWorkspaceView(
+                    metadataViewModel: metadataViewModel,
+                    browserViewModel: browserViewModel,
+                    settingsViewModel: settingsViewModel,
+                    deadlineProfile: deadlineProfileLibrary.selectedProfile,
+                    initialFocusedField: pendingDeadlineCaptionField,
+                    onApplyTemplate: { append in
+                        captionTemplateAppendOverride = append
+                        isShowingTemplatePalette = true
+                    },
+                    onClose: {
+                        pendingDeadlineCaptionField = nil
+                        mainViewMode = .browser
+                        browserViewModel.shouldRestoreGridFocus = true
+                    }
+                )
+            case .deadline:
+                DeadlineWorkspaceView(
+                    input: deadlineWorkspaceInput,
+                    deliveryDependencies: deadlineDeliveryDependencies,
+                    resumeWorkflowIdentifier: pendingDeadlineResumeWorkflowIdentifier,
+                    onFixNext: handleDeadlineRemediation,
+                    onManageProfiles: {
+                        isShowingDeadlineProfileManager = true
+                    },
+                    onResumeWorkflowConsumed: { workflowIdentifier in
+                        if pendingDeadlineResumeWorkflowIdentifier == workflowIdentifier {
+                            pendingDeadlineResumeWorkflowIdentifier = nil
+                        }
+                    },
+                    onClose: {
+                        mainViewMode = .browser
+                        browserViewModel.shouldRestoreGridFocus = true
+                    }
+                )
             case .metadataReview:
                 MetadataReviewView(viewModel: browserViewModel)
             case .imageAnalysis:
@@ -743,6 +959,7 @@ struct ContentView: View {
                     initialRightSource: nil,
                     allowsSourceReplacement: true,
                     allowsDeletion: true,
+                    renameEvent: comparisonRenameEvent,
                     onFocusedImageChange: { image in
                         browserViewModel.selectedImageIDs = [image.url]
                         browserViewModel.lastClickedImageURL = image.url
@@ -887,7 +1104,32 @@ struct ContentView: View {
     /// its local exit button. Route them through the same registered flush handler and leave the
     /// editor visible when persistence fails.
     private func leaveEditWorkspaceIfNeeded(_ transition: @escaping @MainActor () -> Void) {
+        if mainViewMode == .caption {
+            Task { @MainActor in
+                do {
+                    try CaptionWorkspaceFlushCoordinator.shared.flush()
+                    guard mainViewMode == .caption else { return }
+                    transition()
+                } catch {
+                    metadataViewModel.saveError = error.localizedDescription
+                }
+            }
+            return
+        }
         performAfterDevelopFlush(reason: .workspaceExit, transition)
+    }
+
+    private func performAfterCaptionFlush(_ operation: @escaping @MainActor () -> Void) {
+        guard mainViewMode == .caption else { operation(); return }
+        Task { @MainActor in
+            do {
+                try CaptionWorkspaceFlushCoordinator.shared.flush()
+                guard mainViewMode == .caption else { return }
+                operation()
+            } catch {
+                metadataViewModel.saveError = error.localizedDescription
+            }
+        }
     }
 
     private func performAfterDevelopFlush(
@@ -903,6 +1145,13 @@ struct ContentView: View {
     }
 
     private func openEditWorkspace() {
+        if mainViewMode == .caption {
+            leaveEditWorkspaceIfNeeded {
+                mainViewMode = .browser
+                openEditWorkspace()
+            }
+            return
+        }
         if browserViewModel.selectedImageIDs.isEmpty,
            let firstVisible = browserViewModel.visibleImages.first {
             browserViewModel.selectedImageIDs = [firstVisible.url]
@@ -924,6 +1173,288 @@ struct ContentView: View {
         }
 
         mainViewMode = .editing
+    }
+
+    private func openCaptionWorkspace() {
+        guard mainViewMode != .caption else { return }
+        leaveEditWorkspaceIfNeeded {
+            if !browserViewModel.selectedImages.contains(where: \.isImageFile),
+               let firstVisible = browserViewModel.visibleImages.first(where: \.isImageFile) {
+                browserViewModel.selectedImageIDs = [firstVisible.url]
+                browserViewModel.lastClickedImageURL = firstVisible.url
+            }
+            guard browserViewModel.selectedImages.contains(where: \.isImageFile) else { return }
+            mainViewMode = .caption
+        }
+    }
+
+    private func openDeadlineWorkspace() {
+        guard mainViewMode != .deadline else { return }
+        leaveEditWorkspaceIfNeeded {
+            if !browserViewModel.selectedImages.contains(where: \.isImageFile),
+               let firstVisible = browserViewModel.visibleImages.first(where: \.isImageFile) {
+                browserViewModel.selectedImageIDs = [firstVisible.url]
+                browserViewModel.lastClickedImageURL = firstVisible.url
+            }
+            guard browserViewModel.selectedImages.contains(where: \.isImageFile) else { return }
+            mainViewMode = .deadline
+        }
+    }
+
+    private var deadlineWorkspaceInput: DeadlineWorkspaceInput? {
+        deadlineLiveSnapshot.workspaceInput
+    }
+
+    private func handleDeadlineRemediation(_ destination: DeadlineRemediationDestination) {
+        switch destination {
+        case let .caption(imageURL, field):
+            if let field {
+                settingsViewModel.setIPTCMetadataField(field, visible: true)
+            }
+            pendingDeadlineCaptionField = field
+            guard selectDeadlineRemediationImages(imageURL) else { return }
+            mainViewMode = .caption
+
+        case let .sourceImage(imageURL):
+            pendingDeadlineCaptionField = nil
+            guard selectDeadlineRemediationImages(imageURL) else { return }
+            mainViewMode = .browser
+            browserViewModel.shouldRestoreGridFocus = true
+
+        case .profileSettings:
+            isShowingDeadlineProfileManager = true
+
+        case let .renameSettings(imageURL):
+            guard selectDeadlineRemediationImages(imageURL) else { return }
+            browserViewModel.renameSelected()
+
+        case let .exportSettings(imageURL):
+            guard selectDeadlineRemediationImages(imageURL) else { return }
+            showAdvancedExportSelected()
+
+        case let .connectionSettings(identifier):
+            let exactIdentifier = identifier
+                ?? deadlineWorkspaceInput?.request.profile.destination?.connectionIdentifier
+            if let exactIdentifier,
+               let connection = ftpViewModel.connections.first(where: {
+                   $0.id.uuidString.caseInsensitiveCompare(exactIdentifier) == .orderedSame
+               }) {
+                ftpViewModel.startEditingConnection(connection)
+            } else {
+                ftpViewModel.startEditingConnection()
+            }
+
+        case .stagingSettings:
+            Task { await deliveryWorkflowActivity.reload() }
+            isShowingDeadlineStagingActivity = true
+        }
+    }
+
+    /// A per-image remediation keeps that exact image. Batch remediation uses the complete,
+    /// ordered Deadline request rather than guessing from an unrelated browser selection.
+    @discardableResult
+    private func selectDeadlineRemediationImages(_ imageURL: URL?) -> Bool {
+        let urls: [URL]
+        if let imageURL {
+            urls = [imageURL]
+        } else {
+            urls = deadlineWorkspaceInput?.request.items.map(\.sourceURL) ?? []
+        }
+        guard !urls.isEmpty else { return false }
+        browserViewModel.selectedImageIDs = Set(urls)
+        browserViewModel.lastClickedImageURL = imageURL ?? urls.first
+        return true
+    }
+
+    /// Live production composition for one confirmed Deadline batch. The preparation closure
+    /// captures value state on the main actor, hashes source bytes in a detached task, and asks the
+    /// pure planner to revalidate every frozen input before the confirmation sheet is published.
+    private var deadlineDeliveryDependencies: DeadlineDeliveryExecutionDependencies {
+        let browser = browserViewModel
+        let profileLibrary = deadlineProfileLibrary
+        let liveSnapshot = deadlineLiveSnapshot
+        let ftp = ftpViewModel
+        let receipts = deliveryReceiptLibrary
+        let workflowActivity = deliveryWorkflowActivity
+        let session = deadlineDeliverySession
+
+        return DeadlineDeliveryExecutionDependencies(
+            prepare: { preparation in
+                try await session.prepare(
+                    preparation,
+                    browser: browser,
+                    profileLibrary: profileLibrary,
+                    liveSnapshot: liveSnapshot
+                )
+            },
+            start: { batch, progress in
+                try await session.execute(
+                    batch,
+                    connections: ftp.connections,
+                    writeEngine: browser.writeEngine,
+                    resume: false,
+                    progress: progress
+                )
+            },
+            resume: { batch, progress in
+                try await session.execute(
+                    batch,
+                    connections: ftp.connections,
+                    writeEngine: browser.writeEngine,
+                    resume: true,
+                    progress: progress
+                )
+            },
+            cancel: { await session.requestCancellation() },
+            recover: { try await session.recoverableBatch() },
+            reloadReceipts: {
+                await receipts.reload()
+                await workflowActivity.reload()
+            },
+            recoverWorkflow: { try await session.recoverReservedBatch(for: $0) },
+            releaseRecoveredWorkflow: { session.releaseResumeReservation(for: $0) }
+        )
+    }
+
+    /// Value-only identity for scheduling a fresh background capture. No filesystem, image decode,
+    /// capacity, encoder, security-scope, or network work is performed here.
+    private var deadlineLiveCaptureRevision: UInt64 {
+        let selectedURLs = browserViewModel.selectedImageIDs
+        let images = browserViewModel.sortedImages.filter {
+            selectedURLs.contains($0.url) && $0.isImageFile
+        }
+        var revision = deadlineSelectionSourceRevision(images)
+            ^ deadlineMetadataRevision(images)
+            ^ deadlineEncodableRevision(deadlineProfileLibrary.selectedProfile)
+            ^ deadlineEncodableRevision(deadlineRenameRecipeLibrary.presets)
+            ^ deadlineEncodableRevision(templateViewModel.templates)
+        revision ^= deadlineRevision(advancedExportConfiguration.previewSignature(isHDR: false).utf8)
+        revision ^= deadlineRevision(advancedExportConfiguration.previewSignature(isHDR: true).utf8)
+        revision ^= deadlineEncodableRevision(images.map {
+            browserViewModel.currentCameraRawSettings(for: $0.url)
+        })
+        revision ^= deadlineRevision(
+            ftpViewModel.connections.map { $0.id.uuidString.lowercased() }.sorted()
+                .joined(separator: "\n").utf8
+        )
+        revision ^= UInt64(bitPattern: Int64(KeywordListsStore.shared.version))
+        revision ^= deadlineLiveSettingsRevision
+        if mainViewMode == .deadline { revision ^= 0xD34D_11AE }
+        return revision
+    }
+
+    /// Captures only already-owned value state on the main actor. Every live probe happens inside
+    /// `DeadlinePreflightLiveSnapshotCoordinator`'s detached capture task.
+    private func makeDeadlineLiveCaptureRequest() -> DeadlinePreflightLiveCaptureRequest? {
+        guard mainViewMode == .deadline,
+              let deadlineProfile = deadlineProfileLibrary.selectedProfile else { return nil }
+        let selectedURLs = browserViewModel.selectedImageIDs
+        let images = browserViewModel.sortedImages.filter {
+            selectedURLs.contains($0.url) && $0.isImageFile
+        }
+        let items = images.map { image in
+            var resolvedMetadata = image.metadata ?? IPTCMetadata()
+            resolvedMetadata.cameraRaw = browserViewModel.currentCameraRawSettings(for: image.url)
+            return DeadlineLiveSourceItem(
+                sourceURL: image.url,
+                metadata: resolvedMetadata,
+                sidecarState: image.hasPendingMetadataChanges ? .pending : .clean,
+                renameContext: BatchRenameContext(originalFilename: image.url.lastPathComponent),
+                byteCount: image.fileSize > 0 ? image.fileSize : nil,
+                isICloudDownloadPending: image.isICloudDownloadPending,
+                isSupportedFormat: image.isImageFile,
+                isHDR: image.isNativeHDR,
+                hasC2PA: image.hasC2PA,
+                exifOrientation: image.exifOrientation
+            )
+        }
+        let templateIdentifiers = Set(templateViewModel.templates.flatMap { template in
+            [template.id.uuidString, template.id.uuidString.lowercased()]
+        })
+        let validationProfiles = [
+            MetadataValidationProfile.currentRequirements(
+                levels: MetadataRequirements.load(from: AppDefaults.store),
+                minimumLengths: MetadataRequirements.loadMinimumLengths(from: AppDefaults.store)
+            ),
+            MetadataValidationProfile.iptcIIMCompatibility,
+        ]
+        let inventory = DeadlineLiveResourceInventory(
+            validationProfiles: validationProfiles,
+            metadataTemplateIdentifiers: templateIdentifiers,
+            renamePresets: deadlineRenameRecipeLibrary.presets,
+            exportConfigurations: [
+                DeadlineLiveExportConfiguration(
+                    identifier: DeadlineLiveResourceIdentifier.currentExportConfiguration,
+                    snapshot: DeadlineExportSnapshot(advancedExportConfiguration)
+                ),
+            ]
+        )
+        let connectionIdentifiers = Set(ftpViewModel.connections.flatMap {
+            [$0.id.uuidString, $0.id.uuidString.lowercased()]
+        })
+        return DeadlinePreflightLiveCaptureRequest(
+            profile: deadlineProfile,
+            items: items,
+            inventory: inventory,
+            requiredListCandidates: [
+                DeadlineLiveRequiredListCandidate(
+                    identifier: DeadlineLiveResourceIdentifier.approvedKeywords
+                ),
+            ],
+            renameDirectoryURL: browserViewModel.currentFolderURL,
+            stagingRootURL: nil,
+            useDefaultApplicationStagingRoot: true,
+            // Renderer-aware estimation is not yet exposed by the live export pipeline. Source
+            // byte counts are not a safe substitute for rendered TIFF/PNG output.
+            estimatedRequiredBytes: nil,
+            connectionIdentifiers: connectionIdentifiers,
+            selectionSourceRevision: deadlineSelectionSourceRevision(images),
+            metadataRevision: deadlineMetadataRevision(images),
+            profileRevision: deadlineEncodableRevision(deadlineProfile),
+            developSnapshots: images.map { image in
+                guard let settings = browserViewModel.currentCameraRawSettings(for: image.url) else {
+                    return nil
+                }
+                return DevelopVersionSnapshot(settings: settings)
+            }
+        )
+    }
+
+    private func deadlineSelectionSourceRevision(_ images: [ImageFile]) -> UInt64 {
+        let description = images.map {
+            [
+                $0.url.standardizedFileURL.path,
+                String($0.fileSize),
+                String($0.dateModified.timeIntervalSinceReferenceDate.bitPattern),
+                String($0.isICloudDownloadPending),
+                String($0.isNativeHDR),
+                String($0.hasC2PA),
+            ].joined(separator: "|")
+        }.joined(separator: "\n")
+        return deadlineRevision(description.utf8)
+    }
+
+    private func deadlineMetadataRevision(_ images: [ImageFile]) -> UInt64 {
+        let metadata = images.map { $0.metadata ?? IPTCMetadata() }
+        var revision = deadlineEncodableRevision(metadata)
+        revision ^= UInt64(metadataViewModel.metadataLoadGeneration)
+        for image in images where image.hasPendingMetadataChanges {
+            revision &*= 1_099_511_628_211
+            revision ^= deadlineRevision(image.url.standardizedFileURL.path.utf8)
+        }
+        return revision
+    }
+
+    private func deadlineEncodableRevision<Value: Encodable>(_ value: Value) -> UInt64 {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return (try? encoder.encode(value)).map(deadlineRevision) ?? 0
+    }
+
+    private func deadlineRevision<Bytes: Sequence>(_ bytes: Bytes) -> UInt64 where Bytes.Element == UInt8 {
+        bytes.reduce(14_695_981_039_346_656_037) { partial, byte in
+            (partial ^ UInt64(byte)) &* 1_099_511_628_211
+        }
     }
 
     private var selectedAnalysisImage: ImageFile? {
@@ -1089,6 +1620,26 @@ struct ContentView: View {
     private var paneLayoutMenu: some View {
         Menu {
             Button {
+                openCaptionWorkspace()
+            } label: {
+                Label(
+                    "Caption Workspace",
+                    systemImage: mainViewMode == .caption ? "checkmark" : "text.below.photo"
+                )
+            }
+            .disabled(browserViewModel.visibleImages.first(where: \.isImageFile) == nil)
+
+            Button {
+                openDeadlineWorkspace()
+            } label: {
+                Label(
+                    "Deadline Workspace",
+                    systemImage: mainViewMode == .deadline ? "checkmark" : "paperplane"
+                )
+            }
+            .disabled(browserViewModel.visibleImages.first(where: \.isImageFile) == nil)
+
+            Button {
                 openImageAnalysis()
             } label: {
                 Label(
@@ -1127,6 +1678,8 @@ struct ContentView: View {
         } label: {
             Image(systemName: {
                 switch mainViewMode {
+                case .caption: "text.below.photo"
+                case .deadline: "paperplane"
                 case .imageAnalysis: "waveform.path.ecg.rectangle"
                 case .comparison: "rectangle.split.2x1"
                 case .metadataReview: "list.bullet.rectangle"
@@ -1257,6 +1810,8 @@ struct ContentView: View {
 
         ToolbarItem(placement: .automatic) {
             if mainViewMode == .browser
+                || mainViewMode == .caption
+                || mainViewMode == .deadline
                 || mainViewMode == .metadataReview
                 || mainViewMode == .imageAnalysis
                 || mainViewMode == .comparison {
@@ -1555,10 +2110,25 @@ struct ContentView: View {
                 .padding(.vertical, 6)
             }
 
-            if faceRecognitionViewModel.isScanning || !activityHistory.entries.isEmpty {
+            if faceRecognitionViewModel.isScanning
+                || !activityHistory.entries.isEmpty
+                || !deliveryReceiptLibrary.receipts.isEmpty
+                || !deliveryWorkflowActivity.workflows.isEmpty
+                || deliveryWorkflowActivity.error != nil
+                || deliveryReceiptLibrary.error != nil {
                 Divider()
                 HStack {
-                    ActivityHistoryButton(history: activityHistory, faceViewModel: faceRecognitionViewModel)
+                    ActivityHistoryButton(
+                        history: activityHistory,
+                        faceViewModel: faceRecognitionViewModel,
+                        receiptLibrary: deliveryReceiptLibrary,
+                        workflowActivity: deliveryWorkflowActivity,
+                        onResumeWorkflow: { workflowIdentifier in
+                            pendingDeadlineResumeWorkflowIdentifier = workflowIdentifier
+                            mainViewMode = .deadline
+                            return true
+                        }
+                    )
                     Spacer()
                 }
                 .padding(.horizontal, 12)
@@ -2099,9 +2669,12 @@ struct ContentView: View {
             digitalSourceType: source.digitalSourceType,
             urgency: source.urgency,
             sceneCodes: source.sceneCodes,
+            subjectCodes: source.subjectCodes,
+            mediaTopics: source.mediaTopics,
+            genres: source.genres,
             latitude: source.latitude,
             longitude: source.longitude,
-            creator: source.creator,
+            creators: source.creators,
             creatorJobTitle: source.creatorJobTitle,
             descriptionWriter: source.descriptionWriter,
             credit: source.credit,
@@ -2110,6 +2683,7 @@ struct ContentView: View {
             webStatementOfRights: source.webStatementOfRights,
             digitalImageGUID: source.digitalImageGUID,
             imageSupplierImageID: source.imageSupplierImageID,
+            imageSuppliers: source.imageSuppliers,
             jobId: source.jobId,
             dateCreated: source.dateCreated,
             city: source.city,
@@ -2144,7 +2718,13 @@ struct ContentView: View {
             if !normalImages.isEmpty {
                 let normalURLs = normalImages.map(\.url)
                 do {
-                    try await browserViewModel.writeEngine.writeFields(fields, to: normalURLs)
+                    try await browserViewModel.writeEngine.writeFields(
+                        fields,
+                        to: normalURLs,
+                        structuredData: StructuredWriteData(
+                            editorial: EditorialStructuredWriteData(metadata: copied)
+                        )
+                    )
                 } catch {
                     browserViewModel.errorMessage = "Failed to paste IPTC: \(error.localizedDescription)"
                 }
@@ -2171,8 +2751,17 @@ struct ContentView: View {
 
     private func closeTemplatePalette(restoringGridFocus: Bool) {
         isShowingTemplatePalette = false
-        if restoringGridFocus {
+        captionTemplateAppendOverride = nil
+        switch CaptionWorkspaceFocusRestorePolicy.target(
+            afterTransientPresentationInCaptionWorkspace: mainViewMode == .caption,
+            restoreRequested: restoringGridFocus
+        ) {
+        case .captionEditor:
+            NotificationCenter.default.post(name: .restoreCaptionEditorFocus, object: nil)
+        case .browserGrid:
             restoreGridFocus()
+        case .unchanged:
+            break
         }
     }
 
@@ -3012,6 +3601,7 @@ struct ContentViewModifiers: ViewModifier {
     let faceRecognitionViewModel: FaceRecognitionViewModel
     let settingsViewModel: SettingsViewModel
     let importViewModel: ImportViewModel
+    let mainViewMode: MainViewMode
     let loadTechnicalMetadata: () -> Void
     @Binding var technicalMetadataCache: [URL: TechnicalMetadata]
     @Binding var technicalMetadata: TechnicalMetadata?
@@ -3025,7 +3615,7 @@ struct ContentViewModifiers: ViewModifier {
             .onChange(of: browserViewModel.selectedImageIDs) { oldValue, _ in
                 // Defer save of previous selection to a fire-and-forget task so the
                 // selection border renders immediately without waiting for disk I/O.
-                if !oldValue.isEmpty && metadataViewModel.hasChanges {
+                if mainViewMode != .caption, !oldValue.isEmpty && metadataViewModel.hasChanges {
                     let hadC2PA = browserViewModel.images.contains { image in
                         metadataViewModel.selectedURLs.contains(image.url) && image.hasC2PA
                     }
@@ -3087,10 +3677,14 @@ struct ContentViewModifiers: ViewModifier {
                 browserViewModel.confirmDeleteSelectedImages()
             }
             .onReceive(NotificationCenter.default.publisher(for: .selectPreviousImage)) { _ in
-                browserViewModel.selectPrevious()
+                if mainViewMode != .caption {
+                    browserViewModel.selectPrevious()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .selectNextImage)) { _ in
-                browserViewModel.selectNext()
+                if mainViewMode != .caption {
+                    browserViewModel.selectNext()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .rotateClockwise)) { _ in
                 browserViewModel.rotateClockwise()

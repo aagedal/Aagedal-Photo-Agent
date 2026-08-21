@@ -10,6 +10,13 @@
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftExif */; };
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
+		A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */; };
+		A770F2000000000000000002 /* CaptionWorkspaceSpeedToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */; };
+		A770F3000000000000000002 /* AccessibilityKeyboardAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */; };
+		A770F4000000000000000002 /* ImageAnalysisProjectArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F4000000000000000001 /* ImageAnalysisProjectArchiveTests.swift */; };
+		EDDA71000000000000000002 /* EditorialDateCreatedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */; };
+		A8F5A4000000000000000002 /* DeliveryStagingProductionFactoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F5A4000000000000000001 /* DeliveryStagingProductionFactoryTests.swift */; };
+		A95300000000000000000002 /* MetadataHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95300000000000000000001 /* MetadataHistoryTests.swift */; };
 		AB0100000000000000000002 /* ApprovedListBypassTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0100000000000000000001 /* ApprovedListBypassTests.swift */; };
 		AB0200000000000000000002 /* KeywordListsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0200000000000000000001 /* KeywordListsStoreTests.swift */; };
 		AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0300000000000000000001 /* StructuredKeywordParserTests.swift */; };
@@ -63,8 +70,41 @@
 		AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */; };
 		AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5200000000000000000001 /* MetadataValidationTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
+		BA7C03000000000000000002 /* BatchRenameRecipeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */; };
+		BA7C03010000000000000002 /* RenamePlanningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA7C03010000000000000001 /* RenamePlanningServiceTests.swift */; };
+		BA7C03020000000000000002 /* BatchRenameSheetStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA7C03020000000000000001 /* BatchRenameSheetStateTests.swift */; };
+		BA7C03030000000000000002 /* BatchRenameRecipeRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA7C03030000000000000001 /* BatchRenameRecipeRepositoryTests.swift */; };
+		C0D3A1000000000000000002 /* IPTCMetadataVerificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3A1000000000000000001 /* IPTCMetadataVerificationTests.swift */; };
+		C0D3A2000000000000000002 /* DescriptiveMetadataWriteBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3A2000000000000000001 /* DescriptiveMetadataWriteBoundaryTests.swift */; };
+		C0DE21000000000000000002 /* CodeReplacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE21000000000000000001 /* CodeReplacementTests.swift */; };
+		C0DE22000000000000000002 /* CaptionCodeReplacementCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE22000000000000000001 /* CaptionCodeReplacementCoordinatorTests.swift */; };
+		C0DEA1000000000000000002 /* CaptionAutocompleteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */; };
+		C4A710000000000000000002 /* CaptionSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A710000000000000000001 /* CaptionSessionTests.swift */; };
+		C4A720000000000000000002 /* CaptionCopyPreviousServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
+		D311F1000000000000000002 /* DeliveryPlanningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */; };
+		D311F2000000000000000002 /* VerifiedDeliveryUploadCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */; };
+		D312F2000000000000000002 /* StagedDeliveryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D312F2000000000000000001 /* StagedDeliveryCoordinatorTests.swift */; };
+		D312F3000000000000000002 /* MetadataPreservationVerificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D312F3000000000000000001 /* MetadataPreservationVerificationTests.swift */; };
+		D314F4000000000000000002 /* DeliveryWorkflowCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D314F4000000000000000001 /* DeliveryWorkflowCoordinatorTests.swift */; };
+		D315F5000000000000000002 /* DeliveryFTPTransportFactoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D315F5000000000000000001 /* DeliveryFTPTransportFactoryTests.swift */; };
+		D316F6000000000000000002 /* DeliveryWorkflowRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D316F6000000000000000001 /* DeliveryWorkflowRegistryTests.swift */; };
+		D317F7000000000000000002 /* DeliveryWorkflowActivityModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D317F7000000000000000001 /* DeliveryWorkflowActivityModelTests.swift */; };
+		D34D11000000000000000002 /* DeadlineProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34D11000000000000000001 /* DeadlineProfileTests.swift */; };
+		D34D12000000000000000002 /* DeadlineProfileRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34D12000000000000000001 /* DeadlineProfileRepositoryTests.swift */; };
+		D34DF1000000000000000002 /* DeadlinePreflightServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34DF1000000000000000001 /* DeadlinePreflightServiceTests.swift */; };
+		D34DF2000000000000000002 /* DeadlinePreflightCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34DF2000000000000000001 /* DeadlinePreflightCoordinatorTests.swift */; };
+		D34DF3000000000000000002 /* DeadlinePreflightLiveSnapshotAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34DF3000000000000000001 /* DeadlinePreflightLiveSnapshotAdapterTests.swift */; };
+		DE1A01000000000000000002 /* DeliveryReceiptRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE1A01000000000000000001 /* DeliveryReceiptRepositoryTests.swift */; };
+		DE1A02000000000000000002 /* DeliveryReceiptLibraryModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE1A02000000000000000001 /* DeliveryReceiptLibraryModelTests.swift */; };
+		DE1A03000000000000000002 /* DeliveryReceiptAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE1A03000000000000000001 /* DeliveryReceiptAssemblerTests.swift */; };
+		E7EC01000000000000000002 /* RenameExecutionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7EC01000000000000000001 /* RenameExecutionServiceTests.swift */; };
+		E7EC01010000000000000002 /* RenameOriginalFilenameMetadataCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7EC01010000000000000001 /* RenameOriginalFilenameMetadataCodecTests.swift */; };
+		E7EC01020000000000000002 /* RenameOriginalFilenameTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7EC01020000000000000001 /* RenameOriginalFilenameTransactionTests.swift */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
+		EC0F10000000000000000002 /* EditorialContainerFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0F10000000000000000001 /* EditorialContainerFixtureTests.swift */; };
+		ED1700000000000000000002 /* EditorialImageSupplierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED1700000000000000000001 /* EditorialImageSupplierTests.swift */; };
+		F2BA71000000000000000002 /* MetadataBatchSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -85,6 +125,13 @@
 		8E05576D2F2A149800BCFB49 /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TODO.md; sourceTree = "<group>"; };
 		9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataSidecarServiceTests.swift; sourceTree = "<group>"; };
 		A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListServiceTests.swift; sourceTree = "<group>"; };
+		A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApplicationTerminationFlushCoordinatorTests.swift; sourceTree = "<group>"; };
+		A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionWorkspaceSpeedToolsTests.swift; sourceTree = "<group>"; };
+		A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AccessibilityKeyboardAuditTests.swift; sourceTree = "<group>"; };
+		A770F4000000000000000001 /* ImageAnalysisProjectArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageAnalysisProjectArchiveTests.swift; sourceTree = "<group>"; };
+		EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialDateCreatedTests.swift; sourceTree = "<group>"; };
+		A8F5A4000000000000000001 /* DeliveryStagingProductionFactoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryStagingProductionFactoryTests.swift; sourceTree = "<group>"; };
+		A95300000000000000000001 /* MetadataHistoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataHistoryTests.swift; sourceTree = "<group>"; };
 		AB0100000000000000000001 /* ApprovedListBypassTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListBypassTests.swift; sourceTree = "<group>"; };
 		AB0200000000000000000001 /* KeywordListsStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListsStoreTests.swift; sourceTree = "<group>"; };
 		AB0300000000000000000001 /* StructuredKeywordParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordParserTests.swift; sourceTree = "<group>"; };
@@ -137,7 +184,40 @@
 		AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataTemplatePersistenceTests.swift; sourceTree = "<group>"; };
 		AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisSolarPositionCalculatorTests.swift; sourceTree = "<group>"; };
 		AB5200000000000000000001 /* MetadataValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataValidationTests.swift; sourceTree = "<group>"; };
+		BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameRecipeTests.swift; sourceTree = "<group>"; };
+		BA7C03010000000000000001 /* RenamePlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenamePlanningServiceTests.swift; sourceTree = "<group>"; };
+		BA7C03020000000000000001 /* BatchRenameSheetStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameSheetStateTests.swift; sourceTree = "<group>"; };
+		BA7C03030000000000000001 /* BatchRenameRecipeRepositoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameRecipeRepositoryTests.swift; sourceTree = "<group>"; };
+		C0D3A1000000000000000001 /* IPTCMetadataVerificationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataVerificationTests.swift; sourceTree = "<group>"; };
+		C0D3A2000000000000000001 /* DescriptiveMetadataWriteBoundaryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DescriptiveMetadataWriteBoundaryTests.swift; sourceTree = "<group>"; };
+		C0DE21000000000000000001 /* CodeReplacementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CodeReplacementTests.swift; sourceTree = "<group>"; };
+		C0DE22000000000000000001 /* CaptionCodeReplacementCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionCodeReplacementCoordinatorTests.swift; sourceTree = "<group>"; };
+		C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionAutocompleteServiceTests.swift; sourceTree = "<group>"; };
+		C4A710000000000000000001 /* CaptionSessionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionSessionTests.swift; sourceTree = "<group>"; };
+		C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionCopyPreviousServiceTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
+		D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryPlanningServiceTests.swift; sourceTree = "<group>"; };
+		D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VerifiedDeliveryUploadCoordinatorTests.swift; sourceTree = "<group>"; };
+		D312F2000000000000000001 /* StagedDeliveryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StagedDeliveryCoordinatorTests.swift; sourceTree = "<group>"; };
+		D312F3000000000000000001 /* MetadataPreservationVerificationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataPreservationVerificationTests.swift; sourceTree = "<group>"; };
+		D314F4000000000000000001 /* DeliveryWorkflowCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryWorkflowCoordinatorTests.swift; sourceTree = "<group>"; };
+		D315F5000000000000000001 /* DeliveryFTPTransportFactoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryFTPTransportFactoryTests.swift; sourceTree = "<group>"; };
+		D316F6000000000000000001 /* DeliveryWorkflowRegistryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryWorkflowRegistryTests.swift; sourceTree = "<group>"; };
+		D317F7000000000000000001 /* DeliveryWorkflowActivityModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryWorkflowActivityModelTests.swift; sourceTree = "<group>"; };
+		D34D11000000000000000001 /* DeadlineProfileTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeadlineProfileTests.swift; sourceTree = "<group>"; };
+		D34D12000000000000000001 /* DeadlineProfileRepositoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeadlineProfileRepositoryTests.swift; sourceTree = "<group>"; };
+		D34DF1000000000000000001 /* DeadlinePreflightServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeadlinePreflightServiceTests.swift; sourceTree = "<group>"; };
+		D34DF2000000000000000001 /* DeadlinePreflightCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeadlinePreflightCoordinatorTests.swift; sourceTree = "<group>"; };
+		D34DF3000000000000000001 /* DeadlinePreflightLiveSnapshotAdapterTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeadlinePreflightLiveSnapshotAdapterTests.swift; sourceTree = "<group>"; };
+		DE1A01000000000000000001 /* DeliveryReceiptRepositoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryReceiptRepositoryTests.swift; sourceTree = "<group>"; };
+		DE1A02000000000000000001 /* DeliveryReceiptLibraryModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryReceiptLibraryModelTests.swift; sourceTree = "<group>"; };
+		DE1A03000000000000000001 /* DeliveryReceiptAssemblerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryReceiptAssemblerTests.swift; sourceTree = "<group>"; };
+		E7EC01000000000000000001 /* RenameExecutionServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenameExecutionServiceTests.swift; sourceTree = "<group>"; };
+		E7EC01010000000000000001 /* RenameOriginalFilenameMetadataCodecTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenameOriginalFilenameMetadataCodecTests.swift; sourceTree = "<group>"; };
+		E7EC01020000000000000001 /* RenameOriginalFilenameTransactionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenameOriginalFilenameTransactionTests.swift; sourceTree = "<group>"; };
+		EC0F10000000000000000001 /* EditorialContainerFixtureTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialContainerFixtureTests.swift; sourceTree = "<group>"; };
+		ED1700000000000000000001 /* EditorialImageSupplierTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialImageSupplierTests.swift; sourceTree = "<group>"; };
+		F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataBatchSelectionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -240,6 +320,46 @@
 				AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */,
 				AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */,
 				AB5200000000000000000001 /* MetadataValidationTests.swift */,
+				F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */,
+				BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */,
+				BA7C03010000000000000001 /* RenamePlanningServiceTests.swift */,
+				BA7C03020000000000000001 /* BatchRenameSheetStateTests.swift */,
+				BA7C03030000000000000001 /* BatchRenameRecipeRepositoryTests.swift */,
+				E7EC01000000000000000001 /* RenameExecutionServiceTests.swift */,
+				E7EC01010000000000000001 /* RenameOriginalFilenameMetadataCodecTests.swift */,
+				E7EC01020000000000000001 /* RenameOriginalFilenameTransactionTests.swift */,
+				A95300000000000000000001 /* MetadataHistoryTests.swift */,
+				C4A710000000000000000001 /* CaptionSessionTests.swift */,
+				A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */,
+				A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */,
+				A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */,
+				A770F4000000000000000001 /* ImageAnalysisProjectArchiveTests.swift */,
+				EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */,
+				C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */,
+				C0DE21000000000000000001 /* CodeReplacementTests.swift */,
+				C0DE22000000000000000001 /* CaptionCodeReplacementCoordinatorTests.swift */,
+				C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */,
+				C0D3A1000000000000000001 /* IPTCMetadataVerificationTests.swift */,
+				C0D3A2000000000000000001 /* DescriptiveMetadataWriteBoundaryTests.swift */,
+				D34D11000000000000000001 /* DeadlineProfileTests.swift */,
+				D34D12000000000000000001 /* DeadlineProfileRepositoryTests.swift */,
+				D34DF1000000000000000001 /* DeadlinePreflightServiceTests.swift */,
+				D34DF2000000000000000001 /* DeadlinePreflightCoordinatorTests.swift */,
+				D34DF3000000000000000001 /* DeadlinePreflightLiveSnapshotAdapterTests.swift */,
+				D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */,
+				D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */,
+				D315F5000000000000000001 /* DeliveryFTPTransportFactoryTests.swift */,
+				D316F6000000000000000001 /* DeliveryWorkflowRegistryTests.swift */,
+				D317F7000000000000000001 /* DeliveryWorkflowActivityModelTests.swift */,
+				D312F2000000000000000001 /* StagedDeliveryCoordinatorTests.swift */,
+				D312F3000000000000000001 /* MetadataPreservationVerificationTests.swift */,
+				EC0F10000000000000000001 /* EditorialContainerFixtureTests.swift */,
+				ED1700000000000000000001 /* EditorialImageSupplierTests.swift */,
+				A8F5A4000000000000000001 /* DeliveryStagingProductionFactoryTests.swift */,
+				D314F4000000000000000001 /* DeliveryWorkflowCoordinatorTests.swift */,
+				DE1A01000000000000000001 /* DeliveryReceiptRepositoryTests.swift */,
+				DE1A02000000000000000001 /* DeliveryReceiptLibraryModelTests.swift */,
+				DE1A03000000000000000001 /* DeliveryReceiptAssemblerTests.swift */,
 			);
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
@@ -444,6 +564,46 @@
 				AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */,
 				AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */,
 				AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */,
+				F2BA71000000000000000002 /* MetadataBatchSelectionTests.swift in Sources */,
+				BA7C03000000000000000002 /* BatchRenameRecipeTests.swift in Sources */,
+				BA7C03010000000000000002 /* RenamePlanningServiceTests.swift in Sources */,
+				BA7C03020000000000000002 /* BatchRenameSheetStateTests.swift in Sources */,
+				BA7C03030000000000000002 /* BatchRenameRecipeRepositoryTests.swift in Sources */,
+				E7EC01000000000000000002 /* RenameExecutionServiceTests.swift in Sources */,
+				E7EC01010000000000000002 /* RenameOriginalFilenameMetadataCodecTests.swift in Sources */,
+				E7EC01020000000000000002 /* RenameOriginalFilenameTransactionTests.swift in Sources */,
+				A95300000000000000000002 /* MetadataHistoryTests.swift in Sources */,
+				C4A710000000000000000002 /* CaptionSessionTests.swift in Sources */,
+				A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */,
+				A770F2000000000000000002 /* CaptionWorkspaceSpeedToolsTests.swift in Sources */,
+				A770F3000000000000000002 /* AccessibilityKeyboardAuditTests.swift in Sources */,
+				A770F4000000000000000002 /* ImageAnalysisProjectArchiveTests.swift in Sources */,
+				EDDA71000000000000000002 /* EditorialDateCreatedTests.swift in Sources */,
+				C4A720000000000000000002 /* CaptionCopyPreviousServiceTests.swift in Sources */,
+				C0DE21000000000000000002 /* CodeReplacementTests.swift in Sources */,
+				C0DE22000000000000000002 /* CaptionCodeReplacementCoordinatorTests.swift in Sources */,
+				C0DEA1000000000000000002 /* CaptionAutocompleteServiceTests.swift in Sources */,
+				C0D3A1000000000000000002 /* IPTCMetadataVerificationTests.swift in Sources */,
+				C0D3A2000000000000000002 /* DescriptiveMetadataWriteBoundaryTests.swift in Sources */,
+				D34D11000000000000000002 /* DeadlineProfileTests.swift in Sources */,
+				D34D12000000000000000002 /* DeadlineProfileRepositoryTests.swift in Sources */,
+				D34DF1000000000000000002 /* DeadlinePreflightServiceTests.swift in Sources */,
+				D34DF2000000000000000002 /* DeadlinePreflightCoordinatorTests.swift in Sources */,
+				D34DF3000000000000000002 /* DeadlinePreflightLiveSnapshotAdapterTests.swift in Sources */,
+				D311F1000000000000000002 /* DeliveryPlanningServiceTests.swift in Sources */,
+				D311F2000000000000000002 /* VerifiedDeliveryUploadCoordinatorTests.swift in Sources */,
+				D315F5000000000000000002 /* DeliveryFTPTransportFactoryTests.swift in Sources */,
+				D316F6000000000000000002 /* DeliveryWorkflowRegistryTests.swift in Sources */,
+				D317F7000000000000000002 /* DeliveryWorkflowActivityModelTests.swift in Sources */,
+				D312F2000000000000000002 /* StagedDeliveryCoordinatorTests.swift in Sources */,
+				D312F3000000000000000002 /* MetadataPreservationVerificationTests.swift in Sources */,
+				EC0F10000000000000000002 /* EditorialContainerFixtureTests.swift in Sources */,
+				ED1700000000000000000002 /* EditorialImageSupplierTests.swift in Sources */,
+				A8F5A4000000000000000002 /* DeliveryStagingProductionFactoryTests.swift in Sources */,
+				D314F4000000000000000002 /* DeliveryWorkflowCoordinatorTests.swift in Sources */,
+				DE1A01000000000000000002 /* DeliveryReceiptRepositoryTests.swift in Sources */,
+				DE1A02000000000000000002 /* DeliveryReceiptLibraryModelTests.swift in Sources */,
+				DE1A03000000000000000002 /* DeliveryReceiptAssemblerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

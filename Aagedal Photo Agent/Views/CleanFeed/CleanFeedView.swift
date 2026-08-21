@@ -155,6 +155,11 @@ struct CleanFeedRenderView: NSViewRepresentable {
         view.framebufferOnly = false
         view.colorPixelFormat = .rgba16Float
         view.clearColor = MTLClearColorMake(0, 0, 0, 1)
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.image)
+        view.setAccessibilityIdentifier("cleanFeed.preview")
+        view.setAccessibilityLabel("Clean Feed image preview")
+        view.setAccessibilityHelp("A chrome-free preview shown on the selected external display.")
         if let layer = view.layer as? CAMetalLayer {
             layer.colorspace = MetalPreviewView.Coordinator.colorSpace
             // Configure EDR eagerly so the first draw can show HDR content on the feed.
@@ -184,6 +189,11 @@ struct CleanFeedRenderView: NSViewRepresentable {
         context.coordinator.feedCrop = feedCrop
         context.coordinator.comparisonPresentation = comparisonPresentation
         context.coordinator.comparisonLayout = comparisonLayout
+        view.setAccessibilityLabel(
+            comparisonPresentation == nil
+                ? "Clean Feed image preview"
+                : "Clean Feed comparison, \(comparisonLayout.accessibilityName)"
+        )
         if let layer = view.layer as? CAMetalLayer {
             // wantsExtendedDynamicRangeContent is the fundamental CAMetalLayer EDR enabler;
             // preferredDynamicRange (macOS 26+) controls compositing but doesn't replace it.
@@ -491,5 +501,15 @@ struct CleanFeedRenderView: NSViewRepresentable {
             return CIImage(cgImage: image)
         }
 
+    }
+}
+
+private extension ComparisonLayout {
+    var accessibilityName: String {
+        switch self {
+        case .sideBySide: "side by side"
+        case .stacked: "stacked"
+        case .wipe: "wipe"
+        }
     }
 }

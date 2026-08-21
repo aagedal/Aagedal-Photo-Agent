@@ -1,0 +1,19 @@
+<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Aagedal Photo Agent synthetic fixture">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+      xmlns:dc="http://purl.org/dc/elements/1.1/"
+      xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+      xmlns:iptcExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
+      xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+      xmlns:fixture="https://aagedal.example/ns/fixture/1.0/"
+      photoshop:Headline="Synthetic RAW sidecar headline"
+      iptcExt:DigitalSourceType="http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture"
+      crs:Exposure2012="+0.35"
+      fixture:provenance="original-generated-cc0">
+      <dc:description><rdf:Alt><rdf:li xml:lang="x-default">Synthetic RAW sidecar caption — no camera original is distributed.</rdf:li></rdf:Alt></dc:description>
+      <dc:subject><rdf:Bag><rdf:li>synthetic</rdf:li><rdf:li>sidecar</rdf:li></rdf:Bag></dc:subject>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>

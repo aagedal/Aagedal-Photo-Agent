@@ -96,7 +96,7 @@ struct XMPSidecarService: Sendable {
         }
     }
 
-    func saveSidecar(metadata: IPTCMetadata, for imageURL: URL) throws {
+    nonisolated func saveSidecar(metadata: IPTCMetadata, for imageURL: URL) throws {
         let url = sidecarURL(for: imageURL)
         // Merge into the existing sidecar so unknown third-party XMP (namespaces / properties we
         // don't model) is preserved by design — XMPData round-trips every property it parsed.
@@ -116,7 +116,7 @@ struct XMPSidecarService: Sendable {
     /// (`crs`) block already on disk. `saveSidecar` treats a nil `cameraRaw` as "clear", which is
     /// wrong for descriptive writes (rating/label/orientation/keywords) whose metadata never carries
     /// `cameraRaw`; those callers must use this so a caption change doesn't wipe the user's edits.
-    func saveSidecarPreservingDevelopSettings(metadata: IPTCMetadata, for imageURL: URL) throws {
+    nonisolated func saveSidecarPreservingDevelopSettings(metadata: IPTCMetadata, for imageURL: URL) throws {
         var merged = metadata
         if merged.cameraRaw == nil {
             merged.cameraRaw = loadSidecar(for: imageURL)?.cameraRaw
@@ -242,7 +242,7 @@ struct XMPSidecarService: Sendable {
 
     // MARK: - Write
 
-    private func writeXMP(_ xmp: XMPData, to url: URL) throws {
+    nonisolated private func writeXMP(_ xmp: XMPData, to url: URL) throws {
         let xml = XMPWriter.generateXML(xmp)
         guard let data = xml.data(using: .utf8) else {
             throw CocoaError(.fileWriteInapplicableStringEncoding)

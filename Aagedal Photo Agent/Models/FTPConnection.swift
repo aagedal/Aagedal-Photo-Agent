@@ -47,7 +47,7 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         self.allowInsecureHostVerification = allowInsecureHostVerification
     }
 
-    var keychainKey: String { "ftpConnection-\(id.uuidString)" }
+    nonisolated var keychainKey: String { "ftpConnection-\(id.uuidString)" }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)

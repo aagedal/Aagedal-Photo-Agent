@@ -962,7 +962,8 @@ final class SettingsViewModel {
 
         let rawModeStored = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteModeRaw)
             ?? MetadataWriteMode.defaultRaw.rawValue
-        self.metadataWriteModeRaw = MetadataWriteMode(rawValue: rawModeStored) ?? .defaultRaw
+        let storedRawMode = MetadataWriteMode(rawValue: rawModeStored) ?? .defaultRaw
+        self.metadataWriteModeRaw = storedRawMode.writesEmbedded ? .writeToXMPSidecar : storedRawMode
 
         let legacyWriteModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteMode)
         let nonC2PARaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)

@@ -1,0 +1,12 @@
+{
+  "id": "12000000-0000-0000-0000-000000000001",
+  "name": "Release 2.2 desk",
+  "templateType": "Per Field",
+  "fields": [{
+    "id": "22000000-0000-0000-0000-000000000002",
+    "fieldKey": "countryCode",
+    "templateValue": "NOR"
+  }],
+  "shortcutSlot": 3,
+  "processInstantly": false
+}

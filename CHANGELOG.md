@@ -2,6 +2,39 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
+## 3.0.0 — Unreleased
+
+### Highlights
+
+- Added Caption Workspace, Batch Rename, Deadline profiles, frozen preflight, and verified staged
+  FTP/FTPS/SFTP delivery for deadline-oriented editorial workflows.
+- Expanded the descriptive IPTC/XMP model with editorial role, organisation, country-code, rights,
+  urgency, Scene/Subject Codes, Media Topics, structured Genre, Digital Image GUID, canonical PLUS
+  Image Supplier identifiers/structures, ordered creators, precision-aware Date Created, structured
+  creator contact, and created/shown locations, with schema-safe persistence and semantic read-back.
+- Added local delivery receipts and resumable workflow evidence in Activity, with explicit cleanup and
+  privacy-limited summaries.
+
+### Delivery boundaries
+
+- Deadline Send supports staged derivatives only: SDR JPEG/TIFF and HDR Adaptive JPEG gain-map/16-bit
+  TIFF. Writing or delivering originals and XMP-sidecar-only delivery are rejected.
+- Delivery parses exact staged bytes to verify resolved metadata and checks unrelated metadata
+  preservation before upload. C2PA remains an **experimental preview**; carriage evidence does not prove
+  that a credential remains valid for a new rendition.
+- Remote existence and byte size are non-cryptographic acknowledgement evidence, not a remote hash.
+  The path-based transport retains a narrow time-of-check/time-of-use interval after its final local
+  SHA-256 check. SFTP currently supports password/netrc authentication, not SSH private keys.
+- Delivery receipts and retained workflows remain local rather than iCloud-synced. Credentials and
+  editorial metadata values are excluded from Activity summaries; workflow/staging cleanup requires
+  explicit confirmation.
+
+### Documentation
+
+- Added a deterministic metadata-field support table generated from the stable field IDs, writer keys,
+  authoritative overwrite registry, and semantic read-back rules. External Adobe Bridge, Photo Mechanic,
+  and real-server validation remains explicitly unclaimed where no completed evidence exists.
+
 ## 2.2.0 — 2026-07-30
 
 ### Highlights

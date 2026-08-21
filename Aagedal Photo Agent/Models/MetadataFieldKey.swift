@@ -14,6 +14,9 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case digitalSourceType
     case urgency
     case scene
+    case subjectCode
+    case mediaTopic
+    case genre
     case creator
     case creatorJobTitle
     case descriptionWriter
@@ -23,6 +26,8 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case webStatementOfRights
     case digitalImageGUID
     case imageSupplierImageID
+    /// Lossless JSON transport for the structured PLUS ImageSupplier sequence.
+    case imageSupplier
     case transmissionReference
     case dateCreated
     case city

@@ -750,7 +750,9 @@ struct FTPUploadView: View {
                 resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
-                resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.creators = IPTCMetadata.normalizedCreators(meta.creators.compactMap {
+                    resolveIfChanged($0, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                })
                 resolved.creatorJobTitle = resolveIfChanged(meta.creatorJobTitle, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.descriptionWriter = resolveIfChanged(meta.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
@@ -759,6 +761,17 @@ struct FTPUploadView: View {
                 resolved.webStatementOfRights = resolveIfChanged(meta.webStatementOfRights, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.digitalImageGUID = resolveIfChanged(meta.digitalImageGUID, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.imageSupplierImageID = resolveIfChanged(meta.imageSupplierImageID, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.subjectCodes = IPTCSubjectCode.normalizedValues(meta.subjectCodes.compactMap {
+                    resolveIfChanged($0, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                })
+                resolved.imageSuppliers = EditorialImageSupplier.normalizedValues(
+                    meta.imageSuppliers.map { supplier in
+                        EditorialImageSupplier(
+                            identifier: resolveIfChanged(supplier.identifier, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber),
+                            name: resolveIfChanged(supplier.name, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                        )
+                    }
+                )
                 resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
@@ -777,7 +790,9 @@ struct FTPUploadView: View {
                     if resolved.extendedDescription != meta.extendedDescription {
                         fields[.extendedDescription] = resolved.extendedDescription ?? ""
                     }
-                    if resolved.creator != meta.creator { fields[.creator] = resolved.creator ?? "" }
+                    if resolved.creators != meta.creators {
+                        fields[.creator] = resolved.creatorTransportValue ?? ""
+                    }
                     if resolved.creatorJobTitle != meta.creatorJobTitle { fields[.creatorJobTitle] = resolved.creatorJobTitle ?? "" }
                     if resolved.descriptionWriter != meta.descriptionWriter { fields[.descriptionWriter] = resolved.descriptionWriter ?? "" }
                     if resolved.credit != meta.credit { fields[.credit] = resolved.credit ?? "" }
@@ -786,6 +801,14 @@ struct FTPUploadView: View {
                     if resolved.webStatementOfRights != meta.webStatementOfRights { fields[.webStatementOfRights] = resolved.webStatementOfRights ?? "" }
                     if resolved.digitalImageGUID != meta.digitalImageGUID { fields[.digitalImageGUID] = resolved.digitalImageGUID ?? "" }
                     if resolved.imageSupplierImageID != meta.imageSupplierImageID { fields[.imageSupplierImageID] = resolved.imageSupplierImageID ?? "" }
+                    if resolved.subjectCodes != meta.subjectCodes {
+                        fields[.subjectCode] = resolved.subjectCodes.joined(separator: ", ")
+                    }
+                    if resolved.imageSuppliers != meta.imageSuppliers {
+                        fields[.imageSupplier] = EditorialImageSupplier.canonicalJSONString(
+                            for: resolved.imageSuppliers
+                        ) ?? ""
+                    }
                     if resolved.jobId != meta.jobId {
                         fields[.transmissionReference] = resolved.jobId ?? ""
                     }
@@ -800,7 +823,13 @@ struct FTPUploadView: View {
                     if resolved.source != meta.source { fields[.source] = resolved.source ?? "" }
 
                     if !fields.isEmpty {
-                        try await writeEngine.writeFields(fields, to: [url])
+                        try await writeEngine.writeFields(
+                            fields,
+                            to: [url],
+                            structuredData: StructuredWriteData(
+                                editorial: EditorialStructuredWriteData(metadata: resolved)
+                            )
+                        )
                     }
                 }
             } catch {

@@ -154,7 +154,11 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         return (fields.compactMap { $0 }
             + metadata.organisationsShownNames
             + metadata.organisationsShownCodes
-            + metadata.sceneCodes)
+            + metadata.sceneCodes
+            + metadata.subjectCodes
+            + metadata.mediaTopics.flatMap { [$0.termIdentifier, $0.name].compactMap { $0 } }
+            + metadata.genres.flatMap { [$0.termIdentifier, $0.name].compactMap { $0 } }
+            + metadata.imageSuppliers.flatMap { [$0.identifier, $0.name].compactMap { $0 } })
             .joined(separator: "\n")
             .lowercased()
     }

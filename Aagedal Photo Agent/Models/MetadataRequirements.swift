@@ -43,8 +43,17 @@ nonisolated enum MetadataRequirements {
     }
 
     static func save(_ levels: Levels, to defaults: UserDefaults = .standard) {
-        let raw = levels.reduce(into: [String: String]()) { dict, pair in
-            if pair.value != .optional { dict[pair.key.rawValue] = pair.value.rawValue }
+        // Preserve entries this build cannot interpret. Preference maps predate an enclosing
+        // schema marker, so dropping unknown future field/level values during an unrelated edit
+        // would be an irreversible downgrade.
+        let existing = defaults.data(forKey: UserDefaultsKeys.metadataRequirementLevels)
+            .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+        var raw = existing.filter { key, value in
+            MetadataFieldID(rawValue: key) == nil
+                || MetadataRequirementLevel(rawValue: value) == nil
+        }
+        levels.forEach { pair in
+            if pair.value != .optional { raw[pair.key.rawValue] = pair.value.rawValue }
         }
         if let data = try? JSONEncoder().encode(raw) {
             defaults.set(data, forKey: UserDefaultsKeys.metadataRequirementLevels)
@@ -70,8 +79,13 @@ nonisolated enum MetadataRequirements {
     }
 
     static func saveMinimumLengths(_ lengths: MinimumLengths, to defaults: UserDefaults = .standard) {
-        let raw = lengths.reduce(into: [String: Int]()) { result, pair in
-            if pair.value > 0 { result[pair.key.rawValue] = pair.value }
+        let existing = defaults.data(forKey: UserDefaultsKeys.metadataMinimumLengths)
+            .flatMap { try? JSONDecoder().decode([String: Int].self, from: $0) } ?? [:]
+        var raw = existing.filter { key, value in
+            MetadataFieldID(rawValue: key) == nil || value <= 0
+        }
+        for pair in lengths where pair.value > 0 {
+            raw[pair.key.rawValue] = pair.value
         }
         if let data = try? JSONEncoder().encode(raw) {
             defaults.set(data, forKey: UserDefaultsKeys.metadataMinimumLengths)

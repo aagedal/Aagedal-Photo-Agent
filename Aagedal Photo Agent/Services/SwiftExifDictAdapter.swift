@@ -59,18 +59,21 @@ extension ImageMetadata {
         if let v = iptc.objectName { dict[MetadataDictKey.objectName] = v }
         if let v = iptc.caption { dict[MetadataDictKey.captionAbstract] = v }
         if !iptc.keywords.isEmpty { dict[MetadataDictKey.keywords] = iptc.keywords }
-        if let v = iptc.byline { dict[MetadataDictKey.byLine] = v }
+        if !iptc.bylines.isEmpty { dict[MetadataDictKey.byLine] = iptc.bylines }
         if let v = iptc.bylineTitle { dict[MetadataDictKey.byLineTitle] = v }
         if let v = iptc.writerEditor { dict[MetadataDictKey.writerEditor] = v }
         if let v = iptc.credit { dict[MetadataDictKey.credit] = v }
         if let v = iptc.copyright { dict[MetadataDictKey.copyrightNotice] = v }
         if let v = iptc.dateCreated { dict[MetadataDictKey.dateCreated] = v }
+        if let v = iptc.timeCreated { dict[MetadataDictKey.timeCreated] = v }
         if let v = iptc.city { dict[MetadataDictKey.city] = v }
         if let v = iptc.sublocation { dict[MetadataDictKey.sublocation] = v }
         if let v = iptc.provinceState { dict[MetadataDictKey.provinceState] = v }
         if let v = iptc.countryName { dict[MetadataDictKey.countryPrimaryLocationName] = v }
         if let v = iptc.countryCode { dict[MetadataDictKey.countryPrimaryLocationCode] = v }
         if let v = iptc.urgency { dict[MetadataDictKey.urgency] = v }
+        let iimSubjectCodes = iptc.values(for: .subjectReference)
+        if !iimSubjectCodes.isEmpty { dict[MetadataDictKey.subjectCode] = iimSubjectCodes }
         if let v = iptc.specialInstructions { dict[MetadataDictKey.specialInstructions] = v }
         if let v = iptc.source { dict[MetadataDictKey.source] = v }
         if let v = iptc.value(for: .originalTransmissionReference) {
@@ -103,6 +106,25 @@ extension ImageMetadata {
             if !sceneCodes.isEmpty {
                 dict[MetadataDictKey.scene] = sceneCodes
             }
+            let subjectCodes = xmp.arrayValue(
+                namespace: XMPNamespace.iptcCore,
+                property: MetadataDictKey.subjectCode
+            )
+            if !subjectCodes.isEmpty {
+                dict[MetadataDictKey.subjectCode] = subjectCodes
+            }
+            if let values = xmp.structuredArrayValue(
+                namespace: XMPNamespace.iptcExt,
+                property: MetadataDictKey.aboutCvTerm
+            ) {
+                dict[MetadataDictKey.aboutCvTerm] = values.map(unwrapXMPStruct)
+            }
+            if let values = xmp.structuredArrayValue(
+                namespace: XMPNamespace.iptcExt,
+                property: MetadataDictKey.genre
+            ) {
+                dict[MetadataDictKey.genre] = values.map(unwrapXMPStruct)
+            }
             if let v = xmp.simpleValue(
                 namespace: XMPDataBuilder.xmpRightsNamespace,
                 property: MetadataDictKey.rightsUsageTerms
@@ -122,10 +144,24 @@ extension ImageMetadata {
                 dict[MetadataDictKey.digitalImageGUID] = v
             }
             if let v = xmp.simpleValue(
+                namespace: XMPNamespace.plus,
+                property: MetadataDictKey.imageSupplierImageID
+            ) ?? xmp.simpleValue(
                 namespace: XMPNamespace.iptcExt,
                 property: MetadataDictKey.imageSupplierImageID
             ) {
                 dict[MetadataDictKey.imageSupplierImageID] = v
+            }
+            // Canonical IPTC 2025.1/PLUS storage wins when both are present. Older Photo Agent
+            // builds and third-party files may carry the structure under IPTC Extension.
+            if let values = xmp.structuredArrayValue(
+                namespace: XMPNamespace.plus,
+                property: MetadataDictKey.imageSupplier
+            ) ?? xmp.structuredArrayValue(
+                namespace: XMPNamespace.iptcExt,
+                property: MetadataDictKey.imageSupplier
+            ) {
+                dict[MetadataDictKey.imageSupplier] = values.map(unwrapXMPStruct)
             }
             if let v = xmp.headline, dict[MetadataDictKey.headline] == nil {
                 dict[MetadataDictKey.headline] = v
@@ -148,6 +184,11 @@ extension ImageMetadata {
             if let v = xmp.rating { dict[MetadataDictKey.rating] = Int(v) }
             if let v = xmp.label { dict[MetadataDictKey.label] = v }
             if let v = xmp.createDate { dict[MetadataDictKey.createDate] = v }
+            // Photoshop DateCreated is the editorial field and wins over its lossy IIM projection.
+            if let v = xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "DateCreated") {
+                dict[MetadataDictKey.dateCreated] = v
+                dict.removeValue(forKey: MetadataDictKey.timeCreated)
+            }
             if !xmp.personInImage.isEmpty {
                 dict[MetadataDictKey.personInImage] = xmp.personInImage
             }

@@ -36,6 +36,64 @@
         "versioned-json-import-export",
         "validation-rule-schema"
       ]
+    },
+    {
+      "filename": "synthetic-gradient.tiff",
+      "origin": "Generated for Aagedal Photo Agent by scripts/generate_editorial_container_fixtures.swift",
+      "license": "CC0-1.0",
+      "containsPersonalData": false,
+      "sha256": "dc6f93ee87d0c1346d0509cc1b3264f9499009642838e54ece8c512ebfe45998",
+      "purpose": [
+        "tiff-metadata-read-write",
+        "decoded-pixel-preservation"
+      ]
+    },
+    {
+      "filename": "synthetic-gradient.png",
+      "origin": "Generated for Aagedal Photo Agent by scripts/generate_editorial_container_fixtures.swift",
+      "license": "CC0-1.0",
+      "containsPersonalData": false,
+      "sha256": "4b8ddde6f4faca6265569f1d0e649cbbc806bf604602a459ff369e912643ba1f",
+      "purpose": [
+        "png-metadata-read-write",
+        "decoded-pixel-preservation"
+      ]
+    },
+    {
+      "filename": "synthetic-gradient.jxl",
+      "origin": "Generated for Aagedal Photo Agent by scripts/generate_editorial_container_fixtures.swift using the bundled FFmpeg/libjxl encoder",
+      "license": "CC0-1.0",
+      "containsPersonalData": false,
+      "sha256": "44f39e7f5a55d84559966ab1474e6d96af80de2abdd85507a77ed2585c1a8325",
+      "purpose": [
+        "jpeg-xl-metadata-read-write",
+        "codestream-preservation"
+      ]
+    },
+    {
+      "filename": "synthetic-raw-sidecar.xmp",
+      "origin": "Generated for Aagedal Photo Agent by scripts/generate_editorial_container_fixtures.swift",
+      "license": "CC0-1.0",
+      "containsPersonalData": false,
+      "sha256": "57981f5a4b0054935a544200b024d532019bba2ae1ee2f9ad0e64941cf8bf471",
+      "purpose": [
+        "raw-xmp-sidecar-read-write",
+        "raw-embedded-write-refusal"
+      ]
+    }
+  ],
+  "unavailableArtifacts": [
+    {
+      "format": "heic/heif",
+      "reason": "ImageIO advertises public.heic on the validation host but its encoder cannot finalize inside the sandbox; no decodable redistributable fixture is claimed."
+    },
+    {
+      "format": "camera-raw-original",
+      "reason": "The production stack does not synthesize a representative camera RAW and no redistributable original is checked in; only the real XMP sidecar boundary is covered."
+    },
+    {
+      "format": "iptc-2025.1-reference-image",
+      "reason": "The official reference image is not present with confirmed redistribution permission."
     }
   ]
 }

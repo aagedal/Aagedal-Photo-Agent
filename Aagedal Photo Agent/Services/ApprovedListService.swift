@@ -226,6 +226,13 @@ final class ApprovedListService {
         return Self.suggestions(prefix: prefix, in: parsed.ordered, limit: limit)
     }
 
+    /// Canonical entries in source-file order. Caption Workspace uses this read-only snapshot to
+    /// combine approved values with other typed autocomplete sources without duplicating parsing.
+    func allEntries(for field: ApprovedListField) -> [String] {
+        _ = version
+        return cache[field]?.ordered ?? []
+    }
+
     /// Validate a single value against the configured policy for `field`.
     /// Returns `.accept` when the list is inactive, `.acceptCanonical(canonical)` when
     /// the value is in the list (any mode), or `.reject` in Strict mode for non-approved.

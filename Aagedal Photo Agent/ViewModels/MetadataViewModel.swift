@@ -17,6 +17,50 @@ enum MetadataReferenceSource: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Common/partial projection for an unordered repeatable metadata property across a selection.
+/// Values retain first-seen order for stable presentation even though equality is set-based.
+nonisolated struct BatchListSelection<Value: Hashable & Sendable>: Sendable, Equatable {
+    var common: [Value]
+    var partial: [Value]
+
+    nonisolated static var empty: Self { Self(common: [], partial: []) }
+}
+
+/// Typed projection of every repeatable field supported by the batch metadata editor.
+/// Keeping partial values outside the editing buffer prevents a mixed-state placeholder from ever
+/// becoming data that is propagated to the selected files.
+nonisolated struct BatchMetadataListSelectionSummary: Sendable, Equatable {
+    var repeatable: [MetadataFieldID: BatchListSelection<String>]
+    var locationsShown: BatchListSelection<EditorialLocation>
+    var imageSuppliers: BatchListSelection<EditorialImageSupplier>
+
+    nonisolated static let empty = Self(
+        repeatable: [:], locationsShown: .empty, imageSuppliers: .empty
+    )
+
+    nonisolated func selection(for field: MetadataFieldID) -> BatchListSelection<String> {
+        repeatable[field] ?? .empty
+    }
+}
+
+/// Structured locations are not part of `MetadataFieldID`, so they use the same explicit intent
+/// vocabulary through a strongly typed companion operation.
+nonisolated enum BatchLocationsShownMutation: Sendable, Equatable {
+    case untouched
+    case append([EditorialLocation])
+    case replace([EditorialLocation])
+    case clear
+}
+
+nonisolated enum BatchListSelectionError: Error, Sendable, Equatable {
+    case batchSelectionRequired
+    case repeatableFieldRequired(MetadataFieldID)
+    case emptyLocationAppend
+    case emptyLocationReplace
+    case emptyImageSupplierAppend
+    case emptyImageSupplierReplace
+}
+
 @Observable
 final class MetadataViewModel {
     var metadata: IPTCMetadata?
@@ -77,6 +121,10 @@ final class MetadataViewModel {
     var batchDifferingFields: Set<String> = []
     var batchPartialKeywords: [String] = []
     var batchPartialPersonShown: [String] = []
+    var batchListSelectionSummary = BatchMetadataListSelectionSummary.empty
+    private(set) var batchFieldMutations: [MetadataFieldID: MetadataFieldMutation] = [:]
+    private(set) var batchLocationsShownMutation: BatchLocationsShownMutation = .untouched
+    private(set) var batchImageSupplierMutation: EditorialImageSupplierMutation = .untouched
     var isLoadingBatchMetadata = false
 
     // Geocoding state
@@ -86,6 +134,7 @@ final class MetadataViewModel {
 
     private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
+    private let descriptiveWriteBoundary: DescriptiveMetadataWriteBoundary
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
     private let geocodingService = GeocodingService()
@@ -96,10 +145,12 @@ final class MetadataViewModel {
     @ObservationIgnored private var writeTask: Task<Void, Never>?
     @ObservationIgnored private var batchProcessTask: Task<Void, Never>?
     @ObservationIgnored private var geocodingTask: Task<Void, Never>?
+    @ObservationIgnored private var batchMetadataByURL: [URL: IPTCMetadata] = [:]
 
     init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine) {
         self.readService = readService
         self.writeEngine = writeEngine
+        self.descriptiveWriteBoundary = DescriptiveMetadataWriteBoundary(writeEngine: writeEngine)
     }
 
     deinit {
@@ -197,6 +248,40 @@ final class MetadataViewModel {
         xmpSidecarService.loadSidecar(for: imageURL)
     }
 
+    /// Reads a Copy Previous source without changing the current selection or editing buffer.
+    /// Pending app sidecars win, followed by a current descriptive XMP record, then embedded
+    /// metadata. This mirrors the normal single-image read path while remaining read-only.
+    func loadCaptionCopyPreviousMetadata(for imageURL: URL) async throws -> IPTCMetadata {
+        let embedded = try await readService.readFullMetadata(url: imageURL)
+        let xmp = loadXMPMetadata(for: imageURL)
+
+        var resolved = embedded
+        if let xmp {
+            let sidecarIsStale = SidecarReconciliation.verdict(
+                imageURL: imageURL,
+                sidecarURL: xmpSidecarService.sidecarURL(for: imageURL),
+                embedded: embedded,
+                sidecar: xmp
+            ) == .fileNewerConflict
+            if !sidecarIsStale {
+                resolved = xmp.hasDescriptiveContent
+                    ? embedded.replacingDescriptiveFields(from: xmp)
+                    : embedded.merged(preferring: xmp)
+            }
+        }
+
+        let folderURL = currentFolderURL ?? imageURL.deletingLastPathComponent()
+        if let sidecar = sidecarService.loadSidecar(for: imageURL, in: folderURL),
+           sidecar.pendingChanges {
+            let bestCameraRaw = resolved.cameraRaw ?? sidecar.metadata.cameraRaw
+            let bestOrientation = resolved.exifOrientation
+            resolved = sidecar.metadata
+            resolved.cameraRaw = bestCameraRaw
+            resolved.exifOrientation = bestOrientation
+        }
+        return resolved
+    }
+
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
         metadataLoadTask?.cancel()
         metadataLoadTask = nil
@@ -234,6 +319,11 @@ final class MetadataViewModel {
             batchDifferingFields = []
             batchPartialKeywords = []
             batchPartialPersonShown = []
+            batchListSelectionSummary = .empty
+            batchFieldMutations = [:]
+            batchLocationsShownMutation = .untouched
+            batchImageSupplierMutation = .untouched
+            batchMetadataByURL = [:]
         }
 
         if let folderURL {
@@ -248,10 +338,12 @@ final class MetadataViewModel {
             xmpMetadata = nil
             isLoading = false
             isLoadingBatchMetadata = false
+            batchMetadataByURL = [:]
             return
         }
 
         if images.count == 1 {
+            batchMetadataByURL = [:]
             let imageURL = images[0].url
 
             // When reloading the same image (e.g. auto-refresh after external edit),
@@ -410,6 +502,7 @@ final class MetadataViewModel {
     private func loadBatchMetadata(for images: [ImageFile], selectionSnapshot: Set<URL>, isReload: Bool = false) async {
         let urls = images.map(\.url)
         var allMetadata: [IPTCMetadata] = []
+        var metadataByURL: [URL: IPTCMetadata] = [:]
 
         do {
             let batchResults = try await readService.readBatchFullMetadata(urls: urls)
@@ -435,6 +528,7 @@ final class MetadataViewModel {
                     meta.exifOrientation = bestOrientation
                 }
                 allMetadata.append(meta)
+                metadataByURL[image.url] = meta
             }
         } catch {
             logger.error("Failed to load batch metadata: \(error.localizedDescription)")
@@ -458,7 +552,6 @@ final class MetadataViewModel {
         compareOptionalField(allMetadata, keyPath: \.digitalImageGUID, fieldName: "digitalImageGUID", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.imageSupplierImageID, fieldName: "imageSupplierImageID", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.jobId, fieldName: "jobId", common: &common, differing: &differing)
-        compareOptionalField(allMetadata, keyPath: \.creator, fieldName: "creator", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.creatorJobTitle, fieldName: "creatorJobTitle", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.descriptionWriter, fieldName: "descriptionWriter", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.credit, fieldName: "credit", common: &common, differing: &differing)
@@ -472,38 +565,44 @@ final class MetadataViewModel {
         compareOptionalField(allMetadata, keyPath: \.source, fieldName: "source", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.digitalSourceType, fieldName: "digitalSourceType", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.urgency, fieldName: "urgency", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.dateCreated, fieldName: "dateCreated", common: &common, differing: &differing)
 
-        // Array fields — compute intersection (common to all) and partial (some but not all)
-        let (commonKW, partialKW) = computeArrayFieldPartials(allMetadata, keyPath: \.keywords)
-        common.keywords = commonKW
-        if !partialKW.isEmpty { differing.insert("keywords") }
-        self.batchPartialKeywords = partialKW
+        // Repeatable IPTC Bags use normalized membership. Creator is the ordered Seq exception:
+        // only an identical sequence is common, so mixed order can never be propagated silently.
+        let listSummary = Self.batchListSelectionSummary(for: allMetadata)
+        common.keywords = listSummary.selection(for: .keywords).common
+        common.personShown = listSummary.selection(for: .personShown).common
+        common.organisationsShownNames = listSummary.selection(for: .organisationShownName).common
+        common.organisationsShownCodes = listSummary.selection(for: .organisationShownCode).common
+        common.sceneCodes = listSummary.selection(for: .sceneCode).common
+        common.subjectCodes = listSummary.selection(for: .subjectCode).common
+        let commonMediaTopicIDs = Set(listSummary.selection(for: .mediaTopic).common)
+        common.mediaTopics = allMetadata[0].mediaTopics.filter { commonMediaTopicIDs.contains($0.termIdentifier) }
+        let commonGenreIDs = Set(listSummary.selection(for: .genre).common)
+        common.genres = allMetadata[0].genres.filter { commonGenreIDs.contains($0.termIdentifier) }
+        common.creators = listSummary.selection(for: .creator).common
+        common.locationsShown = listSummary.locationsShown.common
 
-        let (commonPS, partialPS) = computeArrayFieldPartials(allMetadata, keyPath: \.personShown)
-        common.personShown = commonPS
-        if !partialPS.isEmpty { differing.insert("personShown") }
-        self.batchPartialPersonShown = partialPS
-
-        let (commonOrganisationNames, partialOrganisationNames) = computeArrayFieldPartials(
-            allMetadata,
-            keyPath: \.organisationsShownNames
-        )
-        common.organisationsShownNames = commonOrganisationNames
-        if !partialOrganisationNames.isEmpty { differing.insert("organisationShownName") }
-
-        let (commonOrganisationCodes, partialOrganisationCodes) = computeArrayFieldPartials(
-            allMetadata,
-            keyPath: \.organisationsShownCodes
-        )
-        common.organisationsShownCodes = commonOrganisationCodes
-        if !partialOrganisationCodes.isEmpty { differing.insert("organisationShownCode") }
-
-        let (commonSceneCodes, partialSceneCodes) = computeArrayFieldPartials(
-            allMetadata,
-            keyPath: \.sceneCodes
-        )
-        common.sceneCodes = commonSceneCodes
-        if !partialSceneCodes.isEmpty { differing.insert("sceneCode") }
+        for (field, differingName) in [
+            (MetadataFieldID.keywords, "keywords"),
+            (.personShown, "personShown"),
+            (.organisationShownName, "organisationShownName"),
+            (.organisationShownCode, "organisationShownCode"),
+            (.sceneCode, "sceneCode"),
+            (.subjectCode, "subjectCode"),
+            (.mediaTopic, "mediaTopic"),
+            (.genre, "genre"),
+            (.creator, "creator"),
+        ] where !listSummary.selection(for: field).partial.isEmpty {
+            differing.insert(differingName)
+        }
+        if !listSummary.locationsShown.partial.isEmpty {
+            differing.insert("locationsShown")
+        }
+        self.batchPartialKeywords = listSummary.selection(for: .keywords).partial
+        self.batchPartialPersonShown = listSummary.selection(for: .personShown).partial
+        self.batchListSelectionSummary = listSummary
+        self.batchMetadataByURL = metadataByURL
 
         // GPS - check if all have the same coordinates
         let latitudes = allMetadata.compactMap(\.latitude)
@@ -549,18 +648,258 @@ final class MetadataViewModel {
         }
     }
 
-    /// Compute intersection (common to all images) and partial (in some but not all) for an array field.
-    private func computeArrayFieldPartials(
-        _ allMetadata: [IPTCMetadata],
-        keyPath: KeyPath<IPTCMetadata, [String]>
-    ) -> (common: [String], partial: [String]) {
-        let sets = allMetadata.map { Set($0[keyPath: keyPath]) }
-        guard let first = sets.first else { return ([], []) }
-        let intersection = sets.dropFirst().reduce(first) { $0.intersection($1) }
-        let union = sets.dropFirst().reduce(first) { $0.union($1) }
-        let common = (allMetadata.first?[keyPath: keyPath] ?? []).filter { intersection.contains($0) }
-        let partial = union.subtracting(intersection).sorted()
-        return (common, partial)
+    nonisolated static func batchListSelectionSummary(
+        for allMetadata: [IPTCMetadata]
+    ) -> BatchMetadataListSelectionSummary {
+        guard !allMetadata.isEmpty else { return .empty }
+
+        var repeatable: [MetadataFieldID: BatchListSelection<String>] = [:]
+        for field in MetadataFieldID.allCases where field.isRepeatable {
+            let lists = allMetadata.map {
+                normalizedRepeatableValues(values(for: field, in: $0), field: field)
+            }
+            repeatable[field] = field == .creator
+                ? summarizeOrderedLists(lists)
+                : summarizeUnorderedLists(lists)
+        }
+
+        return BatchMetadataListSelectionSummary(
+            repeatable: repeatable,
+            locationsShown: summarizeUnorderedLists(
+                allMetadata.map { normalizedLocations($0.locationsShown) }
+            ),
+            imageSuppliers: summarizeUnorderedLists(
+                allMetadata.map { EditorialImageSupplier.normalizedValues($0.imageSuppliers) }
+            )
+        )
+    }
+
+    private nonisolated static func summarizeOrderedLists<Value: Hashable & Sendable>(
+        _ lists: [[Value]]
+    ) -> BatchListSelection<Value> {
+        guard let first = lists.first else { return .empty }
+        if lists.dropFirst().allSatisfy({ $0 == first }) {
+            return BatchListSelection(common: first, partial: [])
+        }
+        var union: [Value] = []
+        var seen = Set<Value>()
+        for list in lists {
+            union.append(contentsOf: list.filter { seen.insert($0).inserted })
+        }
+        return BatchListSelection(common: [], partial: union)
+    }
+
+    private nonisolated static func summarizeUnorderedLists<Value: Hashable & Sendable>(
+        _ lists: [[Value]]
+    ) -> BatchListSelection<Value> {
+        guard let first = lists.first else { return .empty }
+        let commonSet = lists.dropFirst().reduce(Set(first)) { result, values in
+            result.intersection(values)
+        }
+
+        var unionOrder: [Value] = []
+        var seen = Set<Value>()
+        for values in lists {
+            for value in values where seen.insert(value).inserted {
+                unionOrder.append(value)
+            }
+        }
+        return BatchListSelection(
+            common: first.filter { commonSet.contains($0) },
+            partial: unionOrder.filter { !commonSet.contains($0) }
+        )
+    }
+
+    private nonisolated static func values(
+        for field: MetadataFieldID,
+        in metadata: IPTCMetadata
+    ) -> [String] {
+        switch field {
+        case .creator: metadata.creators
+        case .keywords: metadata.keywords
+        case .personShown: metadata.personShown
+        case .organisationShownName: metadata.organisationsShownNames
+        case .organisationShownCode: metadata.organisationsShownCodes
+        case .sceneCode: metadata.sceneCodes
+        case .subjectCode: metadata.subjectCodes
+        case .mediaTopic: metadata.mediaTopics.map(\.termIdentifier)
+        case .genre: metadata.genres.map(\.termIdentifier)
+        default: []
+        }
+    }
+
+    private nonisolated static func normalizedRepeatableValues(
+        _ values: [String],
+        field: MetadataFieldID
+    ) -> [String] {
+        let trimmed = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .uniqued()
+        if field == .sceneCode {
+            return IPTCSceneCode.normalizedValues(trimmed.map(IPTCSceneCode.normalizedEditorValue))
+        }
+        if field == .subjectCode {
+            return IPTCSubjectCode.normalizedValues(trimmed)
+        }
+        if field == .mediaTopic {
+            return IPTCControlledVocabularyTerm.normalizedValues(
+                trimmed.compactMap { IPTCControlledVocabularyTerm.mediaTopic(metadataValue: $0) }
+            ).map(\.termIdentifier)
+        }
+        if field == .genre {
+            return IPTCControlledVocabularyTerm.normalizedValues(
+                trimmed.compactMap { IPTCControlledVocabularyTerm.genre(metadataValue: $0) }
+            ).map(\.termIdentifier)
+        }
+        return trimmed
+    }
+
+    private nonisolated static func normalizedLocations(
+        _ locations: [EditorialLocation]
+    ) -> [EditorialLocation] {
+        locations.compactMap { location in
+            var normalized = location
+            normalized.identifiers = location.identifiers
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .uniqued()
+                .sorted()
+            normalized.name = normalizedText(location.name)
+            normalized.sublocation = normalizedText(location.sublocation)
+            normalized.city = normalizedText(location.city)
+            normalized.provinceState = normalizedText(location.provinceState)
+            normalized.countryName = normalizedText(location.countryName)
+            normalized.countryCode = ISO3166Country.normalizedAlpha3(normalizedText(location.countryCode))
+            normalized.worldRegion = normalizedText(location.worldRegion)
+            return normalized.isEmpty ? nil : normalized
+        }.uniqued()
+    }
+
+    private nonisolated static func normalizedText(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Records explicit append/replace/clear intent for one repeatable field. The common-value
+    /// projection is only a preview; persistence applies the operation independently to each
+    /// selected record, so partial values cannot be mistaken for absent values.
+    func setBatchMutation(
+        _ mutation: MetadataFieldMutation,
+        for field: MetadataFieldID
+    ) throws {
+        guard isBatchEdit else { throw BatchListSelectionError.batchSelectionRequired }
+        guard field.isRepeatable else { throw BatchListSelectionError.repeatableFieldRequired(field) }
+
+        var proposed = batchFieldMutations
+        if mutation == .untouched {
+            proposed.removeValue(forKey: field)
+        } else {
+            proposed[field] = mutation
+        }
+        let preview = try Self.applyingBatchListMutations(
+            proposed,
+            locationsShown: batchLocationsShownMutation,
+            imageSuppliers: batchImageSupplierMutation,
+            to: batchCommonMetadata ?? IPTCMetadata()
+        )
+        batchFieldMutations = proposed
+        copyBatchLists(from: preview, into: &editingMetadata)
+        // This API owns only the explicit list intent. Never clear dirty state here: scalar
+        // fields may already have pending edits that are intentionally independent of it.
+        if !batchFieldMutations.isEmpty || batchLocationsShownMutation != .untouched
+            || batchImageSupplierMutation != .untouched {
+            hasChanges = true
+        }
+    }
+
+    func setBatchLocationsShownMutation(
+        _ mutation: BatchLocationsShownMutation
+    ) throws {
+        guard isBatchEdit else { throw BatchListSelectionError.batchSelectionRequired }
+        let preview = try Self.applyingBatchListMutations(
+            batchFieldMutations,
+            locationsShown: mutation,
+            imageSuppliers: batchImageSupplierMutation,
+            to: batchCommonMetadata ?? IPTCMetadata()
+        )
+        batchLocationsShownMutation = mutation
+        copyBatchLists(from: preview, into: &editingMetadata)
+        if !batchFieldMutations.isEmpty || mutation != .untouched
+            || batchImageSupplierMutation != .untouched {
+            hasChanges = true
+        }
+    }
+
+    func setBatchImageSupplierMutation(
+        _ mutation: EditorialImageSupplierMutation
+    ) throws {
+        guard isBatchEdit else { throw BatchListSelectionError.batchSelectionRequired }
+        switch mutation {
+        case let .append(values) where EditorialImageSupplier.normalizedValues(values).isEmpty:
+            throw BatchListSelectionError.emptyImageSupplierAppend
+        case let .replace(values) where EditorialImageSupplier.normalizedValues(values).isEmpty:
+            throw BatchListSelectionError.emptyImageSupplierReplace
+        default:
+            break
+        }
+        let preview = try Self.applyingBatchListMutations(
+            batchFieldMutations,
+            locationsShown: batchLocationsShownMutation,
+            imageSuppliers: mutation,
+            to: batchCommonMetadata ?? IPTCMetadata()
+        )
+        batchImageSupplierMutation = mutation
+        copyBatchLists(from: preview, into: &editingMetadata)
+        if !batchFieldMutations.isEmpty || batchLocationsShownMutation != .untouched
+            || mutation != .untouched {
+            hasChanges = true
+        }
+    }
+
+    nonisolated static func applyingBatchListMutations(
+        _ mutations: [MetadataFieldID: MetadataFieldMutation],
+        locationsShown: BatchLocationsShownMutation = .untouched,
+        imageSuppliers: EditorialImageSupplierMutation = .untouched,
+        to metadata: IPTCMetadata
+    ) throws -> IPTCMetadata {
+        var result = metadata
+        for field in MetadataFieldID.allCases where field.isRepeatable {
+            guard let mutation = mutations[field] else { continue }
+            try result.apply(mutation, to: field)
+        }
+
+        switch locationsShown {
+        case .untouched:
+            break
+        case .clear:
+            result.locationsShown = []
+        case .append(let locations):
+            let normalized = normalizedLocations(locations)
+            guard !normalized.isEmpty else { throw BatchListSelectionError.emptyLocationAppend }
+            result.locationsShown = normalizedLocations(result.locationsShown + normalized)
+        case .replace(let locations):
+            let normalized = normalizedLocations(locations)
+            guard !normalized.isEmpty else { throw BatchListSelectionError.emptyLocationReplace }
+            result.locationsShown = normalized
+        }
+        result.imageSuppliers = imageSuppliers.apply(to: result.imageSuppliers)
+        return result
+    }
+
+    private func copyBatchLists(from source: IPTCMetadata, into target: inout IPTCMetadata) {
+        target.keywords = source.keywords
+        target.personShown = source.personShown
+        target.organisationsShownNames = source.organisationsShownNames
+        target.organisationsShownCodes = source.organisationsShownCodes
+        target.sceneCodes = source.sceneCodes
+        target.subjectCodes = source.subjectCodes
+        target.mediaTopics = source.mediaTopics
+        target.genres = source.genres
+        target.creators = source.creators
+        target.locationsShown = source.locationsShown
+        target.imageSuppliers = source.imageSuppliers
     }
 
     func promotePartialKeyword(_ keyword: String) {
@@ -725,6 +1064,9 @@ final class MetadataViewModel {
         let original = metadata
         let isBatch = isBatchEdit
         let prevEditing = previousEditingMetadata
+        let explicitBatchMutations = batchFieldMutations
+        let explicitLocationsShownMutation = batchLocationsShownMutation
+        let resolvedBatchSnapshot = batchMetadataByURL
         isSaving = true
         saveError = nil
 
@@ -765,7 +1107,7 @@ final class MetadataViewModel {
                         fields[.gpsLongitude] = String(abs(lon))
                         fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
                     }
-                    if let v = edited.creator, !v.isEmpty { fields[.creator] = v }
+                    if let v = edited.creatorTransportValue { fields[.creator] = v }
                     if let v = edited.creatorJobTitle, !v.isEmpty { fields[.creatorJobTitle] = v }
                     if let v = edited.descriptionWriter, !v.isEmpty { fields[.descriptionWriter] = v }
                     if let v = edited.credit, !v.isEmpty { fields[.credit] = v }
@@ -807,6 +1149,15 @@ final class MetadataViewModel {
                     if edited.sceneCodes != original?.sceneCodes {
                         fields[.scene] = edited.sceneCodes.uniqued().joined(separator: ", ")
                     }
+                    if edited.subjectCodes != original?.subjectCodes {
+                        fields[.subjectCode] = edited.subjectCodes.uniqued().joined(separator: ", ")
+                    }
+                    if edited.mediaTopics != original?.mediaTopics {
+                        fields[.mediaTopic] = edited.mediaTopics.map(\.termIdentifier).joined(separator: ", ")
+                    }
+                    if edited.genres != original?.genres {
+                        fields[.genre] = edited.genres.map(\.termIdentifier).joined(separator: ", ")
+                    }
                     if edited.digitalSourceType != original?.digitalSourceType {
                         fields[.digitalSourceType] = edited.digitalSourceType?.newsCodeURI ?? ""
                     }
@@ -826,7 +1177,9 @@ final class MetadataViewModel {
                             fields[.gpsLongitudeRef] = ""
                         }
                     }
-                    if edited.creator != original?.creator { fields[.creator] = edited.creator ?? "" }
+                    if edited.creators != original?.creators {
+                        fields[.creator] = edited.creatorTransportValue ?? ""
+                    }
                     if edited.creatorJobTitle != original?.creatorJobTitle { fields[.creatorJobTitle] = edited.creatorJobTitle ?? "" }
                     if edited.descriptionWriter != original?.descriptionWriter { fields[.descriptionWriter] = edited.descriptionWriter ?? "" }
                     if edited.credit != original?.credit { fields[.credit] = edited.credit ?? "" }
@@ -849,10 +1202,16 @@ final class MetadataViewModel {
                     if edited.source != original?.source { fields[.source] = edited.source ?? "" }
                 }
 
+                if isBatch {
+                    Self.applyExplicitBatchWriteFields(explicitBatchMutations, into: &fields)
+                }
+
                 let structuredEditorialChanged = !isBatch && (
                     edited.creatorContactInfo != original?.creatorContactInfo
                         || Set(edited.locationsCreated) != Set(original?.locationsCreated ?? [])
                         || Set(edited.locationsShown) != Set(original?.locationsShown ?? [])
+                        || Set(edited.mediaTopics) != Set(original?.mediaTopics ?? [])
+                        || Set(edited.genres) != Set(original?.genres ?? [])
                 )
                 if !fields.isEmpty || structuredEditorialChanged {
                     let structuredData = StructuredWriteData(
@@ -865,12 +1224,62 @@ final class MetadataViewModel {
 
                 // Handle additive list fields via += / -=
                 if isBatch, let prev = prevEditing {
-                    let diffs = additiveListDiffs(from: edited, previous: prev)
+                    let diffs = additiveListDiffs(
+                        from: edited,
+                        previous: prev,
+                        explicitMutations: explicitBatchMutations
+                    )
                     if !diffs.add.isEmpty || !diffs.remove.isEmpty {
                         try await writeEngine.addRemoveListValues(
                             add: diffs.add,
                             remove: diffs.remove,
                             to: urls
+                        )
+                    }
+                }
+
+                if isBatch, explicitLocationsShownMutation != .untouched {
+                    for url in urls {
+                        let base: IPTCMetadata
+                        if let resolved = resolvedBatchSnapshot[url] {
+                            base = resolved
+                        } else {
+                            base = try await self.readService.readFullMetadata(url: url)
+                        }
+                        let updated = try Self.applyingBatchListMutations(
+                            [:],
+                            locationsShown: explicitLocationsShownMutation,
+                            to: base
+                        )
+                        try await writeEngine.writeFields(
+                            [:],
+                            to: [url],
+                            structuredData: StructuredWriteData(
+                                editorial: EditorialStructuredWriteData(metadata: updated)
+                            )
+                        )
+                    }
+                }
+
+                let controlledStructuredMutations = explicitBatchMutations.filter {
+                    $0.key == .mediaTopic || $0.key == .genre
+                }
+                if isBatch, !controlledStructuredMutations.isEmpty {
+                    for url in urls {
+                        let base: IPTCMetadata
+                        if let resolved = resolvedBatchSnapshot[url] {
+                            base = resolved
+                        } else {
+                            base = try await self.readService.readFullMetadata(url: url)
+                        }
+                        let updated = try MetadataFieldMutationSet(controlledStructuredMutations)
+                            .applying(to: base)
+                        try await writeEngine.writeFields(
+                            [:],
+                            to: [url],
+                            structuredData: StructuredWriteData(
+                                editorial: EditorialStructuredWriteData(metadata: updated)
+                            )
                         )
                     }
                 }
@@ -901,7 +1310,7 @@ final class MetadataViewModel {
         }
         if let v = metadata.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = metadata.urgency { fields[.urgency] = String(v) }
-        if let v = metadata.creator, !v.isEmpty { fields[.creator] = v }
+        if let v = metadata.creatorTransportValue { fields[.creator] = v }
         if let v = metadata.creatorJobTitle, !v.isEmpty { fields[.creatorJobTitle] = v }
         if let v = metadata.descriptionWriter, !v.isEmpty { fields[.descriptionWriter] = v }
         if let v = metadata.credit, !v.isEmpty { fields[.credit] = v }
@@ -930,48 +1339,103 @@ final class MetadataViewModel {
         return fields
     }
 
+    private nonisolated static func applyExplicitBatchWriteFields(
+        _ mutations: [MetadataFieldID: MetadataFieldMutation],
+        into fields: inout [MetadataFieldKey: String]
+    ) {
+        for field in MetadataFieldID.allCases where field.isRepeatable {
+            guard let mutation = mutations[field] else { continue }
+            switch mutation {
+            case .untouched:
+                fields.removeValue(forKey: field.metadataWriteKey)
+            case .append:
+                // Appends use the typed add/remove writer path below; never also overwrite the
+                // field with the common-value preview.
+                fields.removeValue(forKey: field.metadataWriteKey)
+            case .clear:
+                fields[field.metadataWriteKey] = ""
+            case .overwrite:
+                guard let updated = try? applyingBatchListMutations(
+                    [field: mutation],
+                    to: IPTCMetadata()
+                ) else { continue }
+                if field == .creator {
+                    fields[field.metadataWriteKey] = updated.creatorTransportValue ?? ""
+                } else {
+                    fields[field.metadataWriteKey] = values(for: field, in: updated)
+                        .joined(separator: ", ")
+                }
+            }
+        }
+    }
+
     /// Compute add/remove diffs for list fields in add mode, relative to previousEditingMetadata.
     private func additiveListDiffs(
         from edited: IPTCMetadata,
-        previous: IPTCMetadata
+        previous: IPTCMetadata,
+        explicitMutations: [MetadataFieldID: MetadataFieldMutation]
     ) -> (add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]]) {
         var addTags: [MetadataFieldKey: [String]] = [:]
         var removeTags: [MetadataFieldKey: [String]] = [:]
 
-        if multiSelectMode(for: "keywords") == .add {
+        for field in MetadataFieldID.allCases where field.isRepeatable {
+            guard case .append(let values)? = explicitMutations[field] else { continue }
+            let normalized = Self.normalizedRepeatableValues(values, field: field)
+            if !normalized.isEmpty {
+                addTags[field.metadataWriteKey] = normalized
+            }
+        }
+
+        if explicitMutations[.keywords] == nil, multiSelectMode(for: "keywords") == .add {
             let added = Array(Set(edited.keywords).subtracting(previous.keywords))
             let removed = Array(Set(previous.keywords).subtracting(edited.keywords))
             if !added.isEmpty { addTags[.subject] = added }
             if !removed.isEmpty { removeTags[.subject] = removed }
         }
 
-        if multiSelectMode(for: "personShown") == .add {
+        if explicitMutations[.personShown] == nil, multiSelectMode(for: "personShown") == .add {
             let added = Array(Set(edited.personShown).subtracting(previous.personShown))
             let removed = Array(Set(previous.personShown).subtracting(edited.personShown))
             if !added.isEmpty { addTags[.personInImage] = added }
             if !removed.isEmpty { removeTags[.personInImage] = removed }
         }
 
-        let previousOrganisationNames = Set(previous.organisationsShownNames)
-        let editedOrganisationNames = Set(edited.organisationsShownNames)
-        let addedOrganisationNames = edited.organisationsShownNames.filter { !previousOrganisationNames.contains($0) }
-        let removedOrganisationNames = previous.organisationsShownNames.filter { !editedOrganisationNames.contains($0) }
-        if !addedOrganisationNames.isEmpty { addTags[.organisationInImageName] = addedOrganisationNames }
-        if !removedOrganisationNames.isEmpty { removeTags[.organisationInImageName] = removedOrganisationNames }
+        if explicitMutations[.organisationShownName] == nil {
+            let previousOrganisationNames = Set(previous.organisationsShownNames)
+            let editedOrganisationNames = Set(edited.organisationsShownNames)
+            let addedOrganisationNames = edited.organisationsShownNames.filter { !previousOrganisationNames.contains($0) }
+            let removedOrganisationNames = previous.organisationsShownNames.filter { !editedOrganisationNames.contains($0) }
+            if !addedOrganisationNames.isEmpty { addTags[.organisationInImageName] = addedOrganisationNames }
+            if !removedOrganisationNames.isEmpty { removeTags[.organisationInImageName] = removedOrganisationNames }
+        }
 
-        let previousOrganisationCodes = Set(previous.organisationsShownCodes)
-        let editedOrganisationCodes = Set(edited.organisationsShownCodes)
-        let addedOrganisationCodes = edited.organisationsShownCodes.filter { !previousOrganisationCodes.contains($0) }
-        let removedOrganisationCodes = previous.organisationsShownCodes.filter { !editedOrganisationCodes.contains($0) }
-        if !addedOrganisationCodes.isEmpty { addTags[.organisationInImageCode] = addedOrganisationCodes }
-        if !removedOrganisationCodes.isEmpty { removeTags[.organisationInImageCode] = removedOrganisationCodes }
+        if explicitMutations[.organisationShownCode] == nil {
+            let previousOrganisationCodes = Set(previous.organisationsShownCodes)
+            let editedOrganisationCodes = Set(edited.organisationsShownCodes)
+            let addedOrganisationCodes = edited.organisationsShownCodes.filter { !previousOrganisationCodes.contains($0) }
+            let removedOrganisationCodes = previous.organisationsShownCodes.filter { !editedOrganisationCodes.contains($0) }
+            if !addedOrganisationCodes.isEmpty { addTags[.organisationInImageCode] = addedOrganisationCodes }
+            if !removedOrganisationCodes.isEmpty { removeTags[.organisationInImageCode] = removedOrganisationCodes }
+        }
 
-        let previousSceneCodes = Set(previous.sceneCodes)
-        let editedSceneCodes = Set(edited.sceneCodes)
-        let addedSceneCodes = edited.sceneCodes.filter { !previousSceneCodes.contains($0) }
-        let removedSceneCodes = previous.sceneCodes.filter { !editedSceneCodes.contains($0) }
-        if !addedSceneCodes.isEmpty { addTags[.scene] = addedSceneCodes }
-        if !removedSceneCodes.isEmpty { removeTags[.scene] = removedSceneCodes }
+        if explicitMutations[.sceneCode] == nil {
+            let previousSceneCodes = Set(previous.sceneCodes)
+            let editedSceneCodes = Set(edited.sceneCodes)
+            let addedSceneCodes = edited.sceneCodes.filter { !previousSceneCodes.contains($0) }
+            let removedSceneCodes = previous.sceneCodes.filter { !editedSceneCodes.contains($0) }
+            if !addedSceneCodes.isEmpty { addTags[.scene] = addedSceneCodes }
+            if !removedSceneCodes.isEmpty { removeTags[.scene] = removedSceneCodes }
+        }
+
+
+        if explicitMutations[.subjectCode] == nil {
+            let previousCodes = Set(previous.subjectCodes)
+            let editedCodes = Set(edited.subjectCodes)
+            let addedCodes = edited.subjectCodes.filter { !previousCodes.contains($0) }
+            let removedCodes = previous.subjectCodes.filter { !editedCodes.contains($0) }
+            if !addedCodes.isEmpty { addTags[.subjectCode] = addedCodes }
+            if !removedCodes.isEmpty { removeTags[.subjectCode] = removedCodes }
+        }
 
         return (addTags, removeTags)
     }
@@ -1025,10 +1489,13 @@ final class MetadataViewModel {
         let batchMeta = editingMetadata
         let prevCommon = previousEditingMetadata
         for imageURL in selectedURLs {
-            var existing = xmpSidecarService.loadSidecar(for: imageURL) ?? IPTCMetadata()
+            var existing = xmpSidecarService.loadSidecar(for: imageURL)
+                ?? batchMetadataByURL[imageURL]
+                ?? IPTCMetadata()
             applyBatchEdits(batchMeta, to: &existing, previousCommon: prevCommon)
             do {
                 try xmpSidecarService.saveSidecar(metadata: existing, for: imageURL)
+                batchMetadataByURL[imageURL] = existing
             } catch {
                 saveError = "Failed to save XMP sidecar: \(error.localizedDescription)"
             }
@@ -1141,9 +1608,12 @@ final class MetadataViewModel {
         fields[.organisationInImageName] = metadata.organisationsShownNames.uniqued().joined(separator: ", ")
         fields[.organisationInImageCode] = metadata.organisationsShownCodes.uniqued().joined(separator: ", ")
         fields[.scene] = metadata.sceneCodes.uniqued().joined(separator: ", ")
+        fields[.subjectCode] = metadata.subjectCodes.uniqued().joined(separator: ", ")
+        fields[.mediaTopic] = metadata.mediaTopics.map(\.termIdentifier).uniqued().joined(separator: ", ")
+        fields[.genre] = metadata.genres.map(\.termIdentifier).uniqued().joined(separator: ", ")
         fields[.digitalSourceType] = metadata.digitalSourceType?.newsCodeURI ?? ""
         fields[.urgency] = metadata.urgency.map(String.init) ?? ""
-        fields[.creator] = metadata.creator ?? ""
+        fields[.creator] = metadata.creatorTransportValue ?? ""
         fields[.creatorJobTitle] = metadata.creatorJobTitle ?? ""
         fields[.descriptionWriter] = metadata.descriptionWriter ?? ""
         fields[.credit] = metadata.credit ?? ""
@@ -1427,12 +1897,38 @@ final class MetadataViewModel {
                 } else {
                     editingMetadata.sceneCodes = values
                 }
+            case "subjectCode":
+                let values = IPTCSubjectCode.normalizedValues(
+                    value.components(separatedBy: CharacterSet(charactersIn: ",;"))
+                )
+                editingMetadata.subjectCodes = append
+                    ? IPTCSubjectCode.normalizedValues(editingMetadata.subjectCodes + values)
+                    : values
+            case "mediaTopic":
+                let values = IPTCControlledVocabularyTerm.terms(
+                    fromTemplateValue: value,
+                    fallback: { IPTCControlledVocabularyTerm.mediaTopic(metadataValue: $0) }
+                )
+                editingMetadata.mediaTopics = append
+                    ? IPTCControlledVocabularyTerm.normalizedValues(editingMetadata.mediaTopics + values)
+                    : values
+            case "genre":
+                let values = IPTCControlledVocabularyTerm.terms(
+                    fromTemplateValue: value,
+                    fallback: { IPTCControlledVocabularyTerm.genre(metadataValue: $0) }
+                )
+                editingMetadata.genres = append
+                    ? IPTCControlledVocabularyTerm.normalizedValues(editingMetadata.genres + values)
+                    : values
             case "digitalSourceType":
                 editingMetadata.digitalSourceType = DigitalSourceType(metadataValue: value)
             case "urgency":
                 editingMetadata.urgency = Int(value)
             case "creator":
-                editingMetadata.creator = append ? appendString(editingMetadata.creator, value) : value
+                let values = IPTCMetadata.creators(fromTransportValue: value)
+                editingMetadata.creators = append
+                    ? IPTCMetadata.normalizedCreators(editingMetadata.creators + values)
+                    : values
             case "creatorJobTitle":
                 editingMetadata.creatorJobTitle = append ? appendString(editingMetadata.creatorJobTitle, value) : value
             case "descriptionWriter":
@@ -1451,10 +1947,20 @@ final class MetadataViewModel {
                 editingMetadata.digitalImageGUID = value
             case "imageSupplierImageID":
                 editingMetadata.imageSupplierImageID = value
+            case "imageSupplier":
+                guard let values = EditorialImageSupplier.values(fromCanonicalJSONString: value) else {
+                    continue
+                }
+                editingMetadata.imageSuppliers = append
+                    ? EditorialImageSupplier.normalizedValues(editingMetadata.imageSuppliers + values)
+                    : values
             case "jobId":
                 editingMetadata.jobId = append ? appendString(editingMetadata.jobId, value) : value
             case "dateCreated":
-                editingMetadata.dateCreated = append ? appendString(editingMetadata.dateCreated, value) : value
+                if MetadataTemplatePlaceholderDetector.containsPlaceholder(value)
+                    || (try? EditorialDateCreated(parsing: value)) != nil {
+                    editingMetadata.dateCreated = value
+                }
             case "city":
                 editingMetadata.city = append ? appendString(editingMetadata.city, value) : value
             case "sublocation":
@@ -1513,7 +2019,6 @@ final class MetadataViewModel {
             editingMetadata.title,
             editingMetadata.description,
             editingMetadata.extendedDescription,
-            editingMetadata.creator,
             editingMetadata.creatorJobTitle,
             editingMetadata.descriptionWriter,
             editingMetadata.credit,
@@ -1535,8 +2040,12 @@ final class MetadataViewModel {
             return true
         }
         let listValues = editingMetadata.keywords + editingMetadata.personShown
+            + editingMetadata.creators
             + editingMetadata.organisationsShownNames + editingMetadata.organisationsShownCodes
             + editingMetadata.sceneCodes
+            + editingMetadata.subjectCodes
+            + editingMetadata.mediaTopics.map(\.termIdentifier)
+            + editingMetadata.genres.map(\.termIdentifier)
         return listValues.contains { $0.contains(Self.variablePattern) }
     }
 
@@ -1558,7 +2067,9 @@ final class MetadataViewModel {
         editingMetadata.title = resolveIfPresent(editingMetadata.title, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.description = resolveIfPresent(editingMetadata.description, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.extendedDescription = resolveIfPresent(editingMetadata.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.creator = resolveIfPresent(editingMetadata.creator, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.creators = IPTCMetadata.normalizedCreators(editingMetadata.creators.compactMap {
+            resolveIfPresent($0, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        })
         editingMetadata.creatorJobTitle = resolveIfPresent(editingMetadata.creatorJobTitle, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.descriptionWriter = resolveIfPresent(editingMetadata.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.credit = resolveIfPresent(editingMetadata.credit, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
@@ -1582,6 +2093,7 @@ final class MetadataViewModel {
         editingMetadata.organisationsShownNames = resolveListField(editingMetadata.organisationsShownNames, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.organisationsShownCodes = resolveListField(editingMetadata.organisationsShownCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.sceneCodes = IPTCSceneCode.normalizedValues(resolveListField(editingMetadata.sceneCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials))
+        editingMetadata.subjectCodes = IPTCSubjectCode.normalizedValues(resolveListField(editingMetadata.subjectCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials))
 
         // Add resolved Job ID to keywords if enabled (after all variables are resolved)
         if UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
@@ -1626,7 +2138,9 @@ final class MetadataViewModel {
         if resolved.extendedDescription != original.extendedDescription {
             fields[.extendedDescription] = resolved.extendedDescription ?? ""
         }
-        if resolved.creator != original.creator { fields[.creator] = resolved.creator ?? "" }
+        if resolved.creators != original.creators {
+            fields[.creator] = resolved.creatorTransportValue ?? ""
+        }
         if resolved.creatorJobTitle != original.creatorJobTitle { fields[.creatorJobTitle] = resolved.creatorJobTitle ?? "" }
         if resolved.descriptionWriter != original.descriptionWriter { fields[.descriptionWriter] = resolved.descriptionWriter ?? "" }
         if resolved.credit != original.credit { fields[.credit] = resolved.credit ?? "" }
@@ -1661,6 +2175,15 @@ final class MetadataViewModel {
         }
         if resolved.sceneCodes != original.sceneCodes {
             fields[.scene] = resolved.sceneCodes.joined(separator: ", ")
+        }
+        if resolved.subjectCodes != original.subjectCodes {
+            fields[.subjectCode] = resolved.subjectCodes.joined(separator: ", ")
+        }
+        if resolved.mediaTopics != original.mediaTopics {
+            fields[.mediaTopic] = resolved.mediaTopics.map(\.termIdentifier).joined(separator: ", ")
+        }
+        if resolved.genres != original.genres {
+            fields[.genre] = resolved.genres.map(\.termIdentifier).joined(separator: ", ")
         }
 
         // Build JSON sidecar with history entry
@@ -1866,7 +2389,9 @@ final class MetadataViewModel {
                 resolvedMeta.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
+                resolvedMeta.creators = IPTCMetadata.normalizedCreators(meta.creators.map { value in
+                    resolveIfChanged(value, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials) ?? ""
+                })
                 resolvedMeta.creatorJobTitle = resolveIfChanged(meta.creatorJobTitle, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.descriptionWriter = resolveIfChanged(meta.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
@@ -1895,6 +2420,8 @@ final class MetadataViewModel {
                 if newOrganisationCodes != meta.organisationsShownCodes { resolvedMeta.organisationsShownCodes = newOrganisationCodes; changed = true }
                 let newSceneCodes = IPTCSceneCode.normalizedValues(resolveListField(meta.sceneCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials))
                 if newSceneCodes != meta.sceneCodes { resolvedMeta.sceneCodes = newSceneCodes; changed = true }
+                let newSubjectCodes = IPTCSubjectCode.normalizedValues(resolveListField(meta.subjectCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials))
+                if newSubjectCodes != meta.subjectCodes { resolvedMeta.subjectCodes = newSubjectCodes; changed = true }
 
                 // Add resolved Job ID to keywords if enabled (after all variables are resolved)
                 if UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
@@ -2114,7 +2641,19 @@ final class MetadataViewModel {
                     if let country = result.country { fields[.country] = country }
 
                     if !fields.isEmpty {
-                        try await writeEngine.writeFields(fields, to: [url])
+                        if SupportedImageFormats.isRaw(url: url) {
+                            var update = IPTCMetadata()
+                            update.city = result.city
+                            update.country = result.country
+                            _ = try await descriptiveWriteBoundary.write(
+                                metadata: update,
+                                for: url,
+                                requestedMode: .writeToFile,
+                                semantics: .merge
+                            )
+                        } else {
+                            try await writeEngine.writeFields(fields, to: [url])
+                        }
                         geocoded += 1
                     }
 
@@ -2154,6 +2693,50 @@ final class MetadataViewModel {
             // Batch mode - merge edits into each image's sidecar
             saveBatchSidecars(folderURL: folderURL)
         }
+    }
+
+    /// Captures the current single-image Caption draft for serialized off-main persistence.
+    ///
+    /// The selection can change as soon as this returns: every value needed by the write is owned
+    /// by the returned request. History state advances optimistically so rapid navigation back to
+    /// the same image cannot manufacture duplicate edits; the queue retains and retries a failed
+    /// request at the next durable barrier.
+    func captureCaptionDraftPersistence() throws -> CaptionDraftPersistence? {
+        guard let folderURL = currentFolderURL else {
+            throw CaptionWorkspaceFlushError.sidecarUnavailable
+        }
+        guard hasChanges else { return nil }
+        guard selectedCount == 1, let imageURL = selectedURLs.first else {
+            throw CaptionWorkspaceFlushError.persistenceFailed(
+                "Caption persistence requires exactly one selected photo."
+            )
+        }
+
+        let now = Date()
+        let previous = previousEditingMetadata ?? IPTCMetadata()
+        let history = buildHistory(
+            previous: previous,
+            edited: editingMetadata,
+            timestamp: now,
+            existing: sidecarHistory
+        )
+        let sidecar = MetadataSidecar(
+            sourceFile: imageURL.lastPathComponent,
+            lastModified: now,
+            pendingChanges: true,
+            metadata: editingMetadata,
+            imageMetadataSnapshot: originalImageMetadata,
+            history: history
+        )
+
+        sidecarHistory = history
+        previousEditingMetadata = editingMetadata
+        saveError = nil
+        return CaptionDraftPersistence(
+            imageURL: imageURL,
+            folderURL: folderURL,
+            sidecar: sidecar
+        )
     }
 
     private func saveSingleImageSidecar(
@@ -2203,74 +2786,11 @@ final class MetadataViewModel {
         existing: [MetadataHistoryEntry]
     ) -> [MetadataHistoryEntry] {
         var history = existing
-
-        func recordChange(_ fieldName: String, old: String?, new: String?) {
-            if old != new {
-                history.append(MetadataHistoryEntry(
-                    timestamp: timestamp,
-                    fieldName: fieldName,
-                    oldValue: old,
-                    newValue: new
-                ))
-            }
-        }
-
-        func recordArrayChange(_ fieldName: String, old: [String], new: [String]) {
-            let oldVal = old.isEmpty ? nil : old.joined(separator: ", ")
-            let newVal = new.isEmpty ? nil : new.joined(separator: ", ")
-            if oldVal != newVal {
-                history.append(MetadataHistoryEntry(
-                    timestamp: timestamp,
-                    fieldName: fieldName,
-                    oldValue: oldVal,
-                    newValue: newVal
-                ))
-            }
-        }
-
-        recordChange("Headline", old: previous.title, new: edited.title)
-        recordChange("Description", old: previous.description, new: edited.description)
-        recordChange("Extended Description", old: previous.extendedDescription, new: edited.extendedDescription)
-        recordArrayChange("Keywords", old: previous.keywords, new: edited.keywords)
-        recordArrayChange("Person Shown", old: previous.personShown, new: edited.personShown)
-        recordArrayChange("Organisation Shown Name", old: previous.organisationsShownNames, new: edited.organisationsShownNames)
-        recordArrayChange("Organisation Shown Code", old: previous.organisationsShownCodes, new: edited.organisationsShownCodes)
-        recordArrayChange("Scene Code", old: previous.sceneCodes, new: edited.sceneCodes)
-        recordChange("Copyright", old: previous.copyright, new: edited.copyright)
-        recordChange("Rights Usage Terms", old: previous.rightsUsageTerms, new: edited.rightsUsageTerms)
-        recordChange("Web Statement of Rights", old: previous.webStatementOfRights, new: edited.webStatementOfRights)
-        recordChange("Digital Image GUID", old: previous.digitalImageGUID, new: edited.digitalImageGUID)
-        recordChange("Image Supplier Image ID", old: previous.imageSupplierImageID, new: edited.imageSupplierImageID)
-        recordChange("Job ID", old: previous.jobId, new: edited.jobId)
-        recordChange("Creator", old: previous.creator, new: edited.creator)
-        recordChange("Creator Job Title", old: previous.creatorJobTitle, new: edited.creatorJobTitle)
-        recordChange("Description Writer", old: previous.descriptionWriter, new: edited.descriptionWriter)
-        recordChange("Credit", old: previous.credit, new: edited.credit)
-        recordChange("Date Created", old: previous.dateCreated, new: edited.dateCreated)
-        recordChange("City", old: previous.city, new: edited.city)
-        recordChange("Country", old: previous.country, new: edited.country)
-        recordChange("Country Code", old: previous.countryCode, new: edited.countryCode)
-        recordChange("Event", old: previous.event, new: edited.event)
-        recordChange(
-            "Digital Source Type",
-            old: previous.digitalSourceType?.rawValue,
-            new: edited.digitalSourceType?.rawValue
-        )
-        recordChange(
-            "Urgency",
-            old: previous.urgency.map(String.init),
-            new: edited.urgency.map(String.init)
-        )
-
-        func formatGPS(_ lat: Double?, _ lon: Double?) -> String? {
-            guard let lat, let lon else { return nil }
-            return "\(lat), \(lon)"
-        }
-        recordChange(
-            "GPS",
-            old: formatGPS(previous.latitude, previous.longitude),
-            new: formatGPS(edited.latitude, edited.longitude)
-        )
+        history.append(contentsOf: MetadataHistoryEntry.changes(
+            from: previous,
+            to: edited,
+            timestamp: timestamp
+        ))
 
         history.trimToHistoryLimit()
         return history
@@ -2298,7 +2818,10 @@ final class MetadataViewModel {
                 existingHistory = existing.history
                 snapshot = existing.imageMetadataSnapshot
             } else {
-                existingMeta = IPTCMetadata()
+                // Start from the resolved per-image record captured during batch loading. Starting
+                // from an empty record loses values that are partial across the selection.
+                existingMeta = batchMetadataByURL[imageURL] ?? IPTCMetadata()
+                snapshot = batchMetadataByURL[imageURL]
             }
 
             let previousMeta = existingMeta
@@ -2321,6 +2844,7 @@ final class MetadataViewModel {
 
             do {
                 try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+                batchMetadataByURL[imageURL] = existingMeta
                 if pendingChanges {
                     // C2PA: save full metadata to XMP sidecar for render+sign overlay.
                     // `existingMeta` is JSON-sourced (no crs) — preserve any develop
@@ -2346,6 +2870,18 @@ final class MetadataViewModel {
         to metadata: inout IPTCMetadata,
         previousCommon: IPTCMetadata? = nil
     ) {
+        // Explicit intent wins over every legacy inference path below. These operations were
+        // validated when recorded, so a failure here can only mean an internal contract drift;
+        // fail closed by leaving the per-image record unchanged.
+        if !batchFieldMutations.isEmpty || batchLocationsShownMutation != .untouched {
+            guard let explicitlyMutated = try? Self.applyingBatchListMutations(
+                batchFieldMutations,
+                locationsShown: batchLocationsShownMutation,
+                to: metadata
+            ) else { return }
+            metadata = explicitlyMutated
+        }
+
         if let title = batchMeta.title, !title.isEmpty {
             metadata.title = title
         }
@@ -2357,54 +2893,78 @@ final class MetadataViewModel {
         }
 
         // Keywords — add vs overwrite
-        if multiSelectMode(for: "keywords") == .add, let prev = previousCommon {
-            let added = Set(batchMeta.keywords).subtracting(prev.keywords)
-            let removed = Set(prev.keywords).subtracting(batchMeta.keywords)
-            if !added.isEmpty || !removed.isEmpty {
-                metadata.keywords = metadata.keywords.filter { !removed.contains($0) }
-                let existingSet = Set(metadata.keywords)
-                metadata.keywords += added.filter { !existingSet.contains($0) }
+        if batchFieldMutations[.keywords] == nil {
+            if multiSelectMode(for: "keywords") == .add, let prev = previousCommon {
+                let previous = Set(Self.normalizedRepeatableValues(prev.keywords, field: .keywords))
+                let edited = Self.normalizedRepeatableValues(batchMeta.keywords, field: .keywords)
+                let editedSet = Set(edited)
+                let added = edited.filter { !previous.contains($0) }
+                let removed = previous.subtracting(editedSet)
+                if !added.isEmpty || !removed.isEmpty {
+                    metadata.keywords = metadata.keywords.filter { !removed.contains($0) }
+                    metadata.keywords = Self.normalizedRepeatableValues(
+                        metadata.keywords + added,
+                        field: .keywords
+                    )
+                }
+            } else if !batchMeta.keywords.isEmpty {
+                metadata.keywords = Self.normalizedRepeatableValues(batchMeta.keywords, field: .keywords)
             }
-        } else if !batchMeta.keywords.isEmpty {
-            let existing = Set(metadata.keywords)
-            metadata.keywords += batchMeta.keywords.filter { !existing.contains($0) }
         }
 
         // Person Shown — add vs overwrite
-        if multiSelectMode(for: "personShown") == .add, let prev = previousCommon {
-            let added = Set(batchMeta.personShown).subtracting(prev.personShown)
-            let removed = Set(prev.personShown).subtracting(batchMeta.personShown)
-            if !added.isEmpty || !removed.isEmpty {
-                metadata.personShown = metadata.personShown.filter { !removed.contains($0) }
-                let existingSet = Set(metadata.personShown)
-                metadata.personShown += added.filter { !existingSet.contains($0) }
+        if batchFieldMutations[.personShown] == nil {
+            if multiSelectMode(for: "personShown") == .add, let prev = previousCommon {
+                let previous = Set(Self.normalizedRepeatableValues(prev.personShown, field: .personShown))
+                let edited = Self.normalizedRepeatableValues(batchMeta.personShown, field: .personShown)
+                let editedSet = Set(edited)
+                let added = edited.filter { !previous.contains($0) }
+                let removed = previous.subtracting(editedSet)
+                if !added.isEmpty || !removed.isEmpty {
+                    metadata.personShown = metadata.personShown.filter { !removed.contains($0) }
+                    metadata.personShown = Self.normalizedRepeatableValues(
+                        metadata.personShown + added,
+                        field: .personShown
+                    )
+                }
+            } else if !batchMeta.personShown.isEmpty {
+                metadata.personShown = Self.normalizedRepeatableValues(batchMeta.personShown, field: .personShown)
             }
-        } else if !batchMeta.personShown.isEmpty {
-            let existing = Set(metadata.personShown)
-            metadata.personShown += batchMeta.personShown.filter { !existing.contains($0) }
         }
 
         if let prev = previousCommon {
-            let previousNames = Set(prev.organisationsShownNames)
-            let added = batchMeta.organisationsShownNames.filter { !previousNames.contains($0) }
-            let removed = Set(prev.organisationsShownNames).subtracting(batchMeta.organisationsShownNames)
-            metadata.organisationsShownNames.removeAll { removed.contains($0) }
-            let existing = Set(metadata.organisationsShownNames)
-            metadata.organisationsShownNames += added.filter { !existing.contains($0) }
-
-            let previousCodes = Set(prev.organisationsShownCodes)
-            let addedCodes = batchMeta.organisationsShownCodes.filter { !previousCodes.contains($0) }
-            let removedCodes = Set(prev.organisationsShownCodes).subtracting(batchMeta.organisationsShownCodes)
-            metadata.organisationsShownCodes.removeAll { removedCodes.contains($0) }
-            let existingCodes = Set(metadata.organisationsShownCodes)
-            metadata.organisationsShownCodes += addedCodes.filter { !existingCodes.contains($0) }
-
-            let previousScenes = Set(prev.sceneCodes)
-            let addedScenes = batchMeta.sceneCodes.filter { !previousScenes.contains($0) }
-            let removedScenes = Set(prev.sceneCodes).subtracting(batchMeta.sceneCodes)
-            metadata.sceneCodes.removeAll { removedScenes.contains($0) }
-            let existingScenes = Set(metadata.sceneCodes)
-            metadata.sceneCodes += addedScenes.filter { !existingScenes.contains($0) }
+            if batchFieldMutations[.organisationShownName] == nil {
+                applyImplicitAdditiveEdit(
+                    previous: prev.organisationsShownNames,
+                    edited: batchMeta.organisationsShownNames,
+                    field: .organisationShownName,
+                    to: &metadata.organisationsShownNames
+                )
+            }
+            if batchFieldMutations[.organisationShownCode] == nil {
+                applyImplicitAdditiveEdit(
+                    previous: prev.organisationsShownCodes,
+                    edited: batchMeta.organisationsShownCodes,
+                    field: .organisationShownCode,
+                    to: &metadata.organisationsShownCodes
+                )
+            }
+            if batchFieldMutations[.sceneCode] == nil {
+                applyImplicitAdditiveEdit(
+                    previous: prev.sceneCodes,
+                    edited: batchMeta.sceneCodes,
+                    field: .sceneCode,
+                    to: &metadata.sceneCodes
+                )
+            }
+            if batchFieldMutations[.subjectCode] == nil {
+                applyImplicitAdditiveEdit(
+                    previous: prev.subjectCodes,
+                    edited: batchMeta.subjectCodes,
+                    field: .subjectCode,
+                    to: &metadata.subjectCodes
+                )
+            }
         }
 
         if let copyright = batchMeta.copyright, !copyright.isEmpty {
@@ -2425,8 +2985,12 @@ final class MetadataViewModel {
         if let jobId = batchMeta.jobId, !jobId.isEmpty {
             metadata.jobId = jobId
         }
-        if let creator = batchMeta.creator, !creator.isEmpty {
-            metadata.creator = creator
+        if let dateCreated = batchMeta.dateCreated,
+           (try? EditorialDateCreated(parsing: dateCreated)) != nil {
+            metadata.dateCreated = dateCreated
+        }
+        if batchFieldMutations[.creator] == nil, !batchMeta.creators.isEmpty {
+            metadata.creators = batchMeta.creators
         }
         if let creatorJobTitle = batchMeta.creatorJobTitle, !creatorJobTitle.isEmpty {
             metadata.creatorJobTitle = creatorJobTitle
@@ -2478,6 +3042,21 @@ final class MetadataViewModel {
         }
     }
 
+    private func applyImplicitAdditiveEdit(
+        previous: [String],
+        edited: [String],
+        field: MetadataFieldID,
+        to target: inout [String]
+    ) {
+        let normalizedPrevious = Set(Self.normalizedRepeatableValues(previous, field: field))
+        let normalizedEdited = Self.normalizedRepeatableValues(edited, field: field)
+        let normalizedEditedSet = Set(normalizedEdited)
+        let added = normalizedEdited.filter { !normalizedPrevious.contains($0) }
+        let removed = normalizedPrevious.subtracting(normalizedEditedSet)
+        target.removeAll { removed.contains($0) }
+        target = Self.normalizedRepeatableValues(target + added, field: field)
+    }
+
     func writeMetadataAndClearSidecar() {
         guard selectedCount == 1,
               let imageURL = selectedURLs.first,
@@ -2516,7 +3095,17 @@ final class MetadataViewModel {
                         replaceCameraRawBlock: true
                     )
                     : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited))
-                try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
+                let wroteToRawSidecar = SupportedImageFormats.isRaw(url: imageURL)
+                if wroteToRawSidecar {
+                    _ = try await descriptiveWriteBoundary.write(
+                        metadata: edited,
+                        for: imageURL,
+                        requestedMode: .writeToFile,
+                        semantics: .replace
+                    )
+                } else {
+                    try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
+                }
 
                 do {
                     try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
@@ -2525,7 +3114,11 @@ final class MetadataViewModel {
                 }
                 self.metadata = edited
                 self.originalImageMetadata = edited
-                self.embeddedMetadata = edited
+                if wroteToRawSidecar {
+                    self.xmpMetadata = edited
+                } else {
+                    self.embeddedMetadata = edited
+                }
                 self.sidecarHistory = []
                 self.hasChanges = false
                 self.previousEditingMetadata = edited
@@ -2654,6 +3247,21 @@ final class MetadataViewModel {
         return editingMetadata.sceneCodes != original.sceneCodes
     }
 
+    func subjectCodesDiffer() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.subjectCodes != original.subjectCodes
+    }
+
+    func mediaTopicsDiffer() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.mediaTopics != original.mediaTopics
+    }
+
+    func genresDiffer() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.genres != original.genres
+    }
+
     func digitalSourceTypeDiffers() -> Bool {
         guard let original = originalImageMetadata else { return false }
         return editingMetadata.digitalSourceType != original.digitalSourceType
@@ -2680,13 +3288,16 @@ final class MetadataViewModel {
         if editingMetadata.organisationsShownNames != original.organisationsShownNames { names.append("Organisation Shown Name") }
         if editingMetadata.organisationsShownCodes != original.organisationsShownCodes { names.append("Organisation Shown Code") }
         if editingMetadata.sceneCodes != original.sceneCodes { names.append("Scene Code") }
+        if editingMetadata.subjectCodes != original.subjectCodes { names.append("Subject Code") }
+        if editingMetadata.mediaTopics != original.mediaTopics { names.append("Media Topic") }
+        if editingMetadata.genres != original.genres { names.append("Genre") }
         if editingMetadata.copyright != original.copyright { names.append("Copyright") }
         if editingMetadata.rightsUsageTerms != original.rightsUsageTerms { names.append("Rights Usage Terms") }
         if editingMetadata.webStatementOfRights != original.webStatementOfRights { names.append("Web Statement of Rights") }
         if editingMetadata.digitalImageGUID != original.digitalImageGUID { names.append("Digital Image GUID") }
         if editingMetadata.imageSupplierImageID != original.imageSupplierImageID { names.append("Image Supplier Image ID") }
         if editingMetadata.jobId != original.jobId { names.append("Job ID") }
-        if editingMetadata.creator != original.creator { names.append("Creator") }
+        if editingMetadata.creators != original.creators { names.append("Creator") }
         if editingMetadata.creatorJobTitle != original.creatorJobTitle { names.append("Creator Job Title") }
         if editingMetadata.descriptionWriter != original.descriptionWriter { names.append("Description Writer") }
         if editingMetadata.credit != original.credit { names.append("Credit") }
@@ -2814,8 +3425,16 @@ final class MetadataViewModel {
         var restored = original
         let historyToApply = Array(sidecarHistory.prefix(index + 1))
 
+        guard historyToApply.allSatisfy(\.isRestorable) else {
+            saveError = "This history point includes summarized or hidden metadata and cannot be restored safely."
+            return
+        }
+
         for entry in historyToApply {
-            applyHistoryEntry(entry, to: &restored)
+            guard entry.apply(to: &restored) else {
+                saveError = "This history point contains metadata that cannot be restored safely."
+                return
+            }
         }
 
         editingMetadata = restored
@@ -2839,71 +3458,6 @@ final class MetadataViewModel {
             } catch {
                 saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
             }
-        }
-    }
-
-    private func applyHistoryEntry(_ entry: MetadataHistoryEntry, to metadata: inout IPTCMetadata) {
-        switch entry.fieldName {
-        case "Headline", "Title":
-            metadata.title = entry.newValue
-        case "Description":
-            metadata.description = entry.newValue
-        case "Extended Description":
-            metadata.extendedDescription = entry.newValue
-        case "Keywords":
-            metadata.keywords = entry.newValue?.components(separatedBy: ", ") ?? []
-        case "Person Shown":
-            metadata.personShown = entry.newValue?.components(separatedBy: ", ") ?? []
-        case "Organisation Shown Name":
-            metadata.organisationsShownNames = entry.newValue?.components(separatedBy: ", ") ?? []
-        case "Organisation Shown Code":
-            metadata.organisationsShownCodes = entry.newValue?.components(separatedBy: ", ") ?? []
-        case "Scene Code":
-            metadata.sceneCodes = IPTCSceneCode.normalizedValues(
-                entry.newValue?.components(separatedBy: ", ") ?? []
-            )
-        case "Copyright":
-            metadata.copyright = entry.newValue
-        case "Rights Usage Terms":
-            metadata.rightsUsageTerms = entry.newValue
-        case "Web Statement of Rights":
-            metadata.webStatementOfRights = entry.newValue
-        case "Digital Image GUID":
-            metadata.digitalImageGUID = entry.newValue
-        case "Image Supplier Image ID":
-            metadata.imageSupplierImageID = entry.newValue
-        case "Job ID", "Job-ID":
-            metadata.jobId = entry.newValue
-        case "Creator":
-            metadata.creator = entry.newValue
-        case "Creator Job Title":
-            metadata.creatorJobTitle = entry.newValue
-        case "Description Writer":
-            metadata.descriptionWriter = entry.newValue
-        case "Credit":
-            metadata.credit = entry.newValue
-        case "City":
-            metadata.city = entry.newValue
-        case "Sublocation":
-            metadata.sublocation = entry.newValue
-        case "State / Province":
-            metadata.provinceState = entry.newValue
-        case "Country":
-            metadata.country = entry.newValue
-        case "Country Code":
-            metadata.countryCode = ISO3166Country.normalizedAlpha3(entry.newValue)
-        case "Event":
-            metadata.event = entry.newValue
-        case "Instructions":
-            metadata.instructions = entry.newValue
-        case "Source":
-            metadata.source = entry.newValue
-        case "Digital Source Type":
-            metadata.digitalSourceType = entry.newValue.flatMap { DigitalSourceType(metadataValue: $0) }
-        case "Urgency":
-            metadata.urgency = entry.newValue.flatMap(Int.init)
-        default:
-            break
         }
     }
 

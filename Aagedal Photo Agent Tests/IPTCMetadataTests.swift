@@ -8,6 +8,108 @@ import UniformTypeIdentifiers
 import SwiftExif
 @testable import Aagedal_Photo_Agent
 
+@Suite("Ordered creators and typed Date Created")
+struct OrderedCreatorDateIntegrationTests {
+    @Test("legacy scalar creator migrates and the writable alias remains compatible")
+    func creatorCodableMigration() throws {
+        let legacy = Data(#"{"creator":"Legacy Reporter","dateCreated":"2026-08-21T10:15:30-00:00"}"#.utf8)
+        var decoded = try JSONDecoder().decode(IPTCMetadata.self, from: legacy)
+        #expect(decoded.creators == ["Legacy Reporter"])
+        #expect(decoded.creator == "Legacy Reporter")
+        #expect(decoded.editorialDateCreated?.timeZone == .unknown)
+
+        decoded.creators = ["First Reporter", "Second Reporter"]
+        let data = try JSONEncoder().encode(decoded)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["creator"] as? String == "First Reporter")
+        #expect(object["creators"] as? [String] == ["First Reporter", "Second Reporter"])
+
+        decoded.creator = "Compatibility Writer"
+        #expect(decoded.creators == ["Compatibility Writer"])
+    }
+
+    @Test("XMP creator sequence and exact Date Created lexical value round trip")
+    func xmpSequenceAndDate() {
+        let expectedDate = "2026-08-21T10:15:30.120+02:30"
+        var xmp = XMPData()
+        XMPDataBuilder.applyDescriptive(
+            IPTCMetadata(
+                creator: nil,
+                creators: ["First Reporter", "Second Reporter"],
+                dateCreated: expectedDate
+            ),
+            into: &xmp
+        )
+        #expect(xmp.creator == ["First Reporter", "Second Reporter"])
+        #expect(xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "DateCreated") == expectedDate)
+
+        var image = ImageMetadata()
+        image.xmp = xmp
+        let parsed = iptcMetadataFromDict(image.asMetadataDict())
+        #expect(parsed.creators == ["First Reporter", "Second Reporter"])
+        #expect(parsed.dateCreated == expectedDate)
+        #expect(parsed.editorialDateCreated?.precision == .fractionalSecond)
+        #expect(parsed.editorialDateCreated?.timeZoneOffsetMinutes == 150)
+    }
+
+    @Test("repeatable IIM By-line order and representable Date/Time reconstruct")
+    func iimProjection() {
+        var image = ImageMetadata()
+        image.iptc.bylines = ["First Reporter", "Second Reporter"]
+        image.iptc.dateCreated = "20260821"
+        image.iptc.timeCreated = "101530+0230"
+
+        let parsed = iptcMetadataFromDict(image.asMetadataDict())
+        #expect(parsed.creators == ["First Reporter", "Second Reporter"])
+        #expect(parsed.dateCreated == "2026-08-21T10:15:30+02:30")
+
+        let minute = try? EditorialDateCreated(parsing: "2026-08-21T10:15+02:30")
+        let second = try? EditorialDateCreated(parsing: "2026-08-21T10:15:30+02:30")
+        let fractional = try? EditorialDateCreated(parsing: "2026-08-21T10:15:30.5+02:30")
+        #expect(minute?.iimDateValue == "20260821")
+        #expect(minute?.iimTimeValue == nil)
+        #expect(second?.iimTimeValue == "101530+0230")
+        #expect(fractional?.iimTimeValue == nil)
+    }
+
+    @Test("history and explicit mutations preserve creator order and validate Date Created")
+    func historyAndMutations() throws {
+        var metadata = IPTCMetadata(creators: ["First", "Second"])
+        let history = MetadataFieldID.creator.historyValue(in: metadata)
+        MetadataFieldID.creator.setHistoryValue(history, in: &metadata)
+        #expect(metadata.creators == ["First", "Second"])
+
+        try metadata.apply(.append(["Third", "First"]), to: .creator)
+        #expect(metadata.creators == ["First", "Second", "Third"])
+        try metadata.apply(.overwrite(.repeatable(["Third", "First"])), to: .creator)
+        #expect(metadata.creators == ["Third", "First"])
+        try metadata.apply(.clear, to: .creator)
+        #expect(metadata.creators.isEmpty)
+
+        #expect(throws: MetadataFieldMutationError.invalidCanonicalValue(
+            .dateCreated,
+            "2026-02-30"
+        )) {
+            try metadata.apply(.overwrite(.scalar("2026-02-30")), to: .dateCreated)
+        }
+        try metadata.apply(.overwrite(.scalar("2026-08-21T10:15:30-00:00")), to: .dateCreated)
+        #expect(metadata.editorialDateCreated?.timeZone == .unknown)
+        let dateHistory = MetadataFieldID.dateCreated.historyValue(in: metadata)
+        var replayed = IPTCMetadata()
+        MetadataFieldID.dateCreated.setHistoryValue(dateHistory, in: &replayed)
+        #expect(replayed.dateCreated == "2026-08-21T10:15:30-00:00")
+    }
+
+    @Test("verification treats creator order as significant")
+    func orderedVerification() {
+        let expected = IPTCMetadata(creators: ["First", "Second"])
+        let reversed = IPTCMetadata(creators: ["Second", "First"])
+        let report = IPTCMetadataVerifier.compare(expected: expected, actual: reversed, fields: [.creator])
+        #expect(!report.isMatch)
+        #expect(report.differences.first?.rule == .orderedUniqueText)
+    }
+}
+
 private func grayscalePNG(_ bytes: [UInt8], width: Int, height: Int) -> Data? {
     guard bytes.count == width * height,
           let provider = CGDataProvider(data: Data(bytes) as CFData),
@@ -26,6 +128,164 @@ private func grayscalePNG(_ bytes: [UInt8], width: Int, height: Int) -> Data? {
     CGImageDestinationAddImage(destination, image, nil)
     guard CGImageDestinationFinalize(destination) else { return nil }
     return output as Data
+}
+
+@Suite("App 2.x persistence migration fixtures")
+struct App2PersistenceMigrationFixtureTests {
+    private func fixtureData(_ name: String) throws -> Data {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/PersistenceMigration", isDirectory: true)
+            .appendingPathComponent(name)
+        return try Data(contentsOf: url)
+    }
+
+    private func iso8601Decoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    @Test(
+        "2.0, 2.1, and 2.2 metadata sidecars decode through the version-key migration",
+        arguments: ["2.0", "2.1", "2.2"]
+    )
+    func metadataSidecarFixtures(release: String) throws {
+        let sidecar = try iso8601Decoder().decode(
+            MetadataSidecar.self,
+            from: fixtureData("v\(release)-metadata-sidecar.json")
+        )
+
+        #expect(sidecar.schemaVersion == MetadataSidecar.currentSchemaVersion)
+        #expect(sidecar.sourceFile.isEmpty == false)
+        #expect(sidecar.metadata.title?.isEmpty == false)
+        if release == "2.0" {
+            #expect(sidecar.metadata.keywords == ["wire", "oslo"])
+            #expect(sidecar.history.first?.fieldID == .headline)
+            #expect(sidecar.history.first?.valueStorage == .exact)
+        }
+    }
+
+    @Test(
+        "2.0, 2.1, and 2.2 unversioned templates and version-key bundles migrate",
+        arguments: ["2.0", "2.1", "2.2"]
+    )
+    func metadataTemplateFixtures(release: String) throws {
+        let template = try JSONDecoder().decode(
+            MetadataTemplate.self,
+            from: fixtureData("v\(release)-metadata-template.json")
+        )
+        let bundle = try iso8601Decoder().decode(
+            TemplateBundle.self,
+            from: fixtureData("v\(release)-template-bundle.json")
+        )
+
+        #expect(template.schemaVersion == MetadataTemplate.currentSchemaVersion)
+        #expect(template.name.isEmpty == false)
+        #expect(bundle.schemaVersion == TemplateBundle.currentSchemaVersion)
+        #expect(bundle.templates.map(\.id) == [template.id])
+    }
+
+    @Test(
+        "2.0, 2.1, and 2.2 requirement maps remain readable",
+        arguments: ["2.0", "2.1", "2.2"]
+    )
+    func metadataRequirementFixtures(release: String) throws {
+        let suiteName = "MetadataRequirementFixtures.\(release).\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(
+            try fixtureData("v\(release)-requirement-levels.json"),
+            forKey: UserDefaultsKeys.metadataRequirementLevels
+        )
+        let expected: MetadataRequirements.Levels = switch release {
+        case "2.0": [.headline: .require, .description: .warnOnEmpty]
+        case "2.1": [.headline: .warnOnEmpty, .copyright: .require]
+        default: [.headline: .require, .countryCode: .warnOnEmpty]
+        }
+        #expect(MetadataRequirements.load(from: defaults) == expected)
+    }
+
+    @Test("2.0 legacy required-field array remains readable")
+    func legacyRequiredFieldsV20Fixture() throws {
+        let suiteName = "MetadataRequiredFieldsV20Fixture.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            try fixtureData("v2.0-required-fields.json"),
+            forKey: UserDefaultsKeys.requiredMetadataFields
+        )
+        #expect(MetadataRequirements.load(from: defaults) == [
+            .headline: .require,
+            .copyright: .require,
+        ])
+    }
+
+    @Test("2.2 minimum-length preference map remains readable")
+    func minimumLengthsV22Fixture() throws {
+        let suiteName = "MetadataMinimumLengthsV22Fixtures.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            try fixtureData("v2.2-minimum-lengths.json"),
+            forKey: UserDefaultsKeys.metadataMinimumLengths
+        )
+
+        #expect(MetadataRequirements.loadMinimumLengths(from: defaults) == [
+            .headline: 12,
+            .description: 40,
+        ])
+    }
+
+    @Test(
+        "2.0, 2.1, and 2.2 keyword archive manifests preserve their version and entries",
+        arguments: ["2.0", "2.1", "2.2"]
+    )
+    func keywordArchiveFixtures(release: String) throws {
+        let manifest = try iso8601Decoder().decode(
+            KeywordListsArchive.Manifest.self,
+            from: fixtureData("v\(release)-keyword-archive-manifest.json")
+        )
+
+        #expect(manifest.schemaVersion == KeywordListsArchive.currentSchemaVersion)
+        #expect(manifest.files.isEmpty == false)
+        #expect(manifest.files.allSatisfy { $0.path.hasPrefix("/") == false })
+        #expect(manifest.files.allSatisfy { $0.kind.isEmpty == false && $0.entryCount > 0 })
+    }
+
+    @Test("tag evidence records preferences as individual keys, not an aggregate document")
+    func preferenceReleaseMatrix() throws {
+        // Compared directly with UserDefaultsKeys.swift in tags 2.0.0, 2.1.0, and 2.2.0.
+        let baseMetadataAndListKeys: Set<String> = [
+            "requiredMetadataFields",
+            "metadataRequirementLevels",
+            "approvedList.keywords.enabled",
+            "approvedList.keywords.bookmark",
+            "approvedList.keywords.mode",
+            "approvedList.keywords.allowStructuredBypass",
+            "keywordLists.iCloudEnabled",
+            "keywordLists.migratedVersion",
+        ]
+        let releaseKeys: [String: Set<String>] = [
+            "2.0": baseMetadataAndListKeys,
+            "2.1": baseMetadataAndListKeys,
+            "2.2": baseMetadataAndListKeys.union([
+                "metadataMinimumLengths",
+                "hiddenIPTCMetadataFields",
+            ]),
+        ]
+
+        #expect(releaseKeys["2.0"] == releaseKeys["2.1"])
+        #expect(releaseKeys["2.2"]?.subtracting(baseMetadataAndListKeys) == [
+            UserDefaultsKeys.metadataMinimumLengths,
+            UserDefaultsKeys.hiddenIPTCMetadataFields,
+        ])
+        #expect(UserDefaultsKeys.requiredMetadataFields == "requiredMetadataFields")
+        #expect(UserDefaultsKeys.metadataRequirementLevels == "metadataRequirementLevels")
+        #expect(UserDefaultsKeys.approvedKeywordsEnabled == "approvedList.keywords.enabled")
+        #expect(UserDefaultsKeys.keywordListsICloudEnabled == "keywordLists.iCloudEnabled")
+    }
 }
 
 @Suite("Chromaticity scope")
@@ -414,11 +674,73 @@ struct EditorialMetadataInteroperabilityTests {
             .appendingPathComponent("Fixtures/EditorialMetadata/legacy-boundaries.json")
     }
 
+    private var controlledVocabularyFixtureURL: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/ControlledEditorial/controlled-vocabularies.json")
+    }
+
     private func loadLegacyBoundaryCorpus() throws -> LegacyBoundaryCorpus {
         try JSONDecoder().decode(
             LegacyBoundaryCorpus.self,
             from: Data(contentsOf: legacyBoundaryFixtureURL)
         )
+    }
+
+    @Test("controlled-vocabulary fixture migrates aliases and preserves unknown concepts")
+    func controlledVocabularyFixtureMigration() throws {
+        let metadata = try JSONDecoder().decode(
+            IPTCMetadata.self,
+            from: Data(contentsOf: controlledVocabularyFixtureURL)
+        )
+
+        #expect(metadata.subjectCodes == [
+            "01000000", "15000000", "newsroom:legacy-subject",
+        ])
+        #expect(metadata.mediaTopics.count == 2)
+        #expect(metadata.mediaTopics[0].mediaTopicCode == "20000587")
+        #expect(metadata.mediaTopics[0].name == "Photography")
+        #expect(metadata.mediaTopics[0].refinedAbout == "https://example.test/topics/editorial-photography")
+        #expect(metadata.mediaTopics[1].termIdentifier == "https://example.test/vocab/concept-42")
+        #expect(metadata.genres.first?.genreCode == "Feature")
+
+        let roundTripped = try JSONDecoder().decode(
+            IPTCMetadata.self,
+            from: JSONEncoder().encode(metadata)
+        )
+        #expect(roundTripped == metadata)
+    }
+
+    @Test("invalid CV-Term identifiers fail closed during decoding")
+    func invalidControlledVocabularyTermFailsClosed() {
+        let invalid = Data(#"{"termIdentifier":"not a URI"}"#.utf8)
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(IPTCControlledVocabularyTerm.self, from: invalid)
+        }
+    }
+
+    @Test("NewsCodes aliases normalize to canonical identifiers")
+    func controlledVocabularyAliasesNormalize() throws {
+        #expect(IPTCSubjectCode.normalizedValue("subj:01000000") == "01000000")
+        #expect(IPTCSubjectCode.normalizedValue(
+            "https://cv.iptc.org/newscodes/subjectcode/15000000"
+        ) == "15000000")
+        #expect(IPTCSubjectCode.iimValue("01000000") == "IPTC:01000000:::")
+
+        let mediaTopic = try #require(IPTCControlledVocabularyTerm.mediaTopic(
+            metadataValue: "medtop:20000587",
+            name: "Photography"
+        ))
+        #expect(mediaTopic.vocabularyIdentifier == IPTCControlledVocabularyTerm.mediaTopicSchemeURI)
+        #expect(mediaTopic.termIdentifier == "http://cv.iptc.org/newscodes/mediatopic/20000587")
+
+        let genre = try #require(IPTCControlledVocabularyTerm.genre(
+            metadataValue: "genre:Feature",
+            name: "Feature"
+        ))
+        #expect(genre.vocabularyIdentifier == IPTCControlledVocabularyTerm.genreSchemeURI)
+        #expect(genre.termIdentifier == "http://cv.iptc.org/newscodes/genre/Feature")
+        #expect(IPTCGenreCode.entry(for: genre.termIdentifier)?.name == "Feature")
     }
 
     private func iimTag(for field: MetadataFieldID) -> IPTCTag? {
@@ -440,9 +762,11 @@ struct EditorialMetadataInteroperabilityTests {
         case .urgency: .urgency
         case .instructions: .specialInstructions
         case .source: .source
+        case .subjectCode: .subjectReference
         case .extendedDescription, .personShown, .organisationShownName, .organisationShownCode, .sceneCode,
+             .mediaTopic, .genre,
              .digitalSourceType, .rightsUsageTerms, .webStatementOfRights, .digitalImageGUID,
-             .imageSupplierImageID,
+             .imageSupplierImageID, .imageSupplier,
              .dateCreated, .event: nil
         }
     }
@@ -684,6 +1008,97 @@ struct EditorialMetadataInteroperabilityTests {
         #expect(abs((loaded.locationsCreated[0].longitude ?? 0) - 10.7339) < 0.000_001)
         #expect(loaded.locationsCreated[0].altitudeMeters == 12.5)
         #expect(loaded.locationsShown == expected.locationsShown)
+    }
+
+    @Test("Subject Code, Media Topic, and Genre use their independent standards mappings")
+    func controlledEditorialXMPMappings() throws {
+        let mediaTopic = try #require(IPTCControlledVocabularyTerm.mediaTopic(
+            metadataValue: "20000587",
+            name: "Photography"
+        ))
+        let genre = try #require(IPTCControlledVocabularyTerm.genre(
+            metadataValue: "Feature",
+            name: "Feature"
+        ))
+        var xmp = XMPData()
+        xmp.setValue(
+            .simple("legacy-intellectual-genre"),
+            namespace: XMPNamespace.iptcCore,
+            property: "IntellectualGenre"
+        )
+        xmp.setValue(
+            .structuredArray([[
+                XMPNamespace.iptcExt + "CvTermId": .simple(mediaTopic.termIdentifier),
+                newsroomNamespace + "Confidence": .simple("confirmed"),
+            ]]),
+            namespace: XMPNamespace.iptcExt,
+            property: "AboutCvTerm"
+        )
+
+        XMPDataBuilder.applyDescriptive(
+            IPTCMetadata(
+                subjectCodes: ["subj:01000000"],
+                mediaTopics: [mediaTopic],
+                genres: [genre]
+            ),
+            into: &xmp
+        )
+
+        #expect(xmp.arrayValue(
+            namespace: XMPNamespace.iptcCore,
+            property: "SubjectCode"
+        ) == ["01000000"])
+        let writtenMediaTopic = try #require(xmp.structuredArrayValue(
+            namespace: XMPNamespace.iptcExt,
+            property: "AboutCvTerm"
+        )?.first)
+        #expect(writtenMediaTopic[XMPNamespace.iptcExt + "CvId"] == .simple(
+            IPTCControlledVocabularyTerm.mediaTopicSchemeURI
+        ))
+        #expect(writtenMediaTopic[XMPNamespace.iptcExt + "CvTermName"] == .langAlternative(
+            "Photography"
+        ))
+        #expect(writtenMediaTopic[newsroomNamespace + "Confidence"] == .simple("confirmed"))
+
+        let writtenGenre = try #require(xmp.structuredArrayValue(
+            namespace: XMPNamespace.iptcExt,
+            property: "Genre"
+        )?.first)
+        #expect(writtenGenre[XMPNamespace.iptcExt + "CvTermId"] == .simple(
+            "http://cv.iptc.org/newscodes/genre/Feature"
+        ))
+        #expect(xmp.simpleValue(
+            namespace: XMPNamespace.iptcCore,
+            property: "IntellectualGenre"
+        ) == "legacy-intellectual-genre")
+    }
+
+    @Test("structured CV-Term parser preserves labels, refinement, and unknown vocabularies")
+    func controlledVocabularyParser() {
+        let namespace = XMPNamespace.iptcExt
+        let values: [[String: Any]] = [
+            [
+                namespace + "CvId": IPTCControlledVocabularyTerm.mediaTopicSchemeURI,
+                namespace + "CvTermId": "http://cv.iptc.org/newscodes/mediatopic/20000587",
+                namespace + "CvTermName": "Photography",
+                namespace + "CvTermRefinedAbout": "https://example.test/topics/photojournalism",
+            ],
+            [
+                namespace + "CvId": "https://example.test/vocab/",
+                namespace + "CvTermId": "https://example.test/vocab/concept-42",
+                namespace + "CvTermName": "Newsroom concept",
+            ],
+            [
+                namespace + "CvTermId": "not a URI",
+            ],
+        ]
+
+        let parsed = parseControlledVocabularyTerms(values)
+        #expect(parsed.count == 2)
+        #expect(parsed[0].name == "Photography")
+        #expect(parsed[0].refinedAbout == "https://example.test/topics/photojournalism")
+        #expect(parsed[1].vocabularyIdentifier == "https://example.test/vocab/")
+        #expect(parsed[1].termIdentifier == "https://example.test/vocab/concept-42")
     }
 
     @Test("structured editorial rewrites preserve unknown member properties")
@@ -1039,9 +1454,12 @@ struct EditorialMetadataInteroperabilityTests {
             Data(contentsOf: sidecarService.sidecarURL(for: rawURL))
         )
         #expect(sidecarXMP.simpleValue(
-            namespace: XMPNamespace.iptcExt,
+            namespace: XMPNamespace.plus,
             property: "ImageSupplierImageID"
         ) == supplierID)
+        #expect(sidecarXMP.value(
+            forKey: XMPNamespace.iptcExt + "ImageSupplierImageID"
+        ) == nil)
         let sidecarMetadata = sidecarService.loadSidecar(for: rawURL)
         #expect(sidecarMetadata?.imageSupplierImageID == supplierID)
         #expect(sidecarMetadata?.digitalImageGUID == imageGUID)
@@ -1948,7 +2366,7 @@ struct FieldKeyTests {
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        let levels = #"{"title":"require","description":"warnOnEmpty","unknownFutureField":"require"}"#
+        let levels = #"{"title":"require","description":"warnOnEmpty","copyright":"futurePolicy","unknownFutureField":"require"}"#
         defaults.set(Data(levels.utf8), forKey: UserDefaultsKeys.metadataRequirementLevels)
 
         #expect(MetadataRequirements.load(from: defaults) == [
@@ -1959,7 +2377,33 @@ struct FieldKeyTests {
         MetadataRequirements.save([.headline: .require], to: defaults)
         let saved = try #require(defaults.data(forKey: UserDefaultsKeys.metadataRequirementLevels))
         let savedMap = try JSONDecoder().decode([String: String].self, from: saved)
-        #expect(savedMap == ["title": "require"])
+        #expect(savedMap == [
+            "title": "require",
+            "copyright": "futurePolicy",
+            "unknownFutureField": "require",
+        ])
+    }
+
+    @Test("saving minimum lengths preserves fields unknown to this build")
+    func futureMinimumLengthFieldsRemainUntouched() throws {
+        let suiteName = "MetadataMinimumLengthFutureTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            Data(#"{"description":20,"copyright":-1,"futureCaptionField":99}"#.utf8),
+            forKey: UserDefaultsKeys.metadataMinimumLengths
+        )
+
+        MetadataRequirements.saveMinimumLengths([.description: 30], to: defaults)
+
+        let saved = try #require(
+            defaults.data(forKey: UserDefaultsKeys.metadataMinimumLengths)
+        )
+        #expect(try JSONDecoder().decode([String: Int].self, from: saved) == [
+            "description": 30,
+            "copyright": -1,
+            "futureCaptionField": 99,
+        ])
     }
 
     @Test("legacy required-field arrays migrate without changing persisted values")
@@ -2020,7 +2464,7 @@ struct FieldKeyTests {
         #expect(mandatory.isDisjoint(with: optional))
         #expect(mandatory.union(optional) == Set(IPTCMetadata.FieldKey.editorFields))
         #expect(optional.isSuperset(of: [.sublocation, .provinceState, .instructions, .source]))
-        #expect(!IPTCMetadata.FieldKey.editorFields.contains(.dateCreated))
+        #expect(IPTCMetadata.FieldKey.editorFields.contains(.dateCreated))
     }
 
     @Test("hidden-field decoding accepts only optional editable fields")
@@ -2034,7 +2478,288 @@ struct FieldKeyTests {
             "unknownFutureField",
         ])
 
-        #expect(hidden == [.extendedDescription, .creator])
+        #expect(hidden == [.extendedDescription, .creator, .dateCreated])
+    }
+}
+
+@Suite("Explicit editorial field mutations")
+struct MetadataFieldMutationTests {
+    private func sampleValue(for field: MetadataFieldID) -> MetadataFieldMutationValue {
+        if field.isRepeatable {
+            let values: [String] = switch field {
+            case .sceneCode: ["scn:011200", "099999"]
+            case .keywords: ["wire", "café, presse"]
+            case .personShown: ["Kari Nordmann", "李雷"]
+            case .organisationShownName: ["Agence Ω", "Harbor Authority"]
+            case .organisationShownCode: ["ORG-Ω", "NO-HARBOR"]
+            case .subjectCode: ["01000000", "15000000"]
+            case .mediaTopic: ["20000587"]
+            case .genre: ["Feature"]
+            case .creator: ["First Reporter", "Second Reporter"]
+            default: []
+            }
+            return .repeatable(values)
+        }
+
+        let value: String = switch field {
+        case .digitalSourceType: DigitalSourceType.digitalCapture.newsCodeURI
+        case .urgency: "5"
+        case .countryCode: "nor"
+        case .dateCreated: "2026-08-21T10:15:30Z"
+        case .webStatementOfRights: "https://example.test/rights"
+        case .digitalImageGUID: "urn:uuid:01234567-89ab-cdef-0123-456789abcdef"
+        case .imageSupplier: "[{\"identifier\":\"agency-42\",\"name\":\"Agency 42\"}]"
+        default: "Editorial Ω \(field.rawValue)"
+        }
+        return .scalar(value)
+    }
+
+    @Test("Every stable field has one writer key and writable verification field")
+    func completeTypedSupportRegistry() {
+        let fields = MetadataFieldID.allCases
+        #expect(Set(fields.map(\.metadataWriteKey)).count == fields.count)
+        #expect(Set(fields.map(\.verificationField)).count == fields.count)
+        #expect(fields.allSatisfy {
+            IPTCMetadataVerificationField.writableFields.contains($0.verificationField)
+        })
+    }
+
+    @Test("Every selected field distinguishes overwrite, clear, and untouched")
+    func perFieldOverwriteClearUntouched() throws {
+        for field in MetadataFieldID.allCases {
+            let original = IPTCMetadata(title: "unrelated sentinel")
+            let overwritten = try MetadataFieldMutationSet([
+                field: .overwrite(sampleValue(for: field)),
+            ]).applying(to: original)
+
+            #expect(!field.isEmpty(in: overwritten), "overwrite failed for \(field)")
+            #expect(
+                overwritten.toWriteFields()[field.metadataWriteKey] != nil,
+                "writer mapping missing for \(field)"
+            )
+            #expect(
+                IPTCMetadataVerifier.canonicalValue(
+                    for: field.verificationField,
+                    in: overwritten
+                ) != .absent,
+                "verification mapping missing for \(field)"
+            )
+
+            let untouched = try MetadataFieldMutationSet([
+                field: .untouched,
+            ]).applying(to: overwritten)
+            #expect(untouched == overwritten, "untouched changed \(field)")
+
+            let cleared = try MetadataFieldMutationSet([
+                field: .clear,
+            ]).applying(to: overwritten)
+            #expect(field.isEmpty(in: cleared), "clear failed for \(field)")
+            #expect(
+                cleared.toOverwriteFields()[field.metadataWriteKey] == "",
+                "authoritative clear missing for \(field)"
+            )
+
+            if field != .headline {
+                #expect(cleared.title == "unrelated sentinel")
+            }
+        }
+    }
+
+    @Test("Every repeatable field appends Unicode values without duplicates")
+    func repeatableAppend() throws {
+        for field in MetadataFieldID.allCases where field.isRepeatable {
+            var metadata = IPTCMetadata()
+            let seed: String
+            let addition: String
+            let expected: [String]
+            switch field {
+            case .subjectCode:
+                seed = "01000000"
+                addition = "15000000"
+                expected = ["01000000", "15000000"]
+            case .mediaTopic:
+                seed = "20000587"
+                addition = "20000586"
+                expected = [
+                    IPTCControlledVocabularyTerm.mediaTopicSchemeURI + "20000587",
+                    IPTCControlledVocabularyTerm.mediaTopicSchemeURI + "20000586",
+                ]
+            case .genre:
+                seed = "Feature"
+                addition = "Analysis"
+                expected = [
+                    IPTCControlledVocabularyTerm.genreSchemeURI + "Feature",
+                    IPTCControlledVocabularyTerm.genreSchemeURI + "Analysis",
+                ]
+            default:
+                seed = "existing"
+                addition = "əlavə Ω"
+                expected = [seed, addition]
+            }
+            try metadata.apply(.overwrite(.repeatable([seed])), to: field)
+            try metadata.apply(.append([seed, "  \(addition)  "]), to: field)
+
+            let value = try #require(field.historyValue(in: metadata))
+            let decoded: [String]
+            if field == .mediaTopic || field == .genre {
+                decoded = try JSONDecoder().decode(
+                    [IPTCControlledVocabularyTerm].self,
+                    from: Data(value.utf8)
+                ).map(\.termIdentifier)
+            } else {
+                decoded = try JSONDecoder().decode([String].self, from: Data(value.utf8))
+            }
+            #expect(decoded == expected, "append failed for \(field)")
+        }
+    }
+
+    @Test("Empty and shape-mismatched operations fail without changing the record")
+    func ambiguousOperationsFailClosed() throws {
+        let original = IPTCMetadata(title: "Keep", keywords: ["existing"])
+        var metadata = original
+
+        #expect(throws: MetadataFieldMutationError.emptyOverwriteRequiresClear(.headline)) {
+            try metadata.apply(.overwrite(.scalar("  \n ")), to: .headline)
+        }
+        #expect(metadata == original)
+
+        #expect(throws: MetadataFieldMutationError.repeatableValueRequired(.keywords)) {
+            try metadata.apply(.overwrite(.scalar("one, two")), to: .keywords)
+        }
+        #expect(metadata == original)
+
+        #expect(throws: MetadataFieldMutationError.scalarValueRequired(.headline)) {
+            try metadata.apply(.overwrite(.repeatable(["value"])), to: .headline)
+        }
+        #expect(metadata == original)
+
+        #expect(throws: MetadataFieldMutationError.appendRequiresRepeatableField(.headline)) {
+            try metadata.apply(.append(["value"]), to: .headline)
+        }
+        #expect(metadata == original)
+
+        #expect(throws: MetadataFieldMutationError.emptyAppendRequiresUntouched(.keywords)) {
+            try metadata.apply(.append(["", " \n "]), to: .keywords)
+        }
+        #expect(metadata == original)
+    }
+
+    @Test("Controlled values store canonical identifiers rather than display labels")
+    func controlledValuesAreCanonical() throws {
+        var metadata = IPTCMetadata()
+        try metadata.apply(
+            .overwrite(.scalar(DigitalSourceType.humanEdits.newsCodeURI)),
+            to: .digitalSourceType
+        )
+        try metadata.apply(
+            .overwrite(.repeatable(["011200 — Aerial view", "scn:012400", "099999"])),
+            to: .sceneCode
+        )
+        try metadata.apply(.overwrite(.scalar("nor")), to: .countryCode)
+
+        #expect(metadata.digitalSourceType == .humanEdits)
+        #expect(MetadataFieldID.digitalSourceType.textValue(in: metadata) == DigitalSourceType.humanEdits.newsCodeURI)
+        #expect(MetadataFieldID.digitalSourceType.textValue(in: metadata) != DigitalSourceType.humanEdits.displayName)
+        #expect(metadata.sceneCodes == ["011200", "012400", "099999"])
+        #expect(metadata.countryCode == "NOR")
+
+        let beforeInvalid = metadata
+        #expect(throws: MetadataFieldMutationError.invalidCanonicalValue(
+            .digitalSourceType,
+            "Not a controlled vocabulary value"
+        )) {
+            try metadata.apply(
+                .overwrite(.scalar("Not a controlled vocabulary value")),
+                to: .digitalSourceType
+            )
+        }
+        #expect(metadata == beforeInvalid)
+    }
+
+    @Test("History replay canonicalizes Scene aliases and remains lossless for comma-bearing values")
+    func historyReplayCanonicalizesControlledValues() throws {
+        var metadata = IPTCMetadata()
+        let sceneHistory = try #require(String(
+            data: JSONEncoder().encode(["scn:011200", "011200 — Aerial view", "099999"]),
+            encoding: .utf8
+        ))
+        MetadataFieldID.sceneCode.setHistoryValue(sceneHistory, in: &metadata)
+        #expect(metadata.sceneCodes == ["011200", "099999"])
+
+        let keywordHistory = try #require(String(
+            data: JSONEncoder().encode(["café, presse", "東京", "café, presse"]),
+            encoding: .utf8
+        ))
+        MetadataFieldID.keywords.setHistoryValue(keywordHistory, in: &metadata)
+        #expect(metadata.keywords == ["café, presse", "東京"])
+
+        let typedTerms = [
+            IPTCControlledVocabularyTerm(
+                vocabularyIdentifier: IPTCControlledVocabularyTerm.mediaTopicSchemeURI,
+                termIdentifier: IPTCControlledVocabularyTerm.mediaTopicSchemeURI + "20000587",
+                name: "Photography",
+                refinedAbout: "https://example.test/topics/photojournalism"
+            ),
+            IPTCControlledVocabularyTerm(
+                vocabularyIdentifier: "https://example.test/vocab/",
+                termIdentifier: "https://example.test/vocab/concept-42",
+                name: "Newsroom concept"
+            ),
+        ]
+        metadata.mediaTopics = typedTerms
+        let typedHistory = try #require(MetadataFieldID.mediaTopic.historyValue(in: metadata))
+        metadata.mediaTopics = []
+        MetadataFieldID.mediaTopic.setHistoryValue(typedHistory, in: &metadata)
+        #expect(metadata.mediaTopics == typedTerms)
+    }
+
+    @Test("Controlled repeatable mutation rejects partial invalid input transactionally")
+    func controlledRepeatableMutationFailsClosed() throws {
+        var metadata = IPTCMetadata(
+            subjectCodes: ["legacy-newsroom-subject"],
+            mediaTopics: [IPTCControlledVocabularyTerm(
+                vocabularyIdentifier: "https://example.test/vocab/",
+                termIdentifier: "https://example.test/vocab/concept-42",
+                name: "Newsroom concept"
+            )]
+        )
+        let original = metadata
+
+        #expect(throws: MetadataFieldMutationError.invalidCanonicalValue(
+            .mediaTopic,
+            "not a URI"
+        )) {
+            try metadata.apply(
+                .overwrite(.repeatable(["20000587", "not a URI"])),
+                to: .mediaTopic
+            )
+        }
+        #expect(metadata == original)
+
+        try metadata.apply(.append(["20000587"]), to: .mediaTopic)
+        #expect(metadata.mediaTopics.first == original.mediaTopics.first)
+        #expect(metadata.mediaTopics.last?.mediaTopicCode == "20000587")
+    }
+
+    @Test("Mutation transport types are Sendable and can prepare off-main")
+    func sendableDetachedPreparation() async throws {
+        func requireSendable<T: Sendable>(_: T.Type) {}
+        requireSendable(MetadataFieldMutationValue.self)
+        requireSendable(MetadataFieldMutation.self)
+        requireSendable(MetadataFieldMutationSet.self)
+        requireSendable(MetadataFieldMutationError.self)
+
+        let mutations = MetadataFieldMutationSet([
+            .headline: .overwrite(.scalar("Detached headline")),
+            .keywords: .append(["wire", "Unicode Ω"]),
+        ])
+        let result = try await Task.detached {
+            try Task.checkCancellation()
+            return try mutations.applying(to: IPTCMetadata(keywords: ["existing"]))
+        }.value
+
+        #expect(result.title == "Detached headline")
+        #expect(result.keywords == ["existing", "wire", "Unicode Ω"])
     }
 }
 
@@ -2362,7 +3087,7 @@ struct MetadataWriteModePresetTests {
         }
     }
 
-    @Test("Custom RAW picker drives RAW resolution")
+    @Test("Custom RAW resolution coerces an unsafe embedded preference to XMP")
     func customRaw() {
         withPreset(.custom) {
             let key = UserDefaultsKeys.metadataWriteModeRaw
@@ -2372,7 +3097,8 @@ struct MetadataWriteModePresetTests {
                 if let saved { AppDefaults.store.set(saved, forKey: key) }
                 else { AppDefaults.store.removeObject(forKey: key) }
             }
-            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: true) == .writeToFile)
+            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: true) == .writeToXMPSidecar)
+            #expect(MetadataWriteMode.rawOptions == [.historyOnly, .writeToXMPSidecar])
         }
     }
 

@@ -2,6 +2,11 @@ import AppKit
 import CoreGraphics
 import SwiftUI
 
+private struct ComparisonWorkspaceSourceInput: Equatable {
+    let availableURLs: [URL]
+    let renameEvent: ComparisonRenameEvent?
+}
+
 struct ComparisonWorkspaceView: View {
     let images: [ImageFile]
     let navigationImages: [ImageFile]
@@ -13,6 +18,7 @@ struct ComparisonWorkspaceView: View {
     let initialRightSource: ComparisonRenderedSource?
     let allowsSourceReplacement: Bool
     let allowsDeletion: Bool
+    var renameEvent: ComparisonRenameEvent?
     let onFocusedImageChange: (ImageFile) -> Void
     let onRequestDelete: (ImageFile) -> Void
     let onClose: (Set<URL>, URL?) -> Void
@@ -55,8 +61,11 @@ struct ComparisonWorkspaceView: View {
                 )
             }
         }
-        .onChange(of: availableImages.map(\.url)) { _, _ in
-            reconcileAvailableSources()
+        .onChange(of: sourceInput) { oldInput, newInput in
+            let mappings = oldInput.renameEvent?.id == newInput.renameEvent?.id
+                ? []
+                : newInput.renameEvent?.mappings ?? []
+            reconcileAvailableSources(renameMappings: mappings)
         }
         .onChange(of: liveSource?.source.representation.renderToken) { _, _ in
             reconcileLiveSource()
@@ -86,9 +95,17 @@ struct ComparisonWorkspaceView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Image comparison workspace")
+        .accessibilityIdentifier("comparison.workspace")
     }
 
     private var session: ComparisonSession? { coordinator?.session }
+
+    private var sourceInput: ComparisonWorkspaceSourceInput {
+        ComparisonWorkspaceSourceInput(
+            availableURLs: availableImages.map(\.url),
+            renameEvent: renameEvent
+        )
+    }
 
     @ViewBuilder
     private var controls: some View {
@@ -105,18 +122,21 @@ struct ComparisonWorkspaceView: View {
                     Image(systemName: "chevron.left")
                 }
                 .help("Previous image in focused pane (Left Arrow)")
+                .accessibilityLabel("Previous image in focused comparison pane")
                 .disabled(replacementTarget(.previous) == nil || replacingPane != nil)
 
                 Button { replaceFocusedSource(.next) } label: {
                     Image(systemName: "chevron.right")
                 }
                 .help("Next image in focused pane (Right Arrow)")
+                .accessibilityLabel("Next image in focused comparison pane")
                 .disabled(replacementTarget(.next) == nil || replacingPane != nil)
 
                 Button(role: .destructive) { requestDeleteFocusedSource() } label: {
                     Image(systemName: "trash")
                 }
                 .help("Move the focused image to the Trash")
+                .accessibilityLabel("Move focused comparison image to Trash")
                 .disabled(!allowsDeletion || focusedImageFile == nil || replacingPane != nil)
 
                 Divider().frame(height: 20)
@@ -169,6 +189,7 @@ struct ComparisonWorkspaceView: View {
                 Image(systemName: "minus.magnifyingglass")
             }
             .help("Zoom out")
+            .accessibilityLabel("Zoom out")
             .disabled(!isZoomReady)
 
             Menu {
@@ -186,6 +207,7 @@ struct ComparisonWorkspaceView: View {
                 Image(systemName: "plus.magnifyingglass")
             }
             .help("Zoom in")
+            .accessibilityLabel("Zoom in")
             .disabled(!isZoomReady)
         }
     }
@@ -205,6 +227,8 @@ struct ComparisonWorkspaceView: View {
                 )
                 .frame(width: 90)
                 .help("Wipe position")
+                .accessibilityLabel("Wipe position")
+                .accessibilityValue("\(Int(session.wipePosition * 100)) percent")
 
                 Image(systemName: "angle")
                     .foregroundStyle(.secondary)
@@ -218,6 +242,8 @@ struct ComparisonWorkspaceView: View {
                 )
                 .frame(width: 90)
                 .help("Wipe angle")
+                .accessibilityLabel("Wipe angle")
+                .accessibilityValue("\(Int(session.wipeAngleDegrees.rounded())) degrees")
                 Text("\(Int(session.wipeAngleDegrees.rounded()))°")
                     .font(.caption.monospacedDigit())
                     .frame(width: 32, alignment: .trailing)
@@ -263,6 +289,7 @@ struct ComparisonWorkspaceView: View {
                 Image(systemName: "scope")
             }
             .help("Set or reset a persistent comparison offset")
+            .accessibilityLabel("Comparison alignment options")
             .disabled(session?.hasBothSources != true)
         }
     }
@@ -590,31 +617,37 @@ struct ComparisonWorkspaceView: View {
         publishComparisonToCleanFeed()
     }
 
-    private func reconcileAvailableSources() {
+    private func reconcileAvailableSources(
+        renameMappings: [BatchRenameExecutionPresentation.Mapping] = []
+    ) {
         guard coordinator != nil else {
             previousAvailableOrder = availableImages.map(\.url)
             return
         }
-        let availableURLs = Set(availableImages.map(\.url))
-
+        guard let coordinator else { return }
+        let result = ComparisonWorkspaceSourceReconciler.reconcile(
+            coordinator: coordinator,
+            previousAvailableOrder: previousAvailableOrder,
+            availableImages: availableImages,
+            renameMappings: renameMappings
+        )
+        self.coordinator = result.coordinator
         for pane in ComparisonPane.allCases {
-            guard let source = session?[pane].source,
-                  !availableURLs.contains(source.revision.canonicalURL) else { continue }
-            let otherURL = session?[pane.other].source?.revision.canonicalURL
-            missingReplacement[pane] = ComparisonNavigationResolver.closestReplacement(
-                in: availableImages,
-                previousOrder: previousAvailableOrder,
-                missingURL: source.revision.canonicalURL,
-                excluding: otherURL
-            )
-            mutateCoordinator { $0.markSourceMissing(in: pane) }
-            renderedImages[pane] = nil
-            geometries[pane] = nil
+            missingReplacement[pane] = result.replacementURLs[pane].flatMap { replacementURL in
+                availableImages.first {
+                    renameReassociationLookupURL($0.url)
+                        == renameReassociationLookupURL(replacementURL)
+                }
+            }
+            if result.missingPanes.contains(pane) {
+                renderedImages[pane] = nil
+                geometries[pane] = nil
+            }
         }
 
         publishComparisonToCleanFeed()
 
-        previousAvailableOrder = availableImages.map(\.url)
+        previousAvailableOrder = result.previousAvailableOrder
         if let focusedImageFile {
             onFocusedImageChange(focusedImageFile)
         }
@@ -724,28 +757,25 @@ struct ComparisonWorkspaceView: View {
     }
 
     private func handleCullingShortcut(_ press: KeyPress) -> KeyPress.Result {
-        guard press.modifiers.isEmpty else { return .ignored }
-        let characters = press.characters.lowercased()
-        if let digit = characters.first?.wholeNumberValue {
-            if (0...5).contains(digit), let rating = StarRating(rawValue: digit) {
-                NotificationCenter.default.post(name: .setRating, object: rating)
-                return .handled
-            }
-            if (6...9).contains(digit),
-               let label = ColorLabel.fromShortcutIndex(digit - 5) {
-                NotificationCenter.default.post(name: .setLabel, object: label)
-                return .handled
-            }
+        guard let action = KeyboardShortcutRouter.resolve(
+            KeyboardShortcutRouteInput(
+                key: press.characters,
+                modifiers: KeyboardShortcutModifiers(press.modifiers),
+                textEditorOwnsInput: false,
+                imeHasMarkedText: false,
+                isRepeat: false
+            ),
+            profile: KeyboardShortcutProfileRegistry.shared.selectedProfile
+        ) else { return .ignored }
+        switch action {
+        case let .rating(value):
+            guard let rating = StarRating(rawValue: value) else { return .ignored }
+            NotificationCenter.default.post(name: .setRating, object: rating)
+        case let .colorLabel(index):
+            guard let label = ColorLabel.fromShortcutIndex(index) else { return .ignored }
+            NotificationCenter.default.post(name: .setLabel, object: label)
         }
-        if characters == "x" {
-            NotificationCenter.default.post(name: .setLabel, object: ColorLabel.trash)
-            return .handled
-        }
-        if characters == "s" {
-            NotificationCenter.default.post(name: .setLabel, object: ColorLabel.red)
-            return .handled
-        }
-        return .ignored
+        return .handled
     }
 }
 

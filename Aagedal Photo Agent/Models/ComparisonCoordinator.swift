@@ -224,6 +224,12 @@ nonisolated struct ComparisonCoordinator: Sendable {
         session.replaceSource(source, in: pane)
     }
 
+    mutating func reassociateSources(
+        using mappings: [BatchRenameExecutionPresentation.Mapping]
+    ) {
+        session.reassociateSources(using: mappings)
+    }
+
     mutating func markSourceMissing(in pane: ComparisonPane) {
         session.markSourceMissing(in: pane)
     }
@@ -315,5 +321,123 @@ nonisolated struct ComparisonCoordinator: Sendable {
 
     private static func sameCenter(_ lhs: CGPoint, _ rhs: CGPoint) -> Bool {
         abs(lhs.x - rhs.x) <= 0.000_000_1 && abs(lhs.y - rhs.y) <= 0.000_000_1
+    }
+}
+
+/// A rename is an event rather than durable view state. Its identity ensures that repeating the
+/// same source/destination names in a later operation is still observed exactly once.
+nonisolated struct ComparisonRenameEvent: Equatable, Sendable {
+    let id: UUID
+    let mappings: [BatchRenameExecutionPresentation.Mapping]
+
+    init(
+        id: UUID = UUID(),
+        mappings: [BatchRenameExecutionPresentation.Mapping]
+    ) {
+        self.id = id
+        self.mappings = mappings
+    }
+}
+
+nonisolated struct ComparisonWorkspaceSourceReconciliationResult: Sendable {
+    let coordinator: ComparisonCoordinator
+    let previousAvailableOrder: [URL]
+    let missingPanes: Set<ComparisonPane>
+    let replacementURLs: [ComparisonPane: URL]
+}
+
+/// Applies a rename event before checking availability, in one value-state transaction. Newly
+/// mapped destinations are provisionally available for this pass so an observation delivered
+/// before Browser publishes its replacement `ImageFile` values cannot erase a comparison pane.
+nonisolated enum ComparisonWorkspaceSourceReconciler {
+    static func reconcile(
+        coordinator: ComparisonCoordinator,
+        previousAvailableOrder: [URL],
+        availableImages: [ImageFile],
+        renameMappings: [BatchRenameExecutionPresentation.Mapping]
+    ) -> ComparisonWorkspaceSourceReconciliationResult {
+        var updated = coordinator
+        updated.reassociateSources(using: renameMappings)
+
+        let destinations = Dictionary(uniqueKeysWithValues: renameMappings.map {
+            (renameReassociationLookupURL($0.sourceURL), $0.destinationURL.standardizedFileURL)
+        })
+        let mappedPreviousOrder = previousAvailableOrder.map { oldURL in
+            destinations[renameReassociationLookupURL(oldURL)] ?? oldURL
+        }
+        let availableKeys = Set(availableImages.map { renameReassociationLookupURL($0.url) })
+            .union(renameMappings.map { renameReassociationLookupURL($0.destinationURL) })
+
+        var missingPanes = Set<ComparisonPane>()
+        var replacementURLs: [ComparisonPane: URL] = [:]
+        for pane in ComparisonPane.allCases {
+            guard let source = updated.session[pane].source,
+                  !availableKeys.contains(
+                    renameReassociationLookupURL(source.revision.canonicalURL)
+                  ) else { continue }
+            let otherURL = updated.session[pane.other].source?.revision.canonicalURL
+            if let replacement = closestReplacement(
+                in: availableImages,
+                previousOrder: mappedPreviousOrder,
+                missingURL: source.revision.canonicalURL,
+                excluding: otherURL
+            ) {
+                replacementURLs[pane] = replacement.url
+            }
+            missingPanes.insert(pane)
+            updated.markSourceMissing(in: pane)
+        }
+
+        return ComparisonWorkspaceSourceReconciliationResult(
+            coordinator: updated,
+            previousAvailableOrder: availableImages.map(\.url),
+            missingPanes: missingPanes,
+            replacementURLs: replacementURLs
+        )
+    }
+
+    private static func closestReplacement(
+        in availableImages: [ImageFile],
+        previousOrder: [URL],
+        missingURL: URL,
+        excluding excludedURL: URL?
+    ) -> ImageFile? {
+        let excludedKey = excludedURL.map(renameReassociationLookupURL)
+        let availableByKey = Dictionary(
+            uniqueKeysWithValues: availableImages.compactMap { image -> (URL, ImageFile)? in
+                let key = renameReassociationLookupURL(image.url)
+                guard SupportedImageFormats.isSupported(url: image.url),
+                      key != excludedKey else { return nil }
+                return (key, image)
+            }
+        )
+        guard !availableByKey.isEmpty else { return nil }
+
+        let missingKey = renameReassociationLookupURL(missingURL)
+        guard let missingIndex = previousOrder.firstIndex(where: {
+            renameReassociationLookupURL($0) == missingKey
+        }) else {
+            return availableImages.first {
+                availableByKey[renameReassociationLookupURL($0.url)] != nil
+            }
+        }
+
+        for distance in 1..<previousOrder.count {
+            let nextIndex = missingIndex + distance
+            if previousOrder.indices.contains(nextIndex),
+               let image = availableByKey[
+                renameReassociationLookupURL(previousOrder[nextIndex])
+               ] {
+                return image
+            }
+            let priorIndex = missingIndex - distance
+            if previousOrder.indices.contains(priorIndex),
+               let image = availableByKey[
+                renameReassociationLookupURL(previousOrder[priorIndex])
+               ] {
+                return image
+            }
+        }
+        return nil
     }
 }

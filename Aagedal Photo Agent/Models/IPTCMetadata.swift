@@ -1573,6 +1573,304 @@ nonisolated struct EditorialLocation: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+/// One IPTC Photo Metadata CV-Term structure (`Iptc4xmpExt:AboutCvTerm`).
+///
+/// The term identifier is required by the standard. The vocabulary identifier, x-default name,
+/// and refined-about URI are optional. Unknown vocabularies remain first-class values as long as
+/// their identifiers are valid URIs; this prevents a Media Topic edit from erasing concepts that
+/// another newsroom or tool owns.
+nonisolated struct IPTCControlledVocabularyTerm: Codable, Hashable, Sendable {
+    static let mediaTopicSchemeURI = "http://cv.iptc.org/newscodes/mediatopic/"
+    static let genreSchemeURI = "http://cv.iptc.org/newscodes/genre/"
+
+    var vocabularyIdentifier: String?
+    var termIdentifier: String
+    var name: String?
+    var refinedAbout: String?
+
+    init(
+        vocabularyIdentifier: String? = nil,
+        termIdentifier: String,
+        name: String? = nil,
+        refinedAbout: String? = nil
+    ) {
+        self.vocabularyIdentifier = Self.cleaned(vocabularyIdentifier)
+        self.termIdentifier = Self.cleaned(termIdentifier) ?? ""
+        self.name = Self.cleaned(name)
+        self.refinedAbout = Self.cleaned(refinedAbout)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case vocabularyIdentifier, termIdentifier, name, refinedAbout
+        // IPTC JSON property aliases accepted for portable fixtures and future migration.
+        case cvId, cvTermId, cvTermName, cvTermRefinedAbout
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let vocabularyIdentifier = try container.decodeIfPresent(String.self, forKey: .vocabularyIdentifier)
+            ?? container.decodeIfPresent(String.self, forKey: .cvId)
+        let termIdentifier = try container.decodeIfPresent(String.self, forKey: .termIdentifier)
+            ?? container.decodeIfPresent(String.self, forKey: .cvTermId)
+            ?? ""
+        let name = try container.decodeIfPresent(String.self, forKey: .name)
+            ?? container.decodeIfPresent(String.self, forKey: .cvTermName)
+        let refinedAbout = try container.decodeIfPresent(String.self, forKey: .refinedAbout)
+            ?? container.decodeIfPresent(String.self, forKey: .cvTermRefinedAbout)
+        self.init(
+            vocabularyIdentifier: vocabularyIdentifier,
+            termIdentifier: termIdentifier,
+            name: name,
+            refinedAbout: refinedAbout
+        )
+        guard isValid else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .termIdentifier,
+                in: container,
+                debugDescription: "A CV-Term requires URI-valued identifiers."
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        guard isValid else {
+            throw EncodingError.invalidValue(
+                self,
+                .init(codingPath: encoder.codingPath, debugDescription: "A CV-Term requires URI-valued identifiers.")
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(vocabularyIdentifier, forKey: .vocabularyIdentifier)
+        try container.encode(termIdentifier, forKey: .termIdentifier)
+        try container.encodeIfPresent(name, forKey: .name)
+        try container.encodeIfPresent(refinedAbout, forKey: .refinedAbout)
+    }
+
+    var isValid: Bool {
+        Self.isURI(termIdentifier)
+            && vocabularyIdentifier.map(Self.isURI) ?? true
+            && refinedAbout.map(Self.isURI) ?? true
+    }
+
+    var isMediaTopic: Bool {
+        vocabularyIdentifier == Self.mediaTopicSchemeURI
+            && termIdentifier.hasPrefix(Self.mediaTopicSchemeURI)
+    }
+
+    var mediaTopicCode: String? {
+        guard isMediaTopic else { return nil }
+        let code = String(termIdentifier.dropFirst(Self.mediaTopicSchemeURI.count))
+        return Self.isNewsCode(code) ? code : nil
+    }
+
+    var isGenre: Bool {
+        vocabularyIdentifier == Self.genreSchemeURI
+            && termIdentifier.hasPrefix(Self.genreSchemeURI)
+    }
+
+    var genreCode: String? {
+        guard isGenre else { return nil }
+        let code = String(termIdentifier.dropFirst(Self.genreSchemeURI.count))
+        return code.isEmpty ? nil : code
+    }
+
+    var editorValue: String { mediaTopicCode ?? termIdentifier }
+
+    static func mediaTopic(metadataValue: String, name: String? = nil) -> Self? {
+        let value = metadataValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code: String
+        if value.hasPrefix(mediaTopicSchemeURI) {
+            code = String(value.dropFirst(mediaTopicSchemeURI.count))
+        } else if value.hasPrefix("https://cv.iptc.org/newscodes/mediatopic/") {
+            code = String(value.dropFirst("https://cv.iptc.org/newscodes/mediatopic/".count))
+        } else if value.hasPrefix("medtop:") {
+            code = String(value.dropFirst("medtop:".count))
+        } else {
+            code = value
+        }
+        guard isNewsCode(code) else { return nil }
+        return Self(
+            vocabularyIdentifier: mediaTopicSchemeURI,
+            termIdentifier: mediaTopicSchemeURI + code,
+            name: name
+        )
+    }
+
+    static func genre(metadataValue: String, name: String? = nil) -> Self? {
+        let value = metadataValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code: String
+        if value.hasPrefix(genreSchemeURI) {
+            code = String(value.dropFirst(genreSchemeURI.count))
+        } else if value.hasPrefix("https://cv.iptc.org/newscodes/genre/") {
+            code = String(value.dropFirst("https://cv.iptc.org/newscodes/genre/".count))
+        } else if value.hasPrefix("genre:") {
+            code = String(value.dropFirst("genre:".count))
+        } else {
+            code = value
+        }
+        guard !code.isEmpty, !code.contains(where: { $0.isWhitespace || $0 == "/" }) else { return nil }
+        return Self(
+            vocabularyIdentifier: genreSchemeURI,
+            termIdentifier: genreSchemeURI + code,
+            name: name
+        )
+    }
+
+    static func normalizedValues(_ values: [Self]) -> [Self] {
+        var seen = Set<String>()
+        return values.filter { $0.isValid && seen.insert($0.termIdentifier).inserted }
+    }
+
+    static func templateValue(for terms: [Self]) -> String? {
+        let terms = normalizedValues(terms)
+        guard !terms.isEmpty, let data = try? JSONEncoder().encode(terms) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func terms(
+        fromTemplateValue value: String,
+        fallback: (String) -> Self?
+    ) -> [Self] {
+        if let data = value.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([Self].self, from: data) {
+            return normalizedValues(decoded)
+        }
+        return normalizedValues(
+            value.components(separatedBy: CharacterSet(charactersIn: ",;"))
+                .compactMap(fallback)
+        )
+    }
+
+    private static func cleaned(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private static func isURI(_ value: String) -> Bool {
+        guard !value.contains(where: { $0.isWhitespace }),
+              let components = URLComponents(string: value),
+              let scheme = components.scheme, !scheme.isEmpty else { return false }
+        return true
+    }
+
+    private static func isNewsCode(_ value: String) -> Bool {
+        value.count == 8 && value.allSatisfy(\.isNumber)
+    }
+}
+
+/// Normalization for the deprecated IPTC Subject Code vocabulary. Current editor writes use the
+/// eight-digit identifier; XMP URI/QCode and legacy IIM Subject Reference projections are accepted
+/// on read. Unknown values are retained verbatim and surfaced by validation instead of discarded.
+nonisolated enum IPTCSubjectCode {
+    static let schemeURI = "http://cv.iptc.org/newscodes/subjectcode/"
+
+    static func normalizedValue(_ rawValue: String) -> String {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return "" }
+        let candidate: String
+        if value.hasPrefix(schemeURI) {
+            candidate = String(value.dropFirst(schemeURI.count))
+        } else if value.hasPrefix("https://cv.iptc.org/newscodes/subjectcode/") {
+            candidate = String(value.dropFirst("https://cv.iptc.org/newscodes/subjectcode/".count))
+        } else if value.hasPrefix("subj:") {
+            candidate = String(value.dropFirst("subj:".count))
+        } else if value.hasPrefix("IPTC:") {
+            candidate = value.split(separator: ":", omittingEmptySubsequences: false)
+                .dropFirst().first.map(String.init) ?? value
+        } else {
+            candidate = value
+        }
+        return isCurrentSyntax(candidate) ? candidate : value
+    }
+
+    static func normalizedValues(_ values: [String]) -> [String] {
+        values.map(normalizedValue).filter { !$0.isEmpty }.uniqued()
+    }
+
+    static func isCurrentSyntax(_ value: String) -> Bool {
+        value.count == 8 && value.allSatisfy(\.isNumber)
+    }
+
+    static func iimValue(_ value: String) -> String {
+        let normalized = normalizedValue(value)
+        return isCurrentSyntax(normalized) ? "IPTC:\(normalized):::" : normalized
+    }
+}
+
+/// Current IPTC Genre NewsCodes used by the controlled editor. Retired codes are deliberately
+/// absent from suggestions but remain readable and preservable as unknown CV-Term values.
+nonisolated struct IPTCGenreCode: Hashable, Sendable {
+    let code: String
+    let name: String
+
+    var displayValue: String { "\(name) — \(code)" }
+
+    static let all: [Self] = [
+        .init(code: "Actuality", name: "Actuality"),
+        .init(code: "Advertiser_Supplied", name: "Advertiser Supplied"),
+        .init(code: "Advice", name: "Advice"),
+        .init(code: "Advisory", name: "Advisory"),
+        .init(code: "almanac", name: "On This Day"),
+        .init(code: "Analysis", name: "Analysis"),
+        .init(code: "Archive_material", name: "Archival material"),
+        .init(code: "Background", name: "Background"),
+        .init(code: "Behind_the_Story", name: "Behind the Story"),
+        .init(code: "Biography", name: "Biography"),
+        .init(code: "Birth_Announcement", name: "Birth Announcement"),
+        .init(code: "Current", name: "Current Events"),
+        .init(code: "Curtain_Raiser", name: "Curtain Raiser"),
+        .init(code: "Daybook", name: "Planner"),
+        .init(code: "Exclusive", name: "Exclusive"),
+        .init(code: "Fact_Check", name: "Fact Check"),
+        .init(code: "Feature", name: "Feature"),
+        .init(code: "Fixture", name: "Fixture"),
+        .init(code: "Forecast", name: "Forecast"),
+        .init(code: "From_the_Scene", name: "From the Scene"),
+        .init(code: "Help_Us_to_Report", name: "Help us to Report"),
+        .init(code: "History", name: "History"),
+        .init(code: "horoscope", name: "Horoscope"),
+        .init(code: "Interview", name: "Interview"),
+        .init(code: "ListingOfFacts", name: "Fact Box"),
+        .init(code: "LiveCoverage", name: "Live Coverage"),
+        .init(code: "Music", name: "Music"),
+        .init(code: "Obituary", name: "Obituary"),
+        .init(code: "Opinion", name: "Opinion"),
+        .init(code: "Polls_and_Surveys", name: "Polls and Surveys"),
+        .init(code: "Press_Release", name: "Press Release"),
+        .init(code: "Press-Digest", name: "Press-Digest"),
+        .init(code: "Preview", name: "Preview"),
+        .init(code: "Profile", name: "Profile"),
+        .init(code: "Question_and_Answer_Session", name: "Question and Answer Session"),
+        .init(code: "Quote", name: "Quote"),
+        .init(code: "Raw_Sound", name: "Raw Sound"),
+        .init(code: "Response_to_a_Question", name: "Response to a Question"),
+        .init(code: "Results_Listings_and_Statistics", name: "Results Listings and Statistics"),
+        .init(code: "Retrospective", name: "Retrospective"),
+        .init(code: "Review", name: "Review"),
+        .init(code: "Satire", name: "Satire"),
+        .init(code: "Side_bar_and_supporting_information", name: "Side bar and Supporting Information"),
+        .init(code: "Special_Report", name: "Special Report"),
+        .init(code: "Sponsored", name: "Sponsored"),
+        .init(code: "Summary", name: "Briefing"),
+        .init(code: "Supported", name: "Supported"),
+        .init(code: "Synopsis", name: "Synopsis"),
+        .init(code: "Transcript_and_Verbatim", name: "Transcript and Verbatim"),
+        .init(code: "UGC", name: "User Generated Content"),
+        .init(code: "Voicer", name: "Voicer"),
+    ]
+
+    static func entry(for value: String) -> Self? {
+        let code = IPTCControlledVocabularyTerm.genre(metadataValue: value)?.genreCode ?? value
+        return all.first { $0.code == code }
+    }
+
+    static func normalizedEditorValue(_ value: String) -> String? {
+        if let entry = all.first(where: { $0.displayValue == value }) { return entry.code }
+        return IPTCControlledVocabularyTerm.genre(metadataValue: value)?.genreCode
+    }
+}
+
 nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     // Priority fields (always visible)
     var title: String?
@@ -1587,9 +1885,18 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     var digitalSourceType: DigitalSourceType?
     var urgency: Int?
     var sceneCodes: [String]
+    var subjectCodes: [String]
+    var mediaTopics: [IPTCControlledVocabularyTerm]
+    var genres: [IPTCControlledVocabularyTerm]
 
     // Secondary fields (collapsible)
-    var creator: String?
+    /// Ordered creators as represented by `dc:creator` / repeatable IIM By-line.
+    /// The legacy scalar `creator` API below remains a writable first-item compatibility alias.
+    var creators: [String]
+    var creator: String? {
+        get { creators.first }
+        set { creators = newValue.map { Self.normalizedCreators([$0]) } ?? [] }
+    }
     var creatorJobTitle: String?
     var descriptionWriter: String?
     var credit: String?
@@ -1602,6 +1909,10 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     /// Identifier assigned to this image by the supplying agency or organisation.
     /// Kept distinct from the image GUID and supplier identity structure.
     var imageSupplierImageID: String?
+    /// Ordered PLUS supplier structures. Each item keeps the supplier name and identifier paired;
+    /// this is distinct from `imageSupplierImageID`, which identifies the image in a supplier's
+    /// own system.
+    var imageSuppliers: [EditorialImageSupplier]
     var jobId: String?
     var dateCreated: String?
     var captureDate: String?
@@ -1636,9 +1947,9 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey, CaseIterable {
         case title, description, extendedDescription, keywords, personShown
         case organisationsShownNames, organisationsShownCodes
-        case digitalSourceType, urgency, sceneCodes
-        case creator, creatorJobTitle, descriptionWriter, credit, copyright
-        case rightsUsageTerms, webStatementOfRights, digitalImageGUID, imageSupplierImageID
+        case digitalSourceType, urgency, sceneCodes, subjectCodes, mediaTopics, genres
+        case creator, creators, creatorJobTitle, descriptionWriter, credit, copyright
+        case rightsUsageTerms, webStatementOfRights, digitalImageGUID, imageSupplierImageID, imageSuppliers
         case jobId, dateCreated, captureDate
         case city, sublocation, provinceState, country, countryCode, event, instructions, source
         case creatorContactInfo, locationsCreated, locationsShown
@@ -1659,9 +1970,13 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         digitalSourceType: DigitalSourceType? = nil,
         urgency: Int? = nil,
         sceneCodes: [String] = [],
+        subjectCodes: [String] = [],
+        mediaTopics: [IPTCControlledVocabularyTerm] = [],
+        genres: [IPTCControlledVocabularyTerm] = [],
         latitude: Double? = nil,
         longitude: Double? = nil,
         creator: String? = nil,
+        creators: [String]? = nil,
         creatorJobTitle: String? = nil,
         descriptionWriter: String? = nil,
         credit: String? = nil,
@@ -1670,6 +1985,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         webStatementOfRights: String? = nil,
         digitalImageGUID: String? = nil,
         imageSupplierImageID: String? = nil,
+        imageSuppliers: [EditorialImageSupplier] = [],
         jobId: String? = nil,
         dateCreated: String? = nil,
         captureDate: String? = nil,
@@ -1699,9 +2015,12 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.digitalSourceType = digitalSourceType
         self.urgency = urgency
         self.sceneCodes = IPTCSceneCode.normalizedValues(sceneCodes)
+        self.subjectCodes = IPTCSubjectCode.normalizedValues(subjectCodes)
+        self.mediaTopics = IPTCControlledVocabularyTerm.normalizedValues(mediaTopics)
+        self.genres = IPTCControlledVocabularyTerm.normalizedValues(genres)
         self.latitude = latitude
         self.longitude = longitude
-        self.creator = creator
+        self.creators = Self.normalizedCreators(creators ?? creator.map { [$0] } ?? [])
         self.creatorJobTitle = creatorJobTitle
         self.descriptionWriter = descriptionWriter
         self.credit = credit
@@ -1710,6 +2029,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.webStatementOfRights = webStatementOfRights
         self.digitalImageGUID = digitalImageGUID
         self.imageSupplierImageID = imageSupplierImageID
+        self.imageSuppliers = EditorialImageSupplier.normalizedValues(imageSuppliers)
         self.jobId = jobId
         self.dateCreated = dateCreated
         self.captureDate = captureDate
@@ -1744,7 +2064,22 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         sceneCodes = IPTCSceneCode.normalizedValues(
             try container.decodeIfPresent([String].self, forKey: .sceneCodes) ?? []
         )
-        creator = try container.decodeIfPresent(String.self, forKey: .creator)
+        subjectCodes = IPTCSubjectCode.normalizedValues(
+            try container.decodeIfPresent([String].self, forKey: .subjectCodes) ?? []
+        )
+        mediaTopics = IPTCControlledVocabularyTerm.normalizedValues(
+            try container.decodeIfPresent([IPTCControlledVocabularyTerm].self, forKey: .mediaTopics) ?? []
+        )
+        genres = IPTCControlledVocabularyTerm.normalizedValues(
+            try container.decodeIfPresent([IPTCControlledVocabularyTerm].self, forKey: .genres) ?? []
+        )
+        if let persistedCreators = try container.decodeIfPresent([String].self, forKey: .creators) {
+            creators = Self.normalizedCreators(persistedCreators)
+        } else {
+            creators = Self.normalizedCreators(
+                try container.decodeIfPresent(String.self, forKey: .creator).map { [$0] } ?? []
+            )
+        }
         creatorJobTitle = try container.decodeIfPresent(String.self, forKey: .creatorJobTitle)
         descriptionWriter = try container.decodeIfPresent(String.self, forKey: .descriptionWriter)
         credit = try container.decodeIfPresent(String.self, forKey: .credit)
@@ -1753,6 +2088,9 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         webStatementOfRights = try container.decodeIfPresent(String.self, forKey: .webStatementOfRights)
         digitalImageGUID = try container.decodeIfPresent(String.self, forKey: .digitalImageGUID)
         imageSupplierImageID = try container.decodeIfPresent(String.self, forKey: .imageSupplierImageID)
+        imageSuppliers = EditorialImageSupplier.normalizedValues(
+            try container.decodeIfPresent([EditorialImageSupplier].self, forKey: .imageSuppliers) ?? []
+        )
         jobId = try container.decodeIfPresent(String.self, forKey: .jobId)
         dateCreated = try container.decodeIfPresent(String.self, forKey: .dateCreated)
         captureDate = try container.decodeIfPresent(String.self, forKey: .captureDate)
@@ -1784,6 +2122,68 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         label = try container.decodeIfPresent(String.self, forKey: .label)
         // cameraRaw and exifOrientation are not decoded — sourced from XMP only
     }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(description, forKey: .description)
+        try container.encodeIfPresent(extendedDescription, forKey: .extendedDescription)
+        try container.encode(keywords, forKey: .keywords)
+        try container.encode(personShown, forKey: .personShown)
+        try container.encode(organisationsShownNames, forKey: .organisationsShownNames)
+        try container.encode(organisationsShownCodes, forKey: .organisationsShownCodes)
+        try container.encodeIfPresent(digitalSourceType, forKey: .digitalSourceType)
+        try container.encodeIfPresent(urgency, forKey: .urgency)
+        try container.encode(sceneCodes, forKey: .sceneCodes)
+        try container.encode(subjectCodes, forKey: .subjectCodes)
+        try container.encode(mediaTopics, forKey: .mediaTopics)
+        try container.encode(genres, forKey: .genres)
+        try container.encode(creators, forKey: .creators)
+        // Keep the shipped scalar key writable for older Photo Agent builds and integrations.
+        try container.encodeIfPresent(creator, forKey: .creator)
+        try container.encodeIfPresent(creatorJobTitle, forKey: .creatorJobTitle)
+        try container.encodeIfPresent(descriptionWriter, forKey: .descriptionWriter)
+        try container.encodeIfPresent(credit, forKey: .credit)
+        try container.encodeIfPresent(copyright, forKey: .copyright)
+        try container.encodeIfPresent(rightsUsageTerms, forKey: .rightsUsageTerms)
+        try container.encodeIfPresent(webStatementOfRights, forKey: .webStatementOfRights)
+        try container.encodeIfPresent(digitalImageGUID, forKey: .digitalImageGUID)
+        try container.encodeIfPresent(imageSupplierImageID, forKey: .imageSupplierImageID)
+        try container.encode(imageSuppliers, forKey: .imageSuppliers)
+        try container.encodeIfPresent(jobId, forKey: .jobId)
+        // `dateCreated` deliberately remains the shipped scalar JSON key.
+        try container.encodeIfPresent(dateCreated, forKey: .dateCreated)
+        try container.encodeIfPresent(captureDate, forKey: .captureDate)
+        try container.encodeIfPresent(city, forKey: .city)
+        try container.encodeIfPresent(sublocation, forKey: .sublocation)
+        try container.encodeIfPresent(provinceState, forKey: .provinceState)
+        try container.encodeIfPresent(country, forKey: .country)
+        try container.encodeIfPresent(countryCode, forKey: .countryCode)
+        try container.encodeIfPresent(event, forKey: .event)
+        try container.encodeIfPresent(instructions, forKey: .instructions)
+        try container.encodeIfPresent(source, forKey: .source)
+        try container.encodeIfPresent(creatorContactInfo, forKey: .creatorContactInfo)
+        try container.encode(locationsCreated, forKey: .locationsCreated)
+        try container.encode(locationsShown, forKey: .locationsShown)
+        try container.encodeIfPresent(latitude, forKey: .latitude)
+        try container.encodeIfPresent(longitude, forKey: .longitude)
+        try container.encodeIfPresent(rating, forKey: .rating)
+        try container.encodeIfPresent(label, forKey: .label)
+    }
+
+    nonisolated static func normalizedCreators(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    /// Validated typed view of the shipped lexical Date Created string. Invalid legacy values
+    /// remain preservable through `dateCreated`; new typed writes are always valid and exact.
+    var editorialDateCreated: EditorialDateCreated? {
+        get { dateCreated.flatMap { try? EditorialDateCreated(parsing: $0) } }
+        set { dateCreated = newValue?.lexicalValue }
+    }
 }
 
 extension IPTCMetadata {
@@ -1799,7 +2199,10 @@ extension IPTCMetadata {
             || digitalSourceType != other.digitalSourceType
             || urgency != other.urgency
             || sceneCodes != other.sceneCodes
-            || creator != other.creator
+            || subjectCodes != other.subjectCodes
+            || mediaTopics != other.mediaTopics
+            || genres != other.genres
+            || creators != other.creators
             || creatorJobTitle != other.creatorJobTitle
             || descriptionWriter != other.descriptionWriter
             || credit != other.credit
@@ -1808,7 +2211,9 @@ extension IPTCMetadata {
             || webStatementOfRights != other.webStatementOfRights
             || digitalImageGUID != other.digitalImageGUID
             || imageSupplierImageID != other.imageSupplierImageID
+            || imageSuppliers != other.imageSuppliers
             || jobId != other.jobId
+            || dateCreated != other.dateCreated
             || city != other.city
             || sublocation != other.sublocation
             || provinceState != other.provinceState
@@ -1838,7 +2243,10 @@ extension IPTCMetadata {
         if digitalSourceType != nil { return true }
         if urgency != nil { return true }
         if !sceneCodes.isEmpty { return true }
-        if let creator, !creator.isEmpty { return true }
+        if !subjectCodes.isEmpty { return true }
+        if !mediaTopics.isEmpty { return true }
+        if !genres.isEmpty { return true }
+        if !creators.isEmpty { return true }
         if let creatorJobTitle, !creatorJobTitle.isEmpty { return true }
         if let descriptionWriter, !descriptionWriter.isEmpty { return true }
         if let credit, !credit.isEmpty { return true }
@@ -1847,6 +2255,7 @@ extension IPTCMetadata {
         if let webStatementOfRights, !webStatementOfRights.isEmpty { return true }
         if let digitalImageGUID, !digitalImageGUID.isEmpty { return true }
         if let imageSupplierImageID, !imageSupplierImageID.isEmpty { return true }
+        if !imageSuppliers.isEmpty { return true }
         if let jobId, !jobId.isEmpty { return true }
         if let dateCreated, !dateCreated.isEmpty { return true }
         if let city, !city.isEmpty { return true }
@@ -1885,7 +2294,10 @@ extension IPTCMetadata {
         result.digitalSourceType = record.digitalSourceType
         result.urgency = record.urgency
         result.sceneCodes = record.sceneCodes
-        result.creator = record.creator
+        result.subjectCodes = record.subjectCodes
+        result.mediaTopics = record.mediaTopics
+        result.genres = record.genres
+        result.creators = record.creators
         result.creatorJobTitle = record.creatorJobTitle
         result.descriptionWriter = record.descriptionWriter
         result.credit = record.credit
@@ -1894,6 +2306,7 @@ extension IPTCMetadata {
         result.webStatementOfRights = record.webStatementOfRights
         result.digitalImageGUID = record.digitalImageGUID
         result.imageSupplierImageID = record.imageSupplierImageID
+        result.imageSuppliers = record.imageSuppliers
         result.jobId = record.jobId
         result.dateCreated = record.dateCreated
         result.city = record.city
@@ -1927,7 +2340,7 @@ extension IPTCMetadata {
         return result
     }
 
-    func merged(preferring override: IPTCMetadata) -> IPTCMetadata {
+    nonisolated func merged(preferring override: IPTCMetadata) -> IPTCMetadata {
         var result = self
 
         if let value = override.title, !value.isEmpty { result.title = value }
@@ -1940,7 +2353,10 @@ extension IPTCMetadata {
         if let value = override.digitalSourceType { result.digitalSourceType = value }
         if let value = override.urgency { result.urgency = value }
         if !override.sceneCodes.isEmpty { result.sceneCodes = override.sceneCodes }
-        if let value = override.creator, !value.isEmpty { result.creator = value }
+        if !override.subjectCodes.isEmpty { result.subjectCodes = override.subjectCodes }
+        if !override.mediaTopics.isEmpty { result.mediaTopics = override.mediaTopics }
+        if !override.genres.isEmpty { result.genres = override.genres }
+        if !override.creators.isEmpty { result.creators = override.creators }
         if let value = override.creatorJobTitle, !value.isEmpty { result.creatorJobTitle = value }
         if let value = override.descriptionWriter, !value.isEmpty { result.descriptionWriter = value }
         if let value = override.credit, !value.isEmpty { result.credit = value }
@@ -1949,6 +2365,7 @@ extension IPTCMetadata {
         if let value = override.webStatementOfRights, !value.isEmpty { result.webStatementOfRights = value }
         if let value = override.digitalImageGUID, !value.isEmpty { result.digitalImageGUID = value }
         if let value = override.imageSupplierImageID, !value.isEmpty { result.imageSupplierImageID = value }
+        if !override.imageSuppliers.isEmpty { result.imageSuppliers = override.imageSuppliers }
         if let value = override.jobId, !value.isEmpty { result.jobId = value }
         if let value = override.dateCreated, !value.isEmpty { result.dateCreated = value }
         if let value = override.captureDate, !value.isEmpty { result.captureDate = value }
@@ -1992,7 +2409,7 @@ extension IPTCMetadata {
 extension IPTCMetadata {
     /// Convert editable IPTC fields to a metadata write-key dictionary.
     /// Excludes rating, label, cameraRaw, and orientation (managed separately).
-    func toWriteFields() -> [MetadataFieldKey: String] {
+    nonisolated func toWriteFields() -> [MetadataFieldKey: String] {
         var fields: [MetadataFieldKey: String] = [:]
         if let v = title { fields[.headline] = v }
         if let v = description { fields[.description] = v }
@@ -2004,7 +2421,10 @@ extension IPTCMetadata {
         if let v = digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
         if let v = urgency { fields[.urgency] = String(v) }
         if !sceneCodes.isEmpty { fields[.scene] = sceneCodes.joined(separator: ", ") }
-        if let v = creator { fields[.creator] = v }
+        if !subjectCodes.isEmpty { fields[.subjectCode] = subjectCodes.joined(separator: ", ") }
+        if !mediaTopics.isEmpty { fields[.mediaTopic] = mediaTopics.map(\.termIdentifier).joined(separator: ", ") }
+        if !genres.isEmpty { fields[.genre] = genres.map(\.termIdentifier).joined(separator: ", ") }
+        if let v = creatorTransportValue { fields[.creator] = v }
         if let v = creatorJobTitle { fields[.creatorJobTitle] = v }
         if let v = descriptionWriter { fields[.descriptionWriter] = v }
         if let v = credit { fields[.credit] = v }
@@ -2013,6 +2433,9 @@ extension IPTCMetadata {
         if let v = webStatementOfRights { fields[.webStatementOfRights] = v }
         if let v = digitalImageGUID { fields[.digitalImageGUID] = v }
         if let v = imageSupplierImageID { fields[.imageSupplierImageID] = v }
+        if let v = EditorialImageSupplier.canonicalJSONString(for: imageSuppliers) {
+            fields[.imageSupplier] = v
+        }
         if let v = jobId { fields[.transmissionReference] = v }
         if let v = dateCreated { fields[.dateCreated] = v }
         if let v = city { fields[.city] = v }
@@ -2043,7 +2466,7 @@ extension IPTCMetadata {
     /// an external tool, or with GPS in a format our parser can't read — may legitimately
     /// omit, and force-clearing would strip valid camera GPS from the export. Camera Raw,
     /// rating, and label are excluded (managed separately).
-    func toOverwriteFields() -> [MetadataFieldKey: String] {
+    nonisolated func toOverwriteFields() -> [MetadataFieldKey: String] {
         var fields: [MetadataFieldKey: String] = [:]
         fields[.headline] = title ?? ""
         fields[.description] = description ?? ""
@@ -2055,7 +2478,10 @@ extension IPTCMetadata {
         fields[.digitalSourceType] = digitalSourceType?.newsCodeURI ?? ""
         fields[.urgency] = urgency.map(String.init) ?? ""
         fields[.scene] = sceneCodes.uniqued().joined(separator: ", ")
-        fields[.creator] = creator ?? ""
+        fields[.subjectCode] = subjectCodes.uniqued().joined(separator: ", ")
+        fields[.mediaTopic] = mediaTopics.map(\.termIdentifier).uniqued().joined(separator: ", ")
+        fields[.genre] = genres.map(\.termIdentifier).uniqued().joined(separator: ", ")
+        fields[.creator] = creatorTransportValue ?? ""
         fields[.creatorJobTitle] = creatorJobTitle ?? ""
         fields[.descriptionWriter] = descriptionWriter ?? ""
         fields[.credit] = credit ?? ""
@@ -2064,6 +2490,7 @@ extension IPTCMetadata {
         fields[.webStatementOfRights] = webStatementOfRights ?? ""
         fields[.digitalImageGUID] = digitalImageGUID ?? ""
         fields[.imageSupplierImageID] = imageSupplierImageID ?? ""
+        fields[.imageSupplier] = EditorialImageSupplier.canonicalJSONString(for: imageSuppliers) ?? ""
         fields[.transmissionReference] = jobId ?? ""
         fields[.dateCreated] = dateCreated ?? ""
         fields[.city] = city ?? ""
@@ -2081,6 +2508,24 @@ extension IPTCMetadata {
             fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
         }
         return fields
+    }
+
+    /// Backward-compatible writer transport: a single creator remains the shipped scalar value;
+    /// multiple creators use a lossless JSON array which the write engine recognizes.
+    nonisolated var creatorTransportValue: String? {
+        let values = Self.normalizedCreators(creators)
+        guard !values.isEmpty else { return nil }
+        if values.count == 1 { return values[0] }
+        guard let data = try? JSONEncoder().encode(values) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    nonisolated static func creators(fromTransportValue value: String) -> [String] {
+        if let data = value.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([String].self, from: data) {
+            return normalizedCreators(decoded)
+        }
+        return normalizedCreators([value])
     }
 }
 

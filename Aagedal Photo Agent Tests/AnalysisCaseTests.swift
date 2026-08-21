@@ -747,6 +747,69 @@ struct AnalysisCaseTests {
         #expect(persisted.mapState.solarOverlay == nil)
     }
 
+    @MainActor
+    @Test("rename quiescence prevents a stale analysis writer from restoring the old path hint")
+    func renameQuiescencePreventsStalePathWriter() async throws {
+        let fixture = try AnalysisFixture(contents: "rename quiescence source")
+        defer { fixture.remove() }
+        let source = fixture.fileURL
+        let destination = fixture.directoryURL.appendingPathComponent("renamed.jpg")
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+
+        model.open(ImageFile(url: source))
+        try await waitForAnalysisState { model.loadState == .ready }
+        let revision = try #require(model.currentRevision)
+
+        model.selectWorkspaceMode(.osint)
+        try await model.beginRenameQuiescence(in: fixture.directoryURL)
+
+        guard case .exact(let flushedBeforeRename) = await repository.loadMostRelevantCase(
+            for: revision
+        ) else {
+            Issue.record("Expected the durable pre-rename case")
+            return
+        }
+        #expect(flushedBeforeRename.workspaceMode == .osint)
+        #expect(flushedBeforeRename.source.canonicalURL == source)
+
+        model.selectWorkspaceMode(.pixelAnalysis)
+        guard case .exact(let heldBeforeRename) = await repository.loadMostRelevantCase(
+            for: revision
+        ) else {
+            Issue.record("Expected the durable case while persistence is gated")
+            return
+        }
+        #expect(heldBeforeRename.workspaceMode == .osint)
+        #expect(heldBeforeRename.source.canonicalURL == source)
+
+        try FileManager.default.moveItem(at: source, to: destination)
+        try await model.finishRenameQuiescence(using: [
+            .init(sourceURL: source, destinationURL: destination),
+        ])
+
+        let renamedRevision = try await SourceImageRevision.capture(at: destination)
+        guard case .exact(let afterRename) = await repository.loadMostRelevantCase(
+            for: renamedRevision
+        ) else {
+            Issue.record("Expected the case after rename")
+            return
+        }
+        #expect(afterRename.workspaceMode == .pixelAnalysis)
+        #expect(afterRename.source.canonicalURL == destination)
+
+        model.selectWorkspaceMode(.osint)
+        await model.flushPendingSaves()
+        guard case .exact(let afterLaterSave) = await repository.loadMostRelevantCase(
+            for: renamedRevision
+        ) else {
+            Issue.record("Expected the case after reopening persistence")
+            return
+        }
+        #expect(afterLaterSave.workspaceMode == .osint)
+        #expect(afterLaterSave.source.canonicalURL == destination)
+    }
+
     @Test("legacy map state defaults 3D content to off")
     func legacyMapStateDefaults3DContentToOff() throws {
         let encoder = JSONEncoder()

@@ -10,6 +10,17 @@ struct AnalysisImageMapAnnotation: Identifiable, Sendable {
     var id: String { "\(caseID.uuidString)-\(annotation.id.uuidString)" }
 }
 
+enum AnalysisRenameQuiescenceError: LocalizedError, Equatable {
+    case persistenceFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .persistenceFailed(let detail):
+            "Analysis changes could not be made durable before rename: \(detail)"
+        }
+    }
+}
+
 @Observable
 final class AnalysisWorkspaceModel {
     enum LoadState: Equatable {
@@ -36,6 +47,8 @@ final class AnalysisWorkspaceModel {
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var folderMapSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var renameQuiescenceFolderURL: URL?
+    @ObservationIgnored private var renameQuiescenceNeedsCaseSave = false
     @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
     private var photoAnnotationHistory = AnalysisAnnotationUndoHistory()
     private var mapAnnotationHistory = AnalysisMapAnnotationUndoHistory()
@@ -227,8 +240,83 @@ final class AnalysisWorkspaceModel {
     /// Waits until the latest photo- and folder-owned documents are durable on disk.
     /// Project export calls this before it snapshots the working folder.
     func flushPendingSaves() async {
-        await saveTask?.value
-        await folderMapSaveTask?.value
+        let pendingLoad = loadTask
+        let pendingCaseSave = saveTask
+        let pendingFolderMapSave = folderMapSaveTask
+        await pendingLoad?.value
+        await pendingCaseSave?.value
+        await pendingFolderMapSave?.value
+    }
+
+    /// Prevents analyzer callbacks from starting a path-bearing save while a browser rename is
+    /// in flight. Existing load/save work is awaited after the gate closes, so every old-path
+    /// writer is durable before filesystem execution begins.
+    func beginRenameQuiescence(in folderURL: URL) async throws {
+        let normalizedFolder = folderURL.standardizedFileURL
+        renameQuiescenceFolderURL = normalizedFolder
+        renameQuiescenceNeedsCaseSave = false
+        await flushPendingSaves()
+
+        if sourceURL?.deletingLastPathComponent().standardizedFileURL == normalizedFolder,
+           case .failed(let detail) = loadState {
+            renameQuiescenceFolderURL = nil
+            throw AnalysisRenameQuiescenceError.persistenceFailed(detail)
+        }
+    }
+
+    /// Applies the successful rename to live state before reopening the persistence gate. Any
+    /// analyzer result delivered while execution was in flight is then saved with the new hint.
+    func finishRenameQuiescence(
+        using mappings: [BatchRenameExecutionPresentation.Mapping]
+    ) async throws {
+        reassociateRenamedSources(using: mappings)
+        do {
+            try await drainRenameQuiescenceChanges()
+            renameQuiescenceFolderURL = nil
+        } catch {
+            renameQuiescenceFolderURL = nil
+            throw error
+        }
+    }
+
+    /// Reopens persistence when execution never touched the filesystem.
+    func cancelRenameQuiescenceBeforeExecution() async throws {
+        do {
+            try await drainRenameQuiescenceChanges()
+            renameQuiescenceFolderURL = nil
+        } catch {
+            renameQuiescenceFolderURL = nil
+            throw error
+        }
+    }
+
+    /// A failed transaction may leave paths in an indeterminate state. Stop every producer and
+    /// close the live workspace rather than allowing an old in-memory hint to be saved later.
+    func invalidateAfterRenameExecutionFailure() async {
+        analysisRunner.configure(existingRuns: [])
+        let pendingLoad = loadTask
+        let pendingSave = saveTask
+        let pendingFolderSave = folderMapSaveTask
+        pendingLoad?.cancel()
+        pendingSave?.cancel()
+        pendingFolderSave?.cancel()
+        await pendingLoad?.value
+        await pendingSave?.value
+        await pendingFolderSave?.value
+
+        loadTask = nil
+        saveTask = nil
+        folderMapSaveTask = nil
+        repository = nil
+        openedImage = nil
+        sourceURL = nil
+        currentRevision = nil
+        analysisCase = nil
+        folderAnalysisCases = []
+        sourceChanged = false
+        loadState = .idle
+        renameQuiescenceFolderURL = nil
+        renameQuiescenceNeedsCaseSave = false
     }
 
     var canUndoPhotoAnnotation: Bool {
@@ -458,6 +546,44 @@ final class AnalysisWorkspaceModel {
     func retry() {
         guard let openedImage else { return }
         open(openedImage)
+    }
+
+    /// Keeps an open analysis workspace attached to the same source bytes after a successful
+    /// browser rename. Persistent path hints are updated by `RenameReassociationService`.
+    func reassociateRenamedSources(
+        using mappings: [BatchRenameExecutionPresentation.Mapping]
+    ) {
+        let destinations = Dictionary(uniqueKeysWithValues: mappings.map {
+            (renameReassociationLookupURL($0.sourceURL), $0.destinationURL.standardizedFileURL)
+        })
+        guard !destinations.isEmpty else { return }
+
+        func destination(for url: URL) -> URL? {
+            destinations[renameReassociationLookupURL(url)]
+        }
+        if let oldURL = sourceURL, let newURL = destination(for: oldURL) {
+            sourceURL = newURL
+        }
+        if let image = openedImage, let newURL = destination(for: image.url) {
+            openedImage = ImageFile(url: newURL, copyingFrom: image)
+        }
+        if let revision = currentRevision,
+           let newURL = destination(for: revision.canonicalURL) {
+            currentRevision = revision.relocated(to: newURL)
+        }
+        if var currentCase = analysisCase,
+           let newURL = destination(for: currentCase.source.canonicalURL) {
+            currentCase.relocateSource(to: newURL)
+            analysisCase = currentCase
+        }
+        folderAnalysisCases = folderAnalysisCases.map { storedCase in
+            guard let newURL = destination(for: storedCase.source.canonicalURL) else {
+                return storedCase
+            }
+            var relocated = storedCase
+            relocated.relocateSource(to: newURL)
+            return relocated
+        }
     }
 
     func createCaseForCurrentRevision() {
@@ -1040,6 +1166,13 @@ final class AnalysisWorkspaceModel {
         }
         guard let repository else { return }
 
+        if let quiescedFolder = renameQuiescenceFolderURL,
+           updatedCase.source.canonicalURL.deletingLastPathComponent().standardizedFileURL
+            == quiescedFolder {
+            renameQuiescenceNeedsCaseSave = true
+            return
+        }
+
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             do {
@@ -1049,6 +1182,23 @@ final class AnalysisWorkspaceModel {
             } catch {
                 guard let self, self.analysisCase?.id == updatedCase.id else { return }
                 self.loadState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func drainRenameQuiescenceChanges() async throws {
+        while renameQuiescenceNeedsCaseSave {
+            renameQuiescenceNeedsCaseSave = false
+            guard let repository, let currentCase = analysisCase else { continue }
+            do {
+                try currentCase.validateForPersistence()
+                try await repository.save(currentCase)
+            } catch {
+                throw AnalysisRenameQuiescenceError.persistenceFailed(
+                    error.localizedDescription.isEmpty
+                        ? "The analysis case could not be saved."
+                        : error.localizedDescription
+                )
             }
         }
     }

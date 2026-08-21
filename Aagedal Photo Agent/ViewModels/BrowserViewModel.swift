@@ -76,6 +76,8 @@ final class BrowserViewModel {
 
     @ObservationIgnored var fullScreenFaceContext: FullScreenFaceContext?
     var errorMessage: String?
+    /// Immutable visible-order selection handed to the shared single/batch rename sheet.
+    var batchRenameSheetRequest: BatchRenameSheetRequest?
     /// Reserved for failures that prevent the current folder from producing a usable
     /// grid. Ordinary operation failures use `errorMessage` and remain non-modal.
     var folderLoadErrorMessage: String?
@@ -2770,8 +2772,9 @@ final class BrowserViewModel {
         if edited.webStatementOfRights != original.webStatementOfRights { names.append("Web Statement of Rights") }
         if edited.digitalImageGUID != original.digitalImageGUID { names.append("Digital Image GUID") }
         if edited.imageSupplierImageID != original.imageSupplierImageID { names.append("Image Supplier Image ID") }
+        if edited.imageSuppliers != original.imageSuppliers { names.append("Image Supplier") }
         if edited.jobId != original.jobId { names.append("Job ID") }
-        if edited.creator != original.creator { names.append("Creator") }
+        if edited.creators != original.creators { names.append("Creator") }
         if edited.creatorJobTitle != original.creatorJobTitle { names.append("Creator Job Title") }
         if edited.descriptionWriter != original.descriptionWriter { names.append("Description Writer") }
         if edited.credit != original.credit { names.append("Credit") }
@@ -2849,7 +2852,7 @@ final class BrowserViewModel {
         updated[index].personShown = edited.personShown
         updated[index].hasPendingMetadataChanges = true
         updated[index].pendingFieldNames = MetadataFieldID.userSelectable.compactMap { field in
-            field.textValue(in: previous) != field.textValue(in: edited) ? field.displayName : nil
+            field.historyValue(in: previous) != field.historyValue(in: edited) ? field.displayName : nil
         }
         images = updated
 
@@ -2857,10 +2860,15 @@ final class BrowserViewModel {
         var history = existing?.history ?? []
         let now = Date()
         for field in MetadataFieldID.userSelectable {
-            let old = field.textValue(in: previous)
-            let new = field.textValue(in: edited)
+            let old = field.historyValue(in: previous)
+            let new = field.historyValue(in: edited)
             if old != new {
-                history.append(MetadataHistoryEntry(timestamp: now, fieldName: field.displayName, oldValue: old, newValue: new))
+                history.append(MetadataHistoryEntry(
+                    timestamp: now,
+                    fieldID: field,
+                    oldValue: old,
+                    newValue: new
+                ))
             }
         }
         history.trimToHistoryLimit()
@@ -3219,211 +3227,123 @@ final class BrowserViewModel {
     // MARK: - Rename
 
     func renameSelected() {
-        guard !selectedImageIDs.isEmpty else { return }
-        if selectedImageIDs.count == 1 {
-            renameSelectedImage()
-        } else {
-            batchRenameSelectedImages()
-        }
+        guard let folderURL = currentFolderURL, !selectedImageIDs.isEmpty else { return }
+        let selectedInVisibleOrder = sortedImages.filter { selectedImageIDs.contains($0.url) }
+        guard !selectedInVisibleOrder.isEmpty else { return }
+
+        batchRenameSheetRequest = BatchRenameSheetRequest(
+            folderURL: folderURL,
+            items: selectedInVisibleOrder.map { image in
+                RenamePlanningItem(
+                    sourceImageURL: image.url,
+                    context: BatchRenameContext(
+                        originalFilename: image.filename,
+                        captureDate: Self.renameDate(from: image.metadata?.captureDate),
+                        fileCreationDate: image.dateAdded,
+                        fileModificationDate: image.dateModified,
+                        metadata: Self.renameMetadata(for: image)
+                    )
+                )
+            }
+        )
     }
 
-    private func renameSelectedImage() {
-        guard let url = selectedImageIDs.first,
-              let index = urlToImageIndex[url],
-              let folderURL = currentFolderURL else { return }
-
-        let currentName = url.deletingPathExtension().lastPathComponent
-        let ext = url.pathExtension
-
-        let alert = NSAlert()
-        alert.messageText = "Rename"
-        alert.informativeText = "Enter a new name for the file."
-
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        input.stringValue = currentName
-        alert.accessoryView = input
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newName.isEmpty, newName != currentName else { return }
-
-        let newURL = url.deletingLastPathComponent()
-            .appendingPathComponent(newName)
-            .appendingPathExtension(ext)
-
-        guard !FileManager.default.fileExists(atPath: newURL.path) else {
-            presentMoveErrorAlert(message: "A file named \"\(newName).\(ext)\" already exists.")
+    /// Applies only the executor's successful source→destination mapping. Building a complete
+    /// replacement array first makes cycles (A↔B) safe and avoids transient duplicate URL keys.
+    func applySuccessfulRename(_ presentation: BatchRenameExecutionPresentation) {
+        guard presentation.status == .succeeded else { return }
+        let mapping = Dictionary(uniqueKeysWithValues: presentation.mappings.map {
+            ($0.sourceURL.standardizedFileURL, $0.destinationURL.standardizedFileURL)
+        })
+        guard !mapping.isEmpty else {
+            batchRenameSheetRequest = nil
             return
         }
 
-        do {
-            try FileManager.default.moveItem(at: url, to: newURL)
-        } catch {
-            presentMoveErrorAlert(message: "Rename failed: \(error.localizedDescription)")
-            return
+        let projectedState = BatchRenameBrowserURLState(
+            selectedURLs: selectedImageIDs,
+            lastClickedURL: lastClickedImageURL,
+            manualOrder: manualOrder
+        ).applying(presentation.mappings)
+        func mappedURL(_ url: URL) -> URL {
+            mapping[url.standardizedFileURL] ?? url
         }
+        pendingMetadataURLs = Set(pendingMetadataURLs.map(mappedURL))
+        lastRefreshModifiedURLs = Set(lastRefreshModifiedURLs.map(mappedURL))
+        draggedImageURLs = Set(draggedImageURLs.map(mappedURL))
+        images = images.map { image in
+            guard let destination = mapping[image.url.standardizedFileURL],
+                  destination != image.url.standardizedFileURL else { return image }
+            return ImageFile(url: destination, copyingFrom: image)
+        }
+        manualOrder = projectedState.manualOrder
+        selectedImageIDs = projectedState.selectedURLs
+        lastClickedImageURL = projectedState.lastClickedURL
 
-        // Move XMP sidecar
-        var sidecarWarnings: [String] = []
-        let xmpSource = xmpSidecarService.sidecarURL(for: url)
-        if FileManager.default.fileExists(atPath: xmpSource.path) {
-            let xmpDest = xmpSidecarService.sidecarURL(for: newURL)
-            do {
-                try FileManager.default.moveItem(at: xmpSource, to: xmpDest)
-            } catch {
-                logger.error("Failed to move XMP sidecar for \(url.lastPathComponent): \(error.localizedDescription)")
-                sidecarWarnings.append("XMP sidecar: \(error.localizedDescription)")
+        for pair in presentation.mappings {
+            for url in [pair.sourceURL, pair.destinationURL] {
+                thumbnailService.invalidateThumbnail(for: url)
+                fullScreenImageCache.invalidateImage(for: url)
+                Task { await C2PASigningService.invalidateValidationCache(for: url) }
             }
         }
-
-        // Rename metadata sidecar to match new filename
-        do {
-            try sidecarService.renameSidecar(from: url, to: newURL, in: folderURL)
-        } catch {
-            logger.error("Failed to move metadata sidecar for \(url.lastPathComponent): \(error.localizedDescription)")
-            sidecarWarnings.append("Metadata sidecar: \(error.localizedDescription)")
-        }
-
-        if !sidecarWarnings.isEmpty {
-            let detail = sidecarWarnings.joined(separator: "\n")
-            let alert = NSAlert()
-            alert.alertStyle = .warning
-            alert.messageText = "File renamed, but sidecar files could not be moved"
-            alert.informativeText = "The image was renamed successfully, but associated sidecar files failed to follow. Edits stored in these sidecars may not appear for the renamed file.\n\n\(detail)"
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        }
-
-        // Update images array
-        let newImage = ImageFile(url: newURL, copyingFrom: images[index])
-        images[index] = newImage
-
-        // Update selection
-        selectedImageIDs = [newURL]
-        lastClickedImageURL = newURL
-
-        // Update manual order
-        if let manualIndex = manualOrder.firstIndex(of: url) {
-            manualOrder[manualIndex] = newURL
-        }
-
-        thumbnailService.invalidateThumbnail(for: url)
+        rebuildNow()
+        batchRenameSheetRequest = nil
     }
 
-    private func batchRenameSelectedImages() {
-        let alert = NSAlert()
-        alert.messageText = "Batch Rename"
-        alert.informativeText = "Enter a rename pattern.\nVariables: {original} (original name), {n} (sequence number), {date} (file date YYYYMMDD)"
-
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        input.stringValue = "{original}"
-        input.placeholderString = "{original}_{n}"
-        alert.accessoryView = input
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        let pattern = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !pattern.isEmpty else { return }
-
-        guard let folderURL = currentFolderURL else { return }
-
-        // Get selected images in sort order
-        let sorted = sortedImages.filter { selectedImageIDs.contains($0.url) }
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyyMMdd"
-
-        var newSelectionURLs: Set<URL> = []
-        var renames: [(oldURL: URL, newURL: URL, index: Int)] = []
-
-        for (seqIndex, image) in sorted.enumerated() {
-            guard let index = urlToImageIndex[image.url] else { continue }
-            let ext = image.url.pathExtension
-            let originalName = image.url.deletingPathExtension().lastPathComponent
-
-            var newName = pattern
-            newName = newName.replacingOccurrences(of: "{original}", with: originalName)
-            newName = newName.replacingOccurrences(of: "{n}", with: String(seqIndex + 1))
-            newName = newName.replacingOccurrences(of: "{date}", with: dateFormatter.string(from: image.dateModified))
-
-            var newURL = image.url.deletingLastPathComponent()
-                .appendingPathComponent(newName)
-                .appendingPathExtension(ext)
-
-            // Handle name collision
-            var counter = 2
-            while FileManager.default.fileExists(atPath: newURL.path) && newURL != image.url {
-                newURL = image.url.deletingLastPathComponent()
-                    .appendingPathComponent("\(newName) \(counter)")
-                    .appendingPathExtension(ext)
-                counter += 1
-            }
-
-            guard newURL != image.url else {
-                newSelectionURLs.insert(image.url)
-                continue
-            }
-
-            renames.append((oldURL: image.url, newURL: newURL, index: index))
-        }
-
-        // Execute renames
-        var sidecarFailures: [String] = []
-        for rename in renames {
-            do {
-                try FileManager.default.moveItem(at: rename.oldURL, to: rename.newURL)
-
-                let xmpSource = xmpSidecarService.sidecarURL(for: rename.oldURL)
-                if FileManager.default.fileExists(atPath: xmpSource.path) {
-                    let xmpDest = xmpSidecarService.sidecarURL(for: rename.newURL)
-                    do {
-                        try FileManager.default.moveItem(at: xmpSource, to: xmpDest)
-                    } catch {
-                        logger.error("Failed to move XMP sidecar for \(rename.oldURL.lastPathComponent): \(error.localizedDescription)")
-                        sidecarFailures.append(rename.oldURL.lastPathComponent)
-                    }
-                }
-                do {
-                    try sidecarService.renameSidecar(from: rename.oldURL, to: rename.newURL, in: folderURL)
-                } catch {
-                    logger.error("Failed to move metadata sidecar for \(rename.oldURL.lastPathComponent): \(error.localizedDescription)")
-                    if !sidecarFailures.contains(rename.oldURL.lastPathComponent) {
-                        sidecarFailures.append(rename.oldURL.lastPathComponent)
-                    }
-                }
-
-                let newImage = ImageFile(url: rename.newURL, copyingFrom: images[rename.index])
-                images[rename.index] = newImage
-                newSelectionURLs.insert(rename.newURL)
-
-                if let manualIndex = manualOrder.firstIndex(of: rename.oldURL) {
-                    manualOrder[manualIndex] = rename.newURL
-                }
-
-                thumbnailService.invalidateThumbnail(for: rename.oldURL)
-            } catch {
-                logger.error("Batch rename failed for \(rename.oldURL.lastPathComponent): \(error.localizedDescription)")
-                newSelectionURLs.insert(rename.oldURL)
+    /// A failed or cancelled multi-file operation is authoritative only about its residual report.
+    /// Invalidate every plausible key and rescan the folder instead of projecting planned paths.
+    func recoverAfterRenameFailure(
+        _ result: RenameExecutionResult,
+        request: BatchRenameSheetRequest
+    ) {
+        var affectedURLs = Set(request.items.map { $0.sourceImageURL.standardizedFileURL })
+        for bundle in result.bundles {
+            if let destination = bundle.destinationImageURL {
+                affectedURLs.insert(destination.standardizedFileURL)
             }
         }
-
-        if !sidecarFailures.isEmpty {
-            let fileList = sidecarFailures.prefix(10).joined(separator: ", ")
-            let suffix = sidecarFailures.count > 10 ? " and \(sidecarFailures.count - 10) more" : ""
-            let alert = NSAlert()
-            alert.alertStyle = .warning
-            alert.messageText = "Some sidecar files could not be moved"
-            alert.informativeText = "Images were renamed successfully, but sidecar files for \(sidecarFailures.count) image(s) failed to follow. Edits stored in these sidecars may not appear for the renamed files.\n\n\(fileList)\(suffix)"
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
+        for residual in result.residuals {
+            affectedURLs.insert(residual.expectedSourceURL.standardizedFileURL)
+            affectedURLs.insert(residual.intendedDestinationURL.standardizedFileURL)
+            affectedURLs.insert(residual.temporaryURL.standardizedFileURL)
+            if let current = residual.currentURL { affectedURLs.insert(current.standardizedFileURL) }
         }
+        for url in affectedURLs {
+            thumbnailService.invalidateThumbnail(for: url)
+            fullScreenImageCache.invalidateImage(for: url)
+            Task { await C2PASigningService.invalidateValidationCache(for: url) }
+        }
+        guard currentFolderURL?.standardizedFileURL == request.folderURL.standardizedFileURL else { return }
+        loadFolder(url: request.folderURL, addToOpenFolders: false)
+    }
 
-        selectedImageIDs = newSelectionURLs
-        lastClickedImageURL = newSelectionURLs.first
+    private static func renameMetadata(for image: ImageFile) -> [BatchRenameMetadataField: String] {
+        let metadata = image.metadata
+        var values: [BatchRenameMetadataField: String] = [:]
+        values[.title] = metadata?.title
+        values[.creator] = metadata?.creator
+        values[.creatorJobTitle] = metadata?.creatorJobTitle
+        values[.jobID] = metadata?.jobId
+        values[.event] = metadata?.event
+        values[.city] = metadata?.city
+        values[.country] = metadata?.country
+        values[.countryCode] = metadata?.countryCode
+        values[.rating] = String(image.starRating.rawValue)
+        values[.colorLabel] = image.colorLabel.displayName
+        return values
+    }
+
+    private static func renameDate(from value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        if let date = ISO8601DateFormatter().date(from: value) { return date }
+        for format in ["yyyy:MM:dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd"] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = format
+            if let date = formatter.date(from: value) { return date }
+        }
+        return nil
     }
 
     // MARK: - Duplicate

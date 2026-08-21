@@ -22,6 +22,9 @@ nonisolated enum MetadataDictKey {
     static let digitalSourceType = "DigitalSourceType"
     static let urgency = "Urgency"
     static let scene = "Scene"
+    static let subjectCode = "SubjectCode"
+    static let aboutCvTerm = "AboutCvTerm"
+    static let genre = "Genre"
     static let creatorContactInfo = "CreatorContactInfo"
     static let locationCreated = "LocationCreated"
     static let locationShown = "LocationShown"
@@ -40,10 +43,12 @@ nonisolated enum MetadataDictKey {
     static let webStatementOfRights = "WebStatement"
     static let digitalImageGUID = "DigImageGUID"
     static let imageSupplierImageID = "ImageSupplierImageID"
+    static let imageSupplier = "ImageSupplier"
     static let transmissionReference = "TransmissionReference"
     static let jobID = "JobID"
     static let originalTransmissionReference = "OriginalTransmissionReference"
     static let dateCreated = "DateCreated"
+    static let timeCreated = "TimeCreated"
     static let createDate = "CreateDate"
     static let dateTimeOriginal = "DateTimeOriginal"
     static let city = "City"
@@ -160,6 +165,7 @@ nonisolated func parseDoubleValue(_ value: Any?) -> Double? {
 
 nonisolated private let iptcCoreXMPNamespace = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
 nonisolated private let iptcExtensionXMPNamespace = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
+nonisolated private let plusXMPNamespace = "http://ns.useplus.org/ldf/xmp/1.0/"
 nonisolated private let exifXMPNamespace = "http://ns.adobe.com/exif/1.0/"
 
 /// SwiftExif unwraps an XMP structure with namespace-qualified dictionary keys. Accept local
@@ -319,6 +325,61 @@ nonisolated func parseEditorialLocations(_ value: Any?) -> [EditorialLocation] {
         return values.compactMap(parseEditorialLocation)
     }
     return parseEditorialLocation(value).map { [$0] } ?? []
+}
+
+nonisolated func parseEditorialImageSuppliers(_ value: Any?) -> [EditorialImageSupplier] {
+    let structures: [[String: Any]]
+    if let values = value as? [[String: Any]] {
+        structures = values
+    } else if let value = value as? [String: Any] {
+        structures = [value]
+    } else {
+        return []
+    }
+    return EditorialImageSupplier.normalizedValues(structures.map { fields in
+        EditorialImageSupplier(
+            identifier: parseFirstString(structuredXMPValue(
+                fields, namespace: plusXMPNamespace, property: "ImageSupplierID"
+            )) ?? parseFirstString(structuredXMPValue(
+                fields, namespace: iptcExtensionXMPNamespace, property: "ImageSupplierID"
+            )),
+            name: parseFirstString(structuredXMPValue(
+                fields, namespace: plusXMPNamespace, property: "ImageSupplierName"
+            )) ?? parseFirstString(structuredXMPValue(
+                fields, namespace: iptcExtensionXMPNamespace, property: "ImageSupplierName"
+            ))
+        )
+    })
+}
+
+nonisolated func parseControlledVocabularyTerms(
+    _ value: Any?
+) -> [IPTCControlledVocabularyTerm] {
+    let structures: [[String: Any]]
+    if let values = value as? [[String: Any]] {
+        structures = values
+    } else if let value = value as? [String: Any] {
+        structures = [value]
+    } else {
+        return []
+    }
+    return IPTCControlledVocabularyTerm.normalizedValues(structures.compactMap { fields in
+        let term = IPTCControlledVocabularyTerm(
+            vocabularyIdentifier: parseFirstString(structuredXMPValue(
+                fields, namespace: iptcExtensionXMPNamespace, property: "CvId"
+            )),
+            termIdentifier: parseFirstString(structuredXMPValue(
+                fields, namespace: iptcExtensionXMPNamespace, property: "CvTermId"
+            )) ?? "",
+            name: parseFirstString(structuredXMPValue(
+                fields, namespace: iptcExtensionXMPNamespace, property: "CvTermName"
+            )),
+            refinedAbout: parseFirstString(structuredXMPValue(
+                fields, namespace: iptcExtensionXMPNamespace, property: "CvTermRefinedAbout"
+            ))
+        )
+        return term.isValid ? term : nil
+    })
 }
 
 /// Sensor-frame (un-oriented) pixel aspect ratio (width/height) from a metadata
@@ -1159,6 +1220,25 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         cameraRaw.filmEmulation = film
     }
 
+    let creators = parseStringOrArray(
+        dict[MetadataDictKey.creator] ?? dict[MetadataDictKey.byLine]
+    )
+    let dateCreated: String? = {
+        if let value = dict[MetadataDictKey.dateCreated] as? String {
+            if let parsed = try? EditorialDateCreated(parsing: value) {
+                return parsed.lexicalValue
+            }
+            if let parsed = EditorialDateCreated.fromIIM(
+                date: value,
+                time: dict[MetadataDictKey.timeCreated] as? String
+            ) {
+                return parsed.lexicalValue
+            }
+            return value // Preserve invalid legacy input for a non-destructive round trip.
+        }
+        return dict[MetadataDictKey.createDate] as? String
+    }()
+
     return IPTCMetadata(
         title: dict[MetadataDictKey.headline] as? String
             ?? dict[MetadataDictKey.title] as? String
@@ -1174,9 +1254,12 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
             .flatMap { DigitalSourceType(metadataValue: $0) },
         urgency: parseIntValue(dict[MetadataDictKey.urgency]),
         sceneCodes: parseStringOrArray(dict[MetadataDictKey.scene]),
+        subjectCodes: parseStringOrArray(dict[MetadataDictKey.subjectCode]),
+        mediaTopics: parseControlledVocabularyTerms(dict[MetadataDictKey.aboutCvTerm]),
+        genres: parseControlledVocabularyTerms(dict[MetadataDictKey.genre]),
         latitude: dict[MetadataDictKey.gpsLatitude] as? Double,
         longitude: dict[MetadataDictKey.gpsLongitude] as? Double,
-        creator: parseFirstString(dict[MetadataDictKey.creator] ?? dict[MetadataDictKey.byLine]),
+        creators: creators,
         creatorJobTitle: dict[MetadataDictKey.creatorJobTitle] as? String
             ?? dict[MetadataDictKey.byLineTitle] as? String,
         descriptionWriter: dict[MetadataDictKey.descriptionWriter] as? String
@@ -1188,11 +1271,11 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         webStatementOfRights: dict[MetadataDictKey.webStatementOfRights] as? String,
         digitalImageGUID: dict[MetadataDictKey.digitalImageGUID] as? String,
         imageSupplierImageID: dict[MetadataDictKey.imageSupplierImageID] as? String,
+        imageSuppliers: parseEditorialImageSuppliers(dict[MetadataDictKey.imageSupplier]),
         jobId: dict[MetadataDictKey.transmissionReference] as? String
             ?? dict[MetadataDictKey.jobID] as? String
             ?? dict[MetadataDictKey.originalTransmissionReference] as? String,
-        dateCreated: dict[MetadataDictKey.dateCreated] as? String
-            ?? dict[MetadataDictKey.createDate] as? String,
+        dateCreated: dateCreated,
         captureDate: dict[MetadataDictKey.dateTimeOriginal] as? String,
         city: dict[MetadataDictKey.city] as? String,
         sublocation: dict[MetadataDictKey.location] as? String

@@ -62,7 +62,10 @@ nonisolated enum SidecarReconciliation {
         if a.digitalSourceType != b.digitalSourceType { return true }
         if a.urgency != b.urgency { return true }
         if Set(a.sceneCodes) != Set(b.sceneCodes) { return true }
-        if a.creator != b.creator { return true }
+        if Set(a.subjectCodes) != Set(b.subjectCodes) { return true }
+        if Set(a.mediaTopics) != Set(b.mediaTopics) { return true }
+        if Set(a.genres) != Set(b.genres) { return true }
+        if a.creators != b.creators { return true }
         if a.creatorJobTitle != b.creatorJobTitle { return true }
         if a.descriptionWriter != b.descriptionWriter { return true }
         if a.credit != b.credit { return true }
@@ -71,6 +74,7 @@ nonisolated enum SidecarReconciliation {
         if a.webStatementOfRights != b.webStatementOfRights { return true }
         if a.digitalImageGUID != b.digitalImageGUID { return true }
         if a.imageSupplierImageID != b.imageSupplierImageID { return true }
+        if a.imageSuppliers != b.imageSuppliers { return true }
         if a.jobId != b.jobId { return true }
         if a.dateCreated != b.dateCreated { return true }
         if a.city != b.city { return true }

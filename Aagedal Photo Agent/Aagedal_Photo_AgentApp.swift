@@ -230,7 +230,7 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("Remove or Reset Selected Edit Layer") {
                     NotificationCenter.default.post(name: .removeOrResetSelectedEditLayer, object: nil)
                 }
-                .keyboardShortcut("w", modifiers: .command)
+                .keyboardShortcut(.delete, modifiers: [.control, .option])
 
                 Divider()
 
@@ -326,6 +326,13 @@ struct Aagedal_Photo_AgentApp: App {
                 Group {
                     Divider()
 
+                    Button("Caption Workspace") {
+                        NotificationCenter.default.post(name: .openCaptionWorkspace, object: nil)
+                    }
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
+
+                    Divider()
+
                     Button("Previous Image") {
                         NotificationCenter.default.post(name: .selectPreviousImage, object: nil)
                     }
@@ -341,7 +348,7 @@ struct Aagedal_Photo_AgentApp: App {
                     Button("Toggle HDR") {
                         NotificationCenter.default.post(name: .toggleHDR, object: nil)
                     }
-                    .keyboardShortcut("h", modifiers: [])
+                    .keyboardShortcut("h", modifiers: [.control, .option])
 
                     Section("Image Scaling") {
                         Toggle("Nearest-Neighbor Scaling", isOn: $imageScaling.useNearestNeighbor)
@@ -352,29 +359,29 @@ struct Aagedal_Photo_AgentApp: App {
                     Button("Waveform") {
                         NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.waveform)
                     }
-                    .keyboardShortcut("1", modifiers: .shift)
+                    .keyboardShortcut("1", modifiers: [.control, .option])
 
                     Button("Parade") {
                         NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.parade)
                     }
-                    .keyboardShortcut("2", modifiers: .shift)
+                    .keyboardShortcut("2", modifiers: [.control, .option])
 
                     Button("Vectorscope") {
                         NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.vectorscope)
                     }
-                    .keyboardShortcut("3", modifiers: .shift)
+                    .keyboardShortcut("3", modifiers: [.control, .option])
 
                     Button("Gamut") {
                         NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.chromaticity)
                     }
-                    .keyboardShortcut("4", modifiers: .shift)
+                    .keyboardShortcut("4", modifiers: [.control, .option])
 
                     Divider()
 
                     Button("Toggle Gamut Clipping") {
                         NotificationCenter.default.post(name: .toggleGamutClipping, object: nil)
                     }
-                    .keyboardShortcut("g", modifiers: [])
+                    .keyboardShortcut("g", modifiers: [.control, .option])
                 }
 
                 // The inline Picker's label is itself the section header — wrapping it
@@ -468,11 +475,11 @@ final class BackgroundOperationMonitor {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    @MainActor private var terminationReplyPending = false
+    @MainActor private let terminationReplyLatch = ApplicationTerminationReplyLatch()
 
     @MainActor
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if terminationReplyPending { return .terminateLater }
+        if terminationReplyLatch.isPending { return .terminateLater }
 
         let monitor = BackgroundOperationMonitor.shared
         if monitor.hasActiveOperation {
@@ -486,26 +493,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if alert.runModal() == .alertFirstButtonReturn { return .terminateCancel }
         }
 
-        let coordinator = DevelopVersionFlushCoordinator.shared
-        guard coordinator.hasRegisteredHandler else { return .terminateNow }
-
-        terminationReplyPending = true
-        Task { @MainActor in
-            let outcome = await coordinator.flush(.applicationTermination)
-            var shouldTerminate = true
-            if case let .failed(message) = outcome {
-                let alert = NSAlert()
-                alert.alertStyle = .critical
-                alert.messageText = "Named Version Save Failed"
-                alert.informativeText = "The active Develop version could not be saved: \(message)\n\nKeep the app open to retry, or quit without saving these changes."
-                alert.addButton(withTitle: "Keep App Open")
-                alert.addButton(withTitle: "Quit Without Saving")
-                shouldTerminate = alert.runModal() == .alertSecondButtonReturn
+        guard terminationReplyLatch.begin() else { return .terminateLater }
+        let captionOperation = CaptionWorkspaceTerminationFlushOperation()
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            captionFlush: { try await captionOperation.flush() },
+            developFlush: {
+                await DevelopVersionFlushCoordinator.shared.flush(.applicationTermination)
             }
-            terminationReplyPending = false
+        )
+        Task { @MainActor in
+            let shouldTerminate = await coordinator.resolve { failure in
+                terminationChoice(for: failure)
+            }
+            guard terminationReplyLatch.finish() else { return }
             sender.reply(toApplicationShouldTerminate: shouldTerminate)
         }
         return .terminateLater
+    }
+
+    @MainActor
+    private func terminationChoice(
+        for failure: ApplicationTerminationFlushFailure
+    ) -> ApplicationTerminationFailureChoice {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        switch failure.stage {
+        case .caption:
+            alert.messageText = "Caption Save Failed"
+            alert.informativeText = "Caption sidecar changes could not be saved: \(failure.message)\n\nRetry the retained drafts, keep the app open, or explicitly quit without saving them."
+        case .develop:
+            alert.messageText = "Named Version Save Failed"
+            alert.informativeText = "The active Develop version could not be saved: \(failure.message)\n\nRetry saving, keep the app open, or explicitly quit without saving these changes."
+        }
+        alert.addButton(withTitle: "Retry Save")
+        alert.addButton(withTitle: "Keep App Open")
+        alert.addButton(withTitle: "Quit Without Saving")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .retry
+        case .alertThirdButtonReturn: return .quitWithoutSaving
+        default: return .keepOpen
+        }
     }
 }
 
@@ -517,6 +544,7 @@ extension Notification.Name {
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")
     static let openInExternalEditor = Notification.Name("openInExternalEditor")
     static let openInInternalEditor = Notification.Name("openInInternalEditor")
+    static let openCaptionWorkspace = Notification.Name("openCaptionWorkspace")
     static let deleteSelected = Notification.Name("deleteSelected")
     static let showImport = Notification.Name("showImport")
     static let importStarted = Notification.Name("importStarted")

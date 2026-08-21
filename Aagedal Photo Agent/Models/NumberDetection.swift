@@ -43,7 +43,7 @@ nonisolated enum NumberClaimState: String, Codable, Sendable {
 /// and enables auto-confirmation when the face is independently identified.
 nonisolated struct NumberDetection: Codable, Identifiable, Sendable {
     let id: UUID
-    let imageURL: URL
+    var imageURL: URL
 
     /// The recognised jersey number (0...99).
     var number: Int

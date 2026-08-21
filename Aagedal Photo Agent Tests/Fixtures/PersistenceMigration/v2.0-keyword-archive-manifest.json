@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2024-01-02T03:04:05Z",
+  "files": [
+    {
+      "path": "quick/keywords.txt",
+      "kind": "quick.keywords",
+      "entryCount": 2
+    },
+    {
+      "path": "approved/city.txt",
+      "kind": "approved.city",
+      "entryCount": 1
+    },
+    {
+      "path": "structured/keywords.txt",
+      "kind": "structured",
+      "entryCount": 3
+    }
+  ]
+}

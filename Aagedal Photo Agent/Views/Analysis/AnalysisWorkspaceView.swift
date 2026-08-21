@@ -206,6 +206,7 @@ struct AnalysisWorkspaceView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Image Analysis workspace")
+        .accessibilityIdentifier("analysis.workspace")
     }
 
     private func resetForSourceChange() {

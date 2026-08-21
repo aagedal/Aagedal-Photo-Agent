@@ -34,6 +34,14 @@ struct ImageAnalysisProjectArchiveTests {
         )
 
         #expect(manifest.files.count == 6)
+        #expect(Set(manifest.files.map(\.path)) == [
+            ".photo_analysis/cases/case.analysis.json",
+            ".photo_analysis/folder-map.analysis.json",
+            ".photo_metadata/evidence.jpg.meta.json",
+            ".photo_versions/catalog.json",
+            "evidence.jpg",
+            "evidence.xmp",
+        ])
         #expect(manifest.files.count { $0.kind == .image } == 1)
         #expect(manifest.files.count { $0.kind == .xmpSidecar } == 1)
         let preview = try await ImageAnalysisProjectArchive.inspect(archiveURL)

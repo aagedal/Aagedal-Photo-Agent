@@ -562,6 +562,172 @@ struct ComparisonCoordinatorTests {
         #expect(coordinator.session == original)
     }
 
+    @Test("rename cycles preserve comparison sources and interaction state")
+    func renameCycleReassociation() throws {
+        let left = makeSource(name: "left.jpg")
+        let right = makeSource(name: "right.jpg")
+        var session = ComparisonSession(
+            origin: .browser,
+            left: left,
+            right: right,
+            layout: .wipe,
+            focusedPane: .right,
+            lockState: .unlocked,
+            alignment: ComparisonAlignment(
+                normalizedCenterOffset: CGPoint(x: 0.1, y: -0.2),
+                rightToLeftScaleRatio: 1.5
+            ),
+            wipePosition: 0.7,
+            wipeAngleDegrees: 12
+        )
+        session.left.viewport.normalizedCenter = CGPoint(x: 0.25, y: 0.35)
+        session.right.viewport.normalizedCenter = CGPoint(x: 0.6, y: 0.7)
+        let originalID = session.id
+        let originalLeftHash = left.revision.sha256
+        let originalRightHash = right.revision.sha256
+
+        session.reassociateSources(using: [
+            .init(sourceURL: left.revision.canonicalURL, destinationURL: right.revision.canonicalURL),
+            .init(sourceURL: right.revision.canonicalURL, destinationURL: left.revision.canonicalURL),
+        ])
+
+        #expect(session.id == originalID)
+        #expect(session.left.source?.revision.canonicalURL == right.revision.canonicalURL)
+        #expect(session.right.source?.revision.canonicalURL == left.revision.canonicalURL)
+        #expect(session.left.source?.revision.sha256 == originalLeftHash)
+        #expect(session.right.source?.revision.sha256 == originalRightHash)
+        #expect(session.layout == .wipe)
+        #expect(session.focusedPane == .right)
+        #expect(session.lockState == .unlocked)
+        #expect(session.alignment.normalizedCenterOffset == CGPoint(x: 0.1, y: -0.2))
+        #expect(session.alignment.rightToLeftScaleRatio == 1.5)
+        #expect(session.wipePosition == 0.7)
+        #expect(session.wipeAngleDegrees == 12)
+        #expect(session.left.viewport.normalizedCenter == CGPoint(x: 0.25, y: 0.35))
+        #expect(session.right.viewport.normalizedCenter == CGPoint(x: 0.6, y: 0.7))
+    }
+
+    @Test("workspace reconciliation applies rename before a stale availability observation")
+    func atomicWorkspaceRenameReconciliation() throws {
+        let left = makeSource(name: "left.jpg")
+        let right = makeSource(name: "right.jpg")
+        let renamedLeft = URL(fileURLWithPath: "/tmp/renamed-left.jpg")
+        let renamedRight = URL(fileURLWithPath: "/tmp/renamed-right.jpg")
+        let mappings: [BatchRenameExecutionPresentation.Mapping] = [
+            .init(sourceURL: left.revision.canonicalURL, destinationURL: renamedLeft),
+            .init(sourceURL: right.revision.canonicalURL, destinationURL: renamedRight),
+        ]
+        let coordinator = try ComparisonCoordinator(session: ComparisonSession(
+            origin: .browser,
+            left: left,
+            right: right,
+            layout: .wipe,
+            focusedPane: .right,
+            viewport: ViewportState(
+                mode: .actualPixels,
+                normalizedCenter: CGPoint(x: 0.3, y: 0.7)
+            )
+        ))
+
+        // SwiftUI can publish the rename event one render before Browser's replacement images.
+        // The destinations are provisionally available for that atomic reconciliation pass.
+        let eventFirst = ComparisonWorkspaceSourceReconciler.reconcile(
+            coordinator: coordinator,
+            previousAvailableOrder: [left.revision.canonicalURL, right.revision.canonicalURL],
+            availableImages: [
+                ImageFile(url: left.revision.canonicalURL),
+                ImageFile(url: right.revision.canonicalURL),
+            ],
+            renameMappings: mappings
+        )
+        #expect(eventFirst.missingPanes.isEmpty)
+        #expect(eventFirst.coordinator.session.left.source?.revision.canonicalURL == renamedLeft)
+        #expect(eventFirst.coordinator.session.right.source?.revision.canonicalURL == renamedRight)
+
+        let availabilitySecond = ComparisonWorkspaceSourceReconciler.reconcile(
+            coordinator: eventFirst.coordinator,
+            previousAvailableOrder: eventFirst.previousAvailableOrder,
+            availableImages: [ImageFile(url: renamedLeft), ImageFile(url: renamedRight)],
+            renameMappings: []
+        )
+        #expect(availabilitySecond.missingPanes.isEmpty)
+        #expect(availabilitySecond.coordinator.session.layout == .wipe)
+        #expect(availabilitySecond.coordinator.session.focusedPane == .right)
+        #expect(
+            availabilitySecond.coordinator.session.left.viewport.normalizedCenter
+                == CGPoint(x: 0.3, y: 0.7)
+        )
+    }
+
+    @Test("workspace rename lookup resolves a symlinked folder like source revisions do")
+    func symlinkedFolderRenameReconciliation() async throws {
+        let container = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "apa-comparison-rename-symlink-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let realFolder = container.appendingPathComponent("real", isDirectory: true)
+        let linkedFolder = container.appendingPathComponent("linked", isDirectory: true)
+        try FileManager.default.createDirectory(at: realFolder, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkedFolder, withDestinationURL: realFolder)
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        let linkedLeft = linkedFolder.appendingPathComponent("left.jpg")
+        let linkedRight = linkedFolder.appendingPathComponent("right.jpg")
+        try Data("left".utf8).write(to: linkedLeft)
+        try Data("right".utf8).write(to: linkedRight)
+        let leftRevision = try await SourceImageRevision.capture(at: linkedLeft)
+        let rightRevision = try await SourceImageRevision.capture(at: linkedRight)
+        let analysisRepository = AnalysisCaseRepository(sourceFolderURL: linkedFolder)
+        let analysisCase = AnalysisCase.create(for: leftRevision)
+        try await analysisRepository.save(analysisCase)
+        let left = ComparisonSource(revision: leftRevision, representation: .original)
+        let right = ComparisonSource(revision: rightRevision, representation: .original)
+        let coordinator = try ComparisonCoordinator(session: ComparisonSession(
+            origin: .browser,
+            left: left,
+            right: right
+        ))
+
+        let linkedRenamed = linkedFolder.appendingPathComponent("renamed.jpg")
+        try FileManager.default.moveItem(at: linkedLeft, to: linkedRenamed)
+        let mappings: [BatchRenameExecutionPresentation.Mapping] = [
+            .init(sourceURL: linkedLeft, destinationURL: linkedRenamed),
+        ]
+        let persistentResult = await RenameReassociationService().reassociate(
+            folderURL: linkedFolder,
+            mappings: mappings
+        )
+        #expect(persistentResult.succeeded)
+        #expect(persistentResult.analysisCaseCount == 1)
+
+        let result = ComparisonWorkspaceSourceReconciler.reconcile(
+            coordinator: coordinator,
+            previousAvailableOrder: [linkedLeft, linkedRight],
+            availableImages: [ImageFile(url: linkedRenamed), ImageFile(url: linkedRight)],
+            renameMappings: mappings
+        )
+
+        #expect(result.missingPanes.isEmpty)
+        #expect(
+            result.coordinator.session.left.source?.revision.canonicalURL
+                == realFolder.appendingPathComponent("renamed.jpg").standardizedFileURL
+        )
+        #expect(result.coordinator.session.left.source?.revision.sha256 == leftRevision.sha256)
+
+        let renamedRevision = try await SourceImageRevision.capture(at: linkedRenamed)
+        guard case .exact(let reopenedCase) = await analysisRepository.loadMostRelevantCase(
+            for: renamedRevision
+        ) else {
+            Issue.record("Expected the analysis case to reopen after a symlinked-folder rename")
+            return
+        }
+        #expect(reopenedCase.id == analysisCase.id)
+        #expect(
+            reopenedCase.source.canonicalURL
+                == realFolder.appendingPathComponent("renamed.jpg").standardizedFileURL
+        )
+    }
+
     private func makeCoordinator(
         focusedPane: ComparisonPane = .left
     ) throws -> ComparisonCoordinator {

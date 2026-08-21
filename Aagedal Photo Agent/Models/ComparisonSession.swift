@@ -258,6 +258,14 @@ nonisolated struct ComparisonSource: Hashable, Sendable {
 
     var filename: String { revision.filenameAtCreation }
     var representationLabel: String { representation.displayName }
+
+    func relocated(to url: URL) -> ComparisonSource {
+        ComparisonSource(
+            revision: revision.relocated(to: url),
+            representation: representation,
+            dynamicRange: dynamicRange
+        )
+    }
 }
 
 nonisolated struct ComparisonPaneState: Hashable, Sendable {
@@ -365,6 +373,25 @@ nonisolated struct ComparisonSession: Hashable, Sendable {
               leftRange != .unknown,
               rightRange != .unknown else { return false }
         return leftRange != rightRange
+    }
+
+    /// Refreshes only URL discovery hints while preserving the comparison identity, rendered
+    /// representation, layout, focus, alignment, and viewport state. The lookup is simultaneous,
+    /// which keeps A↔B swaps and longer cycles unambiguous.
+    mutating func reassociateSources(
+        using mappings: [BatchRenameExecutionPresentation.Mapping]
+    ) {
+        let destinations = Dictionary(uniqueKeysWithValues: mappings.map {
+            (renameReassociationLookupURL($0.sourceURL), $0.destinationURL.standardizedFileURL)
+        })
+        for pane in ComparisonPane.allCases {
+            guard let source = self[pane].source,
+                  let destination = destinations[
+                    renameReassociationLookupURL(source.revision.canonicalURL)
+                  ]
+            else { continue }
+            self[pane].source = source.relocated(to: destination)
+        }
     }
 }
 

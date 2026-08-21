@@ -147,6 +147,12 @@ nonisolated enum UserDefaultsKeys {
     static let addJobIdToKeywords = "addJobIdToKeywords"
     static let creatorInitials = "creatorInitials"
 
+    // MARK: - Caption Code Replacement
+    /// Versioned non-secret `CodeReplacementConfiguration` JSON.
+    static let codeReplacementConfiguration = "caption.codeReplacement.configuration"
+    /// Opaque security-scoped bookmark bytes, deliberately stored outside the configuration.
+    static let codeReplacementSourceBookmark = "caption.codeReplacement.sourceBookmark"
+
     // MARK: - Reverse Geocoding
     /// Output language for GPS→City/Country lookup. Token decoded by
     /// `ReverseGeocodeLanguage` ("system" or a BCP-47 code). Absent → `.system`.

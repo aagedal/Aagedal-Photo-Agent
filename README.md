@@ -73,7 +73,7 @@ Non-destructive RAW development with real-time Metal GPU preview:
 
 ### Metadata Management
 
-- Edit IPTC fields: title, caption, keywords, person shown, creator, credit, copyright, source, city, sublocation, state/province, country, event, instructions, job ID, and GPS coordinates
+- Edit the app's descriptive IPTC/XMP field set, including headline, caption, keywords, people and organisations shown, ordered creators, creator contact, credit and rights, Subject/Scene Codes, Media Topics, structured Genre and PLUS Image Supplier values, precision-aware Date Created, locations, instructions, source, and GPS coordinates
 - Non-destructive editing via JSON sidecar files with explicit save
 - Copy and paste metadata between images
 - Structured keywords — Photo Mechanic-style hierarchical keyword lists with categories and synonyms, with a tree picker in the metadata panel
@@ -84,6 +84,14 @@ Non-destructive RAW development with real-time Metal GPU preview:
 - Metadata mirrored to both IPTC and XMP for cross-tool interoperability
 - Correct IPTC `CodedCharacterSet` tagging so Nordic / non-ASCII characters round-trip through other apps
 - Pure-Swift in-process metadata engine (SwiftExif) — no external binaries, no subprocess overhead
+
+The generated [metadata field and delivery support table](docs/metadata-field-support.md) lists every
+current descriptive field ID, writer mapping, normalized read-back rule, and carrier boundary. It is
+an implementation-support statement, not a claim of completed manual round trips through Adobe
+Bridge, Photo Mechanic, or every supported browsing/export format.
+The current SwiftExif boundary exposes XMP language alternatives as `x-default` only; Photo Agent
+does not yet claim lossless editing of non-default `rdf:Alt` translations, and the shipped Headline/
+Title compatibility mapping remains in place until that dependency model is extended.
 
 ### Face Recognition
 
@@ -132,7 +140,7 @@ AVIF can be encoded with native macOS Image I/O or bundled FFmpeg
 - Experimental signing of images with C2PA content credentials — certificate and private key stored in the macOS Keychain
 - Powered by bundled c2patool
 
-### FTP / SFTP Upload
+### FTP / SFTP Upload and Deadline Delivery
 
 - Upload selected or all images via FTP or SFTP
 - Multiple connection profiles with a Test Connection button
@@ -140,6 +148,21 @@ AVIF can be encoded with native macOS Image I/O or bundled FFmpeg
 - Pre-upload required-field check that is sidecar-aware (falls back to the XMP sidecar for RAW files)
 - Edited images rendered into a per-folder `Uploaded/` folder before sending, with batch abort
 - Progress tracking with upload overlay, automatic retry, and human-readable errors
+- Deadline Send freezes the preflight, filenames, metadata, Develop state, export settings, and
+  destination before producing isolated staged copies; warnings require explicit per-batch acceptance
+- Deadline delivery supports staged copies only: SDR JPEG/TIFF and HDR Adaptive JPEG gain-map/16-bit
+  TIFF. RAW sources are rendered into those derivatives; Deadline Send refuses original-file and
+  XMP-sidecar-only delivery strategies
+- Staged bytes receive the authoritative resolved metadata, are parsed back for semantic verification,
+  and retain preservation evidence before upload. Failed and cancelled workflows keep verified staging
+  evidence for exact resume or confirmed cleanup in Activity
+
+FTP/SFTP delivery acknowledgement has deliberate limits. FTP/FTPS/SFTP protocol success and an optional
+remote existence/size observation are not a cryptographic remote-byte verification. The production
+adapter rechecks the local file's identity, size, and SHA-256 before requesting credentials, but there is
+still a narrow path-based time-of-check/time-of-use interval before `curl` opens that path. SFTP currently
+supports passwords supplied through a private temporary mode-0600 netrc file; SSH private-key identities
+are not supported.
 
 ### External Editor Integration
 
@@ -155,6 +178,20 @@ Opt-in sync that keeps your library settings in step across Macs, configured in 
 - Stored in the app's iCloud Drive container so it follows you to your other Macs
 - Passwords, signing keys, and machine-specific values (file paths, certificates, FTP servers) stay on-device and are never synced
 - Coordinated through `NSFileCoordinator` so syncing never forks conflicting duplicate folders
+
+### Privacy and Delivery Retention
+
+- Delivery receipts and retained delivery workflows live in local Application Support and are not part
+  of iCloud Sync. Retained workflow directories are also excluded from device backup
+- Workflow catalog and Activity summaries are deliberately limited and contain no credentials or
+  editorial metadata values. Receipt Activity details additionally omit filenames, source paths, and
+  content hashes
+- Exact private workflow state necessarily contains the frozen plan, local source identities, resolved
+  editorial metadata, destination details, and retained staged copies. It is used only for validation,
+  resume, and delivery execution; it is not placed in Activity summaries, logs, analytics, or sync
+- Retained workflows and staging are removed only after an explicit confirmation in Activity. Receipts
+  can also be deleted there; the local receipt repository otherwise keeps at most 250 receipts and drops
+  entries older than 365 days when its retention boundary runs
 
 ## Keyboard Shortcuts
 

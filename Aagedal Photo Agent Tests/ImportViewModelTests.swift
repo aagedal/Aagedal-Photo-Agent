@@ -5,6 +5,36 @@ import Testing
 @Suite("ImportViewModel", .serialized)
 @MainActor
 struct ImportViewModelTests {
+    @Test("Import template preserves ordered creators and exact Date Created")
+    func orderedCreatorAndDateTemplate() {
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        let creatorTransport = IPTCMetadata(
+            creators: ["First Reporter", "Second Reporter"]
+        ).creatorTransportValue!
+        let template = MetadataTemplate(
+            name: "Desk",
+            fields: [
+                TemplateField(fieldKey: "creator", templateValue: creatorTransport),
+                TemplateField(
+                    fieldKey: "dateCreated",
+                    templateValue: "2026-08-21T10:15:30.120+02:30"
+                ),
+            ]
+        )
+
+        viewModel.applyTemplate(template)
+
+        #expect(viewModel.configuration.metadata.creators == ["First Reporter", "Second Reporter"])
+        #expect(viewModel.configuration.metadata.editorialDateCreated?.precision == .fractionalSecond)
+        #expect(viewModel.configuration.metadata.editorialDateCreated?.timeZoneOffsetMinutes == 150)
+        let fields = ImportViewModel.buildMetadataFields(from: viewModel.configuration.metadata)
+        #expect(fields[.creator] == creatorTransport)
+        #expect(fields[.dateCreated] == "2026-08-21T10:15:30.120+02:30")
+    }
+
     @Test("Import readiness explains each blocked setup state")
     func importReadinessExplainsBlockedStates() {
         let defaults = UserDefaults.standard

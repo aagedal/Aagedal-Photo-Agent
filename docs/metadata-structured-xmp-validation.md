@@ -58,7 +58,9 @@ all 58 tests across the four suites.
 ## Remaining boundary work
 
 The result proves the app's local SwiftExif/XMP boundary for JPEG and standalone XMP; it is not yet
-an external interoperability guarantee. Current Bridge, Photo Mechanic, IPTC reference-tool, TIFF,
-PNG, HEIC/HEIF, JPEG XL, and representative RAW+XMP validation remain open. Creator-contact and
-location editing UI also remains Phase 1/2 work, and the broader support-matrix mapping task stays
-open until the other selected editorial fields are implemented.
+an external interoperability guarantee. Single-image Metadata editing now exposes Creator Contact
+Info and Location Created/Shown as structured controls; batch mode refuses implicit structured
+mutation and explains the boundary instead of flattening values. The CC0 TIFF, PNG, JPEG XL, and
+RAW-sidecar corpus covers local preservation. Current Bridge, Photo Mechanic, IPTC reference-tool,
+licensed HEIC/HEIF, and representative camera RAW validation plus manual accessibility review of
+the structured editor remain open.

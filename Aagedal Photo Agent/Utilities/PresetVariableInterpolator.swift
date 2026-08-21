@@ -10,13 +10,17 @@ struct PresetVariableInterpolator: Sendable {
     func resolvingGPSPlaceVariables(in metadata: IPTCMetadata) async -> IPTCMetadata {
         let strings = [
             metadata.title, metadata.description, metadata.extendedDescription,
-            metadata.creator, metadata.creatorJobTitle, metadata.descriptionWriter,
+            metadata.creatorJobTitle, metadata.descriptionWriter,
             metadata.credit, metadata.copyright, metadata.rightsUsageTerms,
             metadata.webStatementOfRights, metadata.digitalImageGUID, metadata.imageSupplierImageID,
             metadata.jobId,
             metadata.dateCreated, metadata.city, metadata.country, metadata.event,
-        ].compactMap { $0 } + metadata.keywords + metadata.personShown
+        ].compactMap { $0 } + metadata.creators + metadata.keywords + metadata.personShown
             + metadata.organisationsShownNames + metadata.organisationsShownCodes + metadata.sceneCodes
+            + metadata.subjectCodes
+            + metadata.mediaTopics.map(\.termIdentifier)
+            + metadata.genres.map(\.termIdentifier)
+            + metadata.imageSuppliers.flatMap { [$0.identifier, $0.name].compactMap { $0 } }
         guard strings.contains(where: {
             $0.contains(Self.gpsCityToken) || $0.contains(Self.gpsCountryToken)
         }) else { return metadata }
@@ -52,7 +56,7 @@ struct PresetVariableInterpolator: Sendable {
         result.title = replace(result.title)
         result.description = replace(result.description)
         result.extendedDescription = replace(result.extendedDescription)
-        result.creator = replace(result.creator)
+        result.creators = IPTCMetadata.normalizedCreators(result.creators.compactMap(replace))
         result.creatorJobTitle = replace(result.creatorJobTitle)
         result.descriptionWriter = replace(result.descriptionWriter)
         result.credit = replace(result.credit)
@@ -75,6 +79,12 @@ struct PresetVariableInterpolator: Sendable {
         result.organisationsShownNames = result.organisationsShownNames.compactMap { replace($0) }
         result.organisationsShownCodes = result.organisationsShownCodes.compactMap { replace($0) }
         result.sceneCodes = result.sceneCodes.compactMap { replace($0) }
+        result.subjectCodes = IPTCSubjectCode.normalizedValues(result.subjectCodes.compactMap { replace($0) })
+        result.imageSuppliers = EditorialImageSupplier.normalizedValues(
+            result.imageSuppliers.map {
+                EditorialImageSupplier(identifier: replace($0.identifier), name: replace($0.name))
+            }
+        )
         return result
     }
 
@@ -379,7 +389,13 @@ struct PresetVariableInterpolator: Sendable {
             return metadata.organisationsShownCodes.joined(separator: ", ")
         case "scenecode", "scenecodes", "scene":
             return metadata.sceneCodes.joined(separator: ", ")
-        case "creator": return metadata.creator ?? ""
+        case "subjectcode", "subjectcodes":
+            return metadata.subjectCodes.joined(separator: ", ")
+        case "mediatopic", "mediatopics", "aboutcvterm":
+            return metadata.mediaTopics.map(\.termIdentifier).joined(separator: ", ")
+        case "genre", "genres":
+            return metadata.genres.map(\.termIdentifier).joined(separator: ", ")
+        case "creator": return metadata.creators.joined(separator: ", ")
         case "creatorjobtitle", "authorsposition": return metadata.creatorJobTitle ?? ""
         case "descriptionwriter", "captionwriter": return metadata.descriptionWriter ?? ""
         case "credit": return metadata.credit ?? ""
@@ -388,6 +404,8 @@ struct PresetVariableInterpolator: Sendable {
         case "webstatementofrights", "webstatement": return metadata.webStatementOfRights ?? ""
         case "digitalimageguid", "digimageguid": return metadata.digitalImageGUID ?? ""
         case "imagesupplierimageid", "supplierimageid": return metadata.imageSupplierImageID ?? ""
+        case "imagesupplier", "imagesuppliers":
+            return EditorialImageSupplier.canonicalJSONString(for: metadata.imageSuppliers) ?? ""
         case "jobid": return metadata.jobId ?? ""
         case "datecreated": return metadata.dateCreated ?? ""
         case "city": return metadata.city ?? ""

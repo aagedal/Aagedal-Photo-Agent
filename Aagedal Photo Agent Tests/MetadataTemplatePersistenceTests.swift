@@ -157,4 +157,37 @@ struct MetadataTemplatePersistenceTests {
         }
         #expect(try Data(contentsOf: source) == futureData)
     }
+
+    @Test("a current bundle containing a future template is rejected without changing the file")
+    func nestedFutureTemplateInBundleIsReadOnly() throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let service = TemplateStorageService(directoryURL: folder)
+        let source = folder.appendingPathComponent("bundle.json")
+        let templateID = UUID()
+        let futureData = Data(
+            """
+            {
+              "schemaVersion": \(TemplateBundle.currentSchemaVersion),
+              "exportedAt": "2026-08-19T12:00:00Z",
+              "templates": [{
+                "schemaVersion": \(MetadataTemplate.currentSchemaVersion + 1),
+                "id": "\(templateID.uuidString)",
+                "name": "Future build",
+                "future": {"keep": true}
+              }]
+            }
+            """.utf8
+        )
+        try futureData.write(to: source)
+
+        #expect(throws: EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
+            document: "metadata template",
+            found: MetadataTemplate.currentSchemaVersion + 1,
+            supported: MetadataTemplate.currentSchemaVersion
+        )) {
+            _ = try service.loadBundle(from: source)
+        }
+        #expect(try Data(contentsOf: source) == futureData)
+    }
 }

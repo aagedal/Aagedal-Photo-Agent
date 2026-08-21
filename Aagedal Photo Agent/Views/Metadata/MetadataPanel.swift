@@ -9,9 +9,15 @@ struct MetadataPanel: View {
     @Bindable var viewModel: MetadataViewModel
     let browserViewModel: BrowserViewModel
     let settingsViewModel: SettingsViewModel
+    var initialFocusedField: MetadataFieldID? = nil
     var onApplyTemplate: (() -> Void)?
     var onSaveTemplate: (() -> Void)?
     var onPendingStatusChanged: (() -> Void)?
+    /// Captioning always commits drafts to the app sidecar. Embedding remains an explicit action.
+    var commitsToHistorySidecarOnly = false
+    var captionFlushCoordinator: CaptionWorkspaceFlushCoordinator?
+    var onFocusedFieldChanged: ((MetadataFieldID?) -> Void)?
+    var onAutocompletePresentationChanged: ((Bool) -> Void)?
 
     @State private var isShowingVariableReference = false
     @State private var variableInsertTarget: VariableInsertTarget = .description
@@ -27,6 +33,11 @@ struct MetadataPanel: View {
     @State private var showingStructuredKeywords = false
     @State private var showingStructuredPersonShown = false
     @State private var editingQuickList: QuickListType?
+    @State private var captionFlushOwner = UUID()
+    @State private var showingCaptionAutocomplete = false
+    @State private var captionAutocompleteField: MetadataFieldID?
+    @State private var captionAutocompleteRestoreFocusKey: String?
+    @State private var lastCaptionEditorFocusKey: String?
 
     enum ListFileTarget {
         case keywords
@@ -325,6 +336,147 @@ struct MetadataPanel: View {
         )
     }
 
+    private var subjectCodeEditor: some View {
+        KeywordsEditorWithDiff(
+            label: "Subject Code",
+            keywords: $viewModel.editingMetadata.subjectCodes,
+            differs: viewModel.subjectCodesDiffer(),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("subjectCode"),
+            placeholder: "Add deprecated 8-digit Subject Code",
+            onChange: {
+                viewModel.markChanged()
+                recordBatchControlledMutation(.subjectCode, values: viewModel.editingMetadata.subjectCodes)
+            },
+            onCommit: { commitEdits() },
+            focusKey: MetadataFieldID.subjectCode.rawValue,
+            focusedField: $focusedField,
+            validator: { value in
+                let canonical = IPTCSubjectCode.normalizedValue(value)
+                guard IPTCSubjectCode.isCurrentSyntax(canonical) else {
+                    return .reject(reason: "Use an eight-digit IPTC Subject Code.")
+                }
+                return .acceptCanonical(canonical)
+            },
+            flaggedKeywords: Set(viewModel.editingMetadata.subjectCodes.filter {
+                !IPTCSubjectCode.isCurrentSyntax($0)
+            }),
+            hideQuickListMenu: true
+        )
+    }
+
+    private var mediaTopicEditor: some View {
+        let binding = Binding<[String]>(
+            get: { viewModel.editingMetadata.mediaTopics.map(\.editorValue) },
+            set: { values in
+                let existing = Dictionary(
+                    viewModel.editingMetadata.mediaTopics.map { ($0.termIdentifier, $0) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                viewModel.editingMetadata.mediaTopics = IPTCControlledVocabularyTerm.normalizedValues(
+                    values.compactMap { value in
+                        if let retained = existing[value] { return retained }
+                        guard let parsed = IPTCControlledVocabularyTerm.mediaTopic(metadataValue: value) else {
+                            return nil
+                        }
+                        return existing[parsed.termIdentifier] ?? parsed
+                    }
+                )
+            }
+        )
+        return KeywordsEditorWithDiff(
+            label: "Media Topic",
+            keywords: binding,
+            differs: viewModel.mediaTopicsDiffer(),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("mediaTopic"),
+            placeholder: "Add 8-digit Media Topic NewsCode",
+            onChange: {
+                viewModel.markChanged()
+                recordBatchControlledMutation(
+                    .mediaTopic,
+                    values: viewModel.editingMetadata.mediaTopics.map(\.termIdentifier)
+                )
+            },
+            onCommit: { commitEdits() },
+            focusKey: MetadataFieldID.mediaTopic.rawValue,
+            focusedField: $focusedField,
+            validator: { value in
+                guard let canonical = IPTCControlledVocabularyTerm.mediaTopic(metadataValue: value) else {
+                    return .reject(reason: "Use an eight-digit IPTC Media Topic NewsCode or canonical URI.")
+                }
+                return .acceptCanonical(canonical.editorValue)
+            },
+            flaggedKeywords: Set(viewModel.editingMetadata.mediaTopics.compactMap {
+                $0.isMediaTopic ? nil : $0.termIdentifier
+            }),
+            hideQuickListMenu: true
+        )
+    }
+
+    private var genreEditor: some View {
+        let binding = Binding<[String]>(
+            get: { viewModel.editingMetadata.genres.map { $0.genreCode ?? $0.termIdentifier } },
+            set: { values in
+                let existing = Dictionary(
+                    viewModel.editingMetadata.genres.map { ($0.termIdentifier, $0) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                viewModel.editingMetadata.genres = IPTCControlledVocabularyTerm.normalizedValues(
+                    values.compactMap { value in
+                        if let retained = existing[value] { return retained }
+                        guard let parsed = IPTCControlledVocabularyTerm.genre(metadataValue: value) else {
+                            return nil
+                        }
+                        let known = IPTCGenreCode.entry(for: value)
+                        var labeled = parsed
+                        labeled.name = existing[parsed.termIdentifier]?.name ?? known?.name
+                        return existing[parsed.termIdentifier] ?? labeled
+                    }
+                )
+            }
+        )
+        let suggestions = IPTCGenreCode.all.map(\.displayValue)
+        return KeywordsEditorWithDiff(
+            label: "Genre",
+            keywords: binding,
+            differs: viewModel.genresDiffer(),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("genre"),
+            placeholder: "Choose an IPTC Genre NewsCode",
+            onChange: {
+                viewModel.markChanged()
+                recordBatchControlledMutation(
+                    .genre,
+                    values: viewModel.editingMetadata.genres.map(\.termIdentifier)
+                )
+            },
+            onCommit: { commitEdits() },
+            focusKey: MetadataFieldID.genre.rawValue,
+            focusedField: $focusedField,
+            suggestionProvider: { prefix in
+                ApprovedListService.suggestions(prefix: prefix, in: suggestions)
+            },
+            validator: { value in
+                guard let code = IPTCGenreCode.normalizedEditorValue(value) else {
+                    return .reject(reason: "Choose a current IPTC Genre NewsCode.")
+                }
+                return .acceptCanonical(code)
+            },
+            flaggedKeywords: Set(viewModel.editingMetadata.genres.compactMap {
+                guard let code = $0.genreCode else { return $0.termIdentifier }
+                return IPTCGenreCode.entry(for: code) == nil ? code : nil
+            }),
+            hideQuickListMenu: true,
+            autoHighlightFirstSuggestion: true
+        )
+    }
+
+    private func recordBatchControlledMutation(_ field: MetadataFieldID, values: [String]) {
+        guard viewModel.isBatchEdit else { return }
+        try? viewModel.setBatchMutation(
+            values.isEmpty ? .clear : .overwrite(.repeatable(values)),
+            for: field
+        )
+    }
+
     /// Merges suggestion sources into one candidate list, deduplicated
     /// case-insensitively. First occurrence wins, so earlier sources control
     /// the casing shown in the suggestions popover.
@@ -341,6 +493,191 @@ struct MetadataPanel: View {
             }
         }
         return merged
+    }
+
+    /// Fields where free-text suggestions are safe. Controlled vocabularies, dates, and unique
+    /// identifiers keep their dedicated editors and are intentionally excluded.
+    private static let captionAutocompleteFields: Set<MetadataFieldID> = [
+        .headline, .description, .extendedDescription,
+        .keywords, .personShown, .organisationShownName, .organisationShownCode,
+        .creatorJobTitle, .descriptionWriter, .credit, .copyright,
+        .rightsUsageTerms, .webStatementOfRights, .jobId,
+        .city, .sublocation, .provinceState, .country, .event, .instructions, .source,
+    ]
+
+    private var focusedCaptionAutocompleteField: MetadataFieldID? {
+        guard captionFlushCoordinator != nil,
+              let focusedField,
+              let field = MetadataFieldID(rawValue: focusedField),
+              Self.captionAutocompleteFields.contains(field) else {
+            return nil
+        }
+        return field
+    }
+
+    @discardableResult
+    private func openCaptionAutocomplete() -> Bool {
+        guard let key = focusedField,
+              let field = focusedCaptionAutocompleteField else { return false }
+        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
+           editor.hasMarkedText() {
+            showAutocompleteNotice("Finish the active text composition before opening suggestions.")
+            return true
+        }
+
+        // Capture and flush the exact field before focus moves into the popover. Clearing the
+        // FocusState prevents the popover's search field from being mistaken for a caption editor.
+        flushBufferedFields()
+        captionAutocompleteField = field
+        captionAutocompleteRestoreFocusKey = key
+        focusedField = nil
+        showingCaptionAutocomplete = true
+        return true
+    }
+
+    private func closeCaptionAutocomplete() {
+        showingCaptionAutocomplete = false
+    }
+
+    private func restoreCaptionAutocompleteFocus() {
+        let key = captionAutocompleteRestoreFocusKey
+        captionAutocompleteField = nil
+        captionAutocompleteRestoreFocusKey = nil
+        guard let key else { return }
+        DispatchQueue.main.async {
+            focusedField = key
+        }
+    }
+
+    private func applyCaptionAutocompleteSuggestion(_ suggestion: CaptionAutocompleteSuggestion) {
+        guard let field = captionAutocompleteField else { return }
+        let composition: CaptionAutocompleteCompositionState
+        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
+           editor.hasMarkedText() {
+            composition = .active
+        } else {
+            composition = .committed
+        }
+
+        var insertionSuggestion = suggestion
+        if field == .keywords {
+            let source: KeywordSource = suggestion.provenances.contains(.structuredKeywords)
+                ? .structuredTree
+                : .user
+            let validated = settingsViewModel.approvedLists.validateBulk(
+                suggestion.insertionValues,
+                in: .keywords,
+                source: source
+            )
+            if !validated.rejected.isEmpty {
+                viewModel.notice = MetadataPanelNotice(
+                    title: "Suggestion not inserted — Not in approved list",
+                    detail: validated.rejected,
+                    severity: .warning
+                )
+                return
+            }
+            insertionSuggestion = CaptionAutocompleteSuggestion(
+                field: suggestion.field,
+                displayValue: suggestion.displayValue,
+                insertionValues: validated.accepted,
+                provenances: suggestion.provenances,
+                matchKind: suggestion.matchKind
+            )
+        }
+
+        switch CaptionAutocompleteService.apply(
+            insertionSuggestion,
+            to: field,
+            metadata: viewModel.editingMetadata,
+            compositionState: composition
+        ) {
+        case let .applied(updated):
+            viewModel.editingMetadata = updated
+            viewModel.markChanged()
+            commitEdits()
+            closeCaptionAutocomplete()
+        case .refused(.activeComposition):
+            showAutocompleteNotice("Finish the active text composition before inserting a suggestion.")
+        case .refused(.fieldMismatch):
+            showAutocompleteNotice("The focused metadata field changed. Reopen suggestions for the intended field.")
+        case .refused(.emptyInsertion), .refused(.noChange):
+            closeCaptionAutocomplete()
+        }
+    }
+
+    private func showAutocompleteNotice(_ message: String) {
+        viewModel.notice = MetadataPanelNotice(
+            title: "Suggestion not inserted",
+            detail: [message],
+            severity: .warning
+        )
+    }
+
+    private func captionAutocompleteSeeds(for field: MetadataFieldID) -> [CaptionAutocompleteSeed] {
+        var seeds: [CaptionAutocompleteSeed] = []
+
+        if field == .keywords, settingsViewModel.approvedLists.isActive(for: .keywords) {
+            seeds += settingsViewModel.approvedLists.allEntries(for: .keywords).map {
+                CaptionAutocompleteSeed(field: field, displayValue: $0, provenance: .approvedList)
+            }
+        }
+
+        if field == .keywords {
+            seeds += StructuredKeywordService.shared.allSearchableNames().map { name in
+                let insertion = StructuredKeywordService.shared.activation(forName: name)?.values ?? [name]
+                return CaptionAutocompleteSeed(
+                    field: field,
+                    displayValue: name,
+                    insertionValues: insertion,
+                    provenance: .structuredKeywords
+                )
+            }
+        } else if field == .personShown {
+            seeds += StructuredKeywordService.personShown.allSearchableNames().map { name in
+                let insertion = StructuredKeywordService.personShown.activation(forName: name)?.values ?? [name]
+                return CaptionAutocompleteSeed(
+                    field: field,
+                    displayValue: name,
+                    insertionValues: insertion,
+                    provenance: .structuredPersonShown
+                )
+            }
+            seeds += KnownPeopleService.shared.getAllPeople()
+                .map(\.name)
+                .sorted { CaptionAutocompleteService.normalized($0) < CaptionAutocompleteService.normalized($1) }
+                .map { CaptionAutocompleteSeed(field: field, displayValue: $0, provenance: .knownPeople) }
+        }
+
+        seeds += CaptionAutocompleteService.currentFolderSeeds(
+            from: browserViewModel.images.compactMap(\.metadata),
+            fields: [field]
+        )
+
+        if let quickList = quickListType(for: field) {
+            seeds += settingsViewModel.entries(for: quickList).map {
+                CaptionAutocompleteSeed(
+                    field: field,
+                    displayValue: $0,
+                    provenance: .utf8TextList(name: "\(quickList.displayName) list")
+                )
+            }
+        }
+        return seeds
+    }
+
+    private func quickListType(for field: MetadataFieldID) -> QuickListType? {
+        switch field {
+        case .keywords: return .keywords
+        case .personShown: return .personShown
+        case .copyright: return .copyright
+        case .creator: return .creator
+        case .credit: return .credit
+        case .city: return .city
+        case .country: return .country
+        case .event: return .event
+        default: return nil
+        }
     }
 
     private func addStructuredKeywords(_ expanded: [String]) {
@@ -600,9 +937,29 @@ struct MetadataPanel: View {
         }
     }
 
+    /// The shared field editor is reused by AppKit, so spell/grammar state must be reset on every
+    /// focus change. Names, identifiers, codes, and controlled vocabulary fields deliberately do
+    /// not receive prose corrections.
+    private func configureSystemWritingAssistance(for focusKey: String?) {
+        let proseFields: Set<MetadataFieldID> = [.headline, .description, .extendedDescription]
+        let enabled = focusKey.flatMap(MetadataFieldID.init(rawValue:)).map(proseFields.contains)
+            ?? false
+        DispatchQueue.main.async {
+            guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
+            editor.isContinuousSpellCheckingEnabled = enabled
+            editor.isGrammarCheckingEnabled = enabled
+        }
+    }
+
     private func commitEdits() {
+        commitDebounceTask?.cancel()
         flushBufferedFields()
         guard viewModel.hasChanges else { return }
+        if commitsToHistorySidecarOnly {
+            viewModel.saveToSidecar()
+            onPendingStatusChanged?()
+            return
+        }
         let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
         let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
         // Simple resolves C2PA to .writeToFile and deliberately ignores content
@@ -664,6 +1021,7 @@ struct MetadataPanel: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .accessibilityIdentifier("metadata.panel")
         .sheet(isPresented: $isShowingVariableReference) {
             VariableReferenceView(
                 isPresented: $isShowingVariableReference,
@@ -687,6 +1045,10 @@ struct MetadataPanel: View {
             browserViewModel.shouldRestoreGridFocus = true
             return .handled
         }
+        .onKeyPress(.space) {
+            guard NSEvent.modifierFlags.contains(.option) else { return .ignored }
+            return openCaptionAutocomplete() ? .handled : .ignored
+        }
         .onReceive(NotificationCenter.default.publisher(for: .showRawMetadata)) { _ in
             guard !viewModel.isBatchEdit, viewModel.selectedCount == 1 else { return }
             showingRawMetadata = true
@@ -695,12 +1057,45 @@ struct MetadataPanel: View {
             StructuredKeywordsCoordinator.shared.register(owner: viewModel) { expanded in
                 addStructuredKeywords(expanded)
             }
+            captionFlushCoordinator?.register(
+                owner: captionFlushOwner,
+                compositionState: {
+                    guard focusedField != nil,
+                          let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
+                          editor.hasMarkedText() else {
+                        return .committed
+                    }
+                    return .active
+                },
+                capturePersistence: { try captureCaptionDraftPersistence() },
+                persistenceFailure: { message in
+                    viewModel.saveError = "Failed to save caption sidecar: \(message)"
+                },
+                handler: { try flushCaptionEditorBuffer() }
+            )
+            if let initialFocusedField {
+                DispatchQueue.main.async {
+                    focusedField = initialFocusedField.rawValue
+                }
+            }
+        }
+        .onChange(of: initialFocusedField) { _, field in
+            guard let field else { return }
+            DispatchQueue.main.async {
+                focusedField = field.rawValue
+            }
         }
         .onDisappear {
             StructuredKeywordsCoordinator.shared.unregister(owner: viewModel)
+            captionFlushCoordinator?.unregister(owner: captionFlushOwner)
         }
         .onReceive(NotificationCenter.default.publisher(for: .showVariableReference)) { _ in
             openVariableReferenceFromShortcut()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .restoreCaptionEditorFocus)) { _ in
+            guard captionFlushCoordinator != nil,
+                  let key = lastCaptionEditorFocusKey else { return }
+            DispatchQueue.main.async { focusedField = key }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in
             guard !isShowingVariableReference,
@@ -711,6 +1106,10 @@ struct MetadataPanel: View {
             fieldSelections[key] = editor.selectedRange()
         }
         .onChange(of: focusedField) { _, newValue in
+            configureSystemWritingAssistance(for: newValue)
+            let metadataField = newValue.flatMap(MetadataFieldID.init(rawValue:))
+            if newValue != nil { lastCaptionEditorFocusKey = newValue }
+            onFocusedFieldChanged?(metadataField)
             guard !isShowingVariableReference,
                   let key = newValue,
                   let editor = NSApp.keyWindow?.firstResponder as? NSTextView else {
@@ -775,6 +1174,30 @@ struct MetadataPanel: View {
                 commitEdits()
             }
         }
+        .onChange(of: showingCaptionAutocomplete) { wasShowing, isShowing in
+            onAutocompletePresentationChanged?(isShowing)
+            guard wasShowing, !isShowing else { return }
+            restoreCaptionAutocompleteFocus()
+        }
+    }
+
+    /// Synchronously crosses only the AppKit-to-model barrier. Caption navigation captures the
+    /// resulting immutable draft and queues disk persistence separately, so focus never waits on
+    /// JSON/XMP I/O. The ordinary metadata panel keeps its configured write mode.
+    private func flushCaptionEditorBuffer() throws {
+        commitDebounceTask?.cancel()
+        flushBufferedFields()
+        guard viewModel.currentFolderURL != nil else {
+            throw CaptionWorkspaceFlushError.sidecarUnavailable
+        }
+    }
+
+    private func captureCaptionDraftPersistence() throws -> CaptionDraftPersistence? {
+        let persistence = try viewModel.captureCaptionDraftPersistence()
+        if persistence != nil {
+            onPendingStatusChanged?()
+        }
+        return persistence
     }
 
     // MARK: - Rating & Label
@@ -785,14 +1208,19 @@ struct MetadataPanel: View {
             HStack(spacing: 8) {
                 HStack(spacing: 1) {
                     ForEach(1...5, id: \.self) { star in
-                        Image(systemName: star <= image.starRating.rawValue ? "star.fill" : "star")
-                            .font(.system(size: 14))
-                            .frame(width: 18)
-                            .foregroundStyle(star <= image.starRating.rawValue ? .yellow : .secondary.opacity(0.5))
-                            .onTapGesture {
-                                let rating = StarRating(rawValue: star) ?? .none
-                                browserViewModel.setRating(image.starRating == rating ? .none : rating)
-                            }
+                        Button {
+                            let rating = StarRating(rawValue: star) ?? .none
+                            browserViewModel.setRating(image.starRating == rating ? .none : rating)
+                        } label: {
+                            Image(systemName: star <= image.starRating.rawValue ? "star.fill" : "star")
+                                .font(.system(size: 14))
+                                .frame(width: 18)
+                                .foregroundStyle(star <= image.starRating.rawValue ? .yellow : .secondary.opacity(0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(star) star rating")
+                        .accessibilityValue(image.starRating.rawValue == star ? "Selected" : "Not selected")
+                        .accessibilityHint("Select again to clear this rating")
                     }
                 }
 
@@ -801,13 +1229,18 @@ struct MetadataPanel: View {
 
                 HStack(spacing: 4) {
                     ForEach(ColorLabel.allCases.filter { $0 != .none }, id: \.self) { label in
-                        Circle()
-                            .fill(label.color!.opacity(image.colorLabel == label ? 1.0 : 0.35))
-                            .frame(width: 12, height: 12)
-                            .help(label.displayName)
-                            .onTapGesture {
-                                browserViewModel.setLabel(image.colorLabel == label ? .none : label)
-                            }
+                        Button {
+                            browserViewModel.setLabel(image.colorLabel == label ? .none : label)
+                        } label: {
+                            Circle()
+                                .fill(label.color!.opacity(image.colorLabel == label ? 1.0 : 0.35))
+                                .frame(width: 12, height: 12)
+                        }
+                        .buttonStyle(.plain)
+                        .help(label.displayName)
+                        .accessibilityLabel("\(label.displayName) color label")
+                        .accessibilityValue(image.colorLabel == label ? "Selected" : "Not selected")
+                        .accessibilityHint("Select again to clear this label")
                     }
                 }
 
@@ -842,6 +1275,7 @@ struct MetadataPanel: View {
                     }
                     .buttonStyle(.plain)
                     .help("Image has embedded crop metadata — click to load")
+                    .accessibilityLabel("Load embedded crop metadata")
                 }
                 if !viewModel.isBatchEdit, viewModel.selectedCount == 1 {
                     Button {
@@ -852,6 +1286,7 @@ struct MetadataPanel: View {
                     }
                     .buttonStyle(.plain)
                     .help("View raw metadata (JSON)")
+                    .accessibilityLabel("View raw metadata")
                     .sheet(isPresented: $showingRawMetadata) {
                         if let url = viewModel.selectedURLs.first {
                             RawMetadataView(
@@ -875,6 +1310,7 @@ struct MetadataPanel: View {
                 .buttonStyle(.plain)
                 .disabled(viewModel.sidecarHistory.isEmpty)
                 .help(viewModel.sidecarHistory.isEmpty ? "No editing history" : "View editing history")
+                .accessibilityLabel("Metadata editing history")
                 .popover(isPresented: $showingHistoryPopover) {
                     MetadataHistoryView(
                         history: viewModel.sidecarHistory,
@@ -942,6 +1378,7 @@ struct MetadataPanel: View {
                     }
                     .buttonStyle(.plain)
                     .help("Variable Reference")
+                    .accessibilityLabel("Variable reference for description")
                 }
                 if let conflict = viewModel.descriptionConflict {
                     DescriptionConflictBanner(conflict: conflict) { keepXMP in
@@ -980,10 +1417,13 @@ struct MetadataPanel: View {
                         }
                         .buttonStyle(.plain)
                         .help("Variable Reference")
+                        .accessibilityLabel("Variable reference for accessibility extended description")
                     }
                     BufferedTextField(
                         currentValue: viewModel.editingMetadata.extendedDescription ?? "",
-                        placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "extendedDescription") : "Enter extended description",
+                        placeholder: viewModel.isBatchEdit
+                            ? viewModel.batchPlaceholder(for: "extendedDescription")
+                            : "Describe the visual content for accessibility",
                         lineLimit: 4...8,
                         focusedField: $focusedField,
                         focusKey: "extendedDescription",
@@ -999,7 +1439,7 @@ struct MetadataPanel: View {
                 .padding(.top, 2)
             } label: {
                 HStack(spacing: 4) {
-                    Text("Extended Description")
+                    Text("Extended Description (Accessibility)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     DifferenceIndicator(differs: viewModel.fieldDiffers(\.extendedDescription))
@@ -1008,6 +1448,7 @@ struct MetadataPanel: View {
                     }
                 }
             }
+            .help("IPTC accessibility extended description; distinct from the editorial caption")
             .id("extendedDescription")
         }
 
@@ -1060,31 +1501,37 @@ struct MetadataPanel: View {
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.creator) {
-            EditableTextField(
-                label: "Creator",
-                text: Binding(
-                    get: { viewModel.editingMetadata.creator ?? "" },
-                    set: { viewModel.editingMetadata.creator = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                ),
-                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "creator") : "",
-                onCommit: { commitEdits() },
-                showsDifference: viewModel.fieldDiffers(\.creator),
+            OrderedCreatorsEditor(
+                creators: $viewModel.editingMetadata.creators,
+                differs: viewModel.fieldDiffers(\.creator),
                 hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
-                onInsertVariable: {
-                    openVariableReference(for: .creator)
+                onChange: {
+                    viewModel.markChanged()
+                    guard viewModel.isBatchEdit else { return }
+                    try? viewModel.setBatchMutation(
+                        viewModel.editingMetadata.creators.isEmpty
+                            ? .clear
+                            : .overwrite(.repeatable(viewModel.editingMetadata.creators)),
+                        for: .creator
+                    )
                 },
-                onAddCurrentToQuickList: {
-                    addCurrentToQuickList(type: .creator, value: viewModel.editingMetadata.creator)
-                },
-                presetList: settingsViewModel.loadCreatorList(),
-                onChooseListFile: {
-                    listFilePickerTarget = .creator
-                    showingListFilePicker = true
-                },
-                focusKey: "creator",
-                focusedField: $focusedField
+                onCommit: { commitEdits() }
             )
             .id("creator")
+        }
+
+        if viewModel.isBatchEdit {
+            Text("Creator contact and structured locations can be edited one image at a time.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("metadata.structuredEditorial.batchNotice")
+        } else {
+            StructuredEditorialMetadataEditor(
+                creatorContactInfo: $viewModel.editingMetadata.creatorContactInfo,
+                locationsCreated: $viewModel.editingMetadata.locationsCreated,
+                locationsShown: $viewModel.editingMetadata.locationsShown,
+                onChange: { viewModel.markChanged() }
+            )
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.rightsUsageTerms) {
@@ -1189,6 +1636,22 @@ struct MetadataPanel: View {
             )
             .id("jobId")
         }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.dateCreated) {
+            EditorialDateCreatedEditor(
+                lexicalValue: Binding(
+                    get: { viewModel.editingMetadata.dateCreated ?? "" },
+                    set: {
+                        viewModel.editingMetadata.dateCreated = $0.isEmpty ? nil : $0
+                        viewModel.markChanged()
+                    }
+                ),
+                differs: viewModel.fieldDiffers(\.dateCreated),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("dateCreated"),
+                onCommit: { commitEdits() }
+            )
+            .id("dateCreated")
+        }
     }
 
     // MARK: - Classification
@@ -1215,7 +1678,9 @@ struct MetadataPanel: View {
             }
             .pickerStyle(.menu)
             .labelsHidden()
+            .focused($focusedField, equals: MetadataFieldID.digitalSourceType.rawValue)
         }
+        .id(MetadataFieldID.digitalSourceType.rawValue)
     }
 
     // MARK: - Develop
@@ -1575,6 +2040,7 @@ struct MetadataPanel: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
+                .focused($focusedField, equals: MetadataFieldID.urgency.rawValue)
             }
             .id("urgency")
         }
@@ -1582,6 +2048,18 @@ struct MetadataPanel: View {
         if settingsViewModel.isIPTCMetadataFieldVisible(.sceneCode) {
             sceneCodeEditor
                 .id("sceneCode")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.subjectCode) {
+            subjectCodeEditor.id("subjectCode")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.mediaTopic) {
+            mediaTopicEditor.id("mediaTopic")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.genre) {
+            genreEditor.id("genre")
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.creatorJobTitle) {
@@ -1806,6 +2284,7 @@ struct MetadataPanel: View {
                     }
                     .buttonStyle(.plain)
                     .help("Dismiss")
+                    .accessibilityLabel("Dismiss metadata notice")
                 }
                 if !notice.detail.isEmpty {
                     VStack(alignment: .leading, spacing: 1) {
@@ -1903,6 +2382,7 @@ struct MetadataPanel: View {
                         Image(systemName: "wand.and.stars")
                     }
                     .help("Apply Template")
+                    .accessibilityLabel("Apply metadata template")
                 }
 
                 if let onSaveTemplate {
@@ -1912,6 +2392,7 @@ struct MetadataPanel: View {
                         Image(systemName: "doc.badge.plus")
                     }
                     .help("Save as Template")
+                    .accessibilityLabel("Save metadata as template")
                 }
 
                 Button {
@@ -1923,6 +2404,30 @@ struct MetadataPanel: View {
                 }
                 .disabled(!viewModel.hasVariables)
                 .help("Process Variables")
+                .accessibilityLabel("Process metadata variables")
+
+                if captionFlushCoordinator != nil {
+                    Button {
+                        _ = openCaptionAutocomplete()
+                    } label: {
+                        Image(systemName: "text.badge.plus")
+                    }
+                    .disabled(focusedCaptionAutocompleteField == nil)
+                    .help(focusedCaptionAutocompleteField == nil
+                        ? "Focus an eligible metadata field to show suggestions"
+                        : "Show suggestions for \(focusedCaptionAutocompleteField?.displayName ?? "field") (⌥Space)")
+                    .popover(isPresented: $showingCaptionAutocomplete, arrowEdge: .bottom) {
+                        if let field = captionAutocompleteField {
+                            CaptionAutocompletePopover(
+                                field: field,
+                                currentMetadata: viewModel.editingMetadata,
+                                seeds: captionAutocompleteSeeds(for: field),
+                                onApply: applyCaptionAutocompleteSuggestion,
+                                onClose: closeCaptionAutocomplete
+                            )
+                        }
+                    }
+                }
 
                 Spacer()
 
@@ -1950,6 +2455,10 @@ struct MetadataPanel: View {
             }
         }
     }
+}
+
+extension Notification.Name {
+    static let restoreCaptionEditorFocus = Notification.Name("restoreCaptionEditorFocus")
 }
 
 // MARK: - Keywords Editor With Diff
@@ -2177,6 +2686,14 @@ struct KeywordsEditorWithDiff: View {
                 return
             }
             updateSuggestions(for: newValue)
+        }
+        .onChange(of: inputIsFocused) { _, isFocused in
+            guard typeaheadEnabled, let focusedField, let focusKey else { return }
+            if isFocused {
+                focusedField.wrappedValue = focusKey
+            } else if focusedField.wrappedValue == focusKey {
+                focusedField.wrappedValue = nil
+            }
         }
     }
 
@@ -2883,6 +3400,181 @@ struct DescriptionConflictBanner: View {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color(nsColor: .controlBackgroundColor))
                 )
+        }
+    }
+}
+
+// MARK: - Ordered Creator / Date Created editors
+
+private struct OrderedCreatorsEditor: View {
+    @Binding var creators: [String]
+    let differs: Bool
+    let hasMultipleValues: Bool
+    let onChange: () -> Void
+    let onCommit: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 4) {
+                Text("Creators (ordered)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                DifferenceIndicator(differs: differs)
+                if hasMultipleValues { MultipleValuesIndicator() }
+                Spacer()
+                Button {
+                    creators.append("")
+                    onChange()
+                } label: {
+                    Label("Add Creator", systemImage: "plus")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("metadata.creator.add")
+            }
+
+            if creators.isEmpty {
+                Button("Add creator") {
+                    creators.append("")
+                    onChange()
+                }
+                .buttonStyle(.borderless)
+            }
+
+            ForEach(creators.indices, id: \.self) { index in
+                HStack(spacing: 5) {
+                    Text("\(index + 1)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20, alignment: .trailing)
+                    TextField("Creator name", text: Binding(
+                        get: { creators[index] },
+                        set: {
+                            creators[index] = $0
+                            onChange()
+                        }
+                    ))
+                    .onSubmit {
+                        creators = IPTCMetadata.normalizedCreators(creators)
+                        onChange()
+                        onCommit()
+                    }
+                    .accessibilityLabel("Creator \(index + 1)")
+
+                    Button {
+                        guard index > 0 else { return }
+                        creators.swapAt(index, index - 1)
+                        onChange()
+                        onCommit()
+                    } label: { Image(systemName: "arrow.up") }
+                    .buttonStyle(.plain)
+                    .disabled(index == 0)
+                    .accessibilityLabel("Move creator \(index + 1) earlier")
+
+                    Button {
+                        guard index + 1 < creators.count else { return }
+                        creators.swapAt(index, index + 1)
+                        onChange()
+                        onCommit()
+                    } label: { Image(systemName: "arrow.down") }
+                    .buttonStyle(.plain)
+                    .disabled(index + 1 == creators.count)
+                    .accessibilityLabel("Move creator \(index + 1) later")
+
+                    Button(role: .destructive) {
+                        creators.remove(at: index)
+                        onChange()
+                        onCommit()
+                    } label: { Image(systemName: "minus.circle") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remove creator \(index + 1)")
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("metadata.creator.orderedEditor")
+        .help("Creator order is preserved in XMP dc:creator and repeatable IPTC By-line values.")
+    }
+}
+
+private struct EditorialDateCreatedEditor: View {
+    @Binding var lexicalValue: String
+    let differs: Bool
+    let hasMultipleValues: Bool
+    let onCommit: () -> Void
+    @State private var draft: String
+
+    init(
+        lexicalValue: Binding<String>,
+        differs: Bool,
+        hasMultipleValues: Bool,
+        onCommit: @escaping () -> Void
+    ) {
+        _lexicalValue = lexicalValue
+        self.differs = differs
+        self.hasMultipleValues = hasMultipleValues
+        self.onCommit = onCommit
+        _draft = State(initialValue: lexicalValue.wrappedValue)
+    }
+
+    private var parsed: EditorialDateCreated? {
+        try? EditorialDateCreated(parsing: draft)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text("Date Created")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                DifferenceIndicator(differs: differs)
+                if hasMultipleValues { MultipleValuesIndicator() }
+            }
+            TextField("YYYY-MM-DD or ISO 8601 date/time", text: $draft)
+                .onSubmit { commitIfValid() }
+                .accessibilityIdentifier("metadata.dateCreated.editor")
+
+            if draft.isEmpty {
+                Text("No editorial creation date")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if let parsed {
+                Text("Precision: \(parsed.precision.rawValue); timezone: \(timeZoneDescription(parsed.timeZone))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("metadata.dateCreated.semantics")
+            } else {
+                Text("Use a valid ISO 8601 value; the invalid draft will not be saved.")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("metadata.dateCreated.validationError")
+            }
+        }
+        .onChange(of: lexicalValue) { _, value in
+            guard value != draft else { return }
+            draft = value
+        }
+        .onChange(of: draft) { _, value in
+            guard value.isEmpty || (try? EditorialDateCreated(parsing: value)) != nil else { return }
+            lexicalValue = value
+        }
+        .help("Exact ISO 8601 precision and timezone-known state are preserved in XMP.")
+    }
+
+    private func commitIfValid() {
+        guard draft.isEmpty || parsed != nil else { return }
+        lexicalValue = draft
+        onCommit()
+    }
+
+    private func timeZoneDescription(_ value: EditorialDateCreated.TimeZoneSemantics) -> String {
+        switch value {
+        case .absent: return "not applicable"
+        case .unknown: return "unknown"
+        case .offsetMinutes(let minutes):
+            let sign = minutes < 0 ? "−" : "+"
+            let magnitude = abs(minutes)
+            return String(format: "%@%02d:%02d", sign, magnitude / 60, magnitude % 60)
         }
     }
 }

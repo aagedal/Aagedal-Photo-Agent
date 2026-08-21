@@ -94,4 +94,43 @@ struct ActivityHistoryTests {
         #expect(viewModel.faceData == nil)
         #expect(!viewModel.scanComplete)
     }
+
+    @Test("rename quiescence cancels the exact target scan and awaits its final persistence")
+    func renameQuiescenceAwaitsFacePersistence() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceScanRenameBarrier-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let imageURLs = try (0..<24).map { index in
+            let url = folder.appendingPathComponent("invalid-\(index).jpg")
+            try Data("not an image \(index)".utf8).write(to: url)
+            return url
+        }
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
+        viewModel.scanFolder(imageURLs: imageURLs, folderURL: folder)
+
+        #expect(viewModel.isScanning(folderURL: folder))
+        try await viewModel.quiesceScanForRename(in: folder)
+
+        #expect(!viewModel.isScanning)
+        #expect(!viewModel.isCancellingScan)
+        let durableData = try #require(FaceDataStorageService().loadFaceData(for: folder))
+        #expect(durableData.folderURL.path == folder.path)
+        #expect(!durableData.scanComplete)
+
+        viewModel.scanFolder(imageURLs: imageURLs, folderURL: folder)
+        #expect(!viewModel.isScanning)
+        #expect(viewModel.errorMessage?.contains("paused") == true)
+
+        viewModel.endRenameQuiescence(in: folder)
+        viewModel.scanFolder(imageURLs: imageURLs, folderURL: folder)
+        #expect(viewModel.isScanning(folderURL: folder))
+        viewModel.cancelScan()
+        await viewModel.waitForCurrentScan()
+    }
 }

@@ -1000,7 +1000,7 @@ struct SettingsView: View {
 
                 Section("RAW Images") {
                     Picker("RAW Images", selection: $settingsViewModel.metadataWriteModeRaw) {
-                        ForEach(MetadataWriteMode.standardOptions) { mode in
+                        ForEach(MetadataWriteMode.rawOptions) { mode in
                             Text(mode.displayName).tag(mode)
                         }
                     }

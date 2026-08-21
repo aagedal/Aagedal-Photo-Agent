@@ -29,6 +29,10 @@ nonisolated struct FaceDataStorageService: Sendable {
 
     // MARK: - Load
 
+    func faceDataExists(for folderURL: URL) -> Bool {
+        FileManager.default.fileExists(atPath: dataFileURL(for: folderURL).path)
+    }
+
     func loadFaceData(for folderURL: URL) -> FolderFaceData? {
         let fileURL = dataFileURL(for: folderURL)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }

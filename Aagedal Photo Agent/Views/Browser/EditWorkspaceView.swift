@@ -750,6 +750,9 @@ struct EditWorkspaceView: View {
         .focusable()
         .focused($isWorkspaceFocused)
         .focusEffectDisabled()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Develop workspace")
+        .accessibilityIdentifier("develop.workspace")
         .onTapGesture {
             isWorkspaceFocused = true
         }
@@ -904,13 +907,7 @@ struct EditWorkspaceView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: copyPasteFeedback)
-        .alert("Export Failed", isPresented: saveErrorPresented) {
-            Button("OK", role: .cancel) { saveError = nil }
-        } message: {
-            if let error = saveError {
-                Text(error)
-            }
-        }
+        .modifier(EditWorkspaceExportFailureAlertModifier(saveError: $saveError))
         .modifier(DevelopVersionDialogsModifier(
             nameAction: $developVersionNameAction,
             nameDraft: $developVersionNameDraft,
@@ -8685,12 +8682,12 @@ struct EditWorkspaceView: View {
         // All remaining handlers are key-down only
         guard isKeyDown else { return event }
 
-        // Cmd+W — remove the selected local layer or reset Global. Consume it throughout Develop
-        // so it never closes the app's sole window; ignore key-repeat so holding W cannot delete
-        // a run of adjacent layers. This intentionally runs before the text-field guard, matching
-        // the system-level Close Window shortcut it replaces.
-        if chars == "w", modifiers.contains(.command),
-           modifiers.isDisjoint(with: [.option, .control, .shift]) {
+        // Control+Option+Delete removes the selected local layer or resets Global without
+        // overriding the system Close Window command. Ignore repeat so holding Delete cannot
+        // remove a run of adjacent layers.
+        if [51, 117].contains(Int(event.keyCode)),
+           modifiers.contains([.control, .option]),
+           modifiers.isDisjoint(with: [.command, .shift]) {
             guard !event.isARepeat else { return nil }
             if canEditSingleImage {
                 removeOrResetSelectedEditLayer()
@@ -8700,17 +8697,28 @@ struct EditWorkspaceView: View {
 
         guard !isTextFieldActive() else { return event }
 
-        // Bare 0–5 — rate the current selection without leaving Develop. This mirrors the
-        // culling/full-screen shortcut: 0 clears the rating and 1–5 assign that many stars.
-        // Modified digits remain available to scope and system shortcuts.
-        let ratingModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
-        if modifiers.intersection(ratingModifiers).isEmpty,
-           !event.isARepeat,
-           let digit = chars.first?.wholeNumberValue,
-           (0...5).contains(digit),
-           let rating = StarRating(rawValue: digit),
-           !browserViewModel.selectedImageIDs.isEmpty {
-            browserViewModel.setRating(rating)
+        if !browserViewModel.selectedImageIDs.isEmpty,
+           let key = chars.first,
+           let action = KeyboardShortcutRouter.resolve(
+            KeyboardShortcutRouteInput(
+                key: String(key),
+                modifiers: KeyboardShortcutModifiers(event.modifierFlags),
+                textEditorOwnsInput: isTextFieldActive(),
+                imeHasMarkedText: keyboardTextInputState(in: event.window).imeHasMarkedText,
+                isRepeat: event.isARepeat
+            ),
+            profile: KeyboardShortcutProfileRegistry.shared.selectedProfile
+           ) {
+            switch action {
+            case let .rating(value):
+                if let rating = StarRating(rawValue: value) {
+                    browserViewModel.setRating(rating)
+                }
+            case let .colorLabel(index):
+                if let label = ColorLabel.fromShortcutIndex(index) {
+                    browserViewModel.setLabel(label)
+                }
+            }
             return nil
         }
 
@@ -8819,6 +8827,21 @@ struct EditWorkspaceView: View {
         }
 
         return event
+    }
+}
+
+private struct EditWorkspaceExportFailureAlertModifier: ViewModifier {
+    @Binding var saveError: String?
+
+    func body(content: Content) -> some View {
+        content.alert("Export Failed", isPresented: Binding(
+            get: { saveError != nil },
+            set: { if !$0 { saveError = nil } }
+        )) {
+            Button("OK", role: .cancel) { saveError = nil }
+        } message: {
+            Text(saveError ?? "The export could not be completed.")
+        }
     }
 }
 
