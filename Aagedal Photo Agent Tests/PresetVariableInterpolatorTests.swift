@@ -91,6 +91,15 @@ struct PresetVariableInterpolatorTests {
         ) == "urn:uuid:photo-42|urn:uuid:photo-42")
     }
 
+    @Test("Image Supplier Image ID resolves by key and display label")
+    func imageSupplierImageIDFieldAliases() {
+        let metadata = IPTCMetadata(imageSupplierImageID: "AGENCY-2026-0042")
+        #expect(interpolator.resolve(
+            "{field:imageSupplierImageID}|{field:Image Supplier Image ID}|{field:supplierImageID}",
+            existingMetadata: metadata
+        ) == "AGENCY-2026-0042|AGENCY-2026-0042|AGENCY-2026-0042")
+    }
+
     @Test("Urgency resolves by field key")
     func urgencyFieldAlias() {
         let metadata = IPTCMetadata(urgency: 2)

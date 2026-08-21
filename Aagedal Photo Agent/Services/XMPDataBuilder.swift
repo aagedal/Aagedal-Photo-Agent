@@ -62,6 +62,12 @@ enum XMPDataBuilder {
             namespace: XMPNamespace.iptcExt,
             property: "DigImageGUID"
         )
+        setSimpleOrRemove(
+            &xmp,
+            m.imageSupplierImageID,
+            namespace: XMPNamespace.iptcExt,
+            property: "ImageSupplierImageID"
+        )
         // photoshop:DateCreated (the IPTC date) — distinct from xmp:CreateDate; no convenience setter.
         setSimpleOrRemove(&xmp, m.dateCreated, namespace: XMPNamespace.photoshop, property: "DateCreated")
         xmp.city = nilIfEmpty(m.city)

@@ -456,6 +456,7 @@ final class MetadataViewModel {
         compareOptionalField(allMetadata, keyPath: \.rightsUsageTerms, fieldName: "rightsUsageTerms", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.webStatementOfRights, fieldName: "webStatementOfRights", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.digitalImageGUID, fieldName: "digitalImageGUID", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.imageSupplierImageID, fieldName: "imageSupplierImageID", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.jobId, fieldName: "jobId", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.creator, fieldName: "creator", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.creatorJobTitle, fieldName: "creatorJobTitle", common: &common, differing: &differing)
@@ -772,6 +773,7 @@ final class MetadataViewModel {
                     if let v = edited.rightsUsageTerms, !v.isEmpty { fields[.rightsUsageTerms] = v }
                     if let v = edited.webStatementOfRights, !v.isEmpty { fields[.webStatementOfRights] = v }
                     if let v = edited.digitalImageGUID, !v.isEmpty { fields[.digitalImageGUID] = v }
+                    if let v = edited.imageSupplierImageID, !v.isEmpty { fields[.imageSupplierImageID] = v }
                     if let v = edited.jobId, !v.isEmpty { fields[.transmissionReference] = v }
                     if let v = edited.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
                     if let v = edited.city, !v.isEmpty { fields[.city] = v }
@@ -832,6 +834,7 @@ final class MetadataViewModel {
                     if edited.rightsUsageTerms != original?.rightsUsageTerms { fields[.rightsUsageTerms] = edited.rightsUsageTerms ?? "" }
                     if edited.webStatementOfRights != original?.webStatementOfRights { fields[.webStatementOfRights] = edited.webStatementOfRights ?? "" }
                     if edited.digitalImageGUID != original?.digitalImageGUID { fields[.digitalImageGUID] = edited.digitalImageGUID ?? "" }
+                    if edited.imageSupplierImageID != original?.imageSupplierImageID { fields[.imageSupplierImageID] = edited.imageSupplierImageID ?? "" }
                     if edited.jobId != original?.jobId {
                         fields[.transmissionReference] = edited.jobId ?? ""
                     }
@@ -906,6 +909,7 @@ final class MetadataViewModel {
         if let v = metadata.rightsUsageTerms, !v.isEmpty { fields[.rightsUsageTerms] = v }
         if let v = metadata.webStatementOfRights, !v.isEmpty { fields[.webStatementOfRights] = v }
         if let v = metadata.digitalImageGUID, !v.isEmpty { fields[.digitalImageGUID] = v }
+        if let v = metadata.imageSupplierImageID, !v.isEmpty { fields[.imageSupplierImageID] = v }
         if let v = metadata.jobId, !v.isEmpty { fields[.transmissionReference] = v }
         if let v = metadata.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
         if let v = metadata.city, !v.isEmpty { fields[.city] = v }
@@ -1147,6 +1151,7 @@ final class MetadataViewModel {
         fields[.rightsUsageTerms] = metadata.rightsUsageTerms ?? ""
         fields[.webStatementOfRights] = metadata.webStatementOfRights ?? ""
         fields[.digitalImageGUID] = metadata.digitalImageGUID ?? ""
+        fields[.imageSupplierImageID] = metadata.imageSupplierImageID ?? ""
         fields[.transmissionReference] = metadata.jobId ?? ""
         fields[.dateCreated] = metadata.dateCreated ?? ""
         fields[.city] = metadata.city ?? ""
@@ -1444,6 +1449,8 @@ final class MetadataViewModel {
                 // Identifiers are atomic. Template append mode still replaces this field rather
                 // than concatenating two identifiers into an invalid third value.
                 editingMetadata.digitalImageGUID = value
+            case "imageSupplierImageID":
+                editingMetadata.imageSupplierImageID = value
             case "jobId":
                 editingMetadata.jobId = append ? appendString(editingMetadata.jobId, value) : value
             case "dateCreated":
@@ -1514,6 +1521,7 @@ final class MetadataViewModel {
             editingMetadata.rightsUsageTerms,
             editingMetadata.webStatementOfRights,
             editingMetadata.digitalImageGUID,
+            editingMetadata.imageSupplierImageID,
             editingMetadata.jobId,
             editingMetadata.dateCreated,
             editingMetadata.city,
@@ -1558,6 +1566,7 @@ final class MetadataViewModel {
         editingMetadata.rightsUsageTerms = resolveIfPresent(editingMetadata.rightsUsageTerms, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.webStatementOfRights = resolveIfPresent(editingMetadata.webStatementOfRights, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.digitalImageGUID = resolveIfPresent(editingMetadata.digitalImageGUID, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.imageSupplierImageID = resolveIfPresent(editingMetadata.imageSupplierImageID, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.jobId = resolveIfPresent(editingMetadata.jobId, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.dateCreated = resolveIfPresent(editingMetadata.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.city = resolveIfPresent(editingMetadata.city, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
@@ -1625,6 +1634,7 @@ final class MetadataViewModel {
         if resolved.rightsUsageTerms != original.rightsUsageTerms { fields[.rightsUsageTerms] = resolved.rightsUsageTerms ?? "" }
         if resolved.webStatementOfRights != original.webStatementOfRights { fields[.webStatementOfRights] = resolved.webStatementOfRights ?? "" }
         if resolved.digitalImageGUID != original.digitalImageGUID { fields[.digitalImageGUID] = resolved.digitalImageGUID ?? "" }
+        if resolved.imageSupplierImageID != original.imageSupplierImageID { fields[.imageSupplierImageID] = resolved.imageSupplierImageID ?? "" }
         if resolved.jobId != original.jobId {
             fields[.transmissionReference] = resolved.jobId ?? ""
         }
@@ -1864,6 +1874,7 @@ final class MetadataViewModel {
                 resolvedMeta.rightsUsageTerms = resolveIfChanged(meta.rightsUsageTerms, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.webStatementOfRights = resolveIfChanged(meta.webStatementOfRights, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.digitalImageGUID = resolveIfChanged(meta.digitalImageGUID, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
+                resolvedMeta.imageSupplierImageID = resolveIfChanged(meta.imageSupplierImageID, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
@@ -2229,6 +2240,7 @@ final class MetadataViewModel {
         recordChange("Rights Usage Terms", old: previous.rightsUsageTerms, new: edited.rightsUsageTerms)
         recordChange("Web Statement of Rights", old: previous.webStatementOfRights, new: edited.webStatementOfRights)
         recordChange("Digital Image GUID", old: previous.digitalImageGUID, new: edited.digitalImageGUID)
+        recordChange("Image Supplier Image ID", old: previous.imageSupplierImageID, new: edited.imageSupplierImageID)
         recordChange("Job ID", old: previous.jobId, new: edited.jobId)
         recordChange("Creator", old: previous.creator, new: edited.creator)
         recordChange("Creator Job Title", old: previous.creatorJobTitle, new: edited.creatorJobTitle)
@@ -2406,6 +2418,9 @@ final class MetadataViewModel {
         }
         if let digitalImageGUID = batchMeta.digitalImageGUID, !digitalImageGUID.isEmpty {
             metadata.digitalImageGUID = digitalImageGUID
+        }
+        if let imageSupplierImageID = batchMeta.imageSupplierImageID, !imageSupplierImageID.isEmpty {
+            metadata.imageSupplierImageID = imageSupplierImageID
         }
         if let jobId = batchMeta.jobId, !jobId.isEmpty {
             metadata.jobId = jobId
@@ -2669,6 +2684,7 @@ final class MetadataViewModel {
         if editingMetadata.rightsUsageTerms != original.rightsUsageTerms { names.append("Rights Usage Terms") }
         if editingMetadata.webStatementOfRights != original.webStatementOfRights { names.append("Web Statement of Rights") }
         if editingMetadata.digitalImageGUID != original.digitalImageGUID { names.append("Digital Image GUID") }
+        if editingMetadata.imageSupplierImageID != original.imageSupplierImageID { names.append("Image Supplier Image ID") }
         if editingMetadata.jobId != original.jobId { names.append("Job ID") }
         if editingMetadata.creator != original.creator { names.append("Creator") }
         if editingMetadata.creatorJobTitle != original.creatorJobTitle { names.append("Creator Job Title") }
@@ -2854,6 +2870,8 @@ final class MetadataViewModel {
             metadata.webStatementOfRights = entry.newValue
         case "Digital Image GUID":
             metadata.digitalImageGUID = entry.newValue
+        case "Image Supplier Image ID":
+            metadata.imageSupplierImageID = entry.newValue
         case "Job ID", "Job-ID":
             metadata.jobId = entry.newValue
         case "Creator":

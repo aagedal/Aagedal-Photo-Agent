@@ -18,7 +18,7 @@ own scope, tasks, exit gates, and technical decisions.
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; release hardening in progress | Close remaining manual fixture, accessibility, performance, and cross-phase validation |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, structured contact/location plus editorial role, organisation, country-code, rights, urgency, Scene Code, and Digital Image GUID I/O, JSON schema safety, shared validation, portable profiles, and legacy boundary fixtures established; remaining field mappings and cross-container fixtures remain | Complete the redistributable interoperability corpus, then finish the remaining shared metadata I/O foundation |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Standards decisions, typed editorial models, structured contact/location plus editorial role, organisation, country-code, rights, urgency, Scene Code, Digital Image GUID, and Image Supplier Image ID I/O, JSON schema safety, shared validation, portable profiles, and legacy boundary fixtures established; remaining field mappings and cross-container fixtures remain | Complete the redistributable interoperability corpus, then finish the remaining shared metadata I/O foundation |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, and immutable report evidence implemented; release validation remains | Validate live and reported rays across paper/map styles, camera interactions, rapid time changes, architectures, and accessibility paths |
 
 ## Default delivery order
@@ -101,6 +101,8 @@ Supporting documents:
   alias normalization, repeated XMP bag I/O, and unknown-value preservation.
 - [Digital Image GUID validation](metadata-digital-image-guid-validation.md) — explicit identifier
   ownership, XMP I/O, clear semantics, and unrelated-edit preservation.
+- [Image Supplier Image ID validation](metadata-image-supplier-id-validation.md) — supplier-ID
+  separation, XMP I/O, workflow propagation, clear semantics, and unrelated-edit preservation.
 
 ## Solar overlay document set
 

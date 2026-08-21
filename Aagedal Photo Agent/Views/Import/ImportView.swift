@@ -695,6 +695,14 @@ struct ImportView: View {
             )
 
             EditableTextField(
+                label: "Image Supplier Image ID",
+                text: Binding(
+                    get: { viewModel.configuration.metadata.imageSupplierImageID ?? "" },
+                    set: { viewModel.configuration.metadata.imageSupplierImageID = $0.isEmpty ? nil : $0 }
+                )
+            )
+
+            EditableTextField(
                 label: "Job ID",
                 text: Binding(
                     get: { viewModel.configuration.metadata.jobId ?? "" },

@@ -2109,6 +2109,7 @@ struct ContentView: View {
             rightsUsageTerms: source.rightsUsageTerms,
             webStatementOfRights: source.webStatementOfRights,
             digitalImageGUID: source.digitalImageGUID,
+            imageSupplierImageID: source.imageSupplierImageID,
             jobId: source.jobId,
             dateCreated: source.dateCreated,
             city: source.city,

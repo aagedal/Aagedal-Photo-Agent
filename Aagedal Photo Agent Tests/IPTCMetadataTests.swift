@@ -175,6 +175,17 @@ struct ToWriteFieldsTests {
         #expect(metadata.toWriteFields()[.digitalImageGUID] == metadata.digitalImageGUID)
     }
 
+    @Test("image supplier image ID maps independently from the image GUID")
+    func imageSupplierImageIDMapsToXMPField() {
+        #expect(IPTCMetadata().toWriteFields()[.imageSupplierImageID] == nil)
+        let metadata = IPTCMetadata(
+            digitalImageGUID: "urn:uuid:01234567-89ab-cdef-0123-456789abcdef",
+            imageSupplierImageID: "AGENCY-2026-0042"
+        )
+        #expect(metadata.toWriteFields()[.digitalImageGUID] == metadata.digitalImageGUID)
+        #expect(metadata.toWriteFields()[.imageSupplierImageID] == metadata.imageSupplierImageID)
+    }
+
     @Test("creator maps to XMP creator tag")
     func creatorMapsToCreator() {
         let metadata = IPTCMetadata(creator: "Jane Doe")
@@ -431,6 +442,7 @@ struct EditorialMetadataInteroperabilityTests {
         case .source: .source
         case .extendedDescription, .personShown, .organisationShownName, .organisationShownCode, .sceneCode,
              .digitalSourceType, .rightsUsageTerms, .webStatementOfRights, .digitalImageGUID,
+             .imageSupplierImageID,
              .dateCreated, .event: nil
         }
     }
@@ -1007,6 +1019,52 @@ struct EditorialMetadataInteroperabilityTests {
         #expect(try await SwiftExifReadService().readFullMetadata(url: imageURL).digitalImageGUID == nil)
     }
 
+    @Test("image supplier image ID round-trips independently, survives unrelated edits, and clears explicitly")
+    func imageSupplierImageIDRoundTripAndPreservation() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let supplierID = "AGENCY-2026-0042"
+        let imageGUID = "urn:uuid:01234567-89ab-cdef-0123-456789abcdef"
+        let expected = IPTCMetadata(
+            description: "Original caption",
+            digitalImageGUID: imageGUID,
+            imageSupplierImageID: supplierID
+        )
+        let sidecarService = XMPSidecarService()
+        let rawURL = directory.appendingPathComponent("supplied.nef")
+        try sidecarService.saveSidecar(metadata: expected, for: rawURL)
+
+        let sidecarXMP = try XMPReader.readFromXML(
+            Data(contentsOf: sidecarService.sidecarURL(for: rawURL))
+        )
+        #expect(sidecarXMP.simpleValue(
+            namespace: XMPNamespace.iptcExt,
+            property: "ImageSupplierImageID"
+        ) == supplierID)
+        let sidecarMetadata = sidecarService.loadSidecar(for: rawURL)
+        #expect(sidecarMetadata?.imageSupplierImageID == supplierID)
+        #expect(sidecarMetadata?.digitalImageGUID == imageGUID)
+
+        let imageURL = try makeJPEG(in: directory)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields(expected.toWriteFields(), to: [imageURL])
+        let embedded = try await SwiftExifReadService().readFullMetadata(url: imageURL)
+        #expect(embedded.imageSupplierImageID == supplierID)
+        #expect(embedded.digitalImageGUID == imageGUID)
+
+        try await engine.writeFields([.description: "Updated caption"], to: [imageURL])
+        let afterUnrelatedEdit = try await SwiftExifReadService().readFullMetadata(url: imageURL)
+        #expect(afterUnrelatedEdit.description == "Updated caption")
+        #expect(afterUnrelatedEdit.imageSupplierImageID == supplierID)
+        #expect(afterUnrelatedEdit.digitalImageGUID == imageGUID)
+
+        try await engine.writeFields([.imageSupplierImageID: ""], to: [imageURL])
+        let afterClear = try await SwiftExifReadService().readFullMetadata(url: imageURL)
+        #expect(afterClear.imageSupplierImageID == nil)
+        #expect(afterClear.digitalImageGUID == imageGUID)
+    }
+
     @Test("urgency round-trips through Photoshop XMP and IPTC-IIM with XMP precedence")
     func urgencyRoundTrip() async throws {
         let directory = try makeTemporaryDirectory()
@@ -1362,6 +1420,13 @@ struct HasIPTCDifferencesTests {
         #expect(codes.hasIPTCDifferences(from: changedCodes))
     }
 
+    @Test("different image supplier image IDs are detected")
+    func differentImageSupplierImageIDsDetected() {
+        let a = IPTCMetadata(imageSupplierImageID: "AGENCY-001")
+        let b = IPTCMetadata(imageSupplierImageID: "AGENCY-002")
+        #expect(a.hasIPTCDifferences(from: b))
+    }
+
     @Test("structured editorial differences are detected without location bag ordering")
     func structuredEditorialDifferencesDetected() {
         let cityHall = EditorialLocation(name: "City Hall", city: "Oslo", countryCode: "NOR")
@@ -1503,6 +1568,14 @@ struct MergedTests {
         #expect(base.merged(preferring: IPTCMetadata()).urgency == 5)
     }
 
+    @Test("non-empty image supplier image ID merges atomically")
+    func imageSupplierImageIDMerged() {
+        let base = IPTCMetadata(imageSupplierImageID: "AGENCY-001")
+        let replacement = IPTCMetadata(imageSupplierImageID: "AGENCY-002")
+        #expect(base.merged(preferring: replacement).imageSupplierImageID == "AGENCY-002")
+        #expect(base.merged(preferring: IPTCMetadata()).imageSupplierImageID == "AGENCY-001")
+    }
+
     @Test("non-empty structured metadata merges without flattening locations")
     func structuredMetadataMerged() {
         let base = IPTCMetadata(
@@ -1565,6 +1638,7 @@ struct DescriptiveRecordTests {
         #expect(IPTCMetadata(organisationsShownNames: ["Example News"]).hasDescriptiveContent)
         #expect(IPTCMetadata(organisationsShownCodes: ["EXNEWS"]).hasDescriptiveContent)
         #expect(IPTCMetadata(creator: "C").hasDescriptiveContent)
+        #expect(IPTCMetadata(imageSupplierImageID: "AGENCY-001").hasDescriptiveContent)
         #expect(IPTCMetadata(city: "Oslo").hasDescriptiveContent)
         #expect(IPTCMetadata(
             creatorContactInfo: CreatorContactInfo(emails: ["desk@example.test"])
@@ -1593,6 +1667,13 @@ struct DescriptiveRecordTests {
         #expect(result.description == nil)
         #expect(result.keywords.isEmpty)
         #expect(result.creator == "Old creator")
+    }
+
+    @Test("replacing descriptive fields preserves an explicit supplier-ID clear")
+    func imageSupplierImageIDClearSticks() {
+        let embedded = IPTCMetadata(imageSupplierImageID: "AGENCY-001")
+        let record = IPTCMetadata(title: "Sidecar record")
+        #expect(embedded.replacingDescriptiveFields(from: record).imageSupplierImageID == nil)
     }
 
     @Test("replacingDescriptiveFields keeps GPS, rating, and label additive")
@@ -1703,6 +1784,7 @@ struct IPTCMetadataCodableTests {
             rightsUsageTerms: "Editorial use only",
             webStatementOfRights: "https://example.test/rights",
             digitalImageGUID: "urn:uuid:01234567-89ab-cdef-0123-456789abcdef",
+            imageSupplierImageID: "AGENCY-2026-0042",
             jobId: "JOB123",
             dateCreated: "2026-01-01",
             captureDate: "2026-01-01T12:00:00",
@@ -1742,6 +1824,7 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.rightsUsageTerms == "Editorial use only")
         #expect(decoded.webStatementOfRights == "https://example.test/rights")
         #expect(decoded.digitalImageGUID == "urn:uuid:01234567-89ab-cdef-0123-456789abcdef")
+        #expect(decoded.imageSupplierImageID == "AGENCY-2026-0042")
         #expect(decoded.jobId == "JOB123")
         #expect(decoded.dateCreated == "2026-01-01")
         #expect(decoded.captureDate == "2026-01-01T12:00:00")

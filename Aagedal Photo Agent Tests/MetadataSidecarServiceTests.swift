@@ -57,7 +57,12 @@ struct MetadataSidecarServiceTests {
 
         let service = MetadataSidecarService()
         let imageURL = makeImageURL(in: folder)
-        let metadata = IPTCMetadata(title: "Test Photo", keywords: ["nature"], creator: "Photographer")
+        let metadata = IPTCMetadata(
+            title: "Test Photo",
+            keywords: ["nature"],
+            creator: "Photographer",
+            imageSupplierImageID: "AGENCY-2026-0042"
+        )
         let sidecar = makeSidecar(filename: "photo.jpg", metadata: metadata)
 
         try service.saveSidecar(sidecar, for: imageURL, in: folder)
@@ -66,6 +71,7 @@ struct MetadataSidecarServiceTests {
         #expect(loaded.metadata.title == "Test Photo")
         #expect(loaded.metadata.keywords == ["nature"])
         #expect(loaded.metadata.creator == "Photographer")
+        #expect(loaded.metadata.imageSupplierImageID == "AGENCY-2026-0042")
         #expect(loaded.sourceFile == "photo.jpg")
     }
 

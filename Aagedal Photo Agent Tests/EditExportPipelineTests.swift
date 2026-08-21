@@ -87,6 +87,7 @@ struct EditExportPipelineTests {
             rightsUsageTerms: "Editorial use only",
             webStatementOfRights: "https://example.test/rights",
             digitalImageGUID: "urn:uuid:photo-42",
+            imageSupplierImageID: "AGENCY-2026-0042",
             countryCode: "NOR"
         )
         try XMPSidecarService().saveSidecar(metadata: sidecar, for: source)
@@ -113,6 +114,7 @@ struct EditExportPipelineTests {
         #expect(meta.rightsUsageTerms == "Editorial use only")
         #expect(meta.webStatementOfRights == "https://example.test/rights")
         #expect(meta.digitalImageGUID == "urn:uuid:photo-42")
+        #expect(meta.imageSupplierImageID == "AGENCY-2026-0042")
         #expect(meta.countryCode == "NOR")
         #expect(meta.urgency == 2)
         #expect(meta.sceneCodes == ["011200", "012400"])

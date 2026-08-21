@@ -70,6 +70,7 @@ nonisolated enum SidecarReconciliation {
         if a.rightsUsageTerms != b.rightsUsageTerms { return true }
         if a.webStatementOfRights != b.webStatementOfRights { return true }
         if a.digitalImageGUID != b.digitalImageGUID { return true }
+        if a.imageSupplierImageID != b.imageSupplierImageID { return true }
         if a.jobId != b.jobId { return true }
         if a.dateCreated != b.dateCreated { return true }
         if a.city != b.city { return true }

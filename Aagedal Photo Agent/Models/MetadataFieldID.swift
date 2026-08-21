@@ -12,7 +12,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     case description, extendedDescription, keywords, personShown
     case organisationShownName, organisationShownCode, digitalSourceType, urgency, sceneCode
     case creator, creatorJobTitle, descriptionWriter, credit, copyright
-    case rightsUsageTerms, webStatementOfRights, digitalImageGUID, jobId, dateCreated
+    case rightsUsageTerms, webStatementOfRights, digitalImageGUID, imageSupplierImageID, jobId, dateCreated
     case city, sublocation, provinceState, country, countryCode, event, instructions, source
 
     var displayName: String {
@@ -35,6 +35,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .rightsUsageTerms: return "Rights Usage Terms"
         case .webStatementOfRights: return "Web Statement of Rights"
         case .digitalImageGUID: return "Digital Image GUID"
+        case .imageSupplierImageID: return "Image Supplier Image ID"
         case .jobId: return "Job ID"
         case .dateCreated: return "Date Created"
         case .city: return "City"
@@ -68,6 +69,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .rightsUsageTerms: return metadata.rightsUsageTerms?.isEmpty ?? true
         case .webStatementOfRights: return metadata.webStatementOfRights?.isEmpty ?? true
         case .digitalImageGUID: return metadata.digitalImageGUID?.isEmpty ?? true
+        case .imageSupplierImageID: return metadata.imageSupplierImageID?.isEmpty ?? true
         case .jobId: return metadata.jobId?.isEmpty ?? true
         case .dateCreated: return metadata.dateCreated?.isEmpty ?? true
         case .city: return metadata.city?.isEmpty ?? true
@@ -101,6 +103,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .rightsUsageTerms: return metadata.rightsUsageTerms
         case .webStatementOfRights: return metadata.webStatementOfRights
         case .digitalImageGUID: return metadata.digitalImageGUID
+        case .imageSupplierImageID: return metadata.imageSupplierImageID
         case .jobId: return metadata.jobId
         case .dateCreated: return metadata.dateCreated
         case .city: return metadata.city
@@ -156,6 +159,7 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .rightsUsageTerms: metadata.rightsUsageTerms = scalar
         case .webStatementOfRights: metadata.webStatementOfRights = scalar
         case .digitalImageGUID: metadata.digitalImageGUID = scalar
+        case .imageSupplierImageID: metadata.imageSupplierImageID = scalar
         case .jobId: metadata.jobId = scalar
         case .dateCreated: metadata.dateCreated = scalar
         case .city: metadata.city = scalar
@@ -175,7 +179,8 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     static let primaryEditorFields: [Self] = [
         .headline, .description, .extendedDescription, .keywords, .personShown,
         .organisationShownName, .organisationShownCode,
-        .copyright, .creator, .rightsUsageTerms, .webStatementOfRights, .digitalImageGUID, .jobId,
+        .copyright, .creator, .rightsUsageTerms, .webStatementOfRights, .digitalImageGUID,
+        .imageSupplierImageID, .jobId,
     ]
 
     /// Fields displayed after the primary metadata and classification editors.

@@ -1599,6 +1599,9 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     /// Stable image identifier supplied by the photographer, agency, or ingest workflow.
     /// Metadata edits never synthesize or rotate this value implicitly.
     var digitalImageGUID: String?
+    /// Identifier assigned to this image by the supplying agency or organisation.
+    /// Kept distinct from the image GUID and supplier identity structure.
+    var imageSupplierImageID: String?
     var jobId: String?
     var dateCreated: String?
     var captureDate: String?
@@ -1635,7 +1638,8 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         case organisationsShownNames, organisationsShownCodes
         case digitalSourceType, urgency, sceneCodes
         case creator, creatorJobTitle, descriptionWriter, credit, copyright
-        case rightsUsageTerms, webStatementOfRights, digitalImageGUID, jobId, dateCreated, captureDate
+        case rightsUsageTerms, webStatementOfRights, digitalImageGUID, imageSupplierImageID
+        case jobId, dateCreated, captureDate
         case city, sublocation, provinceState, country, countryCode, event, instructions, source
         case creatorContactInfo, locationsCreated, locationsShown
         case latitude, longitude
@@ -1665,6 +1669,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         rightsUsageTerms: String? = nil,
         webStatementOfRights: String? = nil,
         digitalImageGUID: String? = nil,
+        imageSupplierImageID: String? = nil,
         jobId: String? = nil,
         dateCreated: String? = nil,
         captureDate: String? = nil,
@@ -1704,6 +1709,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.rightsUsageTerms = rightsUsageTerms
         self.webStatementOfRights = webStatementOfRights
         self.digitalImageGUID = digitalImageGUID
+        self.imageSupplierImageID = imageSupplierImageID
         self.jobId = jobId
         self.dateCreated = dateCreated
         self.captureDate = captureDate
@@ -1746,6 +1752,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         rightsUsageTerms = try container.decodeIfPresent(String.self, forKey: .rightsUsageTerms)
         webStatementOfRights = try container.decodeIfPresent(String.self, forKey: .webStatementOfRights)
         digitalImageGUID = try container.decodeIfPresent(String.self, forKey: .digitalImageGUID)
+        imageSupplierImageID = try container.decodeIfPresent(String.self, forKey: .imageSupplierImageID)
         jobId = try container.decodeIfPresent(String.self, forKey: .jobId)
         dateCreated = try container.decodeIfPresent(String.self, forKey: .dateCreated)
         captureDate = try container.decodeIfPresent(String.self, forKey: .captureDate)
@@ -1800,6 +1807,7 @@ extension IPTCMetadata {
             || rightsUsageTerms != other.rightsUsageTerms
             || webStatementOfRights != other.webStatementOfRights
             || digitalImageGUID != other.digitalImageGUID
+            || imageSupplierImageID != other.imageSupplierImageID
             || jobId != other.jobId
             || city != other.city
             || sublocation != other.sublocation
@@ -1838,6 +1846,7 @@ extension IPTCMetadata {
         if let rightsUsageTerms, !rightsUsageTerms.isEmpty { return true }
         if let webStatementOfRights, !webStatementOfRights.isEmpty { return true }
         if let digitalImageGUID, !digitalImageGUID.isEmpty { return true }
+        if let imageSupplierImageID, !imageSupplierImageID.isEmpty { return true }
         if let jobId, !jobId.isEmpty { return true }
         if let dateCreated, !dateCreated.isEmpty { return true }
         if let city, !city.isEmpty { return true }
@@ -1884,6 +1893,7 @@ extension IPTCMetadata {
         result.rightsUsageTerms = record.rightsUsageTerms
         result.webStatementOfRights = record.webStatementOfRights
         result.digitalImageGUID = record.digitalImageGUID
+        result.imageSupplierImageID = record.imageSupplierImageID
         result.jobId = record.jobId
         result.dateCreated = record.dateCreated
         result.city = record.city
@@ -1938,6 +1948,7 @@ extension IPTCMetadata {
         if let value = override.rightsUsageTerms, !value.isEmpty { result.rightsUsageTerms = value }
         if let value = override.webStatementOfRights, !value.isEmpty { result.webStatementOfRights = value }
         if let value = override.digitalImageGUID, !value.isEmpty { result.digitalImageGUID = value }
+        if let value = override.imageSupplierImageID, !value.isEmpty { result.imageSupplierImageID = value }
         if let value = override.jobId, !value.isEmpty { result.jobId = value }
         if let value = override.dateCreated, !value.isEmpty { result.dateCreated = value }
         if let value = override.captureDate, !value.isEmpty { result.captureDate = value }
@@ -2001,6 +2012,7 @@ extension IPTCMetadata {
         if let v = rightsUsageTerms { fields[.rightsUsageTerms] = v }
         if let v = webStatementOfRights { fields[.webStatementOfRights] = v }
         if let v = digitalImageGUID { fields[.digitalImageGUID] = v }
+        if let v = imageSupplierImageID { fields[.imageSupplierImageID] = v }
         if let v = jobId { fields[.transmissionReference] = v }
         if let v = dateCreated { fields[.dateCreated] = v }
         if let v = city { fields[.city] = v }
@@ -2051,6 +2063,7 @@ extension IPTCMetadata {
         fields[.rightsUsageTerms] = rightsUsageTerms ?? ""
         fields[.webStatementOfRights] = webStatementOfRights ?? ""
         fields[.digitalImageGUID] = digitalImageGUID ?? ""
+        fields[.imageSupplierImageID] = imageSupplierImageID ?? ""
         fields[.transmissionReference] = jobId ?? ""
         fields[.dateCreated] = dateCreated ?? ""
         fields[.city] = city ?? ""

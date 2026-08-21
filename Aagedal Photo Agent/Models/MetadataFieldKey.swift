@@ -22,6 +22,7 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case rightsUsageTerms
     case webStatementOfRights
     case digitalImageGUID
+    case imageSupplierImageID
     case transmissionReference
     case dateCreated
     case city

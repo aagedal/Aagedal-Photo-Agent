@@ -264,6 +264,12 @@ enum VariableCatalog {
         example: ""
     ),
     VariableDefinition(
+        variable: "{field:imageSupplierImageID}",
+        category: "Field Reference",
+        description: "Value from the Image Supplier Image ID field.",
+        example: ""
+    ),
+    VariableDefinition(
         variable: "{field:jobId}",
         category: "Field Reference",
         description: "Value of the Job ID field.",

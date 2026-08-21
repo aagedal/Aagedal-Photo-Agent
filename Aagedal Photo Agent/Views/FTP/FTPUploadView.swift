@@ -758,6 +758,7 @@ struct FTPUploadView: View {
                 resolved.rightsUsageTerms = resolveIfChanged(meta.rightsUsageTerms, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.webStatementOfRights = resolveIfChanged(meta.webStatementOfRights, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.digitalImageGUID = resolveIfChanged(meta.digitalImageGUID, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.imageSupplierImageID = resolveIfChanged(meta.imageSupplierImageID, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
@@ -784,6 +785,7 @@ struct FTPUploadView: View {
                     if resolved.rightsUsageTerms != meta.rightsUsageTerms { fields[.rightsUsageTerms] = resolved.rightsUsageTerms ?? "" }
                     if resolved.webStatementOfRights != meta.webStatementOfRights { fields[.webStatementOfRights] = resolved.webStatementOfRights ?? "" }
                     if resolved.digitalImageGUID != meta.digitalImageGUID { fields[.digitalImageGUID] = resolved.digitalImageGUID ?? "" }
+                    if resolved.imageSupplierImageID != meta.imageSupplierImageID { fields[.imageSupplierImageID] = resolved.imageSupplierImageID ?? "" }
                     if resolved.jobId != meta.jobId {
                         fields[.transmissionReference] = resolved.jobId ?? ""
                     }

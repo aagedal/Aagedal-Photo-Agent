@@ -367,6 +367,16 @@ pass 160 tests across two focused runs; see
 [the dated validation record](metadata-digital-image-guid-validation.md). External-tool and
 cross-container verification remains open.
 
+**Progress — 2026-08-21:** Image Supplier Image ID now remains distinct from Digital Image GUID,
+Job ID, filenames, and the planned structured supplier identity across typed metadata, versioned
+JSON, history, batch editing, import, templates and variables, browser search, rendered export, and
+FTP/SFTP preparation. XMP sidecars and embedded JPEGs read and write
+`Iptc4xmpExt:ImageSupplierImageID`, including authoritative clears and preservation through
+unrelated edits. The focused model, persistence, variable, interoperability, and real-file export
+suites pass 166 tests across two focused runs; see
+[the dated validation record](metadata-image-supplier-id-validation.md).
+External-tool and cross-container verification remains open.
+
 ## Phase 2 — Caption Workspace
 
 **Exit gate:** a photographer can caption a folder image by image using the keyboard, never lose an

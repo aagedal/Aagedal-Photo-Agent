@@ -75,6 +75,7 @@ struct MetadataTemplatePersistenceTests {
             TemplateField(fieldKey: "rightsUsageTerms", templateValue: "Editorial use only"),
             TemplateField(fieldKey: "webStatementOfRights", templateValue: "https://example.test/rights"),
             TemplateField(fieldKey: "digitalImageGUID", templateValue: "urn:uuid:{filename}"),
+            TemplateField(fieldKey: "imageSupplierImageID", templateValue: "AGENCY-{filename}"),
             TemplateField(fieldKey: "urgency", templateValue: "2"),
             TemplateField(fieldKey: "sceneCode", templateValue: "011200, 012400"),
         ]
@@ -93,6 +94,7 @@ struct MetadataTemplatePersistenceTests {
         #expect(TemplateField.label(for: "rightsUsageTerms") == "Rights Usage Terms")
         #expect(TemplateField.label(for: "webStatementOfRights") == "Web Statement of Rights")
         #expect(TemplateField.label(for: "digitalImageGUID") == "Digital Image GUID")
+        #expect(TemplateField.label(for: "imageSupplierImageID") == "Image Supplier Image ID")
         #expect(TemplateField.label(for: "urgency") == "Urgency")
         #expect(TemplateField.label(for: "sceneCode") == "Scene Code")
     }

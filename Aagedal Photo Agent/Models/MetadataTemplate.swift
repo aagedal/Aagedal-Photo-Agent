@@ -102,6 +102,7 @@ struct TemplateField: Codable, Identifiable, Sendable, Hashable {
         ("rightsUsageTerms", "Rights Usage Terms"),
         ("webStatementOfRights", "Web Statement of Rights"),
         ("digitalImageGUID", "Digital Image GUID"),
+        ("imageSupplierImageID", "Image Supplier Image ID"),
         ("jobId", "Job ID"),
         ("dateCreated", "Date Created"),
         ("city", "City"),

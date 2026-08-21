@@ -51,6 +51,7 @@ struct MetadataPanel: View {
         case rightsUsageTerms
         case webStatementOfRights
         case digitalImageGUID
+        case imageSupplierImageID
         case jobId
         case dateCreated
         case city
@@ -74,6 +75,7 @@ struct MetadataPanel: View {
             case .rightsUsageTerms: return "rightsUsageTerms"
             case .webStatementOfRights: return "webStatementOfRights"
             case .digitalImageGUID: return "digitalImageGUID"
+            case .imageSupplierImageID: return "imageSupplierImageID"
             case .jobId: return "jobId"
             case .dateCreated: return "dateCreated"
             case .city: return "city"
@@ -467,6 +469,7 @@ struct MetadataPanel: View {
         case "rightsUsageTerms": return .rightsUsageTerms
         case "webStatementOfRights": return .webStatementOfRights
         case "digitalImageGUID": return .digitalImageGUID
+        case "imageSupplierImageID": return .imageSupplierImageID
         case "jobId": return .jobId
         case "dateCreated": return .dateCreated
         case "city": return .city
@@ -510,6 +513,7 @@ struct MetadataPanel: View {
         case .rightsUsageTerms: return viewModel.editingMetadata.rightsUsageTerms ?? ""
         case .webStatementOfRights: return viewModel.editingMetadata.webStatementOfRights ?? ""
         case .digitalImageGUID: return viewModel.editingMetadata.digitalImageGUID ?? ""
+        case .imageSupplierImageID: return viewModel.editingMetadata.imageSupplierImageID ?? ""
         case .jobId: return viewModel.editingMetadata.jobId ?? ""
         case .dateCreated: return viewModel.editingMetadata.dateCreated ?? ""
         case .city: return viewModel.editingMetadata.city ?? ""
@@ -536,6 +540,7 @@ struct MetadataPanel: View {
         case .rightsUsageTerms: viewModel.editingMetadata.rightsUsageTerms = normalized
         case .webStatementOfRights: viewModel.editingMetadata.webStatementOfRights = normalized
         case .digitalImageGUID: viewModel.editingMetadata.digitalImageGUID = normalized
+        case .imageSupplierImageID: viewModel.editingMetadata.imageSupplierImageID = normalized
         case .jobId: viewModel.editingMetadata.jobId = normalized
         case .dateCreated: viewModel.editingMetadata.dateCreated = normalized
         case .city: viewModel.editingMetadata.city = normalized
@@ -1134,6 +1139,24 @@ struct MetadataPanel: View {
                 focusedField: $focusedField
             )
             .id("digitalImageGUID")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.imageSupplierImageID) {
+            EditableTextField(
+                label: "Image Supplier Image ID",
+                text: Binding(
+                    get: { viewModel.editingMetadata.imageSupplierImageID ?? "" },
+                    set: { viewModel.editingMetadata.imageSupplierImageID = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "imageSupplierImageID") : "Enter supplier-assigned image identifier",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.imageSupplierImageID),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("imageSupplierImageID"),
+                onInsertVariable: { openVariableReference(for: .imageSupplierImageID) },
+                focusKey: "imageSupplierImageID",
+                focusedField: $focusedField
+            )
+            .id("imageSupplierImageID")
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.jobId) {
