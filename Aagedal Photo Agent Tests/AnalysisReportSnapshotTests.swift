@@ -417,6 +417,13 @@ struct AnalysisReportSnapshotTests {
             .joined(separator: "\n")
 
         #expect(text.contains("Pixel evidence"))
+        #expect(text.contains("Full-image analytical scopes"))
+        #expect(text.contains("Waveform"))
+        #expect(text.contains("RGBY Parade"))
+        #expect(text.contains("Vectorscope"))
+        #expect(text.contains("Chromaticity"))
+        #expect(text.contains("direct Image"))
+        #expect(text.contains("selected-region scopes are intentionally excluded"))
         #expect(text.contains("true-pixel crop"))
         #expect(text.contains("1:1 source-pixel extraction"))
         #expect(text.contains("No interpolation"))
@@ -548,6 +555,8 @@ struct AnalysisReportSnapshotTests {
         #expect(text.contains("Limitations"))
         #expect(text.contains("sha256:test|report-test|v3"))
         #expect(text.contains("Image figure unavailable"))
+        #expect(text.contains("Full-image analytical scopes"))
+        #expect(text.contains("Scope figures unavailable"))
         #expect(progressValues.last == 1)
         #expect(progressValues == progressValues.sorted())
     }
@@ -568,6 +577,7 @@ struct AnalysisReportSnapshotTests {
             snapshot: snapshot,
             options: AnalysisReportExportOptions(
                 pageFormat: .usLetter,
+                includeAnalyticalScopes: false,
                 includeCanonicalPath: false,
                 includeCameraSerialNumber: false,
                 includeLocationCoordinates: false,
@@ -589,6 +599,7 @@ struct AnalysisReportSnapshotTests {
         #expect(text.contains("Omitted by export settings"))
         #expect(!text.contains(fixture.directoryURL.path))
         #expect(text.contains("Raw metadata was omitted by export settings"))
+        #expect(!text.contains("Full-image analytical scopes"))
     }
 
     @Test("paginates long Unicode findings and many annotations")

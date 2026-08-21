@@ -42,18 +42,10 @@ enum AnalysisEvidenceJPEGRenderer {
         annotations: [AnalysisAnnotation],
         maxPixelSize: CGFloat = 4_096
     ) async throws -> NSImage {
-        guard let imageSource = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
-              CGImageSourceGetCount(imageSource) > 0,
-              CGImageSourceGetType(imageSource) != nil else {
-            throw AnalysisEvidenceJPEGError.sourceImageUnavailable
-        }
-        guard let source = await FullScreenImageCache.loadDownsampledOffPool(
-            from: sourceURL,
+        let source = try await displayOrientedSourceCGImage(
+            sourceURL: sourceURL,
             maxPixelSize: maxPixelSize
-        ) else {
-            throw AnalysisEvidenceJPEGError.sourceImageUnavailable
-        }
-        try Task.checkCancellation()
+        )
         let size = CGSize(width: source.width, height: source.height)
         let image = try bitmapImage(size: size) {
             NSGraphicsContext.current?.cgContext.interpolationQuality = .high
@@ -69,6 +61,25 @@ enum AnalysisEvidenceJPEGRenderer {
             )
         }
         return image
+    }
+
+    static func displayOrientedSourceCGImage(
+        sourceURL: URL,
+        maxPixelSize: CGFloat = 4_096
+    ) async throws -> CGImage {
+        guard let imageSource = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
+              CGImageSourceGetCount(imageSource) > 0,
+              CGImageSourceGetType(imageSource) != nil else {
+            throw AnalysisEvidenceJPEGError.sourceImageUnavailable
+        }
+        guard let source = await FullScreenImageCache.loadDownsampledOffPool(
+            from: sourceURL,
+            maxPixelSize: maxPixelSize
+        ) else {
+            throw AnalysisEvidenceJPEGError.sourceImageUnavailable
+        }
+        try Task.checkCancellation()
+        return source
     }
 
     /// Extracts an upright source crop without resampling, then flattens the visible annotations

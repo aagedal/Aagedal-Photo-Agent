@@ -24,11 +24,34 @@ nonisolated enum AnalysisReportPageFormat: String, CaseIterable, Sendable {
 nonisolated struct AnalysisReportExportOptions: Equatable, Sendable {
     var pageFormat: AnalysisReportPageFormat = .a4
     var includeSelectedEvidenceCrop = true
+    var includeAnalyticalScopes = true
     var includeCanonicalPath = false
     var includeCameraSerialNumber = false
     var includeLocationCoordinates = true
     var includeRawMetadata = true
     var mapBasemap: AnalysisReportMapBasemap = .schematic
+}
+
+private struct AnalysisReportScopeFigure {
+    let mode: ScopeViewModel.ScopeMode
+    let image: NSImage
+
+    var title: String {
+        switch mode {
+        case .waveform: "Waveform"
+        case .parade: "RGBY Parade"
+        case .vectorscope: "Vectorscope"
+        case .chromaticity: "Chromaticity"
+        }
+    }
+
+    var caption: String {
+        switch mode {
+        case .waveform, .parade: "Full original | percentage scale"
+        case .vectorscope: "Full original | YCbCr chroma distribution"
+        case .chromaticity: "Full original | CIE 1931 | sRGB display gamut"
+        }
+    }
 }
 
 nonisolated enum AnalysisReportMapBasemap: String, CaseIterable, Sendable {
@@ -115,6 +138,7 @@ private final class Renderer {
     private var openStreetMapImage: NSImage?
     private var annotatedPhotoImage: NSImage?
     private var evidenceCropImage: NSImage?
+    private var analyticalScopeFigures: [AnalysisReportScopeFigure] = []
 
     private let ink = NSColor(srgbRed: 0.10, green: 0.12, blue: 0.15, alpha: 1)
     private let secondary = NSColor(srgbRed: 0.36, green: 0.39, blue: 0.43, alpha: 1)
@@ -152,6 +176,43 @@ private final class Renderer {
                 annotations: snapshot.photoAnnotations
             )
         }
+        if options.includeAnalyticalScopes,
+           let scopeSource = try? await AnalysisEvidenceJPEGRenderer
+               .displayOrientedSourceCGImage(
+                   sourceURL: snapshot.source.canonicalURL,
+                   maxPixelSize: 2_048
+               ) {
+            let renderedScopes = await Task.detached(priority: .utility) {
+                let service = ScopeRenderService()
+                let requests: [(ScopeViewModel.ScopeMode, CGSize)] = [
+                    (.waveform, CGSize(width: 1_200, height: 720)),
+                    (.parade, CGSize(width: 1_200, height: 720)),
+                    (.vectorscope, CGSize(width: 720, height: 720)),
+                    (.chromaticity, CGSize(width: 720, height: 720)),
+                ]
+                return requests.compactMap { mode, size -> (ScopeViewModel.ScopeMode, CGImage)? in
+                    let request = ScopeRenderRequest(
+                        mode: mode,
+                        outputSize: size,
+                        waveformScale: .percentage,
+                        showClippedGamut: false,
+                        targetGamut: .sRGB,
+                        displayGamut: .sRGB
+                    )
+                    guard let image = service.render(request, from: scopeSource) else { return nil }
+                    return (mode, image)
+                }
+            }.value
+            analyticalScopeFigures = renderedScopes.map { mode, image in
+                AnalysisReportScopeFigure(
+                    mode: mode,
+                    image: NSImage(
+                        cgImage: image,
+                        size: CGSize(width: image.width, height: image.height)
+                    )
+                )
+            }
+        }
         if options.mapBasemap == .openStreetMap, let map = snapshot.mapEvidence {
             openStreetMapImage = try? await AnalysisOpenStreetMapSnapshotter.image(
                 viewport: map.viewport,
@@ -177,32 +238,39 @@ private final class Renderer {
         try await section("Pixel evidence") {
             drawPixelEvidence()
         }
-        try await checkpoint(progress: 0.50)
+        try await checkpoint(progress: 0.47)
+
+        if options.includeAnalyticalScopes {
+            try await section("Full-image analytical scopes") {
+                drawAnalyticalScopes()
+            }
+        }
+        try await checkpoint(progress: 0.56)
 
         try await section("Photo annotations") {
             drawPhotoAnnotations()
         }
-        try await checkpoint(progress: 0.60)
+        try await checkpoint(progress: 0.64)
 
         try await section("Timeline and observations") {
             drawTimeline()
         }
-        try await checkpoint(progress: 0.70)
+        try await checkpoint(progress: 0.73)
 
         try await section("Location evidence") {
             drawLocationEvidence()
         }
-        try await checkpoint(progress: 0.80)
+        try await checkpoint(progress: 0.82)
 
         try await section("Methodology") {
             drawMethodology()
         }
-        try await checkpoint(progress: 0.89)
+        try await checkpoint(progress: 0.90)
 
         try await section("Limitations") {
             drawLimitations()
         }
-        try await checkpoint(progress: 0.95)
+        try await checkpoint(progress: 0.96)
 
         try await section("Appendix") {
             drawAppendix()
@@ -534,6 +602,99 @@ private final class Renderer {
         return CGSize(width: size.width * scale, height: size.height * scale)
     }
 
+    private func drawAnalyticalScopes() {
+        drawFlowingText(
+            "Deterministic CPU-rendered views of the validated, display-oriented original source. The direct Image preview and selected-region scopes are intentionally excluded.",
+            font: .systemFont(ofSize: 9.5),
+            color: secondary,
+            lineSpacing: 2
+        )
+        cursorY -= 14
+
+        guard !analyticalScopeFigures.isEmpty else {
+            drawCallout(
+                title: "Scope figures unavailable",
+                body: "The source could not be decoded for analytical scope rendering. Other frozen report evidence remains available."
+            )
+            return
+        }
+
+        let columnGap: CGFloat = 14
+        let rowGap: CGFloat = 14
+        let cardWidth = (contentWidth - columnGap) / 2
+        let cardHeight: CGFloat = 232
+
+        for rowStart in stride(from: 0, to: analyticalScopeFigures.count, by: 2) {
+            ensureSpace(cardHeight)
+            for column in 0..<2 {
+                let index = rowStart + column
+                guard index < analyticalScopeFigures.count else { continue }
+                let cardRect = CGRect(
+                    x: margin + CGFloat(column) * (cardWidth + columnGap),
+                    y: cursorY - cardHeight,
+                    width: cardWidth,
+                    height: cardHeight
+                )
+                drawAnalyticalScopeCard(analyticalScopeFigures[index], in: cardRect)
+            }
+            cursorY -= cardHeight + rowGap
+        }
+    }
+
+    private func drawAnalyticalScopeCard(
+        _ figure: AnalysisReportScopeFigure,
+        in cardRect: CGRect
+    ) {
+        panelFill.setFill()
+        let card = NSBezierPath(roundedRect: cardRect, xRadius: 7, yRadius: 7)
+        card.fill()
+        hairline.setStroke()
+        card.lineWidth = 0.75
+        card.stroke()
+
+        drawText(
+            figure.title,
+            font: .systemFont(ofSize: 10.5, weight: .semibold),
+            color: ink,
+            in: CGRect(
+                x: cardRect.minX + 9,
+                y: cardRect.maxY - 25,
+                width: cardRect.width - 18,
+                height: 15
+            )
+        )
+        let imageBounds = CGRect(
+            x: cardRect.minX + 9,
+            y: cardRect.minY + 29,
+            width: cardRect.width - 18,
+            height: cardRect.height - 62
+        )
+        let fittedSize = aspectFitSize(figure.image.size, maximum: imageBounds.size)
+        let imageRect = CGRect(
+            x: imageBounds.midX - fittedSize.width / 2,
+            y: imageBounds.midY - fittedSize.height / 2,
+            width: fittedSize.width,
+            height: fittedSize.height
+        )
+        NSGraphicsContext.current?.cgContext.interpolationQuality = .high
+        figure.image.draw(in: imageRect, from: .zero, operation: .copy, fraction: 1)
+        NSColor.black.withAlphaComponent(0.55).setStroke()
+        let imageBorder = NSBezierPath(rect: imageRect)
+        imageBorder.lineWidth = 0.5
+        imageBorder.stroke()
+        drawText(
+            figure.caption,
+            font: .systemFont(ofSize: 7.2),
+            color: secondary,
+            in: CGRect(
+                x: cardRect.minX + 9,
+                y: cardRect.minY + 9,
+                width: cardRect.width - 18,
+                height: 11
+            )
+        )
+    }
+
     private func drawPhotoAnnotations() {
 
         drawFlowingText(
@@ -661,6 +822,12 @@ private final class Renderer {
                 ? "Map rendering. The location figure is generated by this application from the frozen viewport and coordinates. Apple Maps tiles, labels, and imagery are not embedded."
                 : "Map rendering. The location figure uses OpenStreetMap tiles captured at export time with required attribution. Apple Maps tiles and imagery are not embedded.",
         ]
+        if options.includeAnalyticalScopes {
+            paragraphs.insert(
+                "Analytical scopes. Waveform, RGBY parade, vectorscope, and CIE 1931 chromaticity figures are deterministic CPU renders of the display-oriented original source. Waveform views use a percentage scale; chromaticity uses the sRGB display gamut with gamut clipping disabled.",
+                at: 3
+            )
+        }
         if let solar = snapshot.mapEvidence?.solarEvidence {
             paragraphs.append(
                 "Solar position. \(solar.day.method.displayName) applies the report's frozen WGS 84 coordinate, timezone-qualified instant, and fixed UTC offset using the documented Meeus/NOAA equations and standard atmospheric-refraction correction. The snapshot was accepted only after this calculation completed with the saved method version."
@@ -680,6 +847,7 @@ private final class Renderer {
             "This report does not provide a global authenticity, manipulation, or AI-origin verdict.",
             "Metadata can be absent, edited, copied, or produced by normal camera and export workflows. A mismatch is an observation, not proof of intent.",
             "Compression residuals and other derived views can be influenced by recompression, resizing, denoising, sharpening, and ordinary editing.",
+            "Analytical scopes summarize pixel distributions and color relationships; they do not identify editing intent or establish authenticity on their own.",
             "Timezone-less timestamps are wall-clock evidence only and cannot be placed on an absolute chronology without an explicit offset.",
             "Investigator-entered locations, labels, observations, and measurement calibrations are user assertions stored in the case; they are not source metadata.",
             openStreetMapImage == nil

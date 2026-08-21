@@ -1413,6 +1413,7 @@ private struct AnalysisReportExportSheet: View {
 
     @State private var pageFormat: AnalysisReportPageFormat = .a4
     @State private var includeSelectedEvidenceCrop = true
+    @State private var includeAnalyticalScopes = true
     @State private var includeCanonicalPath = false
     @State private var includeCameraSerialNumber = false
     @State private var includeLocationCoordinates = true
@@ -1443,6 +1444,14 @@ private struct AnalysisReportExportSheet: View {
                 }
 
                 Section("Pixel evidence") {
+                    Toggle(
+                        "Include full-image analytical scopes",
+                        isOn: $includeAnalyticalScopes
+                    )
+                    Text("Adds Waveform, RGBY Parade, Vectorscope, and Chromaticity from the validated original source. Image previews and selection-only scopes are excluded.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
                     Toggle(
                         "Include selected source-pixel region",
                         isOn: $includeSelectedEvidenceCrop
@@ -1485,6 +1494,7 @@ private struct AnalysisReportExportSheet: View {
                         pageFormat: pageFormat,
                         includeSelectedEvidenceCrop: includeSelectedEvidenceCrop
                             && hasSelectedEvidenceCrop,
+                        includeAnalyticalScopes: includeAnalyticalScopes,
                         includeCanonicalPath: includeCanonicalPath,
                         includeCameraSerialNumber: includeCameraSerialNumber,
                         includeLocationCoordinates: includeLocationCoordinates,
