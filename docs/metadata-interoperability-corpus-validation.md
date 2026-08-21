@@ -40,7 +40,8 @@ and XMP/IIM conflict precedence.
 
 ## Remaining corpus gate
 
-Phase 0 still requires a confirmed-redistributable IPTC 2025.1 reference image, real TIFF, PNG,
-HEIC/HEIF, JPEG XL, and representative RAW+XMP pairs, followed by current Adobe Bridge, Photo
-Mechanic, and IPTC reference-tool round trips. The generated boundary corpus does not substitute
-for those external-container checks.
+Phase 0 still requires a confirmed-redistributable IPTC 2025.1 reference image, a decodable
+HEIC/HEIF fixture, and representative camera RAW originals, followed by current Adobe Bridge,
+Photo Mechanic, and IPTC reference-tool round trips. The later generated CC0 container corpus now
+covers TIFF, PNG, JPEG XL, and the authentic RAW/XMP-sidecar safety boundary; it does not substitute
+for the remaining licensed fixtures or external-tool checks.
