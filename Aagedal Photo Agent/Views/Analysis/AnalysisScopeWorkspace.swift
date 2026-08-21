@@ -29,6 +29,34 @@ enum AnalysisScopeSourceMode: String, CaseIterable {
     }
 }
 
+private enum AnalysisScopePresentation: String, CaseIterable {
+    case image
+    case waveform
+    case parade
+    case vectorscope
+    case chromaticity
+
+    var label: String {
+        switch self {
+        case .image: "Image"
+        case .waveform: "Waveform"
+        case .parade: "RGBY Parade"
+        case .vectorscope: "Vectorscope"
+        case .chromaticity: "Chromaticity"
+        }
+    }
+
+    var scopeMode: ScopeViewModel.ScopeMode? {
+        switch self {
+        case .image: nil
+        case .waveform: .waveform
+        case .parade: .parade
+        case .vectorscope: .vectorscope
+        case .chromaticity: .chromaticity
+        }
+    }
+}
+
 /// Larger, resizable scope presentation for Pixel Analysis.
 ///
 /// Each card owns a normal `ScopeViewModel`, so cancellation, request identity, and rendering
@@ -40,6 +68,11 @@ struct AnalysisScopeWorkspace: View {
     @Binding var selectedRegion: CGRect?
 
     @State private var layout: AnalysisScopeLayout = .two
+    @State private var displayedSourceImage: CGImage?
+    @State private var waveformPresentation: AnalysisScopePresentation = .waveform
+    @State private var paradePresentation: AnalysisScopePresentation = .parade
+    @State private var vectorscopePresentation: AnalysisScopePresentation = .vectorscope
+    @State private var chromaticityPresentation: AnalysisScopePresentation = .chromaticity
     @State private var waveform = ScopeViewModel(
         scopeMode: .waveform,
         persistsScopeMode: false
@@ -126,6 +159,18 @@ struct AnalysisScopeWorkspace: View {
         .onChange(of: selectedRegion) {
             updateVisibleModels()
         }
+        .onChange(of: waveformPresentation) {
+            updatePresentation(waveformPresentation, for: waveform)
+        }
+        .onChange(of: paradePresentation) {
+            updatePresentation(paradePresentation, for: parade)
+        }
+        .onChange(of: vectorscopePresentation) {
+            updatePresentation(vectorscopePresentation, for: vectorscope)
+        }
+        .onChange(of: chromaticityPresentation) {
+            updatePresentation(chromaticityPresentation, for: chromaticity)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
             "\(layout.accessibilityLabel) for \(sourceMode.label.lowercased())"
@@ -136,21 +181,49 @@ struct AnalysisScopeWorkspace: View {
     private var scopeLayout: some View {
         switch layout {
         case .one:
-            AnalysisScopeCard(model: waveform)
+            AnalysisScopeCard(
+                model: waveform,
+                presentation: $waveformPresentation,
+                sourceImage: displayedSourceImage
+            )
         case .two:
-            HSplitView {
-                AnalysisScopeCard(model: waveform)
-                AnalysisScopeCard(model: vectorscope)
+            VSplitView {
+                AnalysisScopeCard(
+                    model: waveform,
+                    presentation: $waveformPresentation,
+                    sourceImage: displayedSourceImage
+                )
+                AnalysisScopeCard(
+                    model: vectorscope,
+                    presentation: $vectorscopePresentation,
+                    sourceImage: displayedSourceImage
+                )
             }
         case .four:
             VSplitView {
                 HSplitView {
-                    AnalysisScopeCard(model: waveform)
-                    AnalysisScopeCard(model: parade)
+                    AnalysisScopeCard(
+                        model: waveform,
+                        presentation: $waveformPresentation,
+                        sourceImage: displayedSourceImage
+                    )
+                    AnalysisScopeCard(
+                        model: parade,
+                        presentation: $paradePresentation,
+                        sourceImage: displayedSourceImage
+                    )
                 }
                 HSplitView {
-                    AnalysisScopeCard(model: vectorscope)
-                    AnalysisScopeCard(model: chromaticity)
+                    AnalysisScopeCard(
+                        model: vectorscope,
+                        presentation: $vectorscopePresentation,
+                        sourceImage: displayedSourceImage
+                    )
+                    AnalysisScopeCard(
+                        model: chromaticity,
+                        presentation: $chromaticityPresentation,
+                        sourceImage: displayedSourceImage
+                    )
                 }
             }
         }
@@ -167,11 +240,19 @@ struct AnalysisScopeWorkspace: View {
     private var visibleModels: [ScopeViewModel] {
         switch layout {
         case .one:
-            [waveform]
+            waveformPresentation.scopeMode == nil ? [] : [waveform]
         case .two:
-            [waveform, vectorscope]
+            [
+                waveformPresentation.scopeMode == nil ? nil : waveform,
+                vectorscopePresentation.scopeMode == nil ? nil : vectorscope,
+            ].compactMap { $0 }
         case .four:
-            allModels
+            [
+                waveformPresentation.scopeMode == nil ? nil : waveform,
+                paradePresentation.scopeMode == nil ? nil : parade,
+                vectorscopePresentation.scopeMode == nil ? nil : vectorscope,
+                chromaticityPresentation.scopeMode == nil ? nil : chromaticity,
+            ].compactMap { $0 }
         }
     }
 
@@ -191,22 +272,35 @@ struct AnalysisScopeWorkspace: View {
                 scopeImage = nil
             }
         }
+        displayedSourceImage = scopeImage
         for model in allModels {
             model.updateImage(visibleIDs.contains(ObjectIdentifier(model)) ? scopeImage : nil)
         }
+    }
+
+    private func updatePresentation(
+        _ presentation: AnalysisScopePresentation,
+        for model: ScopeViewModel
+    ) {
+        if let scopeMode = presentation.scopeMode {
+            model.scopeMode = scopeMode
+        }
+        updateVisibleModels()
     }
 }
 
 private struct AnalysisScopeCard: View {
     @Bindable var model: ScopeViewModel
+    @Binding var presentation: AnalysisScopePresentation
+    let sourceImage: CGImage?
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         VStack(spacing: 6) {
             HStack {
-                Picker("Scope", selection: $model.scopeMode) {
-                    ForEach(ScopeViewModel.ScopeMode.allCases, id: \.self) { mode in
-                        Text(mode.displayName).tag(mode)
+                Picker("Scope", selection: $presentation) {
+                    ForEach(AnalysisScopePresentation.allCases, id: \.self) { presentation in
+                        Text(presentation.label).tag(presentation)
                     }
                 }
                 .labelsHidden()
@@ -214,7 +308,7 @@ private struct AnalysisScopeCard: View {
                 .fixedSize()
                 .accessibilityLabel("Scope type")
                 Spacer()
-                if model.isComputing {
+                if presentation.scopeMode != nil, model.isComputing {
                     ProgressView()
                         .controlSize(.mini)
                         .accessibilityLabel("Rendering \(model.scopeMode.displayName)")
@@ -222,48 +316,65 @@ private struct AnalysisScopeCard: View {
             }
 
             GeometryReader { geometry in
-                let contentSize = ScopePresentationSizing.contentSize(
-                    mode: model.scopeMode,
-                    availableSize: geometry.size
-                )
-
                 ZStack {
                     Color.black
 
-                    ZStack {
-                        if let image = model.scopeImage {
-                            Image(nsImage: image)
+                    if presentation == .image {
+                        if let sourceImage {
+                            Image(
+                                sourceImage,
+                                scale: 1,
+                                label: Text("Selected scope image")
+                            )
                                 .resizable()
                                 .interpolation(.high)
-                                .accessibilityLabel("\(model.scopeMode.displayName) scope")
-                        } else if model.isComputing {
-                            ProgressView()
-                                .controlSize(.small)
+                                .scaledToFit()
                         } else {
                             Text("No image")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                    } else {
+                        let contentSize = ScopePresentationSizing.contentSize(
+                            mode: model.scopeMode,
+                            availableSize: geometry.size
+                        )
 
-                        if model.scopeMode == .waveform || model.scopeMode == .parade {
-                            ScopeLabelsOverlay(scale: model.waveformScale)
-                                .allowsHitTesting(false)
+                        ZStack {
+                            if let image = model.scopeImage {
+                                Image(nsImage: image)
+                                    .resizable()
+                                    .interpolation(.high)
+                                    .accessibilityLabel("\(model.scopeMode.displayName) scope")
+                            } else if model.isComputing {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Text("No image")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            if model.scopeMode == .waveform || model.scopeMode == .parade {
+                                ScopeLabelsOverlay(scale: model.waveformScale)
+                                    .allowsHitTesting(false)
+                            }
                         }
-                    }
-                    .frame(width: contentSize.width, height: contentSize.height)
-                    .task(id: RenderSizeIdentity(size: contentSize, scale: displayScale)) {
-                        // Split-view drags can publish a new size every frame. Wait for a short
-                        // quiet period so superseded detached CPU renders do not pile up.
-                        do {
-                            try await Task.sleep(for: .milliseconds(120))
-                        } catch {
-                            return
+                        .frame(width: contentSize.width, height: contentSize.height)
+                        .task(id: RenderSizeIdentity(size: contentSize, scale: displayScale)) {
+                            // Split-view drags can publish a new size every frame. Wait for a short
+                            // quiet period so superseded detached CPU renders do not pile up.
+                            do {
+                                try await Task.sleep(for: .milliseconds(120))
+                            } catch {
+                                return
+                            }
+                            guard let pixelSize = ScopeRenderRequest.outputPixelSize(
+                                for: contentSize,
+                                backingScale: displayScale
+                            ) else { return }
+                            model.setOutputPixelSize(pixelSize)
                         }
-                        guard let pixelSize = ScopeRenderRequest.outputPixelSize(
-                            for: contentSize,
-                            backingScale: displayScale
-                        ) else { return }
-                        model.setOutputPixelSize(pixelSize)
                     }
                 }
             }

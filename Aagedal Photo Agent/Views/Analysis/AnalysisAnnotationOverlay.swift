@@ -58,6 +58,36 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
         }
     }
 
+    var photoShortcutKey: String? {
+        switch self {
+        case .select: "V"
+        case .hand: "H"
+        case .line: "L"
+        case .arrow: "A"
+        case .distance: "D"
+        case .rectangle: "R"
+        case .ellipse: "E"
+        case .shape: "P"
+        case .label: "T"
+        case .marker: nil
+        }
+    }
+
+    static func photoTool(forShortcut key: String) -> Self? {
+        switch key.lowercased() {
+        case "v": .select
+        case "h": .hand
+        case "l": .line
+        case "a": .arrow
+        case "d": .distance
+        case "r": .rectangle
+        case "e": .ellipse
+        case "p": .shape
+        case "t": .label
+        default: nil
+        }
+    }
+
     static let photoTools: [Self] = [
         .select, .hand, .line, .arrow, .distance, .rectangle, .ellipse, .shape, .label,
     ]
@@ -318,10 +348,16 @@ struct AnalysisAnnotationToolbar: View {
     ) -> some View {
         Picker("\(contextLabel) Markup Tool", selection: selection) {
             ForEach(tools) { tool in
+                let shortcutKey = tools == AnalysisAnnotationTool.photoTools
+                    ? tool.photoShortcutKey
+                    : nil
                 Label(tool.displayName, systemImage: tool.systemImage)
                     .labelStyle(.iconOnly)
                     .tag(tool)
-                    .help(tool.displayName)
+                    .help(
+                        shortcutKey.map { "\(tool.displayName) (\($0))" }
+                            ?? tool.displayName
+                    )
             }
         }
         .pickerStyle(.segmented)

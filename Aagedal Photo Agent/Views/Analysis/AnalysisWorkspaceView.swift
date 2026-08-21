@@ -691,7 +691,7 @@ struct AnalysisWorkspaceView: View {
                     .layoutPriority(1)
 
                 pixelAnalysisInspector
-                    .frame(minWidth: 350, idealWidth: 410, maxWidth: 520)
+                    .frame(minWidth: 350, idealWidth: 410, maxWidth: .infinity)
             }
         }
     }
@@ -1095,7 +1095,7 @@ struct AnalysisWorkspaceView: View {
                 scopeSourceMode: scopeSourceMode,
                 selectedScopeRegion: $selectedScopeRegion,
                 annotations: model.annotations,
-                annotationTool: photoAnnotationTool,
+                annotationTool: $photoAnnotationTool,
                 annotationStyle: annotationStyle,
                 selectedAnnotationID: $selectedAnnotationID,
                 annotationsAreReadOnly: model.sourceChanged,
@@ -3113,7 +3113,7 @@ private struct AnalysisSourceThumbnail: View {
     let scopeSourceMode: AnalysisScopeSourceMode
     @Binding var selectedScopeRegion: CGRect?
     let annotations: [AnalysisAnnotation]
-    let annotationTool: AnalysisAnnotationTool
+    @Binding var annotationTool: AnalysisAnnotationTool
     let annotationStyle: AnalysisAnnotationStyle
     @Binding var selectedAnnotationID: UUID?
     let annotationsAreReadOnly: Bool
@@ -3144,6 +3144,8 @@ private struct AnalysisSourceThumbnail: View {
     @State private var viewportSize: CGSize = .zero
     @State private var pointerLocationInViewport: CGPoint?
     @State private var scrollEventMonitor: Any?
+    @State private var keyEventMonitor: Any?
+    @State private var isSpaceHandToolActive = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -3366,7 +3368,7 @@ private struct AnalysisSourceThumbnail: View {
                 .scaleEffect(zoomScale)
                 .offset(panOffset)
 
-                if annotationTool == .hand {
+                if annotationTool == .hand || isSpaceHandToolActive {
                     Color.clear
                         .contentShape(Rectangle())
                         .gesture(
@@ -3433,9 +3435,11 @@ private struct AnalysisSourceThumbnail: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .onAppear {
             installScrollEventMonitor()
+            installKeyEventMonitor()
         }
         .onDisappear {
             removeScrollEventMonitor()
+            removeKeyEventMonitor()
         }
         .onChange(of: polygonFinishRequestID) {
             finishPolygonDraft()
@@ -3638,6 +3642,60 @@ private struct AnalysisSourceThumbnail: View {
         guard let scrollEventMonitor else { return }
         NSEvent.removeMonitor(scrollEventMonitor)
         self.scrollEventMonitor = nil
+    }
+
+    private func installKeyEventMonitor() {
+        guard keyEventMonitor == nil else { return }
+        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) {
+            event in
+            handleKeyEvent(event)
+        }
+    }
+
+    private func removeKeyEventMonitor() {
+        guard let keyEventMonitor else { return }
+        NSEvent.removeMonitor(keyEventMonitor)
+        self.keyEventMonitor = nil
+        isSpaceHandToolActive = false
+    }
+
+    private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
+        let isKeyDown = event.type == .keyDown
+        let isKeyUp = event.type == .keyUp
+
+        // Space is a momentary override: releasing it restores the selected markup tool.
+        // Handle key-up even if the pointer left the viewport during the drag.
+        if event.keyCode == 49, isKeyUp, isSpaceHandToolActive {
+            isSpaceHandToolActive = false
+            panDragStartOffset = nil
+            NSCursor.arrow.set()
+            return nil
+        }
+
+        let responder = event.window?.firstResponder
+        let textEditorOwnsInput = responder is NSText || responder is NSTextView
+        guard pointerLocationInViewport != nil, !textEditorOwnsInput else {
+            return event
+        }
+
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.isDisjoint(with: [.command, .control, .option]) else { return event }
+
+        if event.keyCode == 49, isKeyDown {
+            isSpaceHandToolActive = true
+            NSCursor.openHand.set()
+            return nil
+        }
+
+        guard isKeyDown,
+              !event.isARepeat,
+              !annotationsAreReadOnly,
+              let key = event.charactersIgnoringModifiers,
+              let tool = AnalysisAnnotationTool.photoTool(forShortcut: key) else {
+            return event
+        }
+        annotationTool = tool
+        return nil
     }
 
     private func resetZoom() {

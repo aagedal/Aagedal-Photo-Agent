@@ -366,6 +366,16 @@ struct ImagePreviewZoomGeometryTests {
         #expect(AnalysisAnnotationTool.shape.annotationKind == .polygon)
     }
 
+    @Test("photo markup shortcuts select every toolbar tool")
+    func photoMarkupShortcuts() throws {
+        for tool in AnalysisAnnotationTool.photoTools {
+            let key = try #require(tool.photoShortcutKey)
+            #expect(AnalysisAnnotationTool.photoTool(forShortcut: key) == tool)
+            #expect(AnalysisAnnotationTool.photoTool(forShortcut: key.lowercased()) == tool)
+        }
+        #expect(AnalysisAnnotationTool.photoTool(forShortcut: "x") == nil)
+    }
+
     @Test("analysis preview zoom supports 4000 percent")
     func zoomLimit() {
         #expect(ImagePreviewZoomGeometry.maximumScale == 40)
