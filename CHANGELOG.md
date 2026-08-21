@@ -6,6 +6,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Reworked Pixel Analysis around a larger, full-height image surface with Evidence and Scopes in
+  a right-side inspector; added Alpha and fixed-parameter Edges views, plus privacy-labeled links
+  to Meta's Content Seal checker and Google's SynthID check in Gemini.
 - Added Caption Workspace, Batch Rename, Deadline profiles, frozen preflight, and verified staged
   FTP/FTPS/SFTP delivery for deadline-oriented editorial workflows.
 - Expanded the descriptive IPTC/XMP model with editorial role, organisation, country-code, rights,

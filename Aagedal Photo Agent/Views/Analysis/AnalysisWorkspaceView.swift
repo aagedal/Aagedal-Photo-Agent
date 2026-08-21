@@ -2,7 +2,26 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum AnalysisPixelInspectorSection: String, CaseIterable {
+    case evidence
+    case scopes
+
+    var label: String {
+        switch self {
+        case .evidence: "Evidence"
+        case .scopes: "Scopes"
+        }
+    }
+}
+
 struct AnalysisWorkspaceView: View {
+    private static let metaContentSealCheckURL = URL(
+        string: "https://www.meta.ai/identification/"
+    )!
+    private static let googleSynthIDCheckURL = URL(
+        string: "https://gemini.google.com/"
+    )!
+
     @Bindable var model: AnalysisWorkspaceModel
     let folderImages: [ImageFile]
     let thumbnailService: ThumbnailService
@@ -15,6 +34,7 @@ struct AnalysisWorkspaceView: View {
     @State private var scopeSourceMode: AnalysisScopeSourceMode = .fullImage
     @State private var selectedScopeRegion: CGRect?
     @State private var pixelViewMode: AnalysisPixelViewMode = .normal
+    @State private var pixelInspectorSection: AnalysisPixelInspectorSection = .evidence
     @State private var photoAnnotationTool: AnalysisAnnotationTool = .select
     @State private var mapAnnotationTool: AnalysisAnnotationTool = .select
     @State private var annotationStyle = AnalysisAnnotationStyle.default
@@ -269,17 +289,15 @@ struct AnalysisWorkspaceView: View {
             if model.workspaceMode == .pixelAnalysis {
                 Picker("Pixel View", selection: $pixelViewMode) {
                     ForEach(AnalysisPixelViewMode.allCases, id: \.self) { mode in
-                        Text(mode.compactLabel)
+                        Text(mode.displayName)
                             .tag(mode)
-                            .accessibilityLabel(mode.displayName)
                     }
                 }
-                .pickerStyle(.segmented)
-                .frame(minWidth: 360, idealWidth: 460, maxWidth: 540)
+                .pickerStyle(.menu)
+                .fixedSize()
                 .disabled(model.analysisCase == nil)
                 .help(
-                    "Show the normal image, a linear-light channel, relative luminance, "
-                        + "or a fixed-parameter JPEG compression residual"
+                    "Choose a geometry-preserving channel, alpha, edge, or compression view"
                 )
             }
 
@@ -668,23 +686,49 @@ struct AnalysisWorkspaceView: View {
             Divider()
 
             HSplitView {
-                caseSidebar
-                    .frame(minWidth: 190, idealWidth: 230, maxWidth: 300)
-                VSplitView {
-                    sourcePreview(showMarkupToolbar: true)
-                        .frame(minHeight: 260)
-                    AnalysisScopeWorkspace(
-                        sourceImage: displayedScopeImage,
-                        sourceMode: $scopeSourceMode,
-                        selectedRegion: $selectedScopeRegion
-                    )
-                        .frame(minHeight: 180, idealHeight: 300)
-                }
-                    .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
-                analysisDetail
-                    .frame(minWidth: 260, idealWidth: 330, maxWidth: 430)
+                sourcePreview(showMarkupToolbar: true)
+                    .frame(minWidth: 520, minHeight: 360)
+                    .layoutPriority(1)
+
+                pixelAnalysisInspector
+                    .frame(minWidth: 350, idealWidth: 410, maxWidth: 520)
             }
         }
+    }
+
+    private var pixelAnalysisInspector: some View {
+        VStack(spacing: 0) {
+            Picker("Pixel Analysis Inspector", selection: $pixelInspectorSection) {
+                ForEach(AnalysisPixelInspectorSection.allCases, id: \.self) { section in
+                    Text(section.label).tag(section)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(10)
+
+            Divider()
+
+            switch pixelInspectorSection {
+            case .evidence:
+                VSplitView {
+                    caseSidebar
+                        .frame(minHeight: 190, idealHeight: 300)
+                    analysisDetail
+                        .frame(minHeight: 210, idealHeight: 340)
+                }
+            case .scopes:
+                AnalysisScopeWorkspace(
+                    sourceImage: displayedScopeImage,
+                    sourceMode: $scopeSourceMode,
+                    selectedRegion: $selectedScopeRegion
+                )
+                .frame(minHeight: 300)
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Pixel Analysis inspector")
     }
 
     private var osintBody: some View {
@@ -912,6 +956,8 @@ struct AnalysisWorkspaceView: View {
                 .padding(.vertical, 4)
                 .accessibilityLabel("Source Facts")
 
+                watermarkCheckLinks
+
                 if !model.findings.isEmpty {
                     Text("FINDINGS")
                         .font(.caption.weight(.semibold))
@@ -994,6 +1040,31 @@ struct AnalysisWorkspaceView: View {
         .padding(14)
     }
 
+    private var watermarkCheckLinks: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("WATERMARK CHECKS")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Link(destination: Self.metaContentSealCheckURL) {
+                Label("Check Meta Content Seal", systemImage: "arrow.up.right.square")
+            }
+            .help("Open Meta's official identification page")
+
+            Link(destination: Self.googleSynthIDCheckURL) {
+                Label("Check SynthID in Gemini", systemImage: "arrow.up.right.square")
+            }
+            .help("Open Gemini, then upload the image and ask whether it contains SynthID")
+
+            Text("Opens the provider’s site. Photo Agent does not upload the image; you choose what to share there.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+    }
+
     private func sourcePreview(showMarkupToolbar: Bool) -> some View {
         VStack(spacing: 10) {
             if pixelViewMode != .normal {
@@ -1009,7 +1080,7 @@ struct AnalysisWorkspaceView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel("Compression residual limitation: \(limitation)")
+                    .accessibilityLabel("Pixel view limitation: \(limitation)")
             }
 
             AnalysisSourceThumbnail(

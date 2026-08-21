@@ -3,7 +3,7 @@ import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Produces geometry-preserving channel, luminance, and compression-residual visualizations
+/// Produces geometry-preserving channel, luminance, alpha, edge, and compression-residual visualizations
 /// for Pixel Analysis.
 ///
 /// Core Image evaluates the color matrix in an extended-linear sRGB working space. Rendering
@@ -24,6 +24,20 @@ nonisolated enum AnalysisPixelViewRenderer {
             return renderCompressionResidual(
                 source,
                 configuration: .standard,
+                linearWorkingColorSpace: linearWorkingColorSpace
+            )
+        }
+
+        if mode == .alpha {
+            return renderAlpha(
+                source,
+                linearWorkingColorSpace: linearWorkingColorSpace
+            )
+        }
+
+        if mode == .edges {
+            return renderEdges(
+                source,
                 linearWorkingColorSpace: linearWorkingColorSpace
             )
         }
@@ -86,6 +100,69 @@ nonisolated enum AnalysisPixelViewRenderer {
             displayReady = rendered
         }
         return Task.isCancelled ? nil : displayReady
+    }
+
+    /// Renders alpha as an opaque grayscale coverage mask so transparency remains visible even
+    /// when the workspace checkerboard or a downstream display surface changes.
+    private static func renderAlpha(
+        _ source: CGImage,
+        linearWorkingColorSpace: CGColorSpace
+    ) -> CGImage? {
+        let input = CIImage(cgImage: source)
+        let output = input.applyingFilter(
+            "CIColorMatrix",
+            parameters: [
+                "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1)
+            ]
+        )
+        return renderSDR(
+            output,
+            extent: input.extent,
+            linearWorkingColorSpace: linearWorkingColorSpace
+        )
+    }
+
+    /// A fixed-parameter edge-strength view. This is intentionally display-referred and SDR:
+    /// it is a visual aid for locating boundaries, sharpening halos, and texture transitions,
+    /// not a measurement of scene-linear energy.
+    private static func renderEdges(
+        _ source: CGImage,
+        linearWorkingColorSpace: CGColorSpace
+    ) -> CGImage? {
+        let input = CIImage(cgImage: source)
+        let output = input.applyingFilter(
+            "CIEdges",
+            parameters: [kCIInputIntensityKey: 3.0]
+        )
+        return renderSDR(
+            output,
+            extent: input.extent,
+            linearWorkingColorSpace: linearWorkingColorSpace
+        )
+    }
+
+    private static func renderSDR(
+        _ image: CIImage,
+        extent: CGRect,
+        linearWorkingColorSpace: CGColorSpace
+    ) -> CGImage? {
+        guard let outputColorSpace else { return nil }
+        let context = CIContext(options: [
+            .workingColorSpace: linearWorkingColorSpace,
+            .outputColorSpace: outputColorSpace,
+            .cacheIntermediates: false
+        ])
+        let rendered = context.createCGImage(
+            image,
+            from: extent,
+            format: .RGBA8,
+            colorSpace: outputColorSpace
+        )
+        return Task.isCancelled ? nil : rendered
     }
 
     private static func renderCompressionResidual(
@@ -224,7 +301,7 @@ nonisolated enum AnalysisPixelViewRenderer {
             (0, 0, 1)
         case .luminance:
             (0.2126, 0.7152, 0.0722)
-        case .compressionResidual:
+        case .alpha, .edges, .compressionResidual:
             (1, 1, 1)
         }
     }

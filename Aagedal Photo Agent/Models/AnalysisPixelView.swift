@@ -2,7 +2,7 @@ import Foundation
 
 /// The spatially aligned image representations available in Pixel Analysis.
 ///
-/// Channel and luminance views are display aids derived from the currently selected source
+/// Channel, alpha, edge, and luminance views are display aids derived from the selected source
 /// representation. They do not replace or modify the case's source-bound evidence.
 nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
     case normal
@@ -10,6 +10,8 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
     case green
     case blue
     case luminance
+    case alpha
+    case edges
     case compressionResidual
 
     var displayName: String {
@@ -19,6 +21,8 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
         case .green: "Green"
         case .blue: "Blue"
         case .luminance: "Luminance"
+        case .alpha: "Alpha"
+        case .edges: "Edges"
         case .compressionResidual: "Compression Residual"
         }
     }
@@ -30,6 +34,8 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
         case .green: "G"
         case .blue: "B"
         case .luminance: "Luma"
+        case .alpha: "Alpha"
+        case .edges: "Edges"
         case .compressionResidual: "Residual"
         }
     }
@@ -46,6 +52,10 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
             "Blue channel · linear RGB · grayscale"
         case .luminance:
             "Relative luminance · linear RGB · Rec. 709 coefficients"
+        case .alpha:
+            "Source alpha coverage · opaque white, transparent black"
+        case .edges:
+            "Core Image CIEdges · intensity 3.0 · display-referred sRGB"
         case .compressionResidual:
             "2,048 px max preview · ImageIO JPEG 0.90 · |linear sRGB − re-encode| ×12 · alpha over 50% gray"
         }
@@ -53,6 +63,8 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
 
     var limitationLabel: String? {
         switch self {
+        case .edges:
+            "Edge strength is affected by focus, sharpening, noise, resizing, and scene texture; it does not establish manipulation."
         case .compressionResidual:
             "Visualization only. Detail, gradients, resaving, and prior processing can all create bright residuals; this does not establish manipulation."
         default:

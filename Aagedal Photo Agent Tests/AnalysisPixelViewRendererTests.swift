@@ -55,6 +55,43 @@ struct AnalysisPixelViewRendererTests {
         #expect(red.red > blue.red)
     }
 
+    @Test("alpha view renders an opaque grayscale coverage mask")
+    func alphaCoverageMask() throws {
+        let source = try makeSourceImage(
+            red: 0.8,
+            green: 0.4,
+            blue: 0.2,
+            alpha: 0.25
+        )
+        let lowCoverage = try renderedPixel(source, mode: .alpha)
+        let highCoverage = try renderedPixel(
+            makeSourceImage(red: 0.8, green: 0.4, blue: 0.2, alpha: 0.75),
+            mode: .alpha
+        )
+
+        expectGrayscale(lowCoverage)
+        expectGrayscale(highCoverage)
+        #expect(lowCoverage.red < highCoverage.red)
+        #expect(lowCoverage.alpha == 255)
+        #expect(highCoverage.alpha == 255)
+    }
+
+    @Test("edge view preserves geometry and responds to local contrast")
+    func edgeViewGeometryAndEnergy() throws {
+        let uniform = try makePatternImage(width: 32, height: 24, checkerboard: false)
+        let checkerboard = try makePatternImage(width: 32, height: 24, checkerboard: true)
+        let uniformEdges = try #require(
+            AnalysisPixelViewRenderer.render(uniform, mode: .edges)
+        )
+        let checkerboardEdges = try #require(
+            AnalysisPixelViewRenderer.render(checkerboard, mode: .edges)
+        )
+
+        #expect(checkerboardEdges.width == checkerboard.width)
+        #expect(checkerboardEdges.height == checkerboard.height)
+        #expect(try meanRGB(checkerboardEdges) > meanRGB(uniformEdges) + 5)
+    }
+
     @Test("SDR stays compact while HDR channel views preserve headroom")
     func dynamicRangeContract() throws {
         let sdr = try makeSourceImage(red: 0.8, green: 0.4, blue: 0.2)
@@ -117,6 +154,12 @@ struct AnalysisPixelViewRendererTests {
             #expect(!mode.methodLabel.isEmpty)
         }
         #expect(AnalysisPixelViewMode.luminance.methodLabel.contains("Rec. 709"))
+        #expect(AnalysisPixelViewMode.alpha.methodLabel.contains("alpha"))
+        #expect(AnalysisPixelViewMode.edges.methodLabel.contains("3.0"))
+        #expect(
+            AnalysisPixelViewMode.edges.limitationLabel?
+                .contains("does not establish manipulation") == true
+        )
         #expect(AnalysisPixelViewMode.compressionResidual.methodLabel.contains("0.90"))
         #expect(AnalysisPixelViewMode.compressionResidual.methodLabel.contains("×12"))
         #expect(
@@ -296,7 +339,7 @@ struct AnalysisPixelViewRendererTests {
         for y in 0..<height {
             for x in 0..<width {
                 let offset = (y * width + x) * 4
-                if checkerboard, (x + y).isMultiple(of: 2) {
+                if checkerboard, (x / 4 + y / 4).isMultiple(of: 2) {
                     bytes[offset] = 255
                     bytes[offset + 1] = 32
                     bytes[offset + 2] = 16

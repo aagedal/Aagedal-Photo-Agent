@@ -332,6 +332,8 @@ struct FullScreenImageCacheTests {
             for mode in [
                 AnalysisPixelViewMode.red,
                 .luminance,
+                .alpha,
+                .edges,
                 .compressionResidual
             ] {
                 let derived = try #require(

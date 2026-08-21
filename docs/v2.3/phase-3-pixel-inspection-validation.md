@@ -26,10 +26,14 @@
 - Committed scope selection only when the drag ends so superseded CPU renders do not accumulate.
 - Converted normalized selection bounds outward to stable integer pixel edges and cropped one
   shared `CGImage` input for all visible scope cards.
-- Added Normal, Red, Green, Blue, and Luminance view modes above the analysis image.
-- Moved the Pixel View segmented control into the shared workspace header and removed the
+- Added Normal, Red, Green, Blue, Luminance, Alpha, and Edges view modes above the analysis image.
+- Moved the Pixel View menu into the shared workspace header and removed the
   duplicated representation/filename preview row. Normal mode no longer spends a row on its
   redundant method label; derived modes retain their method and limitation disclosures.
+- Gave the image a full-height primary pane and consolidated case/finding detail and large scopes
+  into a switchable right-side inspector.
+- Added provider-owned quick links for Meta Content Seal and Google SynthID checks with an explicit
+  disclosure that Photo Agent does not upload the source and the user chooses what to share.
 - Evaluated the channel matrices in extended-linear sRGB, preserved alpha and image geometry,
   and labeled the active method in the UI.
 - Fed the selected channel/luminance visualization to the existing scope and selected-region
@@ -152,6 +156,11 @@ Derived-view cache coverage additionally verifies exact-key hits, mode isolation
 LRU eviction, and cancellation propagation into detached renders without publishing or caching
 the cancelled result.
 
+The Alpha/Edges follow-up ran the renderer suite alone and passed 10 tests. Coverage additionally
+verifies that Alpha produces an opaque monotonic coverage mask and that the fixed-intensity edge
+view preserves geometry and responds to local contrast. Both views publish their method, and Edges
+states that the visualization does not establish manipulation.
+
 Phase 3 source robustness command:
 
 ```sh
@@ -183,7 +192,7 @@ the full run remains part of Phase 12 release hardening.
 - Compare HDR and SDR display behavior.
 - Confirm reference/residual alignment in the new side-by-side view at every supported workspace
   size.
-- Switch among Normal, R, G, B, Luma, and Residual and confirm every derived view remains aligned
+- Switch among Normal, R, G, B, Luma, Alpha, Edges, and Residual and confirm every derived view remains aligned
   with the crosshair, selected region, and scopes.
 - Resize the source/scope divider and every divider in the one/two/four-up layouts.
 - Switch each card among Waveform, RGBY Parade, Vectorscope, and Chromaticity and confirm the
