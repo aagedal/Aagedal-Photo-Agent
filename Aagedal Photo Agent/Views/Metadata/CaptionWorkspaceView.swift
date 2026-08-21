@@ -143,6 +143,9 @@ struct CaptionWorkspaceView: View {
                             },
                             onAutocompletePresentationChanged: { isPresented in
                                 isEditorTransientPresented = isPresented
+                            },
+                            onTabTraversalRequested: { field, reverse in
+                                moveCaptionFocus(from: field, reverse: reverse)
                             }
                         )
                     }
@@ -310,6 +313,7 @@ struct CaptionWorkspaceView: View {
                         Text("100%").tag(CaptionPreviewMode.actualSize)
                     }
                     .pickerStyle(.segmented)
+                    .labelsHidden()
                     .frame(width: 120)
 
                     Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") {
@@ -369,7 +373,7 @@ struct CaptionWorkspaceView: View {
                 .padding(8)
             }
             .scrollIndicators(.visible)
-            .frame(minHeight: 92)
+            .frame(height: 92)
         }
     }
 
@@ -786,9 +790,10 @@ struct CaptionWorkspaceView: View {
         }
     }
 
-    private func moveCaptionFocus(reverse: Bool) {
+    private func moveCaptionFocus(from field: MetadataFieldID? = nil, reverse: Bool) {
         let order = CaptionKeyboardOrder(priorityFields: fieldLayout.priority)
-        let current = activeEditorField.map(CaptionKeyboardSurface.priorityField)
+        let current = field.map(CaptionKeyboardSurface.priorityField)
+            ?? activeEditorField.map(CaptionKeyboardSurface.priorityField)
             ?? focusedAction.map(CaptionKeyboardSurface.action)
         var candidate = order.adjacent(to: current, reverse: reverse)
         var inspected = 0

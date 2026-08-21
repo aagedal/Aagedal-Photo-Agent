@@ -191,10 +191,13 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(caption.contains("imeHasMarkedText: inputState.imeHasMarkedText"))
         #expect(caption.contains("event.keyCode == 48"))
         #expect(caption.contains("moveCaptionFocus(reverse:"))
+        #expect(caption.contains("moveCaptionFocus(from: field, reverse: reverse)"))
         #expect(caption.contains("NSAccessibility.post"))
         #expect(caption.contains("postAccessibilityAnnouncement(.savedAndAdvanced)"))
         #expect(caption.contains("postAccessibilityAnnouncement(.wroteAndAdvanced)"))
         #expect(caption.contains("onDismiss: restoreLastEditorFocus"))
+        #expect(caption.contains(".labelsHidden()"))
+        #expect(caption.contains(".frame(height: 92)"))
 
         let panel = try source("Aagedal Photo Agent/Views/Metadata/MetadataPanel.swift")
         #expect(panel.contains("let proseFields: Set<MetadataFieldID> = [.headline, .description, .extendedDescription]"))
@@ -202,6 +205,9 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(panel.contains("editor.isGrammarCheckingEnabled = enabled"))
         #expect(panel.contains("restoreCaptionAutocompleteFocus()"))
         #expect(panel.contains(".restoreCaptionEditorFocus"))
+        #expect(panel.contains(".onKeyPress(.tab)"))
+        #expect(panel.contains("handleTab(reverse: true)"))
+        #expect(panel.contains("!editor.hasMarkedText()"))
 
         let autocomplete = try source("Aagedal Photo Agent/Views/Metadata/CaptionAutocompletePopover.swift")
         let codeReplacement = try source("Aagedal Photo Agent/Views/Metadata/CodeReplacementSettingsView.swift")

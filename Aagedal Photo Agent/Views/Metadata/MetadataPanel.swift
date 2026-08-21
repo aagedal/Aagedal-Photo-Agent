@@ -18,6 +18,7 @@ struct MetadataPanel: View {
     var captionFlushCoordinator: CaptionWorkspaceFlushCoordinator?
     var onFocusedFieldChanged: ((MetadataFieldID?) -> Void)?
     var onAutocompletePresentationChanged: ((Bool) -> Void)?
+    var onTabTraversalRequested: ((MetadataFieldID, Bool) -> Void)?
 
     @State private var isShowingVariableReference = false
     @State private var variableInsertTarget: VariableInsertTarget = .description
@@ -1397,7 +1398,10 @@ struct MetadataPanel: View {
                             viewModel.markChanged()
                         }
                     },
-                    onCommit: { commitEdits() }
+                    onCommit: { commitEdits() },
+                    onTabTraversalRequested: onTabTraversalRequested.map { callback in
+                        { reverse in callback(.description, reverse) }
+                    }
                 )
             }
             .id("description")
@@ -1433,7 +1437,10 @@ struct MetadataPanel: View {
                                 viewModel.markChanged()
                             }
                         },
-                        onCommit: { commitEdits() }
+                        onCommit: { commitEdits() },
+                        onTabTraversalRequested: onTabTraversalRequested.map { callback in
+                            { reverse in callback(.extendedDescription, reverse) }
+                        }
                     )
                 }
                 .padding(.top, 2)
@@ -3164,6 +3171,7 @@ private struct BufferedTextField: View {
     let focusKey: String
     var onTextFinished: (String?) -> Void
     var onCommit: () -> Void
+    var onTabTraversalRequested: ((Bool) -> Void)?
 
     @State private var localText = ""
 
@@ -3194,11 +3202,26 @@ private struct BufferedTextField: View {
                 onCommit()
                 return .handled
             }
+            .onKeyPress(.tab) {
+                handleTab(reverse: false)
+            }
+            .onKeyPress(keys: ["\u{19}"]) { _ in
+                handleTab(reverse: true)
+            }
     }
 
     private func flush() {
         let normalized = localText.isEmpty ? nil : localText
         onTextFinished(normalized)
+    }
+
+    private func handleTab(reverse: Bool) -> KeyPress.Result {
+        guard let onTabTraversalRequested else { return .ignored }
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
+              !editor.hasMarkedText() else { return .ignored }
+        flush()
+        onTabTraversalRequested(reverse)
+        return .handled
     }
 
     private func insertNewlineAtCursor() {
