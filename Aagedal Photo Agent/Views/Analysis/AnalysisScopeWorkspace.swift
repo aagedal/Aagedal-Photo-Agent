@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-private enum AnalysisScopeLayout: Int, CaseIterable {
+enum AnalysisScopeLayout: Int, CaseIterable {
     case one = 1
     case two = 2
     case four = 4
@@ -29,7 +29,7 @@ enum AnalysisScopeSourceMode: String, CaseIterable {
     }
 }
 
-private enum AnalysisScopePresentation: String, CaseIterable {
+enum AnalysisScopePresentation: String, CaseIterable {
     case image
     case waveform
     case parade
@@ -57,6 +57,14 @@ private enum AnalysisScopePresentation: String, CaseIterable {
     }
 }
 
+struct AnalysisScopeWorkspaceState: Equatable {
+    var layout: AnalysisScopeLayout = .two
+    var waveformPresentation: AnalysisScopePresentation = .waveform
+    var paradePresentation: AnalysisScopePresentation = .parade
+    var vectorscopePresentation: AnalysisScopePresentation = .vectorscope
+    var chromaticityPresentation: AnalysisScopePresentation = .chromaticity
+}
+
 /// Larger, resizable scope presentation for Pixel Analysis.
 ///
 /// Each card owns a normal `ScopeViewModel`, so cancellation, request identity, and rendering
@@ -66,13 +74,9 @@ struct AnalysisScopeWorkspace: View {
     let sourceImage: CGImage?
     @Binding var sourceMode: AnalysisScopeSourceMode
     @Binding var selectedRegion: CGRect?
+    @Binding var state: AnalysisScopeWorkspaceState
 
-    @State private var layout: AnalysisScopeLayout = .two
     @State private var displayedSourceImage: CGImage?
-    @State private var waveformPresentation: AnalysisScopePresentation = .waveform
-    @State private var paradePresentation: AnalysisScopePresentation = .parade
-    @State private var vectorscopePresentation: AnalysisScopePresentation = .vectorscope
-    @State private var chromaticityPresentation: AnalysisScopePresentation = .chromaticity
     @State private var waveform = ScopeViewModel(
         scopeMode: .waveform,
         persistsScopeMode: false
@@ -117,7 +121,7 @@ struct AnalysisScopeWorkspace: View {
                     .accessibilityLabel("Clear scope selection")
                 }
                 Spacer()
-                Picker("Scope layout", selection: $layout) {
+                Picker("Scope layout", selection: $state.layout) {
                     ForEach(AnalysisScopeLayout.allCases, id: \.self) { layout in
                         Text(layout.label)
                             .tag(layout)
@@ -150,7 +154,7 @@ struct AnalysisScopeWorkspace: View {
         .onChange(of: sourceIdentity, initial: true) {
             updateVisibleModels()
         }
-        .onChange(of: layout) {
+        .onChange(of: state.layout) {
             updateVisibleModels()
         }
         .onChange(of: sourceMode) {
@@ -159,43 +163,43 @@ struct AnalysisScopeWorkspace: View {
         .onChange(of: selectedRegion) {
             updateVisibleModels()
         }
-        .onChange(of: waveformPresentation) {
-            updatePresentation(waveformPresentation, for: waveform)
+        .onChange(of: state.waveformPresentation) {
+            updatePresentation(state.waveformPresentation, for: waveform)
         }
-        .onChange(of: paradePresentation) {
-            updatePresentation(paradePresentation, for: parade)
+        .onChange(of: state.paradePresentation) {
+            updatePresentation(state.paradePresentation, for: parade)
         }
-        .onChange(of: vectorscopePresentation) {
-            updatePresentation(vectorscopePresentation, for: vectorscope)
+        .onChange(of: state.vectorscopePresentation) {
+            updatePresentation(state.vectorscopePresentation, for: vectorscope)
         }
-        .onChange(of: chromaticityPresentation) {
-            updatePresentation(chromaticityPresentation, for: chromaticity)
+        .onChange(of: state.chromaticityPresentation) {
+            updatePresentation(state.chromaticityPresentation, for: chromaticity)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
-            "\(layout.accessibilityLabel) for \(sourceMode.label.lowercased())"
+            "\(state.layout.accessibilityLabel) for \(sourceMode.label.lowercased())"
         )
     }
 
     @ViewBuilder
     private var scopeLayout: some View {
-        switch layout {
+        switch state.layout {
         case .one:
             AnalysisScopeCard(
                 model: waveform,
-                presentation: $waveformPresentation,
+                presentation: $state.waveformPresentation,
                 sourceImage: displayedSourceImage
             )
         case .two:
             VSplitView {
                 AnalysisScopeCard(
                     model: waveform,
-                    presentation: $waveformPresentation,
+                    presentation: $state.waveformPresentation,
                     sourceImage: displayedSourceImage
                 )
                 AnalysisScopeCard(
                     model: vectorscope,
-                    presentation: $vectorscopePresentation,
+                    presentation: $state.vectorscopePresentation,
                     sourceImage: displayedSourceImage
                 )
             }
@@ -204,24 +208,24 @@ struct AnalysisScopeWorkspace: View {
                 HSplitView {
                     AnalysisScopeCard(
                         model: waveform,
-                        presentation: $waveformPresentation,
+                        presentation: $state.waveformPresentation,
                         sourceImage: displayedSourceImage
                     )
                     AnalysisScopeCard(
                         model: parade,
-                        presentation: $paradePresentation,
+                        presentation: $state.paradePresentation,
                         sourceImage: displayedSourceImage
                     )
                 }
                 HSplitView {
                     AnalysisScopeCard(
                         model: vectorscope,
-                        presentation: $vectorscopePresentation,
+                        presentation: $state.vectorscopePresentation,
                         sourceImage: displayedSourceImage
                     )
                     AnalysisScopeCard(
                         model: chromaticity,
-                        presentation: $chromaticityPresentation,
+                        presentation: $state.chromaticityPresentation,
                         sourceImage: displayedSourceImage
                     )
                 }
@@ -238,25 +242,26 @@ struct AnalysisScopeWorkspace: View {
     }
 
     private var visibleModels: [ScopeViewModel] {
-        switch layout {
+        switch state.layout {
         case .one:
-            waveformPresentation.scopeMode == nil ? [] : [waveform]
+            state.waveformPresentation.scopeMode == nil ? [] : [waveform]
         case .two:
             [
-                waveformPresentation.scopeMode == nil ? nil : waveform,
-                vectorscopePresentation.scopeMode == nil ? nil : vectorscope,
+                state.waveformPresentation.scopeMode == nil ? nil : waveform,
+                state.vectorscopePresentation.scopeMode == nil ? nil : vectorscope,
             ].compactMap { $0 }
         case .four:
             [
-                waveformPresentation.scopeMode == nil ? nil : waveform,
-                paradePresentation.scopeMode == nil ? nil : parade,
-                vectorscopePresentation.scopeMode == nil ? nil : vectorscope,
-                chromaticityPresentation.scopeMode == nil ? nil : chromaticity,
+                state.waveformPresentation.scopeMode == nil ? nil : waveform,
+                state.paradePresentation.scopeMode == nil ? nil : parade,
+                state.vectorscopePresentation.scopeMode == nil ? nil : vectorscope,
+                state.chromaticityPresentation.scopeMode == nil ? nil : chromaticity,
             ].compactMap { $0 }
         }
     }
 
     private func updateVisibleModels() {
+        synchronizePresentationModes()
         let visibleIDs = Set(visibleModels.map(ObjectIdentifier.init))
         let scopeImage: CGImage?
         switch sourceMode {
@@ -275,6 +280,20 @@ struct AnalysisScopeWorkspace: View {
         displayedSourceImage = scopeImage
         for model in allModels {
             model.updateImage(visibleIDs.contains(ObjectIdentifier(model)) ? scopeImage : nil)
+        }
+    }
+
+    private func synchronizePresentationModes() {
+        let presentations: [(AnalysisScopePresentation, ScopeViewModel)] = [
+            (state.waveformPresentation, waveform),
+            (state.paradePresentation, parade),
+            (state.vectorscopePresentation, vectorscope),
+            (state.chromaticityPresentation, chromaticity),
+        ]
+        for (presentation, model) in presentations {
+            if let scopeMode = presentation.scopeMode, model.scopeMode != scopeMode {
+                model.scopeMode = scopeMode
+            }
         }
     }
 

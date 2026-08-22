@@ -33,6 +33,7 @@ struct AnalysisWorkspaceView: View {
     @State private var displayedScopeImage: CGImage?
     @State private var scopeSourceMode: AnalysisScopeSourceMode = .fullImage
     @State private var selectedScopeRegion: CGRect?
+    @State private var scopeWorkspaceState = AnalysisScopeWorkspaceState()
     @State private var pixelViewMode: AnalysisPixelViewMode = .normal
     @State private var pixelInspectorSection: AnalysisPixelInspectorSection = .evidence
     @State private var photoAnnotationTool: AnalysisAnnotationTool = .select
@@ -721,7 +722,8 @@ struct AnalysisWorkspaceView: View {
                 AnalysisScopeWorkspace(
                     sourceImage: displayedScopeImage,
                     sourceMode: $scopeSourceMode,
-                    selectedRegion: $selectedScopeRegion
+                    selectedRegion: $selectedScopeRegion,
+                    state: $scopeWorkspaceState
                 )
                 .frame(minHeight: 300)
             }

@@ -4,6 +4,23 @@ import Testing
 
 @Suite("Analysis scope selection")
 struct AnalysisScopeSelectionTests {
+    @Test("workspace state retains its layout and active scope choices")
+    func workspaceStateRetention() {
+        var state = AnalysisScopeWorkspaceState()
+        state.layout = .four
+        state.waveformPresentation = .image
+        state.paradePresentation = .chromaticity
+        state.vectorscopePresentation = .waveform
+        state.chromaticityPresentation = .parade
+
+        let restoredState = state
+        #expect(restoredState.layout == .four)
+        #expect(restoredState.waveformPresentation == .image)
+        #expect(restoredState.paradePresentation == .chromaticity)
+        #expect(restoredState.vectorscopePresentation == .waveform)
+        #expect(restoredState.chromaticityPresentation == .parade)
+    }
+
     @Test("drag selection is direction independent and clamped")
     func normalizedSelection() throws {
         let forward = try #require(
