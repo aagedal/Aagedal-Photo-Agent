@@ -58,6 +58,7 @@ struct AnalysisMapEvidenceView: View {
     @State private var fieldOfViewAngle: Double
     @State private var fieldOfViewRangeMeters: Double
     @State private var solarDay: AnalysisSolarDay?
+    @State private var solarPreview: AnalysisSolarMapPreview?
     @State private var mapAvailability = AnalysisMapAvailabilityMonitor()
     private static let defaultRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 50, longitude: 10),
@@ -230,6 +231,11 @@ struct AnalysisMapEvidenceView: View {
                 overlay: mapState.solarOverlay,
                 location: location
             )
+        }
+        .onChange(of: isSolarControlsPresented) { _, isPresented in
+            if !isPresented {
+                solarPreview = nil
+            }
         }
         .alert("Map Label", isPresented: $isLabelPromptPresented) {
             TextField("Label text", text: $labelInput)
@@ -481,12 +487,14 @@ struct AnalysisMapEvidenceView: View {
                     .accessibilityValue(mapState.solarOverlay == nil ? "Not configured" : "Configured")
                     .popover(isPresented: $isSolarControlsPresented, arrowEdge: .bottom) {
                         AnalysisSolarControls(
-                            location: mapState.investigationLocation,
+                            location: solarControlsLocation,
+                            isUsingMapCenterPreview: mapState.investigationLocation == nil,
                             timestampEvidence: timestampEvidence,
                             overlay: mapState.solarOverlay,
                             isReadOnly: isReadOnly,
                             onApply: onSetSolarOverlay,
-                            onClear: onClearSolarOverlay
+                            onClear: onClearSolarOverlay,
+                            onPreview: { solarPreview = $0 }
                         )
                     }
 
@@ -1338,16 +1346,27 @@ struct AnalysisMapEvidenceView: View {
     }
 
     private var fieldOfViewPreviewCoordinates: [AnalysisGeoCoordinate]? {
-        guard isFieldOfViewSettingsPresented, addsFieldOfViewCone else { return nil }
-        let origin = mapState.investigationLocation?.coordinate ?? AnalysisGeoCoordinate(
-            latitude: visibleRegion.center.latitude,
-            longitude: visibleRegion.center.longitude
-        )
-        guard origin.isValid else { return nil }
-        return fieldOfViewCoordinates(at: origin)
+        if isFieldOfViewSettingsPresented, addsFieldOfViewCone {
+            let origin = mapState.investigationLocation?.coordinate ?? mapCenterCoordinate
+            guard origin.isValid else { return nil }
+            return fieldOfViewCoordinates(at: origin)
+        }
+        guard let annotation = fieldOfViewAnnotation,
+              annotation.isVisible,
+              case .polygon(let coordinates) = annotation.geometry else { return nil }
+        return coordinates
     }
 
     private var solarRenderModel: AnalysisSolarMapRenderModel? {
+        if let solarPreview {
+            return AnalysisSolarMapRenderModel(
+                overlay: solarPreview.overlay,
+                origin: solarPreview.origin,
+                latitudeDelta: visibleRegion.span.latitudeDelta,
+                longitudeDelta: visibleRegion.span.longitudeDelta,
+                day: solarPreview.day
+            )
+        }
         guard let overlay = mapState.solarOverlay,
               let origin = mapState.investigationLocation?.coordinate,
               let solarDay else { return nil }
@@ -1357,6 +1376,14 @@ struct AnalysisMapEvidenceView: View {
             latitudeDelta: visibleRegion.span.latitudeDelta,
             longitudeDelta: visibleRegion.span.longitudeDelta,
             day: solarDay
+        )
+    }
+
+    private var solarControlsLocation: AnalysisLocationEvidence {
+        mapState.investigationLocation ?? AnalysisLocationEvidence(
+            coordinate: mapCenterCoordinate,
+            source: .mapCenter,
+            sourceDetail: "Live preview at the current map center"
         )
     }
 
@@ -1555,7 +1582,16 @@ struct AnalysisMapEvidenceView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            Text("Direction only · length follows zoom")
+            if let shadowLength = model.shadowLengthMeters,
+               let objectHeight = model.shadowObjectHeightMeters {
+                Text(
+                    "Shadow " + formattedDistance(shadowLength) + " for "
+                        + formattedDistance(objectHeight) + " object"
+                )
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Text("Direction rays are illustrative · length follows zoom")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -1563,11 +1599,25 @@ struct AnalysisMapEvidenceView: View {
         .padding(.vertical, 6)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "Solar directions. "
-                + model.rays.map { $0.kind.displayName }.joined(separator: ", ")
-                + ". Direction only; length follows map zoom."
-        )
+        .accessibilityLabel(solarLegendAccessibilityLabel(model))
+    }
+
+    private func solarLegendAccessibilityLabel(_ model: AnalysisSolarMapRenderModel) -> String {
+        let directions = model.rays.map { $0.kind.displayName }.joined(separator: ", ")
+        let shadow = model.shadowLengthMeters.map {
+            " Expected shadow length " + formattedDistance($0) + "."
+        } ?? ""
+        return "Solar directions. " + directions + "." + shadow
+            + " Direction-ray length follows map zoom."
+    }
+
+    private func formattedDistance(_ meters: Double) -> String {
+        if meters >= 1_000 {
+            return (meters / 1_000).formatted(
+                .number.precision(.fractionLength(0...2))
+            ) + " km"
+        }
+        return meters.formatted(.number.precision(.fractionLength(0...2))) + " m"
     }
 
     private func normalizedHeading(_ heading: Double) -> Double {
@@ -1711,6 +1761,23 @@ nonisolated private struct AnalysisSolarDayRequest: Equatable, Sendable {
     let utcOffsetMinutes: Int
 }
 
+nonisolated private struct AnalysisSolarMapPreview: Equatable, Sendable {
+    let overlay: AnalysisSolarOverlayState
+    let origin: AnalysisGeoCoordinate
+    let day: AnalysisSolarDay
+}
+
+nonisolated private struct AnalysisSolarPreviewConfiguration: Equatable, Sendable {
+    let coordinate: AnalysisGeoCoordinate
+    let timestamp: AnalysisTimestampValue
+    let isVisible: Bool
+    let showsSunDirection: Bool
+    let showsShadowDirection: Bool
+    let showsSunriseDirection: Bool
+    let showsSunsetDirection: Bool
+    let shadowObjectHeightMeters: Double?
+}
+
 nonisolated private struct AnalysisSolarPreviewError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
@@ -1718,11 +1785,13 @@ nonisolated private struct AnalysisSolarPreviewError: LocalizedError {
 
 private struct AnalysisSolarControls: View {
     let location: AnalysisLocationEvidence?
+    let isUsingMapCenterPreview: Bool
     let timestampEvidence: [AnalysisTimestampEvidence]
     let overlay: AnalysisSolarOverlayState?
     let isReadOnly: Bool
     let onApply: (AnalysisSolarOverlayState) -> Void
     let onClear: () -> Void
+    let onPreview: (AnalysisSolarMapPreview?) -> Void
 
     @State private var civilDateTime: Date
     @State private var utcOffsetMinutes: Int
@@ -1732,6 +1801,7 @@ private struct AnalysisSolarControls: View {
     @State private var showsShadowDirection: Bool
     @State private var showsSunriseDirection: Bool
     @State private var showsSunsetDirection: Bool
+    @State private var shadowObjectHeightMeters: Double
     @State private var calculatedDay: AnalysisSolarDay?
     @State private var calculatedDayRequest: AnalysisSolarDayRequest?
     @State private var calculationErrorMessage: String?
@@ -1740,18 +1810,22 @@ private struct AnalysisSolarControls: View {
 
     init(
         location: AnalysisLocationEvidence?,
+        isUsingMapCenterPreview: Bool,
         timestampEvidence: [AnalysisTimestampEvidence],
         overlay: AnalysisSolarOverlayState?,
         isReadOnly: Bool,
         onApply: @escaping (AnalysisSolarOverlayState) -> Void,
-        onClear: @escaping () -> Void
+        onClear: @escaping () -> Void,
+        onPreview: @escaping (AnalysisSolarMapPreview?) -> Void
     ) {
         self.location = location
+        self.isUsingMapCenterPreview = isUsingMapCenterPreview
         self.timestampEvidence = timestampEvidence
         self.overlay = overlay
         self.isReadOnly = isReadOnly
         self.onApply = onApply
         self.onClear = onClear
+        self.onPreview = onPreview
 
         let initialTimestamp = overlay?.timestamp ?? AnalysisTimestampValue(
             date: Date(),
@@ -1773,6 +1847,9 @@ private struct AnalysisSolarControls: View {
         _showsShadowDirection = State(initialValue: overlay?.showsShadowDirection ?? true)
         _showsSunriseDirection = State(initialValue: overlay?.showsSunriseDirection ?? true)
         _showsSunsetDirection = State(initialValue: overlay?.showsSunsetDirection ?? true)
+        _shadowObjectHeightMeters = State(
+            initialValue: overlay?.shadowObjectHeightMeters ?? 1
+        )
         let request = Self.dayRequest(location: location, timestamp: initialTimestamp)
         _calculatedDayRequest = State(initialValue: request)
         _calculatedDay = State(initialValue: request.flatMap(Self.calculateDay))
@@ -1844,12 +1921,41 @@ private struct AnalysisSolarControls: View {
     }
 
     private var canApply: Bool {
-        guard location != nil,
+        guard !isUsingMapCenterPreview,
+              location != nil,
               effectiveTimestamp.validate(),
               effectiveTimestamp.timezoneKnown,
               effectiveTimestamp.precision != .day,
+              draftOverlay.validate(),
               case .success = calculation else { return false }
         return true
+    }
+
+    private var draftOverlay: AnalysisSolarOverlayState {
+        AnalysisSolarOverlayState(
+            isVisible: isVisible,
+            timestamp: effectiveTimestamp,
+            linkedTimestampEvidenceID: selectedEvidence?.id,
+            showsSunDirection: showsSunDirection,
+            showsShadowDirection: showsShadowDirection,
+            showsSunriseDirection: showsSunriseDirection,
+            showsSunsetDirection: showsSunsetDirection,
+            shadowObjectHeightMeters: shadowObjectHeightMeters
+        )
+    }
+
+    private var previewConfiguration: AnalysisSolarPreviewConfiguration? {
+        guard let coordinate = location?.coordinate else { return nil }
+        return AnalysisSolarPreviewConfiguration(
+            coordinate: coordinate,
+            timestamp: effectiveTimestamp,
+            isVisible: isVisible,
+            showsSunDirection: showsSunDirection,
+            showsShadowDirection: showsShadowDirection,
+            showsSunriseDirection: showsSunriseDirection,
+            showsSunsetDirection: showsSunsetDirection,
+            shadowObjectHeightMeters: shadowObjectHeightMeters
+        )
     }
 
     var body: some View {
@@ -1886,15 +1992,7 @@ private struct AnalysisSolarControls: View {
                     }
                     Spacer()
                     Button(overlay == nil ? "Add Overlay" : "Update Overlay") {
-                        onApply(AnalysisSolarOverlayState(
-                            isVisible: isVisible,
-                            timestamp: effectiveTimestamp,
-                            linkedTimestampEvidenceID: selectedEvidence?.id,
-                            showsSunDirection: showsSunDirection,
-                            showsShadowDirection: showsShadowDirection,
-                            showsSunriseDirection: showsSunriseDirection,
-                            showsSunsetDirection: showsSunsetDirection
-                        ))
+                        onApply(draftOverlay)
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(isReadOnly || !canApply)
@@ -1908,6 +2006,9 @@ private struct AnalysisSolarControls: View {
         .task(id: solarDayRequest) {
             refreshCalculatedDay()
         }
+        .task(id: previewConfiguration) {
+            publishPreview()
+        }
         .onChange(of: selectedEvidenceID) { _, identifier in
             guard let identifier,
                   let evidence = eligibleEvidence.first(where: { $0.id == identifier }) else {
@@ -1920,7 +2021,7 @@ private struct AnalysisSolarControls: View {
     @ViewBuilder
     private var locationSection: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("Photo Location")
+            Text(isUsingMapCenterPreview ? "Preview Location" : "Photo Location")
                 .font(.subheadline.weight(.semibold))
             if let location {
                 Text(CoordinateParser.format(
@@ -1937,6 +2038,15 @@ private struct AnalysisSolarControls: View {
                 Text(location.sourceDetail)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                if isUsingMapCenterPreview {
+                    Label(
+                        "Preview only — move the map to test possible locations, then use Set Photo Location when ready.",
+                        systemImage: "scope"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 Label(
                     "Set a Photo Location on the map before calculating solar position.",
@@ -2052,6 +2162,10 @@ private struct AnalysisSolarControls: View {
                         value: degrees(day.position.expectedShadowAzimuthDegrees)
                     )
                     solarValueRow(
+                        "Expected shadow length",
+                        value: formattedShadowLength(day.position)
+                    )
+                    solarValueRow(
                         "Geometric elevation",
                         value: signedDegrees(day.position.geometricElevationDegrees)
                     )
@@ -2075,6 +2189,22 @@ private struct AnalysisSolarControls: View {
                         .foregroundStyle(.secondary)
                 }
                 Text("Method: Meeus/NOAA v1")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                HStack(spacing: 10) {
+                    Text("Object height")
+                        .foregroundStyle(.secondary)
+                    TextField(
+                        "Meters",
+                        value: $shadowObjectHeightMeters,
+                        format: .number.precision(.fractionLength(0...2))
+                    )
+                    .frame(width: 80)
+                    Text("m")
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(isReadOnly)
+                Text("Level-ground estimate for a vertical object; terrain and tilt are not modelled.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             case .failure(let error):
@@ -2182,6 +2312,29 @@ private struct AnalysisSolarControls: View {
         }
     }
 
+    private func publishPreview() {
+        guard let coordinate = location?.coordinate,
+              let instant = effectiveTimestamp.resolvedInstant,
+              let utcOffsetMinutes = effectiveTimestamp.utcOffsetMinutes,
+              draftOverlay.validate() else {
+            onPreview(nil)
+            return
+        }
+        do {
+            let calculatedDay = try AnalysisSolarPositionCalculator.calculate(
+                input: AnalysisSolarInput(instant: instant, coordinate: coordinate),
+                civilDayOffsetMinutes: utcOffsetMinutes
+            )
+            onPreview(AnalysisSolarMapPreview(
+                overlay: draftOverlay,
+                origin: coordinate,
+                day: calculatedDay
+            ))
+        } catch {
+            onPreview(nil)
+        }
+    }
+
     private static func dayRequest(
         location: AnalysisLocationEvidence?,
         timestamp: AnalysisTimestampValue
@@ -2243,6 +2396,18 @@ private struct AnalysisSolarControls: View {
 
     private func signedDegrees(_ value: Double) -> String {
         value.formatted(.number.sign(strategy: .always()).precision(.fractionLength(1))) + "°"
+    }
+
+    private func formattedShadowLength(_ position: AnalysisSolarPosition) -> String {
+        guard let meters = position.expectedShadowLengthMeters(
+            objectHeightMeters: shadowObjectHeightMeters
+        ) else { return "Unavailable" }
+        if meters >= 1_000 {
+            return (meters / 1_000).formatted(
+                .number.precision(.fractionLength(0...2))
+            ) + " km"
+        }
+        return meters.formatted(.number.precision(.fractionLength(0...2))) + " m"
     }
 
     private func solarValueRow(_ label: String, value: String) -> some View {

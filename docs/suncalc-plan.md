@@ -78,8 +78,9 @@ map span and must not be described as a measured or predicted ground distance.
 ## Explicitly out of scope for version 1
 
 - Inferring or validating a capture time from a photographed shadow.
-- Object-height entry or physical shadow-length calculation.
-- Image-space shadow measurement or camera-orientation comparison.
+- Image-space shadow measurement, automated object-height calibration, or camera-orientation
+  comparison. The implemented manual reference-object height produces a clearly labelled
+  level-ground shadow-length estimate.
 - Terrain, elevation-model, building, vegetation, or horizon-obstruction simulation.
 - Weather or historical-atmosphere lookup.
 - Golden hour, blue hour, Moon position, or other astronomical bodies.
@@ -337,12 +338,14 @@ with every fixture. Tests must not call online calculators.
 
 ## Acceptance criteria
 
-- A user cannot enable the overlay without a valid Photo Location and absolute instant.
+- A user can preview the overlay at the live map center before choosing a Photo Location, but can
+  only persist it with a valid Photo Location and absolute instant.
 - A timezone-less EXIF timestamp is never interpreted using the machine timezone.
 - The same inputs produce identical persisted and reported numeric outputs.
 - Apple Maps and OpenStreetMap show the same true-north directions.
 - Sun-below-horizon and polar conditions are explicit and do not display misleading active-sun rays.
-- Direction-ray length is never presented as shadow length or map distance.
+- Viewport-relative direction-ray length is never presented as shadow length or map distance; the
+  separately labelled level-ground shadow estimate includes its reference-object height.
 - Removing linked timeline evidence does not erase the frozen calculation input.
 - Changing/removing Photo Location does not retain a silently stale coordinate.
 - Slider changes do not create map-annotation undo entries.
@@ -386,7 +389,7 @@ Expected total: **8–10 engineering days** for the report-backed first version,
 
 ## Follow-up gate
 
-Do not extend this feature into shadow-length comparison or capture-time consistency findings until
+Do not extend this feature into image-space shadow comparison or capture-time consistency findings until
 a separate decision defines:
 
 - image measurement and object-height calibration;

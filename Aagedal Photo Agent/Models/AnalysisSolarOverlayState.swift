@@ -12,6 +12,9 @@ nonisolated struct AnalysisSolarOverlayState: Codable, Equatable, Sendable {
     var showsShadowDirection: Bool
     var showsSunriseDirection: Bool
     var showsSunsetDirection: Bool
+    /// Height of the vertical reference object used for the optional level-ground shadow-length
+    /// estimate. A nil value keeps legacy direction-only overlays unchanged.
+    var shadowObjectHeightMeters: Double?
     var calculationMethod: AnalysisSolarCalculationMethod
 
     init(
@@ -22,6 +25,7 @@ nonisolated struct AnalysisSolarOverlayState: Codable, Equatable, Sendable {
         showsShadowDirection: Bool = true,
         showsSunriseDirection: Bool = true,
         showsSunsetDirection: Bool = true,
+        shadowObjectHeightMeters: Double? = 1,
         calculationMethod: AnalysisSolarCalculationMethod = .meeusNOAAV1
     ) {
         self.isVisible = isVisible
@@ -31,6 +35,7 @@ nonisolated struct AnalysisSolarOverlayState: Codable, Equatable, Sendable {
         self.showsShadowDirection = showsShadowDirection
         self.showsSunriseDirection = showsSunriseDirection
         self.showsSunsetDirection = showsSunsetDirection
+        self.shadowObjectHeightMeters = shadowObjectHeightMeters
         self.calculationMethod = calculationMethod
     }
 
@@ -41,6 +46,9 @@ nonisolated struct AnalysisSolarOverlayState: Codable, Equatable, Sendable {
             && timestamp.timezoneKnown
             && timestamp.precision != .day
             && timestamp.resolvedInstant != nil
+            && (shadowObjectHeightMeters.map {
+                $0.isFinite && (0.01...10_000).contains($0)
+            } ?? true)
             && AnalysisSolarCalculationMethod.allCases.contains(calculationMethod)
     }
 }

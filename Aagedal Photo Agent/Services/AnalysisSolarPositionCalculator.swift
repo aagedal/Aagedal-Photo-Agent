@@ -26,6 +26,18 @@ nonisolated struct AnalysisSolarPosition: Codable, Equatable, Sendable {
     var expectedShadowAzimuthDegrees: Double {
         AnalysisSolarPositionCalculator.normalizedDegrees(azimuthDegrees + 180)
     }
+
+    /// Estimated shadow length for a vertical object on level ground. Apparent elevation is used
+    /// so the result follows the same horizon/refraction boundary as the visible map rays.
+    func expectedShadowLengthMeters(objectHeightMeters: Double) -> Double? {
+        guard objectHeightMeters.isFinite,
+              objectHeightMeters > 0,
+              !isBelowHorizon,
+              apparentElevationDegrees > 0 else { return nil }
+        let length = objectHeightMeters / tan(apparentElevationDegrees * .pi / 180)
+        guard length.isFinite, length >= 0 else { return nil }
+        return length
+    }
 }
 
 nonisolated struct AnalysisSolarEvent: Codable, Equatable, Sendable {

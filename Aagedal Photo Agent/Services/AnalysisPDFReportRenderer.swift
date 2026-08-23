@@ -859,7 +859,7 @@ private final class Renderer {
                 "Solar directions assume a flat, unobstructed horizon and standard atmospheric refraction; actual atmosphere and weather are not reconstructed.",
                 "The solar calculation does not model terrain, buildings, vegetation, or other horizon obstructions.",
                 "The result is only as accurate as the asserted location, UTC offset, and source clock; it does not infer or validate capture time.",
-                "Solar and expected-shadow rays are true-north direction indicators whose displayed length follows the map viewport. They are not measured or predicted ground shadow lengths.",
+                "Solar direction rays are true-north indicators whose displayed length follows the map viewport. A listed shadow length is a level-ground estimate for the investigator-entered vertical object height, not a measured photographed shadow.",
                 "The calculation does not compare map directions with photographed shadows or account for camera orientation.",
             ])
         }
@@ -1073,6 +1073,14 @@ private final class Renderer {
             "Expected shadow direction",
             solarDegrees(solar.day.position.expectedShadowAzimuthDegrees)
         )
+        if let height = solar.overlay.shadowObjectHeightMeters {
+            drawKeyValue("Shadow reference height", solarDistance(height))
+            drawKeyValue(
+                "Expected shadow length",
+                solar.day.position.expectedShadowLengthMeters(objectHeightMeters: height)
+                    .map(solarDistance) ?? "Unavailable"
+            )
+        }
         drawKeyValue(
             "Geometric elevation",
             solarSignedDegrees(solar.day.position.geometricElevationDegrees)
@@ -1100,8 +1108,11 @@ private final class Renderer {
         }
         drawKeyValue("Overlay", solar.overlay.isVisible ? "Visible" : "Hidden")
         drawKeyValue("Selected rays", selectedRays.isEmpty ? "None" : selectedRays.joined(separator: ", "))
+        let rayExplanation = solar.overlay.shadowObjectHeightMeters == nil
+            ? "Direction-ray length is derived from this frozen viewport for legibility and represents direction only."
+            : "Direction-ray length is derived from this frozen viewport for legibility. The numeric shadow-length estimate assumes a vertical object on level ground."
         drawFlowingText(
-            "Ray length is derived from this frozen viewport for legibility and represents direction only.",
+            rayExplanation,
             font: .systemFont(ofSize: 8.5),
             color: caution,
             lineSpacing: 2
@@ -1183,6 +1194,15 @@ private final class Renderer {
         case .sunset:
             (NSColor(srgbRed: 0.18, green: 0.38, blue: 0.72, alpha: 0.82), 1.6, [])
         }
+    }
+
+    private func solarDistance(_ meters: Double) -> String {
+        if meters >= 1_000 {
+            return (meters / 1_000).formatted(
+                .number.precision(.fractionLength(0...2))
+            ) + " km"
+        }
+        return meters.formatted(.number.precision(.fractionLength(0...2))) + " m"
     }
 
     private func solarDegrees(_ value: Double) -> String {

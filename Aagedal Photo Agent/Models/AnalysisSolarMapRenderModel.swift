@@ -2,9 +2,9 @@ import Foundation
 
 /// Shared spherical geometry for case-only map presentation.
 ///
-/// Distances produced here are display geometry, not evidence measurements. In particular, solar
-/// ray length is derived from the current viewport and is never persisted or presented as a real
-/// shadow length.
+/// Most distances produced here are display geometry rather than evidence measurements. Solar
+/// direction-ray length is derived from the current viewport; a separately labelled shadow-length
+/// estimate may be derived from a persisted reference-object height.
 nonisolated enum AnalysisMapGeometry {
     private static let earthRadiusMeters = 6_371_008.8
 
@@ -108,6 +108,8 @@ nonisolated struct AnalysisSolarMapRenderModel: Equatable, Sendable {
     let isBelowHorizon: Bool
     let polarCondition: AnalysisSolarPolarCondition?
     let rayLengthMeters: Double
+    let shadowLengthMeters: Double?
+    let shadowObjectHeightMeters: Double?
 
     init?(
         overlay: AnalysisSolarOverlayState,
@@ -129,6 +131,10 @@ nonisolated struct AnalysisSolarMapRenderModel: Equatable, Sendable {
         self.rayLengthMeters = rayLengthMeters
         isBelowHorizon = day.position.isBelowHorizon
         polarCondition = day.polarCondition
+        shadowObjectHeightMeters = overlay.shadowObjectHeightMeters
+        shadowLengthMeters = overlay.shadowObjectHeightMeters.flatMap {
+            day.position.expectedShadowLengthMeters(objectHeightMeters: $0)
+        }
 
         var rays: [AnalysisSolarMapRay] = []
         if !day.position.isBelowHorizon {

@@ -118,6 +118,68 @@ struct AnalysisSolarPositionCalculatorTests {
         #expect(abs(position.expectedShadowAzimuthDegrees - expected) < 1e-12)
     }
 
+    @Test("Shadow length uses object height and apparent elevation")
+    func shadowLength() throws {
+        let position = AnalysisSolarPosition(
+            azimuthDegrees: 180,
+            geometricElevationDegrees: 45,
+            apparentElevationDegrees: 45
+        )
+        let belowHorizon = AnalysisSolarPosition(
+            azimuthDegrees: 180,
+            geometricElevationDegrees: -1,
+            apparentElevationDegrees: -0.5
+        )
+
+        #expect(abs(try #require(
+            position.expectedShadowLengthMeters(objectHeightMeters: 2)
+        ) - 2) < 1e-12)
+        #expect(belowHorizon.expectedShadowLengthMeters(objectHeightMeters: 2) == nil)
+        #expect(position.expectedShadowLengthMeters(objectHeightMeters: 0) == nil)
+    }
+
+    @Test("Legacy solar overlays decode without a reference-object height")
+    func legacyOverlayDecoding() throws {
+        let instant = try utcDate(2024, 6, 20, 12, 0, 0)
+        let overlay = AnalysisSolarOverlayState(
+            timestamp: AnalysisTimestampValue(
+                date: instant,
+                precision: .minute,
+                timeZone: TimeZone(secondsFromGMT: 0)!
+            )
+        )
+        let encoded = try JSONEncoder().encode(overlay)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "shadowObjectHeightMeters")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(
+            AnalysisSolarOverlayState.self,
+            from: legacyData
+        )
+
+        #expect(decoded.shadowObjectHeightMeters == nil)
+        #expect(decoded.validate())
+    }
+
+    @Test("Solar overlay rejects invalid reference-object heights")
+    func invalidShadowObjectHeight() throws {
+        let instant = try utcDate(2024, 6, 20, 12, 0, 0)
+        var overlay = AnalysisSolarOverlayState(
+            timestamp: AnalysisTimestampValue(
+                date: instant,
+                precision: .minute,
+                timeZone: TimeZone(secondsFromGMT: 0)!
+            )
+        )
+
+        overlay.shadowObjectHeightMeters = 0
+        #expect(!overlay.validate())
+        overlay.shadowObjectHeightMeters = .infinity
+        #expect(!overlay.validate())
+    }
+
     @Test("Absolute position is independent of the selected civil-day offset")
     func positionDoesNotUseCurrentTimeZone() throws {
         let input = AnalysisSolarInput(
@@ -245,6 +307,8 @@ struct AnalysisSolarPositionCalculatorTests {
         ))
 
         #expect(model.rays.map(\.kind) == [.sun, .sunrise])
+        #expect(model.shadowObjectHeightMeters == 1)
+        #expect(model.shadowLengthMeters != nil)
         #expect(model.rays.allSatisfy {
             abs(AnalysisMapGeometry.greatCircleDistanceMeters(
                 from: $0.origin,

@@ -41,8 +41,11 @@ True solar time combines UTC minutes, equation of time, and longitude.
 
 - Azimuth is normalized to `0..<360` degrees clockwise from true north.
 - Geometric elevation is positive above the astronomical horizon.
-- Expected shadow direction is exactly the normalized solar azimuth plus 180 degrees. It is a
-  direction only, never a ground-distance or shadow-length prediction.
+- Expected shadow direction is exactly the normalized solar azimuth plus 180 degrees.
+- When a positive reference-object height is supplied, expected shadow length on level ground is
+  `height / tan(apparent elevation)`. It is unavailable below the apparent horizon. The map's
+  direction ray remains viewport-relative for legibility; the numeric length is labelled
+  separately and is not treated as an image measurement.
 
 Apparent elevation adds NOAA's piecewise refraction correction:
 
