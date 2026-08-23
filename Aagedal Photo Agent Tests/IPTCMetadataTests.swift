@@ -798,6 +798,66 @@ struct EditorialMetadataInteroperabilityTests {
         return url
     }
 
+    @Test("Headline XMP writes do not create or replace localized dc:title")
+    func headlineIsIndependentFromLocalizedTitleInXMP() {
+        var fresh = XMPData()
+        XMPDataBuilder.applyDescriptive(IPTCMetadata(title: "Breaking headline"), into: &fresh)
+        #expect(fresh.headline == "Breaking headline")
+        #expect(fresh.value(namespace: XMPNamespace.dc, property: "title") == nil)
+
+        var existing = XMPData()
+        existing.title = "Localized title"
+        XMPDataBuilder.applyDescriptive(IPTCMetadata(title: "Updated headline"), into: &existing)
+        #expect(existing.headline == "Updated headline")
+        #expect(existing.title == "Localized title")
+    }
+
+    @Test("embedded Headline edits preserve IIM Object Name and dc:title")
+    func embeddedHeadlineEditPreservesDistinctTitles() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = try makeJPEG(in: directory)
+
+        var planted = try SwiftExif.readMetadata(from: imageURL)
+        planted.iptc.headline = "Old headline"
+        planted.iptc.objectName = "Legacy object title"
+        planted.xmp = XMPData()
+        planted.xmp?.headline = "Old headline"
+        planted.xmp?.title = "Localized XMP title"
+        try planted.write(to: imageURL)
+
+        try await SwiftExifWriteEngine().writeFields([.headline: "New headline"], to: [imageURL])
+
+        let written = try SwiftExif.readMetadata(from: imageURL)
+        #expect(written.iptc.headline == "New headline")
+        #expect(written.iptc.objectName == "Legacy object title")
+        #expect(written.xmp?.headline == "New headline")
+        #expect(written.xmp?.title == "Localized XMP title")
+
+        try await SwiftExifWriteEngine().writeFields([.headline: ""], to: [imageURL])
+
+        let cleared = try SwiftExif.readMetadata(from: imageURL)
+        #expect(cleared.iptc.headline == nil)
+        #expect(cleared.iptc.objectName == "Legacy object title")
+        #expect(cleared.xmp?.headline == nil)
+        #expect(cleared.xmp?.title == "Localized XMP title")
+    }
+
+    @Test("embedded Headline writes do not synthesize Title carriers")
+    func embeddedHeadlineDoesNotCreateTitle() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = try makeJPEG(in: directory)
+
+        try await SwiftExifWriteEngine().writeFields([.headline: "New headline"], to: [imageURL])
+
+        let written = try SwiftExif.readMetadata(from: imageURL)
+        #expect(written.iptc.headline == "New headline")
+        #expect(written.iptc.objectName == nil)
+        #expect(written.xmp?.headline == "New headline")
+        #expect(written.xmp?.value(namespace: XMPNamespace.dc, property: "title") == nil)
+    }
+
     @Test("the complex XMP fixture is semantically stable through a no-op round trip")
     func complexFixtureNoOpRoundTrip() throws {
         let original = try XMPReader.readFromXML(Data(contentsOf: fixtureURL))

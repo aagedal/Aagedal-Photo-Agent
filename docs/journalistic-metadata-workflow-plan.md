@@ -216,6 +216,13 @@ ready.
   pinned SwiftExif API currently collapses a language alternative to `x-default`; this requires an
   upstream carrier-model change or an explicitly maintained local dependency fork before the app
   can claim lossless support.
+
+  **Partial progress — 2026-08-23:** Headline writes now target only IPTC-IIM Headline (2:105)
+  and `photoshop:Headline`; they no longer create, clear, or replace IIM Object Name (2:05) or
+  `dc:title`. Existing Title carriers are preserved at the value boundary SwiftExif exposes, and
+  focused builder plus embedded-JPEG tests cover distinct and absent Title values. The item stays
+  open because the compatibility read fallback is still scalar and SwiftExif 1.9.10 still drops
+  non-default `rdf:Alt` entries when it parses a packet.
 - [x] Update metadata history so new fields produce human-readable changes without logging
   sensitive values unnecessarily.
 
@@ -503,6 +510,31 @@ termination modal and live AppKit responder behavior remain manual observations.
 - [x] Show caption/headline character counts and optional profile limits.
 - [x] Provide fit/bounded-preview 100% zoom, full-screen preview, and confirmed face rectangles
   without intentionally leaving caption focus.
+
+### 3.0 hands-on usability follow-up
+
+The following items come from hands-on testing on 2026-08-23 and remain release work even though
+the underlying Caption, validation, and metadata-field infrastructure is implemented:
+
+- [ ] Reduce the Caption Workspace metadata-checklist footprint. Keep readiness and the next
+  actionable issue visible, but make the complete checklist compact or collapsible so it does not
+  reserve a disproportionate share of the editing area.
+- [ ] For a fresh install or an explicit reset to defaults, show only Headline, Description,
+  Keywords, Creator, Copyright Notice, Person Shown, and Rights Usage Terms. Preserve an existing
+  user's customized visibility and ordering during upgrade.
+- [ ] Add a persistent footer below the visible Caption metadata fields explaining that additional
+  IPTC fields can be enabled in Settings → Metadata, with a direct action to open that settings
+  pane when practical.
+- [ ] Give every metadata field label concise IPTC guidance: its common editorial use plus a short
+  example. Expose the same guidance through hover help, keyboard focus/accessibility help, and
+  localization-ready copy rather than making it pointer-only.
+- [ ] Replace the separate visible/hidden and required-field management lists in Metadata Settings
+  with one coherent field-management UI that shows visibility and required state together and
+  supports drag, keyboard, and VoiceOver reordering. The configured order must be reflected
+  consistently in the metadata panel and Caption field navigator, while required validation stays
+  independent of whether a field is currently visible.
+- [ ] Add migration/default tests, ordering persistence and unknown-field recovery tests, and UI
+  coverage for the compact checklist, settings link, field guidance, and accessible reordering.
 
 ### Caption speed tools
 
@@ -835,6 +867,13 @@ and receipt evidence. Seventy-seven focused tests pass; see
 
 ### Deadline UI
 
+- [ ] Redesign the Deadline Workspace information hierarchy based on hands-on testing. Make the
+  selected profile, current phase, readiness summary, next required action, planned outputs, and
+  Send eligibility understandable without knowledge of the internal preflight model; provide
+  useful empty, partially configured, blocked, running, failed, and completed states.
+- [ ] Run a first-use usability pass for Deadline with representative incomplete and ready
+  assignments, then record the observed confusion points and approved layout/remediation changes in
+  a dated validation note.
 - [x] Add a Deadline Mode workspace with a phase/status strip:
   `Select → Caption → Verify → Send`.
 - [x] Show aggregate readiness (`21 of 24 ready`) and counts by issue type.

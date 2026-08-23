@@ -169,6 +169,55 @@ struct AnalysisReportSnapshotTests {
         #expect(unlinkedSolar.day == fresh)
     }
 
+    @Test("solar evidence follows a changed location and disappears when location is removed")
+    func solarEvidenceTracksLocationLifecycle() throws {
+        let timestamp = AnalysisTimestampValue(
+            year: 2026,
+            month: 6,
+            day: 21,
+            hour: 12,
+            minute: 30,
+            precision: .minute,
+            utcOffsetMinutes: 120
+        )
+        var state = AnalysisMapState(solarOverlay: AnalysisSolarOverlayState(timestamp: timestamp))
+
+        #expect(try AnalysisReportSolarEvidence.capture(from: state, timestampEvidence: []) == nil)
+
+        let oslo = AnalysisLocationEvidence(
+            coordinate: AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522),
+            source: .manualCoordinates,
+            sourceDetail: "First location"
+        )
+        state.investigationLocation = oslo
+        let capturedOslo = try AnalysisReportSolarEvidence.capture(
+            from: state,
+            timestampEvidence: []
+        )
+        let osloEvidence = try #require(capturedOslo)
+
+        let greenwich = AnalysisLocationEvidence(
+            coordinate: AnalysisGeoCoordinate(latitude: 51.4779, longitude: 0),
+            source: .manualCoordinates,
+            sourceDetail: "Replacement location"
+        )
+        state.investigationLocation = greenwich
+        let capturedGreenwich = try AnalysisReportSolarEvidence.capture(
+            from: state,
+            timestampEvidence: []
+        )
+        let greenwichEvidence = try #require(capturedGreenwich)
+
+        #expect(osloEvidence.coordinate == oslo.coordinate)
+        #expect(greenwichEvidence.coordinate == greenwich.coordinate)
+        #expect(greenwichEvidence.locationEvidenceID == greenwich.id)
+        #expect(greenwichEvidence.day.position != osloEvidence.day.position)
+
+        state.investigationLocation = nil
+        #expect(state.solarOverlay != nil)
+        #expect(try AnalysisReportSolarEvidence.capture(from: state, timestampEvidence: []) == nil)
+    }
+
     @Test("rejects a solar report input outside the supported method range")
     func rejectsUnreproducibleSolarEvidence() async throws {
         let fixture = try AnalysisReportFixture(contents: "unsupported solar report source")
@@ -251,28 +300,41 @@ struct AnalysisReportSnapshotTests {
             appBuild: "test"
         )
 
-        let data = try await AnalysisPDFReportRenderer.makePDF(snapshot: snapshot)
-        let document = try #require(PDFDocument(data: data))
-        let text = (0..<document.pageCount)
-            .compactMap { document.page(at: $0)?.string }
-            .joined(separator: "\n")
+        for (format, expectedSize, filename) in [
+            (AnalysisReportPageFormat.a4, CGSize(width: 595.28, height: 841.89), "analysis-report-solar-a4.pdf"),
+            (AnalysisReportPageFormat.usLetter, CGSize(width: 612, height: 792), "analysis-report-solar-letter.pdf"),
+        ] {
+            let data = try await AnalysisPDFReportRenderer.makePDF(
+                snapshot: snapshot,
+                options: AnalysisReportExportOptions(pageFormat: format)
+            )
+            let document = try #require(PDFDocument(data: data))
+            let bounds = try #require(document.page(at: 0)?.bounds(for: .mediaBox))
+            let text = (0..<document.pageCount)
+                .compactMap { document.page(at: $0)?.string }
+                .joined(separator: "\n")
+            let normalizedText = text.split(whereSeparator: \Character.isWhitespace)
+                .joined(separator: " ")
 
-        #expect(text.contains("Solar position calculation"))
-        #expect(text.contains("2026-06-21 12:30 UTC+02:00"))
-        #expect(text.contains("Meeus/NOAA v1"))
-        #expect(text.contains("Sun direction"))
-        #expect(text.contains("Expected shadow direction"))
-        #expect(text.contains("Shadow reference height"))
-        #expect(text.contains("Expected shadow length"))
-        #expect(text.contains("Sunrise direction"))
-        #expect(text.contains("Sunset direction"))
-        #expect(text.contains("Direction-ray length is derived"))
-        #expect(text.contains("flat, unobstructed horizon"))
-        #expect(text.contains("terrain, buildings, vegetation"))
-        #expect(text.contains("source clock"))
-        #expect(text.contains("camera orientation"))
+            #expect(abs(bounds.width - expectedSize.width) < 1)
+            #expect(abs(bounds.height - expectedSize.height) < 1)
+            #expect(normalizedText.contains("Solar position calculation"))
+            #expect(normalizedText.contains("2026-06-21 12:30 UTC+02:00"))
+            #expect(normalizedText.contains("Meeus/NOAA v1"))
+            #expect(normalizedText.contains("Sun direction"))
+            #expect(normalizedText.contains("Expected shadow direction"))
+            #expect(normalizedText.contains("Shadow reference height"))
+            #expect(normalizedText.contains("Expected shadow length"))
+            #expect(normalizedText.contains("Sunrise direction"))
+            #expect(normalizedText.contains("Sunset direction"))
+            #expect(normalizedText.contains("Direction-ray length is derived"))
+            #expect(normalizedText.contains("flat, unobstructed horizon"))
+            #expect(normalizedText.contains("terrain, buildings, vegetation"))
+            #expect(normalizedText.contains("source clock"))
+            #expect(normalizedText.contains("camera orientation"))
 
-        try writeQAReportIfRequested(data, filename: "analysis-report-solar.pdf")
+            try writeQAReportIfRequested(data, filename: filename)
+        }
     }
 
     @Test("rejects a source whose bytes changed after the case was created")
@@ -391,6 +453,62 @@ struct AnalysisReportSnapshotTests {
 
         let encoded = try JSONEncoder().encode(snapshot)
         #expect(try JSONDecoder().decode(AnalysisReportSnapshot.self, from: encoded) == snapshot)
+    }
+
+    @Test("freezes report crop bounds in source storage coordinates for every orientation")
+    func freezesCropBoundsAcrossOrientations() async throws {
+        let fixture = try AnalysisReportFixture(contents: "all orientation crop source")
+        defer { fixture.remove() }
+        let expectedSourceRects: [Int: AnalysisReportPixelRect] = [
+            1: AnalysisReportPixelRect(x: 20, y: 18, width: 41, height: 12),
+            2: AnalysisReportPixelRect(x: 39, y: 18, width: 41, height: 12),
+            3: AnalysisReportPixelRect(x: 39, y: 30, width: 41, height: 12),
+            4: AnalysisReportPixelRect(x: 20, y: 30, width: 41, height: 12),
+            5: AnalysisReportPixelRect(x: 30, y: 12, width: 20, height: 24),
+            6: AnalysisReportPixelRect(x: 30, y: 23, width: 20, height: 25),
+            7: AnalysisReportPixelRect(x: 50, y: 23, width: 20, height: 25),
+            8: AnalysisReportPixelRect(x: 50, y: 12, width: 20, height: 24),
+        ]
+        let selectedDisplayRect = CGRect(x: 0.2, y: 0.3, width: 0.4, height: 0.2)
+
+        for orientation in 1...8 {
+            let revision = try await SourceImageRevision.capture(
+                at: fixture.fileURL,
+                pixelWidth: 100,
+                pixelHeight: 60,
+                exifOrientation: orientation
+            )
+            let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+            let snapshot = try await AnalysisReportSnapshot.capture(
+                from: analysisCase,
+                sourceURL: fixture.fileURL,
+                appVersion: "3.0",
+                appBuild: "test",
+                originalDisplayEvidenceCrop: selectedDisplayRect
+            )
+            let crop = try #require(snapshot.evidenceCrop)
+
+            #expect(crop.sourcePixelRect == expectedSourceRects[orientation])
+            if orientation >= 5 {
+                #expect(crop.displayedSourceWidth == 60)
+                #expect(crop.displayedSourceHeight == 100)
+                #expect(crop.displayPixelRect == AnalysisReportPixelRect(
+                    x: 12,
+                    y: 30,
+                    width: 24,
+                    height: 20
+                ))
+            } else {
+                #expect(crop.displayedSourceWidth == 100)
+                #expect(crop.displayedSourceHeight == 60)
+                #expect(crop.displayPixelRect == AnalysisReportPixelRect(
+                    x: 20,
+                    y: 18,
+                    width: 40,
+                    height: 12
+                ))
+            }
+        }
     }
 
     @Test("embeds and captions a selected true-pixel crop")

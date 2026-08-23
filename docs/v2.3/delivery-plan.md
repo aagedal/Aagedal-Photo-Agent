@@ -92,7 +92,7 @@ modifies the source.
 - [x] Add source-pixel measurement.
 - [x] Add user-defined calibration segment and unit conversion.
 - [x] Add linked finding/annotation references.
-- [ ] Test all orientations, view sizes, source changes, and report transforms.
+- [x] Test all orientations, view sizes, source changes, and report transforms.
 - [ ] Validate keyboard-only and VoiceOver workflows.
 
 ## Phase 5 — OSINT map and timeline
@@ -166,7 +166,7 @@ a valid state.
 - [x] Add rating/label focused-image behavior.
 - [x] Add shortcut help/settings entries.
 - [ ] Validate monitor disconnect/reconnect, HDR/SDR pairing, and live edit load.
-- [ ] Add version-to-version comparison hook for Phase 10.
+- [x] Add version-to-version comparison hook for Phase 10.
 
 ## Phase 9 — version storage
 

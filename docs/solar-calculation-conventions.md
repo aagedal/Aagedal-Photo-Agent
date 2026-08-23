@@ -2,7 +2,7 @@
 
 **Method identifier:** `meeusNOAAV1`  
 **Supported civil years:** 1800 through 2100, inclusive  
-**Reviewed:** 2026-08-19
+**Reviewed:** 2026-08-23
 
 This note freezes the numerical contract for the first solar-position overlay. The implementation
 is original Swift based on the equations published by NOAA's Global Monitoring Laboratory, which
@@ -82,7 +82,10 @@ The executable corpus is in `AnalysisSolarPositionCalculatorTests.swift`.
 | Greenwich, 2024-06-20, 51.4779, 0 | NOAA day spreadsheet, retrieved 2026-08-19 | sunrise 03:43 UTC; solar noon 12:02 UTC; sunset 20:21 UTC | 2 minutes |
 | Oslo summer/winter | Generated invariant corpus | sunrise < noon < sunset; normalized bearings | exact ordering/range |
 | Tromsø June/December solstices | Generated polar corpus | polar day/night; absent rise/set | exact state |
-| Leap day at the date line with UTC-12 and UTC+14 | Generated offset corpus | position is invariant for the same instant | exact `Double` result |
+| Equator, March 2024 equinox | Generated symmetry corpus | near-east rise, near-west set, near-zenith noon | 1 degree bearings; elevation above 88 degrees |
+| Northern and southern locations above 72 degrees | Generated high-latitude corpus | opposite seasonal polar day/night; absent rise/set | exact state |
+| Leap day at the date line with UTC-12, UTC, and UTC+14 | Generated offset corpus | position is invariant for the same instant | exact `Double` result |
+| New York DST-transition wall times with explicit UTC-05 and UTC-04 | Generated fixed-offset corpus | resolved instants remain one hour apart; both civil days calculate | exact interval/event availability |
 | Civil years 1800 and 2100 across UTC-year boundaries | Generated boundary corpus | rise/set remain calculable | exact availability |
 | 32 concurrent calculations | Generated concurrency corpus | deterministic `Sendable` result | exact equality |
 

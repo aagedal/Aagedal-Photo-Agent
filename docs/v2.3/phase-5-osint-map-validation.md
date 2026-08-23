@@ -83,3 +83,32 @@ Map-specific coverage includes:
   hardening pass.
 - Sun/shadow analysis remains a post-2.3 conditional feature unless a later gate supplies the
   required assumptions and validation evidence.
+
+## 3.0 follow-on — approved solar-position scope
+
+The 3.0 workstream subsequently approved the narrower offline solar-position overlay documented in
+the [solar implementation plan](../suncalc-plan.md) and
+[calculation contract](../solar-calculation-conventions.md). It is not the broad sun/shadow analyzer
+rejected for 2.3: it calculates true-north Sun and opposite expected-shadow directions from an
+explicit WGS 84 Photo Location and timezone-qualified instant. It does not infer capture time,
+measure photographed shadows, compare camera orientation, or model terrain, buildings, vegetation,
+weather, or horizon obstructions. A separately labelled reference-object shadow-length estimate is
+limited to a vertical object on level ground.
+
+`meeusNOAAV1` is bounded to civil years 1800–2100. The executable reference fixtures allow 0.03
+degree for the NREL position comparison and two minutes for the Greenwich NOAA rise/noon/set
+comparison. NOAA's real-world rise/set guidance remains approximately one minute within ±72 degrees
+latitude and approximately ten minutes outside that band, before atmospheric and horizon effects;
+the UI and report limitations disclose those constraints.
+
+On 2026-08-23, arm64 macOS runs passed all 21 solar-calculator methods (25 parameterized
+invocations), three focused solar lifecycle/reproduction/report tests, and all 62 Analysis Case
+tests. Coverage includes the equator, mid- and high latitudes, both hemispheres above 72 degrees,
+polar day/night, leap day, the international date line, UTC-12/UTC/UTC+14, explicit offsets across
+a DST transition, removed/replaced location, removed timestamp provenance, source-changed behavior,
+all persisted map-style states sharing derived geometry, and structural solar report assertions for
+A4 and US Letter.
+
+Still manual for the 3.0 gate: rapid slider and actual style switching, rotated/pitched maps,
+uncached offline behavior, keyboard-only and VoiceOver review, visual live/report ray comparison,
+and validation on a second supported architecture.

@@ -108,7 +108,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                     self.applyListAdd(key: key, values: valuesToAdd, metadata: &metadata)
                 }
 
-                metadata.syncIPTCToXMP()
+                self.syncIPTCToXMPPreservingDCTitle(&metadata)
                 try metadata.write(to: url)
             }
         }
@@ -393,8 +393,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             metadata.xmp?.setValue(.simple("234881024"), namespace: crsNamespace, property: "CompatibleVersion")
         }
 
-        // Sync IPTC → XMP to ensure both sides are consistent.
-        metadata.syncIPTCToXMP()
+        // Sync supported IIM fields into XMP without treating legacy Object Name as Headline.
+        // dc:title is a separate localized field and is not editable by this scalar UI.
+        syncIPTCToXMPPreservingDCTitle(&metadata)
         normalizeEditorialRoleXMP(for: fields, metadata: &metadata)
         normalizeDateCreatedXMP(for: fields, metadata: &metadata)
 
@@ -406,6 +407,22 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             )
         } else {
             try metadata.write(to: url)
+        }
+    }
+
+    /// SwiftExif's general IIM→XMP synchronizer maps Object Name (2:05) to `dc:title`.
+    /// Photo Agent does not currently expose localized Title editing, so a Headline or unrelated
+    /// write must neither synthesize `dc:title` nor replace its current x-default projection.
+    ///
+    /// This protects the value SwiftExif exposes. Non-default rdf:Alt entries still require a
+    /// richer upstream carrier model before the complete localized value can round-trip.
+    private func syncIPTCToXMPPreservingDCTitle(_ metadata: inout ImageMetadata) {
+        let title = metadata.xmp?.value(namespace: XMPNamespace.dc, property: "title")
+        metadata.syncIPTCToXMP()
+        if let title {
+            metadata.xmp?.setValue(title, namespace: XMPNamespace.dc, property: "title")
+        } else {
+            metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "title")
         }
     }
 
@@ -480,12 +497,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .headline:
             if isEmpty {
                 metadata.iptc.removeAll(for: .headline)
-                metadata.iptc.removeAll(for: .objectName)
                 metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "Headline")
-                metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "title")
             } else {
                 metadata.iptc.headline = value
-                metadata.iptc.objectName = value
             }
 
         case .description:

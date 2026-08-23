@@ -15,6 +15,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   urgency, Scene/Subject Codes, Media Topics, structured Genre, Digital Image GUID, canonical PLUS
   Image Supplier identifiers/structures, ordered creators, precision-aware Date Created, structured
   creator contact, and created/shown locations, with schema-safe persistence and semantic read-back.
+- Separated Headline carrier writes from localized Title: Headline edits no longer create, clear,
+  or replace `dc:title` or IPTC-IIM Object Name metadata.
 - Added local delivery receipts and resumable workflow evidence in Activity, with explicit cleanup and
   privacy-limited summaries.
 

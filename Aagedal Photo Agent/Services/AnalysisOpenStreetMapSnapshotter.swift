@@ -14,9 +14,12 @@ enum AnalysisOpenStreetMapSnapshotError: Error {
 enum AnalysisOpenStreetMapSnapshotter {
     private static let tileSize = 256.0
     private static let session: URLSession = {
+        let appVersion = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "unknown"
         let configuration = URLSessionConfiguration.default
         configuration.httpAdditionalHeaders = [
-            "User-Agent": "AagedalPhotoAgent/2.3 (PDF map export; contact: aagedal.no)",
+            "User-Agent": "AagedalPhotoAgent/\(appVersion) (PDF map export; contact: aagedal.no)",
         ]
         configuration.requestCachePolicy = .returnCacheDataElseLoad
         return URLSession(configuration: configuration)

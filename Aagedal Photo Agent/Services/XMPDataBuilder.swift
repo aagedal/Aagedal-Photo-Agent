@@ -24,9 +24,9 @@ enum XMPDataBuilder {
     /// GPS and photoshop:DateCreated have no convenience setter, so they go through `setSimpleOrRemove`
     /// (and are read back via the service's `fillXMPOnlyGaps`).
     nonisolated static func applyDescriptive(_ m: IPTCMetadata, into xmp: inout XMPData) {
-        // Title is written to BOTH photoshop:Headline and dc:title (the reader prefers Headline).
+        // Headline is distinct from the localized dc:title property. Keep legacy dc:title data
+        // untouched until the carrier can expose every rdf:Alt language entry losslessly.
         xmp.headline = nilIfEmpty(m.title)
-        xmp.title = nilIfEmpty(m.title)
         xmp.description = nilIfEmpty(m.description)
         xmp.extendedDescription = nilIfEmpty(m.extendedDescription)
         setArrayOrRemove(&xmp, m.keywords, namespace: XMPNamespace.dc, property: "subject")

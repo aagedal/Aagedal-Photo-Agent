@@ -25,6 +25,10 @@ value, and require an explicit resolution before a destructive synchronization. 
 or resolves a field, supported fields are synchronized to XMP and IPTC-IIM where both mappings
 exist.
 
+Headline write behavior is already independent of Title despite the compatibility read fallback:
+Headline edits target IPTC-IIM 2:105 and `photoshop:Headline` only. They preserve rather than
+create, clear, or replace IIM Object Name and `dc:title`.
+
 ## Write boundaries by file category
 
 | Category | Default professional behavior | Safety boundary |
@@ -69,9 +73,12 @@ ordered creator model.
 ## Legacy IPTC-IIM editing policy
 
 The following fields remain editable and dual-written where an IIM mapping exists because they are
-still common in wire-service handoffs: Headline, Title/Object Name, Description, Keywords, Creator,
+still common in wire-service handoffs: Headline, Description, Keywords, Creator,
 Creator Job Title, Credit Line, Copyright Notice, Instructions, Job ID, Date Created, City,
 Sublocation, Province/State, Country Name, Country Code, Source, and Urgency.
+
+Title/Object Name is currently preservation-only. It remains a legacy read fallback for Headline,
+but editing Headline no longer mutates either Title carrier.
 
 Legacy Subject Codes are read and preserved, but the new classification UI will prefer IPTC Media
 Topics/CV Terms. Intellectual Genre remains preservation-only until it has a controlled-vocabulary

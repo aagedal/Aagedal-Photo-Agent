@@ -103,6 +103,57 @@ struct AnalysisSolarPositionCalculatorTests {
         #expect(winter.sunset == nil)
     }
 
+    @Test("Equatorial equinox produces near-east rise and near-west set")
+    func equatorialEquinox() throws {
+        let start = try utcDate(2024, 3, 20, 0, 0, 0)
+        let result = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(
+                instant: try utcDate(2024, 3, 20, 12, 0, 0),
+                coordinate: AnalysisGeoCoordinate(latitude: 0, longitude: 0)
+            ),
+            civilDayOffsetMinutes: 0
+        )
+        let sunrise = try #require(result.sunrise)
+        let sunset = try #require(result.sunset)
+
+        #expect(result.polarCondition == nil)
+        #expect(result.position.apparentElevationDegrees > 88)
+        #expect(abs(sunrise.azimuthDegrees - 90) < 1)
+        #expect(abs(sunset.azimuthDegrees - 270) < 1)
+        #expect(sunrise.instant >= start)
+        #expect(sunrise.instant < result.solarNoon.instant)
+        #expect(result.solarNoon.instant < sunset.instant)
+        #expect(sunset.instant < start.addingTimeInterval(86_400))
+    }
+
+    @Test("Latitudes above 72 degrees distinguish polar seasons in both hemispheres")
+    func polarConditionsAboveAccuracyBoundary() throws {
+        let northern = AnalysisGeoCoordinate(latitude: 78.2232, longitude: 15.6469)
+        let southern = AnalysisGeoCoordinate(latitude: -77.8419, longitude: 166.6863)
+
+        let northernSummer = try calculateAtNoon(
+            year: 2024, month: 6, day: 20, coordinate: northern, offset: 120
+        )
+        let northernWinter = try calculateAtNoon(
+            year: 2024, month: 12, day: 21, coordinate: northern, offset: 60
+        )
+        let southernWinter = try calculateAtNoon(
+            year: 2024, month: 6, day: 20, coordinate: southern, offset: 720
+        )
+        let southernSummer = try calculateAtNoon(
+            year: 2024, month: 12, day: 21, coordinate: southern, offset: 780
+        )
+
+        #expect(northernSummer.polarCondition == .polarDay)
+        #expect(northernWinter.polarCondition == .polarNight)
+        #expect(southernWinter.polarCondition == .polarNight)
+        #expect(southernSummer.polarCondition == .polarDay)
+        for day in [northernSummer, northernWinter, southernWinter, southernSummer] {
+            #expect(day.sunrise == nil)
+            #expect(day.sunset == nil)
+        }
+    }
+
     @Test("Shadow bearing is the normalized opposite direction", arguments: [
         (0.0, 180.0),
         (90.0, 270.0),
@@ -196,6 +247,62 @@ struct AnalysisSolarPositionCalculatorTests {
         )
 
         #expect(west.position == east.position)
+    }
+
+    @Test("UTC-12, UTC, and UTC+14 select civil days without changing an absolute position")
+    func extremeUTCOffsets() throws {
+        let input = AnalysisSolarInput(
+            instant: try utcDate(2024, 2, 29, 23, 45, 0),
+            coordinate: AnalysisGeoCoordinate(latitude: 0, longitude: 179.9)
+        )
+        let results = try [-12 * 60, 0, 14 * 60].map {
+            try AnalysisSolarPositionCalculator.calculate(
+                input: input,
+                civilDayOffsetMinutes: $0
+            )
+        }
+
+        #expect(results.dropFirst().allSatisfy { $0.position == results[0].position })
+        #expect(results.allSatisfy { $0.sunrise != nil && $0.sunset != nil })
+        #expect(results.allSatisfy { $0.method == .meeusNOAAV1 })
+    }
+
+    @Test("DST-transition wall times resolve only from their explicit fixed offsets")
+    func explicitOffsetsAcrossDSTTransition() throws {
+        let before = AnalysisTimestampValue(
+            year: 2024,
+            month: 3,
+            day: 10,
+            hour: 1,
+            minute: 30,
+            precision: .minute,
+            utcOffsetMinutes: -5 * 60
+        )
+        let after = AnalysisTimestampValue(
+            year: 2024,
+            month: 3,
+            day: 10,
+            hour: 3,
+            minute: 30,
+            precision: .minute,
+            utcOffsetMinutes: -4 * 60
+        )
+        let beforeInstant = try #require(before.resolvedInstant)
+        let afterInstant = try #require(after.resolvedInstant)
+        let coordinate = AnalysisGeoCoordinate(latitude: 40.7128, longitude: -74.006)
+
+        #expect(afterInstant.timeIntervalSince(beforeInstant) == 3_600)
+        let beforeDay = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(instant: beforeInstant, coordinate: coordinate),
+            civilDayOffsetMinutes: try #require(before.utcOffsetMinutes)
+        )
+        let afterDay = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(instant: afterInstant, coordinate: coordinate),
+            civilDayOffsetMinutes: try #require(after.utcOffsetMinutes)
+        )
+        #expect(beforeDay.sunrise != nil)
+        #expect(afterDay.sunrise != nil)
+        #expect(beforeDay.position != afterDay.position)
     }
 
     @Test("Supported civil-year boundaries allow events across UTC-year boundaries")
@@ -346,6 +453,44 @@ struct AnalysisSolarPositionCalculatorTests {
         #expect(model.rays.map(\.kind) == [.sunrise, .sunset])
     }
 
+    @Test("switching every map style preserves shared derived solar geometry")
+    func mapStylesPreserveSolarGeometry() throws {
+        let instant = try utcDate(2024, 6, 20, 12, 0, 0)
+        let origin = AnalysisGeoCoordinate(latitude: 51.4779, longitude: 0)
+        let day = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(instant: instant, coordinate: origin),
+            civilDayOffsetMinutes: 0
+        )
+        let overlay = AnalysisSolarOverlayState(
+            timestamp: AnalysisTimestampValue(
+                date: instant,
+                precision: .minute,
+                timeZone: TimeZone(secondsFromGMT: 0)!
+            )
+        )
+        var state = AnalysisMapState(solarOverlay: overlay)
+        let expected = try #require(AnalysisSolarMapRenderModel(
+            overlay: overlay,
+            origin: origin,
+            latitudeDelta: 0.2,
+            longitudeDelta: 0.2,
+            day: day
+        ))
+
+        for style in AnalysisMapStyle.allCases {
+            state.style = style
+            let currentOverlay = try #require(state.solarOverlay)
+            let model = try #require(AnalysisSolarMapRenderModel(
+                overlay: currentOverlay,
+                origin: origin,
+                latitudeDelta: 0.2,
+                longitudeDelta: 0.2,
+                day: day
+            ))
+            #expect(model == expected, "Style \(style.rawValue) changed shared solar geometry")
+        }
+    }
+
     @Test("Invalid input returns specific errors")
     func invalidInputErrors() throws {
         let instant = try utcDate(2024, 1, 1, 0, 0, 0)
@@ -397,5 +542,21 @@ struct AnalysisSolarPositionCalculatorTests {
             minute: minute,
             second: second
         )))
+    }
+
+    private func calculateAtNoon(
+        year: Int,
+        month: Int,
+        day: Int,
+        coordinate: AnalysisGeoCoordinate,
+        offset: Int
+    ) throws -> AnalysisSolarDay {
+        try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(
+                instant: utcDate(year, month, day, 12, 0, 0),
+                coordinate: coordinate
+            ),
+            civilDayOffsetMinutes: offset
+        )
     }
 }

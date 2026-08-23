@@ -10,7 +10,9 @@ with explicit inputs, reproducible calculations, and conservative evidence langu
 calculation contract, original Swift implementation, first numerical corpus, schema-9 persistence
 contract, and OSINT controls are complete. Apple Maps and OpenStreetMap now share the same derived
 solar-ray geometry, and schema-4 report snapshots freeze validated inputs, outputs, provenance, and
-matching report rays. Interactive and cross-format release validation remains in Phase 6.
+matching report rays. The automatable Phase 6 numerical, lifecycle, map-style-state, and cross-format
+report checks are complete on arm64; interactive, accessibility, offline, visual-comparison, and
+second-architecture validation remain open.
 
 The first release is not an authenticity verdict, a capture-time inference tool, or a simulation of
 real shadows cast by terrain and structures.
@@ -305,16 +307,33 @@ methodology, limitations, and footer clearance.
 existing OSINT behavior.
 
 - [ ] Run calculator fixtures on supported macOS architectures.
-- [ ] Test equatorial, mid-latitude, high-latitude, polar-day, and polar-night cases.
-- [ ] Test leap day, date-line, positive/negative UTC offset, and DST-transition inputs.
-- [ ] Test missing location, removed location, missing linked evidence, and source-changed cases.
+- [x] Test equatorial, mid-latitude, high-latitude, polar-day, and polar-night cases.
+- [x] Test leap day, date-line, positive/negative UTC offset, and DST-transition inputs.
+- [x] Test missing location, removed location, missing linked evidence, and source-changed cases.
 - [ ] Test rapid slider movement and repeated map-style switching.
 - [ ] Test Apple standard, muted, hybrid, satellite, and OpenStreetMap styles.
 - [ ] Test rotated and pitched maps.
 - [ ] Verify fully offline operation after cached map content is unavailable.
 - [ ] Complete keyboard-only and VoiceOver review.
 - [ ] Render A4 and US Letter reports and visually compare rays and values with the live workspace.
-- [ ] Update the OSINT validation document with the approved scope and measured tolerances.
+- [x] Update the OSINT validation document with the approved scope and measured tolerances.
+
+**Automated validation — 2026-08-23:** On the arm64 macOS host,
+`AnalysisSolarPositionCalculatorTests` passed 21 test methods (25 parameterized invocations), three
+focused solar lifecycle/reproduction/report tests passed, and all 62 `AnalysisCaseTests` passed.
+The expanded corpus covers equatorial equinox, Oslo and Greenwich mid-latitudes, Tromsø below 72
+degrees, northern and southern locations above 72 degrees, both polar states, leap day, the
+international date line, UTC-12/UTC/UTC+14, and explicit fixed offsets spanning a DST transition.
+Report evidence now has an automated lifecycle check for absent, replaced, and removed Photo
+Location, while existing tests cover removed linked timestamp evidence and source-changed read-only
+behavior. All five persisted map-style choices produce the same shared derived geometry, and both
+A4 and US Letter solar reports pass media-box, ray-label, value, method, and limitation text
+assertions.
+
+This run validates the native arm64 architecture only. It does not constitute a manual check of
+rapid slider interaction, actual Apple/OSM style transitions, rotation, pitch, uncached offline map
+behavior, keyboard/VoiceOver behavior, or visual parity between live and reported rays. Those gates
+remain unchecked above.
 
 ## Reference-test coverage
 

@@ -1,6 +1,8 @@
 import AppKit
 import Foundation
+import ImageIO
 import Testing
+import UniformTypeIdentifiers
 @testable import Aagedal_Photo_Agent
 
 @Suite("Analysis evidence JPEG renderer")
@@ -50,6 +52,56 @@ struct AnalysisEvidenceJPEGRendererTests {
     }
 
     @MainActor
+    @Test("flattens annotations in the display frame for every EXIF orientation")
+    func flattensEveryOrientation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "analysis-evidence-jpeg-orientation-tests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let annotation = AnalysisAnnotation(
+            kind: .line,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+                end: AnalysisNormalizedPoint(x: 0.4, y: 0.2)
+            ),
+            style: AnalysisAnnotationStyle(
+                color: .palette(.red),
+                lineWidthPoints: 8,
+                fillOpacity: 0
+            )
+        )
+
+        for orientation in 1...8 {
+            let sourceURL = directory.appendingPathComponent("source-\(orientation).jpg")
+            try orientedWhiteJPEG(width: 200, height: 100, orientation: orientation)
+                .write(to: sourceURL)
+
+            let data = try await AnalysisEvidenceJPEGRenderer.photoJPEG(
+                sourceURL: sourceURL,
+                annotations: [annotation],
+                maxPixelSize: 200
+            )
+            let rendered = try #require(NSBitmapImageRep(data: data))
+            let expectedWidth = orientation >= 5 ? 100 : 200
+            let expectedHeight = orientation >= 5 ? 200 : 100
+            #expect(rendered.pixelsWide == expectedWidth)
+            #expect(rendered.pixelsHigh == expectedHeight)
+
+            let lineColor = try #require(rendered.colorAt(
+                x: Int(Double(expectedWidth) * 0.25),
+                y: Int(Double(expectedHeight) * 0.2)
+            )?.usingColorSpace(.sRGB))
+            #expect(lineColor.redComponent > lineColor.greenComponent + 0.25)
+            #expect(lineColor.redComponent > lineColor.blueComponent + 0.25)
+        }
+    }
+
+    @MainActor
     private func whiteJPEG(width: Int, height: Int) throws -> Data {
         let representation = try #require(NSBitmapImageRep(
             bitmapDataPlanes: nil,
@@ -74,5 +126,25 @@ struct AnalysisEvidenceJPEGRendererTests {
             using: .jpeg,
             properties: [.compressionFactor: 1]
         ))
+    }
+
+    @MainActor
+    private func orientedWhiteJPEG(width: Int, height: Int, orientation: Int) throws -> Data {
+        let undecorated = try whiteJPEG(width: width, height: height)
+        let source = try #require(CGImageSourceCreateWithData(undecorated as CFData, nil))
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let output = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(
+            output,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ))
+        CGImageDestinationAddImage(destination, image, [
+            kCGImagePropertyOrientation: orientation,
+            kCGImageDestinationLossyCompressionQuality: 1,
+        ] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+        return output as Data
     }
 }

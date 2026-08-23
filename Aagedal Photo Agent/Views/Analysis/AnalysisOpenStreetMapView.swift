@@ -302,9 +302,12 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
 
 nonisolated private final class AnalysisOpenStreetMapTileOverlay: MKTileOverlay {
     private static let session: URLSession = {
+        let appVersion = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "unknown"
         let configuration = URLSessionConfiguration.default
         configuration.httpAdditionalHeaders = [
-            "User-Agent": "AagedalPhotoAgent/2.3 (desktop OSINT map; contact: aagedal.no)",
+            "User-Agent": "AagedalPhotoAgent/\(appVersion) (desktop OSINT map; contact: aagedal.no)",
         ]
         configuration.requestCachePolicy = .returnCacheDataElseLoad
         return URLSession(configuration: configuration)

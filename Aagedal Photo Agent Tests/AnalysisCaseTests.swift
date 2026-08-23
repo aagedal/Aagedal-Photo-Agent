@@ -1710,6 +1710,62 @@ struct AnalysisCaseTests {
         #expect(abs(Double(displayed.x) - original.x) > 0.01)
     }
 
+    @Test("annotation coordinates survive every orientation and fitted view size")
+    func annotationCoordinatesAcrossOrientationsAndViewSizes() throws {
+        let annotationPoints = [
+            AnalysisNormalizedPoint(x: 0.4, y: 0.4),
+            AnalysisNormalizedPoint(x: 0.5, y: 0.5),
+            AnalysisNormalizedPoint(x: 0.6, y: 0.6),
+        ]
+        let containers = [
+            CGRect(x: 0, y: 0, width: 320, height: 900),
+            CGRect(x: 17, y: 29, width: 1_200, height: 360),
+            CGRect(x: 41, y: 73, width: 257, height: 257),
+        ]
+
+        for orientation in DisplayImageTransform.Orientation.allCases {
+            let annotationTransform = try DisplayImageTransform(
+                sourcePixelWidth: 6_000,
+                sourcePixelHeight: 4_000,
+                exifOrientation: orientation.rawValue
+            )
+            let displayTransform = try DisplayImageTransform(
+                sourcePixelWidth: 6_000,
+                sourcePixelHeight: 4_000,
+                exifOrientation: orientation.rawValue,
+                developedCrop: DisplayImageTransform.DevelopedCrop(
+                    sourceNormalizedRect: CGRect(x: 0.2, y: 0.2, width: 0.6, height: 0.6),
+                    straightenAngleDegrees: 7.5
+                )
+            )
+            let mapper = AnalysisAnnotationCoordinateMapper(
+                annotationTransform: annotationTransform,
+                displayTransform: displayTransform
+            )
+
+            for container in containers {
+                let viewGeometry = try ImageInspectionGeometry(
+                    imagePixelSize: displayTransform.displayedPixelSize,
+                    containerRect: container
+                )
+
+                for annotationPoint in annotationPoints {
+                    let displayPoint = mapper.displayPoint(from: annotationPoint)
+                    let viewPoint = viewGeometry.viewPoint(fromNormalizedDisplay: displayPoint)
+                    let recoveredDisplayPoint = try #require(
+                        viewGeometry.normalizedDisplayPoint(fromViewPoint: viewPoint)
+                    )
+                    let recoveredAnnotationPoint = mapper.annotationPoint(
+                        from: recoveredDisplayPoint
+                    )
+
+                    #expect(abs(recoveredAnnotationPoint.x - annotationPoint.x) < 1e-9)
+                    #expect(abs(recoveredAnnotationPoint.y - annotationPoint.y) < 1e-9)
+                }
+            }
+        }
+    }
+
     @Test("distance annotations report original source pixels for every EXIF orientation")
     func sourcePixelDistanceAcrossOrientations() throws {
         for orientation in DisplayImageTransform.Orientation.allCases {

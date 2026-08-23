@@ -91,7 +91,9 @@ an implementation-support statement, not a claim of completed manual round trips
 Bridge, Photo Mechanic, or every supported browsing/export format.
 The current SwiftExif boundary exposes XMP language alternatives as `x-default` only; Photo Agent
 does not yet claim lossless editing of non-default `rdf:Alt` translations, and the shipped Headline/
-Title compatibility mapping remains in place until that dependency model is extended.
+Title compatibility read fallback remains in place until that dependency model is extended.
+Headline writes are already independent: they do not create, clear, or replace `dc:title` or IIM
+Object Name.
 
 ### Face Recognition
 

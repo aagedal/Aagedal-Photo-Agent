@@ -62,10 +62,12 @@ Command:
 xcodebuild test \
   -scheme "Aagedal Photo Agent Tests" \
   -destination "platform=macOS" \
-  -only-testing:"Aagedal Photo Agent Tests/AnalysisCaseTests"
+  -only-testing:"Aagedal Photo Agent Tests/AnalysisCaseTests" \
+  -only-testing:"Aagedal Photo Agent Tests/AnalysisReportSnapshotTests" \
+  -only-testing:"Aagedal Photo Agent Tests/AnalysisEvidenceJPEGRendererTests"
 ```
 
-Result: 29 tests passed in 1 suite.
+Result: 78 tests passed in 3 suites.
 
 Coverage includes:
 
@@ -85,8 +87,13 @@ Coverage includes:
 - stable, unique finding-link insertion, removal, validation, and persistence round-trips.
 - source-frame move clamping, segment/bounds resize geometry, and handle/body targeting used by the
   Select tool.
+- full annotation-coordinate round-trips through all eight EXIF orientations, a straightened
+  Developed crop, and tall, wide, square, and offset fit-to-view containers;
+- immutable report display/source pixel bounds for a non-symmetric crop through all eight EXIF
+  orientations, including transposed display dimensions;
+- display-oriented evidence rendering and annotation placement for all eight EXIF orientations;
+- report export refusal after the source bytes change.
 
 ## Remaining Phase 4 work
 
-- Validate all orientations, representation changes, view sizes, reports, keyboard-only use, and
-  VoiceOver.
+- Validate keyboard-only use and VoiceOver.

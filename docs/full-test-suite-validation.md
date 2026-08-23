@@ -28,3 +28,17 @@ activated suites together, without failure or skip.
 
 This automated gate does not replace the separately listed manual external-tool, real-server,
 removable-volume, iCloud, accessibility, or older-binary downgrade drills.
+
+## Integrated follow-up — 2026-08-23
+
+After the Phase 4 orientation/report matrix, solar Phase 6 automation, and independent Headline
+write-boundary changes were combined, a fresh unfiltered arm64 macOS run passed all 1,357 logical
+tests and all 1,484 expanded executions. There were zero failures, skips, or expected failures;
+36 parameterized tests expanded to 163 argument runs. Xcode reported 42.629 seconds for the test
+operation. The result bundle for this development session is
+`/private/tmp/aagedal-3.0-integrated-tests/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.23_21-17-38-+0200.xcresult`.
+
+The metadata support generator, project-file plist lint, and `git diff --check` also passed after
+the planning-index and hands-on usability follow-up edits. The remaining release gates are still
+the explicitly manual, external-tool/server/device, second-architecture, and packaging checks in
+the detailed plans.
