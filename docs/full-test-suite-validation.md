@@ -50,3 +50,18 @@ guidance, and solar slider-cache changes, an unfiltered `test-without-building` 
 logical tests in 153 suites with zero failures. Swift Testing runtime was 41.524 seconds and Xcode's
 complete test operation took 43.253 seconds. The result bundle for this development session is
 `/tmp/aagedal-root-final-tests/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.23_21-52-26-+0200.xcresult`.
+
+## Deadline hierarchy integration follow-up — 2026-08-24
+
+After the Deadline information-hierarchy and authoritative Send-availability changes, an
+incremental application/test build plus the combined Deadline coordinator and solar calculator
+selection passed all 40 tests in 2 suites. An unfiltered `test-without-building` run then passed all
+1,368 logical tests in 153 suites with zero failures. Swift Testing runtime was 50.910 seconds and
+Xcode's complete test operation took 63.608 seconds. The result bundle for this development session
+is
+`/tmp/aagedal-deadline-hierarchy-tests/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.24_16-27-08-+0200.xcresult`.
+
+The run used the currently integrated worktree and therefore validates the Deadline UI/state
+projection together with the existing metadata, delivery, investigation, comparison, report, and
+solar suites. `git diff --check` also passed. The remaining manual and external release gates are
+unchanged.

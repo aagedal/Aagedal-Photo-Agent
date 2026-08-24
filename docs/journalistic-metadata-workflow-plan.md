@@ -883,7 +883,7 @@ and receipt evidence. Seventy-seven focused tests pass; see
 
 ### Deadline UI
 
-- [ ] Redesign the Deadline Workspace information hierarchy based on hands-on testing. Make the
+- [x] Redesign the Deadline Workspace information hierarchy based on hands-on testing. Make the
   selected profile, current phase, readiness summary, next required action, planned outputs, and
   Send eligibility understandable without knowledge of the internal preflight model; provide
   useful empty, partially configured, blocked, running, failed, and completed states.
@@ -931,6 +931,17 @@ blockers rather than late execution failures. Twenty-three combined tests pass; 
 [the live snapshot validation record](deadline-live-preflight-validation.md). Event-backed
 permission/reachability revisions and broader custom resource stores remain open; per-output size
 limits and honest estimate semantics are completed below.
+
+**Progress — 2026-08-24:** Deadline Workspace now presents the selected saved profile, one coherent
+current phase, readiness, next required action, Send eligibility, and planned outputs as distinct
+top-level concepts. Caption blockers lock Verify instead of marking both phases current. Empty,
+evaluating, partially configured/blocked, warning-ready, running, failed, cancelled, and completed
+delivery states provide state-specific guidance. The Send button and its explanatory copy share one
+execution-owned availability result, so stale preflight, blockers, unsupported write policy,
+missing exact source identities, active confirmation, and retained resumable work cannot acquire an
+optimistic UI label. Eighteen focused coordinator/workspace tests pass; see
+[the information-hierarchy validation record](deadline-information-hierarchy-validation.md).
+The separate first-use hands-on usability pass remains open.
 
 ### Verification
 

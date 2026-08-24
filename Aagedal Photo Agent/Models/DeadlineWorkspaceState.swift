@@ -164,6 +164,25 @@ nonisolated struct DeadlineWorkspaceState: Equatable, Sendable {
     let destinationSummary: String
     let nextIssue: DeadlinePreflightIssue?
 
+    var selectedImageCount: Int { rows.count }
+
+    var readinessSummary: String {
+        "\(readyCount) of \(selectedImageCount) ready"
+    }
+
+    var currentStage: DeadlineWorkspaceStage {
+        DeadlineWorkspaceStage.allCases.first { status(for: $0) == .current } ?? .send
+    }
+
+    var nextRequiredAction: String {
+        if let nextIssue,
+           nextIssue.severity == .blocker || nextIssue.severity == .warning {
+            return nextIssue.message
+        }
+        if rows.isEmpty { return "Select at least one image for this Deadline profile." }
+        return "Review the planned outputs, then start Send."
+    }
+
     var nextRemediation: DeadlineRemediationDestination? {
         nextIssue.flatMap { issue in
             guard issue.severity == .blocker || issue.severity == .warning else { return nil }
@@ -222,22 +241,26 @@ nonisolated struct DeadlineWorkspaceState: Equatable, Sendable {
             return rows.isEmpty ? .current : .complete
         case .caption:
             if rows.isEmpty { return .locked }
-            let hasCaptionBlocker = rows.lazy.flatMap(\.issues).contains {
-                switch $0.code {
-                case .metadataValidation, .unresolvedVariable, .unresolvedStructuredVariable,
-                     .sidecarPending, .sidecarFailed:
-                    return $0.severity == .blocker
-                default:
-                    return false
-                }
-            }
             return hasCaptionBlocker ? .current : .complete
         case .verify:
             guard !rows.isEmpty else { return .locked }
+            if hasCaptionBlocker { return .locked }
             return blockerCount > 0 ? .current : .complete
         case .send:
             guard !rows.isEmpty else { return .locked }
             return blockerCount == 0 ? .current : .locked
+        }
+    }
+
+    private var hasCaptionBlocker: Bool {
+        rows.lazy.flatMap(\.issues).contains {
+            switch $0.code {
+            case .metadataValidation, .unresolvedVariable, .unresolvedStructuredVariable,
+                 .sidecarPending, .sidecarFailed:
+                return $0.severity == .blocker
+            default:
+                return false
+            }
         }
     }
 

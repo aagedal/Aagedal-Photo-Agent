@@ -14,7 +14,7 @@ tests, error states, accessibility, and a manual validation note.
 **Exit gate:** the project can make evidence claims and distribute every required dependency/fixture
 legally and reproducibly.
 
-- [ ] Define the exact next-release must/conditional scope from the release plan.
+- [x] Define the exact next-release must/conditional scope from the release plan.
 - [ ] Create architecture decision records for storage location, source identity, map imagery in
   reports, and named-version save semantics.
 - [ ] Build the redistributable analysis fixture corpus and provenance README.
@@ -28,6 +28,16 @@ legally and reproducibly.
 - [ ] Decide version treatment of decoder/process state and unparsed corrections.
 - [ ] Choose keyboard shortcuts after auditing existing shortcuts.
 - [x] Decide folder-local vs Application Support fallback UX.
+
+**Scope lock (2026-08-24):** The authoritative `README.md` in this directory now provides explicit
+**Must ship in 3.0**, **Conditional scope**, and **Explicitly out of scope** lists. None of the
+Phase 11 forensic analyzers has passed its research, licensing, calibration, and product-language
+gates, so those analyzers are excluded from the 3.0 release requirement and do not block the core
+investigation, comparison, or versioning release. The separately approved deterministic
+solar-position direction overlay is part of the OSINT/report scope; it is not approval for the
+broader sun/shadow consistency analyzer. Difference blend, non-MapKit online imagery/search,
+report signing, and C2PA attachment likewise remain deferred unless their documented conditional
+gates are completed before release-candidate scope freeze.
 
 **Deliverables:** decision records, fixture inventory, benchmarks, proof-of-concept screenshots, and
 updated conditional-scope decision.

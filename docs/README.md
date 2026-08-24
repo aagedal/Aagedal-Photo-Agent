@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-08-23
+**Last reviewed:** 2026-08-24
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -18,7 +18,7 @@ own scope, tasks, exit gates, and technical decisions.
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; automated orientation/view/report transform coverage expanded; release hardening remains | Close manual fixture/color, accessibility, display/HDR, performance, security, recovery, and packaging gates |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, Batch Rename, Deadline preflight/delivery, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline writes are now independent from localized Title, while release hardening and hands-on usability follow-up remain | Simplify Deadline and Caption/field customization, complete the localized `rdf:Alt` carrier decision, and perform external interoperability, real-server, device, and accessibility drills |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline writes are now independent from localized Title, while release hardening and hands-on usability follow-up remain | Complete unified Caption/field customization, the localized `rdf:Alt` carrier decision, and external interoperability, real-server, device, accessibility, and first-use Deadline drills |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, immutable report evidence, and the supported-arm64 automated boundary matrix are implemented; interactive release validation remains | Validate live and reported rays across actual map styles, camera interactions, rapid time changes, offline behavior, and accessibility paths |
 
 ## Default delivery order
@@ -111,6 +111,8 @@ Supporting documents:
   parameterized-execution, stress-repeat, and static release-gate evidence.
 - [Deadline maximum output-size validation](deadline-maximum-output-size-validation.md) — frozen
   per-file limits, honest estimate semantics, final-byte enforcement, and receipt evidence.
+- [Deadline information-hierarchy validation](deadline-information-hierarchy-validation.md) —
+  coherent phase/readiness/action/output presentation and execution-owned Send eligibility.
 - [Metadata field-operation contract validation](metadata-field-operation-contract-validation.md) —
   exhaustive stable-field mappings, explicit mutation semantics, canonical values, and round trips.
 - [Controlled editorial structures validation](metadata-controlled-structures-validation.md) —

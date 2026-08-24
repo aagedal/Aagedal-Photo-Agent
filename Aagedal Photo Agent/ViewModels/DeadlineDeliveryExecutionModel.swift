@@ -88,6 +88,57 @@ nonisolated enum DeadlineDeliveryExecutionError: Error, Equatable, LocalizedErro
     }
 }
 
+/// Authoritative reason the current Deadline batch can or cannot begin Send. The workspace uses
+/// this value for both the button state and its explanatory copy so presentation cannot drift from
+/// the execution gate.
+nonisolated enum DeadlineSendAvailability: Equatable, Sendable {
+    case ready(warningCount: Int)
+    case evaluating
+    case workflowBusy
+    case resumeRequired
+    case awaitingUserAction
+    case missingPreflight
+    case stalePreflight
+    case blocked(blockerCount: Int)
+    case unsupportedWriteStrategy
+    case emptySelection
+    case sourceIdentityUnavailable
+
+    var isEnabled: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+
+    var summary: String {
+        switch self {
+        case let .ready(warningCount):
+            return warningCount == 0
+                ? "Eligible to send"
+                : "Eligible after reviewing \(warningCount) warning\(warningCount == 1 ? "" : "s")"
+        case .evaluating:
+            return "Waiting for preflight to finish"
+        case .workflowBusy:
+            return "A delivery operation is in progress"
+        case .resumeRequired:
+            return "Resume or remove the retained delivery first"
+        case .awaitingUserAction:
+            return "Complete the open warning or confirmation step"
+        case .missingPreflight:
+            return "Run preflight for a saved profile and selection"
+        case .stalePreflight:
+            return "Run preflight again because the inputs changed"
+        case let .blocked(blockerCount):
+            return "Resolve \(blockerCount) blocker\(blockerCount == 1 ? "" : "s") before sending"
+        case .unsupportedWriteStrategy:
+            return "Choose staged-copy metadata writes in the profile"
+        case .emptySelection:
+            return "Select at least one image"
+        case .sourceIdentityUnavailable:
+            return "Run preflight again to capture exact source identities"
+        }
+    }
+}
+
 /// Injection boundary for UI composition. Production owns filesystem, renderer, transport, and
 /// repositories; tests can prove the UI lifecycle without touching any of those resources.
 @MainActor
@@ -179,15 +230,36 @@ final class DeadlineDeliveryExecutionModel {
         publication: DeadlinePreflightPublication?,
         isEvaluating: Bool
     ) -> Bool {
-        guard !isEvaluating, !isBusy, !canResume, canBeginNewBatch,
-              let input, let publication,
-              publication.token == input.revisionToken,
-              !publication.report.isBlocked,
-              input.request.profile.metadataWriteStrategy == .stagedCopies,
-              !input.request.items.isEmpty,
-              input.sourceRevisions.count == input.request.items.count,
-              input.sourceRevisions.allSatisfy({ $0 != nil }) else { return false }
-        return true
+        sendAvailability(
+            input: input,
+            publication: publication,
+            isEvaluating: isEvaluating
+        ).isEnabled
+    }
+
+    func sendAvailability(
+        input: DeadlineWorkspaceInput?,
+        publication: DeadlinePreflightPublication?,
+        isEvaluating: Bool
+    ) -> DeadlineSendAvailability {
+        if isEvaluating { return .evaluating }
+        if isBusy { return .workflowBusy }
+        if canResume { return .resumeRequired }
+        guard canBeginNewBatch else { return .awaitingUserAction }
+        guard let input, let publication else { return .missingPreflight }
+        guard publication.token == input.revisionToken else { return .stalePreflight }
+        guard !publication.report.isBlocked else {
+            return .blocked(blockerCount: publication.report.blockerCount)
+        }
+        guard input.request.profile.metadataWriteStrategy == .stagedCopies else {
+            return .unsupportedWriteStrategy
+        }
+        guard !input.request.items.isEmpty else { return .emptySelection }
+        guard input.sourceRevisions.count == input.request.items.count,
+              input.sourceRevisions.allSatisfy({ $0 != nil }) else {
+            return .sourceIdentityUnavailable
+        }
+        return .ready(warningCount: publication.report.warningCount)
     }
 
     func synchronizePreflight(_ publication: DeadlinePreflightPublication?) {

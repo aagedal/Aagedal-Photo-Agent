@@ -62,9 +62,22 @@ struct DeadlinePreflightCoordinatorTests {
             sourceRevisions: [revision]
         )
 
-        #expect(!model.sendIsEnabled(input: missing, publication: publication, isEvaluating: false))
+        #expect(model.sendAvailability(
+            input: missing,
+            publication: publication,
+            isEvaluating: false
+        ) == .sourceIdentityUnavailable)
+        #expect(model.sendAvailability(
+            input: exact,
+            publication: publication,
+            isEvaluating: false
+        ) == .ready(warningCount: 0))
+        #expect(model.sendAvailability(
+            input: exact,
+            publication: publication,
+            isEvaluating: true
+        ) == .evaluating)
         #expect(model.sendIsEnabled(input: exact, publication: publication, isEvaluating: false))
-        #expect(!model.sendIsEnabled(input: exact, publication: publication, isEvaluating: true))
         let unsupported = DeadlineWorkspaceInput(
             request: DeadlinePreflightRequest(
                 profile: DeadlineProfile(
@@ -77,11 +90,11 @@ struct DeadlinePreflightCoordinatorTests {
             developSnapshots: [nil],
             sourceRevisions: [revision]
         )
-        #expect(!model.sendIsEnabled(
+        #expect(model.sendAvailability(
             input: unsupported,
             publication: publication,
             isEvaluating: false
-        ))
+        ) == .unsupportedWriteStrategy)
         let stalePublication = DeadlinePreflightPublication(
             token: DeadlinePreflightRevisionToken(
                 selectionSourceRevision: 2,
@@ -95,7 +108,16 @@ struct DeadlinePreflightCoordinatorTests {
             report: report,
             wasCached: false
         )
-        #expect(!model.sendIsEnabled(input: exact, publication: stalePublication, isEvaluating: false))
+        #expect(model.sendAvailability(
+            input: exact,
+            publication: stalePublication,
+            isEvaluating: false
+        ) == .stalePreflight)
+        #expect(model.sendAvailability(
+            input: nil,
+            publication: nil,
+            isEvaluating: false
+        ) == .missingPreflight)
     }
 
     @Test("Delivery confirmation exposes every frozen output and consequence exactly")
@@ -199,11 +221,21 @@ struct DeadlinePreflightCoordinatorTests {
             prepared: fixture.prepared
         ))
         model.synchronizePreflight(fixture.publication)
+        #expect(model.sendAvailability(
+            input: fixture.input,
+            publication: fixture.publication,
+            isEvaluating: false
+        ) == .ready(warningCount: fixture.publication.report.warningCount))
         model.requestSend(input: fixture.input, publication: fixture.publication)
         guard case .awaitingWarningAcceptance = model.state else {
             Issue.record("Expected explicit warning acceptance")
             return
         }
+        #expect(model.sendAvailability(
+            input: fixture.input,
+            publication: fixture.publication,
+            isEvaluating: false
+        ) == .awaitingUserAction)
         model.acceptWarningsAndPrepare(input: fixture.input, publication: fixture.publication)
         try await Task.sleep(for: .milliseconds(20))
         #expect(!model.acceptedWarningIDs.isEmpty)
@@ -644,8 +676,15 @@ struct DeadlinePreflightCoordinatorTests {
         #expect(state.writeStrategySummary == "Write metadata to XMP sidecars")
         #expect(state.destinationSummary == "desk: /wire/{date}")
         #expect(state.status(for: .caption) == .current)
-        #expect(state.status(for: .verify) == .current)
+        #expect(state.status(for: .verify) == .locked)
         #expect(state.status(for: .send) == .locked)
+        #expect(state.selectedImageCount == 3)
+        #expect(state.readinessSummary == "1 of 3 ready")
+        #expect(state.currentStage == .caption)
+        #expect(DeadlineWorkspaceStage.allCases.count {
+            state.status(for: $0) == .current
+        } == 1)
+        #expect(state.nextRequiredAction == state.nextIssue?.message)
         #expect(state.nextIssue?.imageURL?.lastPathComponent == "a.jpg")
         #expect(state.nextRemediation == .caption(
             imageURL: root.appendingPathComponent("a.jpg"),

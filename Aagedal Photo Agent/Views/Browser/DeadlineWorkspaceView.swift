@@ -123,6 +123,8 @@ struct DeadlineWorkspaceView: View {
             Divider()
             statusStrip
             Divider()
+            overview
+            Divider()
             summary
             Divider()
             results
@@ -175,7 +177,7 @@ struct DeadlineWorkspaceView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Deadline Workspace")
                     .font(.title2.weight(.semibold))
-                Text(model.presentedState?.profileName ?? input?.request.profile.name ?? "Select a saved profile")
+                Text("Selected profile: \(model.presentedState?.profileName ?? input?.request.profile.name ?? "None")")
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -224,10 +226,46 @@ struct DeadlineWorkspaceView: View {
     }
 
     @ViewBuilder
+    private var overview: some View {
+        if let state = model.presentedState {
+            Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 9) {
+                GridRow {
+                    overviewLabel("Current phase", systemImage: "flag.checkered")
+                    Text(currentPhaseSummary(state))
+                        .fontWeight(.semibold)
+                        .accessibilityIdentifier("deadline.currentPhase")
+                }
+                GridRow {
+                    overviewLabel("Readiness", systemImage: "checklist")
+                    Text(state.readinessSummary)
+                        .accessibilityIdentifier("deadline.readinessSummary")
+                }
+                GridRow {
+                    overviewLabel("Next required action", systemImage: "arrow.right.circle")
+                    Text(nextRequiredAction(state))
+                        .lineLimit(2)
+                        .accessibilityIdentifier("deadline.nextRequiredAction")
+                }
+                GridRow {
+                    overviewLabel("Send eligibility", systemImage: "paperplane.circle")
+                    Text(sendAvailability.summary)
+                        .foregroundStyle(sendAvailability.isEnabled ? Color.green : Color.secondary)
+                        .accessibilityIdentifier("deadline.sendEligibility")
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.background)
+        }
+    }
+
+    @ViewBuilder
     private var summary: some View {
         if let state = model.presentedState {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 18) {
+                    Text("Planned Outputs")
+                        .font(.headline)
                     summaryValue("Ready", value: state.readyCount, color: .green)
                     summaryValue("Blockers", value: state.blockerCount, color: .red)
                     summaryValue("Warnings", value: state.warningCount, color: .orange)
@@ -327,11 +365,7 @@ struct DeadlineWorkspaceView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(!deliveryModel.sendIsEnabled(
-                    input: input,
-                    publication: model.publication,
-                    isEvaluating: model.isEvaluating
-                ))
+                .disabled(!sendAvailability.isEnabled)
             }
         }
         .padding(16)
@@ -388,6 +422,67 @@ struct DeadlineWorkspaceView: View {
             },
             set: { if !$0 { deliveryModel.cancelConfirmation() } }
         )
+    }
+
+    private var sendAvailability: DeadlineSendAvailability {
+        deliveryModel.sendAvailability(
+            input: input,
+            publication: model.publication,
+            isEvaluating: model.isEvaluating
+        )
+    }
+
+    private func overviewLabel(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .foregroundStyle(.secondary)
+            .frame(width: 150, alignment: .leading)
+    }
+
+    private func currentPhaseSummary(_ state: DeadlineWorkspaceState) -> String {
+        switch deliveryModel.state {
+        case .preparing:
+            return "Send — freezing plan"
+        case let .executing(progress):
+            return "Send — \(stageTitle(progress.stage))"
+        case .sent:
+            return "Send — completed"
+        case .failed:
+            return "Send — failed"
+        case .cancelled:
+            return "Send — cancelled"
+        case .awaitingWarningAcceptance:
+            return "Send — review warnings"
+        case .awaitingConfirmation:
+            return "Send — confirm outputs"
+        case .idle:
+            if model.isEvaluating { return "Verify — preflight running" }
+            return state.currentStage.rawValue
+        }
+    }
+
+    private func nextRequiredAction(_ state: DeadlineWorkspaceState) -> String {
+        if deliveryModel.canResume {
+            return "Resume the retained verified delivery, or remove it from Activity."
+        }
+        switch deliveryModel.state {
+        case .preparing:
+            return "Wait while the exact delivery plan is frozen."
+        case .executing:
+            return "Monitor delivery or cancel at the next safe file boundary."
+        case .sent:
+            return "Inspect the recorded receipt in Activity."
+        case .failed:
+            return "Review the failure and retained evidence in Activity."
+        case .cancelled:
+            return "Review the retained evidence before starting another delivery."
+        case .awaitingWarningAcceptance:
+            return "Review and accept this batch's warning identifiers, or cancel."
+        case .awaitingConfirmation:
+            return "Confirm the frozen outputs and destination, or cancel."
+        case .idle:
+            if model.isEvaluating { return "Wait for preflight to finish." }
+            return state.nextRequiredAction
+        }
     }
 
     private func stageTitle(_ stage: DeliveryWorkflowStage) -> String {
@@ -448,7 +543,7 @@ struct DeadlineWorkspaceView: View {
     }
 
     private func stageIcon(_ stage: DeadlineWorkspaceStage) -> String {
-        switch model.state?.status(for: stage) ?? (stage == .select ? .current : .locked) {
+        switch model.presentedState?.status(for: stage) ?? (stage == .select ? .current : .locked) {
         case .complete: return "checkmark.circle.fill"
         case .current: return "circle.inset.filled"
         case .locked: return "lock.circle"
@@ -456,7 +551,7 @@ struct DeadlineWorkspaceView: View {
     }
 
     private func stageColor(_ stage: DeadlineWorkspaceStage) -> Color {
-        switch model.state?.status(for: stage) ?? (stage == .select ? .current : .locked) {
+        switch model.presentedState?.status(for: stage) ?? (stage == .select ? .current : .locked) {
         case .complete: return .green
         case .current: return .accentColor
         case .locked: return .secondary
