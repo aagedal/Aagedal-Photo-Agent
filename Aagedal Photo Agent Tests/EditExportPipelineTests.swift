@@ -128,6 +128,10 @@ struct EditExportPipelineTests {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let expected = IPTCMetadata(
+            localizedTitles: [
+                LocalizedMetadataText(languageTag: "x-default", value: "Default title"),
+                LocalizedMetadataText(languageTag: "nb-NO", value: "Norsk tittel"),
+            ],
             creatorContactInfo: CreatorContactInfo(
                 addressLines: ["News House", "1 Example Street"],
                 city: "Oslo",
@@ -164,9 +168,48 @@ struct EditExportPipelineTests {
 
         #expect(await tracker.sidecarOverlayFailures.isEmpty)
         let actual = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        #expect(actual.localizedTitles == expected.localizedTitles)
         #expect(actual.creatorContactInfo == expected.creatorContactInfo)
         #expect(actual.locationsCreated == expected.locationsCreated)
         #expect(actual.locationsShown == expected.locationsShown)
+    }
+
+    @Test("renderItem applies an explicit localized Title clear reloaded from XMP sidecar")
+    func renderItemClearsLocalizedTitleFromSidecar() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        var planted = try SwiftExif.readMetadata(from: source)
+        planted.xmp = XMPData()
+        planted.xmp?.setValue(
+            .languageAlternative([
+                XMPLanguageAlternative(language: "x-default", value: "Stale title"),
+                XMPLanguageAlternative(language: "nb-NO", value: "Gammel tittel"),
+            ]),
+            namespace: XMPNamespace.dc,
+            property: "title"
+        )
+        try planted.write(to: source)
+
+        let sidecars = XMPSidecarService()
+        try sidecars.saveSidecar(metadata: IPTCMetadata(localizedTitles: []), for: source)
+        #expect(sidecars.loadSidecar(for: source)?.localizedTitles == [])
+
+        let outDir = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source,
+            cameraRaw: nil,
+            kind: .jpeg,
+            outputFolder: outDir,
+            folderURL: dir,
+            writeEngine: SwiftExifWriteEngine(),
+            failureTracker: tracker
+        )
+
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: rendered).localizedTitles == nil)
     }
 
     @Test("rendered Sony TIFF accepts sidecar IPTC without weakening ordinary RAW writes")
@@ -504,6 +547,62 @@ struct SidecarReconciliationTests {
         let a = IPTCMetadata(title: "T", description: "old")
         let b = IPTCMetadata(title: "T", description: "new")
         #expect(SidecarReconciliation.descriptiveFieldsDiffer(a, b))
+    }
+
+    @Test("modeled localized Title language or ordering changes are descriptive")
+    func localizedTitleChanges() {
+        let norwegian = LocalizedMetadataText(languageTag: "nb-NO", value: "Norsk")
+        let nynorsk = LocalizedMetadataText(languageTag: "nn", value: "Nynorsk")
+        let a = IPTCMetadata(localizedTitles: [norwegian, nynorsk])
+
+        #expect(!SidecarReconciliation.descriptiveFieldsDiffer(a, a))
+        #expect(SidecarReconciliation.descriptiveFieldsDiffer(
+            a,
+            IPTCMetadata(localizedTitles: [nynorsk, norwegian])
+        ))
+        #expect(SidecarReconciliation.descriptiveFieldsDiffer(
+            a,
+            IPTCMetadata(localizedTitles: [])
+        ))
+        #expect(!SidecarReconciliation.descriptiveFieldsDiffer(a, IPTCMetadata()))
+        #expect(SidecarReconciliation.descriptiveFieldsDiffer(
+            IPTCMetadata(),
+            IPTCMetadata(localizedTitles: [norwegian])
+        ))
+    }
+
+    @Test("legacy sidecar localized Title nil is a reconciliation wildcard")
+    func legacyLocalizedTitleDoesNotCreateConflict() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-sidecar-reconciliation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let imageURL = directory.appendingPathComponent("photo.jpg")
+        let sidecarURL = directory.appendingPathComponent("photo.xmp")
+        try Data().write(to: imageURL)
+        try Data().write(to: sidecarURL)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 200)],
+            ofItemAtPath: imageURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 100)],
+            ofItemAtPath: sidecarURL.path
+        )
+
+        let embedded = IPTCMetadata(
+            title: "Shared headline",
+            localizedTitles: [LocalizedMetadataText(languageTag: "nb-NO", value: "Norsk")]
+        )
+        let legacySidecar = IPTCMetadata(title: "Shared headline")
+
+        #expect(SidecarReconciliation.verdict(
+            imageURL: imageURL,
+            sidecarURL: sidecarURL,
+            embedded: embedded,
+            sidecar: legacySidecar
+        ) == .sidecarMaster)
     }
 
     @Test("GPS-only differences are ignored — GPS isn't descriptive")

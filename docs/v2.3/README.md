@@ -419,6 +419,14 @@ These decisions should be resolved during F0 before their dependent phase begins
 - [delivery-plan.md](delivery-plan.md) — phases, task breakdown, test strategy, risks, and
   release checklist.
 - [wireframes.md](wireframes.md) — low-fidelity layouts and interaction states.
+- [ADR-001: Analysis and named-version storage locations](adr-001-analysis-version-storage.md) —
+  folder-local app-private JSON, narrow Application Support fallback, and atomic recovery.
+- [ADR-002: Exact source revision identity and reassociation](adr-002-source-revision-identity.md) —
+  authoritative SHA-256 binding, discovery hints, and changed-source boundaries.
+- [ADR-003: Named Develop version save and Primary promotion semantics](adr-003-named-version-save-semantics.md) —
+  source-bound snapshots, durable flushes, and recovery-first verified XMP promotion.
+- [ADR-004: Map evidence in exported reports](adr-004-map-report-evidence.md) — schematic report
+  evidence without persisted or embedded provider tiles.
 
 ## Change-control rule
 

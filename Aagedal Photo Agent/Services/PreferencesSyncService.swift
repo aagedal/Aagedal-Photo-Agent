@@ -47,6 +47,7 @@ final class PreferencesSyncService {
         UserDefaultsKeys.addJobIdToKeywords,
         UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords,
         UserDefaultsKeys.hiddenIPTCMetadataFields,
+        UserDefaultsKeys.iptcMetadataFieldOrder,
         // Face recognition
         UserDefaultsKeys.faceCleanupPolicy,
         UserDefaultsKeys.faceMinConfidence,

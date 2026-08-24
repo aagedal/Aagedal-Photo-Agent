@@ -10,6 +10,7 @@ nonisolated enum MetadataDictKey {
     static let sourceFile = "SourceFile"
     static let headline = "Headline"
     static let title = "Title"
+    static let localizedTitle = "LocalizedTitle"
     static let objectName = "ObjectName"
     static let description = "Description"
     static let captionAbstract = "Caption-Abstract"
@@ -141,6 +142,15 @@ nonisolated func parseFirstString(_ value: Any?) -> String? {
     if let str = value as? String { return str }
     if let arr = value as? [String] { return arr.first }
     return nil
+}
+
+/// Decode the ordered language-tagged dictionary shape emitted by `SwiftExifDictAdapter`.
+nonisolated func parseLocalizedMetadataText(_ value: Any?) -> [LocalizedMetadataText]? {
+    guard let items = value as? [[String: String]] else { return nil }
+    return items.compactMap { item in
+        guard let languageTag = item["languageTag"], let text = item["value"] else { return nil }
+        return LocalizedMetadataText(languageTag: languageTag, value: text)
+    }
 }
 
 nonisolated func parseIntValue(_ value: Any?) -> Int? {
@@ -1240,9 +1250,10 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
     }()
 
     return IPTCMetadata(
-        title: dict[MetadataDictKey.headline] as? String
-            ?? dict[MetadataDictKey.title] as? String
-            ?? dict[MetadataDictKey.objectName] as? String,
+        // Headline is not dc:title or the legacy IIM Object Name. Do not reintroduce the old
+        // scalar fallback: it made a localized Title look like an editable Headline.
+        title: dict[MetadataDictKey.headline] as? String,
+        localizedTitles: parseLocalizedMetadataText(dict[MetadataDictKey.localizedTitle]),
         description: dict[MetadataDictKey.description] as? String
             ?? dict[MetadataDictKey.captionAbstract] as? String,
         extendedDescription: dict[MetadataDictKey.extDescrAccessibility] as? String,

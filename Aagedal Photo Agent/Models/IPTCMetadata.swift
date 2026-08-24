@@ -1871,9 +1871,29 @@ nonisolated struct IPTCGenreCode: Hashable, Sendable {
     }
 }
 
+/// One ordered language-tagged value from an XMP `rdf:Alt` property.
+///
+/// The language tag is stored verbatim because XMP permits `x-default` in addition to BCP 47
+/// tags. Order is significant for a lossless read-modify-write even though consumers normally
+/// select by language.
+nonisolated struct LocalizedMetadataText: Codable, Sendable, Equatable {
+    var languageTag: String
+    var value: String
+
+    init(languageTag: String, value: String) {
+        self.languageTag = languageTag
+        self.value = value
+    }
+}
+
 nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     // Priority fields (always visible)
+    /// Editorial Headline (`photoshop:Headline` / IIM 2:105), retained under the shipped `title`
+    /// JSON/API key for compatibility. This is intentionally not Dublin Core Title.
     var title: String?
+    /// Ordered Dublin Core Title alternatives. `nil` means the caller did not model/edit this
+    /// property and existing carrier data must remain untouched; `[]` is an explicit clear.
+    var localizedTitles: [LocalizedMetadataText]?
     var description: String?
     var extendedDescription: String?
     var keywords: [String]
@@ -1945,7 +1965,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     // Exclude cameraRaw and exifOrientation from JSON sidecar serialization.
     // These are sourced exclusively from XMP (embedded in image or XMP sidecar file).
     enum CodingKeys: String, CodingKey, CaseIterable {
-        case title, description, extendedDescription, keywords, personShown
+        case title, localizedTitles, description, extendedDescription, keywords, personShown
         case organisationsShownNames, organisationsShownCodes
         case digitalSourceType, urgency, sceneCodes, subjectCodes, mediaTopics, genres
         case creator, creators, creatorJobTitle, descriptionWriter, credit, copyright
@@ -1961,6 +1981,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
 
     init(
         title: String? = nil,
+        localizedTitles: [LocalizedMetadataText]? = nil,
         description: String? = nil,
         extendedDescription: String? = nil,
         keywords: [String] = [],
@@ -2006,6 +2027,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         exifOrientation: Int? = nil
     ) {
         self.title = title
+        self.localizedTitles = localizedTitles
         self.description = description
         self.extendedDescription = extendedDescription
         self.keywords = keywords
@@ -2053,6 +2075,10 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         title = try container.decodeIfPresent(String.self, forKey: .title)
+        localizedTitles = try container.decodeIfPresent(
+            [LocalizedMetadataText].self,
+            forKey: .localizedTitles
+        )
         description = try container.decodeIfPresent(String.self, forKey: .description)
         extendedDescription = try container.decodeIfPresent(String.self, forKey: .extendedDescription)
         keywords = (try container.decodeIfPresent([String].self, forKey: .keywords) ?? []).uniqued()
@@ -2126,6 +2152,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(localizedTitles, forKey: .localizedTitles)
         try container.encodeIfPresent(description, forKey: .description)
         try container.encodeIfPresent(extendedDescription, forKey: .extendedDescription)
         try container.encode(keywords, forKey: .keywords)
@@ -2190,6 +2217,7 @@ extension IPTCMetadata {
     /// Returns true if any user-facing IPTC fields differ between self and another metadata instance.
     func hasIPTCDifferences(from other: IPTCMetadata) -> Bool {
         title != other.title
+            || localizedTitles != other.localizedTitles
             || description != other.description
             || extendedDescription != other.extendedDescription
             || keywords != other.keywords
@@ -2234,6 +2262,8 @@ extension IPTCMetadata {
     /// neither authoritatively on read nor as an overwrite source on export.
     nonisolated var hasDescriptiveContent: Bool {
         if let title, !title.isEmpty { return true }
+        // Non-nil is authoritative even when empty: [] is an explicit localized-Title clear.
+        if localizedTitles != nil { return true }
         if let description, !description.isEmpty { return true }
         if let extendedDescription, !extendedDescription.isEmpty { return true }
         if !keywords.isEmpty { return true }
@@ -2285,6 +2315,11 @@ extension IPTCMetadata {
         var result = self
 
         result.title = record.title
+        // Localized Title was not modeled by legacy sidecars. Preserve embedded alternatives when
+        // the record has nil; only a modeled non-nil value (including explicit []) is authoritative.
+        if let localizedTitles = record.localizedTitles {
+            result.localizedTitles = localizedTitles
+        }
         result.description = record.description
         result.extendedDescription = record.extendedDescription
         result.keywords = record.keywords
@@ -2344,6 +2379,7 @@ extension IPTCMetadata {
         var result = self
 
         if let value = override.title, !value.isEmpty { result.title = value }
+        if let value = override.localizedTitles { result.localizedTitles = value }
         if let value = override.description, !value.isEmpty { result.description = value }
         if let value = override.extendedDescription, !value.isEmpty { result.extendedDescription = value }
         if !override.keywords.isEmpty { result.keywords = override.keywords }

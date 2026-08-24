@@ -182,7 +182,8 @@ nonisolated struct DescriptiveMetadataWriteBoundary: Sendable {
         from metadata: IPTCMetadata,
         semantics: DescriptiveMetadataWriteSemantics
     ) -> StructuredWriteData {
-        let hasStructuredContent = metadata.creatorContactInfo?.isEmpty == false
+        let hasStructuredContent = metadata.localizedTitles != nil
+            || metadata.creatorContactInfo?.isEmpty == false
             || metadata.locationsCreated.contains(where: { !$0.isEmpty })
             || metadata.locationsShown.contains(where: { !$0.isEmpty })
             || !metadata.imageSuppliers.isEmpty

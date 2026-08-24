@@ -390,11 +390,27 @@ final class SettingsViewModel {
 
     var hiddenIPTCMetadataFields: Set<MetadataFieldID> {
         didSet {
+            let existing = UserDefaults.standard.stringArray(
+                forKey: UserDefaultsKeys.hiddenIPTCMetadataFields
+            )
             UserDefaults.standard.set(
-                hiddenIPTCMetadataFields.map(\.rawValue).sorted(),
+                MetadataFieldID.persistedHiddenEditorFields(
+                    hiddenIPTCMetadataFields,
+                    preserving: existing
+                ),
                 forKey: UserDefaultsKeys.hiddenIPTCMetadataFields
             )
         }
+    }
+
+    var orderedIPTCMetadataFields: [MetadataFieldID] {
+        didSet {
+            MetadataFieldID.saveEditorFieldOrder(orderedIPTCMetadataFields)
+        }
+    }
+
+    var visibleIPTCMetadataFieldsInOrder: [MetadataFieldID] {
+        orderedIPTCMetadataFields.filter(isIPTCMetadataFieldVisible)
     }
 
     func isIPTCMetadataFieldVisible(_ field: MetadataFieldID) -> Bool {
@@ -416,6 +432,43 @@ final class SettingsViewModel {
 
     func resetIPTCMetadataFieldVisibility() {
         hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(storedRawValues: nil)
+    }
+
+    func moveIPTCMetadataField(_ field: MetadataFieldID, by offset: Int) {
+        guard let source = orderedIPTCMetadataFields.firstIndex(of: field) else { return }
+        let destination = min(max(0, source + offset), orderedIPTCMetadataFields.count - 1)
+        guard source != destination else { return }
+        orderedIPTCMetadataFields.remove(at: source)
+        orderedIPTCMetadataFields.insert(field, at: destination)
+    }
+
+    /// Drag/drop uses one stable contract in both directions: place `field` immediately before
+    /// `target`. Resolve the target again after removal so a downward move cannot cross it.
+    static func iptcMetadataFieldOrder(
+        _ order: [MetadataFieldID],
+        moving field: MetadataFieldID,
+        before target: MetadataFieldID
+    ) -> [MetadataFieldID] {
+        guard field != target,
+              let source = order.firstIndex(of: field),
+              order.contains(target) else { return order }
+        var result = order
+        result.remove(at: source)
+        guard let destination = result.firstIndex(of: target) else { return order }
+        result.insert(field, at: destination)
+        return result
+    }
+
+    func moveIPTCMetadataField(_ field: MetadataFieldID, before target: MetadataFieldID) {
+        orderedIPTCMetadataFields = Self.iptcMetadataFieldOrder(
+            orderedIPTCMetadataFields,
+            moving: field,
+            before: target
+        )
+    }
+
+    func resetIPTCMetadataFieldOrder() {
+        orderedIPTCMetadataFields = MetadataFieldID.editorFields
     }
 
     func isDevelopSliderVisible(_ slider: DevelopSlider) -> Bool {
@@ -960,6 +1013,7 @@ final class SettingsViewModel {
                 forKey: UserDefaultsKeys.hiddenIPTCMetadataFields
             )
         )
+        self.orderedIPTCMetadataFields = MetadataFieldID.loadEditorFieldOrder()
 
         self.defaultExternalEditor = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor) ?? ""
         let editDestinationRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultEditDestination)

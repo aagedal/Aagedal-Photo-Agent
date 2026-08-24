@@ -90,8 +90,12 @@ nonisolated struct DeliveryVerifiedStagedBatch: Equatable, Sendable {
                     itemIndex: item.itemIndex
                 )
             }
+            let applicableVerificationFields = IPTCMetadataVerifier.applicableFields(
+                plan.renderAndWrite.verificationFields,
+                expected: item.resolvedMetadata
+            )
             guard staged.stagedRelativePath == item.stagedRelativePath,
-                  staged.checkedFields == plan.renderAndWrite.verificationFields,
+                  staged.checkedFields == applicableVerificationFields,
                   staged.mismatchedFields.isEmpty,
                   staged.failure == nil,
                   let byteCount = staged.stagedByteCount,

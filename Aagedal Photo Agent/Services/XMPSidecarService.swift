@@ -3,6 +3,7 @@ import SwiftExif
 import os
 
 nonisolated private let xmpLog = Logger(subsystem: "com.aagedal.photo-agent", category: "XMPSidecarService")
+nonisolated private let localizedTitleClearedProperty = "LocalizedTitleCleared"
 
 /// Reads and writes Adobe-compatible `.xmp` sidecars for RAW (and any file we don't embed into).
 ///
@@ -81,9 +82,19 @@ struct XMPSidecarService: Sendable {
         }
 
         if let cameraRaw = metadata.cameraRaw, !cameraRaw.isEmpty {
-            let editOnly = IPTCMetadata(cameraRaw: cameraRaw, exifOrientation: metadata.exifOrientation)
+            let editOnly = IPTCMetadata(
+                localizedTitles: [],
+                cameraRaw: cameraRaw,
+                exifOrientation: metadata.exifOrientation
+            )
             do {
-                try saveSidecar(metadata: editOnly, for: imageURL)
+                // Removing descriptive metadata is not a pending Title-clear edit. Suppress the
+                // tombstone so the remaining develop-only sidecar stays non-descriptive.
+                try saveSidecar(
+                    metadata: editOnly,
+                    for: imageURL,
+                    writesLocalizedTitleClearTombstone: false
+                )
             } catch {
                 xmpLog.error("Failed to save stripped XMP sidecar for \(imageURL.lastPathComponent): \(error.localizedDescription, privacy: .public)")
             }
@@ -97,11 +108,37 @@ struct XMPSidecarService: Sendable {
     }
 
     nonisolated func saveSidecar(metadata: IPTCMetadata, for imageURL: URL) throws {
+        try saveSidecar(
+            metadata: metadata,
+            for: imageURL,
+            writesLocalizedTitleClearTombstone: true
+        )
+    }
+
+    nonisolated private func saveSidecar(
+        metadata: IPTCMetadata,
+        for imageURL: URL,
+        writesLocalizedTitleClearTombstone: Bool
+    ) throws {
         let url = sidecarURL(for: imageURL)
         // Merge into the existing sidecar so unknown third-party XMP (namespaces / properties we
         // don't model) is preserved by design — XMPData round-trips every property it parsed.
         var xmp = (try? XMPSidecar.read(from: url)) ?? XMPData()
         XMPDataBuilder.applyDescriptive(metadata, into: &xmp)
+        if let localizedTitles = metadata.localizedTitles {
+            if localizedTitles.isEmpty, writesLocalizedTitleClearTombstone {
+                xmp.setValue(
+                    .simple("True"),
+                    namespace: XMPDataBuilder.aaphotoNamespace,
+                    property: localizedTitleClearedProperty
+                )
+            } else {
+                xmp.removeValue(
+                    namespace: XMPDataBuilder.aaphotoNamespace,
+                    property: localizedTitleClearedProperty
+                )
+            }
+        }
         // nil cameraRaw clears the crs block (matches the prior "nil = clear" contract).
         XMPDataBuilder.applyCameraRaw(
             metadata.cameraRaw,
@@ -152,7 +189,15 @@ struct XMPSidecarService: Sendable {
     nonisolated private func parseMetadata(from xmp: XMPData, imageAspect: () -> Double?) -> IPTCMetadata {
         var dict = ImageMetadata(xmp: xmp).asMetadataDict()
         fillXMPOnlyGaps(&dict, xmp: xmp, imageAspect: imageAspect)
-        return iptcMetadataFromDict(dict)
+        var metadata = iptcMetadataFromDict(dict)
+        if metadata.localizedTitles == nil,
+           xmp.simpleValue(
+               namespace: XMPDataBuilder.aaphotoNamespace,
+               property: localizedTitleClearedProperty
+           ) == "True" {
+            metadata.localizedTitles = []
+        }
+        return metadata
     }
 
     /// `asMetadataDict` sources Orientation, GPS and the IPTC date only from the EXIF segment, which

@@ -30,11 +30,11 @@ struct DeliveryReceiptAssemblerTests {
         #expect(receipt.items.map(\.deliveredFilename) == fixture.plan.items.map(\.outputFilename))
         #expect(receipt.items[0].deliveredSHA256 == fixture.staging.items[0].stagedSHA256)
         #expect(receipt.items[0].sourceIdentity.sha256 == fixture.plan.items[0].sourceRevision.sha256)
-        #expect(receipt.items.allSatisfy {
-            $0.metadataVerification.outcome == .verified
-                && $0.metadataVerification.issueIdentifiers.isEmpty
-                && $0.metadataVerification.controlledFieldIdentifiers
-                    == fixture.plan.renderAndWrite.verificationFields
+        #expect(receipt.items.indices.allSatisfy { index in
+            receipt.items[index].metadataVerification.outcome == .verified
+                && receipt.items[index].metadataVerification.issueIdentifiers.isEmpty
+                && receipt.items[index].metadataVerification.controlledFieldIdentifiers
+                    == fixture.staging.items[index].checkedFields
         })
         #expect(receipt.acceptedWarningIdentifiers == fixture.plan.acceptedWarningIDs)
         for index in receipt.items.indices {
@@ -494,7 +494,10 @@ private struct ReceiptAssemblyFixture {
                     // C2PA carriage is deliberately non-gating terminal evidence.
                     c2paConsequence: .changed
                 ),
-                checkedFields: fixturePlan.renderAndWrite.verificationFields,
+                checkedFields: IPTCMetadataVerifier.applicableFields(
+                    fixturePlan.renderAndWrite.verificationFields,
+                    expected: item.resolvedMetadata
+                ),
                 mismatchedFields: [],
                 failure: nil
             )

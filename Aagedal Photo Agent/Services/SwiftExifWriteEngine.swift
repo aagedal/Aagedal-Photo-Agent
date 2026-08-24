@@ -394,7 +394,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         }
 
         // Sync supported IIM fields into XMP without treating legacy Object Name as Headline.
-        // dc:title is a separate localized field and is not editable by this scalar UI.
+        // dc:title is a separate localized field and is never derived from scalar Headline.
         syncIPTCToXMPPreservingDCTitle(&metadata)
         normalizeEditorialRoleXMP(for: fields, metadata: &metadata)
         normalizeDateCreatedXMP(for: fields, metadata: &metadata)
@@ -411,11 +411,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     }
 
     /// SwiftExif's general IIM→XMP synchronizer maps Object Name (2:05) to `dc:title`.
-    /// Photo Agent does not currently expose localized Title editing, so a Headline or unrelated
-    /// write must neither synthesize `dc:title` nor replace its current x-default projection.
-    ///
-    /// This protects the value SwiftExif exposes. Non-default rdf:Alt entries still require a
-    /// richer upstream carrier model before the complete localized value can round-trip.
+    /// A Headline or unrelated write must neither synthesize `dc:title` nor replace any of its
+    /// language alternatives. The local SwiftExif carrier retains the complete ordered rdf:Alt.
     private func syncIPTCToXMPPreservingDCTitle(_ metadata: inout ImageMetadata) {
         let title = metadata.xmp?.value(namespace: XMPNamespace.dc, property: "title")
         metadata.syncIPTCToXMP()

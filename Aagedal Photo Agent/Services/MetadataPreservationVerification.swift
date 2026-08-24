@@ -527,6 +527,11 @@ nonisolated enum MetadataPreservationSnapshotBuilder {
         switch value {
         case .simple(let value): return "simple:\(framedString(value))"
         case .langAlternative(let value): return "lang:\(framedString(value))"
+        case .languageAlternative(let values):
+            let framedValues = values.map {
+                framedString($0.language) + framedString($0.value)
+            }.joined()
+            return "langs:\(framedValues)"
         case .array(let values):
             return "array:\(values.map(framedString).joined())"
         case .structure(let fields):

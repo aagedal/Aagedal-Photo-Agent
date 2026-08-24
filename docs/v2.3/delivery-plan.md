@@ -15,19 +15,33 @@ tests, error states, accessibility, and a manual validation note.
 legally and reproducibly.
 
 - [x] Define the exact next-release must/conditional scope from the release plan.
-- [ ] Create architecture decision records for storage location, source identity, map imagery in
-  reports, and named-version save semantics.
+- [x] Create architecture decision records for [storage location](adr-001-analysis-version-storage.md),
+  [source identity](adr-002-source-revision-identity.md),
+  [map imagery in reports](adr-004-map-report-evidence.md), and
+  [named-version save semantics](adr-003-named-version-save-semantics.md).
 - [ ] Build the redistributable analysis fixture corpus and provenance README.
-- [ ] Inventory existing comparison/loupe/viewport code suitable for extraction.
+- [x] Inventory existing comparison/loupe/viewport code suitable for extraction; see
+  [Existing components to reuse](README.md#existing-components-to-reuse).
 - [ ] Benchmark current preview, RAW decode, scopes, hashing, and two-image memory use.
 - [ ] Decide target hardware tiers and concrete memory/latency budgets.
-- [ ] Prototype raw metadata graph extraction without flattening conflicting namespaces.
-- [ ] Prototype one compression/residual view and document benign counterexamples.
+- [x] Prototype raw metadata graph extraction without flattening conflicting namespaces; see the
+  [Phase 2 analysis-shell validation](phase-2-analysis-shell-validation.md).
+- [x] Prototype one compression/residual view and document benign counterexamples; see the
+  [Phase 3 pixel-inspection validation](phase-3-pixel-inspection-validation.md).
 - [x] Verify MapKit satellite snapshot/report redistribution and attribution requirements.
 - [ ] Evaluate candidate on-device AI-origin models and licenses; record a ship/no-ship decision.
-- [ ] Decide version treatment of decoder/process state and unparsed corrections.
-- [ ] Choose keyboard shortcuts after auditing existing shortcuts.
+- [x] Decide version treatment of decoder/process state and unparsed corrections; see the
+  [implemented source-bound snapshot policy](comparison-and-versions.md#implemented-source-bound-snapshot-policy).
+- [x] Choose keyboard shortcuts after auditing existing shortcuts; see the
+  [accessibility and keyboard audit](../accessibility-keyboard-audit-validation.md).
 - [x] Decide folder-local vs Application Support fallback UX.
+
+**Implementation reconciliation (2026-08-24):** ADR-001 through ADR-004 now record all four
+required architecture decisions. The shipped implementation and dated validation notes also
+provide the Phase 0 component inventory, namespace-preserving raw metadata extraction, bounded
+compression-residual prototype and benign counterexamples, source-bound decoder/unparsed-correction
+policy, and shortcut-conflict audit linked above. This reconciliation does not claim the still-open
+fixture, benchmark, target-hardware, model/licensing, or manual-validation gates.
 
 **Scope lock (2026-08-24):** The authoritative `README.md` in this directory now provides explicit
 **Must ship in 3.0**, **Conditional scope**, and **Explicitly out of scope** lists. None of the
@@ -229,8 +243,10 @@ Only run this phase for gates approved in Phase 0.
 
 **Exit gate:** all release criteria in `README.md` pass.
 
-- [ ] Full existing test suite.
-- [ ] New fixture-driven unit/render/persistence suites.
+- [x] Full existing test suite; see the current-source follow-up in
+  [full-test-suite validation](../full-test-suite-validation.md#metadata-workflow-and-planning-integration-follow-up--2026-08-24).
+- [x] New fixture-driven unit/render/persistence suites; included in the same fresh, unfiltered
+  [full-suite evidence](../full-test-suite-validation.md#metadata-workflow-and-planning-integration-follow-up--2026-08-24).
 - [ ] Performance and memory budgets on target hardware tiers.
 - [ ] Profile representative two-RAW comparison sessions on every target hardware tier.
 - [ ] Thread Sanitizer/strict concurrency review for case, catalog, runner, and render coordination.

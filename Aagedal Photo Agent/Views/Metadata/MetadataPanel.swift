@@ -1017,7 +1017,6 @@ struct MetadataPanel: View {
                                 Divider()
                                 priorityFieldsSection
                                 classificationSection
-                                additionalFieldsSection
                                 Divider()
                                 gpsSection
                                     .id("gps")
@@ -1360,7 +1359,29 @@ struct MetadataPanel: View {
     private var editableMetadataFields: some View {
         let _ = settingsViewModel.quickListVersion
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.title) {
+        ForEach(settingsViewModel.visibleIPTCMetadataFieldsInOrder, id: \.self) { field in
+            editablePrimaryMetadataField(field)
+            editableAdditionalMetadataField(field)
+        }
+
+        if viewModel.isBatchEdit {
+            Text("Creator contact and structured locations can be edited one image at a time.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("metadata.structuredEditorial.batchNotice")
+        } else {
+            StructuredEditorialMetadataEditor(
+                creatorContactInfo: $viewModel.editingMetadata.creatorContactInfo,
+                locationsCreated: $viewModel.editingMetadata.locationsCreated,
+                locationsShown: $viewModel.editingMetadata.locationsShown,
+                onChange: { viewModel.markChanged() }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func editablePrimaryMetadataField(_ field: MetadataFieldID) -> some View {
+        if field == .title {
             EditableTextField(
                 label: "Headline",
                 text: Binding(
@@ -1380,7 +1401,7 @@ struct MetadataPanel: View {
             .metadataField(.headline)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.description) {
+        if field == .description {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text("Description")
@@ -1428,7 +1449,7 @@ struct MetadataPanel: View {
             .metadataField(.description)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.extendedDescription) {
+        if field == .extendedDescription {
             DisclosureGroup(isExpanded: $showExtendedDescription) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
@@ -1480,27 +1501,27 @@ struct MetadataPanel: View {
             .accessibilityLabel("Extended Description (Accessibility), distinct from the editorial caption")
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.keywords) {
+        if field == .keywords {
             keywordsEditor
                 .metadataField(.keywords)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.personShown) {
+        if field == .personShown {
             personShownEditor
                 .metadataField(.personShown)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.organisationShownName) {
+        if field == .organisationShownName {
             organisationShownNameEditor
                 .metadataField(.organisationShownName)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.organisationShownCode) {
+        if field == .organisationShownCode {
             organisationShownCodeEditor
                 .metadataField(.organisationShownCode)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.copyright) {
+        if field == .copyright {
             EditableTextField(
                 label: "Copyright",
                 text: Binding(
@@ -1528,7 +1549,7 @@ struct MetadataPanel: View {
             .metadataField(.copyright)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.creator) {
+        if field == .creator {
             OrderedCreatorsEditor(
                 creators: $viewModel.editingMetadata.creators,
                 differs: viewModel.fieldDiffers(\.creator),
@@ -1548,21 +1569,7 @@ struct MetadataPanel: View {
             .metadataField(.creator)
         }
 
-        if viewModel.isBatchEdit {
-            Text("Creator contact and structured locations can be edited one image at a time.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("metadata.structuredEditorial.batchNotice")
-        } else {
-            StructuredEditorialMetadataEditor(
-                creatorContactInfo: $viewModel.editingMetadata.creatorContactInfo,
-                locationsCreated: $viewModel.editingMetadata.locationsCreated,
-                locationsShown: $viewModel.editingMetadata.locationsShown,
-                onChange: { viewModel.markChanged() }
-            )
-        }
-
-        if settingsViewModel.isIPTCMetadataFieldVisible(.rightsUsageTerms) {
+        if field == .rightsUsageTerms {
             EditableTextField(
                 label: "Rights Usage Terms",
                 text: Binding(
@@ -1580,7 +1587,7 @@ struct MetadataPanel: View {
             .metadataField(.rightsUsageTerms)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.webStatementOfRights) {
+        if field == .webStatementOfRights {
             EditableTextField(
                 label: "Web Statement of Rights",
                 text: Binding(
@@ -1598,7 +1605,7 @@ struct MetadataPanel: View {
             .metadataField(.webStatementOfRights)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.digitalImageGUID) {
+        if field == .digitalImageGUID {
             EditableTextField(
                 label: "Digital Image GUID",
                 text: Binding(
@@ -1616,7 +1623,7 @@ struct MetadataPanel: View {
             .metadataField(.digitalImageGUID)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.imageSupplierImageID) {
+        if field == .imageSupplierImageID {
             EditableTextField(
                 label: "Image Supplier Image ID",
                 text: Binding(
@@ -1634,7 +1641,23 @@ struct MetadataPanel: View {
             .metadataField(.imageSupplierImageID)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.jobId) {
+        if field == .imageSupplier {
+            if viewModel.isBatchEdit {
+                BatchImageSupplierMetadataEditor(
+                    selection: viewModel.batchListSelectionSummary.imageSuppliers,
+                    onMutation: { mutation in
+                        try? viewModel.setBatchImageSupplierMutation(mutation)
+                    }
+                )
+            } else {
+                ImageSupplierMetadataEditor(
+                    suppliers: $viewModel.editingMetadata.imageSuppliers,
+                    onChange: { viewModel.markChanged() }
+                )
+            }
+        }
+
+        if field == .jobId {
             EditableTextField(
                 label: "Job ID",
                 text: Binding(
@@ -1665,7 +1688,7 @@ struct MetadataPanel: View {
             .metadataField(.jobId)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.dateCreated) {
+        if field == .dateCreated {
             EditorialDateCreatedEditor(
                 lexicalValue: Binding(
                     get: { viewModel.editingMetadata.dateCreated ?? "" },
@@ -2031,19 +2054,8 @@ struct MetadataPanel: View {
     // MARK: - Remaining Metadata Fields
 
     @ViewBuilder
-    private var additionalFieldsSection: some View {
-        if MetadataFieldID.additionalEditorFields.contains(
-            where: { settingsViewModel.isIPTCMetadataFieldVisible($0) }
-        ) {
-            editableAdditionalFields
-        }
-    }
-
-    @ViewBuilder
-    private var editableAdditionalFields: some View {
-        let _ = settingsViewModel.quickListVersion
-
-        if settingsViewModel.isIPTCMetadataFieldVisible(.urgency) {
+    private func editableAdditionalMetadataField(_ field: MetadataFieldID) -> some View {
+        if field == .urgency {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Urgency")
                     .font(.caption)
@@ -2073,24 +2085,24 @@ struct MetadataPanel: View {
             .metadataField(.urgency)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.sceneCode) {
+        if field == .sceneCode {
             sceneCodeEditor
                 .metadataField(.sceneCode)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.subjectCode) {
+        if field == .subjectCode {
             subjectCodeEditor.metadataField(.subjectCode)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.mediaTopic) {
+        if field == .mediaTopic {
             mediaTopicEditor.metadataField(.mediaTopic)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.genre) {
+        if field == .genre {
             genreEditor.metadataField(.genre)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.creatorJobTitle) {
+        if field == .creatorJobTitle {
             simpleAdditionalField(
                 .creatorJobTitle,
                 keyPath: \.creatorJobTitle,
@@ -2098,7 +2110,7 @@ struct MetadataPanel: View {
             )
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.descriptionWriter) {
+        if field == .descriptionWriter {
             simpleAdditionalField(
                 .descriptionWriter,
                 keyPath: \.descriptionWriter,
@@ -2106,7 +2118,7 @@ struct MetadataPanel: View {
             )
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.credit) {
+        if field == .credit {
             EditableTextField(
                 label: "Credit",
                 text: Binding(
@@ -2134,11 +2146,11 @@ struct MetadataPanel: View {
             .metadataField(.credit)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.source) {
+        if field == .source {
             simpleAdditionalField(.source, keyPath: \.source, variableTarget: .source)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.city) {
+        if field == .city {
             EditableTextField(
                 label: "City",
                 text: Binding(
@@ -2166,15 +2178,15 @@ struct MetadataPanel: View {
             .metadataField(.city)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.sublocation) {
+        if field == .sublocation {
             simpleAdditionalField(.sublocation, keyPath: \.sublocation, variableTarget: .sublocation)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.provinceState) {
+        if field == .provinceState {
             simpleAdditionalField(.provinceState, keyPath: \.provinceState, variableTarget: .provinceState)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.country) {
+        if field == .country {
             EditableTextField(
                 label: "Country",
                 text: Binding(
@@ -2202,7 +2214,7 @@ struct MetadataPanel: View {
             .metadataField(.country)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.countryCode) {
+        if field == .countryCode {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Country Code")
                     .font(.caption)
@@ -2233,7 +2245,7 @@ struct MetadataPanel: View {
             .metadataField(.countryCode)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.event) {
+        if field == .event {
             EditableTextField(
                 label: "Event",
                 text: Binding(
@@ -2261,7 +2273,7 @@ struct MetadataPanel: View {
             .metadataField(.event)
         }
 
-        if settingsViewModel.isIPTCMetadataFieldVisible(.instructions) {
+        if field == .instructions {
             simpleAdditionalField(.instructions, keyPath: \.instructions, variableTarget: .instructions)
         }
     }

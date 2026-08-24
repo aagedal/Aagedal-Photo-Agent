@@ -812,6 +812,145 @@ struct EditorialMetadataInteroperabilityTests {
         #expect(existing.title == "Localized title")
     }
 
+    @Test("SwiftExif fork preserves every ordered rdf:Alt language entry")
+    func localizedTitlePacketRoundTrip() throws {
+        let xml = """
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" rdf:about="">
+           <dc:title><rdf:Alt>
+            <rdf:li xml:lang="x-default">Default title</rdf:li>
+            <rdf:li xml:lang="nb-NO">Norsk tittel</rdf:li>
+            <rdf:li xml:lang="nb-NO">Alternativ norsk tittel</rdf:li>
+            <rdf:li xml:lang="nn"></rdf:li>
+           </rdf:Alt></dc:title>
+          </rdf:Description>
+         </rdf:RDF>
+        </x:xmpmeta>
+        """
+        let expected = [
+            XMPLanguageAlternative(language: "x-default", value: "Default title"),
+            XMPLanguageAlternative(language: "nb-NO", value: "Norsk tittel"),
+            XMPLanguageAlternative(language: "nb-NO", value: "Alternativ norsk tittel"),
+            XMPLanguageAlternative(language: "nn", value: ""),
+        ]
+
+        let parsed = try XMPReader.readFromXML(Data(xml.utf8))
+        #expect(parsed.languageAlternativeValue(namespace: XMPNamespace.dc, property: "title") == expected)
+
+        let rewritten = try XMPReader.readFromXML(Data(XMPWriter.generateXML(parsed).utf8))
+        #expect(rewritten.languageAlternativeValue(namespace: XMPNamespace.dc, property: "title") == expected)
+    }
+
+    @Test("sidecar Headline edit preserves all localized dc:title entries")
+    func sidecarHeadlineEditPreservesLocalizedTitles() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = try makeJPEG(in: directory)
+        let service = XMPSidecarService()
+        let expected = [
+            LocalizedMetadataText(languageTag: "x-default", value: "Default title"),
+            LocalizedMetadataText(languageTag: "nb-NO", value: "Norsk tittel"),
+            LocalizedMetadataText(languageTag: "nn", value: "Nynorsk tittel"),
+        ]
+        var metadata = IPTCMetadata(title: "Old headline", localizedTitles: expected)
+        try service.saveSidecar(metadata: metadata, for: imageURL)
+
+        let loaded = try #require(service.loadSidecar(for: imageURL))
+        #expect(loaded.title == "Old headline")
+        #expect(loaded.localizedTitles == expected)
+
+        metadata = loaded
+        metadata.title = "New headline"
+        try service.saveSidecar(metadata: metadata, for: imageURL)
+
+        let reread = try #require(service.loadSidecar(for: imageURL))
+        #expect(reread.title == "New headline")
+        #expect(reread.localizedTitles == expected)
+    }
+
+    @Test("sidecar localized Title clear survives save and reload as explicit intent")
+    func sidecarLocalizedTitleClearTombstone() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = try makeJPEG(in: directory)
+        let service = XMPSidecarService()
+        let expected = [
+            LocalizedMetadataText(languageTag: "x-default", value: "Default title"),
+            LocalizedMetadataText(languageTag: "nb-NO", value: "Norsk tittel"),
+        ]
+        try service.saveSidecar(
+            metadata: IPTCMetadata(title: "Headline", localizedTitles: expected),
+            for: imageURL
+        )
+        try service.saveSidecar(
+            metadata: IPTCMetadata(title: "Headline", localizedTitles: []),
+            for: imageURL
+        )
+
+        let cleared = try #require(service.loadSidecar(for: imageURL))
+        #expect(cleared.localizedTitles == [])
+        let clearedXMP = try XMPReader.readFromXML(
+            Data(contentsOf: service.sidecarURL(for: imageURL))
+        )
+        #expect(clearedXMP.value(namespace: XMPNamespace.dc, property: "title") == nil)
+        #expect(clearedXMP.simpleValue(
+            namespace: XMPDataBuilder.aaphotoNamespace,
+            property: "LocalizedTitleCleared"
+        ) == "True")
+
+        // A legacy/unmodeled update is a no-op and retains the pending clear.
+        try service.saveSidecar(metadata: IPTCMetadata(title: "Updated headline"), for: imageURL)
+        #expect(service.loadSidecar(for: imageURL)?.localizedTitles == [])
+
+        // A modeled value replaces the clear and removes the app-private marker.
+        try service.saveSidecar(
+            metadata: IPTCMetadata(title: "Updated headline", localizedTitles: expected),
+            for: imageURL
+        )
+        #expect(service.loadSidecar(for: imageURL)?.localizedTitles == expected)
+        let restoredXMP = try XMPReader.readFromXML(
+            Data(contentsOf: service.sidecarURL(for: imageURL))
+        )
+        #expect(restoredXMP.simpleValue(
+            namespace: XMPDataBuilder.aaphotoNamespace,
+            property: "LocalizedTitleCleared"
+        ) == nil)
+    }
+
+    @Test("stripping IPTC removes localized Title intent while preserving develop settings")
+    func stripLocalizedTitleLeavesDevelopOnlySidecar() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = try makeJPEG(in: directory)
+        let service = XMPSidecarService()
+        var cameraRaw = CameraRawSettings()
+        cameraRaw.exposure2012 = 0.5
+        try service.saveSidecar(
+            metadata: IPTCMetadata(
+                title: "Headline",
+                localizedTitles: [
+                    LocalizedMetadataText(languageTag: "x-default", value: "Title"),
+                ],
+                cameraRaw: cameraRaw
+            ),
+            for: imageURL
+        )
+
+        service.stripIPTCFromSidecar(for: imageURL)
+
+        let stripped = try #require(service.loadSidecar(for: imageURL))
+        #expect(stripped.localizedTitles == nil)
+        #expect(!stripped.hasDescriptiveContent)
+        #expect(stripped.cameraRaw?.exposure2012 == 0.5)
+        let xmp = try XMPReader.readFromXML(Data(contentsOf: service.sidecarURL(for: imageURL)))
+        #expect(xmp.value(namespace: XMPNamespace.dc, property: "title") == nil)
+        #expect(xmp.simpleValue(
+            namespace: XMPDataBuilder.aaphotoNamespace,
+            property: "LocalizedTitleCleared"
+        ) == nil)
+    }
+
     @Test("embedded Headline edits preserve IIM Object Name and dc:title")
     func embeddedHeadlineEditPreservesDistinctTitles() async throws {
         let directory = try makeTemporaryDirectory()
@@ -841,6 +980,42 @@ struct EditorialMetadataInteroperabilityTests {
         #expect(cleared.iptc.objectName == "Legacy object title")
         #expect(cleared.xmp?.headline == nil)
         #expect(cleared.xmp?.title == "Localized XMP title")
+    }
+
+    @Test("embedded Headline edit preserves every localized dc:title entry")
+    func embeddedHeadlineEditPreservesLocalizedTitles() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = try makeJPEG(in: directory)
+        let expected = [
+            XMPLanguageAlternative(language: "x-default", value: "Default title"),
+            XMPLanguageAlternative(language: "nb-NO", value: "Norsk tittel"),
+            XMPLanguageAlternative(language: "nn", value: "Nynorsk tittel"),
+        ]
+
+        var planted = try SwiftExif.readMetadata(from: imageURL)
+        planted.xmp = XMPData()
+        planted.xmp?.setValue(
+            .languageAlternative(expected),
+            namespace: XMPNamespace.dc,
+            property: "title"
+        )
+        try planted.write(to: imageURL)
+
+        let loaded = try await SwiftExifReadService().readFullMetadata(url: imageURL)
+        #expect(loaded.title == nil)
+        #expect(loaded.localizedTitles == expected.map {
+            LocalizedMetadataText(languageTag: $0.language, value: $0.value)
+        })
+
+        try await SwiftExifWriteEngine().writeFields([.headline: "New headline"], to: [imageURL])
+
+        let rewritten = try SwiftExif.readMetadata(from: imageURL)
+        #expect(rewritten.xmp?.languageAlternativeValue(
+            namespace: XMPNamespace.dc,
+            property: "title"
+        ) == expected)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: imageURL).title == "New headline")
     }
 
     @Test("embedded Headline writes do not synthesize Title carriers")
@@ -1971,6 +2146,17 @@ struct MergedTests {
         #expect(result.title == "Base Title")
     }
 
+    @Test("localized titles merge atomically and preserve explicit clears")
+    func localizedTitlesMergeWithNilVsEmptySemantics() {
+        let baseTitles = [LocalizedMetadataText(languageTag: "nb-NO", value: "Basetittel")]
+        let overrideTitles = [LocalizedMetadataText(languageTag: "nn", value: "Ny tittel")]
+        let base = IPTCMetadata(localizedTitles: baseTitles)
+
+        #expect(base.merged(preferring: IPTCMetadata()).localizedTitles == baseTitles)
+        #expect(base.merged(preferring: IPTCMetadata(localizedTitles: overrideTitles)).localizedTitles == overrideTitles)
+        #expect(base.merged(preferring: IPTCMetadata(localizedTitles: [])).localizedTitles == [])
+    }
+
     @Test("base title kept when override is empty string")
     func baseTitleKeptWhenOverrideEmpty() {
         let base = IPTCMetadata(title: "Base Title")
@@ -2111,6 +2297,7 @@ struct DescriptiveRecordTests {
     @Test("hasDescriptiveContent is true for any descriptive field")
     func descriptiveContent() {
         #expect(IPTCMetadata(title: "T").hasDescriptiveContent)
+        #expect(IPTCMetadata(localizedTitles: []).hasDescriptiveContent)
         #expect(IPTCMetadata(keywords: ["k"]).hasDescriptiveContent)
         #expect(IPTCMetadata(personShown: ["P"]).hasDescriptiveContent)
         #expect(IPTCMetadata(organisationsShownNames: ["Example News"]).hasDescriptiveContent)
@@ -2176,6 +2363,23 @@ struct DescriptiveRecordTests {
         #expect(embedded.merged(preferring: record).title == "Resurrected?")
         // …the record read does not: the clear sticks.
         #expect(embedded.replacingDescriptiveFields(from: record).title == nil)
+    }
+
+    @Test("descriptive replacement preserves legacy-unmodeled titles and honors explicit clears")
+    func localizedTitleReplacement() {
+        let embeddedTitles = [LocalizedMetadataText(languageTag: "nb-NO", value: "Innebygd")]
+        let sidecarTitles = [LocalizedMetadataText(languageTag: "nn", value: "Sidevogn")]
+        let embedded = IPTCMetadata(localizedTitles: embeddedTitles)
+
+        #expect(embedded.replacingDescriptiveFields(
+            from: IPTCMetadata(title: "Sidecar", localizedTitles: sidecarTitles)
+        ).localizedTitles == sidecarTitles)
+        #expect(embedded.replacingDescriptiveFields(
+            from: IPTCMetadata(title: "Sidecar")
+        ).localizedTitles == embeddedTitles)
+        #expect(embedded.replacingDescriptiveFields(
+            from: IPTCMetadata(title: "Sidecar", localizedTitles: [])
+        ).localizedTitles == [])
     }
 
     @Test("replacing descriptive fields preserves explicit structured clears")
@@ -2244,6 +2448,11 @@ struct IPTCMetadataCodableTests {
         )
         let original = IPTCMetadata(
             title: "Test Title",
+            localizedTitles: [
+                LocalizedMetadataText(languageTag: "x-default", value: "Default title"),
+                LocalizedMetadataText(languageTag: "nb-NO", value: "Norsk tittel"),
+                LocalizedMetadataText(languageTag: "nn", value: "Nynorsk tittel"),
+            ],
             description: "A description",
             extendedDescription: "Extended",
             keywords: ["kw1", "kw2"],
@@ -2284,6 +2493,7 @@ struct IPTCMetadataCodableTests {
         let decoded = try decoder.decode(IPTCMetadata.self, from: data)
 
         #expect(decoded.title == "Test Title")
+        #expect(decoded.localizedTitles == original.localizedTitles)
         #expect(decoded.description == "A description")
         #expect(decoded.extendedDescription == "Extended")
         #expect(decoded.keywords == ["kw1", "kw2"])
@@ -2319,6 +2529,16 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.locationsShown == [shownLocation])
         #expect(decoded.rating == 4)
         #expect(decoded.label == "Red")
+    }
+
+    @Test("legacy JSON without localizedTitles decodes as untouched")
+    func legacyJSONDefaultsLocalizedTitlesToNil() throws {
+        let decoded = try decoder.decode(
+            IPTCMetadata.self,
+            from: Data(#"{"title":"Legacy headline"}"#.utf8)
+        )
+        #expect(decoded.title == "Legacy headline")
+        #expect(decoded.localizedTitles == nil)
     }
 
     @Test("cameraRaw excluded from JSON serialization")
@@ -2563,6 +2783,82 @@ struct FieldKeyTests {
         #expect(IPTCMetadata.FieldKey.resolvedHiddenEditorFields(
             storedRawValues: ["creator", "futureEditorialField"]
         ) == [.creator])
+    }
+
+    @Test("field order defaults, persists, and repairs duplicate or missing values")
+    func editorFieldOrderRecovery() {
+        #expect(MetadataFieldID.resolvedEditorFieldOrder(storedRawValues: nil)
+            == MetadataFieldID.editorFields)
+
+        let recovered = MetadataFieldID.resolvedEditorFieldOrder(storedRawValues: [
+            "country", "title", "country", "futureEditorialField",
+        ])
+        #expect(recovered.prefix(2) == [.country, .headline])
+        #expect(recovered.count == MetadataFieldID.editorFields.count)
+        #expect(Set(recovered) == Set(MetadataFieldID.editorFields))
+    }
+
+    @Test("field order round trips through preferences")
+    func editorFieldOrderPersistence() throws {
+        let suiteName = "MetadataFieldOrderTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            ["futureEditorialField", "title", "description"],
+            forKey: UserDefaultsKeys.iptcMetadataFieldOrder
+        )
+        let custom = [.description, .headline] + MetadataFieldID.editorFields.filter {
+            $0 != .description && $0 != .headline
+        }
+
+        MetadataFieldID.saveEditorFieldOrder(custom, to: defaults)
+
+        #expect(MetadataFieldID.loadEditorFieldOrder(from: defaults) == custom)
+        #expect(defaults.stringArray(forKey: UserDefaultsKeys.iptcMetadataFieldOrder)?.first
+            == "futureEditorialField")
+    }
+
+    @Test("dragging downward places the field immediately before its target")
+    @MainActor
+    func downwardFieldReordering() {
+        let order: [MetadataFieldID] = [.headline, .description, .keywords, .creator]
+        #expect(SettingsViewModel.iptcMetadataFieldOrder(
+            order,
+            moving: .headline,
+            before: .creator
+        ) == [.description, .keywords, .headline, .creator])
+    }
+
+    @Test("dragging upward places the field immediately before its target")
+    @MainActor
+    func upwardFieldReordering() {
+        let order: [MetadataFieldID] = [.headline, .description, .keywords, .creator]
+        #expect(SettingsViewModel.iptcMetadataFieldOrder(
+            order,
+            moving: .creator,
+            before: .description
+        ) == [.headline, .creator, .description, .keywords])
+    }
+
+    @Test("saving field customization preserves unknown future field state")
+    func futureFieldCustomizationRemainsRecoverable() {
+        let order = MetadataFieldID.persistedEditorFieldOrder(
+            [.description, .headline] + MetadataFieldID.editorFields.filter {
+                $0 != .description && $0 != .headline
+            },
+            preserving: ["futureBefore", "title", "description", "futureAfter"]
+        )
+        #expect(order.prefix(4) == ["futureBefore", "description", "title", "futureAfter"])
+        #expect(order.filter { $0 == "futureBefore" }.count == 1)
+        #expect(order.filter { $0 == "futureAfter" }.count == 1)
+
+        let hidden = MetadataFieldID.persistedHiddenEditorFields(
+            [.creator, .headline],
+            preserving: ["futureHidden", "creator"]
+        )
+        #expect(hidden.contains("futureHidden"))
+        #expect(hidden.contains(MetadataFieldID.creator.rawValue))
+        #expect(!hidden.contains(MetadataFieldID.headline.rawValue))
     }
 }
 

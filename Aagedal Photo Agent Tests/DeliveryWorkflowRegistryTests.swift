@@ -527,7 +527,10 @@ private struct RegistryFixture: Sendable {
                     quality: 90
                 ),
                 metadataPreservation: preservation,
-                checkedFields: plan.renderAndWrite.verificationFields,
+                checkedFields: IPTCMetadataVerifier.applicableFields(
+                    plan.renderAndWrite.verificationFields,
+                    expected: item.resolvedMetadata
+                ),
                 mismatchedFields: [],
                 failure: nil
             )],

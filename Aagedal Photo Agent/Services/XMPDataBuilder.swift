@@ -24,8 +24,6 @@ enum XMPDataBuilder {
     /// GPS and photoshop:DateCreated have no convenience setter, so they go through `setSimpleOrRemove`
     /// (and are read back via the service's `fillXMPOnlyGaps`).
     nonisolated static func applyDescriptive(_ m: IPTCMetadata, into xmp: inout XMPData) {
-        // Headline is distinct from the localized dc:title property. Keep legacy dc:title data
-        // untouched until the carrier can expose every rdf:Alt language entry losslessly.
         xmp.headline = nilIfEmpty(m.title)
         xmp.description = nilIfEmpty(m.description)
         xmp.extendedDescription = nilIfEmpty(m.extendedDescription)
@@ -108,12 +106,33 @@ enum XMPDataBuilder {
         _ editorial: EditorialStructuredWriteData,
         into xmp: inout XMPData
     ) {
+        applyLocalizedTitles(editorial.localizedTitles, into: &xmp)
         applyCreatorContactInfo(editorial.creatorContactInfo, into: &xmp)
         applyLocations(editorial.locationsCreated, property: "LocationCreated", into: &xmp)
         applyLocations(editorial.locationsShown, property: "LocationShown", into: &xmp)
         applyControlledVocabularyTerms(editorial.mediaTopics, property: "AboutCvTerm", into: &xmp)
         applyControlledVocabularyTerms(editorial.genres, property: "Genre", into: &xmp)
         applyImageSuppliers(editorial.imageSuppliers, into: &xmp)
+    }
+
+    /// Headline is distinct from localized `dc:title`. The optional collection carries operation
+    /// intent: nil preserves the target carrier, nonempty replaces it, and `[]` clears it.
+    nonisolated private static func applyLocalizedTitles(
+        _ localizedTitles: [LocalizedMetadataText]?,
+        into xmp: inout XMPData
+    ) {
+        guard let localizedTitles else { return }
+        guard !localizedTitles.isEmpty else {
+            xmp.removeValue(namespace: XMPNamespace.dc, property: "title")
+            return
+        }
+        xmp.setValue(
+            .languageAlternative(localizedTitles.map {
+                XMPLanguageAlternative(language: $0.languageTag, value: $0.value)
+            }),
+            namespace: XMPNamespace.dc,
+            property: "title"
+        )
     }
 
     /// Image Supplier is an ordered PLUS sequence. Same-index raw structures are the only

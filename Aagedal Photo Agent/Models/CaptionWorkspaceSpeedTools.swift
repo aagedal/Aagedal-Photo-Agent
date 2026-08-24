@@ -61,7 +61,10 @@ nonisolated struct CaptionWorkspaceFieldLayout: Equatable, Sendable {
     let priority: [MetadataFieldID]
     let secondary: [MetadataFieldID]
 
-    static func make(configuration: DeadlineCaptionFieldConfiguration?) -> Self {
+    static func make(
+        configuration: DeadlineCaptionFieldConfiguration?,
+        groupsSecondaryFields: Bool = true
+    ) -> Self {
         let configuredOrder = configuration?.orderedFieldIDs ?? MetadataFieldID.editorFields
         let visible = Set(configuration?.visibleFieldIDs ?? MetadataFieldID.editorFields)
         let orderedVisible = unique(configuredOrder.filter(visible.contains))
@@ -69,6 +72,9 @@ nonisolated struct CaptionWorkspaceFieldLayout: Equatable, Sendable {
             visible.contains($0) && !orderedVisible.contains($0)
         }
         let completeOrder = orderedVisible + missingVisible
+        guard groupsSecondaryFields else {
+            return Self(priority: completeOrder, secondary: [])
+        }
         let priorityCandidates: Set<MetadataFieldID> = [
             .headline, .description, .personShown, .keywords, .event,
             .city, .sublocation, .provinceState, .country,

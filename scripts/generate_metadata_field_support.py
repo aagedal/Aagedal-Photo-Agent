@@ -28,6 +28,7 @@ RULE_LABELS = {
     "unorderedStructuredLocations": "unique normalized locations; order ignored",
     "unorderedControlledVocabularyTerms": "unique normalized CV-Term structures; order ignored",
     "orderedStructuredImageSuppliers": "normalized PLUS supplier structures; sequence order retained",
+    "orderedLocalizedText": "language-tagged text alternatives; sequence order retained",
 }
 
 

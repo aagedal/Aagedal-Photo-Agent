@@ -65,3 +65,19 @@ The run used the currently integrated worktree and therefore validates the Deadl
 projection together with the existing metadata, delivery, investigation, comparison, report, and
 solar suites. `git diff --check` also passed. The remaining manual and external release gates are
 unchanged.
+
+## Metadata workflow and planning integration follow-up — 2026-08-24
+
+After integrating unified metadata-field customization, the independent Headline/localized Title
+carrier and production-write boundary, delivery read-back/receipt verification, and the Phase 0
+ADR reconciliation, a fresh isolated `build-for-testing` succeeded. The subsequent unfiltered
+`test-without-building` run passed all 1,387 logical tests and all 1,514 expanded executions with
+zero failures, skips, or expected failures. Thirty-six parameterized tests expanded to 163 runs.
+Xcode reported 47.298 seconds for the final exact-source test operation on arm64 macOS.
+
+The result bundle for this development session is
+`/tmp/aagedal-plan-final.szZfEO/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.24_18-03-55-+0200.xcresult`.
+The metadata support generator, Xcode project plist lint, and `git diff --check` also passed. This
+closes the current-source existing and new automated-suite gates; it does not replace any manual,
+external-tool/server/device, performance, second-architecture, security, recovery, or packaging
+gate.

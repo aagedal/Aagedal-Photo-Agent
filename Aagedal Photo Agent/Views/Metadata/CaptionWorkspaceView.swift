@@ -66,12 +66,13 @@ struct CaptionWorkspaceView: View {
         if let configuration = deadlineProfile?.captionFields {
             return CaptionWorkspaceFieldLayout.make(configuration: configuration)
         }
-        return CaptionWorkspaceFieldLayout.make(configuration: DeadlineCaptionFieldConfiguration(
-            orderedFieldIDs: MetadataFieldID.editorFields,
-            visibleFieldIDs: MetadataFieldID.editorFields.filter(
-                settingsViewModel.isIPTCMetadataFieldVisible
-            )
-        ))
+        return CaptionWorkspaceFieldLayout.make(
+            configuration: DeadlineCaptionFieldConfiguration(
+                orderedFieldIDs: settingsViewModel.orderedIPTCMetadataFields,
+                visibleFieldIDs: settingsViewModel.visibleIPTCMetadataFieldsInOrder
+            ),
+            groupsSecondaryFields: false
+        )
     }
 
     init(

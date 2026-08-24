@@ -60,6 +60,10 @@ struct DeliveryStagingProductionFactoryTests {
         )
         let stagedMetadata = try await SwiftExifReadService().readFullMetadata(url: stagedURL)
         #expect(stagedMetadata.title == "Frozen delivery headline")
+        #expect(stagedMetadata.localizedTitles == [
+            LocalizedMetadataText(languageTag: "x-default", value: "Frozen delivery title"),
+            LocalizedMetadataText(languageTag: "nb-NO", value: "Frosset leveringstittel"),
+        ])
         #expect(stagedMetadata.description == "Frozen delivery caption")
         #expect(try Data(contentsOf: fixture.sourceURL) == originalBytes)
         let currentSource = try await SourceImageRevision.capture(at: fixture.sourceURL)
@@ -230,6 +234,10 @@ struct DeliveryStagingProductionFactoryTests {
         )
         let metadata = IPTCMetadata(
             title: "Frozen delivery headline",
+            localizedTitles: [
+                LocalizedMetadataText(languageTag: "x-default", value: "Frozen delivery title"),
+                LocalizedMetadataText(languageTag: "nb-NO", value: "Frosset leveringstittel"),
+            ],
             description: "Frozen delivery caption",
             creator: "Reporter",
             credit: "Newsroom"

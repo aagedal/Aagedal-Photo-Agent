@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftExif
 import Testing
@@ -16,6 +17,27 @@ struct DescriptiveMetadataWriteBoundaryTests {
         return (directory, source)
     }
 
+    private func makeJPEGWorkspace() throws -> (URL, URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("EmbeddedWriteBoundary-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("capture.jpg")
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 8,
+            pixelsHigh: 8,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        try #require(bitmap.representation(using: .jpeg, properties: [:])).write(to: source)
+        return (directory, source)
+    }
+
     @Test("Every supported proprietary RAW extension coerces embedded requests to one XMP target")
     func rawTargetSelection() {
         for fileExtension in SupportedImageFormats.rawExtensions {
@@ -29,6 +51,33 @@ struct DescriptiveMetadataWriteBoundaryTests {
         let jpeg = URL(fileURLWithPath: "/tmp/capture.jpg")
         #expect(resolver.resolve(sourceURL: jpeg, requestedMode: .writeToFile) == .embedded)
         #expect(resolver.resolve(sourceURL: jpeg, requestedMode: .writeToFileAndXMPSidecar) == .embeddedAndXMPSidecar)
+    }
+
+    @Test("embedded boundary replaces and clears authoritative localized Titles")
+    func embeddedLocalizedTitleWrite() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let boundary = DescriptiveMetadataWriteBoundary(writeEngine: SwiftExifWriteEngine())
+        let expected = [
+            LocalizedMetadataText(languageTag: "x-default", value: "Default title"),
+            LocalizedMetadataText(languageTag: "nb-NO", value: "Norsk tittel"),
+        ]
+
+        _ = try await boundary.write(
+            metadata: IPTCMetadata(localizedTitles: expected),
+            for: source,
+            requestedMode: .writeToFile,
+            semantics: .merge
+        )
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).localizedTitles == expected)
+
+        _ = try await boundary.write(
+            metadata: IPTCMetadata(localizedTitles: []),
+            for: source,
+            requestedMode: .writeToFile,
+            semantics: .replace
+        )
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).localizedTitles == nil)
     }
 
     @Test("RAW replacement clears omitted descriptive fields, preserves unmodeled and Camera Raw XMP, and never changes source bytes")

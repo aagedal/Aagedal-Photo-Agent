@@ -9,13 +9,15 @@ deadline-driven journalistic metadata work, with one clear product promise:
 
 > From card to picture desk — captioned, standards-checked, and delivered with proof.
 
-This plan covers four connected initiatives:
+This plan covers five connected initiatives:
 
 1. A dedicated **Caption Workspace** for fast, image-by-image metadata work.
 2. Stronger **IPTC standards coverage and interoperability guarantees**.
 3. A safe, previewable, preset-driven **Batch Rename** workflow.
 4. **Deadline Mode**, which combines validation, metadata writing, rendering, verification, and
    delivery into one resumable workflow.
+5. **Sony Alpha voice-memo support**, which keeps camera-recorded WAV companions associated with
+   their images and makes a reviewed transcript available to metadata templates.
 
 The order below is deliberate. Standards and validation become shared infrastructure; Caption
 Workspace and Batch Rename then use that infrastructure; Deadline Mode composes all three rather
@@ -51,6 +53,8 @@ than reimplementing their rules.
 - Photo Mechanic-style captioning ergonomics, code replacement, autocomplete, and rename recipes.
 - Existing FTP/SFTP delivery profiles and the existing export renderer.
 - Machine-readable delivery receipts and resumable activity history.
+- Sony Alpha camera voice-memo WAV ingest, image association, local transcription, and an explicit
+  metadata-variable path into Description or Extended Description.
 
 ### Deferred
 
@@ -212,17 +216,22 @@ ready.
   compatibility key.
 - [x] Model Date Created with explicit precision and timezone-known/offset semantics while retaining
   the shipped lexical JSON/API contract and only projecting losslessly representable parts to IIM.
-- [ ] Split Headline from localized `dc:title` and preserve every `rdf:Alt` language entry. The
-  pinned SwiftExif API currently collapses a language alternative to `x-default`; this requires an
-  upstream carrier-model change or an explicitly maintained local dependency fork before the app
-  can claim lossless support.
+- [x] Split Headline from localized `dc:title` and preserve every `rdf:Alt` language entry.
 
-  **Partial progress — 2026-08-23:** Headline writes now target only IPTC-IIM Headline (2:105)
-  and `photoshop:Headline`; they no longer create, clear, or replace IIM Object Name (2:05) or
-  `dc:title`. Existing Title carriers are preserved at the value boundary SwiftExif exposes, and
-  focused builder plus embedded-JPEG tests cover distinct and absent Title values. The item stays
-  open because the compatibility read fallback is still scalar and SwiftExif 1.9.10 still drops
-  non-default `rdf:Alt` entries when it parses a packet.
+  **Completed — 2026-08-24:** The project now consumes an explicitly maintained local SwiftExif
+  1.9.10 fork whose carrier, parser, and writer retain every ordered `rdf:Alt` item and exact
+  `xml:lang` tag. `IPTCMetadata.title` remains the shipped Headline compatibility key while
+  `localizedTitles` models Dublin Core Title independently with nil-as-unmodeled and empty-as-clear
+  semantics. Legacy JSON and authoritative sidecars without that new key preserve embedded Title
+  alternatives, and that nil state is a reconciliation wildcard rather than a stale-sidecar
+  conflict. The scalar compatibility read fallback from `dc:title`/IIM Object Name was removed, and
+  production structured writes now carry modeled alternatives through embedded output, export,
+  delivery staging, and the descriptive-write boundary. Explicit sidecar clears survive reload via
+  a private tombstone without synthesizing a Title, while verification and delivery receipts report
+  only the localized carrier fields actually checked. Packet, XMP-sidecar, embedded-JPEG, JSON
+  migration, merge/replacement, production delivery, and unrelated structured XMP regression
+  coverage passes; see
+  [the dated validation record](metadata-headline-localized-title-validation.md).
 - [x] Update metadata history so new fields produce human-readable changes without logging
   sensitive values unnecessarily.
 
@@ -256,8 +265,9 @@ date precision and timezone-known state, writer-level GPS precision, ordered con
 and unordered structured Location bags. `SwiftExifReadService.verifyReadBack` reads the actual file
 through the production parser before comparing it. Eight focused tests, including a real embedded
 JPEG write/read/verify cycle, pass; see
-[the dated validation record](metadata-read-back-verification-validation.md). Localized language
-alternatives still need a richer model before they can be compared independently.
+[the dated validation record](metadata-read-back-verification-validation.md). At this checkpoint,
+localized language alternatives still needed a richer model before they could be compared
+independently; that follow-up is now complete.
 
 **Progress — 2026-08-21:** A separate non-UI descriptive-write boundary now treats proprietary
 RAW as a hard safety boundary: embedded and dual-write requests resolve to one adjacent XMP write,
@@ -273,8 +283,8 @@ overwrite, append, and clear operations. Controlled values retain canonical stor
 of display labels, and Scene history replay uses the same canonicalizer. Per-field contract,
 sidecar, embedded-JPEG, preservation, and concurrency runs passed 182 tests across fifteen suites;
 see [the field-operation validation record](metadata-field-operation-contract-validation.md).
-Language-specific `rdf:Alt` variants remain deliberately outside the scalar model, and external
-IPTC/Bridge/Photo Mechanic evidence remains manual.
+At this checkpoint, language-specific `rdf:Alt` variants remained deliberately outside the scalar
+model; that follow-up is now complete. External IPTC/Bridge/Photo Mechanic evidence remains manual.
 
 **Progress — 2026-08-21:** Subject Codes, typed Media Topic CV-Terms, the separate structured Genre
 property, canonical PLUS Image Supplier/Image Supplier Image ID, ordered Creator sequences, and a
@@ -282,8 +292,9 @@ precision/timezone-aware Date Created value now flow through the shared model, m
 history, template/import, batch, UI, validation, and read-back boundaries. Earlier Photo Agent
 supplier-ID namespace values and scalar Creator JSON migrate without data loss. The controlled and
 Supplier gate passed 51 tests; the ordered Creator/Date gate passed 211 tests across 19 suites,
-including real embedded-JPEG evidence. Full localized `rdf:Alt` editing remains blocked on the
-pinned SwiftExif value model, which currently retains only `x-default`.
+including real embedded-JPEG evidence. At this checkpoint, full localized `rdf:Alt` editing was
+blocked on the then-pinned SwiftExif value model, which retained only `x-default`; the checked-in
+carrier extension now resolves that limitation.
 See the [controlled-structure validation record](metadata-controlled-structures-validation.md) and
 the [Creator/Date validation record](metadata-creator-date-validation.md).
 
@@ -528,12 +539,12 @@ the underlying Caption, validation, and metadata-field infrastructure is impleme
 - [x] Give every metadata field label concise IPTC guidance: its common editorial use plus a short
   example. Expose the same guidance through hover help, keyboard focus/accessibility help, and
   localization-ready copy rather than making it pointer-only.
-- [ ] Replace the separate visible/hidden and required-field management lists in Metadata Settings
+- [x] Replace the separate visible/hidden and required-field management lists in Metadata Settings
   with one coherent field-management UI that shows visibility and required state together and
   supports drag, keyboard, and VoiceOver reordering. The configured order must be reflected
   consistently in the metadata panel and Caption field navigator, while required validation stays
   independent of whether a field is currently visible.
-- [ ] Add migration/default tests, ordering persistence and unknown-field recovery tests, and UI
+- [x] Add migration/default tests, ordering persistence and unknown-field recovery tests, and UI
   coverage for the compact checklist, settings link, field guidance, and accessible reordering.
 
 **Progress — 2026-08-23:** Caption's metadata checklist now starts collapsed and retains a compact,
@@ -546,11 +557,20 @@ guidance tests and the production app build pass; see
 and explicit-reset visibility now use the seven-field editorial default while an existing stored
 visibility choice remains authoritative during upgrade. Every stable field now supplies localized
 editorial-use/example guidance through shared Metadata panel hover help and accessibility hints;
-see [the field-guidance validation record](metadata-field-guidance-validation.md). Unified field
-management, persisted ordering, and their broader migration/accessibility coverage remain owned by
-the separate items above. A persistent footer below the editor now explains where to enable
+see [the field-guidance validation record](metadata-field-guidance-validation.md). A persistent
+footer below the editor now explains where to enable
 additional IPTC fields and opens Settings directly on its Metadata section through a consumed,
 non-persisted navigation request.
+
+**Progress — 2026-08-24:** Metadata Settings now presents one reorderable customization surface
+with field visibility and Optional/Warn/Require state together. Native drag/drop and labelled move
+actions support pointer, keyboard, and assistive access; visibility stays independent from shared
+validation. A forward-safe persisted order now drives both the Metadata panel and non-Deadline
+Caption navigator, repairs missing or duplicate fields, and preserves unknown future IDs alongside
+the existing visibility and requirement migration behavior. The focused persistence, recovery,
+layout, and static UI suites pass; see
+[the field-customization validation record](metadata-field-customization-validation.md). A live
+VoiceOver/keyboard/drag pass remains part of final manual release validation.
 
 ### Caption speed tools
 
@@ -610,6 +630,33 @@ monitor. Thirty-one speed/session/accessibility tests pass; see
 [the speed-tools validation record](caption-workspace-speed-tools-validation.md). A referenced
 validation profile is not synchronously resolved here, and native-resolution tiled viewing plus
 hands-on focus/IME/VoiceOver/visual checks remain explicit.
+
+### Sony Alpha voice memos — planned for 3.0
+
+**Status:** planned on 2026-08-24; implementation has not started. Real camera samples are a gate,
+not something to infer from filenames alone.
+
+- [ ] Obtain redistributable or private test samples from the relevant Sony Alpha bodies and
+  firmware versions. Document the on-card directory layout, WAV naming/association rules, audio
+  encoding, duplicate/burst behavior, and orphan/missing-image cases before freezing the model.
+- [ ] Treat an associated voice memo as an image companion during card ingest and folder discovery.
+  Preserve the WAV byte-for-byte and keep the relationship intact through refresh, copy/archive,
+  rename, move/reject, rollback, and source reassociation without presenting the WAV as a photo.
+- [ ] Expose the associated memo in Caption Workspace with playback, duration/source identity, and
+  clear missing/ambiguous/unsupported states. Never transcribe or mutate metadata implicitly.
+- [ ] Add cancellable local transcription with explicit language/model state, offline behavior, and
+  review/edit-before-apply. Keep the audio source and generated transcript provenance distinguishable.
+- [ ] Add a carrier-neutral metadata variable such as `{voiceMemoTranscript}`. Resolve it through
+  the existing template/variable engine so a user can place the reviewed transcript in Description,
+  Extended Description, or another compatible field without silently overwriting existing text.
+- [ ] Define whether delivery includes, excludes, or optionally carries the WAV; make the choice
+  visible in Deadline preflight and receipts instead of silently dropping an ingested companion.
+- [ ] Add fixture-driven association, ingest, rename/rollback, transcription-state, variable,
+  sidecar-durability, and delivery tests, followed by a manual card-to-caption pass on real samples.
+
+**Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
+loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
+can be inserted through the shared metadata-variable path with no implicit metadata overwrite.
 
 ### Keyboard and accessibility
 

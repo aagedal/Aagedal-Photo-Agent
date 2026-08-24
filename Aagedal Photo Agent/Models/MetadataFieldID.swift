@@ -712,6 +712,79 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         return decodeHidden(storedRawValues)
     }
 
+    /// Resolves a durable editor order. Valid stored fields keep their relative order, duplicate
+    /// and unknown values do not enter the live UI, and fields introduced by a newer build are
+    /// appended in the established default order instead of disappearing.
+    static func resolvedEditorFieldOrder(storedRawValues: [String]?) -> [Self] {
+        guard let storedRawValues else { return editorFields }
+        var seen: Set<Self> = []
+        var result = storedRawValues.compactMap { rawValue -> Self? in
+            guard let field = Self(rawValue: rawValue),
+                  editorFields.contains(field),
+                  seen.insert(field).inserted else { return nil }
+            return field
+        }
+        result.append(contentsOf: editorFields.filter { seen.insert($0).inserted })
+        return result
+    }
+
+    /// Encodes the known order without erasing field IDs written by a newer build. Unknown IDs
+    /// retain their slots where possible; the reordered known fields flow through the remaining
+    /// slots and any newly introduced fields are appended.
+    static func persistedEditorFieldOrder(
+        _ order: [Self],
+        preserving storedRawValues: [String]?
+    ) -> [String] {
+        let normalized = resolvedEditorFieldOrder(storedRawValues: order.map(\.rawValue))
+        guard let storedRawValues else { return normalized.map(\.rawValue) }
+
+        var nextKnownIndex = 0
+        var seenUnknown: Set<String> = []
+        var result: [String] = []
+        for rawValue in storedRawValues {
+            if let field = Self(rawValue: rawValue), editorFields.contains(field) {
+                guard nextKnownIndex < normalized.count else { continue }
+                result.append(normalized[nextKnownIndex].rawValue)
+                nextKnownIndex += 1
+            } else if seenUnknown.insert(rawValue).inserted {
+                result.append(rawValue)
+            }
+        }
+        result.append(contentsOf: normalized.dropFirst(nextKnownIndex).map(\.rawValue))
+        return result
+    }
+
+    static func loadEditorFieldOrder(from defaults: UserDefaults = .standard) -> [Self] {
+        resolvedEditorFieldOrder(
+            storedRawValues: defaults.stringArray(forKey: UserDefaultsKeys.iptcMetadataFieldOrder)
+        )
+    }
+
+    static func saveEditorFieldOrder(
+        _ order: [Self],
+        to defaults: UserDefaults = .standard
+    ) {
+        let existing = defaults.stringArray(forKey: UserDefaultsKeys.iptcMetadataFieldOrder)
+        defaults.set(
+            persistedEditorFieldOrder(order, preserving: existing),
+            forKey: UserDefaultsKeys.iptcMetadataFieldOrder
+        )
+    }
+
+    /// Encodes current visibility while preserving fields unknown to this build. This prevents an
+    /// older app from deleting a future field's hidden state during an unrelated customization.
+    static func persistedHiddenEditorFields(
+        _ hidden: Set<Self>,
+        preserving storedRawValues: [String]?
+    ) -> [String] {
+        let unknown = (storedRawValues ?? []).filter { Self(rawValue: $0) == nil }
+        var seen: Set<String> = []
+        return (unknown + hidden
+            .intersection(optionalEditorFields)
+            .map(\.rawValue)
+            .sorted()).filter { seen.insert($0).inserted }
+    }
+
     /// Source compatibility for the former nested `IPTCMetadata.FieldKey.title` case.
     static var title: Self { .headline }
 

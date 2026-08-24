@@ -4,6 +4,9 @@ import Foundation
 /// optional on `StructuredWriteData` distinguishes "leave these properties untouched" from an
 /// explicit record whose nil/empty values clear them.
 nonisolated struct EditorialStructuredWriteData: Sendable {
+    /// Ordered Dublin Core Title alternatives. nil leaves the carrier untouched; an empty
+    /// collection explicitly clears it.
+    var localizedTitles: [LocalizedMetadataText]?
     var creatorContactInfo: CreatorContactInfo?
     var locationsCreated: [EditorialLocation]
     var locationsShown: [EditorialLocation]
@@ -12,6 +15,7 @@ nonisolated struct EditorialStructuredWriteData: Sendable {
     var imageSuppliers: [EditorialImageSupplier]
 
     nonisolated init(metadata: IPTCMetadata) {
+        localizedTitles = metadata.localizedTitles
         creatorContactInfo = metadata.creatorContactInfo
         locationsCreated = metadata.locationsCreated
         locationsShown = metadata.locationsShown

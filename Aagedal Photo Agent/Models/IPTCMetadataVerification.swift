@@ -8,6 +8,7 @@ import Foundation
 /// failed descriptive write.
 nonisolated enum IPTCMetadataVerificationField: String, CaseIterable, Codable, Equatable, Sendable {
     case headline
+    case localizedTitles
     case description
     case extendedDescription
     case keywords
@@ -83,6 +84,8 @@ nonisolated enum IPTCMetadataComparisonRule: String, Sendable, Equatable {
     case unorderedControlledVocabularyTerms
     /// Compare the ordered PLUS Image Supplier sequence while keeping each name/identifier pair.
     case orderedStructuredImageSuppliers
+    /// Compare every ordered Dublin Core Title value together with its exact language tag.
+    case orderedLocalizedText
 }
 
 /// A transport-safe representation of a field after canonical normalization.
@@ -118,7 +121,7 @@ nonisolated enum IPTCMetadataVerifier {
         actual: IPTCMetadata,
         fields: [IPTCMetadataVerificationField] = IPTCMetadataVerificationField.writableFields
     ) -> IPTCMetadataVerificationReport {
-        let checkedFields = fields.uniqued()
+        let checkedFields = applicableFields(fields, expected: expected)
         let differences = checkedFields.compactMap { field -> IPTCMetadataDifference? in
             let expectedValue = canonicalValue(for: field, in: expected)
             let actualValue = canonicalValue(for: field, in: actual)
@@ -134,6 +137,17 @@ nonisolated enum IPTCMetadataVerifier {
             checkedFields: checkedFields,
             differences: differences
         )
+    }
+
+    /// Returns the subset for which `expected` carries an honest verification assertion.
+    /// Localized Title nil is operation intent (leave untouched), not an expected carrier value.
+    static func applicableFields(
+        _ fields: [IPTCMetadataVerificationField],
+        expected: IPTCMetadata
+    ) -> [IPTCMetadataVerificationField] {
+        fields.uniqued().filter { field in
+            field != .localizedTitles || expected.localizedTitles != nil
+        }
     }
 
     static func rule(for field: IPTCMetadataVerificationField) -> IPTCMetadataComparisonRule {
@@ -158,6 +172,8 @@ nonisolated enum IPTCMetadataVerifier {
             .unorderedStructuredLocations
         case .imageSuppliers:
             .orderedStructuredImageSuppliers
+        case .localizedTitles:
+            .orderedLocalizedText
         default:
             .scalarWhitespace
         }
@@ -169,6 +185,7 @@ nonisolated enum IPTCMetadataVerifier {
     ) -> IPTCMetadataCanonicalValue {
         switch field {
         case .headline: scalar(metadata.title)
+        case .localizedTitles: localizedText(metadata.localizedTitles)
         case .description: scalar(metadata.description)
         case .extendedDescription: scalar(metadata.extendedDescription)
         case .keywords: unorderedText(metadata.keywords)
@@ -265,6 +282,18 @@ nonisolated enum IPTCMetadataVerifier {
     private static func orderedUniqueText(_ values: [String]) -> IPTCMetadataCanonicalValue {
         let values = normalizedUniqueText(values, ordered: true).map(IPTCMetadataCanonicalValue.text)
         return values.isEmpty ? .absent : .array(values)
+    }
+
+    private static func localizedText(
+        _ values: [LocalizedMetadataText]?
+    ) -> IPTCMetadataCanonicalValue {
+        guard let values, !values.isEmpty else { return .absent }
+        return .array(values.map { value in
+            .object([
+                "languageTag": scalar(value.languageTag),
+                "value": scalar(value.value),
+            ])
+        })
     }
 
     private static func coordinate(

@@ -873,7 +873,10 @@ private struct UploadFixture {
                     },
                     c2paConsequence: .unknown
                 ),
-                checkedFields: plan.renderAndWrite.verificationFields,
+                checkedFields: IPTCMetadataVerifier.applicableFields(
+                    plan.renderAndWrite.verificationFields,
+                    expected: item.resolvedMetadata
+                ),
                 mismatchedFields: [],
                 failure: nil
             ))

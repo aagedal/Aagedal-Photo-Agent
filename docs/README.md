@@ -18,7 +18,7 @@ own scope, tasks, exit gates, and technical decisions.
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; automated orientation/view/report transform coverage expanded; release hardening remains | Close manual fixture/color, accessibility, display/HDR, performance, security, recovery, and packaging gates |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline writes are now independent from localized Title, while release hardening and hands-on usability follow-up remain | Complete unified Caption/field customization, the localized `rdf:Alt` carrier decision, and external interoperability, real-server, device, accessibility, and first-use Deadline drills |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, unified metadata-field customization, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline and every localized Title alternative now round-trip independently, while Sony Alpha voice-memo support is planned and release hardening remains | Complete Sony voice-memo sample research and implementation plus external interoperability, real-server, device, accessibility, and first-use Deadline drills |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, immutable report evidence, and the supported-arm64 automated boundary matrix are implemented; interactive release validation remains | Validate live and reported rays across actual map styles, camera interactions, rapid time changes, offline behavior, and accessibility paths |
 
 ## Default delivery order
@@ -27,8 +27,9 @@ own scope, tasks, exit gates, and technical decisions.
    immutable report snapshot, and rendering behavior are foundations for later analysis features.
 2. Close journalistic workflow release hardening. Caption Workspace, Batch Rename, Deadline Mode,
    and verified delivery now share the field model, preservation policy, validation engine, and
-   recovery boundaries; remaining work is the final support-ledger model decisions plus external
-   interoperability, real-environment, accessibility, and current-source full-suite evidence.
+   recovery boundaries; remaining work is the final support-ledger model decisions, planned Sony
+   Alpha voice-memo ingest/transcription, plus external interoperability, real-environment,
+   accessibility, and current-source full-suite evidence.
 3. Finish solar-overlay release validation after the implemented calculator, persistence, controls,
    live-map rendering, and report-evidence phases. It remains a bounded map/report feature and does
    not block the journalistic workflow.
@@ -71,6 +72,12 @@ selected:
   migration, security, and recovery.
 - [Wireframes](v2.3/wireframes.md) — interaction and layout references.
 - `phase-*-validation.md` — dated implementation and validation records.
+- [Analysis and named-version storage ADR](v2.3/adr-001-analysis-version-storage.md) — folder-local
+  app-private JSON, Application Support fallback, and atomic recovery policy.
+- [Exact source revision identity ADR](v2.3/adr-002-source-revision-identity.md) — authoritative hash
+  binding, discovery hints, and reassociation boundaries.
+- [Named-version save semantics ADR](v2.3/adr-003-named-version-save-semantics.md) — JSON snapshot,
+  durable flush, and verified Primary-promotion policy.
 - [Map report evidence ADR](v2.3/adr-004-map-report-evidence.md) — map imagery and report policy.
 
 ## Journalistic metadata document set
@@ -120,6 +127,9 @@ Supporting documents:
   exact structured-XMP evidence.
 - [Ordered Creator and typed Date Created validation](metadata-creator-date-validation.md) — ordered
   XMP/IIM creators, compatibility aliases, precision/timezone semantics, and embedded read-back.
+- [Headline and localized Title validation](metadata-headline-localized-title-validation.md) —
+  independent Headline semantics, ordered `rdf:Alt` preservation, legacy migration, explicit-clear
+  persistence, and embedded/export/delivery/read-back evidence.
 - [Accessibility and keyboard audit](accessibility-keyboard-audit-validation.md) — workspace
   semantics, adaptive controls, assignable culling profiles, conflict routing, and manual limits.
 - [Batch Rename original-filename validation](batch-rename-original-filename-validation.md) —
@@ -133,6 +143,8 @@ Supporting documents:
   focus routing, concise fresh-install defaults, and the direct Metadata Settings affordance.
 - [IPTC metadata field guidance validation](metadata-field-guidance-validation.md) — exhaustive
   localized editorial-use/example copy shared by Metadata panel hover help and accessibility hints.
+- [Metadata field customization validation](metadata-field-customization-validation.md) — unified
+  ordering/visibility/requirement controls, durable order, migration, and unknown-field recovery.
 - [Editorial container fixture validation](editorial-container-fixture-validation.md) — generated
   TIFF/PNG/JPEG XL and RAW-sidecar corpus, pixel/codestream preservation, and HEIC boundary.
 - [Caption termination durability validation](caption-termination-durability-validation.md) —

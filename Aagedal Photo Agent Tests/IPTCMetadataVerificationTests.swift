@@ -200,6 +200,42 @@ struct IPTCMetadataVerificationTests {
         #expect(IPTCMetadataVerifier.compare(expected: expected, actual: actual).isMatch)
     }
 
+    @Test("localized Titles verify language, value, and order while nil remains no-op")
+    func localizedTitleSemantics() {
+        let norwegian = LocalizedMetadataText(languageTag: "nb-NO", value: "Norsk")
+        let nynorsk = LocalizedMetadataText(languageTag: "nn", value: "Nynorsk")
+        let expected = IPTCMetadata(localizedTitles: [norwegian, nynorsk])
+
+        #expect(IPTCMetadataVerifier.compare(
+            expected: expected,
+            actual: expected,
+            fields: [.localizedTitles]
+        ).isMatch)
+        let reordered = IPTCMetadata(localizedTitles: [nynorsk, norwegian])
+        let report = IPTCMetadataVerifier.compare(
+            expected: expected,
+            actual: reordered,
+            fields: [.localizedTitles]
+        )
+        #expect(report.differences.first?.field == .localizedTitles)
+        #expect(report.differences.first?.rule == .orderedLocalizedText)
+
+        let unmodeled = IPTCMetadataVerifier.compare(
+            expected: IPTCMetadata(),
+            actual: expected,
+            fields: [.localizedTitles]
+        )
+        #expect(unmodeled.isMatch)
+        #expect(unmodeled.checkedFields.isEmpty)
+        let cleared = IPTCMetadataVerifier.compare(
+            expected: IPTCMetadata(localizedTitles: []),
+            actual: IPTCMetadata(),
+            fields: [.localizedTitles]
+        )
+        #expect(cleared.isMatch)
+        #expect(cleared.checkedFields == [.localizedTitles])
+    }
+
     @Test("Scene NewsCodes URI and QCode aliases compare as canonical unordered values")
     func controlledURIAliases() {
         var expected = IPTCMetadata(sceneCodes: ["010100", "012400"])

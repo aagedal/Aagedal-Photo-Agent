@@ -25,6 +25,8 @@ nonisolated private func unwrapXMPValue(_ value: XMPValue) -> Any {
     case .simple(let s):              return s
     case .array(let items):           return items
     case .langAlternative(let s):     return s
+    case .languageAlternative(let items):
+        return items.map { ["languageTag": $0.language, "value": $0.value] }
     case .structure(let fields):      return unwrapXMPStruct(fields)
     case .structuredArray(let items): return items.map(unwrapXMPStruct)
     }
@@ -84,6 +86,14 @@ extension ImageMetadata {
         // MARK: XMP
 
         if let xmp {
+            if let values = xmp.languageAlternativeValue(
+                namespace: XMPNamespace.dc,
+                property: "title"
+            ) {
+                dict[MetadataDictKey.localizedTitle] = values.map {
+                    ["languageTag": $0.language, "value": $0.value]
+                }
+            }
             if let v = xmp.title { dict[MetadataDictKey.title] = v }
             if let v = xmp.description { dict[MetadataDictKey.description] = v }
             if let v = xmp.extendedDescription { dict[MetadataDictKey.extDescrAccessibility] = v }

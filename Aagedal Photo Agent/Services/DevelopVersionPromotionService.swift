@@ -221,7 +221,7 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
             ) {
                 func removingIncidentalSyncIDs(_ value: XMPValue) -> XMPValue {
                     switch value {
-                    case .simple, .array, .langAlternative:
+                    case .simple, .array, .langAlternative, .languageAlternative:
                         value
                     case let .structure(fields):
                         .structure(fields.reduce(into: [:]) { result, entry in

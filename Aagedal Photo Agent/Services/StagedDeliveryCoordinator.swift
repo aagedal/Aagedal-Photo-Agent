@@ -509,11 +509,15 @@ actor StagedDeliveryCoordinator {
                     results: results
                 )
                 try checkCancellation()
+                let applicableVerificationFields = IPTCMetadataVerifier.applicableFields(
+                    request.plan.renderAndWrite.verificationFields,
+                    expected: item.resolvedMetadata
+                )
                 let report = try await metadataVerifier.verify(
                     stagedBytes,
                     stagedURL,
                     item.resolvedMetadata,
-                    request.plan.renderAndWrite.verificationFields
+                    applicableVerificationFields
                 )
                 try checkCancellation()
                 results[index].checkedFields = report.checkedFields

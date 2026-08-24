@@ -23,7 +23,10 @@ struct StagedDeliveryCoordinatorTests {
         #expect(result.items.map(\.stagedSHA256).allSatisfy { hash in
             hash?.count == 64 && hash?.lowercased() == hash
         })
-        #expect(result.items.allSatisfy { $0.checkedFields == IPTCMetadataVerificationField.writableFields })
+        let applicableFields = IPTCMetadataVerificationField.writableFields.filter {
+            $0 != .localizedTitles
+        }
+        #expect(result.items.allSatisfy { $0.checkedFields == applicableFields })
         #expect(result.items.allSatisfy { $0.mismatchedFields.isEmpty })
         #expect(result.items.allSatisfy { $0.metadataPreservation?.isAcceptableForDelivery == true })
 
@@ -237,7 +240,9 @@ struct StagedDeliveryCoordinatorTests {
         #expect(result.status == .failed)
         #expect(result.items[0].failure?.code == .metadataMismatch)
         #expect(result.items[0].mismatchedFields == [.headline])
-        #expect(result.items[0].checkedFields == IPTCMetadataVerificationField.writableFields)
+        #expect(result.items[0].checkedFields == IPTCMetadataVerificationField.writableFields.filter {
+            $0 != .localizedTitles
+        })
         #expect(result.items[0].stagedSHA256 == nil)
         #expect((await harness.snapshot()).removedDirectories.isEmpty)
     }

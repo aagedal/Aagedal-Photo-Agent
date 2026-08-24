@@ -49,6 +49,27 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(layout.secondary == [.countryCode, .urgency])
     }
 
+    @Test("non-Deadline layout and keyboard path preserve global customization order")
+    func customizedGlobalFieldLayout() {
+        let configuration = DeadlineCaptionFieldConfiguration(
+            orderedFieldIDs: [.countryCode, .headline, .urgency, .description],
+            visibleFieldIDs: [.countryCode, .headline, .urgency, .description]
+        )
+        let layout = CaptionWorkspaceFieldLayout.make(
+            configuration: configuration,
+            groupsSecondaryFields: false
+        )
+
+        #expect(layout.priority == [.countryCode, .headline, .urgency, .description])
+        #expect(layout.secondary.isEmpty)
+        #expect(CaptionKeyboardOrder(priorityFields: layout.priority).surfaces.prefix(4) == [
+            .priorityField(.countryCode),
+            .priorityField(.headline),
+            .priorityField(.urgency),
+            .priorityField(.description),
+        ])
+    }
+
     @Test("headline and caption counts use the narrowest optional profile limit")
     func fieldCountsAndLimits() {
         let profile = MetadataValidationProfile(name: "Caption", rules: [
@@ -254,7 +275,8 @@ struct CaptionWorkspaceSpeedToolsTests {
         }
         #expect(caption.contains("@State private var showsAllFields = false"))
         #expect(caption.contains("actionableFields: Set(layout.priority + layout.secondary)"))
-        #expect(caption.contains("settingsViewModel.isIPTCMetadataFieldVisible"))
+        #expect(caption.contains("settingsViewModel.orderedIPTCMetadataFields"))
+        #expect(caption.contains("settingsViewModel.visibleIPTCMetadataFieldsInOrder"))
         #expect(caption.contains("caption.metadataChecklist.nextIssue"))
         #expect(caption.contains("caption.metadataChecklist.noActionableIssue"))
         #expect(caption.contains("caption.metadataChecklist.ready"))
@@ -299,6 +321,20 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(settings.contains(".onChange(of: settingsViewModel.requestedDestination)"))
         #expect(settings.contains("case .metadata: selection = .metadata"))
         #expect(settings.contains("settingsViewModel.requestedDestination = nil"))
+        #expect(settings.contains("RequiredMetadataFieldsSection(settingsViewModel: settingsViewModel)"))
+
+        let customization = try source("Aagedal Photo Agent/Views/Settings/RequiredMetadataFieldsSection.swift")
+        #expect(customization.contains("settingsViewModel.orderedIPTCMetadataFields"))
+        #expect(customization.contains(".draggable(field.rawValue)"))
+        #expect(customization.contains(".dropDestination(for: String.self)"))
+        #expect(customization.contains("Validation for \\(field.displayName)"))
+        #expect(customization.contains("Move \\(field.displayName) up"))
+        #expect(customization.contains("Move \\(field.displayName) down"))
+        #expect(customization.contains("Warn and Require continue to validate hidden fields"))
+
+        #expect(panel.contains("settingsViewModel.visibleIPTCMetadataFieldsInOrder"))
+        #expect(panel.contains("editablePrimaryMetadataField(field)"))
+        #expect(panel.contains("editableAdditionalMetadataField(field)"))
     }
 
     @Test("every stable IPTC field has concise localized guidance")

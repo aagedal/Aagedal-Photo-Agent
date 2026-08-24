@@ -62,6 +62,7 @@ boundaries.
 
 | Read-back field | Semantic comparison |
 | --- | --- |
+| `localizedTitles` | language-tagged text alternatives; sequence order retained |
 | `creatorContactInfo` | normalized structured contact |
 | `locationsCreated` | unique normalized locations; order ignored |
 | `locationsShown` | unique normalized locations; order ignored |

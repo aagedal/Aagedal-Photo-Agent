@@ -2660,6 +2660,7 @@ struct ContentView: View {
         let source = metadataViewModel.editingMetadata
         browserViewModel.copiedIPTCMetadata = IPTCMetadata(
             title: source.title,
+            localizedTitles: source.localizedTitles,
             description: source.description,
             extendedDescription: source.extendedDescription,
             keywords: source.keywords,
@@ -2707,8 +2708,13 @@ struct ContentView: View {
 
         guard browserViewModel.currentFolderURL != nil else { return }
 
+        // Preserve the historical no-op for a completely blank copied record while allowing a
+        // structured-only record (including localized Title intent) to reach the writer.
+        guard copied.hasDescriptiveContent else { return }
         let fields = copied.toWriteFields()
-        guard !fields.isEmpty else { return }
+        let structuredData = StructuredWriteData(
+            editorial: EditorialStructuredWriteData(metadata: copied)
+        )
 
         let c2paImages = selected.filter { $0.hasC2PA }
         let normalImages = selected.filter { !$0.hasC2PA }
@@ -2721,9 +2727,7 @@ struct ContentView: View {
                     try await browserViewModel.writeEngine.writeFields(
                         fields,
                         to: normalURLs,
-                        structuredData: StructuredWriteData(
-                            editorial: EditorialStructuredWriteData(metadata: copied)
-                        )
+                        structuredData: structuredData
                     )
                 } catch {
                     browserViewModel.errorMessage = "Failed to paste IPTC: \(error.localizedDescription)"

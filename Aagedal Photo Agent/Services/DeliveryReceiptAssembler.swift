@@ -119,7 +119,7 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
                 deliveredByteSize: Int64(byteCount),
                 metadataVerification: DeliveryMetadataVerificationResult(
                     outcome: .verified,
-                    controlledFieldIdentifiers: plan.renderAndWrite.verificationFields,
+                    controlledFieldIdentifiers: stagedItem.checkedFields,
                     issueIdentifiers: []
                 ),
                 renderSettings: try validatedRenderSettings(
@@ -188,12 +188,16 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
                 throw DeliveryReceiptAssemblyError.stagingItemCountMismatch
             }
             let staged = result.items[item.itemIndex]
+            let applicableVerificationFields = IPTCMetadataVerifier.applicableFields(
+                plan.renderAndWrite.verificationFields,
+                expected: item.resolvedMetadata
+            )
             guard staged.itemIndex == item.itemIndex,
                   staged.stageInputFingerprint == item.stageInputFingerprint,
                   staged.stagedRelativePath == item.stagedRelativePath,
                   staged.stage == .verified,
                   staged.failure == nil,
-                  staged.checkedFields == plan.renderAndWrite.verificationFields,
+                  staged.checkedFields == applicableVerificationFields,
                   staged.mismatchedFields.isEmpty,
                   let byteCount = staged.stagedByteCount,
                   byteCount >= 0,
