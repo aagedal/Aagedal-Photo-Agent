@@ -18,6 +18,9 @@ scope rendering, resizable one/two/four-up scopes, selected-region scope input, 
 channel/relative-luminance views, calibrated compression residuals, and cost-bounded, cancellable
 derived-view rendering integrated into Image Analysis; automated HDR/SDR, alpha, orientation, crop,
 and malformed-source validation is complete, while fixture-corpus visual validation remains open.
+Analysis cases and the working-folder map now prefer portable `.photo_analysis` storage, fall back
+to an indexed local Application Support store only when the photo folder is read-only, and show a
+portability warning while fallback storage is active.
 Phase 4 has started with normalized, source-bound annotation persistence and schema migrations for
 line, arrow, distance, rectangle, ellipse, and label markup, plus a bounded photo-surface undo/redo
 history with persistent transactions and standard keyboard shortcuts. Source-pixel distance labels
@@ -86,7 +89,8 @@ Apple Maps and OpenStreetMap now render the same viewport-scaled, true-north dir
 adding them to evidence annotations or undo history. Immutable schema-4 report snapshots now freeze
 validated solar inputs, outputs, method, and provenance, and the PDF uses the shared ray geometry
 with a calculation table, methodology, and explicit limitations. Manual map-camera, style-switch,
-accessibility, architecture, and live-versus-report validation remains before release.
+accessibility, and live-versus-report validation remains before release; the arm64 automated run
+covers the product's Apple-Silicon-only architecture support.
 Phase 7 now includes the reusable comparison session/coordinator and a Browser workspace for exactly
 two selected images. Side-by-side, stacked, and angled-wipe layouts share synchronized fit, true-pixel, and
 custom viewport state with deliberate alignment offsets. The focused pane can be replaced in visible
@@ -390,9 +394,9 @@ Detailed sequencing and gates are in [delivery-plan.md](delivery-plan.md).
 
 These decisions should be resolved during F0 before their dependent phase begins:
 
-1. Should analysis cases live beside the image in a hidden folder or in Application Support
-   with a folder-local pointer? The recommendation is folder-local by default for portability,
-   with Application Support fallback for read-only locations.
+1. **Resolved:** analysis cases live beside the image in `.photo_analysis` by default. Read-only
+   photo folders use an indexed Application Support fallback and show a portability warning; the
+   fallback is local-only and does not silently enter portable settings sync.
 2. Should the report embed the full source image, a bounded preview, or only annotated crops?
    The recommendation is a bounded preview plus user-selected evidence crops.
 3. Should satellite imagery be limited to MapKit, and can snapshots be redistributed inside
@@ -433,3 +437,4 @@ silently redefine forensic claims or persistence behavior in code.
 | 2026-07-30 | Use a fixed ImageIO JPEG 0.90 re-encode with a 12× linear-sRGB absolute difference for the baseline compression residual | Makes the view reproducible and labelable while avoiding any unsupported manipulation verdict; Analysis uses a bounded 2,048-pixel preview and composites alpha over 50% gray |
 | 2026-08-02 | Use one shared OSINT markup bar and treat annotation labels as optional identity on every geometry | Keeps authoring consistent across photo/map surfaces and lets non-text photo evidence participate in stable map links |
 | 2026-08-02 | Store untimed investigator notes separately from timestamp evidence | Avoids fabricating a date while retaining case-only observations in report inputs |
+| 2026-08-23 | Prefer folder-local analysis persistence with an indexed Application Support fallback for read-only photo folders | Keeps cases portable when possible without making the investigation workspace unusable or repeatedly requesting access when the folder cannot be written |

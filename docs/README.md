@@ -19,7 +19,7 @@ own scope, tasks, exit gates, and technical decisions.
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; automated orientation/view/report transform coverage expanded; release hardening remains | Close manual fixture/color, accessibility, display/HDR, performance, security, recovery, and packaging gates |
 | Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, Batch Rename, Deadline preflight/delivery, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline writes are now independent from localized Title, while release hardening and hands-on usability follow-up remain | Simplify Deadline and Caption/field customization, complete the localized `rdf:Alt` carrier decision, and perform external interoperability, real-server, device, and accessibility drills |
-| SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, immutable report evidence, and the arm64 automated boundary matrix are implemented; interactive release validation remains | Validate live and reported rays across actual map styles, camera interactions, rapid time changes, offline behavior, a second architecture, and accessibility paths |
+| SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, immutable report evidence, and the supported-arm64 automated boundary matrix are implemented; interactive release validation remains | Validate live and reported rays across actual map styles, camera interactions, rapid time changes, offline behavior, and accessibility paths |
 
 ## Default delivery order
 
@@ -126,6 +126,11 @@ Supporting documents:
   availability matrix and the smallest external actions for the remaining real-world gates.
 - [Caption Workspace speed-tools validation](caption-workspace-speed-tools-validation.md) — edited
   preview, profile navigator, durable actions, shortcuts, confirmed people, and prose checking.
+- [Caption Workspace compact-checklist validation](caption-workspace-checklist-validation.md) —
+  collapsed field navigation, persistent readiness/next-issue remediation, and visibility-aware
+  focus routing, concise fresh-install defaults, and the direct Metadata Settings affordance.
+- [IPTC metadata field guidance validation](metadata-field-guidance-validation.md) — exhaustive
+  localized editorial-use/example copy shared by Metadata panel hover help and accessibility hints.
 - [Editorial container fixture validation](editorial-container-fixture-validation.md) — generated
   TIFF/PNG/JPEG XL and RAW-sidecar corpus, pixel/codestream preservation, and HEIC boundary.
 - [Caption termination durability validation](caption-termination-durability-validation.md) —

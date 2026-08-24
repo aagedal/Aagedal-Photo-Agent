@@ -1755,10 +1755,30 @@ private extension AnalysisSolarMapRayKind {
     }
 }
 
-nonisolated private struct AnalysisSolarDayRequest: Equatable, Sendable {
+/// Cache identity for the event calculation shared by all minute previews on one civil day.
+nonisolated struct AnalysisSolarDayRequest: Equatable, Sendable {
     let coordinate: AnalysisGeoCoordinate
     let civilDayRepresentativeInstant: Date
     let utcOffsetMinutes: Int
+
+    init?(coordinate: AnalysisGeoCoordinate?, timestamp: AnalysisTimestampValue) {
+        guard let coordinate,
+              coordinate.isValid,
+              timestamp.validate(),
+              timestamp.timezoneKnown,
+              timestamp.precision != .day else { return nil }
+        var representative = timestamp
+        representative.hour = 12
+        representative.minute = 0
+        representative.second = 0
+        representative.nanosecond = 0
+        representative.precision = .minute
+        guard let instant = representative.resolvedInstant,
+              let utcOffsetMinutes = representative.utcOffsetMinutes else { return nil }
+        self.coordinate = coordinate
+        civilDayRepresentativeInstant = instant
+        self.utcOffsetMinutes = utcOffsetMinutes
+    }
 }
 
 nonisolated private struct AnalysisSolarMapPreview: Equatable, Sendable {
@@ -1767,15 +1787,11 @@ nonisolated private struct AnalysisSolarMapPreview: Equatable, Sendable {
     let day: AnalysisSolarDay
 }
 
-nonisolated private struct AnalysisSolarPreviewConfiguration: Equatable, Sendable {
-    let coordinate: AnalysisGeoCoordinate
-    let timestamp: AnalysisTimestampValue
-    let isVisible: Bool
-    let showsSunDirection: Bool
-    let showsShadowDirection: Bool
-    let showsSunriseDirection: Bool
-    let showsSunsetDirection: Bool
-    let shadowObjectHeightMeters: Double?
+nonisolated private struct AnalysisSolarPreviewRequest: Equatable, Sendable {
+    let overlay: AnalysisSolarOverlayState
+    let origin: AnalysisGeoCoordinate
+    let instant: Date
+    let calculatedCivilDay: AnalysisSolarDay
 }
 
 nonisolated private struct AnalysisSolarPreviewError: LocalizedError {
@@ -1850,7 +1866,10 @@ private struct AnalysisSolarControls: View {
         _shadowObjectHeightMeters = State(
             initialValue: overlay?.shadowObjectHeightMeters ?? 1
         )
-        let request = Self.dayRequest(location: location, timestamp: initialTimestamp)
+        let request = AnalysisSolarDayRequest(
+            coordinate: location?.coordinate,
+            timestamp: initialTimestamp
+        )
         _calculatedDayRequest = State(initialValue: request)
         _calculatedDay = State(initialValue: request.flatMap(Self.calculateDay))
         _calculationErrorMessage = State(initialValue: nil)
@@ -1901,23 +1920,19 @@ private struct AnalysisSolarControls: View {
         guard calculatedDayRequest == request,
               let calculatedDay else { return nil }
         return Result {
-            let position = try AnalysisSolarPositionCalculator.position(
+            try AnalysisSolarPositionCalculator.updatingPosition(
+                in: calculatedDay,
                 at: instant,
                 coordinate: coordinate
-            )
-            return AnalysisSolarDay(
-                position: position,
-                sunrise: calculatedDay.sunrise,
-                solarNoon: calculatedDay.solarNoon,
-                sunset: calculatedDay.sunset,
-                polarCondition: calculatedDay.polarCondition,
-                method: calculatedDay.method
             )
         }
     }
 
     private var solarDayRequest: AnalysisSolarDayRequest? {
-        Self.dayRequest(location: location, timestamp: effectiveTimestamp)
+        AnalysisSolarDayRequest(
+            coordinate: location?.coordinate,
+            timestamp: effectiveTimestamp
+        )
     }
 
     private var canApply: Bool {
@@ -1944,17 +1959,18 @@ private struct AnalysisSolarControls: View {
         )
     }
 
-    private var previewConfiguration: AnalysisSolarPreviewConfiguration? {
-        guard let coordinate = location?.coordinate else { return nil }
-        return AnalysisSolarPreviewConfiguration(
-            coordinate: coordinate,
-            timestamp: effectiveTimestamp,
-            isVisible: isVisible,
-            showsSunDirection: showsSunDirection,
-            showsShadowDirection: showsShadowDirection,
-            showsSunriseDirection: showsSunriseDirection,
-            showsSunsetDirection: showsSunsetDirection,
-            shadowObjectHeightMeters: shadowObjectHeightMeters
+    private var previewRequest: AnalysisSolarPreviewRequest? {
+        guard let origin = location?.coordinate,
+              let instant = effectiveTimestamp.resolvedInstant,
+              draftOverlay.validate(),
+              let request = solarDayRequest,
+              calculatedDayRequest == request,
+              let calculatedDay else { return nil }
+        return AnalysisSolarPreviewRequest(
+            overlay: draftOverlay,
+            origin: origin,
+            instant: instant,
+            calculatedCivilDay: calculatedDay
         )
     }
 
@@ -2006,8 +2022,8 @@ private struct AnalysisSolarControls: View {
         .task(id: solarDayRequest) {
             refreshCalculatedDay()
         }
-        .task(id: previewConfiguration) {
-            publishPreview()
+        .task(id: previewRequest) {
+            publishPreview(previewRequest)
         }
         .onChange(of: selectedEvidenceID) { _, identifier in
             guard let identifier,
@@ -2312,51 +2328,25 @@ private struct AnalysisSolarControls: View {
         }
     }
 
-    private func publishPreview() {
-        guard let coordinate = location?.coordinate,
-              let instant = effectiveTimestamp.resolvedInstant,
-              let utcOffsetMinutes = effectiveTimestamp.utcOffsetMinutes,
-              draftOverlay.validate() else {
+    private func publishPreview(_ request: AnalysisSolarPreviewRequest?) {
+        guard let request else {
             onPreview(nil)
             return
         }
         do {
-            let calculatedDay = try AnalysisSolarPositionCalculator.calculate(
-                input: AnalysisSolarInput(instant: instant, coordinate: coordinate),
-                civilDayOffsetMinutes: utcOffsetMinutes
+            let previewDay = try AnalysisSolarPositionCalculator.updatingPosition(
+                in: request.calculatedCivilDay,
+                at: request.instant,
+                coordinate: request.origin
             )
             onPreview(AnalysisSolarMapPreview(
-                overlay: draftOverlay,
-                origin: coordinate,
-                day: calculatedDay
+                overlay: request.overlay,
+                origin: request.origin,
+                day: previewDay
             ))
         } catch {
             onPreview(nil)
         }
-    }
-
-    private static func dayRequest(
-        location: AnalysisLocationEvidence?,
-        timestamp: AnalysisTimestampValue
-    ) -> AnalysisSolarDayRequest? {
-        guard let coordinate = location?.coordinate,
-              coordinate.isValid,
-              timestamp.validate(),
-              timestamp.timezoneKnown,
-              timestamp.precision != .day else { return nil }
-        var representative = timestamp
-        representative.hour = 12
-        representative.minute = 0
-        representative.second = 0
-        representative.nanosecond = 0
-        representative.precision = .minute
-        guard let instant = representative.resolvedInstant,
-              let utcOffsetMinutes = representative.utcOffsetMinutes else { return nil }
-        return AnalysisSolarDayRequest(
-            coordinate: coordinate,
-            civilDayRepresentativeInstant: instant,
-            utcOffsetMinutes: utcOffsetMinutes
-        )
     }
 
     private static func calculateDay(_ request: AnalysisSolarDayRequest) -> AnalysisSolarDay? {

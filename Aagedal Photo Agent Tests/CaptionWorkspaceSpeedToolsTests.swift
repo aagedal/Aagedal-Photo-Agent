@@ -75,6 +75,72 @@ struct CaptionWorkspaceSpeedToolsTests {
         ) == 64)
     }
 
+    @Test("compact checklist keeps shared readiness and next-issue ordering")
+    func compactChecklistSummary() {
+        let imageURL = URL(fileURLWithPath: "/caption/a.jpg")
+        let warning = MetadataValidationIssue(
+            id: "description.warning",
+            imageURL: imageURL,
+            field: .description,
+            severity: .warning,
+            message: "Description needs attention.",
+            technicalDetail: nil
+        )
+        let firstBlocker = MetadataValidationIssue(
+            id: "headline.blocker",
+            imageURL: imageURL,
+            field: .headline,
+            severity: .blocker,
+            message: "Headline is required.",
+            technicalDetail: nil
+        )
+        let laterBlocker = MetadataValidationIssue(
+            id: "creator.blocker",
+            imageURL: imageURL,
+            field: .creator,
+            severity: .blocker,
+            message: "Creator is required.",
+            technicalDetail: nil
+        )
+
+        let blocked = CaptionWorkspaceChecklistSummary.make(report: MetadataValidationReport(
+            issues: [warning, firstBlocker, laterBlocker]
+        ))
+        #expect(blocked.readiness == .blocked)
+        #expect(blocked.blockerCount == 2)
+        #expect(blocked.warningCount == 1)
+        #expect(blocked.informationCount == 0)
+        #expect(blocked.nextIssue == firstBlocker)
+
+        let visibleOnly = CaptionWorkspaceChecklistSummary.make(
+            report: MetadataValidationReport(issues: [firstBlocker, warning]),
+            actionableFields: [.description]
+        )
+        #expect(visibleOnly.readiness == .blocked)
+        #expect(visibleOnly.blockerCount == 1)
+        #expect(visibleOnly.nextIssue == warning)
+
+        let noVisibleIssue = CaptionWorkspaceChecklistSummary.make(
+            report: MetadataValidationReport(issues: [firstBlocker]),
+            actionableFields: []
+        )
+        #expect(noVisibleIssue.readiness == .blocked)
+        #expect(noVisibleIssue.blockerCount == 1)
+        #expect(noVisibleIssue.nextIssue == nil)
+
+        let warnings = CaptionWorkspaceChecklistSummary.make(
+            report: MetadataValidationReport(issues: [warning])
+        )
+        #expect(warnings.readiness == .warnings)
+        #expect(warnings.nextIssue == warning)
+
+        let ready = CaptionWorkspaceChecklistSummary.make(
+            report: MetadataValidationReport(issues: [])
+        )
+        #expect(ready.readiness == .ready)
+        #expect(ready.nextIssue == nil)
+    }
+
     @Test("face rectangles convert from Vision bottom-left to preview top-left coordinates")
     func previewGeometry() {
         let fitted = CaptionPreviewGeometry.fittedImageRect(
@@ -181,10 +247,23 @@ struct CaptionWorkspaceSpeedToolsTests {
         let caption = try source("Aagedal Photo Agent/Views/Metadata/CaptionWorkspaceView.swift")
         for label in [
             "Previous", "Save & Next", "Write & Next", "Apply Template", "Copy Previous",
-            "Fix Next", "Full Screen", "Faces", "Secondary & Technical",
+            "Fix Next", "Full Screen", "Faces", "Metadata checks", "All metadata fields",
+            "Secondary & Technical",
         ] {
             #expect(caption.contains(label), "Missing \(label)")
         }
+        #expect(caption.contains("@State private var showsAllFields = false"))
+        #expect(caption.contains("actionableFields: Set(layout.priority + layout.secondary)"))
+        #expect(caption.contains("settingsViewModel.isIPTCMetadataFieldVisible"))
+        #expect(caption.contains("caption.metadataChecklist.nextIssue"))
+        #expect(caption.contains("caption.metadataChecklist.noActionableIssue"))
+        #expect(caption.contains("caption.metadataChecklist.ready"))
+        #expect(caption.contains("caption.metadataChecklist.disclosure"))
+        #expect(caption.contains("Additional IPTC fields can be enabled in Settings → Metadata."))
+        #expect(caption.contains("Button(\"Metadata Settings…\")"))
+        #expect(caption.contains("settingsViewModel.requestedDestination = .metadata"))
+        #expect(caption.contains("openSettings()"))
+        #expect(caption.contains("caption.metadataSettings"))
         #expect(caption.contains("CaptionWorkspaceFlushCoordinator.shared.flush()"))
         #expect(caption.contains("preservingEditorFocus"))
         #expect(caption.contains("CaptionAdvanceShortcutRouter.resolve"))
@@ -215,6 +294,64 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(autocomplete.contains(".onKeyPress(.escape)"))
         #expect(codeReplacement.components(separatedBy: ".onKeyPress(.escape)").count >= 3)
         #expect(template.contains(".onKeyPress(.escape)"))
+
+        let settings = try source("Aagedal Photo Agent/Views/Settings/SettingsView.swift")
+        #expect(settings.contains(".onChange(of: settingsViewModel.requestedDestination)"))
+        #expect(settings.contains("case .metadata: selection = .metadata"))
+        #expect(settings.contains("settingsViewModel.requestedDestination = nil"))
+    }
+
+    @Test("every stable IPTC field has concise localized guidance")
+    func metadataFieldGuidanceCoverage() {
+        #expect(MetadataFieldID.allCases.count == 33)
+        for field in MetadataFieldID.allCases {
+            let guidance = field.guidance
+            #expect(!guidance.commonUse.isEmpty, "Missing common use for \(field)")
+            #expect(!guidance.example.isEmpty, "Missing example for \(field)")
+            #expect(guidance.commonUse.count <= 100, "Common use is not concise for \(field)")
+            #expect(guidance.example.count <= 90, "Example is not concise for \(field)")
+            #expect(guidance.helpText.contains(guidance.commonUse))
+            #expect(guidance.helpText.contains(guidance.example))
+        }
+    }
+
+    @Test("Metadata panel shares field guidance across hover and accessibility")
+    func metadataPanelGuidanceAudit() throws {
+        let model = try source("Aagedal Photo Agent/Models/MetadataFieldID.swift")
+        let panel = try source("Aagedal Photo Agent/Views/Metadata/MetadataPanel.swift")
+        let supplier = try source("Aagedal Photo Agent/Views/Metadata/ImageSupplierMetadataEditor.swift")
+
+        #expect(model.contains("String(localized:"))
+        #expect(panel.contains("private struct MetadataFieldGuidanceModifier"))
+        #expect(panel.contains(".help(helpText)"))
+        #expect(panel.contains(".accessibilityElement(children: .contain)"))
+        #expect(panel.contains(".accessibilityHint(helpText)"))
+        #expect(panel.contains(".metadataField(field)"))
+
+        let directlyComposedFields = [
+            "headline", "description", "extendedDescription", "keywords", "personShown",
+            "organisationShownName", "organisationShownCode", "copyright", "creator",
+            "rightsUsageTerms", "webStatementOfRights", "digitalImageGUID",
+            "imageSupplierImageID", "jobId", "dateCreated", "digitalSourceType", "urgency",
+            "sceneCode", "subjectCode", "mediaTopic", "genre", "credit", "city", "country",
+            "countryCode", "event",
+        ]
+        for field in directlyComposedFields {
+            #expect(panel.contains(".metadataField(.\(field))"), "Missing panel guidance for \(field)")
+        }
+
+        for field in [
+            "creatorJobTitle", "descriptionWriter", "source", "sublocation", "provinceState",
+            "instructions",
+        ] {
+            let inlineCall = "simpleAdditionalField(.\(field)"
+            let multilineArgument = ".\(field),"
+            #expect(
+                panel.contains(inlineCall) || panel.contains(multilineArgument),
+                "Missing simple editor for \(field)"
+            )
+        }
+        #expect(supplier.contains(".metadataField(.imageSupplier)"))
     }
 
     private func face(

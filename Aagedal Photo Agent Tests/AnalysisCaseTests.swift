@@ -175,6 +175,201 @@ struct AnalysisCaseTests {
         ))
     }
 
+    @Test("read-only photo folders use indexed Application Support case storage")
+    func readOnlyFolderCaseFallback() async throws {
+        let fixture = try AnalysisFixture(contents: "read-only source")
+        defer { fixture.remove() }
+        let applicationSupportURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "apa-analysis-support-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: applicationSupportURL) }
+        let sourceBefore = try Data(contentsOf: fixture.fileURL)
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let repository = AnalysisCaseRepository(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: applicationSupportURL,
+            sourceFolderIsWritable: false
+        )
+
+        let storage = try await repository.save(analysisCase)
+
+        #expect(storage == .applicationSupport)
+        #expect(storage.portabilityWarning?.contains("will not automatically travel") == true)
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.directoryURL
+                .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+                .appendingPathComponent(
+                    "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+                ).path
+        ))
+        let fallbackRoot = applicationSupportURL
+            .appendingPathComponent("AnalysisCases", isDirectory: true)
+        #expect(FileManager.default.fileExists(
+            atPath: fallbackRoot
+                .appendingPathComponent("cases", isDirectory: true)
+                .appendingPathComponent(
+                    "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+                ).path
+        ))
+        let indexURL = fallbackRoot.appendingPathComponent("index.analysis.json")
+        let indexObject = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any]
+        )
+        let entries = try #require(indexObject["cases"] as? [[String: Any]])
+        let indexedSource = try #require(entries.first?["source"] as? [String: Any])
+        #expect(indexedSource["sha256"] as? String == revision.sha256)
+
+        let reopenedRepository = AnalysisCaseRepository(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: applicationSupportURL,
+            sourceFolderIsWritable: false
+        )
+        let load = await reopenedRepository.loadMostRelevantCaseWithStorage(for: revision)
+        guard case .exact(let reopened) = load.match else {
+            Issue.record("Expected the fallback case to reopen after repository recreation")
+            return
+        }
+        #expect(reopened.id == analysisCase.id)
+        #expect(load.storage == .applicationSupport)
+        #expect(try Data(contentsOf: fixture.fileURL) == sourceBefore)
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.fileURL.deletingPathExtension().appendingPathExtension("xmp").path
+        ))
+    }
+
+    @Test("read-only folder map storage reopens from Application Support")
+    func readOnlyFolderMapFallback() async throws {
+        let fixture = try AnalysisFixture(contents: "folder map source")
+        defer { fixture.remove() }
+        let applicationSupportURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "apa-analysis-map-support-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: applicationSupportURL) }
+        let repository = AnalysisCaseRepository(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: applicationSupportURL,
+            sourceFolderIsWritable: false
+        )
+        var document = AnalysisFolderMapDocument.create(now: Date(timeIntervalSince1970: 1))
+        document.setAnnotation(AnalysisGlobalMapAnnotation(annotation: AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.91, longitude: 10.75)),
+            text: "Shared landmark",
+            now: Date(timeIntervalSince1970: 2)
+        )), now: Date(timeIntervalSince1970: 2))
+
+        let storage = try await repository.saveFolderMapDocument(document)
+        let reopenedRepository = AnalysisCaseRepository(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: applicationSupportURL,
+            sourceFolderIsWritable: false
+        )
+        let load = await reopenedRepository.loadFolderMapDocumentWithStorage()
+
+        #expect(storage == .applicationSupport)
+        #expect(load.storage == .applicationSupport)
+        #expect(load.document == document)
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.directoryURL
+                .appendingPathComponent(".photo_analysis/folder-map.analysis.json").path
+        ))
+    }
+
+    @Test("folder-local analysis wins an equal fallback revision when writing resumes")
+    func folderLocalPreferredAfterFallback() async throws {
+        let fixture = try AnalysisFixture(contents: "portable source")
+        defer { fixture.remove() }
+        let applicationSupportURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "apa-analysis-preference-support-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: applicationSupportURL) }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+
+        let fallbackRepository = AnalysisCaseRepository(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: applicationSupportURL,
+            sourceFolderIsWritable: false
+        )
+        #expect(try await fallbackRepository.save(analysisCase) == .applicationSupport)
+
+        let writableRepository = AnalysisCaseRepository(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: applicationSupportURL,
+            sourceFolderIsWritable: true
+        )
+        #expect(try await writableRepository.save(analysisCase) == .folderLocal)
+        let load = await writableRepository.loadMostRelevantCaseWithStorage(for: revision)
+        #expect(load.storage == .folderLocal)
+    }
+
+    @Test("newer fallback index blocks an older writer")
+    func newerFallbackIndexBlocksSave() async throws {
+        let fixture = try AnalysisFixture(contents: "future index source")
+        defer { fixture.remove() }
+        let applicationSupportURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "apa-analysis-future-support-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: applicationSupportURL) }
+        let indexURL = applicationSupportURL
+            .appendingPathComponent("AnalysisCases", isDirectory: true)
+            .appendingPathComponent("index.analysis.json")
+        try FileManager.default.createDirectory(
+            at: indexURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"schemaVersion":2,"cases":[],"folderMaps":[]}"#.utf8)
+            .write(to: indexURL)
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let repository = AnalysisCaseRepository(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: applicationSupportURL,
+            sourceFolderIsWritable: false
+        )
+
+        await #expect(throws: AtomicJSONDocumentStoreError.newerSchemaRequiresReadOnly(
+            found: 2,
+            supported: 1
+        )) {
+            try await repository.save(AnalysisCase.create(for: revision, appBuild: "test"))
+        }
+    }
+
+    @Test("workspace stays usable and exposes fallback portability state")
+    func workspaceUsesFallbackStorage() async throws {
+        let fixture = try AnalysisFixture(contents: "workspace fallback source")
+        defer { fixture.remove() }
+        let applicationSupportURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "apa-analysis-workspace-support-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: applicationSupportURL) }
+        let counter = AnalysisInvocationCounter()
+        let model = AnalysisWorkspaceModel(
+            analyzers: [ImmediateAnalysisAnalyzer(counter: counter)],
+            repositoryFactory: { folderURL in
+                AnalysisCaseRepository(
+                    sourceFolderURL: folderURL,
+                    applicationSupportURL: applicationSupportURL,
+                    sourceFolderIsWritable: false
+                )
+            }
+        )
+
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+
+        #expect(model.analysisCase != nil)
+        #expect(model.caseStorage == .applicationSupport)
+        #expect(model.storagePortabilityWarning?.contains("Application Support") == true)
+        #expect(counter.count == 1)
+    }
+
     @Test("repository surfaces a changed source instead of silently rebinding its case")
     func detectsChangedSource() async throws {
         let fixture = try AnalysisFixture(contents: "before")

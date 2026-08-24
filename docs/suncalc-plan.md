@@ -10,9 +10,9 @@ with explicit inputs, reproducible calculations, and conservative evidence langu
 calculation contract, original Swift implementation, first numerical corpus, schema-9 persistence
 contract, and OSINT controls are complete. Apple Maps and OpenStreetMap now share the same derived
 solar-ray geometry, and schema-4 report snapshots freeze validated inputs, outputs, provenance, and
-matching report rays. The automatable Phase 6 numerical, lifecycle, map-style-state, and cross-format
-report checks are complete on arm64; interactive, accessibility, offline, visual-comparison, and
-second-architecture validation remain open.
+matching report rays. The automatable Phase 6 numerical, lifecycle, slider-cache, map-style-state,
+and cross-format report checks are complete on the supported arm64 architecture; interactive,
+accessibility, offline, and visual-comparison validation remain open.
 
 The first release is not an authenticity verdict, a capture-time inference tool, or a simulation of
 real shadows cast by terrain and structures.
@@ -306,11 +306,12 @@ methodology, limitations, and footer clearance.
 **Exit gate:** the feature is numerically bounded, accessible, reproducible, and does not regress
 existing OSINT behavior.
 
-- [ ] Run calculator fixtures on supported macOS architectures.
+- [x] Run calculator fixtures on every supported macOS architecture (currently arm64).
 - [x] Test equatorial, mid-latitude, high-latitude, polar-day, and polar-night cases.
 - [x] Test leap day, date-line, positive/negative UTC offset, and DST-transition inputs.
 - [x] Test missing location, removed location, missing linked evidence, and source-changed cases.
-- [ ] Test rapid slider movement and repeated map-style switching.
+- [x] Stress all 1,440 slider minute positions while reusing one civil-day event solve.
+- [ ] Test rapid slider interaction and repeated map-style switching.
 - [ ] Test Apple standard, muted, hybrid, satellite, and OpenStreetMap styles.
 - [ ] Test rotated and pitched maps.
 - [ ] Verify fully offline operation after cached map content is unavailable.
@@ -319,7 +320,7 @@ existing OSINT behavior.
 - [x] Update the OSINT validation document with the approved scope and measured tolerances.
 
 **Automated validation — 2026-08-23:** On the arm64 macOS host,
-`AnalysisSolarPositionCalculatorTests` passed 21 test methods (25 parameterized invocations), three
+`AnalysisSolarPositionCalculatorTests` passed 22 test methods (26 parameterized invocations), three
 focused solar lifecycle/reproduction/report tests passed, and all 62 `AnalysisCaseTests` passed.
 The expanded corpus covers equatorial equinox, Oslo and Greenwich mid-latitudes, Tromsø below 72
 degrees, northern and southern locations above 72 degrees, both polar states, leap day, the
@@ -328,12 +329,14 @@ Report evidence now has an automated lifecycle check for absent, replaced, and r
 Location, while existing tests cover removed linked timestamp evidence and source-changed read-only
 behavior. All five persisted map-style choices produce the same shared derived geometry, and both
 A4 and US Letter solar reports pass media-box, ray-label, value, method, and limitation text
-assertions.
+assertions. A full 1,440-minute civil-day sweep now proves that slider previews retain one event
+cache identity and reuse its sunrise, solar-noon, sunset, polar state, and method while updating only
+the instantaneous position.
 
-This run validates the native arm64 architecture only. It does not constitute a manual check of
-rapid slider interaction, actual Apple/OSM style transitions, rotation, pitch, uncached offline map
-behavior, keyboard/VoiceOver behavior, or visual parity between live and reported rays. Those gates
-remain unchecked above.
+The product supports Apple Silicon only, so the arm64 run covers every supported architecture. It
+does not constitute a manual check of rapid slider interaction, actual Apple/OSM style transitions,
+rotation, pitch, uncached offline map behavior, keyboard/VoiceOver behavior, or visual parity
+between live and reported rays. Those gates remain unchecked above.
 
 ## Reference-test coverage
 

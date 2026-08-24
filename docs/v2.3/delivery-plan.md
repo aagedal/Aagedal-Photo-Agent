@@ -27,7 +27,7 @@ legally and reproducibly.
 - [ ] Evaluate candidate on-device AI-origin models and licenses; record a ship/no-ship decision.
 - [ ] Decide version treatment of decoder/process state and unparsed corrections.
 - [ ] Choose keyboard shortcuts after auditing existing shortcuts.
-- [ ] Decide folder-local vs Application Support fallback UX.
+- [x] Decide folder-local vs Application Support fallback UX.
 
 **Deliverables:** decision records, fixture inventory, benchmarks, proof-of-concept screenshots, and
 updated conditional-scope decision.

@@ -217,6 +217,11 @@ struct AnalysisWorkspaceView: View {
             workspaceHeader
             Divider()
 
+            if let warning = model.storagePortabilityWarning {
+                storagePortabilityBanner(warning)
+                Divider()
+            }
+
             if model.sourceChanged {
                 sourceChangedBanner
                 Divider()
@@ -427,6 +432,27 @@ struct AnalysisWorkspaceView: View {
         .padding(.vertical, 10)
         .background(Color.orange.opacity(0.10))
         .accessibilityElement(children: .combine)
+    }
+
+    private func storagePortabilityBanner(_ warning: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "externaldrive.badge.exclamationmark")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Analysis stored on this Mac")
+                    .font(.headline)
+                Text(warning)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.10))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("analysis.storage-portability-warning")
     }
 
     private func chooseReportDestinationAndExport(options: AnalysisReportExportOptions) {

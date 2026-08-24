@@ -516,16 +516,16 @@ termination modal and live AppKit responder behavior remain manual observations.
 The following items come from hands-on testing on 2026-08-23 and remain release work even though
 the underlying Caption, validation, and metadata-field infrastructure is implemented:
 
-- [ ] Reduce the Caption Workspace metadata-checklist footprint. Keep readiness and the next
+- [x] Reduce the Caption Workspace metadata-checklist footprint. Keep readiness and the next
   actionable issue visible, but make the complete checklist compact or collapsible so it does not
   reserve a disproportionate share of the editing area.
-- [ ] For a fresh install or an explicit reset to defaults, show only Headline, Description,
+- [x] For a fresh install or an explicit reset to defaults, show only Headline, Description,
   Keywords, Creator, Copyright Notice, Person Shown, and Rights Usage Terms. Preserve an existing
   user's customized visibility and ordering during upgrade.
-- [ ] Add a persistent footer below the visible Caption metadata fields explaining that additional
+- [x] Add a persistent footer below the visible Caption metadata fields explaining that additional
   IPTC fields can be enabled in Settings → Metadata, with a direct action to open that settings
   pane when practical.
-- [ ] Give every metadata field label concise IPTC guidance: its common editorial use plus a short
+- [x] Give every metadata field label concise IPTC guidance: its common editorial use plus a short
   example. Expose the same guidance through hover help, keyboard focus/accessibility help, and
   localization-ready copy rather than making it pointer-only.
 - [ ] Replace the separate visible/hidden and required-field management lists in Metadata Settings
@@ -535,6 +535,22 @@ the underlying Caption, validation, and metadata-field infrastructure is impleme
   independent of whether a field is currently visible.
 - [ ] Add migration/default tests, ordering persistence and unknown-field recovery tests, and UI
   coverage for the compact checklist, settings link, field guidance, and accessible reordering.
+
+**Progress — 2026-08-23:** Caption's metadata checklist now starts collapsed and retains a compact,
+always-visible readiness/count summary plus the shared engine's next actionable blocker or first
+actionable remaining issue as a direct focus action. The full priority and secondary field lists
+remain available behind native disclosure controls, and the no-Deadline-profile navigator now
+excludes fields hidden by the existing metadata visibility settings. Twelve focused speed-tool and
+guidance tests and the production app build pass; see
+[the compact-checklist validation record](caption-workspace-checklist-validation.md). Fresh-install
+and explicit-reset visibility now use the seven-field editorial default while an existing stored
+visibility choice remains authoritative during upgrade. Every stable field now supplies localized
+editorial-use/example guidance through shared Metadata panel hover help and accessibility hints;
+see [the field-guidance validation record](metadata-field-guidance-validation.md). Unified field
+management, persisted ordering, and their broader migration/accessibility coverage remain owned by
+the separate items above. A persistent footer below the editor now explains where to enable
+additional IPTC fields and opens Settings directly on its Metadata section through a consumed,
+non-persisted navigation request.
 
 ### Caption speed tools
 

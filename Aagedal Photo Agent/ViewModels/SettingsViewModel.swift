@@ -337,10 +337,16 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
 }
 
 
+nonisolated enum SettingsDestination: Equatable, Sendable {
+    case metadata
+}
+
 @Observable
 final class SettingsViewModel {
     private let c2paPersistence: any C2PASigningConfigurationPersisting
     private let pkcs12Importer: any C2PAIdentityImporting
+    /// Ephemeral navigation request consumed by the app's Settings scene.
+    var requestedDestination: SettingsDestination? = nil
     var rawRenderAsHDR: Bool {
         didSet { UserDefaults.standard.set(rawRenderAsHDR, forKey: UserDefaultsKeys.rawRenderAsHDR) }
     }
@@ -406,6 +412,10 @@ final class SettingsViewModel {
         } else {
             hiddenIPTCMetadataFields.insert(field)
         }
+    }
+
+    func resetIPTCMetadataFieldVisibility() {
+        hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(storedRawValues: nil)
     }
 
     func isDevelopSliderVisible(_ slider: DevelopSlider) -> Bool {
@@ -945,8 +955,10 @@ final class SettingsViewModel {
         self.developSectionOrder = DevelopPanelSection.decodeOrder(
             UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.developSectionOrder) ?? []
         )
-        self.hiddenIPTCMetadataFields = MetadataFieldID.decodeHidden(
-            UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields) ?? []
+        self.hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(
+            storedRawValues: UserDefaults.standard.stringArray(
+                forKey: UserDefaultsKeys.hiddenIPTCMetadataFields
+            )
         )
 
         self.defaultExternalEditor = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor) ?? ""

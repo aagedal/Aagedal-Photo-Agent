@@ -40,6 +40,8 @@ final class AnalysisWorkspaceModel {
     private(set) var sourceOrientation = 1
     private(set) var folderAnalysisCases: [AnalysisCase] = []
     private(set) var folderMapDocument = AnalysisFolderMapDocument.create()
+    private(set) var caseStorage: AnalysisCaseStorage?
+    private(set) var folderMapStorage: AnalysisCaseStorage?
     let analysisRunner: AnalysisRunner
 
     @ObservationIgnored private var repository: AnalysisCaseRepository?
@@ -50,13 +52,20 @@ final class AnalysisWorkspaceModel {
     @ObservationIgnored private var renameQuiescenceFolderURL: URL?
     @ObservationIgnored private var renameQuiescenceNeedsCaseSave = false
     @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
+    @ObservationIgnored private let repositoryFactory: (URL) -> AnalysisCaseRepository
     private var photoAnnotationHistory = AnalysisAnnotationUndoHistory()
     private var mapAnnotationHistory = AnalysisMapAnnotationUndoHistory()
     private var globalMapAnnotationHistory = AnalysisGlobalMapAnnotationUndoHistory()
 
-    init(analyzers: [any AnalysisAnalyzer]? = nil) {
+    init(
+        analyzers: [any AnalysisAnalyzer]? = nil,
+        repositoryFactory: ((URL) -> AnalysisCaseRepository)? = nil
+    ) {
         analysisRunner = AnalysisRunner()
         self.analyzers = analyzers ?? [SourceFactsAnalyzer()]
+        self.repositoryFactory = repositoryFactory ?? {
+            AnalysisCaseRepository(sourceFolderURL: $0)
+        }
         analysisRunner.onPersistableRunChanged = { [weak self] run in
             self?.persistAnalyzerRun(run)
         }
@@ -69,6 +78,13 @@ final class AnalysisWorkspaceModel {
     var displayPreference: AnalysisSourceRepresentation {
         guard hasDevelopedRepresentation else { return .original }
         return analysisCase?.displayPreference ?? .original
+    }
+
+    var storagePortabilityWarning: String? {
+        if caseStorage == .applicationSupport || folderMapStorage == .applicationSupport {
+            return AnalysisCaseStorage.applicationSupport.portabilityWarning
+        }
+        return nil
     }
 
     var sourceFactsRun: AnalysisAnalyzerRun? {
@@ -108,9 +124,8 @@ final class AnalysisWorkspaceModel {
             at: image.url,
             exifOrientation: image.exifOrientation
         )
-        let targetRepository = repository ?? AnalysisCaseRepository(
-            sourceFolderURL: image.url.deletingLastPathComponent()
-        )
+        let targetRepository = repository
+            ?? repositoryFactory(image.url.deletingLastPathComponent())
         let isCurrentSource = sourceURL?.standardizedFileURL == image.url.standardizedFileURL
         var targetCase: AnalysisCase
         if isCurrentSource,
@@ -135,7 +150,7 @@ final class AnalysisWorkspaceModel {
             saveTask?.cancel()
             await saveTask?.value
         }
-        try await targetRepository.save(targetCase)
+        let storage = try await targetRepository.save(targetCase)
 
         if let index = folderAnalysisCases.firstIndex(where: { $0.id == targetCase.id }) {
             folderAnalysisCases[index] = targetCase
@@ -145,6 +160,7 @@ final class AnalysisWorkspaceModel {
 
         if isCurrentSource {
             analysisCase = targetCase
+            caseStorage = storage
             sourceChanged = false
             photoAnnotationHistory.record(
                 before: before,
@@ -313,6 +329,9 @@ final class AnalysisWorkspaceModel {
         currentRevision = nil
         analysisCase = nil
         folderAnalysisCases = []
+        folderMapDocument = .create()
+        caseStorage = nil
+        folderMapStorage = nil
         sourceChanged = false
         loadState = .idle
         renameQuiescenceFolderURL = nil
@@ -459,13 +478,13 @@ final class AnalysisWorkspaceModel {
         globalMapAnnotationHistory.removeAll()
         folderAnalysisCases = []
         folderMapDocument = AnalysisFolderMapDocument.create()
+        caseStorage = nil
+        folderMapStorage = nil
         analysisRunner.configure(existingRuns: [])
 
         let url = image.url
         let orientation = image.exifOrientation
-        let repository = AnalysisCaseRepository(
-            sourceFolderURL: url.deletingLastPathComponent()
-        )
+        let repository = repositoryFactory(url.deletingLastPathComponent())
         self.repository = repository
 
         loadTask = Task { [weak self] in
@@ -477,13 +496,14 @@ final class AnalysisWorkspaceModel {
                     exifOrientation: orientation
                 )
                 try Task.checkCancellation()
-                let match = await repository.loadMostRelevantCase(for: revision)
+                let caseLoad = await repository.loadMostRelevantCaseWithStorage(for: revision)
                 try Task.checkCancellation()
 
                 guard let self, self.sourceURL == url else { return }
                 self.currentRevision = revision
 
-                switch match {
+                self.caseStorage = caseLoad.storage
+                switch caseLoad.match {
                 case .exact(var existing):
                     let normalizationDate = Date()
                     if AnalysisLinkedMapMarkerNaming.normalize(
@@ -495,7 +515,7 @@ final class AnalysisWorkspaceModel {
                             existing.mapState.annotations,
                             now: normalizationDate
                         )
-                        try await repository.save(existing)
+                        self.caseStorage = try await repository.save(existing)
                         try Task.checkCancellation()
                         guard self.sourceURL == url else { return }
                     }
@@ -508,7 +528,7 @@ final class AnalysisWorkspaceModel {
                     self.configureAnalysis(for: existing, autoStart: false)
                 case .none:
                     let newCase = AnalysisCase.create(for: revision)
-                    try await repository.save(newCase)
+                    self.caseStorage = try await repository.save(newCase)
                     try Task.checkCancellation()
                     self.analysisCase = newCase
                     self.sourceChanged = false
@@ -520,15 +540,16 @@ final class AnalysisWorkspaceModel {
                    var preferredCase = self.analysisCase,
                    preferredCase.workspaceMode != preferredWorkspaceMode {
                     preferredCase.setWorkspaceMode(preferredWorkspaceMode)
-                    try await repository.save(preferredCase)
+                    self.caseStorage = try await repository.save(preferredCase)
                     self.analysisCase = preferredCase
                 }
                 let folderCases = await repository.loadAllCases()
-                let folderMapDocument = await repository.loadFolderMapDocument()
+                let folderMapLoad = await repository.loadFolderMapDocumentWithStorage()
                 try Task.checkCancellation()
                 guard self.sourceURL == url else { return }
                 self.folderAnalysisCases = folderCases
-                self.folderMapDocument = folderMapDocument
+                self.folderMapDocument = folderMapLoad.document
+                self.folderMapStorage = folderMapLoad.storage
                 self.loadState = .ready
             } catch is CancellationError {
                 return
@@ -600,9 +621,10 @@ final class AnalysisWorkspaceModel {
 
         saveTask = Task { [weak self] in
             do {
-                try await repository.save(newCase)
+                let storage = try await repository.save(newCase)
                 try Task.checkCancellation()
                 guard let self, self.analysisCase?.id == newCase.id else { return }
+                self.caseStorage = storage
                 self.configureAnalysis(for: newCase, autoStart: true)
                 self.loadState = .ready
             } catch is CancellationError {
@@ -1176,7 +1198,9 @@ final class AnalysisWorkspaceModel {
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             do {
-                try await repository.save(updatedCase)
+                let storage = try await repository.save(updatedCase)
+                guard let self, self.analysisCase?.id == updatedCase.id else { return }
+                self.caseStorage = storage
             } catch is CancellationError {
                 return
             } catch {
@@ -1192,7 +1216,7 @@ final class AnalysisWorkspaceModel {
             guard let repository, let currentCase = analysisCase else { continue }
             do {
                 try currentCase.validateForPersistence()
-                try await repository.save(currentCase)
+                caseStorage = try await repository.save(currentCase)
             } catch {
                 throw AnalysisRenameQuiescenceError.persistenceFailed(
                     error.localizedDescription.isEmpty
@@ -1210,7 +1234,9 @@ final class AnalysisWorkspaceModel {
         folderMapSaveTask?.cancel()
         folderMapSaveTask = Task { [weak self] in
             do {
-                try await repository.saveFolderMapDocument(document)
+                let storage = try await repository.saveFolderMapDocument(document)
+                guard let self, self.folderMapDocument.id == document.id else { return }
+                self.folderMapStorage = storage
             } catch is CancellationError {
                 return
             } catch {

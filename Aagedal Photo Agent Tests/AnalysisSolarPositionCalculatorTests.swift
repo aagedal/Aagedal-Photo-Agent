@@ -359,6 +359,77 @@ struct AnalysisSolarPositionCalculatorTests {
         #expect(results.allSatisfy { $0 == expected })
     }
 
+    @Test("minute slider reuses one civil-day solve while updating every position")
+    func minuteSliderReusesCivilDayEvents() throws {
+        let coordinate = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)
+        let noonTimestamp = AnalysisTimestampValue(
+            year: 2026,
+            month: 6,
+            day: 21,
+            hour: 12,
+            minute: 0,
+            precision: .minute,
+            utcOffsetMinutes: 120
+        )
+        let cachedRequest = try #require(AnalysisSolarDayRequest(
+            coordinate: coordinate,
+            timestamp: noonTimestamp
+        ))
+        let cachedDay = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(
+                instant: cachedRequest.civilDayRepresentativeInstant,
+                coordinate: coordinate
+            ),
+            civilDayOffsetMinutes: cachedRequest.utcOffsetMinutes
+        )
+
+        var firstPosition: AnalysisSolarPosition?
+        var lastPosition: AnalysisSolarPosition?
+        for minuteOfDay in 0..<1_440 {
+            let timestamp = AnalysisTimestampValue(
+                year: 2026,
+                month: 6,
+                day: 21,
+                hour: minuteOfDay / 60,
+                minute: minuteOfDay % 60,
+                precision: .minute,
+                utcOffsetMinutes: 120
+            )
+            let request = try #require(AnalysisSolarDayRequest(
+                coordinate: coordinate,
+                timestamp: timestamp
+            ))
+            #expect(request == cachedRequest)
+
+            let preview = try AnalysisSolarPositionCalculator.updatingPosition(
+                in: cachedDay,
+                at: try #require(timestamp.resolvedInstant),
+                coordinate: coordinate
+            )
+            #expect(preview.sunrise == cachedDay.sunrise)
+            #expect(preview.solarNoon == cachedDay.solarNoon)
+            #expect(preview.sunset == cachedDay.sunset)
+            #expect(preview.polarCondition == cachedDay.polarCondition)
+            #expect(preview.method == cachedDay.method)
+            #expect(preview.position.azimuthDegrees.isFinite)
+            #expect(preview.position.apparentElevationDegrees.isFinite)
+            if minuteOfDay == 0 { firstPosition = preview.position }
+            if minuteOfDay == 1_439 { lastPosition = preview.position }
+        }
+
+        #expect(firstPosition != lastPosition)
+        let nextDay = AnalysisTimestampValue(
+            year: 2026,
+            month: 6,
+            day: 22,
+            hour: 0,
+            minute: 0,
+            precision: .minute,
+            utcOffsetMinutes: 120
+        )
+        #expect(AnalysisSolarDayRequest(coordinate: coordinate, timestamp: nextDay) != cachedRequest)
+    }
+
     @Test("shared map geometry preserves bearing and scales solar rays with the viewport")
     func solarMapGeometryScalesWithViewport() {
         let origin = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)

@@ -42,3 +42,11 @@ The metadata support generator, project-file plist lint, and `git diff --check` 
 the planning-index and hands-on usability follow-up edits. The remaining release gates are still
 the explicitly manual, external-tool/server/device, second-architecture, and packaging checks in
 the detailed plans.
+
+## Current implementation follow-up — 2026-08-23
+
+After integrating the read-only analysis-case fallback, Caption workspace checklist/defaults/field
+guidance, and solar slider-cache changes, an unfiltered `test-without-building` run passed all 1,368
+logical tests in 153 suites with zero failures. Swift Testing runtime was 41.524 seconds and Xcode's
+complete test operation took 43.253 seconds. The result bundle for this development session is
+`/tmp/aagedal-root-final-tests/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.23_21-52-26-+0200.xcresult`.

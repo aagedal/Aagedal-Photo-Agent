@@ -174,6 +174,25 @@ nonisolated enum AnalysisSolarPositionCalculator {
         return positionUnchecked(at: instant, coordinate: coordinate)
     }
 
+    /// Reuses the already-solved civil-day events while updating only the instantaneous position.
+    ///
+    /// Slider previews call this path so changing the time within one civil day does not repeat the
+    /// sunrise, solar-noon, and sunset solves performed by `calculate(input:civilDayOffsetMinutes:)`.
+    static func updatingPosition(
+        in calculatedDay: AnalysisSolarDay,
+        at instant: Date,
+        coordinate: AnalysisGeoCoordinate
+    ) throws -> AnalysisSolarDay {
+        AnalysisSolarDay(
+            position: try position(at: instant, coordinate: coordinate),
+            sunrise: calculatedDay.sunrise,
+            solarNoon: calculatedDay.solarNoon,
+            sunset: calculatedDay.sunset,
+            polarCondition: calculatedDay.polarCondition,
+            method: calculatedDay.method
+        )
+    }
+
     private static func positionUnchecked(
         at instant: Date,
         coordinate: AnalysisGeoCoordinate

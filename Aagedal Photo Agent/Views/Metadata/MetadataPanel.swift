@@ -5,6 +5,27 @@ import os
 
 nonisolated private let metadataPanelLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPanel")
 
+private struct MetadataFieldGuidanceModifier: ViewModifier {
+    let field: MetadataFieldID
+
+    func body(content: Content) -> some View {
+        let helpText = field.guidance.helpText
+        content
+            .id(field.rawValue)
+            .help(helpText)
+            .accessibilityElement(children: .contain)
+            .accessibilityHint(helpText)
+    }
+}
+
+extension View {
+    /// Gives each editor surface stable navigation identity and the same guidance for pointer and
+    /// assistive access. Apply at the field boundary rather than duplicating help on every control.
+    func metadataField(_ field: MetadataFieldID) -> some View {
+        modifier(MetadataFieldGuidanceModifier(field: field))
+    }
+}
+
 struct MetadataPanel: View {
     @Bindable var viewModel: MetadataViewModel
     let browserViewModel: BrowserViewModel
@@ -1356,7 +1377,7 @@ struct MetadataPanel: View {
                 focusKey: "title",
                 focusedField: $focusedField
             )
-            .id("title")
+            .metadataField(.headline)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.description) {
@@ -1404,7 +1425,7 @@ struct MetadataPanel: View {
                     }
                 )
             }
-            .id("description")
+            .metadataField(.description)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.extendedDescription) {
@@ -1455,28 +1476,28 @@ struct MetadataPanel: View {
                     }
                 }
             }
-            .help("IPTC accessibility extended description; distinct from the editorial caption")
-            .id("extendedDescription")
+            .metadataField(.extendedDescription)
+            .accessibilityLabel("Extended Description (Accessibility), distinct from the editorial caption")
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.keywords) {
             keywordsEditor
-                .id("keywords")
+                .metadataField(.keywords)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.personShown) {
             personShownEditor
-                .id("personShown")
+                .metadataField(.personShown)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.organisationShownName) {
             organisationShownNameEditor
-                .id("organisationShownName")
+                .metadataField(.organisationShownName)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.organisationShownCode) {
             organisationShownCodeEditor
-                .id("organisationShownCode")
+                .metadataField(.organisationShownCode)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.copyright) {
@@ -1504,7 +1525,7 @@ struct MetadataPanel: View {
                 focusKey: "copyright",
                 focusedField: $focusedField
             )
-            .id("copyright")
+            .metadataField(.copyright)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.creator) {
@@ -1524,7 +1545,7 @@ struct MetadataPanel: View {
                 },
                 onCommit: { commitEdits() }
             )
-            .id("creator")
+            .metadataField(.creator)
         }
 
         if viewModel.isBatchEdit {
@@ -1556,7 +1577,7 @@ struct MetadataPanel: View {
                 focusKey: "rightsUsageTerms",
                 focusedField: $focusedField
             )
-            .id("rightsUsageTerms")
+            .metadataField(.rightsUsageTerms)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.webStatementOfRights) {
@@ -1574,7 +1595,7 @@ struct MetadataPanel: View {
                 focusKey: "webStatementOfRights",
                 focusedField: $focusedField
             )
-            .id("webStatementOfRights")
+            .metadataField(.webStatementOfRights)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.digitalImageGUID) {
@@ -1592,7 +1613,7 @@ struct MetadataPanel: View {
                 focusKey: "digitalImageGUID",
                 focusedField: $focusedField
             )
-            .id("digitalImageGUID")
+            .metadataField(.digitalImageGUID)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.imageSupplierImageID) {
@@ -1610,7 +1631,7 @@ struct MetadataPanel: View {
                 focusKey: "imageSupplierImageID",
                 focusedField: $focusedField
             )
-            .id("imageSupplierImageID")
+            .metadataField(.imageSupplierImageID)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.jobId) {
@@ -1641,7 +1662,7 @@ struct MetadataPanel: View {
                 focusKey: "jobId",
                 focusedField: $focusedField
             )
-            .id("jobId")
+            .metadataField(.jobId)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.dateCreated) {
@@ -1657,7 +1678,7 @@ struct MetadataPanel: View {
                 hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("dateCreated"),
                 onCommit: { commitEdits() }
             )
-            .id("dateCreated")
+            .metadataField(.dateCreated)
         }
     }
 
@@ -1687,7 +1708,7 @@ struct MetadataPanel: View {
             .labelsHidden()
             .focused($focusedField, equals: MetadataFieldID.digitalSourceType.rawValue)
         }
-        .id(MetadataFieldID.digitalSourceType.rawValue)
+        .metadataField(.digitalSourceType)
     }
 
     // MARK: - Develop
@@ -2049,24 +2070,24 @@ struct MetadataPanel: View {
                 .labelsHidden()
                 .focused($focusedField, equals: MetadataFieldID.urgency.rawValue)
             }
-            .id("urgency")
+            .metadataField(.urgency)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.sceneCode) {
             sceneCodeEditor
-                .id("sceneCode")
+                .metadataField(.sceneCode)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.subjectCode) {
-            subjectCodeEditor.id("subjectCode")
+            subjectCodeEditor.metadataField(.subjectCode)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.mediaTopic) {
-            mediaTopicEditor.id("mediaTopic")
+            mediaTopicEditor.metadataField(.mediaTopic)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.genre) {
-            genreEditor.id("genre")
+            genreEditor.metadataField(.genre)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.creatorJobTitle) {
@@ -2110,7 +2131,7 @@ struct MetadataPanel: View {
                 focusKey: "credit",
                 focusedField: $focusedField
             )
-            .id("credit")
+            .metadataField(.credit)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.source) {
@@ -2142,7 +2163,7 @@ struct MetadataPanel: View {
                 focusKey: "city",
                 focusedField: $focusedField
             )
-            .id("city")
+            .metadataField(.city)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.sublocation) {
@@ -2178,7 +2199,7 @@ struct MetadataPanel: View {
                 focusKey: "country",
                 focusedField: $focusedField
             )
-            .id("country")
+            .metadataField(.country)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.countryCode) {
@@ -2209,7 +2230,7 @@ struct MetadataPanel: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
             }
-            .id("countryCode")
+            .metadataField(.countryCode)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.event) {
@@ -2237,7 +2258,7 @@ struct MetadataPanel: View {
                 focusKey: "event",
                 focusedField: $focusedField
             )
-            .id("event")
+            .metadataField(.event)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.instructions) {
@@ -2269,7 +2290,7 @@ struct MetadataPanel: View {
             focusKey: field.rawValue,
             focusedField: $focusedField
         )
-        .id(field.rawValue)
+        .metadataField(field)
     }
 
     @ViewBuilder

@@ -101,7 +101,7 @@ comparison. NOAA's real-world rise/set guidance remains approximately one minute
 latitude and approximately ten minutes outside that band, before atmospheric and horizon effects;
 the UI and report limitations disclose those constraints.
 
-On 2026-08-23, arm64 macOS runs passed all 21 solar-calculator methods (25 parameterized
+On 2026-08-23, arm64 macOS runs passed all 22 solar-calculator methods (26 parameterized
 invocations), three focused solar lifecycle/reproduction/report tests, and all 62 Analysis Case
 tests. Coverage includes the equator, mid- and high latitudes, both hemispheres above 72 degrees,
 polar day/night, leap day, the international date line, UTC-12/UTC/UTC+14, explicit offsets across
@@ -110,5 +110,5 @@ all persisted map-style states sharing derived geometry, and structural solar re
 A4 and US Letter.
 
 Still manual for the 3.0 gate: rapid slider and actual style switching, rotated/pitched maps,
-uncached offline behavior, keyboard-only and VoiceOver review, visual live/report ray comparison,
-and validation on a second supported architecture.
+uncached offline behavior, keyboard-only and VoiceOver review, and visual live/report ray
+comparison. The arm64 automated run covers the product's Apple-Silicon-only architecture support.

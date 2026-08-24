@@ -1,5 +1,16 @@
 import Foundation
 
+/// Short, user-facing context for an IPTC field. The use and example are separate localized
+/// strings so translators can adapt each fragment before the shared help sentence is composed.
+nonisolated struct MetadataFieldGuidance: Equatable, Sendable {
+    let commonUse: String
+    let example: String
+
+    var helpText: String {
+        String(localized: "\(commonUse) Example: \(example)")
+    }
+}
+
 /// Stable identity for an editor-facing metadata field.
 ///
 /// Raw values are persistence keys. They are intentionally independent of UI labels and metadata
@@ -51,6 +62,177 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         case .event: return "Event"
         case .instructions: return "Instructions"
         case .source: return "Source"
+        }
+    }
+
+    /// Concise editorial guidance shared by hover help and accessibility hints in the editor.
+    var guidance: MetadataFieldGuidance {
+        switch self {
+        case .headline:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "A short publishable title stating the main news point."),
+                example: String(localized: "City council approves waterfront plan")
+            )
+        case .description:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "A factual caption explaining who, what, where, and when."),
+                example: String(localized: "Mayor Lina Berg opens the new library in Oslo on Monday.")
+            )
+        case .extendedDescription:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "A visual description for accessibility, distinct from the editorial caption."),
+                example: String(localized: "Three firefighters cross a smoke-filled street carrying hoses.")
+            )
+        case .keywords:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "Search terms for the people, places, subjects, and concepts shown."),
+                example: String(localized: "wildfire, evacuation, emergency services")
+            )
+        case .personShown:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "Full names of recognizable people shown in the image."),
+                example: String(localized: "Lina Berg")
+            )
+        case .organisationShownName:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "Names of recognizable organisations shown or represented."),
+                example: String(localized: "Oslo City Council")
+            )
+        case .organisationShownCode:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "Controlled identifiers for organisations shown or represented."),
+                example: String(localized: "NO-987654321")
+            )
+        case .digitalSourceType:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "How the digital image was created or sourced."),
+                example: String(localized: "Digital capture")
+            )
+        case .urgency:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "Editorial handling priority, where 1 is highest and 8 is lowest."),
+                example: String(localized: "2")
+            )
+        case .sceneCode:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "An IPTC Scene NewsCode describing the visual setting or viewpoint."),
+                example: String(localized: "010200 (portrait)")
+            )
+        case .subjectCode:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "A legacy IPTC Subject Code retained for older recipient systems."),
+                example: String(localized: "15054000 (weather)")
+            )
+        case .mediaTopic:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "A current IPTC Media Topic classifying the story subject."),
+                example: String(localized: "20000523 (climate change)")
+            )
+        case .genre:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "An IPTC Genre NewsCode describing the content's journalistic form."),
+                example: String(localized: "Interview")
+            )
+        case .creator:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The photographer or other person who created the image."),
+                example: String(localized: "Ada Nilsen")
+            )
+        case .creatorJobTitle:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The creator's professional role or job title."),
+                example: String(localized: "Staff photographer")
+            )
+        case .descriptionWriter:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The person who wrote or edited the caption."),
+                example: String(localized: "Jonas Dahl")
+            )
+        case .credit:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The credit line recipients should display with the image."),
+                example: String(localized: "Ada Nilsen / Nordic News")
+            )
+        case .copyright:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The copyright notice identifying the rights holder."),
+                example: String(localized: "© 2026 Nordic News")
+            )
+        case .rightsUsageTerms:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "Plain-language permissions, restrictions, or licensing terms."),
+                example: String(localized: "Editorial use only; no resale.")
+            )
+        case .webStatementOfRights:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "A web address for the authoritative rights statement."),
+                example: String(localized: "https://example.com/rights/1234")
+            )
+        case .digitalImageGUID:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "A globally unique identifier that stays with this digital image."),
+                example: String(localized: "550e8400-e29b-41d4-a716-446655440000")
+            )
+        case .imageSupplierImageID:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The image identifier assigned by the supplying organisation."),
+                example: String(localized: "NN-2026-004217")
+            )
+        case .imageSupplier:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The organisation supplying the image and its optional identifier."),
+                example: String(localized: "Nordic News, NN")
+            )
+        case .jobId:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The assignment or transmission identifier used by the newsroom."),
+                example: String(localized: "OSL-ELECTION-042")
+            )
+        case .dateCreated:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "When the depicted content was originally created or captured."),
+                example: String(localized: "2026-08-23T14:35:00+02:00")
+            )
+        case .city:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The city where the depicted event or subject is located."),
+                example: String(localized: "Oslo")
+            )
+        case .sublocation:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "A precise place within the city or broader location."),
+                example: String(localized: "Rådhusplassen")
+            )
+        case .provinceState:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The state, province, or first-level region of the location."),
+                example: String(localized: "Oslo")
+            )
+        case .country:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The full country name for the depicted location."),
+                example: String(localized: "Norway")
+            )
+        case .countryCode:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The three-letter ISO country code for the depicted location."),
+                example: String(localized: "NOR")
+            )
+        case .event:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The named event at which the image was made."),
+                example: String(localized: "Oslo Jazz Festival 2026")
+            )
+        case .instructions:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "Editorial handling notes for recipients or picture desks."),
+                example: String(localized: "Do not publish before 18:00 CET.")
+            )
+        case .source:
+            MetadataFieldGuidance(
+                commonUse: String(localized: "The person or organisation from which the image originated."),
+                example: String(localized: "Oslo Fire Department")
+            )
         }
     }
 
@@ -496,6 +678,14 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         .headline, .description, .keywords, .copyright,
     ]
 
+    /// The intentionally small field set shown before a user customizes Metadata Settings.
+    /// Existing installations persist an explicit hidden-field array, including an empty array
+    /// after choosing Show All, so this default is applied only when that preference is absent.
+    static let defaultVisibleEditorFields: Set<Self> = [
+        .headline, .description, .keywords, .creator, .copyright, .personShown,
+        .rightsUsageTerms,
+    ]
+
     /// Fields offered in Settings for panel customization.
     static let optionalEditorFields = editorFields.filter {
         !alwaysVisibleEditorFields.contains($0)
@@ -509,6 +699,17 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
     static func decodeHidden(_ rawValues: [String]) -> Set<Self> {
         Set(rawValues.compactMap(Self.init(rawValue:)))
             .intersection(optionalEditorFields)
+    }
+
+    /// Resolves the stored visibility preference while distinguishing a fresh install (`nil`)
+    /// from an existing user's explicit "Show All" choice (`[]`).
+    static func resolvedHiddenEditorFields(storedRawValues: [String]?) -> Set<Self> {
+        guard let storedRawValues else {
+            return Set(editorFields)
+                .subtracting(defaultVisibleEditorFields)
+                .intersection(optionalEditorFields)
+        }
+        return decodeHidden(storedRawValues)
     }
 
     /// Source compatibility for the former nested `IPTCMetadata.FieldKey.title` case.

@@ -37,6 +37,22 @@ Use Application Support fallback when the source folder is read-only. The fallba
 record the original folder/source identity and offer a user-visible portability warning. Do not
 silently fail or repeatedly request folder access.
 
+Implemented analysis fallback layout:
+
+```text
+Application Support/Aagedal Photo Agent/AnalysisCases/
+├── index.analysis.json          # source revisions and original folder identities
+├── cases/
+│   └── <case-uuid>.analysis.json
+└── folder-maps/
+    └── <generated-uuid>.folder-map.analysis.json
+```
+
+The repository checks the fallback index schema before writing, prefers folder-local documents at
+equal revisions, and keeps the source image and XMP untouched. The workspace discloses that a
+fallback case or folder map is stored only on the current Mac and will not automatically travel
+with the photo folder.
+
 Before adopting new hidden folder names, verify backup, move-to-folder, move-rejected, rename,
 delete, iCloud, and folder-monitor behaviors. Sidecar-aware file operations must either move the
 associated analysis/version records transactionally or deliberately leave a recoverable record and

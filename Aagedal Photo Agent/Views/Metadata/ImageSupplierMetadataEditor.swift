@@ -13,6 +13,7 @@ struct ImageSupplierMetadataEditor: View {
             supplierRows(suppliers: $suppliers, onChange: onChange)
                 .padding(.top, 6)
         }
+        .metadataField(.imageSupplier)
         .accessibilityIdentifier("metadata.imageSupplier")
     }
 }
@@ -58,6 +59,7 @@ struct BatchImageSupplierMetadataEditor: View {
             }
             .padding(.top, 6)
         }
+        .metadataField(.imageSupplier)
         .accessibilityIdentifier("metadata.imageSupplier.batch")
     }
 

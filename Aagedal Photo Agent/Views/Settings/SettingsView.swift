@@ -175,10 +175,22 @@ struct SettingsView: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 720, idealWidth: 760, minHeight: 560, idealHeight: 620)
         .onAppear {
+            applyRequestedDestination()
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
             developTemplateViewModel.loadTemplates()
         }
+        .onChange(of: settingsViewModel.requestedDestination) { _, _ in
+            applyRequestedDestination()
+        }
+    }
+
+    private func applyRequestedDestination() {
+        guard let destination = settingsViewModel.requestedDestination else { return }
+        switch destination {
+        case .metadata: selection = .metadata
+        }
+        settingsViewModel.requestedDestination = nil
     }
 
     @ViewBuilder
@@ -961,6 +973,10 @@ struct SettingsView: View {
                 }
 
                 HStack {
+                    Button("Reset to Defaults") {
+                        settingsViewModel.resetIPTCMetadataFieldVisibility()
+                    }
+
                     Spacer()
                     Button("Show All") {
                         settingsViewModel.hiddenIPTCMetadataFields.removeAll()

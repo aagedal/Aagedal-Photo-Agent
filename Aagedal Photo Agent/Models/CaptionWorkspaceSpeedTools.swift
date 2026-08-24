@@ -116,6 +116,34 @@ nonisolated enum CaptionWorkspaceValidationSummary {
     }
 }
 
+/// The small, always-visible validation summary shown above Caption's collapsible field list.
+/// Selection deliberately reuses the shared report's blocker ordering before falling back to the
+/// first remaining issue, matching the workspace's existing Fix Next behavior.
+nonisolated struct CaptionWorkspaceChecklistSummary: Equatable, Sendable {
+    let readiness: CaptionReadiness
+    let blockerCount: Int
+    let warningCount: Int
+    let informationCount: Int
+    let nextIssue: MetadataValidationIssue?
+
+    static func make(
+        report: MetadataValidationReport,
+        actionableFields: Set<MetadataFieldID>? = nil
+    ) -> Self {
+        let actionableIssues = actionableFields.map { fields in
+            report.issues.filter { fields.contains($0.field) }
+        } ?? report.issues
+        return Self(
+            readiness: CaptionReadinessResolver.readiness(for: report),
+            blockerCount: report.blockerCount,
+            warningCount: report.warningCount,
+            informationCount: report.informationCount,
+            nextIssue: actionableIssues.first { $0.severity == .blocker }
+                ?? actionableIssues.first
+        )
+    }
+}
+
 nonisolated enum CaptionPreviewGeometry {
     static func fittedImageRect(imageSize: CGSize, containerSize: CGSize) -> CGRect {
         guard imageSize.width > 0, imageSize.height > 0,

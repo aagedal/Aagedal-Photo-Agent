@@ -88,6 +88,7 @@ The executable corpus is in `AnalysisSolarPositionCalculatorTests.swift`.
 | New York DST-transition wall times with explicit UTC-05 and UTC-04 | Generated fixed-offset corpus | resolved instants remain one hour apart; both civil days calculate | exact interval/event availability |
 | Civil years 1800 and 2100 across UTC-year boundaries | Generated boundary corpus | rise/set remain calculable | exact availability |
 | 32 concurrent calculations | Generated concurrency corpus | deterministic `Sendable` result | exact equality |
+| Every minute of one Oslo civil day | Generated slider-cache corpus | one civil-day event identity; position-only preview updates | exact event equality and finite positions |
 
 NOAA states that rise/set calculations are theoretically accurate to about one minute between
 latitudes ±72 degrees and about ten minutes outside that range, before real atmospheric variation.

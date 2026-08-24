@@ -39,6 +39,7 @@ struct CaptionWorkspaceView: View {
     @State private var isEditorTransientPresented = false
     @State private var isAwaitingTemplatePalette = false
     @FocusState private var focusedAction: CaptionActionFocus?
+    @Environment(\.openSettings) private var openSettings
 
     private var visibleImages: [ImageFile] {
         browserViewModel.visibleImages.filter(\.isImageFile)
@@ -62,7 +63,15 @@ struct CaptionWorkspaceView: View {
     }
 
     private var fieldLayout: CaptionWorkspaceFieldLayout {
-        CaptionWorkspaceFieldLayout.make(configuration: deadlineProfile?.captionFields)
+        if let configuration = deadlineProfile?.captionFields {
+            return CaptionWorkspaceFieldLayout.make(configuration: configuration)
+        }
+        return CaptionWorkspaceFieldLayout.make(configuration: DeadlineCaptionFieldConfiguration(
+            orderedFieldIDs: MetadataFieldID.editorFields,
+            visibleFieldIDs: MetadataFieldID.editorFields.filter(
+                settingsViewModel.isIPTCMetadataFieldVisible
+            )
+        ))
     }
 
     init(
@@ -148,6 +157,22 @@ struct CaptionWorkspaceView: View {
                                 moveCaptionFocus(from: field, reverse: reverse)
                             }
                         )
+                        Divider()
+                        HStack(spacing: 8) {
+                            Text("Additional IPTC fields can be enabled in Settings → Metadata.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Metadata Settings…") {
+                                settingsViewModel.requestedDestination = .metadata
+                                openSettings()
+                            }
+                            .controlSize(.small)
+                            .accessibilityHint("Open Settings at the Metadata field controls")
+                            .accessibilityIdentifier("caption.metadataSettings")
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 34)
                     }
                     .frame(minWidth: 340, idealWidth: 430, maxWidth: 560)
                 }
@@ -974,40 +999,153 @@ private struct CaptionPriorityFieldNavigator: View {
     let validationProfile: MetadataValidationProfile
     let report: MetadataValidationReport
     let onFocus: (MetadataFieldID) -> Void
+    @State private var showsAllFields = false
+
+    private var summary: CaptionWorkspaceChecklistSummary {
+        CaptionWorkspaceChecklistSummary.make(
+            report: report,
+            actionableFields: Set(layout.priority + layout.secondary)
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Priority fields")
-                .font(.subheadline.weight(.semibold))
-
-            ScrollView {
-                LazyVStack(spacing: 4) {
-                    ForEach(layout.priority, id: \.self) { field in
-                        fieldRow(field)
-                    }
-                }
+            HStack(spacing: 8) {
+                Text("Metadata checks")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Label(readinessTitle, systemImage: readinessIcon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(readinessColor)
+                Text(countSummary)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            .frame(maxHeight: 190)
 
-            if !layout.secondary.isEmpty {
-                DisclosureGroup("Secondary & Technical") {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 6) {
-                            ForEach(layout.secondary, id: \.self) { field in
-                                Button(field.displayName) { onFocus(field) }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
+            nextIssueRow
+
+            DisclosureGroup("All metadata fields", isExpanded: $showsAllFields) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ScrollView {
+                        LazyVStack(spacing: 4) {
+                            ForEach(layout.priority, id: \.self) { field in
+                                fieldRow(field)
                             }
                         }
                     }
-                    .scrollIndicators(.hidden)
+                    .frame(maxHeight: 160)
+
+                    if !layout.secondary.isEmpty {
+                        DisclosureGroup("Secondary & Technical") {
+                            ScrollView(.horizontal) {
+                                HStack(spacing: 6) {
+                                    ForEach(layout.secondary, id: \.self) { field in
+                                        Button(field.displayName) { onFocus(field) }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+                                    }
+                                }
+                            }
+                            .scrollIndicators(.hidden)
+                        }
+                        .font(.caption)
+                    }
                 }
-                .font(.caption)
             }
+            .font(.caption)
+            .accessibilityIdentifier("caption.metadataChecklist.disclosure")
         }
         .padding(10)
         .background(.quaternary.opacity(0.35))
-        .accessibilityIdentifier("caption.priorityFields")
+        .accessibilityIdentifier("caption.metadataChecklist")
+    }
+
+    @ViewBuilder
+    private var nextIssueRow: some View {
+        if let issue = summary.nextIssue {
+            Button {
+                onFocus(issue.field)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(color(for: issue.severity))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Next: \(issue.field.displayName)")
+                            .font(.caption.weight(.semibold))
+                        Text(issue.message)
+                            .font(.caption2)
+                            .foregroundStyle(color(for: issue.severity))
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Text("Fix")
+                        .font(.caption.weight(.semibold))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Next metadata issue, \(issue.field.displayName): \(issue.message)")
+            .accessibilityHint("Move editor focus to this field")
+            .accessibilityIdentifier("caption.metadataChecklist.nextIssue")
+        } else if summary.blockerCount + summary.warningCount + summary.informationCount > 0 {
+            Label("No visible issue to fix", systemImage: "eye.slash")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Validation issues remain in fields hidden from this layout.")
+                .accessibilityIdentifier("caption.metadataChecklist.noActionableIssue")
+        } else {
+            Label("No validation issues", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+                .accessibilityLabel("Ready. No validation issues.")
+                .accessibilityIdentifier("caption.metadataChecklist.ready")
+        }
+    }
+
+    private var readinessTitle: String {
+        switch summary.readiness {
+        case .ready: "Ready"
+        case .warnings: "Warnings"
+        case .blocked: "Blocked"
+        }
+    }
+
+    private var readinessIcon: String {
+        switch summary.readiness {
+        case .ready: "checkmark.circle.fill"
+        case .warnings: "exclamationmark.triangle.fill"
+        case .blocked: "xmark.octagon.fill"
+        }
+    }
+
+    private var readinessColor: Color {
+        switch summary.readiness {
+        case .ready: .green
+        case .warnings: .orange
+        case .blocked: .red
+        }
+    }
+
+    private var countSummary: String {
+        var parts: [String] = []
+        if summary.blockerCount > 0 {
+            parts.append("\(summary.blockerCount) blocker\(summary.blockerCount == 1 ? "" : "s")")
+        }
+        if summary.warningCount > 0 {
+            parts.append("\(summary.warningCount) warning\(summary.warningCount == 1 ? "" : "s")")
+        }
+        if summary.informationCount > 0 {
+            parts.append("\(summary.informationCount) info")
+        }
+        return parts.isEmpty ? "No issues" : parts.joined(separator: " · ")
+    }
+
+    private func color(for severity: MetadataValidationSeverity) -> Color {
+        switch severity {
+        case .information: .secondary
+        case .warning: .orange
+        case .blocker: .red
+        }
     }
 
     private func fieldRow(_ field: MetadataFieldID) -> some View {

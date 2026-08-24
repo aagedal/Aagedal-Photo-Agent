@@ -2540,6 +2540,30 @@ struct FieldKeyTests {
 
         #expect(hidden == [.extendedDescription, .creator, .dateCreated])
     }
+
+    @Test("fresh installs start with the concise editorial field set")
+    func freshInstallFieldVisibilityDefaults() {
+        let visible = Set(IPTCMetadata.FieldKey.editorFields)
+            .subtracting(IPTCMetadata.FieldKey.resolvedHiddenEditorFields(storedRawValues: nil))
+
+        #expect(visible == [
+            .headline,
+            .description,
+            .keywords,
+            .creator,
+            .copyright,
+            .personShown,
+            .rightsUsageTerms,
+        ])
+    }
+
+    @Test("an explicit stored visibility choice survives upgrade")
+    func storedFieldVisibilitySurvivesUpgrade() {
+        #expect(IPTCMetadata.FieldKey.resolvedHiddenEditorFields(storedRawValues: []) == [])
+        #expect(IPTCMetadata.FieldKey.resolvedHiddenEditorFields(
+            storedRawValues: ["creator", "futureEditorialField"]
+        ) == [.creator])
+    }
 }
 
 @Suite("Explicit editorial field mutations")
