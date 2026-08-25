@@ -152,8 +152,8 @@ struct ImportView: View {
                     }
                 }
 
-                if !viewModel.sourceFiles.isEmpty {
-                    Text("\(viewModel.sourceFiles.count) supported images found")
+                if !viewModel.allSourceImages.isEmpty {
+                    Text("\(viewModel.allSourceImages.count) supported images found across selected sources")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -169,6 +169,69 @@ struct ImportView: View {
                         onPrefetchTimeout: handleSlowThumbnailPrefetch
                     )
                     .padding(.top, 2)
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Second Card or Media Source")
+                        .font(.subheadline.weight(.medium))
+
+                    HStack {
+                        if let sourceURL = viewModel.configuration.voiceMemoSourceURL {
+                            Image(systemName: "waveform.badge.mic")
+                                .foregroundStyle(.secondary)
+                            Text(sourceURL.path)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        } else {
+                            Text("Optional: add another RAW/JPEG card or a card containing WAV files")
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if viewModel.configuration.voiceMemoSourceURL != nil {
+                            Button("Change…") { viewModel.selectVoiceMemoSource() }
+                            Button {
+                                viewModel.clearVoiceMemoSource()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove second media source")
+                            .accessibilityLabel("Remove second media source")
+                        } else {
+                            Button("Choose Second Source…") {
+                                viewModel.selectVoiceMemoSource()
+                            }
+                        }
+                    }
+
+                    if viewModel.isScanningVoiceMemoSource {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini)
+                            Text("Scanning images and WAV files…")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else if let report = viewModel.voiceMemoAssociationReport {
+                        let selectedMatches = viewModel.selectedVoiceMemoAssociations.count
+                        let selectedMemos = viewModel.selectedVoiceMemoCount
+                        Text("\(selectedMemos) voice memo\(selectedMemos == 1 ? "" : "s") matched to \(selectedMatches) selected photo\(selectedMatches == 1 ? "" : "s")"
+                             + (report.ambiguous.isEmpty ? "" : " · \(report.ambiguous.count) ambiguous and skipped")
+                             + (report.orphanMemoURLs.isEmpty ? "" : " · \(report.orphanMemoURLs.count) orphaned"))
+                            .font(.caption)
+                            .foregroundStyle(report.ambiguous.isEmpty ? Color.secondary : Color.orange)
+                    } else if viewModel.configuration.voiceMemoSourceURL != nil,
+                              viewModel.voiceMemoSourceFiles.isEmpty {
+                        Text("No supported images or WAV files were found on this source.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
+                    Text("RAW and JPEG files on both sources follow the File Types choice below. A WAV may be on either source; it must share an exact capture identity with an image on that source, have the same stem, and cannot predate the exposure. There is no maximum recording delay.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -282,7 +345,7 @@ struct ImportView: View {
                     if viewModel.isScanningDates {
                         ProgressView()
                             .controlSize(.small)
-                    } else if viewModel.sortByDate && viewModel.dateGroups.isEmpty && !viewModel.sourceFiles.isEmpty {
+                    } else if viewModel.sortByDate && viewModel.dateGroups.isEmpty && !viewModel.allSourceImages.isEmpty {
                         Button("Scan Dates") {
                             viewModel.scanCaptureDates()
                         }
@@ -427,7 +490,7 @@ struct ImportView: View {
         }
         .onChange(of: viewModel.sortByDate) { _, newValue in
             viewModel.refreshPreviousImportFolderSuggestions()
-            if newValue && viewModel.dateGroups.isEmpty && !viewModel.sourceFiles.isEmpty {
+            if newValue && viewModel.dateGroups.isEmpty && !viewModel.allSourceImages.isEmpty {
                 viewModel.scanCaptureDates()
             }
         }
@@ -462,6 +525,9 @@ struct ImportView: View {
                     set: { newValue in
                         viewModel.configuration.fileTypeFilter = newValue
                         UserDefaults.standard.set(newValue.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter)
+                        if viewModel.sortByDate {
+                            viewModel.scanCaptureDates()
+                        }
                     }
                 )) {
                     ForEach(ImportFileTypeFilter.allCases, id: \.self) { filter in
@@ -474,8 +540,12 @@ struct ImportView: View {
                     Toggle("Create RAW and JPEG sub-folders", isOn: $viewModel.configuration.createSubFolders)
                 }
 
-                if !viewModel.sourceFiles.isEmpty {
-                    Text("\(viewModel.selectedSourceFiles.count) files will be imported")
+                if !viewModel.allSourceImages.isEmpty {
+                    let photoCount = viewModel.selectedSourceFiles.count
+                    let memoCount = viewModel.selectedVoiceMemoCount
+                    Text("\(photoCount) photo\(photoCount == 1 ? "" : "s")"
+                         + (memoCount == 0 ? "" : " + \(memoCount) voice memo\(memoCount == 1 ? "" : "s")")
+                         + " will be imported")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

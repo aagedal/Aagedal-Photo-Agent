@@ -29,10 +29,40 @@ nonisolated struct RenamePlanningEnvironment: Equatable, Sendable {
 nonisolated struct RenamePlanningItem: Equatable, Sendable {
     let sourceImageURL: URL
     var context: BatchRenameContext
+    /// Explicitly associated files that must move as part of the image bundle. Unlike registry
+    /// rules, these carry a concrete source URL, so the planner never has to infer a voice-memo
+    /// relationship from a filename during a destructive operation.
+    var associatedArtifacts: [RenamePlanningAssociatedArtifact]
 
-    init(sourceImageURL: URL, context: BatchRenameContext? = nil) {
+    init(
+        sourceImageURL: URL,
+        context: BatchRenameContext? = nil,
+        associatedArtifacts: [RenamePlanningAssociatedArtifact] = []
+    ) {
         self.sourceImageURL = sourceImageURL
         self.context = context ?? BatchRenameContext(originalFilename: sourceImageURL.lastPathComponent)
+        self.associatedArtifacts = associatedArtifacts
+    }
+}
+
+/// A relationship proven before rename planning. `filenamePattern` describes how the companion's
+/// destination follows the accepted image name; its source is never reconstructed from that rule.
+nonisolated struct RenamePlanningAssociatedArtifact: Codable, Equatable, Sendable {
+    let identifier: String
+    let displayName: String
+    let sourceURL: URL
+    let filenamePattern: RenameArtifactFilenamePattern
+
+    init(
+        identifier: String,
+        displayName: String,
+        sourceURL: URL,
+        filenamePattern: RenameArtifactFilenamePattern
+    ) {
+        self.identifier = identifier
+        self.displayName = displayName
+        self.sourceURL = sourceURL
+        self.filenamePattern = filenamePattern
     }
 }
 

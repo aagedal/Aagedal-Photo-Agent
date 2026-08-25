@@ -81,3 +81,76 @@ The metadata support generator, Xcode project plist lint, and `git diff --check`
 closes the current-source existing and new automated-suite gates; it does not replace any manual,
 external-tool/server/device, performance, second-architecture, security, recovery, or packaging
 gate.
+
+## Plan-status integration follow-up — 2026-08-24
+
+After integrating the profile-driven voice-memo association and transactional-rename foundation,
+expanded solar interaction/report model tests, and investigation concurrency evidence, a fresh
+isolated `build-for-testing` succeeded. The unfiltered `test-without-building` run then passed all
+1,398 logical tests in 154 suites with zero failures. Swift Testing reported 46.157 seconds and
+Xcode's complete test operation took 49.240 seconds.
+
+The result bundle for this development session is
+`/private/tmp/aagedal-plan-status.BaHcMw/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.24_22-43-15-+0200.xcresult`.
+The generated metadata support report remains current, the Xcode project plist passes validation,
+the source tree has no unresolved conflict markers, and `git diff --check` passes. The remaining
+release gates are still the explicitly manual, real-sample, external-tool/server/device,
+performance, security, recovery, and packaging checks in the detailed plans.
+
+## Import and browser reliability follow-up — 2026-08-24
+
+After ensuring the import reveal directory exists before the browser handoff and replacing the
+thumbnail sort picker with an explicitly titled, action-driven menu, the two focused regression
+suites passed all 31 tests with zero failures. The subsequent unfiltered run passed all 1,400
+logical tests in 154 suites with zero failures. Swift Testing reported 43.450 seconds and Xcode's
+complete test operation took 45.358 seconds.
+
+The result bundle for the unfiltered run is
+`/private/tmp/aagedal-plan-status.BaHcMw/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.24_22-54-20-+0200.xcresult`.
+This automated result validates the deterministic folder-handoff ordering and sort-mode state
+regression together with the integrated worktree; visual confirmation on the macOS 27 runtime
+remains a manual compatibility check.
+
+## Sony dual-card voice-memo ingest follow-up — 2026-08-24
+
+After adding an optional Sony JPEG/playback-card source, fail-closed cross-card association, and
+paired image+WAV import handling, the focused association/discovery/copy/import suites passed all
+23 tests in 4 suites. A one-off production-parser check over the private Sony ILCE-1 v4.00 sample associated all
+3 supplied image/JPEG/WAV stems with no ambiguities or orphans; the private media and its absolute
+path were not added to the repository.
+
+The subsequent unfiltered `test-without-building` run passed all 1,406 logical tests in 155 suites
+with zero failures. Swift Testing reported 41.837 seconds and Xcode's complete test operation took
+43.709 seconds. The result bundle is
+`/tmp/aagedal-sony-dual-card/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.24_23-18-06-+0200.xcresult`.
+
+This proves the current automated boundary, including the rule that a WAV may be arbitrarily later
+than its image but may never predate it. Additional Sony bodies/firmware, real-card UI behavior,
+relationship persistence, playback, transcription, delivery policy, and external workflow checks
+remain explicit follow-up gates.
+
+## Flexible Sony media-source follow-up — 2026-08-24
+
+The Sony ingest boundary was expanded from a fixed RAW-card plus JPEG/WAV-card layout to one or two
+media sources. RAW Only, JPEG Only, and Both now apply across both sources. A WAV can be anchored by
+a same-source RAW or JPEG, while image variants on the other source require an identical Sony
+capture fingerprint. The focused association, source-discovery, copy, and import suites passed all
+27 tests in 4 suites, including single-card RAW+WAV, second-card JPEG import, and one-card
+RAW+JPEG+WAV import with verified companions beside both selected variants.
+
+The subsequent unfiltered `test-without-building` run passed all 1,410 logical tests in 155 suites
+with zero failures. Swift Testing reported 48.901 seconds and Xcode's complete test operation took
+50.799 seconds. The result bundle is
+`/tmp/aagedal-sony-flexible-sources/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.24_23-30-44-+0200.xcresult`.
+
+## Command-S export safety follow-up — 2026-08-25
+
+After making interactive format exports collision-safe and rejecting metadata-copy calls whose
+source and destination identify the same file, the two focused suites passed all 25 tests. The
+regressions cover JPEG-to-JPEG export beside the source, two selected sources with the same
+basename, and byte-preserving rejection of a source/destination alias.
+
+The subsequent unfiltered `test` run passed all 1,413 logical tests in 155 suites with zero
+failures. Swift Testing reported 41.015 seconds and Xcode's complete test operation took 43.005
+seconds. The result bundle is
+`/tmp/aagedal-sony-flexible-sources/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.25_13-11-05-+0200.xcresult`.

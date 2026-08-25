@@ -14,6 +14,21 @@ import SwiftExif
 @Suite("EditExportPipeline render + sidecar overlay (real file)")
 struct EditExportPipelineTests {
 
+    private var collisionSafeJPEGConfiguration: AdvancedExportConfiguration {
+        AdvancedExportConfiguration(
+            sdrFormat: .jpeg,
+            sdrQuality: 0.92,
+            sdrGamut: .sRGB,
+            hdrFormat: .jpegGainMap,
+            hdrQuality: 0.92,
+            hdrGamut: .displayP3,
+            tiffCompression: .lzw,
+            resolutionLimit: .original,
+            locationMode: .sameAsOriginal,
+            customSubfolderName: "Exports"
+        )
+    }
+
     /// Creates a unique temp working directory with a minimal valid JPEG inside it.
     /// Generated in-process so no binary fixture lives in the repo. The caller removes
     /// `dir`.
@@ -530,6 +545,88 @@ struct EditExportPipelineTests {
 
         #expect(FileManager.default.fileExists(atPath: rendered.path))
         #expect(await tracker.sidecarOverlayFailures.isEmpty)
+    }
+
+    /// Command-S can target the current source folder. A JPEG-to-JPEG export used to
+    /// resolve to the source URL itself, so the renderer and metadata copier operated on
+    /// one file as though it were two distinct files. The source could then disappear
+    /// when SwiftExif completed its atomic replacement a moment after the pixels rendered.
+    @Test("collision-safe format export beside a JPEG never aliases or changes its source")
+    func formatExportBesideSourcePreservesSource() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let originalBytes = try Data(contentsOf: source)
+
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source,
+            cameraRaw: nil,
+            kind: .format,
+            outputFolder: dir,
+            folderURL: dir,
+            writeEngine: SwiftExifWriteEngine(),
+            failureTracker: tracker,
+            configuration: collisionSafeJPEGConfiguration,
+            collisionPolicy: .appendNumber
+        )
+
+        #expect(rendered.standardizedFileURL != source.standardizedFileURL)
+        #expect(rendered.lastPathComponent == "photo 2.jpg")
+        #expect(FileManager.default.fileExists(atPath: rendered.path))
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(try Data(contentsOf: source) == originalBytes)
+        #expect(await tracker.metadataCopyFailures.isEmpty)
+    }
+
+    /// A mixed RAW/JPEG selection (or two cards) can legitimately contain distinct
+    /// source files with the same stem. A collision-safe local batch must reserve a new
+    /// filename for the later item rather than silently replacing the earlier export.
+    @Test("collision-safe format exports give same-basename sources distinct outputs")
+    func formatExportsWithSameBasenameRemainDistinct() async throws {
+        let (dir, fixture) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let cardA = dir.appendingPathComponent("card-a", isDirectory: true)
+        let cardB = dir.appendingPathComponent("card-b", isDirectory: true)
+        let output = dir.appendingPathComponent("exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: cardA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cardB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let firstSource = cardA.appendingPathComponent("photo.jpg")
+        let secondSource = cardB.appendingPathComponent("photo.jpg")
+        try FileManager.default.copyItem(at: fixture, to: firstSource)
+        try FileManager.default.copyItem(at: fixture, to: secondSource)
+
+        let tracker = MetadataFailureTracker()
+        let firstOutput = try await EditExportPipeline.renderItem(
+            sourceURL: firstSource,
+            cameraRaw: nil,
+            kind: .format,
+            outputFolder: output,
+            folderURL: cardA,
+            writeEngine: SwiftExifWriteEngine(),
+            failureTracker: tracker,
+            configuration: collisionSafeJPEGConfiguration,
+            collisionPolicy: .appendNumber
+        )
+        let secondOutput = try await EditExportPipeline.renderItem(
+            sourceURL: secondSource,
+            cameraRaw: nil,
+            kind: .format,
+            outputFolder: output,
+            folderURL: cardB,
+            writeEngine: SwiftExifWriteEngine(),
+            failureTracker: tracker,
+            configuration: collisionSafeJPEGConfiguration,
+            collisionPolicy: .appendNumber
+        )
+
+        #expect(firstOutput != secondOutput)
+        #expect(firstOutput.lastPathComponent == "photo.jpg")
+        #expect(secondOutput.lastPathComponent == "photo 2.jpg")
+        #expect(FileManager.default.fileExists(atPath: firstOutput.path))
+        #expect(FileManager.default.fileExists(atPath: secondOutput.path))
+        #expect(await tracker.metadataCopyFailures.isEmpty)
     }
 }
 

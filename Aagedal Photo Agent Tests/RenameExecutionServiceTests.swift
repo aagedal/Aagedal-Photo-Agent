@@ -26,6 +26,78 @@ struct RenameExecutionServiceTests {
         #expect(result.bundles.first?.completedArtifactIdentifiers == ["image"])
     }
 
+    @Test("An explicit voice memo is committed in the same transactional bundle")
+    func voiceMemoCompanionCommitsWithImage() async throws {
+        let image = root.appendingPathComponent("DSC00001.ARW")
+        let memo = root.appendingPathComponent("AUDIO_SOURCE_1.WAV")
+        let plan = RenamePlanningService().makePlan(
+            items: [RenamePlanningItem(
+                sourceImageURL: image,
+                associatedArtifacts: [RenamePlanningAssociatedArtifact(
+                    identifier: "voice-memo",
+                    displayName: "Voice memo",
+                    sourceURL: memo,
+                    filenamePattern: RenameArtifactFilenamePattern(basis: .stem, suffix: ".WAV")
+                )]
+            )],
+            recipe: BatchRenameRecipe(name: "Desk", components: [.literal("desk-001.ARW")]),
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseSensitive,
+                existingURLs: [memo]
+            )
+        )
+        let original: [URL: Data] = [
+            image: Data("raw-bytes".utf8),
+            memo: Data("wav-bytes".utf8),
+        ]
+        let fileSystem = MemoryRenameFileSystem(original)
+
+        let result = await service(fileSystem).execute(plan)
+
+        #expect(result.succeeded)
+        #expect(result.bundles.first?.artifactIdentifiers == ["image", "voice-memo"])
+        #expect(fileSystem.dataIfPresent(at: root.appendingPathComponent("desk-001.ARW")) == original[image])
+        #expect(fileSystem.dataIfPresent(at: root.appendingPathComponent("desk-001.WAV")) == original[memo])
+        #expect(!fileSystem.exists(image))
+        #expect(!fileSystem.exists(memo))
+    }
+
+    @Test("A voice memo rolls back byte-for-byte when the bundle commit fails")
+    func voiceMemoCompanionRollsBackWithImage() async {
+        let image = root.appendingPathComponent("DSC00002.ARW")
+        let memo = root.appendingPathComponent("DSC00002.WAV")
+        let companion = RenamePlanningAssociatedArtifact(
+            identifier: "voice-memo",
+            displayName: "Voice memo",
+            sourceURL: memo,
+            filenamePattern: RenameArtifactFilenamePattern(basis: .stem, suffix: ".WAV")
+        )
+        let plan = RenamePlanningService().makePlan(
+            items: [RenamePlanningItem(sourceImageURL: image, associatedArtifacts: [companion])],
+            recipe: BatchRenameRecipe(name: "Desk", components: [.literal("desk-002.ARW")]),
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseSensitive,
+                existingURLs: [memo]
+            )
+        )
+        let original: [URL: Data] = [
+            image: Data("raw-two".utf8),
+            memo: Data("wav-two".utf8),
+        ]
+        let fileSystem = MemoryRenameFileSystem(original)
+        let result = await RenameExecutionService(
+            fileSystem: fileSystem,
+            temporaryNameToken: LockedTokenSequence().next,
+            // Both artifacts are staged first; fail after the image commit.
+            afterMove: { $0.ordinal == 3 ? "Injected bundle failure" : nil }
+        ).execute(plan)
+
+        #expect(result.status == .failed)
+        #expect(result.rollbackStatus == .succeeded)
+        #expect(result.residuals.isEmpty)
+        #expect(fileSystem.snapshot() == original)
+    }
+
     @Test("Multiple bundles execute in visible plan order")
     func multipleBundlesWithoutSidecars() async {
         let sources = ["z.jpg", "a.jpg", "m.jpg"].map(root.appendingPathComponent)

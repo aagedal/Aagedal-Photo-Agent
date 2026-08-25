@@ -18,6 +18,14 @@ nonisolated struct AdvancedExportRenderedArtifact: @unchecked Sendable {
 
 nonisolated enum EditedImageRenderer {
 
+    /// Controls what a format export does when its derived filename is already present.
+    /// Interactive local exports append a number so they can never overwrite a source,
+    /// an existing rendition, or another selected source with the same basename.
+    enum OutputCollisionPolicy: Sendable {
+        case replaceExisting
+        case appendNumber
+    }
+
     /// Fixed color target for rendered RAW archives. Keeping it independent of general
     /// export preferences makes JPEG XL and TIFF archives consistent HDR masters.
     static let rawArchiveConversionGamut: TargetColorGamut = .rec2020
@@ -98,6 +106,7 @@ nonisolated enum EditedImageRenderer {
         outputFolder: URL,
         configuration: AdvancedExportConfiguration? = nil,
         outputFilenameSuffix: String = "",
+        collisionPolicy: OutputCollisionPolicy = .replaceExisting,
         metadataCopier: MetadataCopier? = nil
     ) async throws -> URL {
         let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
@@ -114,7 +123,8 @@ nonisolated enum EditedImageRenderer {
                 sourceURL: sourceURL,
                 outputFolder: outputFolder,
                 configuration: configuration,
-                outputFilenameSuffix: outputFilenameSuffix
+                outputFilenameSuffix: outputFilenameSuffix,
+                collisionPolicy: collisionPolicy
             )
         } else {
             destURL = try await renderSDRFormat(
@@ -122,7 +132,8 @@ nonisolated enum EditedImageRenderer {
                 sourceURL: sourceURL,
                 outputFolder: outputFolder,
                 configuration: configuration,
-                outputFilenameSuffix: outputFilenameSuffix
+                outputFilenameSuffix: outputFilenameSuffix,
+                collisionPolicy: collisionPolicy
             )
         }
         if let metadataCopier {
@@ -319,7 +330,8 @@ nonisolated enum EditedImageRenderer {
         sourceURL: URL,
         outputFolder: URL,
         configuration: AdvancedExportConfiguration? = nil,
-        outputFilenameSuffix: String = ""
+        outputFilenameSuffix: String = "",
+        collisionPolicy: OutputCollisionPolicy = .replaceExisting
     ) async throws -> URL {
         let format = configuration?.sdrFormat
             ?? ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "")
@@ -331,12 +343,23 @@ nonisolated enum EditedImageRenderer {
             ?? TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "")
             ?? .sRGB
 
-        let destURL = outputURL(
-            for: sourceURL,
-            in: outputFolder,
-            extension: format.fileExtension,
-            filenameSuffix: outputFilenameSuffix
-        )
+        let destURL: URL
+        switch collisionPolicy {
+        case .replaceExisting:
+            destURL = outputURL(
+                for: sourceURL,
+                in: outputFolder,
+                extension: format.fileExtension,
+                filenameSuffix: outputFilenameSuffix
+            )
+        case .appendNumber:
+            destURL = uniqueOutputURL(
+                for: sourceURL,
+                in: outputFolder,
+                extension: format.fileExtension,
+                filenameSuffix: outputFilenameSuffix
+            )
+        }
         let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext
 
@@ -466,7 +489,8 @@ nonisolated enum EditedImageRenderer {
         sourceURL: URL,
         outputFolder: URL,
         configuration: AdvancedExportConfiguration? = nil,
-        outputFilenameSuffix: String = ""
+        outputFilenameSuffix: String = "",
+        collisionPolicy: OutputCollisionPolicy = .replaceExisting
     ) async throws -> URL {
         let format = configuration?.hdrFormat
             ?? ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "")
@@ -478,12 +502,23 @@ nonisolated enum EditedImageRenderer {
             ?? TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? "")
             ?? .displayP3
 
-        let destURL = outputURL(
-            for: sourceURL,
-            in: outputFolder,
-            extension: format.fileExtension,
-            filenameSuffix: outputFilenameSuffix
-        )
+        let destURL: URL
+        switch collisionPolicy {
+        case .replaceExisting:
+            destURL = outputURL(
+                for: sourceURL,
+                in: outputFolder,
+                extension: format.fileExtension,
+                filenameSuffix: outputFilenameSuffix
+            )
+        case .appendNumber:
+            destURL = uniqueOutputURL(
+                for: sourceURL,
+                in: outputFolder,
+                extension: format.fileExtension,
+                filenameSuffix: outputFilenameSuffix
+            )
+        }
         let hdrColorSpace = gamut.hdrHLGColorSpace
         let ctx = CameraRawApproximation.ciContext
 
@@ -975,8 +1010,13 @@ nonisolated enum EditedImageRenderer {
     }
 
     /// Returns a non-existing output URL by appending " 2", " 3", … when needed.
-    static func uniqueOutputURL(for sourceURL: URL, in outputFolder: URL, extension ext: String) -> URL {
-        let baseName = sourceURL.deletingPathExtension().lastPathComponent
+    static func uniqueOutputURL(
+        for sourceURL: URL,
+        in outputFolder: URL,
+        extension ext: String,
+        filenameSuffix: String = ""
+    ) -> URL {
+        let baseName = sourceURL.deletingPathExtension().lastPathComponent + filenameSuffix
         var candidate = outputFolder.appendingPathComponent(baseName).appendingPathExtension(ext)
         var counter = 2
         while FileManager.default.fileExists(atPath: candidate.path) {

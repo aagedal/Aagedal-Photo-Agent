@@ -28,11 +28,15 @@ actor ImportCopyService {
         let desiredBackupDest: URL?
         /// When set, the job is intentionally not copied and returns a skipped result.
         var preflightSkipReason: SkipReason? = nil
+        /// Companion jobs run only after this job completed successfully. This keeps an audio
+        /// companion from being copied by itself when its image copy or verification failed.
+        var prerequisiteJobID: UUID? = nil
     }
 
     enum SkipReason: String, Sendable, Equatable {
         case destinationExists
         case previouslyImported
+        case associatedImageFailed
     }
 
     enum DestinationOutcome: Sendable, Equatable {
@@ -83,6 +87,20 @@ actor ImportCopyService {
 
         for job in jobs {
             try Task.checkCancellation()
+            if let prerequisiteID = job.prerequisiteJobID,
+               let prerequisite = results.first(where: { $0.id == prerequisiteID }),
+               !prerequisite.isPrimaryGood {
+                let reason: SkipReason
+                if case let .skipped(prerequisiteReason) = prerequisite.primary {
+                    reason = prerequisiteReason
+                } else {
+                    reason = .associatedImageFailed
+                }
+                let result = Self.skippedResult(for: job, reason: reason)
+                results.append(result)
+                await progress(result)
+                continue
+            }
             let result = try await processJob(
                 job,
                 conflictPolicy: conflictPolicy,
@@ -93,6 +111,20 @@ actor ImportCopyService {
             await progress(result)
         }
         return results
+    }
+
+    nonisolated private static func skippedResult(
+        for job: CopyJob,
+        reason: SkipReason
+    ) -> CopyResult {
+        CopyResult(
+            id: job.id,
+            source: job.source,
+            primary: .skipped(reason),
+            primaryVerification: .skipped,
+            backup: job.desiredBackupDest != nil ? .skipped(reason) : nil,
+            backupVerification: job.desiredBackupDest != nil ? .skipped : nil
+        )
     }
 
     // MARK: - Per-Job Processing

@@ -244,17 +244,19 @@ Only run this phase for gates approved in Phase 0.
 **Exit gate:** all release criteria in `README.md` pass.
 
 - [x] Full existing test suite; see the current-source follow-up in
-  [full-test-suite validation](../full-test-suite-validation.md#metadata-workflow-and-planning-integration-follow-up--2026-08-24).
+  [full-test-suite validation](../full-test-suite-validation.md#command-s-export-safety-follow-up--2026-08-25).
 - [x] New fixture-driven unit/render/persistence suites; included in the same fresh, unfiltered
-  [full-suite evidence](../full-test-suite-validation.md#metadata-workflow-and-planning-integration-follow-up--2026-08-24).
+  [full-suite evidence](../full-test-suite-validation.md#command-s-export-safety-follow-up--2026-08-25).
 - [ ] Performance and memory budgets on target hardware tiers.
 - [ ] Profile representative two-RAW comparison sessions on every target hardware tier.
-- [ ] Thread Sanitizer/strict concurrency review for case, catalog, runner, and render coordination.
+- [x] Thread Sanitizer/strict concurrency review for case, catalog, runner, and render coordination;
+  see the [investigation concurrency validation](investigation-concurrency-validation.md).
 - [ ] GPU validation and long-running analysis cancellation.
 - [ ] Source/folder permission regression, including launch behavior.
 - [ ] Security/privacy review of logs, temp files, map requests, and reports.
 - [ ] Accessibility and localization readiness.
-- [ ] Menu/shortcut conflict audit.
+- [x] Menu/shortcut conflict audit; see the
+  [accessibility and keyboard audit](../accessibility-keyboard-audit-validation.md).
 - [ ] Upgrade/downgrade/newer-schema manual tests.
 - [ ] Backup/restore and crash-interruption drills.
 - [ ] README, feature help, limitations, privacy text, licenses, and CHANGELOG draft.

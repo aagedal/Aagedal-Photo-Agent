@@ -631,17 +631,21 @@ monitor. Thirty-one speed/session/accessibility tests pass; see
 validation profile is not synchronously resolved here, and native-resolution tiled viewing plus
 hands-on focus/IME/VoiceOver/visual checks remain explicit.
 
-### Sony Alpha voice memos — planned for 3.0
+### Sony Alpha voice memos — ingest foundation implemented for 3.0
 
-**Status:** planned on 2026-08-24; implementation has not started. Real camera samples are a gate,
-not something to infer from filenames alone.
+**Status:** flexible one/two-source ILCE-1 v4.00 ingest implemented on 2026-08-24.
+Compatibility with other Sony bodies/firmware and companion persistence beyond ingest remain
+gated by additional samples and follow-up implementation.
 
-- [ ] Obtain redistributable or private test samples from the relevant Sony Alpha bodies and
-  firmware versions. Document the on-card directory layout, WAV naming/association rules, audio
-  encoding, duplicate/burst behavior, and orphan/missing-image cases before freezing the model.
-- [ ] Treat an associated voice memo as an image companion during card ingest and folder discovery.
-  Preserve the WAV byte-for-byte and keep the relationship intact through refresh, copy/archive,
-  rename, move/reject, rollback, and source reassociation without presenting the WAV as a photo.
+- [x] Obtain private test samples from Sony ILCE-1 firmware v4.00. Document the on-card directory
+  layout, WAV naming/association rules, audio
+  encoding, and the no-earlier-than-image timing rule. Additional bodies plus duplicate, rollover,
+  and orphan/missing-image cases remain open before widening the compatibility claim.
+- [x] Treat an associated voice memo as an image companion during card ingest. Preserve the WAV
+  byte-for-byte, support one or two sources plus RAW/JPEG/Both import selection, and keep WAVs out
+  of the photo metadata pass.
+- [ ] Persist the relationship through browser refresh, copy/archive, rename, move/reject,
+  rollback, and source reassociation without presenting the WAV as a photo.
 - [ ] Expose the associated memo in Caption Workspace with playback, duration/source identity, and
   clear missing/ambiguous/unsupported states. Never transcribe or mutate metadata implicitly.
 - [ ] Add cancellable local transcription with explicit language/model state, offline behavior, and
@@ -653,6 +657,30 @@ not something to infer from filenames alone.
   visible in Deadline preflight and receipts instead of silently dropping an ingested companion.
 - [ ] Add fixture-driven association, ingest, rename/rollback, transcription-state, variable,
   sidecar-durability, and delivery tests, followed by a manual card-to-caption pass on real samples.
+
+**Progress — 2026-08-24:** A profile-driven, carrier-neutral companion service now provides the
+safe association seam for card/folder discovery without shipping guessed Sony rules. Explicit
+profiles define image/audio extensions, case behavior, and optional memo subdirectories; unique
+one-image/one-WAV groups associate, while RAW+JPEG, duplicate/case-colliding WAVs, missing memos,
+orphans, and unsafe profiles fail closed with typed states. Proven relationships now enter batch
+rename as concrete-source companions and participate in immutable preview summaries, collision
+reservation, two-phase commit, cancellation, and byte-for-byte rollback. Forty-five focused source
+discovery, association, rename-planning, and rename-execution tests pass using synthetic data; no
+synthetic fixture is claimed as Sony behavior. See the
+[voice-memo companion validation record](sony-alpha-voice-memo-companion-validation.md). Broader
+Sony samples, persisted browser identity, playback, transcription, template variables, sidecar
+durability, delivery policy/receipts, and manual validation remain open.
+
+**Flexible-source ingest progress — 2026-08-24:** The Import sheet supports one card or an optional
+second media source. Images on both participate in RAW Only, JPEG Only, or Both selection. A WAV
+may share a source with either a RAW or JPEG; cross-source image variants join the same exposure
+only when camera, firmware, original timestamp, subsecond, and UTC-offset evidence are identical.
+A WAV must have a matching image anchor on its own source and a timestamp no earlier than capture;
+there is intentionally no maximum memo delay. Proven WAVs copy and verify beside each selected
+image variant, share its conflict suffix, mirror to backup, and appear in Activity/completion counts
+without entering photo metadata writes. Ambiguous or unproven WAVs are visibly counted and skipped.
+The next boundary is persisted companion identity through browser/file operations, followed by
+playback and transcription.
 
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text

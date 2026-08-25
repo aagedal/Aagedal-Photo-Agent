@@ -11,6 +11,17 @@ nonisolated private let crsNamespace = "http://ns.adobe.com/camera-raw-settings/
 /// position in the reorderable layer chain (mirrors XMPSidecarService's `aaphoto`).
 nonisolated private let aaphotoNamespace = "http://aagedal.me/ns/photo/1.0/"
 
+nonisolated enum RenderedMetadataCopySafetyError: LocalizedError {
+    case sourceAndDestinationAreSameFile(URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .sourceAndDestinationAreSameFile(let url):
+            return "Refusing to copy metadata onto its source file: \(url.lastPathComponent)"
+        }
+    }
+}
+
 /// Native, in-process metadata write engine. Reads and re-emits the image file
 /// via SwiftExif. There is no external process and no fallback path.
 nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
@@ -198,6 +209,14 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         to destination: URL,
         bakedCameraRaw: CameraRawSettings?
     ) async throws {
+        // This operation reads the source and then atomically replaces the destination.
+        // If both URLs identify one file, that second phase can replace the source while
+        // another metadata operation still owns it. Reject the invalid call before either
+        // file is touched; format-export collision handling should prevent it upstream.
+        if filesReferToSameItem(source, destination) {
+            throw RenderedMetadataCopySafetyError.sourceAndDestinationAreSameFile(source)
+        }
+
         // Read the source under its own lock so it can't be read mid-write while the user
         // edits the original. Locks are released between the two phases (source and destination
         // are distinct files / keys), which avoids any same-key re-entrancy.
@@ -285,6 +304,18 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 throw error
             }
         }
+    }
+
+    private func filesReferToSameItem(_ lhs: URL, _ rhs: URL) -> Bool {
+        let left = lhs.standardizedFileURL
+        let right = rhs.standardizedFileURL
+        if left.path == right.path { return true }
+
+        let keys: Set<URLResourceKey> = [.fileResourceIdentifierKey]
+        let leftID = try? left.resourceValues(forKeys: keys).fileResourceIdentifier
+        let rightID = try? right.resourceValues(forKeys: keys).fileResourceIdentifier
+        guard let leftID, let rightID else { return false }
+        return (leftID as AnyObject).isEqual(rightID)
     }
 
     // MARK: - Private Helpers

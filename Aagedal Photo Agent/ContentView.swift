@@ -1744,20 +1744,7 @@ struct ContentView: View {
                 .help(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
                 .disabled(browserViewModel.sortOrder == .manual)
 
-                Picker("Sort", selection: Binding(
-                    get: { browserViewModel.sortOrder },
-                    set: { newValue in
-                        if newValue == .manual && browserViewModel.sortOrder != .manual {
-                            browserViewModel.initializeManualOrder(from: browserViewModel.sortedImages)
-                        }
-                        browserViewModel.sortOrder = newValue
-                    }
-                )) {
-                    ForEach(BrowserViewModel.SortOrder.allCases, id: \.self) { order in
-                        Text(order.rawValue).tag(order)
-                    }
-                }
-                .pickerStyle(.menu)
+                BrowserSortOrderMenu(viewModel: browserViewModel)
             }
 
             ToolbarItemGroup(placement: .automatic) {
@@ -1791,20 +1778,7 @@ struct ContentView: View {
                 .help(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
                 .disabled(browserViewModel.sortOrder == .manual)
 
-                Picker("Sort", selection: Binding(
-                    get: { browserViewModel.sortOrder },
-                    set: { newValue in
-                        if newValue == .manual && browserViewModel.sortOrder != .manual {
-                            browserViewModel.initializeManualOrder(from: browserViewModel.sortedImages)
-                        }
-                        browserViewModel.sortOrder = newValue
-                    }
-                )) {
-                    ForEach(BrowserViewModel.SortOrder.allCases, id: \.self) { order in
-                        Text(order.rawValue).tag(order)
-                    }
-                }
-                .pickerStyle(.menu)
+                BrowserSortOrderMenu(viewModel: browserViewModel)
             }
         }
 
@@ -3539,7 +3513,8 @@ struct ContentView: View {
                             writeEngine: browserViewModel.writeEngine,
                             failureTracker: failureTracker,
                             configuration: configuration,
-                            outputFilenameSuffix: isSecondary ? " Secondary" : ""
+                            outputFilenameSuffix: isSecondary ? " Secondary" : "",
+                            collisionPolicy: .appendNumber
                         )
                         successCount += 1
                     } catch {

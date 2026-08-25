@@ -148,6 +148,246 @@ struct SourceImageDiscoveryServiceTests {
     }
 }
 
+@Suite("Voice memo companion association")
+struct VoiceMemoAssociationServiceTests {
+    private let service = VoiceMemoAssociationService()
+    private let profile = VoiceMemoAssociationProfile(
+        identifier: "synthetic-validated-layout",
+        imageFilenameExtensions: ["arw", "jpg"],
+        filenameCaseSensitive: false
+    )
+
+    @Test("an explicit profile associates one image and one memo deterministically")
+    func associatesUniquePair() throws {
+        let root = URL(fileURLWithPath: "/card/DCIM/100MSDCF", isDirectory: true)
+        let image = root.appendingPathComponent("DSC01234.ARW")
+        let memo = root.appendingPathComponent("dsc01234.WAV")
+
+        let report = try service.associate(
+            files: [memo, image, memo],
+            profile: profile
+        )
+
+        #expect(report.associations == [VoiceMemoAssociation(
+            profileIdentifier: profile.identifier,
+            imageURL: image,
+            memoURL: memo
+        )])
+        #expect(report.imagesWithoutMemo.isEmpty)
+        #expect(report.ambiguous.isEmpty)
+        #expect(report.orphanMemoURLs.isEmpty)
+        #expect(report.association(for: image)?.renameArtifact.sourceURL == memo)
+        #expect(report.association(for: image)?.renameArtifact.filenamePattern.suffix == ".WAV")
+    }
+
+    @Test("RAW plus JPEG and duplicate audio fail closed instead of guessing")
+    func reportsAmbiguousGroups() throws {
+        let root = URL(fileURLWithPath: "/card/DCIM/100MSDCF", isDirectory: true)
+        let raw = root.appendingPathComponent("DSC00001.ARW")
+        let jpeg = root.appendingPathComponent("DSC00001.JPG")
+        let upperMemo = root.appendingPathComponent("DSC00001.WAV")
+        let lowerMemo = root.appendingPathComponent("dsc00001.wav")
+
+        let report = try service.associate(
+            files: [raw, jpeg, upperMemo, lowerMemo],
+            profile: profile
+        )
+
+        #expect(report.associations.isEmpty)
+        #expect(report.ambiguous == [VoiceMemoAssociationAmbiguity(
+            imageURLs: [raw, jpeg],
+            memoURLs: [lowerMemo, upperMemo]
+        )])
+        #expect(report.orphanMemoURLs.isEmpty)
+    }
+
+    @Test("missing images and orphan memos stay visible")
+    func reportsMissingAndOrphan() throws {
+        let root = URL(fileURLWithPath: "/card/DCIM/100MSDCF", isDirectory: true)
+        let image = root.appendingPathComponent("DSC00002.ARW")
+        let orphan = root.appendingPathComponent("DSC99999.WAV")
+
+        let report = try service.associate(files: [image, orphan], profile: profile)
+
+        #expect(report.imagesWithoutMemo == [image])
+        #expect(report.orphanMemoURLs == [orphan])
+        #expect(report.associations.isEmpty)
+    }
+
+    @Test("a validated relative memo directory is honored")
+    func supportsRelativeMemoDirectory() throws {
+        let imageRoot = URL(fileURLWithPath: "/card/DCIM/100MSDCF", isDirectory: true)
+        let image = imageRoot.appendingPathComponent("DSC00003.ARW")
+        let memo = imageRoot.appendingPathComponent("VOICE", isDirectory: true)
+            .appendingPathComponent("DSC00003.WAV")
+        let nestedProfile = VoiceMemoAssociationProfile(
+            identifier: "synthetic-nested-layout",
+            imageFilenameExtensions: ["arw"],
+            memoDirectoryComponents: ["VOICE"],
+            filenameCaseSensitive: true
+        )
+
+        let report = try service.associate(files: [memo, image], profile: nestedProfile)
+
+        #expect(report.associations.first?.imageURL == image)
+        #expect(report.associations.first?.memoURL == memo)
+    }
+
+    @Test("unsafe or empty profiles are rejected")
+    func rejectsInvalidProfile() {
+        let invalid = VoiceMemoAssociationProfile(
+            identifier: "",
+            imageFilenameExtensions: ["arw"],
+            memoDirectoryComponents: [".."],
+            filenameCaseSensitive: false
+        )
+
+        #expect(throws: VoiceMemoAssociationService.AssociationError.invalidProfile) {
+            _ = try service.associate(files: [], profile: invalid)
+        }
+    }
+}
+
+@Suite("Sony dual-card voice memo association")
+struct SonyDualCardVoiceMemoAssociationServiceTests {
+    private let service = SonyDualCardVoiceMemoAssociationService()
+    private let cardOne = URL(fileURLWithPath: "/card-1/DCIM/100MSDCF", isDirectory: true)
+    private let cardTwo = URL(fileURLWithPath: "/card-2/DCIM/100MSDCF", isDirectory: true)
+    private let capturedAt = Date(timeIntervalSince1970: 1_787_605_206.544)
+
+    @Test("matching RAW and JPEG variants associate a WAV recorded at any later time")
+    func associatesAcrossCardsWithoutAnUpperTimeLimit() {
+        let raw = evidence(cardOne.appendingPathComponent("TRA08908.ARW"))
+        let jpeg = evidence(cardTwo.appendingPathComponent("TRA08908.JPG"))
+        let wav = cardTwo.appendingPathComponent("TRA08908.WAV")
+
+        let report = service.associate(
+            primaryImages: [raw],
+            companionImages: [jpeg],
+            memoFileDates: [wav: capturedAt.addingTimeInterval(30 * 24 * 3600)]
+        )
+
+        #expect(report.associations == [
+            VoiceMemoAssociation(
+                profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+                imageURL: raw.url,
+                memoURL: wav
+            ),
+            VoiceMemoAssociation(
+                profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+                imageURL: jpeg.url,
+                memoURL: wav
+            ),
+        ])
+        #expect(report.ambiguous.isEmpty)
+        #expect(report.orphanMemoURLs.isEmpty)
+    }
+
+    @Test("a RAW and WAV on one card associate without a JPEG")
+    func associatesSingleCardRawAndMemo() {
+        let raw = evidence(cardOne.appendingPathComponent("TRA08910.ARW"))
+        let wav = cardOne.appendingPathComponent("TRA08910.WAV")
+
+        let report = service.associate(
+            primaryImages: [raw],
+            companionImages: [],
+            primaryMemoFileDates: [wav: capturedAt.addingTimeInterval(120)],
+            companionMemoFileDates: [:]
+        )
+
+        #expect(report.associations == [VoiceMemoAssociation(
+            profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+            imageURL: raw.url,
+            memoURL: wav
+        )])
+        #expect(report.ambiguous.isEmpty)
+    }
+
+    @Test("a WAV on another source requires an image anchor on that source")
+    func rejectsCrossSourceMemoWithoutImageAnchor() {
+        let raw = evidence(cardOne.appendingPathComponent("TRA08911.ARW"))
+        let wav = cardTwo.appendingPathComponent("TRA08911.WAV")
+
+        let report = service.associate(
+            primaryImages: [raw],
+            companionImages: [],
+            primaryMemoFileDates: [:],
+            companionMemoFileDates: [wav: capturedAt.addingTimeInterval(120)]
+        )
+
+        #expect(report.associations.isEmpty)
+        #expect(report.ambiguous.count == 1)
+    }
+
+    @Test("a WAV timestamp before image capture fails closed")
+    func rejectsMemoCreatedBeforeImage() {
+        let raw = evidence(cardOne.appendingPathComponent("TRA08907.ARW"))
+        let jpeg = evidence(cardTwo.appendingPathComponent("TRA08907.JPG"))
+        let wav = cardTwo.appendingPathComponent("TRA08907.WAV")
+
+        let report = service.associate(
+            primaryImages: [raw],
+            companionImages: [jpeg],
+            memoFileDates: [wav: capturedAt.addingTimeInterval(-0.001)]
+        )
+
+        #expect(report.associations.isEmpty)
+        #expect(report.ambiguous == [VoiceMemoAssociationAmbiguity(
+            imageURLs: [raw.url, jpeg.url],
+            memoURLs: [wav]
+        )])
+    }
+
+    @Test("a matching stem with different capture evidence fails closed")
+    func rejectsSequenceRolloverCollision() {
+        let raw = evidence(cardOne.appendingPathComponent("TRA00001.ARW"))
+        let jpegURL = cardTwo.appendingPathComponent("TRA00001.JPG")
+        let jpeg = SonyVoiceMemoImageEvidence(
+            url: jpegURL,
+            captureSignature: "ILCE-1|v4.00|2027:01:01 00:00:00|000|+02:00",
+            capturedAt: capturedAt.addingTimeInterval(10_000)
+        )
+        let wav = cardTwo.appendingPathComponent("TRA00001.WAV")
+
+        let report = service.associate(
+            primaryImages: [raw],
+            companionImages: [jpeg],
+            memoFileDates: [wav: capturedAt.addingTimeInterval(20_000)]
+        )
+
+        #expect(report.associations.isEmpty)
+        #expect(report.ambiguous.count == 1)
+    }
+
+    @Test("a same-source image anchor and unique files are required")
+    func rejectsMissingWitnessAndDuplicateMemo() {
+        let raw = evidence(cardOne.appendingPathComponent("TRA08909.ARW"))
+        let wav = cardTwo.appendingPathComponent("TRA08909.WAV")
+        let duplicate = cardTwo.appendingPathComponent("backup/TRA08909.WAV")
+
+        let report = service.associate(
+            primaryImages: [raw],
+            companionImages: [],
+            memoFileDates: [
+                wav: capturedAt.addingTimeInterval(10),
+                duplicate: capturedAt.addingTimeInterval(20),
+            ]
+        )
+
+        #expect(report.associations.isEmpty)
+        #expect(report.ambiguous.first?.memoURLs == [duplicate, wav])
+    }
+
+    private func evidence(_ url: URL) -> SonyVoiceMemoImageEvidence {
+        SonyVoiceMemoImageEvidence(
+            url: url,
+            captureSignature: "ILCE-1|v4.00|2026:08:24 22:41:06|544|+02:00",
+            capturedAt: capturedAt
+        )
+    }
+
+}
+
 private struct SourceDiscoveryFixture {
     let directoryURL: URL
 

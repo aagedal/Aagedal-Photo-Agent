@@ -153,6 +153,46 @@ struct DevelopInteractionBehaviorTests {
         #expect(!viewModel.isFullScreen)
     }
 
+    @Test("Explicit sort selection persists across browser model recreation")
+    @MainActor
+    func explicitSortSelectionPersistsAcrossRecreation() {
+        let defaults = UserDefaults.standard
+        let sortKey = UserDefaultsKeys.thumbnailSortOrder
+        let reverseKey = UserDefaultsKeys.thumbnailSortReversed
+        let originalSort = defaults.object(forKey: sortKey)
+        let originalReverse = defaults.object(forKey: reverseKey)
+        defer {
+            if let originalSort {
+                defaults.set(originalSort, forKey: sortKey)
+            } else {
+                defaults.removeObject(forKey: sortKey)
+            }
+            if let originalReverse {
+                defaults.set(originalReverse, forKey: reverseKey)
+            } else {
+                defaults.removeObject(forKey: reverseKey)
+            }
+        }
+
+        defaults.set(BrowserViewModel.SortOrder.name.rawValue, forKey: sortKey)
+        defaults.set(false, forKey: reverseKey)
+        let first = BrowserViewModel()
+
+        first.selectSortOrder(.fileType)
+        first.sortReversed = true
+
+        #expect(defaults.string(forKey: sortKey) == BrowserViewModel.SortOrder.fileType.rawValue)
+        #expect(defaults.bool(forKey: reverseKey))
+
+        let recreated = BrowserViewModel()
+        #expect(recreated.sortOrder == .fileType)
+        #expect(recreated.sortReversed)
+
+        recreated.selectSortOrder(.fileType)
+        #expect(recreated.sortOrder == .fileType)
+        #expect(defaults.string(forKey: sortKey) == BrowserViewModel.SortOrder.fileType.rawValue)
+    }
+
     @Test("Brush axis follows the first dominant cursor direction")
     func brushAxisInference() {
         let start = CGPoint(x: 40, y: 50)

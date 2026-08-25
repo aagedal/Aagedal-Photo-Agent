@@ -51,6 +51,7 @@ nonisolated struct RenamePlanningService: Sendable {
                 for: items[index].sourceImageURL,
                 destinationFilename: destinationFilename,
                 registry: artifactRegistry,
+                explicitlyAssociated: items[index].associatedArtifacts,
                 snapshot: snapshot,
                 originalFilenameMetadata: recipe.originalFilenameMetadata
             )
@@ -170,6 +171,7 @@ nonisolated struct RenamePlanningService: Sendable {
                 for: item.sourceImageURL,
                 destinationFilename: requestedName,
                 registry: artifactRegistry,
+                explicitlyAssociated: item.associatedArtifacts,
                 snapshot: snapshot,
                 originalFilenameMetadata: recipe.originalFilenameMetadata
             )
@@ -269,6 +271,7 @@ nonisolated struct RenamePlanningService: Sendable {
                             for: item.sourceImageURL,
                             destinationFilename: candidateName,
                             registry: artifactRegistry,
+                            explicitlyAssociated: item.associatedArtifacts,
                             snapshot: snapshot,
                             originalFilenameMetadata: recipe.originalFilenameMetadata
                         )
@@ -359,7 +362,11 @@ nonisolated struct RenamePlanningService: Sendable {
             entries: entries,
             reservedDestinationURLs: reservedURLs,
             issues: allIssues,
-            associatedArtifactSummary: artifactSummary(entries: entries, registry: artifactRegistry)
+            associatedArtifactSummary: artifactSummary(
+                entries: entries,
+                registry: artifactRegistry,
+                items: items
+            )
         )
     }
 
@@ -406,6 +413,7 @@ nonisolated struct RenamePlanningService: Sendable {
         for sourceImageURL: URL,
         destinationFilename: String,
         registry: RenameArtifactRegistry,
+        explicitlyAssociated: [RenamePlanningAssociatedArtifact],
         snapshot: PathSnapshot,
         originalFilenameMetadata: BatchRenameOriginalFilenameMetadataPolicy
     ) -> [RenameArtifactAction] {
@@ -415,7 +423,7 @@ nonisolated struct RenamePlanningService: Sendable {
         }
         let sourceFilename = sourceImageURL.lastPathComponent
         let root = sourceImageURL.deletingLastPathComponent()
-        return rules.compactMap { rule in
+        let derivedActions: [RenameArtifactAction] = rules.compactMap { rule in
             let directory = rule.relativeDirectoryComponents.reduce(root) {
                 $0.appendingPathComponent($1, isDirectory: true)
             }
@@ -471,6 +479,22 @@ nonisolated struct RenamePlanningService: Sendable {
                 originalFilenameMetadataMutation: mutation
             )
         }
+
+        let explicitActions = explicitlyAssociated.map { artifact in
+            RenameArtifactAction(
+                identifier: artifact.identifier,
+                displayName: artifact.displayName,
+                role: .associated,
+                sourceURL: artifact.sourceURL,
+                destinationURL: artifact.sourceURL.deletingLastPathComponent()
+                    .appendingPathComponent(filename(
+                        from: destinationFilename,
+                        pattern: artifact.filenamePattern
+                    )),
+                originalFilenameMetadataMutation: nil
+            )
+        }
+        return derivedActions + explicitActions
     }
 
     private func filename(
@@ -620,18 +644,25 @@ nonisolated struct RenamePlanningService: Sendable {
 
     private func artifactSummary(
         entries: [RenamePlanEntry],
-        registry: RenameArtifactRegistry
+        registry: RenameArtifactRegistry,
+        items: [RenamePlanningItem]
     ) -> [RenameArtifactSummary] {
-        let associatedRules = registry.rules.filter { $0.role == .associated }
-        return associatedRules.compactMap { rule in
+        var descriptors = registry.rules.filter { $0.role == .associated }.map {
+            (identifier: $0.identifier, displayName: $0.displayName)
+        }
+        for artifact in items.flatMap(\.associatedArtifacts) where
+            !descriptors.contains(where: { $0.identifier == artifact.identifier }) {
+            descriptors.append((artifact.identifier, artifact.displayName))
+        }
+        return descriptors.compactMap { descriptor in
             let actions = entries.flatMap(\.plannedArtifactActions).filter {
-                $0.identifier == rule.identifier
+                $0.identifier == descriptor.identifier
             }
             guard !actions.isEmpty else { return nil }
             let renamed = actions.filter(\.changesPath).count
             return RenameArtifactSummary(
-                identifier: rule.identifier,
-                displayName: rule.displayName,
+                identifier: descriptor.identifier,
+                displayName: descriptor.displayName,
                 presentCount: actions.count,
                 renamedCount: renamed,
                 unchangedCount: actions.count - renamed

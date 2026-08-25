@@ -80,7 +80,8 @@ enum EditExportPipeline {
                            writeEngine: any MetadataWriteEngine,
                            failureTracker: MetadataFailureTracker,
                            configuration: AdvancedExportConfiguration? = nil,
-                           outputFilenameSuffix: String = "") async throws -> URL {
+                           outputFilenameSuffix: String = "",
+                           collisionPolicy: EditedImageRenderer.OutputCollisionPolicy = .replaceExisting) async throws -> URL {
         if case .rawDNG(let compression, let executableURL) = kind {
             // A DNG is still a camera RAW, not a rendered output. Do not run the
             // rendered-metadata copier or sidecar overlay; the converter preserves
@@ -124,6 +125,7 @@ enum EditExportPipeline {
                     outputFolder: outputFolder,
                     configuration: configuration,
                     outputFilenameSuffix: outputFilenameSuffix,
+                    collisionPolicy: collisionPolicy,
                     metadataCopier: copier)
             case .saveAs(let format):
                 return try await EditedImageRenderer.saveAs(

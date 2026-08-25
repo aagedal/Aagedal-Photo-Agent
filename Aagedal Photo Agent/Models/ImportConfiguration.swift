@@ -87,6 +87,9 @@ struct BackupDestination: Sendable, Equatable {
 
 struct ImportConfiguration {
     var sourceURL: URL?
+    /// Optional second media source. Its RAW/JPEG files participate in the selected file-type
+    /// filter, and its Sony WAV files can be associated with matching exposures on either source.
+    var voiceMemoSourceURL: URL?
     var destinationBaseURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Photos")
     var importTitle: String = ""
     var fileTypeFilter: ImportFileTypeFilter = .both {

@@ -146,6 +146,23 @@ struct AnalysisReportSnapshotTests {
         #expect(solar.linkedTimestampEvidenceIsAvailable)
         #expect(solar.day == fresh)
 
+        let viewport = try #require(snapshot.mapEvidence?.viewport)
+        let liveGeometry = try #require(AnalysisSolarMapRenderModel(
+            overlay: overlay,
+            origin: coordinate,
+            latitudeDelta: viewport.latitudeDelta,
+            longitudeDelta: viewport.longitudeDelta,
+            day: fresh
+        ))
+        let reportGeometry = try #require(AnalysisSolarMapRenderModel(
+            overlay: solar.overlay,
+            origin: solar.coordinate,
+            latitudeDelta: viewport.latitudeDelta,
+            longitudeDelta: viewport.longitudeDelta,
+            day: solar.day
+        ))
+        #expect(reportGeometry == liveGeometry)
+
         let encoded = try JSONEncoder().encode(snapshot)
         #expect(try JSONDecoder().decode(AnalysisReportSnapshot.self, from: encoded) == snapshot)
 

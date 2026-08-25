@@ -50,6 +50,29 @@ struct MetadataEngineConcurrencyTests {
         #expect(meta.title == "Hello")
     }
 
+    /// The rendered-file copier deliberately performs two separately locked phases
+    /// because source and destination are required to be different files. Reject an
+    /// accidental alias before either phase so an export-planning regression cannot
+    /// rewrite, replace, or delete the user's original image.
+    @Test("rendered metadata copy rejects source equal to destination without changing the file")
+    func renderedMetadataCopyRejectsSameFile() async throws {
+        let engine = SwiftExifWriteEngine()
+        let url = try makeTempJPEG()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let originalBytes = try Data(contentsOf: url)
+
+        await #expect(throws: (any Error).self) {
+            try await engine.copyMetadataToRenderedFile(
+                from: url,
+                to: url,
+                bakedCameraRaw: nil
+            )
+        }
+
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(try Data(contentsOf: url) == originalBytes)
+    }
+
     /// Radial-mask regression: a mask written by the engine must read back with
     /// its authored geometry and local adjustments. SwiftExif returns structured
     /// XMP fields under namespace-URI-prefixed keys; the parser used to miss

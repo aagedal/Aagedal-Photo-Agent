@@ -3600,6 +3600,17 @@ final class BrowserViewModel {
         manualOrder = currentSorted.map(\.url)
     }
 
+    /// The sole user-action path for changing browser sort order. Keeping this as an explicit
+    /// command avoids toolbar control focus/activation changes being interpreted as selection
+    /// writes by SwiftUI on newer macOS releases.
+    func selectSortOrder(_ newValue: SortOrder) {
+        guard newValue != sortOrder else { return }
+        if newValue == .manual {
+            initializeManualOrder(from: sortedImages)
+        }
+        sortOrder = newValue
+    }
+
     enum SortOrder: String, CaseIterable {
         case name = "Name"
         case dateModified = "Date Modified"

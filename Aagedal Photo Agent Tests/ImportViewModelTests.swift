@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -5,6 +6,36 @@ import Testing
 @Suite("ImportViewModel", .serialized)
 @MainActor
 struct ImportViewModelTests {
+    @Test("RAW and JPEG filters include images from both selected cards")
+    func fileTypeFilterSpansBothSources() {
+        let defaults = UserDefaults.standard
+        let original = defaults.object(forKey: UserDefaultsKeys.importFileTypeFilter)
+        defer {
+            if let original {
+                defaults.set(original, forKey: UserDefaultsKeys.importFileTypeFilter)
+            } else {
+                defaults.removeObject(forKey: UserDefaultsKeys.importFileTypeFilter)
+            }
+        }
+
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        let raw = URL(fileURLWithPath: "/card-1/TRA08908.ARW")
+        let jpeg = URL(fileURLWithPath: "/card-2/TRA08908.JPG")
+        let wav = URL(fileURLWithPath: "/card-2/TRA08908.WAV")
+        viewModel.sourceFiles = [raw]
+        viewModel.voiceMemoSourceFiles = [jpeg, wav]
+
+        viewModel.configuration.fileTypeFilter = .rawOnly
+        #expect(viewModel.filteredSourceFiles == [raw])
+        viewModel.configuration.fileTypeFilter = .jpegOnly
+        #expect(viewModel.filteredSourceFiles == [jpeg])
+        viewModel.configuration.fileTypeFilter = .both
+        #expect(viewModel.filteredSourceFiles == [raw, jpeg])
+    }
+
     @Test("Import template preserves ordered creators and exact Date Created")
     func orderedCreatorAndDateTemplate() {
         let viewModel = ImportViewModel(
@@ -262,6 +293,305 @@ struct ImportViewModelTests {
         #expect(ImportViewModel.commonAncestor(of: dayFolders)?.path == "/Volumes/Photos/2026/07")
         #expect(ImportViewModel.commonAncestor(of: monthFolders)?.path == "/Volumes/Photos/2026")
     }
+
+    @Test("Import opens its reveal folder only after the directory exists")
+    func importStartedFollowsRevealFolderCreation() async throws {
+        let defaults = UserDefaults.standard
+        let preferenceKeys = [
+            UserDefaultsKeys.importFileTypeFilter,
+            UserDefaultsKeys.importCreateSubFolders,
+            UserDefaultsKeys.importVerificationMode,
+            UserDefaultsKeys.importSkipPreviouslyImported,
+            UserDefaultsKeys.importSortByDate,
+        ]
+        var originalPreferences: [String: Any] = [:]
+        for key in preferenceKeys {
+            originalPreferences[key] = defaults.object(forKey: key)
+        }
+        defer {
+            for key in preferenceKeys {
+                if let original = originalPreferences[key] {
+                    defaults.set(original, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportFolderHandoffTests-\(UUID().uuidString)", isDirectory: true)
+        let sourceFolder = root.appendingPathComponent("card", isDirectory: true)
+        let destinationBase = root.appendingPathComponent("photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destinationBase, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let source = sourceFolder.appendingPathComponent("photo.jpg")
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 16,
+            pixelsHigh: 16,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let jpeg = try #require(bitmap.representation(using: .jpeg, properties: [:]))
+        try jpeg.write(to: source)
+
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        viewModel.configuration.sourceURL = sourceFolder
+        viewModel.configuration.destinationBaseURL = destinationBase
+        viewModel.configuration.importTitle = "Folder Handoff"
+        viewModel.configuration.fileTypeFilter = .jpegOnly
+        viewModel.configuration.createSubFolders = false
+        viewModel.configuration.verificationMode = .off
+        viewModel.configuration.skipPreviouslyImported = false
+        viewModel.configuration.applyMetadata = false
+        viewModel.sortByDate = false
+        viewModel.sourceFiles = [source]
+
+        let notificationTask = Task { @MainActor () -> (URL, Bool)? in
+            for await notification in NotificationCenter.default.notifications(named: .importStarted) {
+                guard let folder = notification.object as? URL else { continue }
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(
+                    atPath: folder.path,
+                    isDirectory: &isDirectory
+                ) && isDirectory.boolValue
+                return (folder, exists)
+            }
+            return nil
+        }
+        await Task.yield()
+
+        viewModel.startImport()
+
+        let timeoutTask = Task {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            notificationTask.cancel()
+        }
+        let observed = await notificationTask.value
+        timeoutTask.cancel()
+
+        #expect(
+            observed?.0.standardizedFileURL.path
+                == viewModel.configuration.destinationFolderURL.standardizedFileURL.path
+        )
+        #expect(observed?.1 == true)
+
+        for _ in 0..<500 where viewModel.isImporting {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!viewModel.isImporting)
+        // The test host contains the real browser notification consumer. Let its small-folder
+        // scan finish before the temporary tree is removed by `defer`.
+        try await Task.sleep(for: .milliseconds(500))
+    }
+
+    @Test("Dual-card import copies a matched WAV with the image conflict suffix")
+    func dualCardImportKeepsMemoBesideRenamedImage() async throws {
+        let defaults = UserDefaults.standard
+        let preferenceKeys = [
+            UserDefaultsKeys.importFileTypeFilter,
+            UserDefaultsKeys.importConflictPolicy,
+            UserDefaultsKeys.importCreateSubFolders,
+            UserDefaultsKeys.importVerificationMode,
+            UserDefaultsKeys.importSkipPreviouslyImported,
+            UserDefaultsKeys.importSortByDate,
+        ]
+        var originalPreferences: [String: Any] = [:]
+        for key in preferenceKeys { originalPreferences[key] = defaults.object(forKey: key) }
+        defer {
+            for key in preferenceKeys {
+                if let original = originalPreferences[key] {
+                    defaults.set(original, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DualCardImportTests-\(UUID().uuidString)", isDirectory: true)
+        let rawCard = root.appendingPathComponent("card-1", isDirectory: true)
+        let memoCard = root.appendingPathComponent("card-2", isDirectory: true)
+        let destinationBase = root.appendingPathComponent("photos", isDirectory: true)
+        for folder in [rawCard, memoCard, destinationBase] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let raw = rawCard.appendingPathComponent("TRA08908.ARW")
+        try Data("synthetic-primary-raw".utf8).write(to: raw)
+        let image = memoCard.appendingPathComponent("TRA08908.JPG")
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 16,
+            pixelsHigh: 16,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let jpeg = try #require(bitmap.representation(using: .jpeg, properties: [:]))
+        try jpeg.write(to: image)
+        let memo = memoCard.appendingPathComponent("TRA08908.WAV")
+        let memoBytes = Data("sony-voice-memo-bytes".utf8)
+        try memoBytes.write(to: memo)
+
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        viewModel.configuration.sourceURL = rawCard
+        viewModel.configuration.voiceMemoSourceURL = memoCard
+        viewModel.configuration.destinationBaseURL = destinationBase
+        viewModel.configuration.importTitle = "Dual Card"
+        viewModel.configuration.fileTypeFilter = .jpegOnly
+        viewModel.configuration.conflictPolicy = .renameWithSuffix
+        viewModel.configuration.createSubFolders = false
+        viewModel.configuration.verificationMode = .on
+        viewModel.configuration.skipPreviouslyImported = false
+        viewModel.configuration.applyMetadata = false
+        viewModel.sortByDate = false
+        viewModel.sourceFiles = [raw]
+        viewModel.voiceMemoSourceFiles = [image, memo]
+        viewModel.voiceMemoAssociationReport = VoiceMemoAssociationReport(
+            profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+            associations: [raw, image].map {
+                VoiceMemoAssociation(
+                    profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+                    imageURL: $0,
+                    memoURL: memo
+                )
+            },
+            imagesWithoutMemo: [],
+            ambiguous: [],
+            orphanMemoURLs: []
+        )
+
+        let destinationFolder = viewModel.configuration.destinationFolderURL
+        try FileManager.default.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+        try jpeg.write(
+            to: destinationFolder.appendingPathComponent("TRA08908.JPG")
+        )
+
+        viewModel.startImport()
+        for _ in 0..<500 where viewModel.isImporting {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let importedImage = destinationFolder.appendingPathComponent("TRA08908-1.JPG")
+        let importedMemo = destinationFolder.appendingPathComponent("TRA08908-1.WAV")
+        #expect(!viewModel.isImporting)
+        #expect(FileManager.default.fileExists(atPath: importedImage.path))
+        #expect(try Data(contentsOf: importedMemo) == memoBytes)
+        #expect(viewModel.copiedFiles == 2)
+        #expect(viewModel.voiceMemoCopiedFiles == 1)
+        #expect(viewModel.importSummary.contains("Imported 1 photo"))
+        #expect(viewModel.importSummary.contains("voice memos 1"))
+
+        try await Task.sleep(for: .milliseconds(500))
+    }
+
+    @Test("One-card import can keep RAW, JPEG, and their voice memo")
+    func oneCardImportKeepsBothImageVariantsAndMemo() async throws {
+        let defaults = UserDefaults.standard
+        let preferenceKeys = [
+            UserDefaultsKeys.importFileTypeFilter,
+            UserDefaultsKeys.importConflictPolicy,
+            UserDefaultsKeys.importCreateSubFolders,
+            UserDefaultsKeys.importVerificationMode,
+            UserDefaultsKeys.importSkipPreviouslyImported,
+            UserDefaultsKeys.importSortByDate,
+        ]
+        var originalPreferences: [String: Any] = [:]
+        for key in preferenceKeys { originalPreferences[key] = defaults.object(forKey: key) }
+        defer {
+            for key in preferenceKeys {
+                if let original = originalPreferences[key] {
+                    defaults.set(original, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OneCardVoiceMemoImportTests-\(UUID().uuidString)", isDirectory: true)
+        let card = root.appendingPathComponent("card", isDirectory: true)
+        let destinationBase = root.appendingPathComponent("photos", isDirectory: true)
+        for folder in [card, destinationBase] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let raw = card.appendingPathComponent("TRA08912.ARW")
+        let jpeg = card.appendingPathComponent("TRA08912.JPG")
+        let memo = card.appendingPathComponent("TRA08912.WAV")
+        let rawBytes = Data("synthetic-raw-copy-fixture".utf8)
+        let jpegBytes = Data("synthetic-jpeg-copy-fixture".utf8)
+        let memoBytes = Data("single-card-voice-memo".utf8)
+        try rawBytes.write(to: raw)
+        try jpegBytes.write(to: jpeg)
+        try memoBytes.write(to: memo)
+
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        viewModel.configuration.sourceURL = card
+        viewModel.configuration.destinationBaseURL = destinationBase
+        viewModel.configuration.importTitle = "One Card"
+        viewModel.configuration.fileTypeFilter = .both
+        viewModel.configuration.conflictPolicy = .renameWithSuffix
+        viewModel.configuration.createSubFolders = true
+        viewModel.configuration.verificationMode = .on
+        viewModel.configuration.skipPreviouslyImported = false
+        viewModel.configuration.applyMetadata = false
+        viewModel.sortByDate = false
+        viewModel.sourceFiles = [raw, jpeg]
+        viewModel.sourceVoiceMemoFiles = [memo]
+        viewModel.voiceMemoAssociationReport = VoiceMemoAssociationReport(
+            profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+            associations: [raw, jpeg].map {
+                VoiceMemoAssociation(
+                    profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+                    imageURL: $0,
+                    memoURL: memo
+                )
+            },
+            imagesWithoutMemo: [],
+            ambiguous: [],
+            orphanMemoURLs: []
+        )
+
+        viewModel.startImport()
+        for _ in 0..<500 where viewModel.isImporting {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let destination = viewModel.configuration.destinationFolderURL
+        #expect(try Data(contentsOf: destination.appendingPathComponent("RAW/TRA08912.ARW")) == rawBytes)
+        #expect(try Data(contentsOf: destination.appendingPathComponent("RAW/TRA08912.WAV")) == memoBytes)
+        #expect(try Data(contentsOf: destination.appendingPathComponent("JPEG/TRA08912.JPG")) == jpegBytes)
+        #expect(try Data(contentsOf: destination.appendingPathComponent("JPEG/TRA08912.WAV")) == memoBytes)
+        #expect(viewModel.copiedFiles == 4)
+        #expect(viewModel.voiceMemoCopiedFiles == 2)
+
+        try await Task.sleep(for: .milliseconds(500))
+    }
 }
 
 @Suite("Safe import paths")
@@ -390,5 +720,47 @@ struct ImportCopyServiceTests {
         } else {
             Issue.record("Copying a file onto itself must be rejected")
         }
+    }
+
+    @Test("a companion is skipped when its image copy fails")
+    func companionRequiresSuccessfulImage() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportCopyTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let missingImage = root.appendingPathComponent("missing.ARW")
+        let memo = root.appendingPathComponent("source.WAV")
+        let imageDestination = root.appendingPathComponent("destination.ARW")
+        let memoDestination = root.appendingPathComponent("destination.WAV")
+        try Data("memo".utf8).write(to: memo)
+        let imageJob = ImportCopyService.CopyJob(
+            source: missingImage,
+            desiredPrimaryDest: imageDestination,
+            desiredBackupDest: nil
+        )
+        let memoJob = ImportCopyService.CopyJob(
+            source: memo,
+            desiredPrimaryDest: memoDestination,
+            desiredBackupDest: nil,
+            prerequisiteJobID: imageJob.id
+        )
+
+        let results = try await ImportCopyService().run(
+            jobs: [imageJob, memoJob],
+            conflictPolicy: .overwrite,
+            verificationMode: .on,
+            verifyBackup: true,
+            progress: { _ in }
+        )
+
+        #expect(results.count == 2)
+        if case .failed = results[0].primary {
+            // Expected.
+        } else {
+            Issue.record("The missing image source should fail")
+        }
+        #expect(results[1].primary == .skipped(.associatedImageFailed))
+        #expect(!FileManager.default.fileExists(atPath: memoDestination.path))
     }
 }

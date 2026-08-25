@@ -311,17 +311,21 @@ existing OSINT behavior.
 - [x] Test leap day, date-line, positive/negative UTC offset, and DST-transition inputs.
 - [x] Test missing location, removed location, missing linked evidence, and source-changed cases.
 - [x] Stress all 1,440 slider minute positions while reusing one civil-day event solve.
-- [ ] Test rapid slider interaction and repeated map-style switching.
-- [ ] Test Apple standard, muted, hybrid, satellite, and OpenStreetMap styles.
-- [ ] Test rotated and pitched maps.
+- [x] Stress rapid, out-of-order slider state updates and repeated map-style state switching.
+- [x] Verify Apple standard, muted, hybrid, satellite, and OpenStreetMap state use identical shared
+  solar geometry.
+- [x] Verify true-north solar geometry is invariant under valid persisted rotation and pitch values.
+- [ ] Manually test rapid slider interaction and actual Apple/OSM rendered style transitions.
+- [ ] Manually test rotated and pitched map rendering.
 - [ ] Verify fully offline operation after cached map content is unavailable.
 - [ ] Complete keyboard-only and VoiceOver review.
 - [ ] Render A4 and US Letter reports and visually compare rays and values with the live workspace.
 - [x] Update the OSINT validation document with the approved scope and measured tolerances.
 
-**Automated validation — 2026-08-23:** On the arm64 macOS host,
-`AnalysisSolarPositionCalculatorTests` passed 22 test methods (26 parameterized invocations), three
-focused solar lifecycle/reproduction/report tests passed, and all 62 `AnalysisCaseTests` passed.
+**Automated validation — 2026-08-24:** On the arm64 macOS host,
+`AnalysisSolarPositionCalculatorTests` passed 24 test methods (28 concrete invocations); the complete
+focused calculator and report run passed 38 tests across two suites, and the earlier full run of all
+62 `AnalysisCaseTests` remains green.
 The expanded corpus covers equatorial equinox, Oslo and Greenwich mid-latitudes, Tromsø below 72
 degrees, northern and southern locations above 72 degrees, both polar states, leap day, the
 international date line, UTC-12/UTC/UTC+14, and explicit fixed offsets spanning a DST transition.
@@ -331,12 +335,20 @@ behavior. All five persisted map-style choices produce the same shared derived g
 A4 and US Letter solar reports pass media-box, ray-label, value, method, and limitation text
 assertions. A full 1,440-minute civil-day sweep now proves that slider previews retain one event
 cache identity and reuse its sunrise, solar-noon, sunset, polar state, and method while updating only
-the instantaneous position.
+the instantaneous position. An additional 2,880-update alternating/reverse scrub proves
+out-of-order state changes retain those events and end at the exact latest requested position; 1,000
+repeated transitions across all five style states preserve a valid map state and exactly equal
+shared solar geometry. Valid persisted headings from 0 through 359.999 degrees and pitches from 0
+through 90 degrees do not alter the true-north ray model. Snapshot tests also construct the live and
+report ray models independently from their respective inputs and require exact equality. The
+calculator and shared ray model remain Foundation-only, and the report snapshot retains schematic
+solar geometry without map imagery; this is automated evidence for offline-independent
+calculation/geometry, not a substitute for the uncached live-map drill.
 
 The product supports Apple Silicon only, so the arm64 run covers every supported architecture. It
 does not constitute a manual check of rapid slider interaction, actual Apple/OSM style transitions,
-rotation, pitch, uncached offline map behavior, keyboard/VoiceOver behavior, or visual parity
-between live and reported rays. Those gates remain unchecked above.
+rendered rotation or pitch, uncached offline map behavior, keyboard/VoiceOver behavior, or visual
+parity between live and reported rays. Those gates remain unchecked above.
 
 ## Reference-test coverage
 

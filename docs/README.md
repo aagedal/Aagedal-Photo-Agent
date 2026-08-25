@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-08-24
+**Last reviewed:** 2026-08-25
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -18,7 +18,7 @@ own scope, tasks, exit gates, and technical decisions.
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; automated orientation/view/report transform coverage expanded; release hardening remains | Close manual fixture/color, accessibility, display/HDR, performance, security, recovery, and packaging gates |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, unified metadata-field customization, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline and every localized Title alternative now round-trip independently, while Sony Alpha voice-memo support is planned and release hardening remains | Complete Sony voice-memo sample research and implementation plus external interoperability, real-server, device, accessibility, and first-use Deadline drills |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, unified metadata-field customization, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline and every localized Title alternative round-trip independently; ILCE-1 v4.00 one/two-source RAW/JPEG voice-memo ingest and transactional rename foundations are implemented with fail-closed evidence | Persist voice-memo identity beyond ingest and complete playback/transcription/delivery plus broader Sony samples, external interoperability, real-server, device, accessibility, and first-use Deadline drills |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, immutable report evidence, and the supported-arm64 automated boundary matrix are implemented; interactive release validation remains | Validate live and reported rays across actual map styles, camera interactions, rapid time changes, offline behavior, and accessibility paths |
 
 ## Default delivery order
@@ -27,9 +27,10 @@ own scope, tasks, exit gates, and technical decisions.
    immutable report snapshot, and rendering behavior are foundations for later analysis features.
 2. Close journalistic workflow release hardening. Caption Workspace, Batch Rename, Deadline Mode,
    and verified delivery now share the field model, preservation policy, validation engine, and
-   recovery boundaries; remaining work is the final support-ledger model decisions, planned Sony
-   Alpha voice-memo ingest/transcription, plus external interoperability, real-environment,
-   accessibility, and current-source full-suite evidence.
+   recovery boundaries; remaining work is the final support-ledger model decisions, Sony Alpha
+   voice-memo persistence/playback/transcription/delivery integration beyond the implemented
+   ILCE-1 v4.00 ingest and transactional-rename foundation, plus broader real-sample compatibility,
+   external interoperability, real-environment, and manual accessibility evidence.
 3. Finish solar-overlay release validation after the implemented calculator, persistence, controls,
    live-map rendering, and report-evidence phases. It remains a bounded map/report feature and does
    not block the journalistic workflow.
@@ -149,6 +150,10 @@ Supporting documents:
   TIFF/PNG/JPEG XL and RAW-sidecar corpus, pixel/codestream preservation, and HEIC boundary.
 - [Caption termination durability validation](caption-termination-durability-validation.md) —
   deferred AppKit termination, FIFO retry, Caption-before-Develop ordering, and focus evidence.
+- [Sony Alpha voice-memo companion foundation](sony-alpha-voice-memo-companion-validation.md) —
+  private-sample-validated ILCE-1 v4.00 one/two-source ingest plus transactional rename/rollback;
+  persistence, playback/transcription/delivery, and broader body/firmware compatibility remain
+  gated.
 
 ## Solar overlay document set
 
@@ -175,6 +180,16 @@ initiatives. Their own status sections are authoritative:
 - [Sports mode 2.1 plan](sports-2.1-plan.md) — specialist sports-tagging trust and review workflow.
 
 They should not be used as the top-level project backlog unless promoted into the portfolio table.
+
+## Cross-cutting improvement backlog
+
+The [app improvement audit plan](app-improvement-audit-plan.md) is a proposed, risk-ordered backlog
+covering data-loss prevention, release reproducibility, security/privacy, accessibility,
+responsiveness, and maintainability. It is not a fourth 3.0 portfolio initiative, and its unchecked
+items do not claim implementation or replace the release gates in the three authoritative plans
+above. The audit baseline is reconciled to the latest recorded integrated run of 1,413 passing
+tests in 155 suites; manual, external-service, hardware, legal, and credential-dependent actions
+remain explicitly gated in that document.
 
 ## File organization convention
 

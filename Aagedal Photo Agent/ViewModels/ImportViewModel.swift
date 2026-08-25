@@ -59,8 +59,13 @@ struct ImportDateGroup: Identifiable {
 final class ImportViewModel {
     var configuration = ImportConfiguration()
     var sourceFiles: [URL] = []
+    var sourceVoiceMemoFiles: [URL] = []
+    var voiceMemoSourceFiles: [URL] = []
+    var voiceMemoAssociationReport: VoiceMemoAssociationReport?
+    var isScanningVoiceMemoSource: Bool = false
     var importPhase: ImportPhase = .idle
     var copiedFiles: Int = 0
+    var voiceMemoCopiedFiles: Int = 0
     var totalFiles: Int = 0
     var skippedFiles: Int = 0
     var duplicateSkippedFiles: Int = 0
@@ -119,6 +124,8 @@ final class ImportViewModel {
     @ObservationIgnored private var copyResults: [ImportCopyService.CopyResult] = []
     private let interpolator = PresetVariableInterpolator()
     @ObservationIgnored private var scanTask: Task<Void, Never>?
+    @ObservationIgnored private var voiceMemoScanTask: Task<Void, Never>?
+    @ObservationIgnored private var voiceMemoAssociationTask: Task<Void, Never>?
     @ObservationIgnored private var dateScanTask: Task<Void, Never>?
     @ObservationIgnored private var folderSuggestionTask: Task<Void, Never>?
     @ObservationIgnored private var folderSuggestionRequestID = UUID()
@@ -176,6 +183,8 @@ final class ImportViewModel {
 
     deinit {
         scanTask?.cancel()
+        voiceMemoScanTask?.cancel()
+        voiceMemoAssociationTask?.cancel()
         dateScanTask?.cancel()
         folderSuggestionTask?.cancel()
         importTask?.cancel()
@@ -190,14 +199,24 @@ final class ImportViewModel {
         }
     }
 
+    var allSourceImages: [URL] {
+        let secondSourceImages = voiceMemoSourceFiles.filter {
+            SupportedImageFormats.isSupported(url: $0)
+        }
+        var seen = Set<URL>()
+        return (sourceFiles + secondSourceImages).filter {
+            seen.insert(VoiceMemoAssociationService.canonicalURL($0)).inserted
+        }
+    }
+
     var filteredSourceFiles: [URL] {
         switch configuration.fileTypeFilter {
         case .rawOnly:
-            return sourceFiles.filter { SupportedImageFormats.isRaw(url: $0) }
+            return allSourceImages.filter { SupportedImageFormats.isRaw(url: $0) }
         case .jpegOnly:
-            return sourceFiles.filter { SupportedImageFormats.isJPEG(url: $0) }
+            return allSourceImages.filter { SupportedImageFormats.isJPEG(url: $0) }
         case .both:
-            return sourceFiles
+            return allSourceImages
         }
     }
 
@@ -208,6 +227,17 @@ final class ImportViewModel {
         return filtered.filter { includedFiles.contains($0) }
     }
 
+    var selectedVoiceMemoAssociations: [VoiceMemoAssociation] {
+        let selected = Set(selectedSourceFiles.map(VoiceMemoAssociationService.canonicalURL))
+        return voiceMemoAssociationReport?.associations.filter {
+            selected.contains($0.imageURL)
+        } ?? []
+    }
+
+    var selectedVoiceMemoCount: Int {
+        Set(selectedVoiceMemoAssociations.map(\.memoURL)).count
+    }
+
     /// Explains why the import cannot start, in the same priority order the
     /// user encounters the setup steps. Keeping this validation in the view
     /// model ensures the button state, its explanation, and `startImport()`
@@ -216,10 +246,13 @@ final class ImportViewModel {
         if importPhase == .scanning {
             return "Scanning the source folder…"
         }
+        if isScanningVoiceMemoSource {
+            return "Analyzing image and voice-memo matches…"
+        }
         if configuration.sourceURL == nil {
             return "Choose a memory card or folder to import from."
         }
-        if sourceFiles.isEmpty {
+        if allSourceImages.isEmpty {
             return "No supported images were found in the source folder."
         }
         if filteredSourceFiles.isEmpty {
@@ -265,6 +298,7 @@ final class ImportViewModel {
         dateScanTask?.cancel()
         importPhase = .scanning
         sourceFiles = []
+        sourceVoiceMemoFiles = []
         dateGroups = []
 
         scanTask = Task.detached(priority: .userInitiated) {
@@ -275,13 +309,180 @@ final class ImportViewModel {
                 self.sourceFiles = allURLs
                     .filter { SupportedImageFormats.isSupported(url: $0) }
                     .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                self.sourceVoiceMemoFiles = allURLs
+                    .filter { $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame }
+                    .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
                 self.importPhase = .idle
+                self.refreshVoiceMemoAssociations()
                 // Re-detect capture dates for the new folder when date sorting is on.
                 if self.sortByDate {
                     self.scanCaptureDates()
                 }
             }
         }
+    }
+
+    /// Selects an optional second media source. Its images follow the same RAW/JPEG import filter
+    /// as the first source, and any Sony WAVs participate in exposure association.
+    func selectVoiceMemoSource() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select an optional second memory card or media folder"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        setVoiceMemoSource(url)
+    }
+
+    func setVoiceMemoSource(_ url: URL) {
+        configuration.voiceMemoSourceURL = url
+        scanVoiceMemoSource(url: url)
+    }
+
+    func clearVoiceMemoSource() {
+        voiceMemoScanTask?.cancel()
+        voiceMemoAssociationTask?.cancel()
+        configuration.voiceMemoSourceURL = nil
+        voiceMemoSourceFiles = []
+        refreshVoiceMemoAssociations()
+        if sortByDate {
+            scanCaptureDates()
+        }
+    }
+
+    private func scanVoiceMemoSource(url: URL) {
+        voiceMemoScanTask?.cancel()
+        voiceMemoAssociationTask?.cancel()
+        voiceMemoSourceFiles = []
+        voiceMemoAssociationReport = nil
+        isScanningVoiceMemoSource = true
+
+        voiceMemoScanTask = Task.detached(priority: .userInitiated) {
+            let didStartAccessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if didStartAccessing { url.stopAccessingSecurityScopedResource() }
+            }
+            let files = Self.enumerateFiles(at: url).filter {
+                SupportedImageFormats.isSupported(url: $0)
+                    || $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard !Task.isCancelled, self.configuration.voiceMemoSourceURL == url else { return }
+                self.voiceMemoSourceFiles = files.sorted {
+                    $0.path.localizedStandardCompare($1.path) == .orderedAscending
+                }
+                self.refreshVoiceMemoAssociations()
+                if self.sortByDate {
+                    self.scanCaptureDates()
+                }
+            }
+        }
+    }
+
+    private func refreshVoiceMemoAssociations() {
+        voiceMemoAssociationTask?.cancel()
+        let hasMemoCandidates = !sourceVoiceMemoFiles.isEmpty
+            || voiceMemoSourceFiles.contains {
+                $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame
+            }
+        guard !allSourceImages.isEmpty, hasMemoCandidates else {
+            voiceMemoAssociationReport = nil
+            isScanningVoiceMemoSource = false
+            return
+        }
+
+        isScanningVoiceMemoSource = true
+        let primaryFiles = sourceFiles
+        let companionFiles = voiceMemoSourceFiles
+        let primaryMemoFiles = sourceVoiceMemoFiles
+        let primaryRoot = configuration.sourceURL
+        let companionRoot = configuration.voiceMemoSourceURL
+        voiceMemoAssociationTask = Task.detached(priority: .userInitiated) {
+            let didStartAccessingPrimary = primaryRoot?.startAccessingSecurityScopedResource() ?? false
+            let didStartAccessingCompanion = companionRoot?.startAccessingSecurityScopedResource() ?? false
+            defer {
+                if didStartAccessingPrimary { primaryRoot?.stopAccessingSecurityScopedResource() }
+                if didStartAccessingCompanion { companionRoot?.stopAccessingSecurityScopedResource() }
+            }
+            var primaryEvidence: [SonyVoiceMemoImageEvidence] = []
+            var companionEvidence: [SonyVoiceMemoImageEvidence] = []
+            var primaryMemoDates: [URL: Date] = [:]
+            var companionMemoDates: [URL: Date] = [:]
+
+            for file in primaryFiles {
+                guard !Task.isCancelled else { return }
+                primaryEvidence.append(Self.sonyVoiceMemoEvidence(for: file))
+            }
+            for file in primaryMemoFiles {
+                guard !Task.isCancelled else { return }
+                primaryMemoDates[file] = Self.voiceMemoFileDate(for: file)
+            }
+            for file in companionFiles {
+                guard !Task.isCancelled else { return }
+                if file.pathExtension.lowercased() == "wav" {
+                    companionMemoDates[file] = Self.voiceMemoFileDate(for: file)
+                } else {
+                    companionEvidence.append(Self.sonyVoiceMemoEvidence(for: file))
+                }
+            }
+
+            let report = SonyDualCardVoiceMemoAssociationService().associate(
+                primaryImages: primaryEvidence,
+                companionImages: companionEvidence,
+                primaryMemoFileDates: primaryMemoDates,
+                companionMemoFileDates: companionMemoDates
+            )
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard !Task.isCancelled,
+                      self.sourceFiles == primaryFiles,
+                      self.sourceVoiceMemoFiles == primaryMemoFiles,
+                      self.voiceMemoSourceFiles == companionFiles else { return }
+                self.voiceMemoAssociationReport = report
+                self.isScanningVoiceMemoSource = false
+            }
+        }
+    }
+
+    nonisolated private static func voiceMemoFileDate(for url: URL) -> Date {
+        let values = try? url.resourceValues(forKeys: [
+            .creationDateKey,
+            .contentModificationDateKey,
+        ])
+        // Missing filesystem dates are not evidence that a WAV followed its image. Keeping the
+        // candidate with `.distantPast` makes the lower-bound rule fail closed and visible.
+        return values?.creationDate ?? values?.contentModificationDate ?? .distantPast
+    }
+
+    nonisolated private static func sonyVoiceMemoEvidence(for url: URL) -> SonyVoiceMemoImageEvidence {
+        guard let metadata = try? ImageMetadata.read(from: url), let exif = metadata.exif,
+              let captured = exif.dateTimeOriginal?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !captured.isEmpty else {
+            return SonyVoiceMemoImageEvidence(url: url, captureSignature: nil, capturedAt: nil)
+        }
+
+        let make = exif.make?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let model = exif.model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let software = exif.software?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let subsecond = exif.subSecTimeOriginal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let offset = exif.offsetTimeOriginal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard make.caseInsensitiveCompare("SONY") == .orderedSame,
+              !model.isEmpty, !software.isEmpty, !subsecond.isEmpty, !offset.isEmpty else {
+            return SonyVoiceMemoImageEvidence(url: url, captureSignature: nil, capturedAt: nil)
+        }
+        let signature = [make, model, software, captured, subsecond, offset].joined(separator: "|")
+
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy:MM:dd HH:mm:ssXXX"
+        let capturedAt = parser.date(from: captured + offset)
+        return SonyVoiceMemoImageEvidence(
+            url: url,
+            captureSignature: signature,
+            capturedAt: capturedAt
+        )
     }
 
     /// Enumerate all regular files under `url` off the main actor.
@@ -497,6 +698,9 @@ final class ImportViewModel {
         }
 
         let filesToCopy = selectedSourceFiles
+        let voiceMemoByImage = Dictionary(
+            uniqueKeysWithValues: selectedVoiceMemoAssociations.map { ($0.imageURL, $0.memoURL) }
+        )
 
         // Guard against two date groups (e.g. split sub-shoots, or a manual rename)
         // resolving to the same destination folder, which would silently merge them.
@@ -528,7 +732,8 @@ final class ImportViewModel {
 
         importPhase = .copying
         copiedFiles = 0
-        totalFiles = filesToCopy.count
+        voiceMemoCopiedFiles = 0
+        totalFiles = 0
         skippedFiles = 0
         duplicateSkippedFiles = 0
         renamedFiles = 0
@@ -593,6 +798,8 @@ final class ImportViewModel {
         var previousImportCandidates: [PreviousImportDetector.Candidate] = []
         var allDestFolders: Set<URL> = []
         var allRevealFolders: Set<URL> = []
+        var companionParentBySource: [URL: URL] = [:]
+        var plannedMemoDestinations = Set<URL>()
         let flatImportDate = String(destURL.lastPathComponent.prefix(10))
         for file in filesToCopy {
             let baseFolder: URL
@@ -623,7 +830,7 @@ final class ImportViewModel {
             allRevealFolders.insert(shootBaseFolder)
             allDestFolders.insert(primaryFolder)
 
-            let primaryURL = primaryFolder.appendingPathComponent(file.lastPathComponent)
+            var primaryURL = primaryFolder.appendingPathComponent(file.lastPathComponent)
             guard SafePathComponent.isContained(primaryURL, in: baseURL) else {
                 importPhase = .failed("An import destination escaped the selected folder.")
                 errorMessage = "An import folder name resolves outside the selected destination."
@@ -640,30 +847,99 @@ final class ImportViewModel {
                 }
             }
 
-            jobs.append(ImportCopyService.CopyJob(
+            let canonicalImage = VoiceMemoAssociationService.canonicalURL(file)
+            let memoSource = voiceMemoByImage[canonicalImage]
+            var memoPrimaryURL: URL?
+            var memoBackupURL: URL?
+            var bundleSkipReason: ImportCopyService.SkipReason?
+            if let memoSource {
+                let memoExtension = memoSource.pathExtension.isEmpty ? "wav" : memoSource.pathExtension
+                let desiredMemo = primaryFolder
+                    .appendingPathComponent(primaryURL.deletingPathExtension().lastPathComponent)
+                    .appendingPathExtension(memoExtension)
+                let desiredMemoBackup: URL?
+                if let backupRoot = backupDestination?.url,
+                   let relative = Self.relativePath(of: desiredMemo, under: baseURL) {
+                    desiredMemoBackup = backupRoot.appendingPathComponent(relative)
+                } else {
+                    desiredMemoBackup = nil
+                }
+                let bundle = Self.resolveImportBundleDestinations(
+                    image: primaryURL,
+                    memo: desiredMemo,
+                    imageBackup: backupURL,
+                    memoBackup: desiredMemoBackup,
+                    policy: conflictPolicy
+                )
+                primaryURL = bundle.image
+                backupURL = bundle.imageBackup
+                memoPrimaryURL = bundle.memo
+                memoBackupURL = bundle.memoBackup
+                bundleSkipReason = bundle.skipReason
+                let canonicalMemoDestination = VoiceMemoAssociationService.canonicalURL(bundle.memo)
+                if plannedMemoDestinations.contains(canonicalMemoDestination) {
+                    // RAW and JPEG can share a destination folder when format subfolders are off.
+                    // In that layout one WAV represents the exposure; do not schedule the same
+                    // source bytes twice at the same destination.
+                    memoPrimaryURL = nil
+                    memoBackupURL = nil
+                } else {
+                    plannedMemoDestinations.insert(canonicalMemoDestination)
+                }
+            }
+
+            let imageJob = ImportCopyService.CopyJob(
                 source: file,
                 desiredPrimaryDest: primaryURL,
-                desiredBackupDest: backupURL
-            ))
+                desiredBackupDest: backupURL,
+                preflightSkipReason: bundleSkipReason
+            )
+            jobs.append(imageJob)
+            if let memoSource, let memoPrimaryURL {
+                guard SafePathComponent.isContained(memoPrimaryURL, in: baseURL) else {
+                    importPhase = .failed("A voice memo destination escaped the selected folder.")
+                    errorMessage = "A voice memo destination resolves outside the selected destination."
+                    return
+                }
+                jobs.append(ImportCopyService.CopyJob(
+                    source: memoSource,
+                    desiredPrimaryDest: memoPrimaryURL,
+                    desiredBackupDest: memoBackupURL,
+                    preflightSkipReason: bundleSkipReason,
+                    prerequisiteJobID: imageJob.id
+                ))
+                companionParentBySource[memoSource] = file
+                allDestFolders.insert(memoPrimaryURL.deletingLastPathComponent())
+                if let memoBackupURL {
+                    allDestFolders.insert(memoBackupURL.deletingLastPathComponent())
+                }
+            }
             previousImportCandidates.append(PreviousImportDetector.Candidate(
                 source: file,
                 dateFolderName: fileImportDate[file] ?? flatImportDate
             ))
         }
 
+        totalFiles = jobs.count
+
         let allFolders = allDestFolders
         let folderToOpen = Self.commonAncestor(of: Array(allRevealFolders)) ?? destURL
-        // Immediately close the sheet and open the most useful common destination
-        // so the browser can show thumbnails arriving via auto-refresh without
-        // expanding every imported date or shoot folder.
-        NotificationCenter.default.post(name: .importStarted, object: folderToOpen)
         let verifyBackup = backupDestination?.verifyAfterWrite ?? true
         let skipPreviouslyImported = configuration.skipPreviouslyImported
         let copyService = self.copyService
+        let imageSources = Set(filesToCopy)
+        let primarySourceURL = configuration.sourceURL
+        let voiceMemoSourceURL = configuration.voiceMemoSourceURL
 
         importTask = Task.detached(priority: .userInitiated) { [readService, interpolator, importLog, weak self] in
             guard let self else { return }
             _ = readService
+            let didStartAccessingSource = primarySourceURL?.startAccessingSecurityScopedResource() ?? false
+            let didStartAccessingVoiceMemos = voiceMemoSourceURL?.startAccessingSecurityScopedResource() ?? false
+            defer {
+                if didStartAccessingSource { primarySourceURL?.stopAccessingSecurityScopedResource() }
+                if didStartAccessingVoiceMemos { voiceMemoSourceURL?.stopAccessingSecurityScopedResource() }
+            }
             let didStartAccessingDestination =
                 baseURL.startAccessingSecurityScopedResource()
             defer {
@@ -673,6 +949,18 @@ final class ImportViewModel {
             }
 
             do {
+                let fm = FileManager.default
+                // The browser must never receive a folder URL before that folder exists. The old
+                // ordering posted `importStarted` on the main actor and only created directories
+                // later in this detached task, so a fast browser scan could fail with ENOENT.
+                // Create the exact reveal target while destination access is active, then close
+                // the sheet/open it. Child folders and copied files can continue arriving through
+                // the browser's existing auto-refresh path.
+                try fm.createDirectory(at: folderToOpen, withIntermediateDirectories: true)
+                await MainActor.run {
+                    NotificationCenter.default.post(name: .importStarted, object: folderToOpen)
+                }
+
                 var jobsToRun = jobs
                 if skipPreviouslyImported {
                     await MainActor.run {
@@ -685,7 +973,8 @@ final class ImportViewModel {
                     if !duplicateSources.isEmpty {
                         jobsToRun = jobs.map { job in
                             var updated = job
-                            if duplicateSources.contains(job.source) {
+                            if duplicateSources.contains(job.source)
+                                || companionParentBySource[job.source].map(duplicateSources.contains) == true {
                                 updated.preflightSkipReason = .previouslyImported
                             }
                             return updated
@@ -700,7 +989,6 @@ final class ImportViewModel {
                     }
                 }
 
-                let fm = FileManager.default
                 for folder in allFolders {
                     try fm.createDirectory(at: folder, withIntermediateDirectories: true)
                 }
@@ -717,7 +1005,9 @@ final class ImportViewModel {
                     }
                 )
                 // Pull successful primary URLs (verified or verification disabled) for metadata pass.
-                let copiedURLs = results.compactMap { $0.primaryURL }
+                let copiedURLs = results.compactMap { result in
+                    imageSources.contains(result.source) ? result.primaryURL : nil
+                }
 
                 if copiedURLs.isEmpty {
                     await MainActor.run {
@@ -818,6 +1108,9 @@ final class ImportViewModel {
         switch result.primary {
         case .copied(_, let renamed, _):
             copiedFiles += 1
+            if result.source.pathExtension.lowercased() == "wav" {
+                voiceMemoCopiedFiles += 1
+            }
             if renamed { renamedFiles += 1 }
         case .skipped(let reason):
             skippedFiles += 1
@@ -916,6 +1209,82 @@ final class ImportViewModel {
         return urlComponents[rootComponents.count..<urlComponents.count].joined(separator: "/")
     }
 
+    private struct ImportBundleDestinations {
+        let image: URL
+        let memo: URL
+        let imageBackup: URL?
+        let memoBackup: URL?
+        let skipReason: ImportCopyService.SkipReason?
+    }
+
+    /// Chooses one suffix for the complete image/WAV bundle. This prevents independent conflict
+    /// resolution from producing (for example) `TRA00001-1.ARW` beside `TRA00001.WAV`.
+    private static func resolveImportBundleDestinations(
+        image: URL,
+        memo: URL,
+        imageBackup: URL?,
+        memoBackup: URL?,
+        policy: ImportConflictPolicy
+    ) -> ImportBundleDestinations {
+        let direct = ImportBundleDestinations(
+            image: image,
+            memo: memo,
+            imageBackup: imageBackup,
+            memoBackup: memoBackup,
+            skipReason: nil
+        )
+        switch policy {
+        case .overwrite:
+            return direct
+        case .skipExisting:
+            let primaryExists = FileManager.default.fileExists(atPath: image.path)
+                || FileManager.default.fileExists(atPath: memo.path)
+            return ImportBundleDestinations(
+                image: image,
+                memo: memo,
+                imageBackup: imageBackup,
+                memoBackup: memoBackup,
+                skipReason: primaryExists ? .destinationExists : nil
+            )
+        case .renameWithSuffix:
+            for suffix in 0...10_000 {
+                let candidateImage = suffixedURL(image, suffix: suffix)
+                let candidateMemo = suffixedURL(memo, suffix: suffix)
+                let candidateImageBackup = imageBackup.map { suffixedURL($0, suffix: suffix) }
+                let candidateMemoBackup = memoBackup.map { suffixedURL($0, suffix: suffix) }
+                let candidates = [candidateImage, candidateMemo, candidateImageBackup, candidateMemoBackup]
+                    .compactMap { $0 }
+                if candidates.allSatisfy({ !FileManager.default.fileExists(atPath: $0.path) }) {
+                    return ImportBundleDestinations(
+                        image: candidateImage,
+                        memo: candidateMemo,
+                        imageBackup: candidateImageBackup,
+                        memoBackup: candidateMemoBackup,
+                        skipReason: nil
+                    )
+                }
+            }
+            // Never let the copy service resolve the two files independently after the shared
+            // suffix space is exhausted; skipping the complete bundle preserves association.
+            return ImportBundleDestinations(
+                image: image,
+                memo: memo,
+                imageBackup: imageBackup,
+                memoBackup: memoBackup,
+                skipReason: .destinationExists
+            )
+        }
+    }
+
+    private static func suffixedURL(_ url: URL, suffix: Int) -> URL {
+        guard suffix > 0 else { return url }
+        let directory = url.deletingLastPathComponent()
+        let stem = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        let filename = ext.isEmpty ? "\(stem)-\(suffix)" : "\(stem)-\(suffix).\(ext)"
+        return directory.appendingPathComponent(filename)
+    }
+
     nonisolated static func commonAncestor(of urls: [URL]) -> URL? {
         guard var commonComponents = urls.first?.standardizedFileURL.pathComponents else { return nil }
         for url in urls.dropFirst() {
@@ -935,7 +1304,11 @@ final class ImportViewModel {
 
     private func buildImportSummary() -> String {
         var parts: [String] = []
-        parts.append("Imported \(copiedFiles)")
+        let copiedPhotos = copiedFiles - voiceMemoCopiedFiles
+        parts.append("Imported \(copiedPhotos) photo\(copiedPhotos == 1 ? "" : "s")")
+        if voiceMemoCopiedFiles > 0 {
+            parts.append("voice memos \(voiceMemoCopiedFiles)")
+        }
         if renamedFiles > 0 { parts.append("renamed \(renamedFiles)") }
         let otherSkipped = skippedFiles - duplicateSkippedFiles
         if otherSkipped > 0 { parts.append("skipped \(otherSkipped)") }
@@ -1603,8 +1976,13 @@ final class ImportViewModel {
         configuration.backupDestination = preservedBackup
         configuration.skipPreviouslyImported = preservedSkipPreviouslyImported
         sourceFiles = []
+        sourceVoiceMemoFiles = []
+        voiceMemoSourceFiles = []
+        voiceMemoAssociationReport = nil
+        isScanningVoiceMemoSource = false
         importPhase = .idle
         copiedFiles = 0
+        voiceMemoCopiedFiles = 0
         totalFiles = 0
         skippedFiles = 0
         renamedFiles = 0
@@ -1622,6 +2000,8 @@ final class ImportViewModel {
         sortByDate = preservedSortByDate
         isScanningDates = false
         dateScanTask?.cancel()
+        voiceMemoScanTask?.cancel()
+        voiceMemoAssociationTask?.cancel()
         folderSuggestionTask?.cancel()
         importTask?.cancel()
         refreshPreviousImportFolderSuggestions()

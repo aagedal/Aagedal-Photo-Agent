@@ -56,20 +56,7 @@ struct BrowserView: View {
                         )
                         .disabled(viewModel.sortOrder == .manual)
 
-                        Picker("Sort", selection: Binding(
-                            get: { viewModel.sortOrder },
-                            set: { newValue in
-                                if newValue == .manual && viewModel.sortOrder != .manual {
-                                    viewModel.initializeManualOrder(from: viewModel.sortedImages)
-                                }
-                                viewModel.sortOrder = newValue
-                            }
-                        )) {
-                            ForEach(BrowserViewModel.SortOrder.allCases, id: \.self) { order in
-                                Text(order.rawValue).tag(order)
-                            }
-                        }
-                        .pickerStyle(.menu)
+                        BrowserSortOrderMenu(viewModel: viewModel)
 
                     }
 
@@ -323,4 +310,36 @@ struct BrowserView: View {
         .disabled(viewModel.images.isEmpty)
     }
 
+}
+
+/// A toolbar-safe sort control with an explicit title. A bound `Picker` can lose its selected
+/// title in the macOS 27 toolbar and may emit an unintended selection write as focus changes.
+/// Menu buttons change the model only when the user actually chooses an item.
+struct BrowserSortOrderMenu: View {
+    @Bindable var viewModel: BrowserViewModel
+
+    var body: some View {
+        Menu {
+            ForEach(BrowserViewModel.SortOrder.allCases, id: \.self) { order in
+                Button {
+                    viewModel.selectSortOrder(order)
+                } label: {
+                    if order == viewModel.sortOrder {
+                        Label(order.rawValue, systemImage: "checkmark")
+                    } else {
+                        Text(order.rawValue)
+                    }
+                }
+            }
+        } label: {
+            Text(viewModel.sortOrder.rawValue)
+                .lineLimit(1)
+                .frame(minWidth: 92, alignment: .leading)
+        }
+        .menuIndicator(.visible)
+        .fixedSize(horizontal: true, vertical: false)
+        .help("Sort by \(viewModel.sortOrder.rawValue)")
+        .accessibilityLabel("Sort order")
+        .accessibilityValue(viewModel.sortOrder.rawValue)
+    }
 }

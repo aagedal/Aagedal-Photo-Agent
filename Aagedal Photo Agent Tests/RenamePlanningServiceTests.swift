@@ -146,6 +146,69 @@ struct RenamePlanningServiceTests {
         })
     }
 
+    @Test("An explicitly associated voice memo follows the image without source-name inference")
+    func explicitVoiceMemoCompanion() throws {
+        let source = root.appendingPathComponent("IMG_1.ARW")
+        let memo = root.appendingPathComponent("CAMERA_GENERATED_AUDIO_77.WAV")
+        let association = RenamePlanningAssociatedArtifact(
+            identifier: "voice-memo",
+            displayName: "Voice memo",
+            sourceURL: memo,
+            filenamePattern: RenameArtifactFilenamePattern(basis: .stem, suffix: ".WAV")
+        )
+
+        let plan = service.makePlan(
+            items: [RenamePlanningItem(
+                sourceImageURL: source,
+                associatedArtifacts: [association]
+            )],
+            recipe: BatchRenameRecipe(name: "Desk", components: [.literal("desk-001.ARW")]),
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseSensitive,
+                existingURLs: [memo]
+            )
+        )
+        let action = try #require(plan.entries.first?.plannedArtifactActions.first {
+            $0.identifier == "voice-memo"
+        })
+
+        #expect(action.sourceURL == memo)
+        #expect(action.destinationURL == root.appendingPathComponent("desk-001.WAV"))
+        #expect(plan.canExecute)
+        #expect(plan.associatedArtifactSummary.contains {
+            $0.identifier == "voice-memo" && $0.presentCount == 1 && $0.renamedCount == 1
+        })
+    }
+
+    @Test("A voice memo destination collision blocks the whole image bundle")
+    func voiceMemoCollisionBlocksBundle() {
+        let source = root.appendingPathComponent("IMG_1.ARW")
+        let memo = root.appendingPathComponent("IMG_1.WAV")
+        let occupied = root.appendingPathComponent("desk-001.WAV")
+        let companion = RenamePlanningAssociatedArtifact(
+            identifier: "voice-memo",
+            displayName: "Voice memo",
+            sourceURL: memo,
+            filenamePattern: RenameArtifactFilenamePattern(basis: .stem, suffix: ".WAV")
+        )
+
+        let plan = service.makePlan(
+            items: [RenamePlanningItem(sourceImageURL: source, associatedArtifacts: [companion])],
+            recipe: BatchRenameRecipe(name: "Desk", components: [.literal("desk-001.ARW")]),
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseSensitive,
+                existingURLs: [memo, occupied]
+            )
+        )
+
+        #expect(!plan.canExecute)
+        #expect(plan.entries.first?.disposition == .blocked)
+        #expect(plan.issues.contains {
+            $0.artifactIdentifier == "voice-memo"
+                && $0.code == .existingDestination(existingURL: occupied)
+        })
+    }
+
     @Test("Missing-value block, skip, and preserve outcomes stay structured")
     func missingValueOutcomes() throws {
         let source = root.appendingPathComponent("original.jpg")

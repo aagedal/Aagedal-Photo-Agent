@@ -524,7 +524,7 @@ struct AnalysisSolarPositionCalculatorTests {
         #expect(model.rays.map(\.kind) == [.sunrise, .sunset])
     }
 
-    @Test("switching every map style preserves shared derived solar geometry")
+    @Test("repeated map-style transitions preserve shared derived solar geometry")
     func mapStylesPreserveSolarGeometry() throws {
         let instant = try utcDate(2024, 6, 20, 12, 0, 0)
         let origin = AnalysisGeoCoordinate(latitude: 51.4779, longitude: 0)
@@ -548,7 +548,10 @@ struct AnalysisSolarPositionCalculatorTests {
             day: day
         ))
 
-        for style in AnalysisMapStyle.allCases {
+        // Exercise far more transitions than a user can produce during one style-menu gesture.
+        // This verifies the persisted state/model boundary, not MapKit or tile-provider rendering.
+        for transition in 0..<1_000 {
+            let style = AnalysisMapStyle.allCases[transition % AnalysisMapStyle.allCases.count]
             state.style = style
             let currentOverlay = try #require(state.solarOverlay)
             let model = try #require(AnalysisSolarMapRenderModel(
@@ -558,7 +561,125 @@ struct AnalysisSolarPositionCalculatorTests {
                 longitudeDelta: 0.2,
                 day: day
             ))
+            #expect(state.validate())
             #expect(model == expected, "Style \(style.rawValue) changed shared solar geometry")
+        }
+    }
+
+    @Test("rapid out-of-order slider updates keep cached events and latest position coherent")
+    func rapidSliderUpdatesRemainCoherent() throws {
+        let coordinate = AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522)
+        let offsetMinutes = 120
+        let representativeTimestamp = AnalysisTimestampValue(
+            year: 2026,
+            month: 6,
+            day: 21,
+            hour: 12,
+            minute: 0,
+            precision: .minute,
+            utcOffsetMinutes: offsetMinutes
+        )
+        let cachedRequest = try #require(AnalysisSolarDayRequest(
+            coordinate: coordinate,
+            timestamp: representativeTimestamp
+        ))
+        let cachedDay = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(
+                instant: cachedRequest.civilDayRepresentativeInstant,
+                coordinate: coordinate
+            ),
+            civilDayOffsetMinutes: offsetMinutes
+        )
+
+        // Alternate between the ends of the day, then run a reverse scrub. This deliberately
+        // avoids monotonic input so stale ordering assumptions cannot make the result appear valid.
+        let alternating = (0..<720).flatMap { [$0, 1_439 - $0] }
+        let interactionMinutes = alternating + Array((0..<1_440).reversed())
+        var latestPreview = cachedDay
+
+        for minuteOfDay in interactionMinutes {
+            let timestamp = AnalysisTimestampValue(
+                year: 2026,
+                month: 6,
+                day: 21,
+                hour: minuteOfDay / 60,
+                minute: minuteOfDay % 60,
+                precision: .minute,
+                utcOffsetMinutes: offsetMinutes
+            )
+            #expect(AnalysisSolarDayRequest(coordinate: coordinate, timestamp: timestamp) == cachedRequest)
+            latestPreview = try AnalysisSolarPositionCalculator.updatingPosition(
+                in: cachedDay,
+                at: try #require(timestamp.resolvedInstant),
+                coordinate: coordinate
+            )
+            #expect(latestPreview.sunrise == cachedDay.sunrise)
+            #expect(latestPreview.solarNoon == cachedDay.solarNoon)
+            #expect(latestPreview.sunset == cachedDay.sunset)
+            #expect(latestPreview.polarCondition == cachedDay.polarCondition)
+            #expect(latestPreview.method == cachedDay.method)
+        }
+
+        let expectedFinalTimestamp = AnalysisTimestampValue(
+            year: 2026,
+            month: 6,
+            day: 21,
+            hour: 0,
+            minute: 0,
+            precision: .minute,
+            utcOffsetMinutes: offsetMinutes
+        )
+        let expectedFinal = try AnalysisSolarPositionCalculator.updatingPosition(
+            in: cachedDay,
+            at: try #require(expectedFinalTimestamp.resolvedInstant),
+            coordinate: coordinate
+        )
+        #expect(latestPreview == expectedFinal)
+    }
+
+    @Test("true-north solar geometry is invariant under persisted rotation and pitch")
+    func solarGeometryIsInvariantUnderCameraOrientation() throws {
+        let instant = try utcDate(2024, 6, 20, 12, 0, 0)
+        let origin = AnalysisGeoCoordinate(latitude: 51.4779, longitude: 0)
+        let overlay = AnalysisSolarOverlayState(
+            timestamp: AnalysisTimestampValue(
+                date: instant,
+                precision: .minute,
+                timeZone: TimeZone(secondsFromGMT: 0)!
+            )
+        )
+        let day = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(instant: instant, coordinate: origin),
+            civilDayOffsetMinutes: 0
+        )
+        let expected = try #require(AnalysisSolarMapRenderModel(
+            overlay: overlay,
+            origin: origin,
+            latitudeDelta: 0.2,
+            longitudeDelta: 0.3,
+            day: day
+        ))
+
+        for heading in [0.0, 45, 179.5, 359.999] {
+            for pitch in [0.0, 30, 60, 90] {
+                let viewport = AnalysisMapViewport(
+                    center: origin,
+                    latitudeDelta: 0.2,
+                    longitudeDelta: 0.3,
+                    cameraDistance: 2_000,
+                    heading: heading,
+                    pitch: pitch
+                )
+                #expect(viewport.isValid)
+                let model = try #require(AnalysisSolarMapRenderModel(
+                    overlay: overlay,
+                    origin: origin,
+                    latitudeDelta: viewport.latitudeDelta,
+                    longitudeDelta: viewport.longitudeDelta,
+                    day: day
+                ))
+                #expect(model == expected)
+            }
         }
     }
 
