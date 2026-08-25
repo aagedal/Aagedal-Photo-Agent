@@ -2,6 +2,7 @@ import SwiftUI
 
 struct FTPServerForm: View {
     @Bindable var viewModel: FTPViewModel
+    @State private var isConfirmingInsecureSave = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -69,6 +70,20 @@ struct FTPServerForm: View {
                 }
             }
 
+            Label(
+                viewModel.editingConnection.transportSecurity.badgeTitle,
+                systemImage: viewModel.editingConnection.transportSecurity.isInsecure
+                    ? "exclamationmark.shield.fill"
+                    : "checkmark.shield.fill"
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(
+                viewModel.editingConnection.transportSecurity.isInsecure ? .orange : .green
+            )
+            .accessibilityLabel(
+                "Transport security, \(viewModel.editingConnection.transportSecurity.evidenceDescription)"
+            )
+
             connectionTestStatus
 
             Divider()
@@ -88,7 +103,11 @@ struct FTPServerForm: View {
                     viewModel.isShowingServerForm = false
                 }
                 Button("Save") {
-                    viewModel.saveEditingConnection()
+                    if viewModel.editingConnection.transportSecurity.isInsecure {
+                        isConfirmingInsecureSave = true
+                    } else {
+                        viewModel.saveEditingConnection()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(viewModel.editingConnection.name.isEmpty || viewModel.editingConnection.host.isEmpty || viewModel.editingConnection.port < 1 || viewModel.editingConnection.port > 65535)
@@ -99,6 +118,18 @@ struct FTPServerForm: View {
         // A stale "Connected"/error result is misleading once any field changes.
         .onChange(of: viewModel.editingConnection) { viewModel.resetConnectionTest() }
         .onChange(of: viewModel.editingPassword) { viewModel.resetConnectionTest() }
+        .confirmationDialog(
+            "Save an insecure delivery profile?",
+            isPresented: $isConfirmingInsecureSave,
+            titleVisibility: .visible
+        ) {
+            Button("Save Insecure Profile", role: .destructive) {
+                viewModel.saveEditingConnection(acknowledgingInsecureTransport: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(insecureSaveMessage)
+        }
     }
 
     @ViewBuilder
@@ -122,6 +153,17 @@ struct FTPServerForm: View {
                 .font(.caption)
                 .foregroundStyle(.red)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var insecureSaveMessage: String {
+        switch viewModel.editingConnection.transportSecurity.protocolKind {
+        case .ftp:
+            "Plain FTP exposes the username, password, and files in transit. SFTP or verified FTPS is recommended."
+        case .sftp:
+            "Host verification is disabled, so the server identity is not authenticated. Verified SFTP is recommended."
+        case .explicitFTPS:
+            "Certificate verification is disabled, so the server identity is not authenticated. Verified FTPS is recommended."
         }
     }
 }

@@ -27,6 +27,7 @@ final class FaceThumbnailSubview: NSView {
     override var isFlipped: Bool { true }
 
     var faceID: UUID?
+    var onAccessibilityPress: ((UUID) -> Void)?
 
     private let imageLayer = CALayer()
     private let placeholderLayer = CALayer()
@@ -57,6 +58,9 @@ final class FaceThumbnailSubview: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityHelp("Press to select this face; use arrow keys to move between faces")
         layer?.cornerRadius = 4
         layer?.masksToBounds = true
 
@@ -97,8 +101,10 @@ final class FaceThumbnailSubview: NSView {
         CATransaction.commit()
     }
 
-    func configure(faceID: UUID, image: NSImage?) {
+    func configure(faceID: UUID, ordinal: Int, image: NSImage?) {
         self.faceID = faceID
+        setAccessibilityLabel("Face thumbnail \(ordinal)")
+        setAccessibilityIdentifier("face.thumbnail.\(faceID.uuidString.lowercased())")
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if let image {
@@ -114,6 +120,7 @@ final class FaceThumbnailSubview: NSView {
     }
 
     func updateVisuals(isSelected: Bool, isFocused: Bool, isDragged: Bool) {
+        setAccessibilityValue(isSelected ? "Selected" : "Not selected")
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
@@ -135,6 +142,10 @@ final class FaceThumbnailSubview: NSView {
 
     override func prepareForReuse() {
         faceID = nil
+        onAccessibilityPress = nil
+        setAccessibilityLabel(nil)
+        setAccessibilityValue(nil)
+        setAccessibilityIdentifier(nil)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         imageLayer.contents = nil
@@ -144,6 +155,12 @@ final class FaceThumbnailSubview: NSView {
         checkmarkLayer.isHidden = true
         layer?.opacity = 1.0
         CATransaction.commit()
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let faceID, let onAccessibilityPress else { return false }
+        onAccessibilityPress(faceID)
+        return true
     }
 }
 
@@ -500,13 +517,16 @@ final class FaceGroupCardView: NSView {
             let sub = faceSubviews[i]
             sub.isHidden = false
             let thumbnail = viewModel.thumbnailImage(for: face.id)
-            sub.configure(faceID: face.id, image: thumbnail)
+            sub.configure(faceID: face.id, ordinal: i + 1, image: thumbnail)
+            sub.onAccessibilityPress = { [weak self] faceID in
+                self?.selectFace(faceID, modifiers: [])
+            }
         }
 
         // Hide excess
         for i in faces.count..<faceSubviews.count {
+            faceSubviews[i].prepareForReuse()
             faceSubviews[i].isHidden = true
-            faceSubviews[i].faceID = nil
         }
 
         needsLayout = true
@@ -641,9 +661,13 @@ final class FaceGroupCardView: NSView {
         }
 
         // If we were dragging, the collection view handles it
-        guard let faceID = mouseDownFaceID, let selectionState else { return }
+        guard let faceID = mouseDownFaceID else { return }
 
-        let modifiers = event.modifierFlags
+        selectFace(faceID, modifiers: event.modifierFlags)
+    }
+
+    private func selectFace(_ faceID: UUID, modifiers: NSEvent.ModifierFlags) {
+        guard let selectionState else { return }
         if modifiers.contains(.shift) {
             // Build allFaces for this group from visible subviews
             let visibleFaceIDs = faceSubviews.compactMap { $0.isHidden ? nil : $0.faceID }

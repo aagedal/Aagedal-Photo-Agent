@@ -13,6 +13,37 @@ nonisolated struct DeadlinePreparedDeliveryBatch: Sendable {
     let plan: DeliveryPlan
     let stagingRootURL: URL
     let c2paConsequences: [DeadlineC2PAConsequence]
+    let transportSecurity: DeliveryTransportSecurity?
+    let requiresFirstInsecureTransportAcknowledgement: Bool
+
+    init(
+        workflowIdentifier: UUID,
+        plan: DeliveryPlan,
+        stagingRootURL: URL,
+        c2paConsequences: [DeadlineC2PAConsequence],
+        transportSecurity: DeliveryTransportSecurity? = nil,
+        requiresFirstInsecureTransportAcknowledgement: Bool = false
+    ) {
+        self.workflowIdentifier = workflowIdentifier
+        self.plan = plan
+        self.stagingRootURL = stagingRootURL
+        self.c2paConsequences = c2paConsequences
+        self.transportSecurity = transportSecurity
+        self.requiresFirstInsecureTransportAcknowledgement =
+            requiresFirstInsecureTransportAcknowledgement
+    }
+
+    func recordingTransportSecurity(_ connection: FTPConnection) -> Self {
+        Self(
+            workflowIdentifier: workflowIdentifier,
+            plan: plan,
+            stagingRootURL: stagingRootURL,
+            c2paConsequences: c2paConsequences,
+            transportSecurity: connection.transportSecurity,
+            requiresFirstInsecureTransportAcknowledgement:
+                connection.requiresFirstInsecureUploadAcknowledgement
+        )
+    }
 }
 
 nonisolated struct DeadlineDeliveryConfirmationItem: Equatable, Identifiable, Sendable {
@@ -36,6 +67,8 @@ nonisolated struct DeadlineDeliveryConfirmation: Equatable, Sendable {
     let metadataWriteStrategy: DeadlineMetadataWriteStrategy
     let maximumOutputByteCount: Int64?
     let acceptedWarningIDs: [String]
+    let transportSecurity: DeliveryTransportSecurity?
+    let requiresFirstInsecureTransportAcknowledgement: Bool
 
     init(prepared: DeadlinePreparedDeliveryBatch) {
         let export = prepared.plan.renderAndWrite.export
@@ -45,6 +78,9 @@ nonisolated struct DeadlineDeliveryConfirmation: Equatable, Sendable {
         metadataWriteStrategy = prepared.plan.renderAndWrite.metadataWriteStrategy
         maximumOutputByteCount = export.maximumOutputByteCount
         acceptedWarningIDs = prepared.plan.acceptedWarningIDs
+        transportSecurity = prepared.transportSecurity
+        requiresFirstInsecureTransportAcknowledgement =
+            prepared.requiresFirstInsecureTransportAcknowledgement
         items = prepared.plan.items.map { item in
             DeadlineDeliveryConfirmationItem(
                 itemIndex: item.itemIndex,
@@ -72,6 +108,7 @@ nonisolated enum DeadlineDeliveryExecutionError: Error, Equatable, LocalizedErro
     case warningsNotAccepted
     case unsupportedWriteStrategy
     case preparationFailed
+    case insecureTransportAcknowledgementFailed
     case executionFailed
     case resumeUnavailable
 
@@ -82,6 +119,8 @@ nonisolated enum DeadlineDeliveryExecutionError: Error, Equatable, LocalizedErro
         case .warningsNotAccepted: "Accept the current batch warnings before sending."
         case .unsupportedWriteStrategy: "Delivery requires the staged-copies metadata strategy."
         case .preparationFailed: "The exact delivery plan could not be prepared."
+        case .insecureTransportAcknowledgementFailed:
+            "The insecure connection changed or could not be acknowledged. Review it and confirm again."
         case .executionFailed: "Delivery did not complete. Verified staged evidence was retained."
         case .resumeUnavailable: "No exact verified staged delivery is available to resume."
         }
@@ -153,6 +192,7 @@ struct DeadlineDeliveryExecutionDependencies {
     let recoverWorkflow: (UUID) async throws -> DeadlinePreparedDeliveryBatch
     let releaseRecoveredWorkflow: (UUID) async -> Void
     let reloadReceipts: () async -> Void
+    let acknowledgeInsecureTransport: (String, DeliveryTransportSecurity) -> Bool
 
     init(
         prepare: @escaping (DeadlineDeliveryPreparation) async throws -> DeadlinePreparedDeliveryBatch,
@@ -167,6 +207,10 @@ struct DeadlineDeliveryExecutionDependencies {
         cancel: @escaping () async -> Void,
         recover: @escaping () async throws -> DeadlinePreparedDeliveryBatch?,
         reloadReceipts: @escaping () async -> Void,
+        acknowledgeInsecureTransport: @escaping (
+            String,
+            DeliveryTransportSecurity
+        ) -> Bool = { _, _ in false },
         recoverWorkflow: @escaping (UUID) async throws -> DeadlinePreparedDeliveryBatch = { _ in
             throw DeadlineDeliveryExecutionError.resumeUnavailable
         },
@@ -180,6 +224,7 @@ struct DeadlineDeliveryExecutionDependencies {
         self.recoverWorkflow = recoverWorkflow
         self.releaseRecoveredWorkflow = releaseRecoveredWorkflow
         self.reloadReceipts = reloadReceipts
+        self.acknowledgeInsecureTransport = acknowledgeInsecureTransport
     }
 }
 
@@ -321,7 +366,18 @@ final class DeadlineDeliveryExecutionModel {
 
     func confirmAndStart() {
         guard let preparedBatch,
-              case .awaitingConfirmation = state else { return }
+              case let .awaitingConfirmation(confirmation) = state else { return }
+        if confirmation.requiresFirstInsecureTransportAcknowledgement {
+            guard let security = confirmation.transportSecurity,
+                  security.isInsecure,
+                  dependencies.acknowledgeInsecureTransport(
+                    confirmation.destinationConnectionIdentifier,
+                    security
+                  ) else {
+                error = .insecureTransportAcknowledgementFailed
+                return
+            }
+        }
         execute(preparedBatch, resume: false)
     }
 
@@ -828,6 +884,11 @@ final class DeadlineDeliveryProductionSession {
                         forInfoDictionaryKey: "CFBundleVersion"
                     ) as? String ?? "unknown"
                 )
+            }, transportSecurity: { identifier in
+                let matches = connections.filter {
+                    $0.id.uuidString.caseInsensitiveCompare(identifier) == .orderedSame
+                }
+                return matches.count == 1 ? matches[0].transportSecurity : nil
             }),
             receiptRecorder: .repository(receiptRepository),
             manifestPersistence: locations.manifestPersistence,

@@ -187,8 +187,8 @@ The [app improvement audit plan](app-improvement-audit-plan.md) is a proposed, r
 covering data-loss prevention, release reproducibility, security/privacy, accessibility,
 responsiveness, and maintainability. It is not a fourth 3.0 portfolio initiative, and its unchecked
 items do not claim implementation or replace the release gates in the three authoritative plans
-above. The audit baseline is reconciled to the latest recorded integrated run of 1,413 passing
-tests in 155 suites; manual, external-service, hardware, legal, and credential-dependent actions
+above. The audit baseline is reconciled to the latest recorded integrated run of 1,452 passing
+tests in 161 suites; manual, external-service, hardware, legal, and credential-dependent actions
 remain explicitly gated in that document.
 
 ## File organization convention

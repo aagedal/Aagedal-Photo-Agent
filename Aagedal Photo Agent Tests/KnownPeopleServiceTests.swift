@@ -43,6 +43,7 @@ struct KnownPeopleServiceTests {
         let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
         let previous = UserDefaults.standard.object(forKey: key)
         let dir = makeTempDir()
+        KnownPeopleService.migrationRecoveryNotices = MigrationRecoveryNoticeCenter()
         activate(dir)
         defer {
             if let previous {
@@ -51,6 +52,7 @@ struct KnownPeopleServiceTests {
                 UserDefaults.standard.removeObject(forKey: key)
             }
             KnownPeopleService.embeddingMigrationIO = .live
+            KnownPeopleService.migrationRecoveryNotices = .shared
             teardown(dir)
         }
         try body(dir)
@@ -145,6 +147,10 @@ struct KnownPeopleServiceTests {
                 UserDefaults.standard.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
                     == FaceRecognitionDefaults.embeddingVersion - 1
             )
+            let notice = KnownPeopleService.migrationRecoveryNotices.notice
+            #expect(notice?.affectedCategories == [.knownPeople])
+            #expect(notice?.message.contains("Known People") == true)
+            #expect(notice?.message.contains(person.id.uuidString) == false)
         }
     }
 
@@ -177,6 +183,10 @@ struct KnownPeopleServiceTests {
             #expect(
                 UserDefaults.standard.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
                     == FaceRecognitionDefaults.embeddingVersion - 1
+            )
+            #expect(
+                KnownPeopleService.migrationRecoveryNotices.notice?.affectedCategories
+                    == [.knownPeople]
             )
         }
     }

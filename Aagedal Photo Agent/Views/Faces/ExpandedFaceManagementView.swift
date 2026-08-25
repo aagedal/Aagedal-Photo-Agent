@@ -1276,34 +1276,7 @@ struct ExpressionLensView: View {
     @ViewBuilder
     private func faceThumbnail(_ faceID: UUID) -> some View {
         let isSelected = selectedFaceIDs.contains(faceID)
-        Group {
-            if let image = viewModel.thumbnailImage(for: faceID) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                Rectangle()
-                    .fill(.quaternary)
-                    .overlay {
-                        Image(systemName: "person.fill")
-                            .foregroundStyle(.secondary)
-                    }
-            }
-        }
-        .frame(width: 64, height: 64)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.accentColor, lineWidth: 3)
-            }
-        }
-        .onTapGesture(count: 2) {
-            if let face = viewModel.face(byID: faceID) {
-                onOpenFullScreen?(face.imageURL, faceID)
-            }
-        }
-        .onTapGesture {
+        Button {
             if NSEvent.modifierFlags.contains(.command) {
                 if isSelected {
                     selectedFaceIDs.remove(faceID)
@@ -1312,6 +1285,44 @@ struct ExpressionLensView: View {
                 }
             } else {
                 selectedFaceIDs = [faceID]
+            }
+        } label: {
+            Group {
+                if let image = viewModel.thumbnailImage(for: faceID) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Rectangle()
+                        .fill(.quaternary)
+                        .overlay {
+                            Image(systemName: "person.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                }
+            }
+            .frame(width: 64, height: 64)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.accentColor, lineWidth: 3)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Face thumbnail")
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .accessibilityHint("Select this face; hold Command to change a multi-selection")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .onTapGesture(count: 2) {
+            if let face = viewModel.face(byID: faceID) {
+                onOpenFullScreen?(face.imageURL, faceID)
+            }
+        }
+        .accessibilityAction(named: "Open Full Screen") {
+            if let face = viewModel.face(byID: faceID) {
+                onOpenFullScreen?(face.imageURL, faceID)
             }
         }
     }

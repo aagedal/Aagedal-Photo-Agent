@@ -157,6 +157,7 @@ struct DeliveryFTPTransportFactoryTests {
             connection.useSFTP = true
             connection.port = 22
         }
+        connection.acknowledgeFirstInsecureUpload()
         let transport = DeliveryFTPTransportFactory.make(
             connections: [connection],
             secretLoader: .init { _ in Self.secret },
@@ -209,6 +210,33 @@ struct DeliveryFTPTransportFactoryTests {
         }
     }
 
+    @Test("deadline transport refuses an insecure first upload before secret lookup")
+    func insecureFirstUploadRequiresAcknowledgement() async throws {
+        let file = try makeFile(name: "news.jpg", bytes: Data("news".utf8))
+        defer { try? FileManager.default.removeItem(at: file) }
+        let capture = DeliveryFTPCapture()
+        var connection = makeConnection()
+        connection.firstUploadAcknowledgedSecurity = nil
+        let transport = DeliveryFTPTransportFactory.make(
+            connections: [connection],
+            secretLoader: .init { key in
+                capture.recordKey(key)
+                return Self.secret
+            },
+            processRunner: .init { _, _ in
+                Issue.record("Unacknowledged insecure upload reached process runner")
+                return .init(terminationStatus: 0)
+            }
+        )
+
+        await expectUploadError(
+            .insecureTransportNotAcknowledged,
+            transport: transport,
+            transfer: makeTransfer(file: file)
+        )
+        #expect(capture.keys.isEmpty)
+    }
+
     @Test("an active file completes in the coordinator-style uncancelled task boundary")
     func activeFileCompletesAcrossWaiterCancellation() async throws {
         let file = try makeFile(name: "news.jpg", bytes: Data("news".utf8))
@@ -258,7 +286,7 @@ struct DeliveryFTPTransportFactoryTests {
     }
 
     private func makeConnection() -> FTPConnection {
-        FTPConnection(
+        var connection = FTPConnection(
             id: Self.identifier,
             name: "Desk",
             host: "original.example",
@@ -266,6 +294,8 @@ struct DeliveryFTPTransportFactoryTests {
             username: "reporter",
             remotePath: "/inventory-default"
         )
+        connection.acknowledgeFirstInsecureUpload()
+        return connection
     }
 
     private func makeFile(name: String, bytes: Data) throws -> URL {

@@ -197,7 +197,12 @@ struct DeadlinePreflightCoordinatorTests {
             workflowIdentifier: UUID(),
             plan: plan,
             stagingRootURL: URL(fileURLWithPath: "/private/tmp/staging"),
-            c2paConsequences: [.derivedOutputDropsManifest]
+            c2paConsequences: [.derivedOutputDropsManifest],
+            transportSecurity: DeliveryTransportSecurity(
+                protocolKind: .explicitFTPS,
+                verificationEnabled: false
+            ),
+            requiresFirstInsecureTransportAcknowledgement: true
         ))
 
         #expect(confirmation.items.map(\.outputFilename) == ["wire-001.jpg"])
@@ -210,6 +215,106 @@ struct DeadlinePreflightCoordinatorTests {
         #expect(confirmation.destinationPath == "/incoming/desk")
         #expect(confirmation.metadataWriteStrategy == .stagedCopies)
         #expect(confirmation.maximumOutputByteCount == 2_500_000)
+        #expect(confirmation.transportSecurity == DeliveryTransportSecurity(
+            protocolKind: .explicitFTPS,
+            verificationEnabled: false
+        ))
+        #expect(confirmation.requiresFirstInsecureTransportAcknowledgement)
+    }
+
+    @Test("Deadline confirmation acknowledges the exact insecure state before execution")
+    @MainActor
+    func deadlineInsecureTransportAcknowledgement() async throws {
+        let fixture = try await makeDeadlineExecutionFixture()
+        let security = DeliveryTransportSecurity(protocolKind: .ftp, verificationEnabled: false)
+        let prepared = DeadlinePreparedDeliveryBatch(
+            workflowIdentifier: fixture.prepared.workflowIdentifier,
+            plan: fixture.prepared.plan,
+            stagingRootURL: fixture.prepared.stagingRootURL,
+            c2paConsequences: fixture.prepared.c2paConsequences,
+            transportSecurity: security,
+            requiresFirstInsecureTransportAcknowledgement: true
+        )
+        var acknowledgement: (String, DeliveryTransportSecurity)?
+        var didStart = false
+        let model = DeadlineDeliveryExecutionModel(dependencies: .init(
+            prepare: { _ in prepared },
+            start: { _, _ in
+                didStart = true
+                throw DeadlineDeliveryExecutionError.executionFailed
+            },
+            resume: { _, _ in throw DeadlineDeliveryExecutionError.resumeUnavailable },
+            cancel: {},
+            recover: { nil },
+            reloadReceipts: {},
+            acknowledgeInsecureTransport: { identifier, confirmedSecurity in
+                acknowledgement = (identifier, confirmedSecurity)
+                return true
+            }
+        ))
+        model.synchronizePreflight(fixture.publication)
+        model.requestSend(input: fixture.input, publication: fixture.publication)
+        #expect(await waitForDeadlineExecutionState(model, timeout: .seconds(2)) {
+            if case .awaitingConfirmation = $0 { true } else { false }
+        })
+
+        guard case let .awaitingConfirmation(confirmation) = model.state else {
+            Issue.record("Expected insecure transport confirmation")
+            return
+        }
+        #expect(confirmation.transportSecurity == security)
+        #expect(confirmation.requiresFirstInsecureTransportAcknowledgement)
+        model.confirmAndStart()
+
+        #expect(acknowledgement?.0 == prepared.plan.destination.connectionIdentifier)
+        #expect(acknowledgement?.1 == security)
+        #expect(await waitForDeadlineExecutionState(model, timeout: .seconds(2)) {
+            if case .failed = $0 { true } else { false }
+        })
+        #expect(didStart)
+    }
+
+    @Test("Deadline refuses execution when the exact insecure acknowledgement cannot persist")
+    @MainActor
+    func deadlineInsecureTransportAcknowledgementFailure() async throws {
+        let fixture = try await makeDeadlineExecutionFixture()
+        let prepared = DeadlinePreparedDeliveryBatch(
+            workflowIdentifier: fixture.prepared.workflowIdentifier,
+            plan: fixture.prepared.plan,
+            stagingRootURL: fixture.prepared.stagingRootURL,
+            c2paConsequences: fixture.prepared.c2paConsequences,
+            transportSecurity: DeliveryTransportSecurity(
+                protocolKind: .sftp,
+                verificationEnabled: false
+            ),
+            requiresFirstInsecureTransportAcknowledgement: true
+        )
+        var didStart = false
+        let model = DeadlineDeliveryExecutionModel(dependencies: .init(
+            prepare: { _ in prepared },
+            start: { _, _ in
+                didStart = true
+                throw DeadlineDeliveryExecutionError.executionFailed
+            },
+            resume: { _, _ in throw DeadlineDeliveryExecutionError.resumeUnavailable },
+            cancel: {},
+            recover: { nil },
+            reloadReceipts: {},
+            acknowledgeInsecureTransport: { _, _ in false }
+        ))
+        model.synchronizePreflight(fixture.publication)
+        model.requestSend(input: fixture.input, publication: fixture.publication)
+        #expect(await waitForDeadlineExecutionState(model, timeout: .seconds(2)) {
+            if case .awaitingConfirmation = $0 { true } else { false }
+        })
+        model.confirmAndStart()
+
+        #expect(!didStart)
+        #expect(model.error == .insecureTransportAcknowledgementFailed)
+        guard case .awaitingConfirmation = model.state else {
+            Issue.record("Failed acknowledgement must keep the exact confirmation open")
+            return
+        }
     }
 
     @Test("Warning acceptance is batch-scoped and resets on token change")

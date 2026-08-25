@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 28 of 75 checklist substeps complete
+**Status:** implementation in progress — 39 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -29,8 +29,8 @@ removed the cited behavior or moved the cited lines.
   checked Phase 1.1 work below has since added build-and-test CI.
 - The worktree was already modified before this audit. This plan is a new file and does not alter app code.
 
-**Checklist reconciliation (2026-08-25):** the status count is exact: 28 of 75 substeps are checked and
-47 remain open. Each checked substep links to dated validation. A baseline current-source and
+**Checklist reconciliation (2026-08-25):** the status count is exact: 39 of 75 substeps are checked and
+36 remain open. Each checked substep links to dated validation. A baseline current-source and
 validation-record review found no definitive evidence that another unchecked substep was already complete;
 partial foundations such as the existing bookmark lifecycle tests, accessibility semantics, bounded image
 caches, and focused concurrency coverage do not satisfy their broader manual, system-level, or
@@ -85,7 +85,8 @@ resurrect a successfully deleted record; interrupted merges have a documented re
   ([validation](one-shot-migration-recovery-validation.md), 2026-08-25)
 - [x] Preserve source bookmarks until each corresponding import is verified.
   ([validation](one-shot-migration-recovery-validation.md), 2026-08-25)
-- [ ] Show a plain-language recovery notice naming the affected category without exposing private values.
+- [x] Show a plain-language recovery notice naming the affected category without exposing private values.
+  ([validation](plan-status-parallel-follow-up-validation.md), 2026-08-25)
 
 **Exit gate:** disk-full, permission, unavailable security scope, corrupt input, and iCloud-placeholder tests
 prove that no source is cleared or permanently skipped after a failed migration.
@@ -165,13 +166,23 @@ and is fetched without a pinned revision/checksum (`Resources/Models/README.md:9
 
 **Plan:**
 
-- [ ] Track a manifest containing component version, immutable upstream revision, SHA-256, license, build
+- [x] Track a manifest containing component version, immutable upstream revision, SHA-256, license, build
   recipe revision, target architecture, and expected runtime capability.
-- [ ] Correct the FFmpeg corresponding-source offer and keep it generated from the manifest.
+  ([validation](plan-status-parallel-follow-up-validation.md), 2026-08-25)
+- [x] Correct the FFmpeg corresponding-source offer and keep it generated from the manifest.
+  ([validation](plan-status-parallel-follow-up-validation.md), 2026-08-25)
 - [ ] Add deterministic fetch/build/verify tooling for AuraFace with a pinned Hugging Face revision.
-- [ ] Make release preflight fail on a missing or mismatched required artifact.
-- [ ] If a feature is intentionally omitted, compile/package an explicit unavailable state and disclose it in
+- [x] Make release preflight fail on a missing or mismatched required artifact.
+  ([validation](plan-status-parallel-follow-up-validation.md), 2026-08-25)
+- [x] If a feature is intentionally omitted, compile/package an explicit unavailable state and disclose it in
   release notes rather than silently degrading.
+  ([validation](auraface-packaged-unavailable-validation.md), 2026-08-25)
+
+**Pinned-source follow-up (2026-08-25):** manifest-driven `hf` fetch and SHA-256 verification are complete
+and covered by offline tests ([validation](auraface-source-fetch-validation.md)). The combined item remains
+open because the Python/conversion toolchain is not transitively locked and the current CoreML package embeds
+non-normalized conversion metadata/generated identifiers; repeated byte-identical builds and automated
+Torch-vs-CoreML semantic verification have not been demonstrated.
 
 **Exit gate:** two release builds from one source revision resolve identical declared artifacts; modifying or
 omitting any artifact fails preflight; shipped source/license claims match runtime versions.
@@ -198,8 +209,9 @@ omitting any artifact fails preflight; shipped source/license claims match runti
   ([validation](logger-privacy-and-manifest-validation.md), 2026-08-25)
 - [x] Audit whether a privacy manifest is required and document the conclusion.
   ([validation](logger-privacy-and-manifest-validation.md), 2026-08-25)
-- [ ] Evaluate App Sandbox feasibility; if full sandboxing is impractical, document why and assess a
+- [x] Evaluate App Sandbox feasibility; if full sandboxing is impractical, document why and assess a
   constrained XPC/helper boundary for untrusted parsing and bundled tools.
+  ([validation](app-sandbox-feasibility-validation.md), 2026-08-25)
 
 **Exit gate:** a log capture from import, face scan, edit/export, and delivery contains no source path,
 filename, editorial value, credential, or private command argument; security documentation matches the ship
@@ -254,10 +266,18 @@ copy is reviewed and does not overclaim compliance.
 
 **Plan:**
 
-- [ ] Recommend SFTP/verified FTPS by default and visually badge insecure profiles everywhere selected.
-- [ ] Require acknowledgement when saving an insecure profile and before its first upload.
-- [ ] Record transport and verification state in privacy-safe Activity/receipt evidence.
+- [x] Recommend SFTP/verified FTPS by default and visually badge insecure profiles everywhere selected.
+  ([validation](plan-status-parallel-follow-up-validation.md), 2026-08-25)
+- [x] Require acknowledgement when saving an insecure profile and before its first upload.
+  ([validation](plan-status-parallel-follow-up-validation.md), 2026-08-25)
+- [x] Record transport and verification state in privacy-safe Activity/receipt evidence.
+  ([validation](plan-status-parallel-follow-up-validation.md), 2026-08-25)
 - [ ] Add real-server drills for FTP, explicit FTPS, and SFTP, including certificate/host-key failures.
+
+**Acknowledgement follow-up (2026-08-25):** insecure saves, the legacy upload first-use path, and Deadline's
+confirmation sheet now require explicit acknowledgement tied to the exact protocol/verification state.
+Deadline also retains the fail-closed transport boundary; see the
+[parallel follow-up validation](plan-status-parallel-follow-up-validation.md).
 
 **Exit gate:** insecure transport cannot be used accidentally; receipts accurately describe the security mode;
 representative server tests cover failure and retry.
@@ -274,9 +294,11 @@ representative server tests cover failure and retry.
   Deadline preflight, and recovery/error states.
 - [x] Convert full-screen rating stars and label dots to labelled Buttons.
   ([validation](accessibility-keyboard-audit-validation.md), 2026-08-25)
-- [ ] Convert face selection, ingest split cells, scope modes, and copyable metadata rows from gesture-only
+- [x] Convert face selection, ingest split cells, scope modes, and copyable metadata rows from gesture-only
   interactions to keyboard/VoiceOver-operable controls.
-- [ ] Give Metadata Review failures persistent icons/reasons and accessibility severity, not color/hover alone.
+  ([validation](accessibility-keyboard-audit-validation.md), 2026-08-25)
+- [x] Give Metadata Review failures persistent icons/reasons and accessibility severity, not color/hover alone.
+  ([validation](plan-status-parallel-follow-up-validation.md), 2026-08-25)
 - [ ] Run and record VoiceOver rotor/order, Full Keyboard Access, IME, high contrast, Reduce Motion,
   text/localization stress, window extremes, and external-display Clean Feed.
 
@@ -381,12 +403,18 @@ scenario is repeatable and clean.
 **Evidence:** AuraFace occupies about 125 MB and the existing roadmap already proposes an on-demand,
 versioned model in `TODO.md` under **Version 2.3**.
 
+**Distribution decision (2026-08-25):** Hugging Face remains upstream source/provenance for developers.
+Users will download the existing pre-converted, quantized Core ML artifact from `aagedal.me`; they will not
+download ONNX or run Python/PyTorch/Core ML Tools conversion. Prefer a versioned `.mlpackage` archive unless
+cross-version testing proves a compiled `.mlmodelc` archive is portable across every supported macOS tier.
+Normal one-time Core ML preparation of an `.mlpackage` is not model conversion and requires no ML toolchain.
+
 **Plan:**
 
 - [ ] Define model availability states: not installed, downloading, ready, update available, incompatible,
   verification failed, and offline.
-- [ ] Download over HTTPS, verify the manifest signature/hash before install, stage atomically, and retain a
-  rollback version during migration.
+- [ ] Download the pre-converted quantized Core ML artifact from `aagedal.me` over HTTPS, verify the manifest
+  signature/hash before install, stage atomically, and retain a rollback version during migration.
 - [ ] Never reset stored embeddings until the new model and backup are both verified.
 - [ ] Explain download size, on-device use, removal, and offline behavior before downloading.
 

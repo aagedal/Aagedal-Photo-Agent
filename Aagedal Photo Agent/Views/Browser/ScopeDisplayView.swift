@@ -26,30 +26,42 @@ struct ScopeDisplayView: View {
 
                 if isExpanded {
                     ForEach(ScopeViewModel.ScopeMode.allCases, id: \.self) { mode in
-                        Text(label(for: mode))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(
-                                scopeViewModel.scopeMode == mode
-                                    ? Color.primary
-                                    : Color.secondary.opacity(0.5)
-                            )
-                            .underline(hoveredMode == mode)
-                            .onHover { hovering in
-                                hoveredMode = hovering ? mode : nil
-                            }
-                            .onTapGesture {
-                                scopeViewModel.scopeMode = mode
-                            }
+                        Button {
+                            scopeViewModel.scopeMode = mode
+                        } label: {
+                            Text(label(for: mode))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(
+                                    scopeViewModel.scopeMode == mode
+                                        ? Color.primary
+                                        : Color.secondary.opacity(0.5)
+                                )
+                                .underline(hoveredMode == mode)
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { hovering in
+                            hoveredMode = hovering ? mode : nil
+                        }
+                        .accessibilityLabel("\(label(for: mode)) scope")
+                        .accessibilityValue(
+                            scopeViewModel.scopeMode == mode ? "Selected" : "Not selected"
+                        )
+                        .accessibilityAddTraits(
+                            scopeViewModel.scopeMode == mode ? .isSelected : []
+                        )
                     }
                 } else {
-                    Text("Scopes")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                isExpanded = true
-                            }
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            isExpanded = true
                         }
+                    } label: {
+                        Text("Scopes")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Expand scope controls")
                     Spacer()
                     Text(label(for: scopeViewModel.scopeMode))
                         .font(.caption)

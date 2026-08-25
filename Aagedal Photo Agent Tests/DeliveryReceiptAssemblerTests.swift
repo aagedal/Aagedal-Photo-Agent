@@ -27,6 +27,10 @@ struct DeliveryReceiptAssemblerTests {
         #expect(receipt.completedAt == completedAt)
         #expect(receipt.destination.identifier == fixture.connectionID.uuidString.lowercased())
         #expect(receipt.destination.path == "/incoming/wire")
+        #expect(receipt.destination.transportSecurity == DeliveryTransportSecurity(
+            protocolKind: .explicitFTPS,
+            verificationEnabled: true
+        ))
         #expect(receipt.items.map(\.deliveredFilename) == fixture.plan.items.map(\.outputFilename))
         #expect(receipt.items[0].deliveredSHA256 == fixture.staging.items[0].stagedSHA256)
         #expect(receipt.items[0].sourceIdentity.sha256 == fixture.plan.items[0].sourceRevision.sha256)
@@ -69,6 +73,8 @@ struct DeliveryReceiptAssemblerTests {
         #expect(!json.contains("canonicalurl"))
         #expect(!json.contains("source-0.raw"))
         #expect(!json.contains("password"))
+        #expect(json.contains("explicitftps"))
+        #expect(json.contains("verificationenabled"))
     }
 
     @Test("invalid or fingerprint-tampered plans are refused")
@@ -356,7 +362,10 @@ struct DeliveryReceiptAssemblerTests {
         DeliveryReceiptAssembler(
             applicationVersion: { version },
             now: { completedAt },
-            makeReceiptID: { receiptID }
+            makeReceiptID: { receiptID },
+            transportSecurity: { _ in
+                DeliveryTransportSecurity(protocolKind: .explicitFTPS, verificationEnabled: true)
+            }
         )
     }
 }

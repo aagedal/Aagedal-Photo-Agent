@@ -337,6 +337,7 @@ nonisolated struct DeliveryReceiptSummaryGenerator: Sendable {
             "Completed: \(date)",
             "Profile: \(receipt.profileIdentifier.uuidString.lowercased())",
             "Destination: \(receipt.destination.identifier) \(receipt.destination.path)",
+            "Transport: \(receipt.destination.transportSecurity?.evidenceDescription ?? "legacy receipt; not recorded")",
             "Items: \(receipt.items.count); upload acknowledged: \(uploadCount); remote size matched: \(remoteMatchCount)",
             "Metadata verification failures: \(verificationFailureCount); accepted warnings: \(warningCount)",
             "App: \(receipt.applicationVersion.marketingVersion) (\(receipt.applicationVersion.buildNumber))",

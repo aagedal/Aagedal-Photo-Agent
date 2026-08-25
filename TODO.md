@@ -126,7 +126,8 @@
   - [x] Accessible from Develop, full-screen, and Clean Feed as well as Browser.
 - [x] Grading versions: store source-bound named edit versions as private JSON, not XMP.
 - [ ] Separate the face recognition model file from the app, to minimize update size. The model is rarely updated.
-  - [ ] The model should download in the background on first launch if a model isn't found locally.
+  - [ ] Download the pre-converted quantized Core ML artifact from `aagedal.me` in the background when the
+    model is not installed. Users must never download ONNX or run the developer conversion toolchain.
   - [ ] Needs support for model versioning, in case an improved face recognition model is released.
 - [ ] Check if a users face database is problematic with relation to GDPR. If so warn the user that they may now want to use the known people database feature. The face grouping feature should still be legally safe.
 

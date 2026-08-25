@@ -249,6 +249,12 @@ Only run this phase for gates approved in Phase 0.
 
 **Exit gate:** all release criteria in `README.md` pass.
 
+**Automated hardening follow-up (2026-08-25):** migration recovery notices, bundled-component provenance,
+delivery transport defaults/evidence, and Metadata Review accessibility semantics are complete and validated
+in the [parallel plan-status follow-up](../plan-status-parallel-follow-up-validation.md). These changes do not
+close the broader manual performance, hardware, privacy, accessibility, recovery, documentation, or packaging
+gates below.
+
 - [x] Full existing test suite; see the current-source follow-up in
   [full-test-suite validation](../full-test-suite-validation.md#command-s-export-safety-follow-up--2026-08-25).
 - [x] New fixture-driven unit/render/persistence suites; included in the same fresh, unfiltered

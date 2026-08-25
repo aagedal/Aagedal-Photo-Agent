@@ -72,6 +72,8 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
     /// Whether the run was cancelled before finishing.
     let wasCancelled: Bool
     let importResultCounts: ActivityImportResultCounts?
+    /// Credential-free upload transport evidence. `nil` for imports, face scans, and legacy data.
+    let deliveryTransportSecurity: DeliveryTransportSecurity?
     let files: [ActivityFileRecord]
 
     init(
@@ -85,6 +87,7 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         verificationEnabled: Bool = false,
         wasCancelled: Bool = false,
         importResultCounts: ActivityImportResultCounts? = nil,
+        deliveryTransportSecurity: DeliveryTransportSecurity? = nil,
         files: [ActivityFileRecord]
     ) {
         self.id = id
@@ -97,6 +100,7 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         self.verificationEnabled = verificationEnabled
         self.wasCancelled = wasCancelled
         self.importResultCounts = importResultCounts
+        self.deliveryTransportSecurity = deliveryTransportSecurity
         self.files = files
     }
 

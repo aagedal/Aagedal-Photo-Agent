@@ -103,6 +103,9 @@ final class KeywordListsStore {
     static let shared = KeywordListsStore()
     nonisolated static let changedKeyUserInfo = "key"
 
+    /// Injectable so focused migration tests do not mutate launch UI state.
+    static var migrationRecoveryNotices = MigrationRecoveryNoticeCenter.shared
+
     /// Test seam for stale, unavailable, and subsequently recovered legacy
     /// bookmarks. Production uses security-scoped bookmark resolution.
     static var legacyBookmarkResolver: (Data) -> URL? = { data in
@@ -337,7 +340,10 @@ final class KeywordListsStore {
     /// Legacy bookmark bytes are intentionally retained as recovery evidence.
     func migrateLegacyBookmarksIfNeeded() {
         let stamp = UserDefaults.standard.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion)
-        if stamp >= 1 { return }
+        if stamp >= 1 {
+            Self.migrationRecoveryNotices.clear(.keywordLists)
+            return
+        }
 
         var completed = Set(
             UserDefaults.standard.stringArray(
@@ -411,6 +417,9 @@ final class KeywordListsStore {
         )
         if !hadFailure {
             UserDefaults.standard.set(1, forKey: UserDefaultsKeys.keywordListsMigratedVersion)
+            Self.migrationRecoveryNotices.clear(.keywordLists)
+        } else {
+            Self.migrationRecoveryNotices.recordFailure(in: .keywordLists)
         }
     }
 

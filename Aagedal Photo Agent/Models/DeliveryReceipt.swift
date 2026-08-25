@@ -171,10 +171,18 @@ nonisolated struct DeliveryApplicationVersion: Codable, Equatable, Sendable {
 nonisolated struct DeliveryReceiptDestination: Codable, Equatable, Sendable {
     let identifier: String
     let path: String
+    /// Exact protocol and verification state used by the transport, without server or credential
+    /// material. `nil` is reserved for receipts created before this evidence was recorded.
+    let transportSecurity: DeliveryTransportSecurity?
 
-    init(identifier: String, path: String) {
+    init(
+        identifier: String,
+        path: String,
+        transportSecurity: DeliveryTransportSecurity? = nil
+    ) {
         self.identifier = identifier
         self.path = path
+        self.transportSecurity = transportSecurity
     }
 
     fileprivate func validateForPersistence() throws {

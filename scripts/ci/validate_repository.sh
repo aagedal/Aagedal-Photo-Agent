@@ -10,6 +10,7 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 say "Checking generated metadata support documentation"
 python3 scripts/generate_metadata_field_support.py --check
+python3 scripts/generate_bundled_component_docs.py --check
 
 say "Validating tracked JSON documents"
 json_count=0
@@ -27,6 +28,11 @@ while IFS= read -r -d '' path; do
 done < <(git ls-files -z -- '*.plist' '*.xcprivacy')
 plutil -lint -- 'Aagedal Photo Agent.xcodeproj/project.pbxproj' >/dev/null
 printf 'validated %d property lists and project.pbxproj\n' "$plist_count"
+
+say "Verifying bundled binary and model provenance"
+python3 -B scripts/ci/test_bundled_component_validator.py
+python3 -B scripts/ci/test_auraface_source_fetch.py
+python3 -B scripts/ci/validate_bundled_components.py
 
 say "Checking unified-log privacy classifications"
 python3 scripts/ci/test_logger_privacy_validator.py

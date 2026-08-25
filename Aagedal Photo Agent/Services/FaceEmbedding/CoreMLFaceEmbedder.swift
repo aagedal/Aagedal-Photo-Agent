@@ -3,6 +3,35 @@ import CoreML
 import CoreGraphics
 import Accelerate
 
+/// The face-recognition capability compiled into this app package. AuraFace is optional in source
+/// checkouts, so absence must be an explicit product state rather than a per-photo scan failure.
+nonisolated enum FaceRecognitionModelAvailability: Equatable, Sendable {
+    case available
+    case unavailable
+
+    var isAvailable: Bool { self == .available }
+
+    var title: String {
+        switch self {
+        case .available: "Face Recognition Available"
+        case .unavailable: "Face Recognition Unavailable"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .available:
+            "The AuraFace recognition model is included in this build."
+        case .unavailable:
+            "This build does not include the AuraFace recognition model. Face scanning and recognition are unavailable."
+        }
+    }
+
+    /// Exact copy release operators can use when intentionally shipping without the optional model.
+    static let releaseNotesDisclosure =
+        "Face recognition is unavailable in this build because the AuraFace model is not included."
+}
+
 /// Face-identity embedder backed by the bundled **AuraFace-v1** model
 /// (`glintr100` / ArcFace R100, Apache-2.0). See `Resources/Models/AuraFaceR100.mlpackage`.
 ///
@@ -28,8 +57,22 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     private static let inputIsRGB = true
 
     private let lock = NSLock()
+    private let modelURL: URL?
     private var loadedModel: MLModel?
     private var loadError: Error?
+
+    nonisolated var availability: FaceRecognitionModelAvailability {
+        modelURL == nil ? .unavailable : .available
+    }
+
+    nonisolated convenience init(bundle: Bundle = .main) {
+        self.init(modelURL: bundle.url(forResource: Self.modelResource, withExtension: "mlmodelc"))
+    }
+
+    /// Internal injection point keeps the omitted-package state deterministic in focused tests.
+    nonisolated init(modelURL: URL?) {
+        self.modelURL = modelURL
+    }
 
     enum EmbedError: LocalizedError {
         case modelNotFound
@@ -51,7 +94,7 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
         if let m = loadedModel { return m }
         if let e = loadError { throw e }
         do {
-            guard let url = Bundle.main.url(forResource: Self.modelResource, withExtension: "mlmodelc") else {
+            guard let url = modelURL else {
                 throw EmbedError.modelNotFound
             }
             let config = MLModelConfiguration()

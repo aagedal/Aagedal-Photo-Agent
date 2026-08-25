@@ -110,6 +110,8 @@ struct ContentView: View {
     @State private var deliveryReceiptLibrary = DeliveryReceiptLibraryModel()
     /// Privacy-safe discovery and explicit recovery/cleanup for retained delivery workflows.
     @State private var deliveryWorkflowActivity: DeliveryWorkflowActivityModel
+    /// Retains migration failures that can happen before this view exists.
+    @State private var migrationRecoveryNotices = MigrationRecoveryNoticeCenter.shared
 
     @State private var isShowingTemplateEditor = false
     @State private var isShowingTemplatePicker = false
@@ -265,6 +267,17 @@ struct ContentView: View {
                 Button("Restore…") { isShowingListBackups = true }
             } message: {
                 Text("These lists came back empty, but local backups are available:\n\n\(listRecoveryAffectedNames.joined(separator: "\n"))\n\nYou can restore an earlier version.")
+            }
+            .alert(
+                migrationRecoveryNotices.notice?.title ?? "Some data still needs updating",
+                isPresented: Binding(
+                    get: { migrationRecoveryNotices.notice != nil },
+                    set: { if !$0 { migrationRecoveryNotices.dismiss() } }
+                )
+            ) {
+                Button("OK") { migrationRecoveryNotices.dismiss() }
+            } message: {
+                Text(migrationRecoveryNotices.notice?.message ?? "")
             }
             .sheet(isPresented: $isShowingListBackups) {
                 KeywordListBackupsSheet(
@@ -1279,12 +1292,17 @@ struct ContentView: View {
 
         return DeadlineDeliveryExecutionDependencies(
             prepare: { preparation in
-                try await session.prepare(
+                let batch = try await session.prepare(
                     preparation,
                     browser: browser,
                     profileLibrary: profileLibrary,
                     liveSnapshot: liveSnapshot
                 )
+                let identifier = batch.plan.destination.connectionIdentifier
+                guard let connection = ftp.connections.first(where: {
+                    $0.id.uuidString.caseInsensitiveCompare(identifier) == .orderedSame
+                }) else { return batch }
+                return batch.recordingTransportSecurity(connection)
             },
             start: { batch, progress in
                 try await session.execute(
@@ -1309,6 +1327,15 @@ struct ContentView: View {
             reloadReceipts: {
                 await receipts.reload()
                 await workflowActivity.reload()
+            },
+            acknowledgeInsecureTransport: { identifier, expectedSecurity in
+                guard let connectionID = UUID(uuidString: identifier),
+                      let connection = ftp.connections.first(where: { $0.id == connectionID }),
+                      connection.transportSecurity == expectedSecurity,
+                      connection.requiresFirstInsecureUploadAcknowledgement else {
+                    return false
+                }
+                return ftp.acknowledgeFirstInsecureUpload(connectionID: connectionID) != nil
             },
             recoverWorkflow: { try await session.recoverReservedBatch(for: $0) },
             releaseRecoveredWorkflow: { session.releaseResumeReservation(for: $0) }

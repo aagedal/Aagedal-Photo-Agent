@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "components": [
+    {
+      "id": "ffmpeg-photo",
+      "artifactPath": "Aagedal Photo Agent/Resources/ffmpeg",
+      "artifactSHA256": "111a6b7926d3677f4c39786e06b299ab7c23aa663f961d2f5ee21ef7f2f40abb",
+      "required": true,
+      "version": "9.0.1",
+      "versionCommand": ["-version"],
+      "expectedVersionPrefix": "ffmpeg version 9.0.1 ",
+      "upstream": {
+        "url": "https://github.com/FFmpeg/FFmpeg",
+        "revision": "bf1b838f2ab88b4f8fd83443325c782ea0e0f7fa",
+        "sourceArchive": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz"
+      },
+      "license": "GPL-3.0-or-later",
+      "licensePath": "Aagedal Photo Agent/Resources/Licenses/License-GPL-3.0.txt",
+      "buildRecipe": {
+        "url": "https://github.com/aagedal/ffmpeg-apple-silicon",
+        "revision": "00023f51d635ac7ab5b83f5419e57f004254318e",
+        "path": "scripts/12a-ffmpeg-photo.sh"
+      },
+      "targetArchitectures": ["arm64"],
+      "runtimeCapabilities": [
+        "decode supported image containers without network access",
+        "encode AVIF, JPEG XL, WebP, PNG, JPEG, TIFF, and EXR"
+      ]
+    },
+    {
+      "id": "c2patool",
+      "artifactPath": "Aagedal Photo Agent/Resources/c2patool",
+      "artifactSHA256": "a8978e307fe829b707c6891a6fca362628ea5c182e60cb9d147285bf6cdf4bec",
+      "required": true,
+      "version": "0.26.69",
+      "versionCommand": ["--version"],
+      "expectedVersionPrefix": "c2patool 0.26.69",
+      "upstream": {
+        "url": "https://github.com/contentauth/c2pa-rs",
+        "revision": "363c3e55b545327fc748905f256a18b82de19815",
+        "releaseTag": "c2patool-v0.26.69"
+      },
+      "license": "MIT",
+      "licensePath": "Aagedal Photo Agent/Resources/Licenses/License-c2patool.txt",
+      "buildRecipe": {
+        "url": "https://github.com/contentauth/c2pa-rs",
+        "revision": "363c3e55b545327fc748905f256a18b82de19815",
+        "path": ".github/workflows/release.yml"
+      },
+      "targetArchitectures": ["arm64", "x86_64"],
+      "runtimeCapabilities": [
+        "inspect and validate embedded C2PA manifests",
+        "sign supported assets when configured with user credentials"
+      ]
+    },
+    {
+      "id": "auraface-r100-coreml",
+      "artifactPath": "Aagedal Photo Agent/Resources/Models/AuraFaceR100.mlpackage",
+      "artifactFiles": {
+        "Data/com.apple.CoreML/model.mlmodel": "57f18ebea842b59b9da16b50fac274cb7499ce846880cc0486b01d4df4d02355",
+        "Data/com.apple.CoreML/weights/weight.bin": "c189aaf7d6758dafb1603b4ea7f7c2161b69639434ddbce800e0cc632b26d7e0",
+        "Manifest.json": "702d1f4a0a71cf78de4d5380e10eccd8f9e054c86c8a1f87c5bb31a27e23b25d"
+      },
+      "required": false,
+      "version": "AuraFace-v1/glintr100",
+      "upstream": {
+        "url": "https://huggingface.co/fal/AuraFace-v1",
+        "revision": "af6d057c9b0ec4071d4c49c80e3539258798b609",
+        "sourceFile": "glintr100.onnx",
+        "sourceSHA256": "a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60"
+      },
+      "license": "Apache-2.0",
+      "licensePath": "Aagedal Photo Agent/Resources/Models/AuraFace-LICENSE.md",
+      "buildRecipe": {
+        "repositoryPath": "Aagedal Photo Agent/Resources/Models/README.md",
+        "revision": "sha256:5e9d5b7a616fb0f609f2bf00104704b1c32592ae1570dd4e1d4bb5f342b29f7d"
+      },
+      "targetArchitectures": ["arm64"],
+      "runtimeCapabilities": [
+        "produce 512-dimensional face embeddings on device"
+      ]
+    }
+  ]
+}

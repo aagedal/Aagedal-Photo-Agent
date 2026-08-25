@@ -90,19 +90,22 @@ private struct CopyableMetadataRow: View {
     @State private var resetTask: Task<Void, Never>?
 
     var body: some View {
-        HStack {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer()
-            if showsCopied {
-                Label("Copied", systemImage: "checkmark")
+        Button(action: copyValue) {
+            HStack {
+                Text(label)
                     .foregroundStyle(.secondary)
-            } else {
-                Text(value)
-                    .lineLimit(1)
+                Spacer()
+                if showsCopied {
+                    Label("Copied", systemImage: "checkmark")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(value)
+                        .lineLimit(1)
+                }
             }
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 4)
                 .fill(.primary.opacity(isHovering ? 0.07 : 0))
@@ -110,8 +113,10 @@ private struct CopyableMetadataRow: View {
                 .padding(.vertical, -1)
         )
         .onHover { isHovering = $0 }
-        .onTapGesture { copyValue() }
-        .help("Click to copy")
+        .help("Copy value")
+        .accessibilityLabel("\(label), \(value)")
+        .accessibilityValue(showsCopied ? "Copied" : value)
+        .accessibilityHint("Copy this value to the clipboard")
     }
 
     private func copyValue() {
@@ -126,4 +131,3 @@ private struct CopyableMetadataRow: View {
         }
     }
 }
-

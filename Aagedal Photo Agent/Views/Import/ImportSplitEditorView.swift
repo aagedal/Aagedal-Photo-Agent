@@ -101,54 +101,68 @@ struct ImportSplitEditorView: View {
         let isSelected = mode == .select && selection.contains(index)
         let segment = segmentIndex(for: index)
 
-        VStack(spacing: 3) {
-            ImportSplitCellThumb(url: url, thumbnailService: thumbnailService)
-                .frame(height: 78)
-                .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(alignment: .topLeading) {
-                    if isBoundary {
-                        Image(systemName: "scissors")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(3)
-                            .background(Color.accentColor, in: Circle())
-                            .padding(3)
-                    }
-                }
-                .overlay(alignment: .topTrailing) {
-                    if let gap = gapLabel(at: index) {
-                        Text(gap)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 2)
-                            .background(.orange, in: Capsule())
-                            .padding(3)
-                    }
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(
-                            isSelected ? Color.accentColor
-                                : (isBoundary ? Color.accentColor.opacity(0.7) : Color.clear),
-                            lineWidth: isSelected ? 3 : 2
-                        )
-                }
-
-            Text(timeLabel(for: url))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(5)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(mode == .byTime ? segmentTint(segment) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture {
+        Button {
             handleTap(index: index, shiftHeld: NSEvent.modifierFlags.contains(.shift))
+        } label: {
+            VStack(spacing: 3) {
+                ImportSplitCellThumb(url: url, thumbnailService: thumbnailService)
+                    .frame(height: 78)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(alignment: .topLeading) {
+                        if isBoundary {
+                            Image(systemName: "scissors")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(3)
+                                .background(Color.accentColor, in: Circle())
+                                .padding(3)
+                        }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if let gap = gapLabel(at: index) {
+                            Text(gap)
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 2)
+                                .background(.orange, in: Capsule())
+                                .padding(3)
+                        }
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(
+                                isSelected ? Color.accentColor
+                                    : (isBoundary ? Color.accentColor.opacity(0.7) : Color.clear),
+                                lineWidth: isSelected ? 3 : 2
+                            )
+                    }
+
+                Text(timeLabel(for: url))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(5)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(mode == .byTime ? segmentTint(segment) : Color.clear)
+            )
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(mode == .byTime && index == 0)
+        .accessibilityLabel("Photo \(index + 1), \(timeLabel(for: url))")
+        .accessibilityValue(
+            mode == .byTime
+                ? (index == 0 ? "First shoot start" : (isBoundary ? "Starts a new shoot" : "Same shoot"))
+                : (isSelected ? "Selected" : "Not selected")
+        )
+        .accessibilityHint(
+            mode == .byTime
+                ? "Toggle whether this photo starts a new shoot"
+                : "Toggle this photo for moving to a new shoot"
+        )
     }
 
     // MARK: - Footer

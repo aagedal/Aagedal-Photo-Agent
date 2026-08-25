@@ -87,6 +87,9 @@ final class KnownPeopleService {
     /// Test-only failure injection for the embedding-space migration.
     static var embeddingMigrationIO = KnownPeopleEmbeddingMigrationIO.live
 
+    /// Injectable so focused migration tests do not mutate launch UI state.
+    static var migrationRecoveryNotices = MigrationRecoveryNoticeCenter.shared
+
     /// How long a deletion tombstone is honored before it is garbage-collected.
     /// While present, a person's file is suppressed so a peer that still holds
     /// the person can't resurrect it; after the window a re-synced file could
@@ -937,7 +940,10 @@ final class KnownPeopleService {
         let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
         let stored = UserDefaults.standard.object(forKey: key) as? Int
         let current = FaceRecognitionDefaults.embeddingVersion
-        guard stored != current else { return }
+        guard stored != current else {
+            Self.migrationRecoveryNotices.clear(.knownPeople)
+            return
+        }
 
         let hasExisting = ((try? CloudCoordinatedIO.contentsOfDirectory(at: peopleDirectory)) ?? [])
             .contains { $0.pathExtension == "json" }
@@ -956,11 +962,13 @@ final class KnownPeopleService {
                 try resetDatabaseForEmbeddingMigration(io: io)
             } catch {
                 knownPeopleLog.error("Known People embedding migration was not completed: \(error.localizedDescription, privacy: .private)")
+                Self.migrationRecoveryNotices.recordFailure(in: .knownPeople)
                 return
             }
         }
 
         UserDefaults.standard.set(current, forKey: key)
+        Self.migrationRecoveryNotices.clear(.knownPeople)
     }
 
     private func verifyEmbeddingMigrationBackup(

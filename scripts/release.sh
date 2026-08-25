@@ -45,6 +45,14 @@ ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Recheck the artifacts in this checkout immediately before any signing or
+# packaging work. Remote CI validates committed declarations, but it cannot
+# prove that a required local binary is still present and unmodified here.
+say "Verifying bundled release artifacts"
+python3 -B scripts/ci/validate_bundled_components.py \
+  || die "Bundled component validation failed; restore or rebuild the declared artifacts before releasing."
+ok "Bundled release artifacts match their pinned manifest"
+
 # Verify this exact committed source before doing any keychain, signing,
 # notarization, archive, or appcast work. The verifier also records the accepted
 # workflow run (or the explicit emergency override) in OUTPUT_DIR.

@@ -17,6 +17,9 @@ nonisolated enum DeliveryFTPTransportFactory {
             upload: { transfer in
                 do {
                     let resolved = try resolve(transfer, in: inventory)
+                    guard !resolved.requiresFirstInsecureUploadAcknowledgement else {
+                        throw DeliveryFTPTransportError.insecureTransportNotAcknowledged
+                    }
                     try await validateExactLocalEvidence(transfer)
                     try await service.uploadDeliveryFile(
                         localURL: transfer.localURL,
@@ -173,6 +176,7 @@ nonisolated enum DeliveryFTPTransportError: Error, Equatable, LocalizedError, Se
     case invalidConnectionIdentifier
     case connectionUnavailable
     case credentialUnavailable
+    case insecureTransportNotAcknowledged
     case unsafeTransfer
     case uploadFailed
     case remoteObservationUnavailable
@@ -185,6 +189,8 @@ nonisolated enum DeliveryFTPTransportError: Error, Equatable, LocalizedError, Se
             "The saved delivery connection is unavailable or invalid."
         case .credentialUnavailable:
             "The credential for the saved delivery connection is unavailable."
+        case .insecureTransportNotAcknowledged:
+            "Acknowledge this insecure delivery connection before its first upload."
         case .unsafeTransfer:
             "The staged delivery file or remote path is invalid."
         case .uploadFailed:

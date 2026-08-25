@@ -71,6 +71,7 @@
 		AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */; };
 		AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */; };
 		AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5200000000000000000001 /* MetadataValidationTests.swift */; };
+		D4A700000000000000000002 /* MetadataReviewValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A700000000000000000001 /* MetadataReviewValidationTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		BA7C03000000000000000002 /* BatchRenameRecipeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */; };
 		BA7C03010000000000000002 /* RenamePlanningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA7C03010000000000000001 /* RenamePlanningServiceTests.swift */; };
@@ -188,6 +189,7 @@
 		AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataTemplatePersistenceTests.swift; sourceTree = "<group>"; };
 		AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisSolarPositionCalculatorTests.swift; sourceTree = "<group>"; };
 		AB5200000000000000000001 /* MetadataValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataValidationTests.swift; sourceTree = "<group>"; };
+		D4A700000000000000000001 /* MetadataReviewValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataReviewValidationTests.swift; sourceTree = "<group>"; };
 		BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameRecipeTests.swift; sourceTree = "<group>"; };
 		BA7C03010000000000000001 /* RenamePlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenamePlanningServiceTests.swift; sourceTree = "<group>"; };
 		BA7C03020000000000000001 /* BatchRenameSheetStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameSheetStateTests.swift; sourceTree = "<group>"; };
@@ -326,6 +328,7 @@
 				AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */,
 				AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */,
 				AB5200000000000000000001 /* MetadataValidationTests.swift */,
+				D4A700000000000000000001 /* MetadataReviewValidationTests.swift */,
 				F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */,
 				BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */,
 				BA7C03010000000000000001 /* RenamePlanningServiceTests.swift */,
@@ -572,6 +575,7 @@
 				AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */,
 				AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */,
 				AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */,
+				D4A700000000000000000002 /* MetadataReviewValidationTests.swift in Sources */,
 				F2BA71000000000000000002 /* MetadataBatchSelectionTests.swift in Sources */,
 				BA7C03000000000000000002 /* BatchRenameRecipeTests.swift in Sources */,
 				BA7C03010000000000000002 /* RenamePlanningServiceTests.swift in Sources */,

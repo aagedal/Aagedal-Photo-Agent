@@ -169,6 +169,57 @@ struct FTPRemoteURLTests {
 @Suite("FTPConnection Codable")
 struct FTPConnectionCodableTests {
 
+    @Test("new profiles default to verified SFTP")
+    func newProfileSafeDefault() {
+        let connection = FTPConnection.secureDefault
+        #expect(connection.useSFTP)
+        #expect(connection.port == 22)
+        #expect(connection.transportSecurity == DeliveryTransportSecurity(
+            protocolKind: .sftp,
+            verificationEnabled: true
+        ))
+        #expect(!connection.transportSecurity.isInsecure)
+    }
+
+    @Test("plain FTP and disabled server verification are classified as insecure")
+    func insecureClassification() {
+        let ftp = FTPConnection(useSFTP: false, useTLS: false)
+        let ftps = FTPConnection(
+            useSFTP: false,
+            useTLS: true,
+            allowInsecureHostVerification: true
+        )
+        let sftp = FTPConnection(useSFTP: true, allowInsecureHostVerification: true)
+
+        #expect(ftp.transportSecurity.protocolKind == .ftp)
+        #expect(ftp.transportSecurity.isInsecure)
+        #expect(ftps.transportSecurity.protocolKind == .explicitFTPS)
+        #expect(ftps.transportSecurity.isInsecure)
+        #expect(sftp.transportSecurity.protocolKind == .sftp)
+        #expect(sftp.transportSecurity.isInsecure)
+    }
+
+    @Test("first-upload acknowledgement is exact to the insecure transport state")
+    func acknowledgementInvalidatesOnSecurityChange() throws {
+        var connection = FTPConnection(useSFTP: false, useTLS: false)
+        #expect(connection.requiresFirstInsecureUploadAcknowledgement)
+        connection.acknowledgeFirstInsecureUpload()
+        #expect(!connection.requiresFirstInsecureUploadAcknowledgement)
+
+        connection.useTLS = true
+        connection.normalizeTransportAcknowledgement()
+        #expect(connection.firstUploadAcknowledgedSecurity == nil)
+        #expect(!connection.requiresFirstInsecureUploadAcknowledgement)
+
+        connection.allowInsecureHostVerification = true
+        #expect(connection.requiresFirstInsecureUploadAcknowledgement)
+        let decoded = try JSONDecoder().decode(
+            FTPConnection.self,
+            from: JSONEncoder().encode(connection)
+        )
+        #expect(decoded.requiresFirstInsecureUploadAcknowledgement)
+    }
+
     @Test("legacy JSON without useTLS decodes to useTLS == false")
     func legacyDecodeDefaultsTLSOff() throws {
         let legacy = """
@@ -179,6 +230,7 @@ struct FTPConnectionCodableTests {
         let conn = try JSONDecoder().decode(FTPConnection.self, from: legacy)
         #expect(conn.useTLS == false)
         #expect(conn.host == "h")
+        #expect(conn.requiresFirstInsecureUploadAcknowledgement)
     }
 
     @Test("useTLS survives an encode/decode roundtrip")
@@ -188,5 +240,49 @@ struct FTPConnectionCodableTests {
         let decoded = try JSONDecoder().decode(FTPConnection.self, from: data)
         #expect(decoded.useTLS == true)
         #expect(decoded == original)
+    }
+}
+
+@MainActor
+@Suite("FTPViewModel transport acknowledgement")
+struct FTPViewModelTransportAcknowledgementTests {
+    @Test("plain upload fails closed before credential lookup or history creation")
+    func plainUploadFailsClosed() {
+        let viewModel = FTPViewModel()
+        let connection = FTPConnection(name: "Desk", host: "example.invalid")
+
+        viewModel.uploadFiles(
+            [URL(fileURLWithPath: "/private/tmp/should-not-upload.jpg")],
+            to: connection
+        )
+
+        #expect(viewModel.errorMessages == [
+            "Acknowledge this insecure delivery connection before its first upload."
+        ])
+        #expect(!viewModel.isUploading)
+        #expect(viewModel.uploadHistory.entries.isEmpty)
+    }
+
+    @Test("rendering upload fails closed before rendering or credential lookup")
+    func renderedUploadFailsClosed() {
+        let viewModel = FTPViewModel()
+        let url = URL(fileURLWithPath: "/private/tmp/should-not-render.jpg")
+        let connection = FTPConnection(name: "Desk", host: "example.invalid")
+
+        viewModel.uploadFiles(
+            [url],
+            renderURLs: [url],
+            to: connection,
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            inMemoryCameraRaw: { _ in nil }
+        )
+
+        #expect(viewModel.errorMessages == [
+            "Acknowledge this insecure delivery connection before its first upload."
+        ])
+        #expect(!viewModel.isUploading)
+        #expect(!viewModel.isRendering)
+        #expect(viewModel.uploadHistory.entries.isEmpty)
     }
 }

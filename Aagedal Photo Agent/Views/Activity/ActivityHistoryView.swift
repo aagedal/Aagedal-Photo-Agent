@@ -507,6 +507,10 @@ private struct DeliveryReceiptDetailView: View {
                 safeFact("Profile", detail.profileIdentifier.uuidString.lowercased())
                 safeFact("Connection", detail.destinationIdentifier)
                 safeFact("Destination", detail.destinationPath)
+                safeFact(
+                    "Transport",
+                    detail.transportSecurity?.evidenceDescription ?? "Legacy receipt — not recorded"
+                )
                 safeFact("Started", Self.dateFormatter.string(from: detail.startedAt))
                 safeFact("Completed", Self.dateFormatter.string(from: detail.completedAt))
                 safeFact(
@@ -674,6 +678,16 @@ private struct ActivityEntryRow: View {
                                 Text("·")
                             }
                             Text(Self.dateFormatter.string(from: entry.date))
+                            if let security = entry.deliveryTransportSecurity {
+                                Text("·")
+                                Label(
+                                    security.badgeTitle,
+                                    systemImage: security.isInsecure
+                                        ? "exclamationmark.shield.fill"
+                                        : "checkmark.shield.fill"
+                                )
+                                .foregroundStyle(security.isInsecure ? .orange : .secondary)
+                            }
                         }
                         .font(.caption2)
                         .foregroundStyle(.secondary)

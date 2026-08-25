@@ -103,6 +103,47 @@ struct FaceEmbeddingTests {
 
     // MARK: - CoreMLFaceEmbedder (bundled model smoke test)
 
+    @Test func omittedModelHasExplicitUnavailableState() async {
+        let embedder = CoreMLFaceEmbedder(modelURL: nil)
+
+        #expect(embedder.availability == .unavailable)
+        #expect(embedder.availability.title == "Face Recognition Unavailable")
+        #expect(embedder.availability.detail.contains("AuraFace"))
+        #expect(FaceRecognitionModelAvailability.releaseNotesDisclosure ==
+            "Face recognition is unavailable in this build because the AuraFace model is not included.")
+
+        do {
+            _ = try await embedder.embed(Self.makeTestImage(seed: 7))
+            Issue.record("An embedder without a packaged model unexpectedly produced an embedding")
+        } catch let error as CoreMLFaceEmbedder.EmbedError {
+            guard case .modelNotFound = error else {
+                Issue.record("Expected modelNotFound, received \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Expected CoreMLFaceEmbedder.EmbedError, received \(error)")
+        }
+    }
+
+    @Test @MainActor
+    func unavailableModelRefusesScanBeforeStarting() {
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            faceModelAvailability: .unavailable
+        )
+
+        viewModel.scanFolder(
+            imageURLs: [URL(fileURLWithPath: "/private/tmp/should-not-face-scan.jpg")],
+            folderURL: URL(fileURLWithPath: "/private/tmp/should-not-face-scan")
+        )
+
+        #expect(!viewModel.isScanning)
+        #expect(viewModel.scanningFolderURL == nil)
+        #expect(viewModel.scanProcessedCount == 0)
+        #expect(viewModel.errorMessage == FaceRecognitionModelAvailability.unavailable.detail)
+    }
+
     @Test func embedderProducesNormalizedDeterministicVectors() async throws {
         let embedder = CoreMLFaceEmbedder.shared
         let image = Self.makeTestImage(seed: 7)

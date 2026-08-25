@@ -71,6 +71,7 @@ nonisolated struct DeliveryReceiptActivityDetail: Equatable, Identifiable, Senda
     let completedAt: Date
     let destinationIdentifier: String
     let destinationPath: String
+    let transportSecurity: DeliveryTransportSecurity?
     let acceptedWarningIdentifiers: [String]
     let status: DeliveryReceiptActivityStatus
     let items: [DeliveryReceiptActivityItemEvidence]
@@ -256,6 +257,7 @@ final class DeliveryReceiptLibraryModel {
             completedAt: receipt.completedAt,
             destinationIdentifier: receipt.destination.identifier,
             destinationPath: receipt.destination.path,
+            transportSecurity: receipt.destination.transportSecurity,
             acceptedWarningIdentifiers: receipt.acceptedWarningIdentifiers,
             status: detailStatus(
                 items,

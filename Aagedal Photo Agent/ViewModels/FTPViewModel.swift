@@ -29,7 +29,7 @@ final class FTPViewModel {
     var renderedUploadedFolders: [URL] = []
 
     var isShowingServerForm = false
-    var editingConnection = FTPConnection()
+    var editingConnection = FTPConnection.secureDefault
     var editingPassword = ""
 
     enum ConnectionTestState: Equatable {
@@ -99,7 +99,7 @@ final class FTPViewModel {
     }
 
     func startEditingConnection(_ connection: FTPConnection? = nil) {
-        editingConnection = connection ?? FTPConnection()
+        editingConnection = connection ?? FTPConnection.secureDefault
         editingPassword = connection.flatMap { KeychainService.load(forKey: $0.keychainKey) } ?? ""
         connectionTestTask?.cancel()
         connectionTest = .idle
@@ -135,14 +135,23 @@ final class FTPViewModel {
         }
     }
 
-    func saveEditingConnection() {
+    /// Returns `false` without persisting when the form must first present the insecure-transport
+    /// acknowledgement. Secure profiles save directly.
+    @discardableResult
+    func saveEditingConnection(acknowledgingInsecureTransport: Bool = false) -> Bool {
+        editingConnection.normalizeTransportAcknowledgement()
+        if editingConnection.transportSecurity.isInsecure,
+           !acknowledgingInsecureTransport {
+            return false
+        }
+
         // Save password to keychain
         do {
             try KeychainService.save(password: editingPassword, forKey: editingConnection.keychainKey)
         } catch {
             ftpLog.error("Keychain save failed for \(self.editingConnection.name, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             errorMessages = ["Failed to save password: \(error.localizedDescription)"]
-            return
+            return false
         }
 
         if let index = connections.firstIndex(where: { $0.id == editingConnection.id }) {
@@ -156,6 +165,21 @@ final class FTPViewModel {
         }
         saveConnections()
         isShowingServerForm = false
+        return true
+    }
+
+    /// Durably records the one-time acknowledgement for this exact insecure protocol/verification
+    /// state. The connection UUID is used instead of host or user data.
+    @discardableResult
+    func acknowledgeFirstInsecureUpload(connectionID: UUID) -> FTPConnection? {
+        guard let index = connections.firstIndex(where: { $0.id == connectionID }),
+              connections[index].transportSecurity.isInsecure else { return nil }
+        connections[index].acknowledgeFirstInsecureUpload()
+        saveConnections()
+        if editingConnection.id == connectionID {
+            editingConnection = connections[index]
+        }
+        return connections[index]
     }
 
     func cancelUpload() {
@@ -233,6 +257,7 @@ final class FTPViewModel {
     // MARK: - Upload
 
     func uploadFiles(_ urls: [URL], to connection: FTPConnection) {
+        guard ensureUploadTransportIsAcknowledged(connection) else { return }
         guard let password = KeychainService.load(forKey: connection.keychainKey) else {
             errorMessages = ["No password found for \(connection.name). Edit the connection to set a password."]
             return
@@ -288,7 +313,7 @@ final class FTPViewModel {
             }
             guard !Task.isCancelled, self.uploadGeneration == generation else { return }
             self.recordUploadCompletion(id: historyID)
-            self.showCompletion(serverName: connection.name)
+            self.showCompletion(connection: connection)
         }
     }
 
@@ -306,6 +331,7 @@ final class FTPViewModel {
         inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?,
         signingConfiguration: C2PAUploadSigningConfiguration? = nil
     ) {
+        guard ensureUploadTransportIsAcknowledged(connection) else { return }
         let renderTargets = urls.filter { renderURLs.contains($0) }
         guard !renderTargets.isEmpty else {
             uploadFiles(urls, to: connection)
@@ -488,8 +514,22 @@ final class FTPViewModel {
 
             guard !Task.isCancelled, self.uploadGeneration == generation else { return }
             self.recordUploadCompletion(id: historyID)
-            self.showCompletion(serverName: connection.name)
+            self.showCompletion(connection: connection)
         }
+    }
+
+    /// This boundary is intentionally below the SwiftUI confirmation. It prevents callers,
+    /// future UI entry points, and restored actions from bypassing the first-use acknowledgement.
+    /// Check it before Keychain access, history creation, rendering, or network work.
+    @discardableResult
+    private func ensureUploadTransportIsAcknowledged(_ connection: FTPConnection) -> Bool {
+        guard !connection.requiresFirstInsecureUploadAcknowledgement else {
+            errorMessages = [
+                "Acknowledge this insecure delivery connection before its first upload."
+            ]
+            return false
+        }
+        return true
     }
 
     /// Returns the URL to upload for a non-rendered original. The original is uploaded in
@@ -574,12 +614,12 @@ final class FTPViewModel {
     /// Shows the sticky completion state and records the upload to the shared
     /// activity history. The banner stays until the user confirms it (a new
     /// upload also replaces it), so the confirmation can't be missed.
-    private func showCompletion(serverName: String) {
+    private func showCompletion(connection: FTPConnection) {
         isUploading = false
         isRendering = false
         uploadCompleted = true
         overallProgress = 1.0
-        recordActivity(serverName: serverName)
+        recordActivity(connection: connection)
     }
 
     /// Dismisses the sticky upload-completion banner (the green-check confirm action).
@@ -588,13 +628,13 @@ final class FTPViewModel {
         uploadCompleted = false
     }
 
-    private func recordActivity(serverName: String) {
+    private func recordActivity(connection: FTPConnection) {
         let records: [ActivityFileRecord] = uploadProgress.values
             .sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
             .map { progress in
                 ActivityFileRecord(
                     fileName: progress.fileName,
-                    destination: serverName,
+                    destination: connection.name,
                     succeeded: progress.isComplete,
                     verification: .notApplicable
                 )
@@ -603,9 +643,10 @@ final class FTPViewModel {
         let entry = ActivityEntry(
             kind: .upload,
             date: Date(),
-            title: serverName,
+            title: connection.name,
             successCount: completedCount,
             totalCount: totalCount,
+            deliveryTransportSecurity: connection.transportSecurity,
             files: records
         )
         activityHistory?.record(entry)

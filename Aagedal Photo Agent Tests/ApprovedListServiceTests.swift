@@ -356,6 +356,8 @@ struct KeywordListLegacyMigrationTests {
             UserDefaultsKeys.keywordListsMigrationCompletedKeys,
         ] + legacyBookmarkKeys
         let previous = Dictionary(uniqueKeysWithValues: migrationKeys.map { ($0, defaults.object(forKey: $0)) })
+        let migrationNotices = MigrationRecoveryNoticeCenter()
+        KeywordListsStore.migrationRecoveryNotices = migrationNotices
         defer {
             for (key, value) in previous {
                 if let value {
@@ -373,6 +375,7 @@ struct KeywordListLegacyMigrationTests {
                     bookmarkDataIsStale: &isStale
                 )
             }
+            KeywordListsStore.migrationRecoveryNotices = .shared
         }
 
         for key in migrationKeys {
@@ -398,6 +401,9 @@ struct KeywordListLegacyMigrationTests {
                 defaults.stringArray(forKey: UserDefaultsKeys.keywordListsMigrationCompletedKeys)?
                     .contains("approved:keywords") == true
             )
+            #expect(migrationNotices.notice?.affectedCategories == [.keywordLists])
+            #expect(migrationNotices.notice?.message.contains("Keyword Lists") == true)
+            #expect(migrationNotices.notice?.message.contains(quickSource.path) == false)
 
             // A completed source must not be re-imported while the failed source retries.
             try "Changed\n".write(to: approvedSource, atomically: true, encoding: .utf8)
@@ -409,6 +415,7 @@ struct KeywordListLegacyMigrationTests {
             #expect(defaults.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion) == 1)
             #expect(defaults.data(forKey: approvedKey) == approvedBookmark)
             #expect(defaults.data(forKey: quickKey) == quickBookmark)
+            #expect(migrationNotices.notice == nil)
         }
     }
 }

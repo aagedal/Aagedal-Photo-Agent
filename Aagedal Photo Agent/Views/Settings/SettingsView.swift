@@ -1978,6 +1978,14 @@ struct SettingsView: View {
                                 Text("\(conn.useSFTP ? "sftp" : (conn.useTLS ? "ftps" : "ftp"))://\(conn.host):\(conn.port)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                Label(
+                                    conn.transportSecurity.badgeTitle,
+                                    systemImage: conn.transportSecurity.isInsecure
+                                        ? "exclamationmark.shield.fill"
+                                        : "checkmark.shield.fill"
+                                )
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(conn.transportSecurity.isInsecure ? .orange : .green)
                             }
                             Spacer()
                             Button("Edit") {

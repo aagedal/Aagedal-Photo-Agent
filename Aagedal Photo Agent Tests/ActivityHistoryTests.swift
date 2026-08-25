@@ -6,6 +6,34 @@ import Testing
 @Suite("Activity History")
 @MainActor
 struct ActivityHistoryTests {
+    @Test("Upload Activity persists privacy-safe transport evidence and reads legacy entries")
+    func uploadTransportEvidenceCodable() throws {
+        let transport = DeliveryTransportSecurity(
+            protocolKind: .sftp,
+            verificationEnabled: false
+        )
+        let entry = ActivityEntry(
+            kind: .upload,
+            date: Date(timeIntervalSince1970: 100),
+            title: "Desk",
+            successCount: 1,
+            totalCount: 1,
+            deliveryTransportSecurity: transport,
+            files: []
+        )
+        let data = try JSONEncoder().encode(entry)
+        let json = String(decoding: data, as: UTF8.self)
+        #expect(json.contains("sftp"))
+        #expect(json.contains("verificationEnabled"))
+        #expect(!json.localizedCaseInsensitiveContains("password"))
+        #expect(try JSONDecoder().decode(ActivityEntry.self, from: data)
+            .deliveryTransportSecurity == transport)
+
+        let legacy = dataRemovingKey("deliveryTransportSecurity", from: data)
+        #expect(try JSONDecoder().decode(ActivityEntry.self, from: legacy)
+            .deliveryTransportSecurity == nil)
+    }
+
     @Test("Partial face results remain available in the expanded manager")
     func partialFaceResultsCanBeManaged() {
         let viewModel = FaceRecognitionViewModel(
@@ -76,7 +104,8 @@ struct ActivityHistoryTests {
 
         let viewModel = FaceRecognitionViewModel(
             readService: SwiftExifReadService(),
-            writeEngine: SwiftExifWriteEngine()
+            writeEngine: SwiftExifWriteEngine(),
+            faceModelAvailability: .available
         )
         viewModel.loadFaceData(for: scannedFolder, cleanupPolicy: .never)
         viewModel.scanFolder(imageURLs: [invalidImage], folderURL: scannedFolder)
@@ -109,7 +138,8 @@ struct ActivityHistoryTests {
         }
         let viewModel = FaceRecognitionViewModel(
             readService: SwiftExifReadService(),
-            writeEngine: SwiftExifWriteEngine()
+            writeEngine: SwiftExifWriteEngine(),
+            faceModelAvailability: .available
         )
         viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
         viewModel.scanFolder(imageURLs: imageURLs, folderURL: folder)
@@ -133,4 +163,10 @@ struct ActivityHistoryTests {
         viewModel.cancelScan()
         await viewModel.waitForCurrentScan()
     }
+}
+
+private func dataRemovingKey(_ key: String, from data: Data) -> Data {
+    var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    object[key] = nil
+    return (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
 }

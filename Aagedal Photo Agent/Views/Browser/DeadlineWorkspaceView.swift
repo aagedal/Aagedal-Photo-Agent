@@ -599,6 +599,20 @@ private struct DeadlineDeliveryConfirmationView: View {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 GridRow { Text("Connection").foregroundStyle(.secondary); Text(confirmation.destinationConnectionIdentifier).monospaced() }
                 GridRow { Text("Remote path").foregroundStyle(.secondary); Text(confirmation.destinationPath).monospaced() }
+                GridRow {
+                    Text("Transport").foregroundStyle(.secondary)
+                    if let security = confirmation.transportSecurity {
+                        Label(
+                            security.evidenceDescription,
+                            systemImage: security.isInsecure
+                                ? "exclamationmark.shield.fill"
+                                : "checkmark.shield.fill"
+                        )
+                        .foregroundStyle(security.isInsecure ? .orange : .green)
+                    } else {
+                        Text("Unavailable").foregroundStyle(.secondary)
+                    }
+                }
                 GridRow { Text("Metadata policy").foregroundStyle(.secondary); Text("Staged copies only") }
                 GridRow {
                     Text("Maximum file size").foregroundStyle(.secondary)
@@ -607,15 +621,44 @@ private struct DeadlineDeliveryConfirmationView: View {
                     } ?? "No limit")
                 }
             }
+            if confirmation.requiresFirstInsecureTransportAcknowledgement,
+               let security = confirmation.transportSecurity {
+                Label(
+                    insecureAcknowledgementMessage(security),
+                    systemImage: "exclamationmark.shield.fill"
+                )
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("deadline.insecureTransportAcknowledgement")
+            }
             HStack {
                 Button("Cancel", role: .cancel, action: onCancel)
                 Spacer()
-                Button("Stage, Verify, and Send", action: onConfirm)
+                Button(
+                    confirmation.requiresFirstInsecureTransportAcknowledgement
+                        ? "Acknowledge Insecure Transport and Send"
+                        : "Stage, Verify, and Send",
+                    action: onConfirm
+                )
                     .buttonStyle(.borderedProminent)
             }
         }
         .padding(20)
         .frame(minWidth: 660, minHeight: 480)
+    }
+
+    private func insecureAcknowledgementMessage(
+        _ security: DeliveryTransportSecurity
+    ) -> String {
+        switch security.protocolKind {
+        case .ftp:
+            "Plain FTP exposes credentials and files in transit. Confirming records your acknowledgement for this exact connection state before its first delivery."
+        case .sftp:
+            "SFTP host verification is disabled. Confirming records your acknowledgement for this exact connection state before its first delivery."
+        case .explicitFTPS:
+            "FTPS certificate verification is disabled. Confirming records your acknowledgement for this exact connection state before its first delivery."
+        }
     }
 
 }

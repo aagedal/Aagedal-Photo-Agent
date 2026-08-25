@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -230,6 +231,50 @@ struct AccessibilityKeyboardAuditTests {
         #expect(metadataPanel.contains("EditorialDateCreatedEditor("))
         #expect(metadataPanel.contains("metadata.dateCreated.validationError"))
         #expect(metadataPanel.contains("Exact ISO 8601 precision and timezone-known state are preserved"))
+    }
+
+    @Test("face selection, ingest split cells, scope modes, and metadata copy rows use semantic controls")
+    func formerlyGestureOnlyControls() throws {
+        let faceCard = try source("Aagedal Photo Agent/Views/Faces/FaceGroupCardView.swift")
+        #expect(faceCard.contains("setAccessibilityRole(.button)"))
+        #expect(faceCard.contains("override func accessibilityPerformPress() -> Bool"))
+        #expect(faceCard.contains("setAccessibilityValue(isSelected ? \"Selected\" : \"Not selected\")"))
+
+        let faceDetail = try source("Aagedal Photo Agent/Views/Faces/FaceGroupDetailView.swift")
+        #expect(faceDetail.contains("Button {"))
+        #expect(faceDetail.contains("Select this face; hold Command to change a multi-selection"))
+        #expect(!faceDetail.contains(".onTapGesture {"))
+
+        let expandedFaces = try source("Aagedal Photo Agent/Views/Faces/ExpandedFaceManagementView.swift")
+        #expect(expandedFaces.contains(".accessibilityAction(named: \"Open Full Screen\")"))
+        #expect(expandedFaces.contains(".accessibilityValue(isSelected ? \"Selected\" : \"Not selected\")"))
+
+        let splitEditor = try source("Aagedal Photo Agent/Views/Import/ImportSplitEditorView.swift")
+        #expect(splitEditor.contains("Button {"))
+        #expect(splitEditor.contains("Toggle whether this photo starts a new shoot"))
+        #expect(!splitEditor.contains(".onTapGesture"))
+
+        let scopes = try source("Aagedal Photo Agent/Views/Browser/ScopeDisplayView.swift")
+        #expect(scopes.contains("scopeViewModel.scopeMode = mode"))
+        #expect(scopes.contains("scopeViewModel.scopeMode == mode ? .isSelected : []"))
+        #expect(!scopes.contains(".onTapGesture"))
+
+        let technicalMetadata = try source("Aagedal Photo Agent/Views/Browser/TechnicalMetadataView.swift")
+        #expect(technicalMetadata.contains("Button(action: copyValue)"))
+        #expect(technicalMetadata.contains("Copy this value to the clipboard"))
+        #expect(!technicalMetadata.contains(".onTapGesture"))
+    }
+
+    @Test("AppKit face thumbnails expose an actionable accessibility press")
+    func appKitFaceAccessibilityPress() {
+        let faceID = UUID()
+        let thumbnail = FaceThumbnailSubview(frame: .zero)
+        var pressedFaceID: UUID?
+        thumbnail.configure(faceID: faceID, ordinal: 1, image: nil)
+        thumbnail.onAccessibilityPress = { pressedFaceID = $0 }
+
+        #expect(thumbnail.accessibilityPerformPress())
+        #expect(pressedFaceID == faceID)
     }
 
     private func source(_ relativePath: String) throws -> String {

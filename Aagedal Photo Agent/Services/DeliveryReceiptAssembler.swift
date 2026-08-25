@@ -63,15 +63,18 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
     private let applicationVersion: @Sendable () -> DeliveryApplicationVersion
     private let now: @Sendable () -> Date
     private let makeReceiptID: @Sendable () -> UUID
+    private let transportSecurity: @Sendable (String) -> DeliveryTransportSecurity?
 
     init(
         applicationVersion: @escaping @Sendable () -> DeliveryApplicationVersion,
         now: @escaping @Sendable () -> Date = Date.init,
-        makeReceiptID: @escaping @Sendable () -> UUID = UUID.init
+        makeReceiptID: @escaping @Sendable () -> UUID = UUID.init,
+        transportSecurity: @escaping @Sendable (String) -> DeliveryTransportSecurity? = { _ in nil }
     ) {
         self.applicationVersion = applicationVersion
         self.now = now
         self.makeReceiptID = makeReceiptID
+        self.transportSecurity = transportSecurity
     }
 
     func assemble(
@@ -147,7 +150,8 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
             completedAt: completedAt,
             destination: DeliveryReceiptDestination(
                 identifier: plan.destination.connectionIdentifier.lowercased(),
-                path: plan.destination.resolvedRemotePath
+                path: plan.destination.resolvedRemotePath,
+                transportSecurity: transportSecurity(plan.destination.connectionIdentifier)
             ),
             acceptedWarningIdentifiers: plan.acceptedWarningIDs,
             items: receiptItems

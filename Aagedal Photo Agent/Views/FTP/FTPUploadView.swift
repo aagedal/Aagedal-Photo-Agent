@@ -61,6 +61,8 @@ struct FTPUploadView: View {
     /// Files that will upload as-is and whose `.xmp` sidecar holds non-optional metadata the
     /// embedded file is missing — the row offers a one-click sync from sidecar into the file.
     @State private var sidecarMergeableURLs: Set<URL> = []
+    @State private var pendingInsecureUploadConnectionID: UUID?
+    @State private var pendingInsecureUploadRenderURLs: Set<URL> = []
 
     init(viewModel: FTPViewModel, files: [URL], readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?, thumbnailService: ThumbnailService, onStartUpload: (() -> Void)? = nil) {
         self.viewModel = viewModel
@@ -158,6 +160,21 @@ struct FTPUploadView: View {
         .sheet(isPresented: $viewModel.isShowingServerForm) {
             FTPServerForm(viewModel: viewModel)
         }
+        .confirmationDialog(
+            "Upload using an insecure connection?",
+            isPresented: Binding(
+                get: { pendingInsecureUploadConnectionID != nil },
+                set: { if !$0 { cancelPendingInsecureUpload() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Upload with Insecure Connection", role: .destructive) {
+                confirmPendingInsecureUpload()
+            }
+            Button("Cancel", role: .cancel) { cancelPendingInsecureUpload() }
+        } message: {
+            Text(firstInsecureUploadMessage)
+        }
     }
 
     // MARK: - File List (left column)
@@ -218,11 +235,22 @@ struct FTPUploadView: View {
             Picker("Server", selection: $selectedServerID) {
                 Text("Select...").tag(nil as UUID?)
                 ForEach(viewModel.connections) { conn in
-                    Text(conn.name).tag(conn.id as UUID?)
+                    Text("\(conn.name) — \(conn.transportSecurity.badgeTitle)")
+                        .tag(conn.id as UUID?)
                 }
             }
             .onChange(of: selectedServerID) { _, newValue in
                 viewModel.selectedConnectionID = newValue
+            }
+            if let selectedConnection {
+                Label(
+                    selectedConnection.transportSecurity.evidenceDescription,
+                    systemImage: selectedConnection.transportSecurity.isInsecure
+                        ? "exclamationmark.shield.fill"
+                        : "checkmark.shield.fill"
+                )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(selectedConnection.transportSecurity.isInsecure ? .orange : .green)
             }
         }
 
@@ -611,6 +639,54 @@ struct FTPUploadView: View {
     private func startUpload(renderURLs: Set<URL>) {
         guard let id = selectedServerID,
               let connection = viewModel.connections.first(where: { $0.id == id }) else { return }
+
+        if connection.requiresFirstInsecureUploadAcknowledgement {
+            pendingInsecureUploadConnectionID = connection.id
+            pendingInsecureUploadRenderURLs = renderURLs
+            return
+        }
+
+        startAcknowledgedUpload(renderURLs: renderURLs, connection: connection)
+    }
+
+    private var selectedConnection: FTPConnection? {
+        guard let selectedServerID else { return nil }
+        return viewModel.connections.first { $0.id == selectedServerID }
+    }
+
+    private var firstInsecureUploadMessage: String {
+        guard let id = pendingInsecureUploadConnectionID,
+              let connection = viewModel.connections.first(where: { $0.id == id }) else {
+            return "SFTP or verified FTPS is recommended."
+        }
+        switch connection.transportSecurity.protocolKind {
+        case .ftp:
+            return "This profile uses plain FTP. Credentials and files are not encrypted in transit. This acknowledgement is required before its first upload."
+        case .sftp:
+            return "This SFTP profile does not verify the server host. This acknowledgement is required before its first upload."
+        case .explicitFTPS:
+            return "This FTPS profile does not verify the server certificate. This acknowledgement is required before its first upload."
+        }
+    }
+
+    private func confirmPendingInsecureUpload() {
+        guard let id = pendingInsecureUploadConnectionID,
+              let connection = viewModel.acknowledgeFirstInsecureUpload(connectionID: id) else {
+            cancelPendingInsecureUpload()
+            return
+        }
+        let renderURLs = pendingInsecureUploadRenderURLs
+        pendingInsecureUploadConnectionID = nil
+        pendingInsecureUploadRenderURLs = []
+        startAcknowledgedUpload(renderURLs: renderURLs, connection: connection)
+    }
+
+    private func cancelPendingInsecureUpload() {
+        pendingInsecureUploadConnectionID = nil
+        pendingInsecureUploadRenderURLs = []
+    }
+
+    private func startAcknowledgedUpload(renderURLs: Set<URL>, connection: FTPConnection) {
 
         viewModel.saveLastUsedConnectionID(connection.id)
 

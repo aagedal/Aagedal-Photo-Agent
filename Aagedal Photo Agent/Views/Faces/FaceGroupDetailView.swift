@@ -375,7 +375,7 @@ struct FaceGroupDetailView: View {
     private func faceThumbnail(face: DetectedFace, canUngroup: Bool) -> some View {
         let isSelected = selectedFaceIDs.contains(face.id)
 
-        let thumbnail: some View = Group {
+        let thumbnail = Group {
             if let image = viewModel.thumbnailImage(for: face.id) {
                 Image(nsImage: image)
                     .resizable()
@@ -400,7 +400,8 @@ struct FaceGroupDetailView: View {
                     .padding(2)
             }
         }
-        .onTapGesture {
+
+        Button {
             if NSEvent.modifierFlags.contains(.command) {
                 if selectedFaceIDs.contains(face.id) {
                     selectedFaceIDs.remove(face.id)
@@ -411,42 +412,47 @@ struct FaceGroupDetailView: View {
                 selectedFaceIDs.removeAll()
                 selectedFaceIDs.insert(face.id)
             }
+        } label: {
+            thumbnail
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Face thumbnail")
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .accessibilityHint("Select this face; hold Command to change a multi-selection")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .contextMenu {
+            let targets = menuTargets(face.id)
+            let plural = targets.count > 1
 
-        thumbnail
-            .contextMenu {
-                let targets = menuTargets(face.id)
-                let plural = targets.count > 1
-
-                if isUnmatched || canUngroup {
-                    Button(plural ? "Move \(targets.count) to New Group" : "Move to New Group") {
-                        viewModel.createNewGroup(withFaces: targets)
-                        selectedFaceIDs.subtract(targets)
-                        dismiss()
-                    }
-                }
-
-                if plural {
-                    Button("Add \(targets.count) to Separate Groups") {
-                        viewModel.createSeparateGroups(forFaces: targets)
-                        selectedFaceIDs.subtract(targets)
-                        dismiss()
-                    }
-                }
-
-                if !isUnmatched && canUngroup {
-                    Button(plural ? "Remove \(targets.count) from Group" : "Remove from Group") {
-                        for faceID in targets { viewModel.ungroupFace(faceID) }
-                        selectedFaceIDs.subtract(targets)
-                    }
-                }
-
-                Divider()
-                Button(plural ? "Delete \(targets.count) Faces" : "Delete Face", role: .destructive) {
+            if isUnmatched || canUngroup {
+                Button(plural ? "Move \(targets.count) to New Group" : "Move to New Group") {
+                    viewModel.createNewGroup(withFaces: targets)
                     selectedFaceIDs.subtract(targets)
-                    viewModel.deleteFaces(targets)
+                    dismiss()
                 }
             }
+
+            if plural {
+                Button("Add \(targets.count) to Separate Groups") {
+                    viewModel.createSeparateGroups(forFaces: targets)
+                    selectedFaceIDs.subtract(targets)
+                    dismiss()
+                }
+            }
+
+            if !isUnmatched && canUngroup {
+                Button(plural ? "Remove \(targets.count) from Group" : "Remove from Group") {
+                    for faceID in targets { viewModel.ungroupFace(faceID) }
+                    selectedFaceIDs.subtract(targets)
+                }
+            }
+
+            Divider()
+            Button(plural ? "Delete \(targets.count) Faces" : "Delete Face", role: .destructive) {
+                selectedFaceIDs.subtract(targets)
+                viewModel.deleteFaces(targets)
+            }
+        }
     }
 
     private func applyName() {

@@ -115,8 +115,14 @@ private struct MetadataReviewRow: View {
         let value = field.textValue(in: draft) ?? ""
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let level = levels[field] ?? .optional
-        let failed = MetadataRequirements.fieldFails(field, in: draft, levels: levels, minimumLengths: minimumLengths)
-        let border: Color = level == .require ? .red : .orange
+        let failures = MetadataReviewValidation.failures(
+            for: field,
+            in: draft,
+            imageURL: image.url,
+            levels: levels,
+            minimumLengths: minimumLengths
+        )
+        let primaryFailure = failures.first
 
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
@@ -140,10 +146,33 @@ private struct MetadataReviewRow: View {
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 5))
                 .overlay {
                     RoundedRectangle(cornerRadius: 5)
-                        .stroke(failed ? border : Color(nsColor: .separatorColor), lineWidth: failed ? 2 : 1)
+                        .stroke(
+                            primaryFailure.map { validationColor(for: $0.severity) }
+                                ?? Color(nsColor: .separatorColor),
+                            lineWidth: primaryFailure == nil ? 1 : 2
+                        )
                 }
+                .accessibilityLabel(field.displayName)
+                .accessibilityValue(
+                    failures.isEmpty
+                        ? "No validation issues"
+                        : failures.map(\.accessibleDescription).joined(separator: "; ")
+                )
+
+            ForEach(failures) { failure in
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Image(systemName: failure.systemImageName)
+                        .accessibilityHidden(true)
+                    Text(failure.accessibleDescription)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.caption2)
+                .foregroundStyle(validationColor(for: failure.severity))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(failure.accessibleDescription)
+            }
         }
-        .help(failed ? validationHelp(field, value: trimmed, level: level) : value)
+        .help(failures.isEmpty ? value : failures.map(\.accessibleDescription).joined(separator: "\n"))
     }
 
     private func binding(for field: MetadataFieldID) -> Binding<String> {
@@ -158,14 +187,12 @@ private struct MetadataReviewRow: View {
         onSave(draft)
     }
 
-    private func validationHelp(_ field: MetadataFieldID, value: String,
-                                level: MetadataRequirementLevel) -> String {
-        let prefix = level == .require ? "Required" : "Warning"
-        if value.isEmpty { return "\(prefix): \(field.displayName) is missing" }
-        if let minimum = minimumLengths[field] {
-            return "\(prefix): \(field.displayName) needs at least \(minimum) characters (currently \(value.count))"
+    private func validationColor(for severity: MetadataValidationSeverity) -> Color {
+        switch severity {
+        case .blocker: .red
+        case .warning: .orange
+        case .information: .blue
         }
-        return prefix
     }
 }
 

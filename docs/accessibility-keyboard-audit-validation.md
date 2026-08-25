@@ -40,6 +40,26 @@ xcodebuild test -scheme 'Aagedal Photo Agent Tests' -destination 'platform=macOS
 
 Result: 4 tests passed in 1 suite, including the new semantic-control source regression.
 
+The gesture-only control follow-up on 2026-08-25 completed the four named semantic-control gaps.
+Face thumbnails in the SwiftUI detail/assignment grids are now labelled Buttons with selected state,
+keyboard multi-selection guidance, and an accessible Full Screen action where applicable. The main AppKit
+face-card grid retains its existing arrow-key navigation and now exposes each visible thumbnail as a
+VoiceOver button whose press action selects that face. Import split cells, scope mode tabs, the collapsed
+Scopes label, and copyable technical-metadata rows are keyboard-operable Buttons with explicit labels,
+values, hints, and selected state where relevant.
+
+Focused command:
+
+```sh
+xcodebuild test -scheme 'Aagedal Photo Agent Tests' -destination 'platform=macOS' \
+  -only-testing:'Aagedal Photo Agent Tests/AccessibilityKeyboardAuditTests'
+```
+
+Result: 14 tests passed in 1 suite, including a source regression covering all four named areas and a
+runtime check that an AppKit face thumbnail's accessibility press invokes its selection action. The app and
+changed views compiled successfully. Manual focus-ring order and actual VoiceOver speech remain in the
+separate OS-level release gate; this follow-up validates semantic operability without claiming that gate.
+
 This is the automatable audit, not a manual accessibility certification. The culling registry is
 deliberately limited to fifteen commands, while Caption owns a separate two-command registry;
 broader app/menu/Develop-tool commands remain fixed and documented. VoiceOver rotor/order and announcements, Full Keyboard Access focus rings,

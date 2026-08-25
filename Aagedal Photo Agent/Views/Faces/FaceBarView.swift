@@ -258,7 +258,9 @@ struct FaceBarView: View {
     @ViewBuilder
     private var scanButton: some View {
         Group {
-            if isScanningCurrentFolder {
+            if !viewModel.faceModelAvailability.isAvailable {
+                unavailableModelState
+            } else if isScanningCurrentFolder {
                 scanningButton
             } else if !viewModel.scanComplete {
                 scanCameraButton
@@ -268,6 +270,23 @@ struct FaceBarView: View {
                 doneButton
             }
         }
+    }
+
+    /// The optional model can be deliberately omitted from a package. Keep that decision visible
+    /// in the primary face workflow instead of allowing every photo to fail as an ordinary scan.
+    private var unavailableModelState: some View {
+        VStack(spacing: 2) {
+            Image(systemName: "person.crop.circle.badge.exclamationmark")
+                .font(.system(size: 20))
+                .foregroundStyle(.orange)
+            Text("Unavailable")
+                .font(.system(size: 9))
+        }
+        .frame(width: 64, height: 56)
+        .help(viewModel.faceModelAvailability.detail)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(viewModel.faceModelAvailability.title)
+        .accessibilityValue(viewModel.faceModelAvailability.detail)
     }
 
     /// Scanning in progress — click to cancel.
