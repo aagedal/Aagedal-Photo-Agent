@@ -54,10 +54,14 @@ final class ICloudSyncCoordinator {
     /// Enables or disables every category at once. Each per-category setter still
     /// runs its own data movement and availability check, and any failure remains
     /// surfaced in `lastError` after all categories have been attempted.
-    func setAllEnabled(_ on: Bool) {
+    func setAllEnabled(_ on: Bool, confirmedKnownPeopleFirstEnable: Bool = false) {
         var firstError: String?
         for category in Self.masterCategories {
-            setEnabled(on, for: category)
+            setEnabled(
+                on,
+                for: category,
+                confirmedKnownPeopleFirstEnable: confirmedKnownPeopleFirstEnable
+            )
             if firstError == nil { firstError = lastError }
         }
         // Each category setter clears its predecessor's error. Preserve the
@@ -144,8 +148,16 @@ final class ICloudSyncCoordinator {
         return UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
     }
 
-    func setKnownPeopleEnabled(_ on: Bool) {
+    func setKnownPeopleEnabled(_ on: Bool, confirmedFirstEnable: Bool = false) {
         lastError = nil
+        if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
+            enabling: on,
+            currentlyEnabled: knownPeopleEnabled
+        ), !confirmedFirstEnable {
+            lastError = Self.knownPeopleConfirmationRequiredMessage
+            bump()
+            return
+        }
         do {
             if on {
                 guard let cloud = AppPaths.iCloudKnownPeopleURL else {
@@ -155,6 +167,9 @@ final class ICloudSyncCoordinator {
                 }
                 try mergeCopy(from: KnownPeopleService.localKnownPeopleDirectory, to: cloud)
                 UserDefaults.standard.set(true, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+                if confirmedFirstEnable {
+                    KnownPeoplePrivacyLifecycle.recordICloudTransferConfirmation()
+                }
             } else {
                 guard let cloud = AppPaths.iCloudKnownPeopleURL else {
                     lastError = Self.unavailableMessage
@@ -256,12 +271,17 @@ final class ICloudSyncCoordinator {
         }
     }
 
-    private func setEnabled(_ on: Bool, for category: ICloudSyncCategory) {
+    private func setEnabled(
+        _ on: Bool,
+        for category: ICloudSyncCategory,
+        confirmedKnownPeopleFirstEnable: Bool = false
+    ) {
         switch category {
         case .preferences: setPreferencesEnabled(on)
         case .keywordLists: setKeywordListsEnabled(on)
         case .templates: setTemplatesEnabled(on)
-        case .knownPeople: setKnownPeopleEnabled(on)
+        case .knownPeople:
+            setKnownPeopleEnabled(on, confirmedFirstEnable: confirmedKnownPeopleFirstEnable)
         case .teams: setTeamsEnabled(on)
         case .watermarks: setWatermarksEnabled(on)
         }
@@ -269,6 +289,8 @@ final class ICloudSyncCoordinator {
 
     private static let unavailableMessage =
         "iCloud Drive is not available. Sign in to iCloud in System Settings and enable iCloud Drive for this app."
+    private static let knownPeopleConfirmationRequiredMessage =
+        "Confirm the Known People iCloud transfer before turning on this sync category."
 
     private func bump() { version &+= 1 }
 

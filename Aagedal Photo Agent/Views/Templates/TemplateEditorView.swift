@@ -51,13 +51,15 @@ struct TemplateEditorView: View {
 
             Divider()
 
-            if let error = viewModel.saveError {
+            if viewModel.saveError != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("Template wasn’t saved", systemImage: "exclamationmark.triangle.fill")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.red)
                         .accessibilityFocused($isSaveErrorFocused)
-                        .accessibilityLabel("Template save failed. \(error.localizedDescription)")
+                        .accessibilityLabel(
+                            AppAccessibilityAnnouncement.failure(.templateSave).spokenText
+                        )
 
                     Text("Your edits are still here. Retry the save or save a new copy.")
                         .font(.caption)
@@ -65,12 +67,12 @@ struct TemplateEditorView: View {
 
                     HStack {
                         Button("Retry Save") {
-                            viewModel.saveEditingTemplate()
+                            saveTemplate(isRecovery: true)
                         }
                         .keyboardShortcut(.defaultAction)
 
                         Button("Save as New") {
-                            viewModel.saveEditingTemplateAsNew()
+                            saveTemplateAsNew()
                         }
                     }
                 }
@@ -169,10 +171,11 @@ struct TemplateEditorView: View {
             HStack {
                 Spacer()
                 Button("Cancel") {
+                    AccessibilityAnnouncementCenter.post(.cancellation(.templateEditing))
                     viewModel.cancelEditing()
                 }
                 Button("Save") {
-                    viewModel.saveEditingTemplate()
+                    saveTemplate(isRecovery: false)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(viewModel.editingTemplate.name.isEmpty)
@@ -203,6 +206,28 @@ struct TemplateEditorView: View {
             DispatchQueue.main.async {
                 isSaveErrorFocused = true
             }
+        }
+    }
+
+    private func saveTemplate(isRecovery: Bool) {
+        switch viewModel.saveEditingTemplate() {
+        case .success:
+            AccessibilityAnnouncementCenter.post(
+                isRecovery ? .recovery(.templateSaved) : .success(.templateSaved)
+            )
+        case .failure:
+            // Accessibility focus moves to the fixed-copy inline failure, avoiding
+            // a duplicate posted announcement for the same failed action.
+            break
+        }
+    }
+
+    private func saveTemplateAsNew() {
+        switch viewModel.saveEditingTemplateAsNew() {
+        case .success:
+            AccessibilityAnnouncementCenter.post(.recovery(.templateSaved))
+        case .failure:
+            break
         }
     }
 

@@ -27,4 +27,5 @@ including `ContentView`, `C2PADetailSheet`, and the typed inspection-failure mod
 cases verify distinct failure mapping, nested Cocoa/POSIX permission errors, and that
 private error details cannot enter user-facing recovery messages.
 
-The separate centralized accessibility-announcement checklist item remains open.
+The centralized accessibility-announcement checklist item was subsequently completed; see
+the [announcement validation](accessibility-announcement-validation.md).

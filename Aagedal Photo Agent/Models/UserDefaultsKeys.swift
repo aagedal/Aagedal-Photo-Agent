@@ -42,6 +42,11 @@ nonisolated enum UserDefaultsKeys {
     /// `FaceRecognitionDefaults.embeddingVersion` triggers a one-time start-fresh migration.
     static let knownPeopleEmbeddingVersion = "knownPeople.embeddingVersion"
     static let knownPeopleMinConfidence = "knownPeopleMinConfidence"
+    /// Version of the first-use face-data disclosure the user has viewed.
+    static let knownPeopleDisclosureAcknowledgedVersion = "knownPeople.disclosureAcknowledgedVersion"
+    /// Version of the explicit Known People iCloud transfer confirmation the user accepted.
+    /// This preference stays local and is deliberately excluded from portable preference sync.
+    static let knownPeopleICloudConsentVersion = "knownPeople.iCloudConsentVersion"
     /// Retired: matching is now always automatic. Kept for one release for clean decoding.
     static let knownPeopleMode = "knownPeopleMode"
 

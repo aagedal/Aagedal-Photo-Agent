@@ -6,6 +6,45 @@ import Testing
 @Suite("Accessibility and keyboard audit")
 @MainActor
 struct AccessibilityKeyboardAuditTests {
+    @Test("shared announcements are typed fixed copy with no private interpolation surface")
+    func privacySafeAccessibilityAnnouncements() throws {
+        let announcements = AppAccessibilityAnnouncement.allFixedCopy
+        #expect(!announcements.isEmpty)
+        #expect(announcements.contains(.success(.templateSaved)))
+        #expect(announcements.contains(.failure(.templateSave)))
+        #expect(announcements.contains(.cancellation(.templateEditing)))
+        #expect(announcements.contains(.recovery(.contentCredentialsInspection)))
+
+        for announcement in announcements {
+            #expect(!announcement.spokenText.isEmpty)
+            #expect(!announcement.spokenText.contains("/"))
+            #expect(!announcement.spokenText.contains("\\"))
+            #expect(!announcement.spokenText.contains("{"))
+            #expect(!announcement.spokenText.contains("}"))
+            #expect(!announcement.spokenText.contains("%"))
+        }
+
+        let center = try source("Aagedal Photo Agent/Services/AccessibilityAnnouncementCenter.swift")
+        #expect(center.contains("NSAccessibility.post"))
+        #expect(center.contains(".announcement: announcement.spokenText"))
+        #expect(!center.contains("localizedDescription"))
+
+        for path in [
+            "Aagedal Photo Agent/Views/Metadata/CaptionWorkspaceView.swift",
+            "Aagedal Photo Agent/Views/Templates/TemplateEditorView.swift",
+            "Aagedal Photo Agent/Views/Templates/DevelopTemplateListView.swift",
+            "Aagedal Photo Agent/Views/Browser/C2PADetailSheet.swift",
+        ] {
+            let view = try source(path)
+            #expect(!view.contains("NSAccessibility.post"), "Bypassed shared announcer in \(path)")
+        }
+
+        let metadataTemplate = try source("Aagedal Photo Agent/Views/Templates/TemplateEditorView.swift")
+        let developTemplate = try source("Aagedal Photo Agent/Views/Templates/DevelopTemplateListView.swift")
+        #expect(!metadataTemplate.contains("accessibilityLabel(\"Template save failed. \\("))
+        #expect(!developTemplate.contains("accessibilityLabel(\"Template save failed. \\("))
+    }
+
     @Test("built-in culling profiles are deterministic, conflict-free, and use unique chords")
     func builtInProfiles() {
         for preset in [

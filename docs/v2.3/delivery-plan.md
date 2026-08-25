@@ -102,7 +102,8 @@ modifies the source.
 - [x] Extract reusable true-pixel/normalized hover utilities from Advanced Export.
 - [x] Generalize scope requests and output sizing without regressing the existing scope sidebar.
 - [x] Build resizable one/two/four-up scope layouts.
-- [x] Add linked hover sampling and source-pixel readout.
+- [x] Add linked hover sampling, source-pixel readout, and a source-resolution 100% /
+  nearest-neighbor magnified hover loupe to Image Analysis.
 - [x] Add selected-region scopes.
 - [x] Add channel/luminance views.
 - [x] Ship the calibrated compression/residual view with method/parameter label.

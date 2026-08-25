@@ -227,8 +227,3 @@ nonisolated struct CaptionKeyboardOrder: Equatable, Sendable {
         return surfaces[target]
     }
 }
-
-nonisolated enum CaptionAccessibilityAnnouncement: String, Sendable {
-    case savedAndAdvanced = "Saved and moved to the next photo."
-    case wroteAndAdvanced = "Wrote metadata and moved to the next photo."
-}

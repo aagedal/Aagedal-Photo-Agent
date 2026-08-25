@@ -22,4 +22,5 @@ xcodebuild test \
 
 Result: 13 tests across 2 suites passed, including injected write failure, retained draft
 and identity, retry, and Save as New recovery. C2PA state handling and centralized global
-announcements remain separate open bullets in item 2.1.
+announcements were subsequently completed; see the
+[announcement validation](accessibility-announcement-validation.md).

@@ -523,7 +523,7 @@ struct CaptionWorkspaceView: View {
                 if moved {
                     publishSessionSelection()
                     if announcesAdvance {
-                        postAccessibilityAnnouncement(.savedAndAdvanced)
+                        AccessibilityAnnouncementCenter.post(.success(.captionSavedAndAdvanced))
                     }
                 }
             } catch {
@@ -723,7 +723,7 @@ struct CaptionWorkspaceView: View {
                 let moved = try await session.goNext(flush: {})
                 if moved {
                     publishSessionSelection()
-                    postAccessibilityAnnouncement(.wroteAndAdvanced)
+                    AccessibilityAnnouncementCenter.post(.success(.captionWroteAndAdvanced))
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -747,18 +747,6 @@ struct CaptionWorkspaceView: View {
     private func restoreLastEditorFocus() {
         guard let lastEditorField else { return }
         requestFocus(lastEditorField)
-    }
-
-    private func postAccessibilityAnnouncement(_ announcement: CaptionAccessibilityAnnouncement) {
-        guard let application = NSApp else { return }
-        NSAccessibility.post(
-            element: application,
-            notification: .announcementRequested,
-            userInfo: [
-                .announcement: announcement.rawValue,
-                .priority: NSAccessibilityPriorityLevel.medium.rawValue,
-            ]
-        )
     }
 
     private func preservingEditorFocus(_ action: () -> Void) {

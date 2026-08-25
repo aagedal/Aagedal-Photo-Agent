@@ -3167,6 +3167,9 @@ private struct AnalysisSourceThumbnail: View {
     @State private var sourceCGImage: CGImage?
     @State private var sourceImage: NSImage?
     @State private var image: NSImage?
+    @State private var loupeSourceIdentity: SourcePreviewIdentity?
+    @State private var loupeSourceCGImage: CGImage?
+    @State private var loupeLoadFailedIdentity: SourcePreviewIdentity?
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDraft: CGRect?
     @State private var annotationDraft: AnalysisAnnotationGestureDraft?
@@ -3184,6 +3187,8 @@ private struct AnalysisSourceThumbnail: View {
     @State private var scrollEventMonitor: Any?
     @State private var keyEventMonitor: Any?
     @State private var isSpaceHandToolActive = false
+
+    private let loupeDisplaySize: CGFloat = 132
 
     var body: some View {
         GeometryReader { geometry in
@@ -3275,6 +3280,7 @@ private struct AnalysisSourceThumbnail: View {
                             )
                         }
                     }
+
                     } else {
                         ProgressView()
                             .tint(.white)
@@ -3405,6 +3411,23 @@ private struct AnalysisSourceThumbnail: View {
                 }
                 .scaleEffect(zoomScale)
                 .offset(panOffset)
+
+                if let inspectionSample {
+                    AnalysisTruePixelLoupe(
+                        sourceImage: loupeSourceIdentity == loupeLoadIdentity
+                            ? loupeSourceCGImage
+                            : nil,
+                        isUnavailable: loupeLoadFailedIdentity == loupeLoadIdentity,
+                        normalizedDisplayPoint: inspectionSample.normalizedDisplayPoint,
+                        sourcePixel: inspectionSample.sourcePixel,
+                        representation: representation,
+                        displaySize: loupeDisplaySize
+                    )
+                    .padding(12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(false)
+                }
 
                 if annotationTool == .hand || isSpaceHandToolActive {
                     Color.clear
@@ -3596,6 +3619,48 @@ private struct AnalysisSourceThumbnail: View {
                 : NSImage(cgImage: rendered, size: loadedImage.size)
             onImageLoaded(rendered)
         }
+        .task(id: loupeLoadIdentity) {
+            guard let identity = loupeLoadIdentity,
+                  let displayTransform else { return }
+            if loupeSourceIdentity == identity, loupeSourceCGImage != nil {
+                return
+            }
+
+            loupeSourceCGImage = nil
+            loupeSourceIdentity = nil
+            loupeLoadFailedIdentity = nil
+            let settings = identity.representation == .developed ? developSettings : nil
+            let maximumPixelSize = ceil(max(
+                displayTransform.displayedPixelSize.width,
+                displayTransform.displayedPixelSize.height
+            ))
+            let fullResolutionImage = await FullScreenImageCache.decodedEditedPreview(
+                for: identity.url,
+                settings: settings,
+                orientation: identity.sourceOrientation,
+                screenMaxPx: maximumPixelSize
+            )
+            guard !Task.isCancelled else { return }
+            guard let fullResolutionImage else {
+                loupeLoadFailedIdentity = identity
+                return
+            }
+            loupeSourceIdentity = identity
+            loupeSourceCGImage = fullResolutionImage
+        }
+    }
+
+    private var loupeLoadIdentity: SourcePreviewIdentity? {
+        guard inspectionSample != nil, let url else { return nil }
+        return SourcePreviewIdentity(
+            url: url,
+            representation: representation,
+            sourceOrientation: sourceOrientation,
+            renderToken: FullScreenImageCache.renderToken(
+                settings: developSettings,
+                isEdited: representation == .developed
+            )
+        )
     }
 
     private func setZoom(
@@ -4119,6 +4184,166 @@ private struct SourcePreviewIdentity: Hashable {
             String(sourceOrientation),
             renderToken ?? "source"
         ].joined(separator: "|")
+    }
+}
+
+private struct AnalysisTruePixelLoupe: View {
+    let sourceImage: CGImage?
+    let isUnavailable: Bool
+    let normalizedDisplayPoint: CGPoint
+    let sourcePixel: SourcePixelCoordinate
+    let representation: AnalysisSourceRepresentation
+    let displaySize: CGFloat
+
+    @Environment(\.displayScale) private var displayScale
+
+    private var pixelSize: Int {
+        max(1, Int((displaySize * displayScale).rounded()))
+    }
+
+    private var crop: ImageInspectionLoupeCrop? {
+        sourceImage.flatMap {
+            ImageInspectionLoupeCrop.make(
+                from: $0,
+                normalizedDisplayPoint: normalizedDisplayPoint,
+                pixelSize: pixelSize
+            )
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Label("True-pixel detail", systemImage: "magnifyingglass")
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 8)
+                Text("x \(sourcePixel.x), y \(sourcePixel.y)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(alignment: .top, spacing: 8) {
+                loupePane(title: "100%", magnification: 1)
+                loupePane(title: "400%", magnification: 4)
+            }
+
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .strokeBorder(.primary.opacity(0.2), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "True-pixel detail for source pixel x \(sourcePixel.x), y \(sourcePixel.y)"
+        )
+        .accessibilityValue(caption)
+    }
+
+    private func loupePane(title: String, magnification: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            ZStack {
+                Color.black.opacity(0.94)
+                if let crop {
+                    Image(decorative: crop.image, scale: displayScale, orientation: .up)
+                        .interpolation(.none)
+                        .scaleEffect(magnification)
+                        .offset(magnifiedImageOffset(for: crop, magnification: magnification))
+
+                    PixelInspectionLoupeReticle()
+                        .position(reticlePosition(for: crop, magnification: magnification))
+                } else if isUnavailable {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                }
+            }
+            .frame(width: displaySize, height: displaySize)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private func magnifiedImageOffset(
+        for crop: ImageInspectionLoupeCrop,
+        magnification: CGFloat
+    ) -> CGSize {
+        guard magnification > 1 else { return .zero }
+        let nativeCenter = CGPoint(
+            x: CGFloat(crop.image.width) / displayScale / 2,
+            y: CGFloat(crop.image.height) / displayScale / 2
+        )
+        let focus = CGPoint(
+            x: crop.focusPointInCrop.x / displayScale,
+            y: crop.focusPointInCrop.y / displayScale
+        )
+        return CGSize(
+            width: (nativeCenter.x - focus.x) * magnification,
+            height: (nativeCenter.y - focus.y) * magnification
+        )
+    }
+
+    private func reticlePosition(
+        for crop: ImageInspectionLoupeCrop,
+        magnification: CGFloat
+    ) -> CGPoint {
+        let center = CGPoint(x: displaySize / 2, y: displaySize / 2)
+        guard magnification == 1 else { return center }
+        let nativeCenter = CGPoint(
+            x: CGFloat(crop.image.width) / displayScale / 2,
+            y: CGFloat(crop.image.height) / displayScale / 2
+        )
+        return CGPoint(
+            x: center.x + crop.focusPointInCrop.x / displayScale - nativeCenter.x,
+            y: center.y + crop.focusPointInCrop.y / displayScale - nativeCenter.y
+        )
+    }
+
+    private var caption: String {
+        guard let crop else {
+            if isUnavailable {
+                return "Full-resolution pixels could not be loaded"
+            }
+            return "Loading full-resolution \(representation.displayName.lowercased()) pixels…"
+        }
+        return "\(Int(crop.pixelRect.width)) × \(Int(crop.pixelRect.height)) px · nearest-neighbor magnification"
+    }
+}
+
+private struct PixelInspectionLoupeReticle: View {
+    var body: some View {
+        ZStack {
+            Circle()
+                .strokeBorder(.black.opacity(0.9), lineWidth: 3)
+            Circle()
+                .strokeBorder(.yellow, lineWidth: 1)
+            Rectangle()
+                .fill(.black.opacity(0.9))
+                .frame(width: 1, height: 15)
+            Rectangle()
+                .fill(.black.opacity(0.9))
+                .frame(width: 15, height: 1)
+            Rectangle()
+                .fill(.yellow)
+                .frame(width: 1, height: 11)
+            Rectangle()
+                .fill(.yellow)
+                .frame(width: 11, height: 1)
+        }
+        .frame(width: 17, height: 17)
+        .shadow(color: .black.opacity(0.4), radius: 1)
     }
 }
 

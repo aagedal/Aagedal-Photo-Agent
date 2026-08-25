@@ -133,6 +133,8 @@ Supporting documents:
   persistence, and embedded/export/delivery/read-back evidence.
 - [Accessibility and keyboard audit](accessibility-keyboard-audit-validation.md) — workspace
   semantics, adaptive controls, assignable culling profiles, conflict routing, and manual limits.
+- [Privacy-safe accessibility announcement validation](accessibility-announcement-validation.md) —
+  centralized fixed copy for action success, failure, cancellation, and recovery.
 - [Batch Rename original-filename validation](batch-rename-original-filename-validation.md) —
   standards-correct XMP mapping, transaction order, RAW safety, and exact rollback evidence.
 - [Manual release-prerequisite audit](manual-release-prerequisite-audit.md) — sanitized local

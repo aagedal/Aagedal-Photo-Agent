@@ -74,3 +74,8 @@ Successful Save & Next and Write & Next post fixed, privacy-safe accessibility a
 no filename, path, or editorial value. The expanded Caption speed/session/accessibility selector
 passed 31 logical tests with no failure and a warning-free incremental build. Native menu focus,
 responder timing, and actual announcement speech/coalescing remain OS/manual observations.
+
+The follow-up on 2026-08-25 moved Caption announcements into the app-wide typed fixed-copy
+center and extended the same privacy boundary to template save/cancel/recovery and C2PA
+inspection outcomes. The focused five-suite selection passed 53 tests with no failures; see
+the [privacy-safe announcement validation](accessibility-announcement-validation.md).

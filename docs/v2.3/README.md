@@ -13,8 +13,9 @@
 **Target platform:** macOS 26, Apple Silicon
 
 **Implementation status:** Phases 1 and 2 complete; Phase 3 automated validation is complete with
-shared fit/true-pixel hover geometry, orientation/crop-aware source-pixel inspection, generalized
-scope rendering, resizable one/two/four-up scopes, selected-region scope input, linear-light RGB
+shared fit/true-pixel hover geometry, orientation/crop-aware source-pixel inspection, a native-pixel
+100% / nearest-neighbor magnified Analysis hover loupe, generalized scope rendering, resizable
+one/two/four-up scopes, selected-region scope input, linear-light RGB
 channel/relative-luminance views, calibrated compression residuals, and cost-bounded, cancellable
 derived-view rendering integrated into Image Analysis; automated HDR/SDR, alpha, orientation, crop,
 and malformed-source validation is complete, while fixture-corpus visual validation remains open.

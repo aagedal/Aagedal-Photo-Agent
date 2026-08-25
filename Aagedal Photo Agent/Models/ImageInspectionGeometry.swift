@@ -107,6 +107,47 @@ nonisolated enum ImageInspectionExtentOrigin: Hashable, Sendable {
     case bottomLeft
 }
 
+/// A display-oriented, source-resolution crop for a pixel inspection loupe.
+///
+/// `CGImage.cropping(to:)` uses the raster's top-left display coordinate system here. The
+/// returned image therefore preserves one source/display pixel per output pixel without an
+/// orientation conversion or resampling step.
+nonisolated struct ImageInspectionLoupeCrop: @unchecked Sendable {
+    let image: CGImage
+    let pixelRect: CGRect
+    /// Center of the inspected display pixel, expressed in the returned crop raster.
+    let focusPointInCrop: CGPoint
+
+    static func make(
+        from image: CGImage,
+        normalizedDisplayPoint: CGPoint,
+        pixelSize: Int
+    ) -> ImageInspectionLoupeCrop? {
+        guard let pixelRect = ImageInspectionGeometry.centeredPixelCropRect(
+            in: CGRect(x: 0, y: 0, width: image.width, height: image.height),
+            normalizedDisplayPoint: normalizedDisplayPoint,
+            pixelSize: pixelSize,
+            extentOrigin: .topLeft
+        ), let crop = image.cropping(to: pixelRect) else {
+            return nil
+        }
+        let focusPixelX = min(image.width - 1, max(0, Int(floor(
+            min(1, max(0, normalizedDisplayPoint.x)) * CGFloat(image.width)
+        ))))
+        let focusPixelY = min(image.height - 1, max(0, Int(floor(
+            min(1, max(0, normalizedDisplayPoint.y)) * CGFloat(image.height)
+        ))))
+        return ImageInspectionLoupeCrop(
+            image: crop,
+            pixelRect: pixelRect,
+            focusPointInCrop: CGPoint(
+                x: CGFloat(focusPixelX) + 0.5 - pixelRect.minX,
+                y: CGFloat(focusPixelY) + 0.5 - pixelRect.minY
+            )
+        )
+    }
+}
+
 /// Geometry shared by fit-to-view previews that zoom a centered image canvas.
 /// Offsets are expressed in viewport points after scaling, so a one-point pointer
 /// movement always produces a one-point pan on screen.

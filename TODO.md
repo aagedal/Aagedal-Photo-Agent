@@ -108,8 +108,9 @@
       remains conditional below.
     - [x] OSINT (where was this image taken and when)
   - [x] Bigger resizable scopes with linked hover and source-pixel inspection.
-  - [ ] Add a true-pixel hover detail loupe directly to Image Analysis. The shared hover/crop
-    geometry exists, but the full Analysis loupe remains open.
+  - [x] Add a true-pixel hover detail loupe directly to Image Analysis. (2026-08-25)
+    Hovering either aligned Analysis pane now opens a source-resolution 100% / 400% detail
+    overlay with no interpolation, an edge-aware inspected-pixel reticle, and source coordinates.
   - [x] Compression/residual view beside the aligned normal image.
   - [ ] Pixel analysis to detect common AI-generated artifacts
   - [x] Suspicious metadata detection
@@ -134,6 +135,6 @@
 **3.0 status reconciliation (2026-08-25):** the completed investigation, comparison, and named-version
 items above are backed by the implementation and the dated validation records in
 [`docs/v2.3`](docs/v2.3/README.md). The automated AI-origin/artifact detector remains conditional and
-unapproved; the Analysis hover loupe, on-demand face-model component, and focused face-data privacy/legal
-review remain open. Release-level manual, hardware, privacy, recovery, and packaging gates continue in the
+unapproved; the on-demand face-model component and focused face-data privacy/legal review remain open.
+Release-level manual, hardware, privacy, recovery, and packaging gates continue in the
 [delivery plan](docs/v2.3/delivery-plan.md) and [app improvement audit](docs/app-improvement-audit-plan.md).

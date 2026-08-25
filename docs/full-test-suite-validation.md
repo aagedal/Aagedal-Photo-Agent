@@ -171,3 +171,18 @@ JSON parse successfully, the source tree has no unresolved conflict markers,
 `scripts/release.sh` passes `bash -n`, and `git diff --check` passes. The audit backlog now
 records 10 completed substeps and 65 open substeps; manual, external-system, performance,
 security, recovery, UI-automation, and packaging gates remain open where identified.
+
+## Plan-status parallel completion follow-up — 2026-08-25
+
+After integrating the Image Analysis true-pixel loupe, the Known People privacy/iCloud lifecycle
+checkpoint, and the centralized privacy-safe accessibility announcer, a fresh isolated arm64
+`build-for-testing` succeeded. The unfiltered `test-without-building` run then passed all
+**1,460 tests in 161 suites** with zero failures. Swift Testing reported 39.982 seconds and
+Xcode's complete test operation took 42.971 seconds.
+
+The result bundle is
+`/private/tmp/aagedal-plan-status-20260825-followup/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.25_18-15-15-+0200.xcresult`.
+The three focused workstreams also passed their geometry, iCloud lifecycle, and accessibility/
+template/C2PA suites independently. `git diff --check` remains clean. Manual VoiceOver speech,
+privacy/legal review, external-server/device drills, performance budgets, recovery exercises, and
+signed release packaging remain separate release gates.

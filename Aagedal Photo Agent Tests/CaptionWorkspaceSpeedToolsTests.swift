@@ -249,17 +249,17 @@ struct CaptionWorkspaceSpeedToolsTests {
 
     @Test("completion announcements are fixed and contain no editorial or path placeholders")
     func privacySafeAnnouncements() {
-        #expect(CaptionAccessibilityAnnouncement.savedAndAdvanced.rawValue
+        #expect(AppAccessibilityAnnouncement.success(.captionSavedAndAdvanced).spokenText
             == "Saved and moved to the next photo.")
-        #expect(CaptionAccessibilityAnnouncement.wroteAndAdvanced.rawValue
+        #expect(AppAccessibilityAnnouncement.success(.captionWroteAndAdvanced).spokenText
             == "Wrote metadata and moved to the next photo.")
         for announcement in [
-            CaptionAccessibilityAnnouncement.savedAndAdvanced,
-            .wroteAndAdvanced,
+            AppAccessibilityAnnouncement.success(.captionSavedAndAdvanced),
+            .success(.captionWroteAndAdvanced),
         ] {
-            #expect(!announcement.rawValue.contains("/"))
-            #expect(!announcement.rawValue.contains("{"))
-            #expect(!announcement.rawValue.contains("%"))
+            #expect(!announcement.spokenText.contains("/"))
+            #expect(!announcement.spokenText.contains("{"))
+            #expect(!announcement.spokenText.contains("%"))
         }
     }
 
@@ -293,9 +293,8 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(caption.contains("event.keyCode == 48"))
         #expect(caption.contains("moveCaptionFocus(reverse:"))
         #expect(caption.contains("moveCaptionFocus(from: field, reverse: reverse)"))
-        #expect(caption.contains("NSAccessibility.post"))
-        #expect(caption.contains("postAccessibilityAnnouncement(.savedAndAdvanced)"))
-        #expect(caption.contains("postAccessibilityAnnouncement(.wroteAndAdvanced)"))
+        #expect(caption.contains("AccessibilityAnnouncementCenter.post(.success(.captionSavedAndAdvanced))"))
+        #expect(caption.contains("AccessibilityAnnouncementCenter.post(.success(.captionWroteAndAdvanced))"))
         #expect(caption.contains("onDismiss: restoreLastEditorFocus"))
         #expect(caption.contains(".labelsHidden()"))
         #expect(caption.contains(".frame(height: 92)"))

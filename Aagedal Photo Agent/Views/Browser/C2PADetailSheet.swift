@@ -44,10 +44,14 @@ struct C2PADetailSheet: View {
                     .foregroundStyle(.blue)
                 Spacer()
                 Button("Re-render and Sign") {
+                    announceCancellationIfNeeded()
                     NotificationCenter.default.post(name: .renderAndSignSelected, object: nil)
                     dismiss()
                 }
-                Button("Done") { dismiss() }
+                Button("Done") {
+                    announceCancellationIfNeeded()
+                    dismiss()
+                }
                     .keyboardShortcut(.cancelAction)
             }
 
@@ -254,6 +258,11 @@ struct C2PADetailSheet: View {
             try Task.checkCancellation()
             guard !metadata.manifests.isEmpty else {
                 metadataState = .absent
+                AccessibilityAnnouncementCenter.post(
+                    forceRefresh
+                        ? .recovery(.contentCredentialsNotFound)
+                        : .success(.contentCredentialsNotFound)
+                )
                 return
             }
             // Thumbnails are supplementary. A failed thumbnail decode must not
@@ -265,6 +274,7 @@ struct C2PADetailSheet: View {
             return
         } catch {
             metadataState = .failed(.metadataRead(error: error))
+            AccessibilityAnnouncementCenter.post(.failure(.contentCredentialsInspection))
             return
         }
 
@@ -277,12 +287,42 @@ struct C2PADetailSheet: View {
             try Task.checkCancellation()
             validationState = .result(result)
             onValidationChanged(result)
+            if result.status == .validationFailed {
+                AccessibilityAnnouncementCenter.post(.failure(.contentCredentialsValidation))
+            } else {
+                AccessibilityAnnouncementCenter.post(
+                    forceRefresh
+                        ? .recovery(.contentCredentialsInspection)
+                        : .success(.contentCredentialsLoaded)
+                )
+            }
         } catch is CancellationError {
             return
         } catch {
             let failure = C2PAInspectionFailure.validation(error: error)
             validationState = .failed(failure)
             onValidationChanged(validationResult(for: failure))
+            AccessibilityAnnouncementCenter.post(.failure(.contentCredentialsValidation))
+        }
+    }
+
+    private func announceCancellationIfNeeded() {
+        let metadataIsLoading: Bool
+        if case .loading = metadataState {
+            metadataIsLoading = true
+        } else {
+            metadataIsLoading = false
+        }
+
+        let validationIsLoading: Bool
+        if case .loaded = metadataState, case .loading = validationState {
+            validationIsLoading = true
+        } else {
+            validationIsLoading = false
+        }
+
+        if metadataIsLoading || validationIsLoading {
+            AccessibilityAnnouncementCenter.post(.cancellation(.contentCredentialsInspection))
         }
     }
 

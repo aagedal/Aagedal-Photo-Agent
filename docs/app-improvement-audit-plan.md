@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 39 of 75 checklist substeps complete
+**Status:** implementation in progress — 43 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -29,8 +29,8 @@ removed the cited behavior or moved the cited lines.
   checked Phase 1.1 work below has since added build-and-test CI.
 - The worktree was already modified before this audit. This plan is a new file and does not alter app code.
 
-**Checklist reconciliation (2026-08-25):** the status count is exact: 39 of 75 substeps are checked and
-36 remain open. Each checked substep links to dated validation. A baseline current-source and
+**Checklist reconciliation (2026-08-25):** the status count is exact: 43 of 75 substeps are checked and
+32 remain open. Each checked substep links to dated validation. A baseline current-source and
 validation-record review found no definitive evidence that another unchecked substep was already complete;
 partial foundations such as the existing bookmark lifecycle tests, accessibility semantics, bounded image
 caches, and focused concurrency coverage do not satisfy their broader manual, system-level, or
@@ -235,7 +235,8 @@ read failure is swallowed at `ContentView.swift:2923-2939`.
 - [x] Present C2PA loading immediately, then distinguish absent, malformed, unavailable-tool, access-denied,
   and validation-failed states with Retry.
   ([validation](c2pa-inspector-recovery-validation.md), 2026-08-25)
-- [ ] Centralize privacy-safe accessibility announcements for success, failure, cancellation, and recovery.
+- [x] Centralize privacy-safe accessibility announcements for success, failure, cancellation, and recovery.
+  ([validation](accessibility-announcement-validation.md), 2026-08-25)
 
 **Exit gate:** injected failures retain all edits, focus the error, remain keyboard operable, and produce one
 useful VoiceOver announcement.
@@ -243,17 +244,21 @@ useful VoiceOver announcement.
 ### 2.2 Add a clear face-data and iCloud lifecycle checkpoint
 
 **Priority:** P1, pending legal/privacy review; do not claim a legal conclusion from this audit.  
-**Evidence:** the open privacy/legal question remains in `TODO.md` under **Version 2.3**; automatic matching is described at
-`SettingsView.swift:567-585`; iCloud can sync reference faces and clothing samples at `:1538-1544`.
+**Evidence:** the open privacy/legal question remains in `TODO.md` under **Version 2.3**. The implementation
+stores face-only Known People samples separately from folder-local scan/clothing features and now explains
+that boundary before optional iCloud transfer.
 
 **Plan:**
 
 - [ ] Obtain a focused privacy/legal review of Known People, embeddings, thumbnails, clothing samples,
   folder-local face data, export, deletion, and optional iCloud sync.
-- [ ] Add first-use plain-language disclosure of on-device processing, persisted data, locations, retention,
+- [x] Add first-use plain-language disclosure of on-device processing, persisted data, locations, retention,
   export/delete scope, and optional cloud transfer.
-- [ ] Require explicit confirmation before enabling Known People iCloud sync for the first time.
-- [ ] Provide a single Data Management summary with counts, storage destinations, export, and deletion paths.
+  ([validation](known-people-privacy-lifecycle-validation.md), 2026-08-25)
+- [x] Require explicit confirmation before enabling Known People iCloud sync for the first time.
+  ([validation](known-people-privacy-lifecycle-validation.md), 2026-08-25)
+- [x] Provide a single Data Management summary with counts, storage destinations, export, and deletion paths.
+  ([validation](known-people-privacy-lifecycle-validation.md), 2026-08-25)
 
 **Exit gate:** a new user can state what is stored locally, what may be uploaded, and how to export/delete it;
 copy is reviewed and does not overclaim compliance.

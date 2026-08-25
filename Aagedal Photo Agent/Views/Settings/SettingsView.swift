@@ -18,6 +18,14 @@ struct SettingsView: View {
     @State private var isExporting = false
     @State private var showClearConfirmation = false
     @State private var knownPeopleMessage: String?
+    @State private var knownPeopleDataSummary = KnownPeopleDataSummary(
+        peopleCount: 0,
+        sampleCount: 0,
+        storedBytes: 0,
+        syncEnabled: false
+    )
+    @State private var showKnownPeopleDisclosure = false
+    @State private var pendingKnownPeopleSyncRequest: KnownPeopleSyncRequest?
 
     // Approved Keywords state
     @State private var approvedKeywordsErrorMessage: String?
@@ -55,6 +63,11 @@ struct SettingsView: View {
         case develop = "Develop"
 
         var id: String { rawValue }
+    }
+
+    private enum KnownPeopleSyncRequest {
+        case knownPeopleOnly
+        case allCategories
     }
 
     // MARK: - Sidebar Sections
@@ -182,6 +195,13 @@ struct SettingsView: View {
         }
         .onChange(of: settingsViewModel.requestedDestination) { _, _ in
             applyRequestedDestination()
+        }
+        .sheet(isPresented: $showKnownPeopleDisclosure) {
+            KnownPeoplePrivacyDisclosureView {
+                KnownPeoplePrivacyLifecycle.acknowledgeDisclosure()
+                showKnownPeopleDisclosure = false
+            }
+            .interactiveDismissDisabled()
         }
     }
 
@@ -535,7 +555,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Data Management") {
+            Section("Folder Face Data") {
                 Picker("Auto-delete face data", selection: $settingsViewModel.faceCleanupPolicy) {
                     ForEach(FaceCleanupPolicy.allCases, id: \.self) { policy in
                         Text(policy.displayName).tag(policy)
@@ -635,6 +655,8 @@ struct SettingsView: View {
                 }
             }
 
+            knownPeopleDataManagementSection
+
             structuredPersonShownSection
         }
         .formStyle(.grouped)
@@ -650,6 +672,9 @@ struct SettingsView: View {
         }
         .onAppear {
             refreshKnownPeopleStats()
+            if !KnownPeoplePrivacyLifecycle.hasAcknowledgedDisclosure() {
+                showKnownPeopleDisclosure = true
+            }
         }
         .alert("Clear Known People Database?", isPresented: $showClearConfirmation) {
             Button("Cancel", role: .cancel) { }
@@ -658,6 +683,52 @@ struct SettingsView: View {
             }
         } message: {
             Text("This will permanently delete all \(knownPeopleStats.peopleCount) known people and their reference images. This cannot be undone.")
+        }
+    }
+
+    @ViewBuilder
+    private var knownPeopleDataManagementSection: some View {
+        Section("Data Management") {
+            LabeledContent("Known People") {
+                Text("\(knownPeopleDataSummary.peopleCount) people, \(knownPeopleDataSummary.sampleCount) face samples")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            LabeledContent("Stored size") {
+                Text(ByteCountFormatter.string(
+                    fromByteCount: knownPeopleDataSummary.storedBytes,
+                    countStyle: .file
+                ))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            }
+
+            LabeledContent("Known People storage") {
+                Text(knownPeopleDataSummary.storageDestination)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+
+            LabeledContent("Folder scan storage") {
+                Text("A hidden .face_data folder inside each scanned photo folder")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+
+            Text("Face detection and matching run on this Mac. Folder scan data includes face positions, face and optional clothing features, groups, and thumbnails. It remains until you use Delete Face Data in the Faces view or the auto-delete policy removes it after that folder is opened again.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("Export creates a ZIP of the Known People database only. Clear Database removes its names, face samples, and reference thumbnails from the active storage destination; it does not delete folder scan data or exported ZIP files.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if knownPeopleDataSummary.syncEnabled {
+                Text("Known People is currently stored in iCloud Drive. Clear it while sync is on to remove the active synced database. Turning sync off copies data back to this Mac but does not itself delete the existing iCloud files.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -1495,7 +1566,7 @@ struct SettingsView: View {
                 Toggle("Sync everything", isOn: Binding(
                     get: { coordinator.allEnabled },
                     set: {
-                        coordinator.setAllEnabled($0)
+                        requestAllCategoriesSync($0, coordinator: coordinator)
                         templateViewModel.loadTemplates()
                         developTemplateViewModel.loadTemplates()
                     }
@@ -1537,9 +1608,9 @@ struct SettingsView: View {
 
                 Toggle("Known People database", isOn: Binding(
                     get: { coordinator.knownPeopleEnabled },
-                    set: { coordinator.setKnownPeopleEnabled($0) }
+                    set: { requestKnownPeopleSync($0, coordinator: coordinator) }
                 ))
-                Text("Reference faces and clothing samples used for auto-matching.")
+                Text("Names, face-only feature vectors, and reference thumbnails used for auto-matching. Folder .face_data, including clothing features, is not synced.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -1581,12 +1652,79 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .alert(
+            "Sync Known People with iCloud?",
+            isPresented: Binding(
+                get: { pendingKnownPeopleSyncRequest != nil },
+                set: { if !$0 { pendingKnownPeopleSyncRequest = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                pendingKnownPeopleSyncRequest = nil
+            }
+            Button("Sync Known People") {
+                confirmKnownPeopleSync(coordinator: coordinator)
+            }
+            .keyboardShortcut(.defaultAction)
+        } message: {
+            Text("This uploads names, face-only feature vectors, and reference thumbnails from Known People to this app’s iCloud Drive container so they can reach your other Macs. Folder scan data and clothing features stay in each photo folder and are not uploaded by this setting. Turning sync off later does not itself delete the existing iCloud files.")
+        }
     }
 
     // MARK: - Known People Actions
 
     private func refreshKnownPeopleStats() {
         knownPeopleStats = KnownPeopleService.shared.getStatistics()
+        let syncEnabled = ICloudSyncCoordinator.shared.knownPeopleEnabled
+        let storageURL = syncEnabled
+            ? (AppPaths.iCloudKnownPeopleURL ?? KnownPeopleService.localKnownPeopleDirectory)
+            : KnownPeopleService.localKnownPeopleDirectory
+        knownPeopleDataSummary = KnownPeopleDataSummary.make(
+            peopleCount: knownPeopleStats.peopleCount,
+            sampleCount: knownPeopleStats.embeddingCount,
+            storageURL: storageURL,
+            syncEnabled: syncEnabled
+        )
+    }
+
+    private func requestKnownPeopleSync(_ on: Bool, coordinator: ICloudSyncCoordinator) {
+        if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
+            enabling: on,
+            currentlyEnabled: coordinator.knownPeopleEnabled
+        ) {
+            pendingKnownPeopleSyncRequest = .knownPeopleOnly
+            return
+        }
+        coordinator.setKnownPeopleEnabled(on)
+        refreshKnownPeopleStats()
+    }
+
+    private func requestAllCategoriesSync(_ on: Bool, coordinator: ICloudSyncCoordinator) {
+        if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
+            enabling: on,
+            currentlyEnabled: coordinator.knownPeopleEnabled
+        ) {
+            pendingKnownPeopleSyncRequest = .allCategories
+            return
+        }
+        coordinator.setAllEnabled(on)
+        refreshKnownPeopleStats()
+    }
+
+    private func confirmKnownPeopleSync(coordinator: ICloudSyncCoordinator) {
+        let request = pendingKnownPeopleSyncRequest
+        pendingKnownPeopleSyncRequest = nil
+        switch request {
+        case .knownPeopleOnly:
+            coordinator.setKnownPeopleEnabled(true, confirmedFirstEnable: true)
+        case .allCategories:
+            coordinator.setAllEnabled(true, confirmedKnownPeopleFirstEnable: true)
+            templateViewModel.loadTemplates()
+            developTemplateViewModel.loadTemplates()
+        case nil:
+            return
+        }
+        refreshKnownPeopleStats()
     }
 
     private func importKnownPeople() {
@@ -2132,6 +2270,61 @@ struct SettingsView: View {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         templateViewModel.preparePreview(from: url)
+    }
+}
+
+private struct KnownPeoplePrivacyDisclosureView: View {
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("How Known People uses face data", systemImage: "person.crop.square")
+                .font(.title2.weight(.semibold))
+
+            disclosureRow(
+                icon: "desktopcomputer",
+                title: "Processed on this Mac",
+                text: "Face detection, grouping, and Known People matching run on this Mac."
+            )
+            disclosureRow(
+                icon: "internaldrive",
+                title: "Saved in two places",
+                text: "Each scanned photo folder gets a hidden .face_data folder containing face positions, feature vectors, groups, and thumbnails. Known People separately saves names, face-only feature vectors, and reference thumbnails in the app’s managed database."
+            )
+            disclosureRow(
+                icon: "clock.arrow.circlepath",
+                title: "Kept until you remove it",
+                text: "Folder scan data follows the auto-delete setting and can be deleted from the Faces view. Known People remains until you remove people or clear its database. Exported ZIP files are separate copies you manage."
+            )
+            disclosureRow(
+                icon: "icloud",
+                title: "iCloud is optional",
+                text: "Known People stays on this Mac unless you separately confirm iCloud sync. Sync uploads its names, face-only feature vectors, and reference thumbnails; folder scan data and clothing features are not uploaded by that setting."
+            )
+
+            HStack {
+                Spacer()
+                Button("Continue") { onContinue() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 560)
+    }
+
+    private func disclosureRow(icon: String, title: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .frame(width: 24)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline)
+                Text(text)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -319,6 +320,46 @@ struct ImageInspectionGeometryTests {
                 extentOrigin: .bottomLeft
             ) == nil
         )
+    }
+
+    @Test("loupe crops preserve raster pixels and clamp at display edges")
+    func loupeCrop() throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bytes = Array(repeating: UInt8(0), count: 6 * 4 * 4)
+        let provider = try #require(CGDataProvider(data: Data(bytes) as CFData))
+        let image = try #require(CGImage(
+            width: 6,
+            height: 4,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: 24,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        ))
+
+        let topLeft = try #require(ImageInspectionLoupeCrop.make(
+            from: image,
+            normalizedDisplayPoint: .zero,
+            pixelSize: 3
+        ))
+        let bottomRight = try #require(ImageInspectionLoupeCrop.make(
+            from: image,
+            normalizedDisplayPoint: CGPoint(x: 1, y: 1),
+            pixelSize: 3
+        ))
+
+        #expect(topLeft.pixelRect == CGRect(x: 0, y: 0, width: 3, height: 3))
+        #expect(bottomRight.pixelRect == CGRect(x: 3, y: 1, width: 3, height: 3))
+        #expect(topLeft.image.width == 3)
+        #expect(topLeft.image.height == 3)
+        #expect(bottomRight.image.width == 3)
+        #expect(bottomRight.image.height == 3)
+        #expect(topLeft.focusPointInCrop == CGPoint(x: 0.5, y: 0.5))
+        #expect(bottomRight.focusPointInCrop == CGPoint(x: 2.5, y: 2.5))
     }
 
     private func expectEqual(

@@ -7,6 +7,9 @@
 - Refactored Advanced Export hover and loupe crop placement to use the shared geometry.
 - Added a workspace-owned linked hover sample to Image Analysis.
 - Added a visible crosshair and zero-based source-pixel readout.
+- Added an in-workspace hover loupe backed by a lazily decoded full-resolution copy of the
+  selected original or developed representation. It presents a backing-scale-correct 100% crop
+  beside a 400% nearest-neighbor view and keeps the inspected pixel marked at image edges.
 - Mapped developed representation hover positions through crop and straighten to the original
   source pixel frame.
 - Kept letterbox areas outside the sampling surface and added an accessible center-pixel action.
@@ -60,11 +63,10 @@
 - Kept the compression residual's dynamic-range contract explicit: alpha is flattened over the
   fixed 50% gray matte and the diagnostic result is opaque 8-bit sRGB.
 
-This slice does not claim that the Analysis thumbnail is a true-pixel rendering. The reusable
-true-pixel crop utility currently continues to back Advanced Export; the full Analysis loupe,
-arrives with the remaining Phase 3 work. The compression residual is explicitly a bounded
-preview; a future report figure must persist its actual pixel dimensions alongside the fixed
-method parameters.
+The fit-to-view Analysis thumbnail remains a bounded preview. True-pixel claims are limited to
+the hover loupe, which lazily loads the selected representation at its displayed native dimensions
+and crops without resampling. The compression residual remains explicitly a bounded preview; a
+future report figure must persist its actual pixel dimensions alongside the fixed method parameters.
 
 ## Automated validation
 
@@ -79,7 +81,7 @@ xcodebuild test \
   -only-testing:"Aagedal Photo Agent Tests/DisplayImageTransformTests"
 ```
 
-Result: 25 tests passed in 3 suites.
+Result: 26 tests passed in 3 suites.
 
 Coverage includes:
 
@@ -89,6 +91,8 @@ Coverage includes:
 - developed crop and straighten mapping;
 - top-left hover to bottom-left Core Image crop conversion;
 - true-pixel crop clamping at image edges;
+- top-left display-raster loupe cropping, exact output dimensions, and inspected-pixel placement
+  at both image edges;
 - existing fit, actual-pixel, custom zoom, pan, and round-trip viewport behavior.
 
 Scope request command:
