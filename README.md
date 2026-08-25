@@ -269,14 +269,17 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
 
 1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in the Xcode project.
 2. Add the release notes to `CHANGELOG.md`, including a concise `### Highlights` list for the Sparkle appcast.
-3. Run the release assistant:
+3. Commit and push the exact release source, then wait for the **macOS CI / Clean build and unfiltered tests** check to pass for that commit. The workflow performs a clean `build-for-testing`, an unfiltered `test-without-building`, generated-metadata drift checking, JSON/plist validation, conflict-marker scanning, and whitespace checks. Configure this check as required on the protected release branch in GitHub; repository files cannot enforce that remote setting.
+4. From a clean checkout of that same commit, run the release assistant with an authenticated GitHub CLI:
    ```bash
    scripts/release.sh
    ```
-   It archives, exports with Developer ID, notarizes and staples the app and DMG, Sparkle-signs the DMG, and inserts the appcast item. When a matching archive or valid exported app already exists, its terminal menu can resume from that artifact instead of rebuilding. Set `RELEASE_BUILD_MODE=reuse` or `RELEASE_BUILD_MODE=rebuild` to make that choice non-interactively.
-4. Upload the DMG to `https://aagedal.me/apps/photoagent/`, using the exact filename printed by the script.
-5. Commit and push the generated `appcast.xml` to GitHub, tag the release, then synchronize the website fallback appcast and legacy Codeberg copy.
-6. Bump the cask in the `aagedal/homebrew-tap` repo.
+   Before accessing signing credentials or building, it rejects a dirty worktree and verifies a successful CI run tied to the exact `HEAD` SHA. The accepted run is recorded under `build/release/`. It then archives, exports with Developer ID, notarizes and staples the app and DMG, Sparkle-signs the DMG, and inserts the appcast item. When an archive or valid exported app has matching version/build metadata **and** the source-revision marker written by the script, its terminal menu can resume from that artifact instead of rebuilding; unmarked or stale-revision artifacts are rejected. Set `RELEASE_BUILD_MODE=reuse` or `RELEASE_BUILD_MODE=rebuild` to make that choice non-interactively.
+5. Upload the DMG to `https://aagedal.me/apps/photoagent/`, using the exact filename printed by the script.
+6. Commit and push the generated `appcast.xml` to GitHub, tag the release, then synchronize the website fallback appcast and legacy Codeberg copy.
+7. Bump the cask in the `aagedal/homebrew-tap` repo.
+
+An emergency can bypass the CI lookup only with `RELEASE_TEST_GATE_OVERRIDE=EMERGENCY`, a written `RELEASE_TEST_GATE_OVERRIDE_REASON` of at least 20 characters, and confirmation by typing (or setting `RELEASE_TEST_GATE_OVERRIDE_CONFIRM` to) the full current SHA. The script prints a prominent warning and records the revision, operator, timestamp, and reason in `build/release/release-test-gate.json` and the append-only-per-worktree `release-test-gate-audit.jsonl`. Preserve those files with the release records. An override does not permit releasing uncommitted source.
 
 ## License
 

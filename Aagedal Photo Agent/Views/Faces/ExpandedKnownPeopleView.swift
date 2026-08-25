@@ -39,6 +39,7 @@ struct ExpandedKnownPeopleView: View {
     @State private var isImporting = false
     @State private var isExporting = false
     @State private var importExportMessage: String?
+    @State private var destructiveOperationErrorMessage: String?
 
     private var filteredPeople: [KnownPerson] {
         let base: [KnownPerson]
@@ -103,6 +104,17 @@ struct ExpandedKnownPeopleView: View {
         } message: {
             let targetName = people.first { selectedPersonIDs.contains($0.id) }?.name ?? ""
             Text("Merge \(selectedPersonIDs.count) people into one? The first person (\(targetName)) will be kept and receive all embeddings from the others. The other \(selectedPersonIDs.count - 1) people will be deleted.")
+        }
+        .alert(
+            "Operation Not Completed",
+            isPresented: Binding(
+                get: { destructiveOperationErrorMessage != nil },
+                set: { if !$0 { destructiveOperationErrorMessage = nil } }
+            )
+        ) {
+            Button("OK") { destructiveOperationErrorMessage = nil }
+        } message: {
+            Text(destructiveOperationErrorMessage ?? "")
         }
     }
 
@@ -421,7 +433,7 @@ struct ExpandedKnownPeopleView: View {
             people.removeAll { $0.id == person.id }
             selectedPersonIDs.remove(person.id)
         } catch {
-            // Handle error silently for now
+            destructiveOperationErrorMessage = error.localizedDescription
         }
     }
 
@@ -443,7 +455,7 @@ struct ExpandedKnownPeopleView: View {
             loadPeople()
             selectedPersonIDs = [targetPerson.id]
         } catch {
-            // Handle error silently for now
+            destructiveOperationErrorMessage = error.localizedDescription
         }
     }
 }

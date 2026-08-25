@@ -59,6 +59,12 @@ struct C2PAValidationTests {
         #expect(result.rawValidationCodes == ["assertion.dataHash.mismatch"])
     }
 
+    @Test("absent manifest maps to not present")
+    func absent() throws {
+        let result = try parse("{\"validation_state\":\"no manifest\"}")
+        #expect(result.status == .notPresent)
+    }
+
     @Test("malformed validation output is rejected")
     func malformed() {
         #expect(throws: C2PAValidationError.self) {
@@ -71,6 +77,47 @@ struct C2PAValidationTests {
         #expect(throws: C2PAValidationError.self) {
             try C2PASigningService.parseValidationInfoJSON(Data("{\"error\":\"unable to read file\"}".utf8))
         }
+    }
+
+    @Test("inspection failures remain distinct and privacy-safe")
+    func inspectionFailureMapping() {
+        let privateDetail = "/Users/reporter/Embargoed/source.jpg"
+
+        let denied = NSError(
+            domain: NSCocoaErrorDomain,
+            code: CocoaError.Code.fileReadNoPermission.rawValue,
+            userInfo: [NSLocalizedDescriptionKey: privateDetail]
+        )
+        #expect(C2PAInspectionFailure.metadataRead(error: denied) == .accessDenied)
+        #expect(C2PAInspectionFailure.validation(error: denied) == .accessDenied)
+        #expect(C2PAInspectionFailure.metadataRead(error: C2PAValidationError.malformedOutput) == .malformed)
+        #expect(C2PAInspectionFailure.validation(error: C2PAValidationError.malformedOutput) == .malformed)
+        #expect(C2PAInspectionFailure.validation(error: C2PASigningError.c2patoolMissing) == .unavailableTool)
+        #expect(C2PAInspectionFailure.validation(error: C2PASigningError.processFailed(privateDetail)) == .validationFailed)
+
+        let failures: [C2PAInspectionFailure] = [
+            .malformed,
+            .unavailableTool,
+            .accessDenied,
+            .validationFailed,
+        ]
+        #expect(Set(failures.map(\.title)).count == failures.count)
+        #expect(failures.allSatisfy { !$0.message.contains(privateDetail) })
+    }
+
+    @Test("wrapped POSIX permission failures map to access denied")
+    func wrappedPermissionFailure() {
+        let underlying = NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(POSIXErrorCode.EACCES.rawValue)
+        )
+        let wrapper = NSError(
+            domain: "C2PAReader",
+            code: 1,
+            userInfo: [NSUnderlyingErrorKey: underlying]
+        )
+        #expect(C2PAInspectionFailure.metadataRead(error: wrapper) == .accessDenied)
+        #expect(C2PAInspectionFailure.validation(error: wrapper) == .accessDenied)
     }
 
     @Test("trust-list cache accepts PEM certificates but rejects non-certificate downloads")

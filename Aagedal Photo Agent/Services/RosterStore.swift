@@ -35,6 +35,7 @@ final class RosterStore {
     /// Test-only seam: overrides the resolved storage root so tests can point at
     /// a temp directory. Production never sets this.
     @ObservationIgnored static var storageOverrideURL: URL?
+    @ObservationIgnored static var deletionIO = DurableDeletionIO.live
 
     @ObservationIgnored private var didLoad = false
     @ObservationIgnored private var cachedDirectory: URL?
@@ -206,8 +207,16 @@ final class RosterStore {
 
     func delete(id: UUID) throws {
         ensureLoaded()
-        writeTombstone(for: id)
-        try CloudCoordinatedIO.removeItem(at: teamFileURL(for: id))
+        let marker = TeamTombstone(id: id, deletedAt: Date())
+        let markerURL = tombstoneURL(for: id)
+        try DurableDeletionTransaction.execute(
+            marker: marker,
+            markerURL: markerURL,
+            recordURL: teamFileURL(for: id),
+            markerMatches: { $0.id == id },
+            io: Self.deletionIO
+        )
+        stampLocalWrite(markerURL)
         teams.removeAll { $0.id == id }
         NotificationCenter.default.post(name: .teamsLibraryDidChange, object: nil)
     }
@@ -247,14 +256,6 @@ final class RosterStore {
             }
         }
         return tombstoned
-    }
-
-    private func writeTombstone(for id: UUID) {
-        let tombstone = TeamTombstone(id: id, deletedAt: Date())
-        guard let data = try? JSONEncoder().encode(tombstone) else { return }
-        let url = tombstoneURL(for: id)
-        try? CloudCoordinatedIO.writeData(data, to: url)
-        stampLocalWrite(url)
     }
 
     // MARK: - Conflict resolution

@@ -24,11 +24,13 @@ struct KnownPeopleServiceTests {
     /// Points the singleton at `dir` and drops all cached state so the next
     /// access reads from that directory.
     private func activate(_ dir: URL) {
+        KnownPeopleService.deletionIO = .live
         KnownPeopleService.storageOverrideURL = dir
         KnownPeopleService.shared.reloadAfterStorageChange()
     }
 
     private func teardown(_ dir: URL) {
+        KnownPeopleService.deletionIO = .live
         KnownPeopleService.storageOverrideURL = nil
         try? FileManager.default.removeItem(at: dir)
         // Reset the singleton's cache so the next test starts clean.
@@ -178,6 +180,71 @@ struct KnownPeopleServiceTests {
         // The tombstone suppresses it and the stray file is cleaned up.
         #expect(KnownPeopleService.shared.getAllPeople().isEmpty)
         #expect(!FileManager.default.fileExists(atPath: personFileURL(person.id, in: dir).path))
+    }
+
+    @Test("failed marker persistence keeps the person and all derived thumbnails usable")
+    func failedMarkerPersistencePreservesPersonAndCaches() throws {
+        let dir = makeTempDir()
+        defer { teardown(dir) }
+        activate(dir)
+
+        let sample = embedding(8)
+        let person = try KnownPeopleService.shared.addPerson(
+            name: "Preserved",
+            embeddings: [sample],
+            thumbnailData: Data([1, 2, 3]),
+            embeddingThumbnails: [sample.id: Data([4, 5, 6])]
+        )
+        KnownPeopleService.deletionIO = DurableDeletionIO(
+            writeData: { _, _ in throw CocoaError(.fileWriteNoPermission) },
+            readData: { try CloudCoordinatedIO.readData(at: $0) },
+            removeItem: { try CloudCoordinatedIO.removeItem(at: $0) }
+        )
+
+        #expect(throws: DurableDeletionError.self) {
+            try KnownPeopleService.shared.removePerson(id: person.id)
+        }
+
+        #expect(KnownPeopleService.shared.person(byID: person.id)?.name == "Preserved")
+        #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: dir).path))
+        #expect(FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("thumbnails/\(person.id.uuidString).jpg").path
+        ))
+        #expect(FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("embedding_thumbnails/\(sample.id.uuidString).jpg").path
+        ))
+        #expect(!FileManager.default.fileExists(atPath: tombstoneURL(person.id, in: dir).path))
+    }
+
+    @Test("interrupted merge keeps its source and retry finishes without duplicate embeddings")
+    func interruptedMergeIsRecoverableAndIdempotent() throws {
+        let dir = makeTempDir()
+        defer { teardown(dir) }
+        activate(dir)
+
+        let target = try KnownPeopleService.shared.addPerson(
+            name: "Target", embeddings: [embedding(1)]
+        )
+        let source = try KnownPeopleService.shared.addPerson(
+            name: "Source", embeddings: [embedding(2)]
+        )
+        KnownPeopleService.deletionIO = DurableDeletionIO(
+            writeData: { _, _ in throw CocoaError(.fileWriteNoPermission) },
+            readData: { try CloudCoordinatedIO.readData(at: $0) },
+            removeItem: { try CloudCoordinatedIO.removeItem(at: $0) }
+        )
+
+        #expect(throws: DurableDeletionError.self) {
+            try KnownPeopleService.shared.mergePeople(sourceID: source.id, intoTargetID: target.id)
+        }
+        #expect(KnownPeopleService.shared.person(byID: source.id) != nil)
+        #expect(KnownPeopleService.shared.person(byID: target.id)?.embeddings.count == 2)
+        #expect(FileManager.default.fileExists(atPath: personFileURL(source.id, in: dir).path))
+
+        KnownPeopleService.deletionIO = .live
+        try KnownPeopleService.shared.mergePeople(sourceID: source.id, intoTargetID: target.id)
+        #expect(KnownPeopleService.shared.person(byID: source.id) == nil)
+        #expect(KnownPeopleService.shared.person(byID: target.id)?.embeddings.count == 2)
     }
 
     // MARK: - 5. Tombstone GC

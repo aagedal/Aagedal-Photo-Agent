@@ -48,6 +48,7 @@ final class WatermarkStore {
     /// loader (`resolvedImageURL`, called off-main during offscreen export) can read it
     /// without actor isolation; tests only ever touch it serially.
     @ObservationIgnored nonisolated(unsafe) static var storageOverrideURL: URL?
+    @ObservationIgnored static var deletionIO = DurableDeletionIO.live
 
     @ObservationIgnored private var didLoad = false
     @ObservationIgnored private var cachedDirectory: URL?
@@ -307,8 +308,16 @@ final class WatermarkStore {
 
     func delete(id: UUID) throws {
         ensureLoaded()
-        writeTombstone(for: id)
-        try CloudCoordinatedIO.removeItem(at: itemDirectory(for: id))
+        let marker = WatermarkTombstone(id: id, deletedAt: Date())
+        let markerURL = tombstoneURL(for: id)
+        try DurableDeletionTransaction.execute(
+            marker: marker,
+            markerURL: markerURL,
+            recordURL: itemDirectory(for: id),
+            markerMatches: { $0.id == id },
+            io: Self.deletionIO
+        )
+        stampLocalWrite(markerURL)
         assets.removeAll { $0.id == id }
         NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)
     }
@@ -336,14 +345,6 @@ final class WatermarkStore {
             }
         }
         return tombstoned
-    }
-
-    private func writeTombstone(for id: UUID) {
-        let tombstone = WatermarkTombstone(id: id, deletedAt: Date())
-        guard let data = try? JSONEncoder().encode(tombstone) else { return }
-        let url = tombstoneURL(for: id)
-        try? CloudCoordinatedIO.writeData(data, to: url)
-        stampLocalWrite(url)
     }
 
     // MARK: - Conflict resolution

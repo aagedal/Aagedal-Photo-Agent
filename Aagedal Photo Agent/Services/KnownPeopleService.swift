@@ -28,6 +28,10 @@ final class KnownPeopleService {
     /// it, call `reloadAfterStorageChange()` to drop the cache.
     static var storageOverrideURL: URL?
 
+    /// Test-only failure injection for the shared durable deletion transaction.
+    /// Production always uses coordinated iCloud-safe file operations.
+    static var deletionIO = DurableDeletionIO.live
+
     /// How long a deletion tombstone is honored before it is garbage-collected.
     /// While present, a person's file is suppressed so a peer that still holds
     /// the person can't resurrect it; after the window a re-synced file could
@@ -399,11 +403,16 @@ final class KnownPeopleService {
         return tombstoned
     }
 
-    private func writeTombstone(for personID: UUID) {
+    private func deleteRecordDurably(for personID: UUID) throws {
         let tombstone = KnownPersonTombstone(id: personID)
-        guard let data = try? JSONEncoder().encode(tombstone) else { return }
         let url = tombstoneURL(for: personID)
-        try? CloudCoordinatedIO.writeData(data, to: url)
+        try DurableDeletionTransaction.execute(
+            marker: tombstone,
+            markerURL: url,
+            recordURL: personFileURL(for: personID),
+            markerMatches: { $0.id == personID },
+            io: Self.deletionIO
+        )
         stampLocalWrite(url)
     }
 
@@ -611,21 +620,25 @@ final class KnownPeopleService {
     }
 
     func removePerson(id: UUID) throws {
-        // Delete embedding thumbnails before removing from the store
-        if let person = person(byID: id) {
-            deleteAllEmbeddingThumbnails(for: person)
-            for embedding in person.embeddings {
-                featurePrintCache.removeObject(forKey: embedding.id as NSUUID)
-            }
-        }
+        // Capture cache keys, but leave every derived file and in-memory entry
+        // untouched until the marker + record transition has completed.
+        let personToCleanUp = person(byID: id)
 
         // Tombstone first so the delete propagates and can't be resurrected by a
-        // peer, then remove the person file and drop it from the cache.
-        writeTombstone(for: id)
-        try CloudCoordinatedIO.removeItem(at: personFileURL(for: id))
+        // peer. The shared transaction verifies the installed marker and rolls it
+        // back if record removal fails, preserving a usable original on failure.
+        try deleteRecordDurably(for: id)
         if var db = database {
             db.people.removeAll { $0.id == id }
             database = db
+        }
+
+        // Derived caches are disposable, but only after the durable transition.
+        if let personToCleanUp {
+            deleteAllEmbeddingThumbnails(for: personToCleanUp)
+            for embedding in personToCleanUp.embeddings {
+                featurePrintCache.removeObject(forKey: embedding.id as NSUUID)
+            }
         }
         deleteThumbnail(for: id)
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
@@ -770,10 +783,12 @@ final class KnownPeopleService {
     /// Merge people: combine embeddings from source into target, delete source.
     /// Deduplicates embeddings to avoid storing the same face data multiple times.
     ///
-    /// Touches two person files (target update + source delete) with no
-    /// cross-file transaction. If interrupted between them the worst case is a
-    /// lingering source that a later merge or delete cleans up — persons are
-    /// independent, so there's no inconsistent shared state.
+    /// Touches two person files (target update + source delete) with no portable
+    /// cross-file atomic rename. The target is updated first so source data is
+    /// never destroyed before its embeddings are durable. If marker creation or
+    /// source removal then fails, the source stays usable while the target may
+    /// already contain a deduplicated copy; retrying the merge is the documented
+    /// recovery path and is idempotent by feature-print bytes.
     func mergePeople(sourceID: UUID, intoTargetID: UUID) throws {
         guard sourceID != intoTargetID else { return }
 
@@ -797,8 +812,7 @@ final class KnownPeopleService {
 
         // 2. Tombstone and remove the source (so the delete propagates) and drop
         //    it from the cache.
-        writeTombstone(for: sourceID)
-        try CloudCoordinatedIO.removeItem(at: personFileURL(for: sourceID))
+        try deleteRecordDurably(for: sourceID)
         if var db = database {
             db.people.removeAll { $0.id == sourceID }
             database = db

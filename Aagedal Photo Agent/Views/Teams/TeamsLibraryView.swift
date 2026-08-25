@@ -43,6 +43,7 @@ struct TeamsLibraryContent: View {
     @State private var showDeleteAlert = false
     @State private var searchText = ""
     @State private var sportFilter: TeamSport?
+    @State private var deletionErrorMessage: String?
 
     /// Teams matching the current search text and sport filter, sorted by name.
     private var filteredTeams: [Team] {
@@ -148,13 +149,28 @@ struct TeamsLibraryContent: View {
         .alert("Delete this team?", isPresented: $showDeleteAlert) {
             Button("Delete", role: .destructive) {
                 if let id = selection {
-                    try? store.delete(id: id)
-                    selection = nil
+                    do {
+                        try store.delete(id: id)
+                        selection = nil
+                    } catch {
+                        deletionErrorMessage = error.localizedDescription
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes the team and its roster from the library on all your devices.")
+        }
+        .alert(
+            "Deletion Not Completed",
+            isPresented: Binding(
+                get: { deletionErrorMessage != nil },
+                set: { if !$0 { deletionErrorMessage = nil } }
+            )
+        ) {
+            Button("OK") { deletionErrorMessage = nil }
+        } message: {
+            Text(deletionErrorMessage ?? "")
         }
     }
 

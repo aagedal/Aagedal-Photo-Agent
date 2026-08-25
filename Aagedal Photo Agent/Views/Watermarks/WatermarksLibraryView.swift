@@ -11,6 +11,7 @@ struct WatermarksLibraryContent: View {
     @State private var showDeleteAlert = false
     @State private var isImportingPNG = false
     @State private var importErrorMessage: String?
+    @State private var deletionErrorMessage: String?
     @State private var searchText = ""
 
     private var filteredAssets: [WatermarkAsset] {
@@ -96,13 +97,28 @@ struct WatermarksLibraryContent: View {
         .alert("Delete this watermark?", isPresented: $showDeleteAlert) {
             Button("Delete", role: .destructive) {
                 if let id = selection {
-                    try? store.delete(id: id)
-                    selection = nil
+                    do {
+                        try store.delete(id: id)
+                        selection = nil
+                    } catch {
+                        deletionErrorMessage = error.localizedDescription
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes the watermark image from the library on all your devices. Develop layers already using it will show a missing-asset placeholder.")
+        }
+        .alert(
+            "Deletion Not Completed",
+            isPresented: Binding(
+                get: { deletionErrorMessage != nil },
+                set: { if !$0 { deletionErrorMessage = nil } }
+            )
+        ) {
+            Button("OK") { deletionErrorMessage = nil }
+        } message: {
+            Text(deletionErrorMessage ?? "")
         }
         .alert(
             "Import Failed",

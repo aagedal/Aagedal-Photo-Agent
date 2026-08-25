@@ -39,6 +39,8 @@
 		AB2000000000000000000002 /* NormalizedCropRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2000000000000000000001 /* NormalizedCropRegionTests.swift */; };
 		AB2100000000000000000002 /* TechnicalMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2100000000000000000001 /* TechnicalMetadataTests.swift */; };
 		AB2200000000000000000002 /* WatermarkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2200000000000000000001 /* WatermarkStoreTests.swift */; };
+		DD0100000000000000000002 /* DurableDeletionTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */; };
+		DD0200000000000000000002 /* RosterStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0200000000000000000001 /* RosterStoreTests.swift */; };
 		AB2300000000000000000002 /* WatermarkRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2300000000000000000001 /* WatermarkRenderingTests.swift */; };
 		AB2400000000000000000002 /* DevelopInteractionBehaviorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */; };
 		AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2500000000000000000001 /* DevelopTemplateTests.swift */; };
@@ -154,6 +156,8 @@
 		AB2000000000000000000001 /* NormalizedCropRegionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NormalizedCropRegionTests.swift; sourceTree = "<group>"; };
 		AB2100000000000000000001 /* TechnicalMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TechnicalMetadataTests.swift; sourceTree = "<group>"; };
 		AB2200000000000000000001 /* WatermarkStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatermarkStoreTests.swift; sourceTree = "<group>"; };
+		DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DurableDeletionTransactionTests.swift; sourceTree = "<group>"; };
+		DD0200000000000000000001 /* RosterStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RosterStoreTests.swift; sourceTree = "<group>"; };
 		AB2300000000000000000001 /* WatermarkRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatermarkRenderingTests.swift; sourceTree = "<group>"; };
 		AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopInteractionBehaviorTests.swift; sourceTree = "<group>"; };
 		AB2500000000000000000001 /* DevelopTemplateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateTests.swift; sourceTree = "<group>"; };
@@ -272,6 +276,8 @@
 				AB0100000000000000000001 /* ApprovedListBypassTests.swift */,
 				AB0200000000000000000001 /* KeywordListsStoreTests.swift */,
 				AB0900000000000000000001 /* KnownPeopleServiceTests.swift */,
+				DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */,
+				DD0200000000000000000001 /* RosterStoreTests.swift */,
 				AB1600000000000000000001 /* FaceEmbeddingTests.swift */,
 				AB0300000000000000000001 /* StructuredKeywordParserTests.swift */,
 				AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */,
@@ -516,6 +522,8 @@
 				AB0100000000000000000002 /* ApprovedListBypassTests.swift in Sources */,
 				AB0200000000000000000002 /* KeywordListsStoreTests.swift in Sources */,
 				AB0900000000000000000002 /* KnownPeopleServiceTests.swift in Sources */,
+				DD0100000000000000000002 /* DurableDeletionTransactionTests.swift in Sources */,
+				DD0200000000000000000002 /* RosterStoreTests.swift in Sources */,
 				AB1600000000000000000002 /* FaceEmbeddingTests.swift in Sources */,
 				AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */,
 				AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */,

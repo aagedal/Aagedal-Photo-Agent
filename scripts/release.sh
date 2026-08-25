@@ -17,6 +17,9 @@
 #   NOTARY_PROFILE=AC_NOTARY scripts/release.sh          # skip the prompt
 #   RELEASE_BUILD_MODE=rebuild scripts/release.sh        # ignore saved builds
 #
+# A normal release requires a clean worktree and a successful macOS CI run for
+# the exact HEAD revision. See README.md for the recorded emergency procedure.
+#
 set -euo pipefail
 
 # ─── CONFIG (override via env) ────────────────────────────────────────────────
@@ -42,6 +45,23 @@ ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Verify this exact committed source before doing any keychain, signing,
+# notarization, archive, or appcast work. The verifier also records the accepted
+# workflow run (or the explicit emergency override) in OUTPUT_DIR.
+say "Verifying exact-revision release test gate"
+scripts/ci/verify_release_test_gate.sh "$OUTPUT_DIR/release-test-gate.json"
+ok "Release test gate accepted and recorded"
+SOURCE_REVISION="$(git rev-parse HEAD)"
+
+artifact_matches_source_revision() {
+  local marker="$1.source-revision"
+  [ -f "$marker" ] && [ "$(tr -d '\r\n' < "$marker")" = "$SOURCE_REVISION" ]
+}
+
+record_artifact_source_revision() {
+  printf '%s\n' "$SOURCE_REVISION" > "$1.source-revision"
+}
+
 artifact_app_version() {
   /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null || true
 }
@@ -64,7 +84,9 @@ archive_matches_release() {
   local archived_app
   [ -d "$1" ] || return 1
   archived_app="$(archive_app_path "$1")"
-  [ -n "$archived_app" ] && app_matches_release "$archived_app"
+  [ -n "$archived_app" ] \
+    && app_matches_release "$archived_app" \
+    && artifact_matches_source_revision "$1"
 }
 
 choose_build_source() {
@@ -72,16 +94,18 @@ choose_build_source() {
   local app_usable=0 archive_usable=0 choice default_choice
   local -a labels=() values=()
 
-  if app_matches_release "$existing_app" && codesign --verify --deep --strict "$existing_app" >/dev/null 2>&1; then
+  if app_matches_release "$existing_app" \
+    && artifact_matches_source_revision "$existing_app" \
+    && codesign --verify --deep --strict "$existing_app" >/dev/null 2>&1; then
     app_usable=1
   elif [ -d "$existing_app" ]; then
-    warn "Existing exported app does not match $VERSION ($BUILD), or its Developer ID signature is invalid; it will not be reused."
+    warn "Existing exported app does not match $VERSION ($BUILD) and exact source $SOURCE_REVISION, or its Developer ID signature is invalid; it will not be reused."
   fi
 
   if archive_matches_release "$existing_archive"; then
     archive_usable=1
   elif [ -d "$existing_archive" ]; then
-    warn "Existing archive does not match $VERSION ($BUILD); it will not be reused."
+    warn "Existing archive does not match $VERSION ($BUILD) and exact source $SOURCE_REVISION; it will not be reused."
   fi
 
   case "$RELEASE_BUILD_MODE" in
@@ -316,11 +340,13 @@ ok "Release path: $BUILD_CHOICE"
 
 if [ "$BUILD_CHOICE" = "rebuild" ]; then
   rm -rf "$ARCHIVE" "$LEGACY_ARCHIVE" "$OUTPUT_DIR/export"
+  rm -f "$ARCHIVE.source-revision" "$LEGACY_ARCHIVE.source-revision"
   say "Archiving (Release)…"
   run_with_progress "Archiving" "$OUTPUT_DIR/archive.log" \
     xcodebuild -scheme "$SCHEME" -configuration Release -destination 'generic/platform=macOS' \
     -archivePath "$ARCHIVE" archive \
     || die "Archive failed — see $OUTPUT_DIR/archive.log"
+  record_artifact_source_revision "$ARCHIVE"
   ok "Archived: $ARCHIVE"
 elif [ "$BUILD_CHOICE" = "archive" ]; then
   ARCHIVE="$EXISTING_ARCHIVE"
@@ -355,6 +381,7 @@ EOF
   [ -n "$APP" ] || die "Exported .app not found."
   app_matches_release "$APP" || die "Exported app version/build does not match $VERSION ($BUILD)."
   codesign --verify --deep --strict "$APP" || die "Exported app failed signature verification."
+  record_artifact_source_revision "$APP"
   ok "Exported & verified: $APP"
 fi
 

@@ -1,25 +1,39 @@
 import SwiftUI
 
+private enum C2PAMetadataLoadState {
+    case loading
+    case absent
+    case loaded(C2PAMetadata)
+    case failed(C2PAInspectionFailure)
+}
+
+private enum C2PAValidationLoadState {
+    case loading
+    case result(C2PAValidationResult)
+    case failed(C2PAInspectionFailure)
+}
+
 struct C2PADetailSheet: View {
-    let metadata: C2PAMetadata
     let imageURL: URL
-    let initialValidation: C2PAValidationResult?
+    let readService: SwiftExifReadService
     let onValidationChanged: (C2PAValidationResult) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var validation: C2PAValidationResult?
-    @State private var validationTask: Task<Void, Never>?
+    @State private var metadataState = C2PAMetadataLoadState.loading
+    @State private var validationState: C2PAValidationLoadState
+    @State private var inspectionRevision = 0
 
     init(
-        metadata: C2PAMetadata,
         imageURL: URL,
+        readService: SwiftExifReadService,
         initialValidation: C2PAValidationResult? = nil,
         onValidationChanged: @escaping (C2PAValidationResult) -> Void = { _ in }
     ) {
-        self.metadata = metadata
         self.imageURL = imageURL
-        self.initialValidation = initialValidation
+        self.readService = readService
         self.onValidationChanged = onValidationChanged
-        _validation = State(initialValue: initialValidation)
+        _validationState = State(
+            initialValue: initialValidation.map { .result($0) } ?? .loading
+        )
     }
 
     var body: some View {
@@ -39,12 +53,20 @@ struct C2PADetailSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    validationSection
-                    Divider()
-                    if metadata.manifests.isEmpty {
-                        Text("No C2PA manifests found.")
-                            .foregroundStyle(.secondary)
-                    } else {
+                    switch metadataState {
+                    case .loading:
+                        loadingSection
+                    case .absent:
+                        inspectionStateSection(
+                            title: "No Content Credentials",
+                            message: "No Content Credentials were found in this image.",
+                            icon: "c.circle",
+                            color: .secondary
+                        )
+                    case .failed(let failure):
+                        failureSection(failure)
+                    case .loaded(let metadata):
+                        validationSection
                         Divider()
                         // Thumbnails section
                         if let thumbnails = metadata.thumbnails,
@@ -54,7 +76,11 @@ struct C2PADetailSheet: View {
                         }
 
                         ForEach(Array(metadata.manifests.enumerated()), id: \.offset) { index, manifest in
-                            manifestSection(manifest, index: index)
+                            manifestSection(
+                                manifest,
+                                index: index,
+                                manifestCount: metadata.manifests.count
+                            )
                             if index < metadata.manifests.count - 1 {
                                 Divider()
                             }
@@ -66,30 +92,61 @@ struct C2PADetailSheet: View {
         .padding()
         .frame(minWidth: 620, idealWidth: 700, minHeight: 400)
         .frame(idealHeight: NSScreen.main.map { $0.visibleFrame.height * 0.9 } ?? 700)
-        .task { validate() }
-        .onDisappear { validationTask?.cancel() }
+        .task(id: inspectionRevision) {
+            await inspect(forceRefresh: inspectionRevision > 0)
+        }
+    }
+
+    private var loadingSection: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Loading Content Credentials…")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Loading Content Credentials")
     }
 
     @ViewBuilder
     private var validationSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                if let validation {
+                switch validationState {
+                case .loading:
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Validating Content Credentials…")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Validating Content Credentials")
+                case .result(let validation):
                     let presentation = validationPresentation(validation)
                     Label(presentation.title, systemImage: presentation.icon)
                         .font(.headline)
                         .foregroundStyle(presentation.color)
                         .accessibilityLabel(presentation.accessibilityLabel)
-                } else {
-                    Label("Validating…", systemImage: "arrow.triangle.2.circlepath")
+                case .failed(let failure):
+                    Label(failure.title, systemImage: failureIcon(failure))
                         .font(.headline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(failureColor(failure))
                 }
                 Spacer()
-                Button("Refresh") { validate(forceRefresh: true) }
-                    .disabled(validation == nil)
+                if case .loading = validationState {
+                    EmptyView()
+                } else {
+                    Button("Retry") { retry() }
+                }
             }
-            if let validation {
+            switch validationState {
+            case .loading:
+                EmptyView()
+            case .failed(let failure):
+                Text(failure.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .result(let validation):
                 Text(validation.message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -117,6 +174,48 @@ struct C2PADetailSheet: View {
         }
     }
 
+    private func inspectionStateSection(
+        title: String,
+        message: String,
+        icon: String,
+        color: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: icon)
+                .font(.headline)
+                .foregroundStyle(color)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Retry") { retry() }
+        }
+    }
+
+    private func failureSection(_ failure: C2PAInspectionFailure) -> some View {
+        inspectionStateSection(
+            title: failure.title,
+            message: failure.message,
+            icon: failureIcon(failure),
+            color: failureColor(failure)
+        )
+    }
+
+    private func failureIcon(_ failure: C2PAInspectionFailure) -> String {
+        switch failure {
+        case .malformed: "exclamationmark.triangle.fill"
+        case .unavailableTool: "wrench.and.screwdriver.fill"
+        case .accessDenied: "lock.fill"
+        case .validationFailed: "questionmark.circle.fill"
+        }
+    }
+
+    private func failureColor(_ failure: C2PAInspectionFailure) -> Color {
+        switch failure {
+        case .malformed, .accessDenied: .orange
+        case .unavailableTool, .validationFailed: .secondary
+        }
+    }
+
     private func validationPresentation(_ result: C2PAValidationResult) -> (title: String, icon: String, color: Color, accessibilityLabel: String) {
         switch result.status {
         case .trusted:
@@ -134,30 +233,67 @@ struct C2PADetailSheet: View {
             ("Invalid", "xmark.octagon.fill", .red, "Invalid Content Credentials")
         case .trustNotConfigured:
             ("Signer trust not checked", "exclamationmark.triangle.fill", .orange, "Signer trust was not checked")
-        case .unsupported, .notPresent, .validationFailed:
-            ("Could not validate", "questionmark.circle.fill", .gray, "Content Credentials could not be validated")
+        case .unsupported:
+            ("Unsupported", "questionmark.circle.fill", .gray, "Content Credentials validation is unsupported")
+        case .notPresent:
+            ("No Content Credentials", "c.circle", .gray, "No Content Credentials were found")
+        case .validationFailed:
+            ("Validation Failed", "questionmark.circle.fill", .gray, "Content Credentials validation failed")
         }
     }
 
-    private func validate(forceRefresh: Bool = false) {
-        validationTask?.cancel()
-        validation = forceRefresh ? nil : validation
-        validationTask = Task {
-            let result: C2PAValidationResult
-            do {
-                result = try await C2PASigningService.validate(imageURL: imageURL, forceRefresh: forceRefresh)
-            } catch is CancellationError {
+    private func retry() {
+        metadataState = .loading
+        validationState = .loading
+        inspectionRevision &+= 1
+    }
+
+    private func inspect(forceRefresh: Bool) async {
+        do {
+            var metadata = try await readService.readC2PAMetadata(url: imageURL)
+            try Task.checkCancellation()
+            guard !metadata.manifests.isEmpty else {
+                metadataState = .absent
                 return
-            } catch C2PASigningError.c2patoolMissing {
-                result = .unavailable
-            } catch C2PAValidationError.malformedOutput {
-                result = C2PAValidationResult(status: .unsupported, message: "c2patool returned unsupported validation output.")
-            } catch {
-                result = C2PAValidationResult(status: .validationFailed, message: "Could not validate: \(error.localizedDescription)")
             }
-            guard !Task.isCancelled else { return }
-            validation = result
+            // Thumbnails are supplementary. A failed thumbnail decode must not
+            // hide otherwise-readable credentials.
+            metadata.thumbnails = try? await readService.readC2PAThumbnails(url: imageURL)
+            try Task.checkCancellation()
+            metadataState = .loaded(metadata)
+        } catch is CancellationError {
+            return
+        } catch {
+            metadataState = .failed(.metadataRead(error: error))
+            return
+        }
+
+        validationState = .loading
+        do {
+            let result = try await C2PASigningService.validate(
+                imageURL: imageURL,
+                forceRefresh: forceRefresh
+            )
+            try Task.checkCancellation()
+            validationState = .result(result)
             onValidationChanged(result)
+        } catch is CancellationError {
+            return
+        } catch {
+            let failure = C2PAInspectionFailure.validation(error: error)
+            validationState = .failed(failure)
+            onValidationChanged(validationResult(for: failure))
+        }
+    }
+
+    private func validationResult(for failure: C2PAInspectionFailure) -> C2PAValidationResult {
+        switch failure {
+        case .unavailableTool:
+            .unavailable
+        case .malformed:
+            C2PAValidationResult(status: .unsupported, message: failure.message)
+        case .accessDenied, .validationFailed:
+            C2PAValidationResult(status: .validationFailed, message: failure.message)
         }
     }
 
@@ -192,11 +328,15 @@ struct C2PADetailSheet: View {
     }
 
     @ViewBuilder
-    private func manifestSection(_ manifest: C2PAManifest, index: Int) -> some View {
+    private func manifestSection(
+        _ manifest: C2PAManifest,
+        index: Int,
+        manifestCount: Int
+    ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             // Header: manifest number + whether it's the active one
             HStack {
-                let isActive = index == metadata.manifests.count - 1
+                let isActive = index == manifestCount - 1
                 Text("Manifest \(index + 1)")
                     .font(.subheadline)
                     .fontWeight(.semibold)

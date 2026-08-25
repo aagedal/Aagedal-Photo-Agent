@@ -299,6 +299,7 @@ struct ImportViewModelTests {
         let defaults = UserDefaults.standard
         let preferenceKeys = [
             UserDefaultsKeys.importFileTypeFilter,
+            UserDefaultsKeys.importConflictPolicy,
             UserDefaultsKeys.importCreateSubFolders,
             UserDefaultsKeys.importVerificationMode,
             UserDefaultsKeys.importSkipPreviouslyImported,
@@ -350,6 +351,7 @@ struct ImportViewModelTests {
         viewModel.configuration.destinationBaseURL = destinationBase
         viewModel.configuration.importTitle = "Folder Handoff"
         viewModel.configuration.fileTypeFilter = .jpegOnly
+        viewModel.configuration.conflictPolicy = .skipExisting
         viewModel.configuration.createSubFolders = false
         viewModel.configuration.verificationMode = .off
         viewModel.configuration.skipPreviouslyImported = false

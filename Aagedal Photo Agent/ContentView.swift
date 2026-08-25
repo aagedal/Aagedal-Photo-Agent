@@ -46,7 +46,6 @@ private struct BackupEditedItem: Identifiable {
 /// sheet, which presents as a small rounded rectangle on first launch.
 private struct C2PADetailPresentation: Identifiable {
     let id = UUID()
-    let metadata: C2PAMetadata
     let imageURL: URL
 }
 
@@ -508,8 +507,8 @@ struct ContentView: View {
             }
             .sheet(item: $c2paDetailPresentation) { presentation in
                 C2PADetailSheet(
-                    metadata: presentation.metadata,
                     imageURL: presentation.imageURL,
+                    readService: browserViewModel.metadataReadService,
                     initialValidation: c2paValidation,
                     onValidationChanged: { c2paValidation = $0 }
                 )
@@ -2922,22 +2921,10 @@ struct ContentView: View {
 
     private func loadC2PADetail() {
         guard let image = browserViewModel.selectedImages.first else { return }
-        let service = browserViewModel.metadataReadService
-        let imageURL = image.url
         c2paValidation = nil
-        Task {
-            do {
-                var result = try await service.readC2PAMetadata(url: imageURL)
-                // Best-effort thumbnail extraction — don't fail the sheet if this errors
-                let thumbnails = try? await service.readC2PAThumbnails(url: imageURL)
-                result.thumbnails = thumbnails
-                guard !Task.isCancelled,
-                      browserViewModel.selectedImages.first?.url == imageURL else { return }
-                c2paDetailPresentation = C2PADetailPresentation(metadata: result, imageURL: imageURL)
-            } catch {
-                c2paDetailPresentation = nil
-            }
-        }
+        // Present first; the sheet owns its loading and retry lifecycle so a
+        // slow or failed C2PA read can never make the user's action go silent.
+        c2paDetailPresentation = C2PADetailPresentation(imageURL: image.url)
     }
 
     private func revealInFinder(_ url: URL) {

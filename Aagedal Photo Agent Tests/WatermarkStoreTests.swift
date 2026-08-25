@@ -20,11 +20,13 @@ struct WatermarkStoreTests {
     }
 
     private func activate(_ dir: URL) {
+        WatermarkStore.deletionIO = .live
         WatermarkStore.storageOverrideURL = dir
         WatermarkStore.shared.reloadAfterStorageChange()
     }
 
     private func teardown(_ dir: URL) {
+        WatermarkStore.deletionIO = .live
         WatermarkStore.storageOverrideURL = nil
         try? FileManager.default.removeItem(at: dir)
         WatermarkStore.shared.reloadAfterStorageChange()
@@ -123,6 +125,47 @@ struct WatermarkStoreTests {
         // A tombstone must survive so a stale remote copy can't resurrect the deleted item.
         let tombstone = dir.appendingPathComponent("items/\(asset.id.uuidString).deleted")
         #expect(FileManager.default.fileExists(atPath: tombstone.path))
+
+        // Simulate a stale peer returning the complete item folder. Reload must
+        // honor the marker and clean the resurrected copy back up.
+        try FileManager.default.createDirectory(at: itemDir, withIntermediateDirectories: true)
+        try JSONEncoder().encode(asset).write(
+            to: itemDir.appendingPathComponent("meta.json"), options: .atomic
+        )
+        try Data(contentsOf: pngURL).write(
+            to: itemDir.appendingPathComponent("image.png"), options: .atomic
+        )
+        WatermarkStore.shared.reloadAfterStorageChange()
+        #expect(WatermarkStore.shared.allAssets().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: itemDir.path))
+    }
+
+    @Test("failed marker persistence preserves the watermark folder and library entry")
+    func failedMarkerPersistencePreservesWatermark() throws {
+        let dir = makeTempDir()
+        activate(dir)
+        defer { teardown(dir) }
+
+        let pngURL = try makeTempPNG()
+        defer { try? FileManager.default.removeItem(at: pngURL) }
+        let asset = try WatermarkStore.shared.importPNG(from: pngURL, name: "Preserved")
+        let itemDir = dir.appendingPathComponent("items/\(asset.id.uuidString)", isDirectory: true)
+        WatermarkStore.deletionIO = DurableDeletionIO(
+            writeData: { _, _ in throw CocoaError(.fileWriteNoPermission) },
+            readData: { try CloudCoordinatedIO.readData(at: $0) },
+            removeItem: { try CloudCoordinatedIO.removeItem(at: $0) }
+        )
+
+        #expect(throws: DurableDeletionError.self) {
+            try WatermarkStore.shared.delete(id: asset.id)
+        }
+
+        #expect(WatermarkStore.shared.asset(byID: asset.id)?.name == "Preserved")
+        #expect(FileManager.default.fileExists(atPath: itemDir.appendingPathComponent("meta.json").path))
+        #expect(FileManager.default.fileExists(atPath: itemDir.appendingPathComponent("image.png").path))
+        #expect(!FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("items/\(asset.id.uuidString).deleted").path
+        ))
     }
 
     /// Regression test: `meta.json` written before `defaultSizeDimension`/`defaultSizeUnit`/

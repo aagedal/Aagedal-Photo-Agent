@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 10 of 75 checklist substeps complete
+**Status:** implementation in progress — 20 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -40,11 +40,16 @@ accessibility, responsiveness, and maintainability.
 
 **Plan:**
 
-- [ ] Make tombstone creation throwing and verify the installed marker can be decoded.
-- [ ] Abort deletion/merge if the marker cannot be made durable.
-- [ ] Delete thumbnails and derived caches only after the record/tombstone transition succeeds.
-- [ ] Share one tested deletion-transaction abstraction across Known People, Teams, and Watermarks.
-- [ ] Surface a recoverable error rather than presenting a successful deletion.
+- [x] Make tombstone creation throwing and verify the installed marker can be decoded.
+  ([validation](durable-synced-deletion-validation.md), 2026-08-25)
+- [x] Abort deletion/merge if the marker cannot be made durable.
+  ([validation](durable-synced-deletion-validation.md), 2026-08-25)
+- [x] Delete thumbnails and derived caches only after the record/tombstone transition succeeds.
+  ([validation](durable-synced-deletion-validation.md), 2026-08-25)
+- [x] Share one tested deletion-transaction abstraction across Known People, Teams, and Watermarks.
+  ([validation](durable-synced-deletion-validation.md), 2026-08-25)
+- [x] Surface a recoverable error rather than presenting a successful deletion.
+  ([validation](durable-synced-deletion-validation.md), 2026-08-25)
 
 **Exit gate:** injected encode/write/remove failures leave the original record usable; a simulated peer cannot
 resurrect a successfully deleted record; interrupted merges have a documented recoverable state.
@@ -120,14 +125,18 @@ produce deterministic history.
 
 **Plan:**
 
-- [ ] Add a macOS workflow that performs a clean `build-for-testing` and unfiltered
+- [x] Add a macOS workflow that performs a clean `build-for-testing` and unfiltered
   `test-without-building` run.
-- [ ] Run the metadata support generator check, JSON/plist validation, conflict-marker scan, and
+  ([validation](continuous-integration-release-gate-validation.md), 2026-08-25)
+- [x] Run the metadata support generator check, JSON/plist validation, conflict-marker scan, and
   `git diff --check` in CI.
-- [ ] Publish the `.xcresult` and concise test summary on failure.
+  ([validation](continuous-integration-release-gate-validation.md), 2026-08-25)
+- [x] Publish the `.xcresult` and concise test summary on failure.
+  ([validation](continuous-integration-release-gate-validation.md), 2026-08-25)
 - [ ] Require the workflow on the protected release branch.
-- [ ] Make `release.sh` require a passing result tied to the exact source revision, with a noisy, recorded
+- [x] Make `release.sh` require a passing result tied to the exact source revision, with a noisy, recorded
   emergency override.
+  ([validation](continuous-integration-release-gate-validation.md), 2026-08-25)
 
 **Exit gate:** a deliberately failing test blocks CI and the normal release path; a stale result from another
 commit is rejected.
@@ -193,8 +202,9 @@ read failure is swallowed at `ContentView.swift:2923-2939`.
   ([validation](template-save-recovery-validation.md), 2026-08-25)
 - [x] Preserve the draft and show inline Retry/Save As actions on failure.
   ([validation](template-save-recovery-validation.md), 2026-08-25)
-- [ ] Present C2PA loading immediately, then distinguish absent, malformed, unavailable-tool, access-denied,
+- [x] Present C2PA loading immediately, then distinguish absent, malformed, unavailable-tool, access-denied,
   and validation-failed states with Retry.
+  ([validation](c2pa-inspector-recovery-validation.md), 2026-08-25)
 - [ ] Centralize privacy-safe accessibility announcements for success, failure, cancellation, and recovery.
 
 **Exit gate:** injected failures retain all edits, focus the error, remain keyboard operable, and produce one

@@ -25,6 +25,7 @@ struct KnownPeopleListView: View {
     @State private var showDeleteConfirmation = false
     @State private var personToDelete: KnownPerson?
     @State private var sortMode: KnownPeopleSortMode = .name
+    @State private var deletionErrorMessage: String?
 
     private var filteredPeople: [KnownPerson] {
         let filtered: [KnownPerson]
@@ -141,6 +142,17 @@ struct KnownPeopleListView: View {
         } message: { person in
             Text("Are you sure you want to delete \"\(person.name)\"? This will remove all \(person.embeddings.count) face sample(s). This cannot be undone.")
         }
+        .alert(
+            "Deletion Not Completed",
+            isPresented: Binding(
+                get: { deletionErrorMessage != nil },
+                set: { if !$0 { deletionErrorMessage = nil } }
+            )
+        ) {
+            Button("OK") { deletionErrorMessage = nil }
+        } message: {
+            Text(deletionErrorMessage ?? "")
+        }
     }
 
     private func loadPeople() {
@@ -170,7 +182,7 @@ struct KnownPeopleListView: View {
                 selectedPersonID = nil
             }
         } catch {
-            // Handle error silently for now
+            deletionErrorMessage = error.localizedDescription
         }
     }
 }
