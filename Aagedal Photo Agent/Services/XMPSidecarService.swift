@@ -15,6 +15,11 @@ nonisolated private let localizedTitleClearedProperty = "LocalizedTitleCleared"
 /// writer via `XMPDataBuilder`, so the sidecar and embedded XMP can't drift.
 struct XMPSidecarService: Sendable {
 
+    /// A sidecar may also be edited by Bridge/Lightroom while Photo Agent is preparing a write.
+    /// Serialized app writes retry from the newly observed bytes instead of installing a merge
+    /// based on a stale source document.
+    private nonisolated static let transactionRetryLimit = 4
+
     nonisolated func sidecarURL(for imageURL: URL) -> URL {
         imageURL.deletingPathExtension().appendingPathExtension("xmp")
     }
@@ -161,6 +166,78 @@ struct XMPSidecarService: Sendable {
         try saveSidecar(metadata: merged, for: imageURL)
     }
 
+    /// Complete serialized descriptive transaction. The existing XMP is read and mutated only
+    /// after this photo's URL boundary has been acquired, so Develop/face/caption writes cannot
+    /// interleave their read/merge/install phases. A content comparison immediately before the
+    /// atomic install catches out-of-process edits and restarts the merge.
+    nonisolated func saveSidecarPreservingDevelopSettingsSerialized(
+        metadata: IPTCMetadata,
+        for imageURL: URL,
+        mergeWithExisting: Bool = false,
+        expectedSnapshot: XMPSidecarWriteSnapshot? = nil,
+        beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
+    ) async throws {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            try await self.updateXMPTransaction(
+                for: imageURL,
+                expectedSnapshot: expectedSnapshot,
+                beforeRevisionCheck: beforeRevisionCheck
+            ) { xmp in
+                let record: IPTCMetadata
+                if mergeWithExisting {
+                    let existing = self.parseMetadata(from: xmp, imageAspect: { nil })
+                    record = existing.merged(preferring: metadata)
+                } else {
+                    record = metadata
+                }
+                XMPDataBuilder.applyDescriptive(record, into: &xmp)
+                if let localizedTitles = record.localizedTitles {
+                    if localizedTitles.isEmpty {
+                        xmp.setValue(
+                            .simple("True"),
+                            namespace: XMPDataBuilder.aaphotoNamespace,
+                            property: localizedTitleClearedProperty
+                        )
+                    } else {
+                        xmp.removeValue(
+                            namespace: XMPDataBuilder.aaphotoNamespace,
+                            property: localizedTitleClearedProperty
+                        )
+                    }
+                }
+                xmp.creatorTool = SwiftExifWriteEngine.creatorTool
+            }
+        }
+    }
+
+    /// Complete serialized Develop transaction. Descriptive and third-party namespaces are
+    /// retained from the source revision used for this attempt.
+    nonisolated func saveCameraRawOnlySerialized(
+        _ settings: CameraRawSettings?,
+        orientation: Int?,
+        for imageURL: URL
+    ) async throws {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            try await self.updateXMPTransaction(for: imageURL) { xmp in
+                if let settings, !settings.isEmpty {
+                    XMPDataBuilder.applyCameraRaw(
+                        settings,
+                        imageAspect: self.imageAspectIfCropAngled(for: imageURL, crop: settings.crop),
+                        into: &xmp
+                    )
+                    if let orientation {
+                        let value = String(orientation)
+                        xmp.setValue(.simple(value), namespace: XMPNamespace.tiff, property: "Orientation")
+                        xmp.setValue(.simple(value), namespace: XMPNamespace.exif, property: "Orientation")
+                    }
+                    xmp.creatorTool = SwiftExifWriteEngine.creatorTool
+                } else {
+                    XMPDataBuilder.removeCRSBlock(&xmp)
+                }
+            }
+        }
+    }
+
     func saveCameraRawOnly(_ settings: CameraRawSettings?, orientation: Int?, for imageURL: URL) throws {
         let url = sidecarURL(for: imageURL)
         if let settings, !settings.isEmpty {
@@ -294,6 +371,56 @@ struct XMPSidecarService: Sendable {
         }
         // `.atomic` keeps the sidecar crash-safe (XMPSidecar.write is a plain non-atomic write).
         try data.write(to: url, options: .atomic)
+    }
+
+    /// Read/merge/revision-check/stage/install/read-back loop used by every new asynchronous XMP
+    /// entry point. `Task.yield()` is intentional: it gives file presenters and external editors a
+    /// chance to publish a pending replacement before the content-token check.
+    nonisolated private func updateXMPTransaction(
+        for imageURL: URL,
+        expectedSnapshot: XMPSidecarWriteSnapshot? = nil,
+        beforeRevisionCheck: @Sendable (Int) -> Void = { _ in },
+        mutation: @Sendable (inout XMPData) -> Void
+    ) async throws {
+        let url = sidecarURL(for: imageURL)
+        for attempt in 0..<Self.transactionRetryLimit {
+            let sourceData = try Self.currentData(at: url)
+            if let expectedSnapshot, sourceData != expectedSnapshot.data {
+                throw DescriptiveMetadataWriteError.staleXMPSidecar(url)
+            }
+            var xmp: XMPData
+            if let sourceData {
+                xmp = try XMPReader.readFromXML(sourceData)
+            } else {
+                xmp = XMPData()
+            }
+            mutation(&xmp)
+
+            let xml = XMPWriter.generateXML(xmp)
+            guard let stagedData = xml.data(using: .utf8) else {
+                throw CocoaError(.fileWriteInapplicableStringEncoding)
+            }
+            // Validate the staged schema before it can replace the recoverable source bytes.
+            _ = try XMPReader.readFromXML(stagedData)
+
+            beforeRevisionCheck(attempt)
+            await Task.yield()
+            guard try Self.currentData(at: url) == sourceData else { continue }
+
+            try stagedData.write(to: url, options: .atomic)
+            let installedData = try Data(contentsOf: url)
+            guard installedData == stagedData else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            _ = try XMPReader.readFromXML(installedData)
+            return
+        }
+        throw DescriptiveMetadataWriteError.staleXMPSidecar(url)
+    }
+
+    private nonisolated static func currentData(at url: URL) throws -> Data? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try Data(contentsOf: url)
     }
 
     /// Sensor-frame aspect for the ACR crop-convention conversion — read from the image header only

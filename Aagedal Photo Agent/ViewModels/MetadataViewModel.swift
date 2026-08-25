@@ -1532,8 +1532,6 @@ final class MetadataViewModel {
         writeTask?.cancel()
         writeTask = Task {
             do {
-                try xmpSidecarService.saveSidecar(metadata: edited, for: imageURL)
-
                 let now = Date()
                 let history = buildHistory(
                     previous: previous,
@@ -1549,13 +1547,22 @@ final class MetadataViewModel {
                     imageMetadataSnapshot: edited,
                     history: history
                 )
-                try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+                let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
+                    sidecar,
+                    for: imageURL,
+                    in: folderURL
+                )
+                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                    metadata: installed.metadata,
+                    for: imageURL,
+                    mergeWithExisting: true
+                )
 
                 let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
                 if isStillSelected {
-                    self.sidecarHistory = history
-                    self.previousEditingMetadata = edited
-                    self.xmpMetadata = edited
+                    self.sidecarHistory = installed.history
+                    self.previousEditingMetadata = installed.metadata
+                    self.xmpMetadata = installed.metadata
                     if self.metadataReferenceSource == .xmp {
                         let reference = self.referenceMetadata(
                             for: .xmp,
@@ -2011,7 +2018,7 @@ final class MetadataViewModel {
         processVariablesForImages(images)
     }
 
-    private static let variablePattern = /\{(date|date:[^}]+|dateCreated|dateCreated:[^}]+|dateCaptured|dateCaptured:[^}]+|filename|initials|persons|keywords|gps|gps:city|gps:country|latitude|longitude|field:[^}]+|seq|seq:\d+)\}/
+    private static let variablePattern = /(?:\{(date|date:[^}]+|dateCreated|dateCreated:[^}]+|dateCaptured|dateCaptured:[^}]+|filename|initials|persons|keywords|number|gps|gps:city|gps:country|latitude|longitude|field:[^}]+|seq|seq:\d+)\}|\(number\))/
 
     /// Checks whether any text field, keyword, or person in editingMetadata contains variable placeholders.
     var hasVariables: Bool {
@@ -2057,10 +2064,24 @@ final class MetadataViewModel {
         }
     }
 
+    private func sportsCaptionNumber(for imageURL: URL?) -> String {
+        guard let imageURL else { return "" }
+        let folderURL = imageURL.deletingLastPathComponent()
+        return SportsCaptionNumberResolver.value(
+            for: imageURL,
+            faceData: FaceDataStorageService().loadFaceData(for: folderURL),
+            match: MatchRosterService().load(for: folderURL)
+        )
+    }
+
     private func processVariablesInEditingBuffer(filename: String, sequenceIndex: Int) async {
         let interpolator = PresetVariableInterpolator()
         let initials = UserDefaults.standard.string(forKey: UserDefaultsKeys.creatorInitials) ?? ""
         editingMetadata = await interpolator.resolvingGPSPlaceVariables(in: editingMetadata)
+        editingMetadata = interpolator.resolvingSportsNumberVariables(
+            in: editingMetadata,
+            number: sportsCaptionNumber(for: selectedURLs.first)
+        )
         // Use a snapshot of current editing state for field references
         let snapshot = editingMetadata
 
@@ -2380,7 +2401,11 @@ final class MetadataViewModel {
                 } else {
                     unresolvedMeta = baseMeta
                 }
-                let meta = await interpolator.resolvingGPSPlaceVariables(in: unresolvedMeta)
+                let gpsResolved = await interpolator.resolvingGPSPlaceVariables(in: unresolvedMeta)
+                let meta = interpolator.resolvingSportsNumberVariables(
+                    in: gpsResolved,
+                    number: self.sportsCaptionNumber(for: url)
+                )
                 let snapshot = meta
 
                 var changed = meta != unresolvedMeta

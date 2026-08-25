@@ -11,8 +11,43 @@ nonisolated struct CaptionDraftPersistence: Sendable {
     let sidecar: MetadataSidecar
 
     func persist() throws {
-        try MetadataSidecarService().saveSidecar(sidecar, for: imageURL, in: folderURL)
-        try XMPSidecarService().saveSidecar(metadata: sidecar.metadata, for: imageURL)
+        // Caption's FIFO is intentionally a background DispatchQueue. Bridge its synchronous
+        // durable-barrier contract to the shared async URL actor without blocking the main actor.
+        let completion = DispatchSemaphore(value: 0)
+        let result = CaptionPersistenceResult()
+        Task {
+            do {
+                let installed = try await MetadataSidecarService().saveSidecarMergingHistorySerialized(
+                    sidecar,
+                    for: imageURL,
+                    in: folderURL
+                )
+                try await XMPSidecarService().saveSidecarPreservingDevelopSettingsSerialized(
+                    metadata: installed.metadata,
+                    for: imageURL,
+                    mergeWithExisting: true
+                )
+                result.set(.success(()))
+            } catch {
+                result.set(.failure(error))
+            }
+            completion.signal()
+        }
+        completion.wait()
+        try result.get().get()
+    }
+}
+
+nonisolated private final class CaptionPersistenceResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Result<Void, any Error>?
+
+    nonisolated func set(_ newValue: Result<Void, any Error>) {
+        lock.withLock { value = newValue }
+    }
+
+    nonisolated func get() -> Result<Void, any Error> {
+        lock.withLock { value! }
     }
 }
 

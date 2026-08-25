@@ -79,13 +79,11 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
         self.init(
             saveCatalog: { try await repository.save($0) },
             writePrimary: { settings in
-                try await MainActor.run {
-                    try sidecars.saveCameraRawOnly(
-                        settings,
-                        orientation: orientation,
-                        for: imageURL
-                    )
-                }
+                try await sidecars.saveCameraRawOnlySerialized(
+                    settings,
+                    orientation: orientation,
+                    for: imageURL
+                )
             },
             readPrimary: { sidecars.loadSidecar(for: imageURL)?.cameraRaw },
             orientation: orientation

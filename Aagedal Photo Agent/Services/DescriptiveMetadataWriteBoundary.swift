@@ -149,25 +149,17 @@ nonisolated struct DescriptiveMetadataWriteBoundary: Sendable {
         if writesXMPSidecar {
             try Task.checkCancellation()
             let sidecarURL = xmpSidecarService.sidecarURL(for: sourceURL)
-            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: sourceURL)) {
-                try Task.checkCancellation()
-                if let expectedXMPSnapshot,
-                   self.xmpSidecarService.sidecarDataIfExists(for: sourceURL) != expectedXMPSnapshot.data {
-                    throw DescriptiveMetadataWriteError.staleXMPSidecar(sidecarURL)
-                }
-
-                var record = metadata
-                if !isReplacement,
-                   let existing = self.xmpSidecarService.loadSidecar(for: sourceURL) {
-                    record = existing.merged(preferring: metadata)
-                }
-                // This is a descriptive boundary: nil Camera Raw means preserve, never clear.
-                record.cameraRaw = nil
-                try self.xmpSidecarService.saveSidecarPreservingDevelopSettings(
-                    metadata: record,
-                    for: sourceURL
-                )
-            }
+            // The service owns the complete read/merge/revision-check/install transaction. Keeping
+            // the merge inside the URL boundary is what prevents a face-name write from racing a
+            // caption/keyword write that was prepared from an older sidecar revision.
+            var record = metadata
+            record.cameraRaw = nil
+            try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                metadata: record,
+                for: sourceURL,
+                mergeWithExisting: !isReplacement,
+                expectedSnapshot: expectedXMPSnapshot
+            )
             writtenSidecarURL = sidecarURL
         }
 

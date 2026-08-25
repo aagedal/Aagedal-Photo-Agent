@@ -134,7 +134,7 @@ struct ContentView: View {
     @State private var saveDevelopTemplateIncludesCrop = true
     @AppStorage(UserDefaultsKeys.metadataPanelWidth) private var metadataPanelWidth: Double = 320
     @State private var mainViewMode: MainViewMode = .browser
-    @State private var deadlineProfileLibrary = DeadlineProfileLibraryModel()
+    @State private var deadlineProfileLibrary: DeadlineProfileLibraryModel
     @State private var deadlineRenameRecipeLibrary = BatchRenameRecipeLibraryModel()
     @State private var deadlineLiveSnapshot = DeadlinePreflightLiveSnapshotModel()
     @State private var deadlineDeliverySession: DeadlineDeliveryProductionSession
@@ -174,6 +174,7 @@ struct ContentView: View {
     @State private var comparisonRenameEvent: ComparisonRenameEvent?
     @State private var comparisonOrigin: ComparisonOriginWorkspace = .browser
     @State private var comparisonInitialLeftRepresentation: ComparisonRepresentation?
+    private let uiTestLaunchConfiguration: UITestLaunchConfiguration
 
     // Keyword-list backup recovery (prompts when a list comes back empty at launch).
     @State private var isShowingListRecoveryPrompt = false
@@ -184,6 +185,7 @@ struct ContentView: View {
     @State private var listRecoveryAffectedNames: [String] = []
 
     init(settingsViewModel: SettingsViewModel) {
+        let uiTestLaunchConfiguration = UITestLaunchConfiguration.current
         let deliverySession = DeadlineDeliveryProductionSession()
         let thumbnailService = ThumbnailService()
         let fullScreenImageCache = FullScreenImageCache()
@@ -209,6 +211,14 @@ struct ContentView: View {
         _metadataViewModel = State(initialValue: MetadataViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
         _faceRecognitionViewModel = State(initialValue: faceRecognition)
         _settingsViewModel = State(initialValue: settingsViewModel)
+        if uiTestLaunchConfiguration.isEnabled,
+           let profileStoreURL = uiTestLaunchConfiguration.profileStoreURL {
+            _deadlineProfileLibrary = State(initialValue: DeadlineProfileLibraryModel(
+                repository: DeadlineProfileRepository(documentURL: profileStoreURL)
+            ))
+        } else {
+            _deadlineProfileLibrary = State(initialValue: DeadlineProfileLibraryModel())
+        }
         _activityHistory = State(initialValue: history)
         _deadlineDeliverySession = State(initialValue: deliverySession)
         _deliveryWorkflowActivity = State(initialValue: DeliveryWorkflowActivityModel(
@@ -216,6 +226,7 @@ struct ContentView: View {
         ))
         _pendingDeadlineResumeWorkflowIdentifier = State(initialValue: nil)
         _importViewModel = State(initialValue: ImportViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine, activityHistory: history))
+        self.uiTestLaunchConfiguration = uiTestLaunchConfiguration
     }
 
     @Environment(\.openWindow) private var openWindow
@@ -227,6 +238,7 @@ struct ContentView: View {
                 await deadlineRenameRecipeLibrary.loadIfNeeded()
                 await deliveryReceiptLibrary.reload()
                 await deliveryWorkflowActivity.reload()
+                await runUITestWorkflowIfRequested()
             }
             .task(id: deadlineLiveCaptureRevision) {
                 guard let request = makeDeadlineLiveCaptureRequest() else {
@@ -1210,6 +1222,69 @@ struct ContentView: View {
             }
             guard browserViewModel.selectedImages.contains(where: \.isImageFile) else { return }
             mainViewMode = .deadline
+        }
+    }
+
+    /// Drives real workflow entry points with disposable paths supplied by the UI-test process.
+    /// The explicit `--ui-testing` gate keeps this entirely inert for interactive launches.
+    private func runUITestWorkflowIfRequested() async {
+        let configuration = uiTestLaunchConfiguration
+        guard configuration.isEnabled, let workflow = configuration.workflow else { return }
+
+        if workflow == .importPreflight {
+            guard let sourceURL = configuration.sourceURL,
+                  let destinationURL = configuration.destinationURL else { return }
+            importViewModel.prepareForNewSession()
+            importViewModel.configuration.sourceURL = sourceURL
+            importViewModel.configuration.destinationBaseURL = destinationURL
+            importViewModel.configuration.importTitle = "UI Smoke Import"
+            importViewModel.configuration.fileTypeFilter = .both
+            importViewModel.configuration.conflictPolicy = .overwrite
+            importViewModel.configuration.createSubFolders = false
+            importViewModel.configuration.applyMetadata = false
+            importViewModel.configuration.verificationMode = .off
+            importViewModel.configuration.skipPreviouslyImported = false
+            importViewModel.sortByDate = false
+            importViewModel.sourceFiles = ((try? FileManager.default.contentsOfDirectory(
+                at: sourceURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? [])
+                .filter { SupportedImageFormats.isSupported(url: $0) }
+                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            isShowingImport = true
+            return
+        }
+
+        guard let folderURL = configuration.folderURL else { return }
+        openFolderInActivePane(folderURL, addToOpenFolders: false)
+
+        for _ in 0..<200 where browserViewModel.isLoading {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
+        if workflow == .openFolder || workflow == .recoveryError { return }
+        guard !browserViewModel.visibleImages.isEmpty else { return }
+
+        let selection = workflow == .batchRename
+            ? Array(browserViewModel.visibleImages.prefix(2))
+            : Array(browserViewModel.visibleImages.prefix(1))
+        let selectedURLs = Set(selection.map(\.url))
+        browserViewModel.applySelection(ids: selectedURLs, active: selection.first?.url)
+        metadataViewModel.loadMetadata(for: selection, folderURL: folderURL)
+
+        switch workflow {
+        case .caption:
+            openCaptionWorkspace()
+        case .batchRename:
+            browserViewModel.renameSelected()
+        case .deadline:
+            if deadlineProfileLibrary.selectedProfile == nil {
+                await deadlineProfileLibrary.create(name: "UI Smoke Deadline")
+            }
+            openDeadlineWorkspace()
+        case .openFolder, .importPreflight, .recoveryError:
+            break
         }
     }
 

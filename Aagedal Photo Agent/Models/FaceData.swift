@@ -115,6 +115,14 @@ nonisolated struct FaceGroup: Codable, Identifiable {
     /// A jersey number assigned by hand (sports mode). Display-only — it labels the group
     /// and overrides OCR'd/roster numbers, but is never written into the name or Person Shown.
     var manualNumber: Int?
+    /// A stable identity learned from Known People. Optional for backwards compatibility.
+    /// Sports uses it to recover the player's roster number in later tournament folders.
+    var knownPersonID: UUID? = nil
+    /// Reversible "do not write Person Shown" choice for referees, coaches, supporters, etc.
+    /// The group and its faces remain available for later correction/re-inclusion.
+    var excludedFromPersonShown: Bool? = nil
+
+    var isExcludedFromPersonShown: Bool { excludedFromPersonShown ?? false }
 }
 
 // MARK: - Lenses

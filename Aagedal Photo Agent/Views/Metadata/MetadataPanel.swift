@@ -3146,6 +3146,7 @@ struct EditableTextField: View {
             if let focusedField, let focusKey {
                 let isFocused = focusedField.wrappedValue == focusKey
                 TextField(placeholder, text: $localText)
+                    .accessibilityIdentifier("metadata.input.\(focusKey)")
                     .textFieldStyle(.roundedBorder)
                     .font(.body)
                     .focused(focusedField, equals: focusKey)
@@ -3162,6 +3163,7 @@ struct EditableTextField: View {
                     }
             } else {
                 TextField(placeholder, text: $text)
+                    .accessibilityIdentifier("metadata.input.\(focusKey ?? label)")
                     .textFieldStyle(.roundedBorder)
                     .font(.body)
                     .onSubmit {

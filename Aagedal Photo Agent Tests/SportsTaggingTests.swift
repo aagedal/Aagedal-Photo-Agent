@@ -457,6 +457,97 @@ struct SportsTaggingTests {
         #expect(decoded.player(forNumber: 9)?.playerName == "Riise")
     }
 
+    @Test("Roster paste accepts sheet formats, ignores headers, and preserves known-person links")
+    func rosterPasteImport() {
+        let personID = UUID()
+        let existing = [
+            RosterPlayer(number: 9, playerName: "Old Name", knownPersonID: personID),
+            RosterPlayer(number: 11, playerName: "Existing")
+        ]
+        let imported = RosterTextImporter.merge(
+            "No. Player\n9, Ada Updated\n7\tGrace Hopper\n12 Alan Turing\ninvalid\n",
+            into: existing
+        )
+
+        #expect(imported.map(\.number) == [7, 9, 11, 12])
+        #expect(imported.first { $0.number == 9 }?.playerName == "Ada Updated")
+        #expect(imported.first { $0.number == 9 }?.knownPersonID == personID)
+    }
+
+    @Test("Sports caption number uses only confirmed or identity-backed values")
+    func sportsCaptionNumberTrustBoundary() {
+        let imageURL = URL(fileURLWithPath: "/tmp/sports-caption.jpg")
+        let personID = UUID()
+        let face = DetectedFace(
+            id: UUID(), imageURL: imageURL,
+            faceRect: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2),
+            featurePrintData: Data([1]), groupID: nil, detectedAt: Date()
+        )
+        var identifiedGroup = FaceGroup(
+            id: UUID(), name: "Roster Alias", representativeFaceID: face.id, faceIDs: [face.id]
+        )
+        identifiedGroup.knownPersonID = personID
+        var groupedFace = face
+        groupedFace.groupID = identifiedGroup.id
+        let confirmed = NumberDetection(
+            imageURL: imageURL, number: 9, numberConfidence: 0.9,
+            boundingBox: .zero, claimState: .confirmed
+        )
+        let suggestion = NumberDetection(
+            imageURL: imageURL, number: 88, numberConfidence: 0.9,
+            boundingBox: .zero, claimState: .suggested
+        )
+        let data = FolderFaceData(
+            folderURL: imageURL.deletingLastPathComponent(), faces: [groupedFace],
+            groups: [identifiedGroup], lastScanDate: Date(), scanComplete: true,
+            numberDetections: [confirmed, suggestion]
+        )
+        let team = Team(
+            name: "Team", primaryColor: TeamKitColor(r: 1, g: 0, b: 0),
+            roster: [RosterPlayer(number: 7, playerName: "Different Display", knownPersonID: personID)]
+        )
+        let match = MatchRoster(
+            folderURL: data.folderURL, homeTeamID: team.id, homeTeamSnapshot: team
+        )
+
+        #expect(SportsCaptionNumberResolver.value(for: imageURL, faceData: data, match: match) == "7, 9")
+
+        identifiedGroup.excludedFromPersonShown = true
+        var excludedData = data
+        excludedData.groups = [identifiedGroup]
+        #expect(SportsCaptionNumberResolver.value(for: imageURL, faceData: excludedData, match: match) == "9")
+    }
+
+    @Test("Known-person and referee exclusion group fields are migration-safe")
+    func sportsGroupBridgeRoundTrip() throws {
+        let id = UUID()
+        var group = FaceGroup(id: UUID(), name: "Player", representativeFaceID: UUID(), faceIDs: [])
+        group.knownPersonID = id
+        group.excludedFromPersonShown = true
+        let decoded = try JSONDecoder().decode(FaceGroup.self, from: JSONEncoder().encode(group))
+        #expect(decoded.knownPersonID == id)
+        #expect(decoded.isExcludedFromPersonShown)
+
+        let legacyJSON = "{\"id\":\"\(UUID().uuidString)\",\"representativeFaceID\":\"\(UUID().uuidString)\",\"faceIDs\":[]}"
+        let legacy = try JSONDecoder().decode(FaceGroup.self, from: Data(legacyJSON.utf8))
+        #expect(legacy.knownPersonID == nil)
+        #expect(!legacy.isExcludedFromPersonShown)
+    }
+
+    @Test("Excluded non-player groups cannot corroborate a Sports number claim")
+    func excludedGroupDoesNotConfirmClaim() {
+        let imageURL = URL(fileURLWithPath: "/tmp/referee.jpg")
+        var face = numberedFace(number: 4, color: nil)
+        face.imageURL = imageURL
+        var referee = group(of: [face], name: "Player Four")
+        referee.excludedFromPersonShown = true
+        face.groupID = referee.id
+        let names = FaceRecognitionViewModel.independentFaceNamesByURL(
+            faces: [face], groups: [referee]
+        )
+        #expect(names[imageURL] == nil)
+    }
+
     // MARK: - Colour sampling
 
     @Test("sampleDominantColor recovers a solid jersey colour")

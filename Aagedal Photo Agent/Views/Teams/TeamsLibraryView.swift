@@ -422,21 +422,7 @@ private struct TeamEditorView: View {
     /// Parse "<number> <name>" lines (separators: space, comma, tab). Merges with
     /// existing roster, overwriting names on number collisions.
     private func importRoster(from text: String) {
-        var byNumber = Dictionary(roster.map { ($0.number, $0) }, uniquingKeysWith: { first, _ in first })
-        for line in text.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard let firstSep = trimmed.firstIndex(where: { $0 == " " || $0 == "," || $0 == "\t" }) else { continue }
-            let numberPart = trimmed[..<firstSep].trimmingCharacters(in: CharacterSet(charactersIn: " ,\t"))
-            let namePart = trimmed[firstSep...].trimmingCharacters(in: CharacterSet(charactersIn: " ,\t"))
-            guard let number = Int(numberPart), !namePart.isEmpty else { continue }
-            if var existing = byNumber[number] {
-                existing.playerName = namePart
-                byNumber[number] = existing
-            } else {
-                byNumber[number] = RosterPlayer(number: number, playerName: namePart)
-            }
-        }
-        roster = byNumber.values.sorted { $0.number < $1.number }
+        roster = RosterTextImporter.merge(text, into: roster)
     }
 
     /// Debounce writes so each keystroke or colour-wheel drag doesn't trigger a

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */; };
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftExif */; };
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
@@ -111,6 +112,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		F00D0000000000000000000A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8E0556AB2F28C3F600BCFB49 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8E0556B22F28C3F600BCFB49;
+			remoteInfo = "Aagedal Photo Agent";
+		};
 		88530002139060FF0EA7D219 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 8E0556AB2F28C3F600BCFB49 /* Project object */;
@@ -121,6 +129,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoreWorkflowSmokeTests.swift; sourceTree = "<group>"; };
+		F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent UI Smoke Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataTests.swift; sourceTree = "<group>"; };
 		8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Aagedal Photo Agent.app"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -248,6 +258,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		F00D00000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		8E0556B02F28C3F600BCFB49 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -267,6 +284,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		F00D00000000000000000004 /* Aagedal Photo Agent UI Smoke Tests */ = {
+			isa = PBXGroup;
+			children = (
+				F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */,
+			);
+			path = "Aagedal Photo Agent UI Smoke Tests";
+			sourceTree = "<group>";
+		};
 		025F811ED39BE1D910E68E81 /* Aagedal Photo Agent Tests */ = {
 			isa = PBXGroup;
 			children = (
@@ -381,6 +406,7 @@
 				8E0556B52F28C3F600BCFB49 /* Aagedal Photo Agent */,
 				8E0556B42F28C3F600BCFB49 /* Products */,
 				025F811ED39BE1D910E68E81 /* Aagedal Photo Agent Tests */,
+				F00D00000000000000000004 /* Aagedal Photo Agent UI Smoke Tests */,
 			);
 			sourceTree = "<group>";
 		};
@@ -389,6 +415,7 @@
 			children = (
 				8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */,
 				0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */,
+				F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -396,6 +423,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		F00D00000000000000000008 /* Aagedal Photo Agent UI Smoke Tests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F00D0000000000000000000D /* Build configuration list for PBXNativeTarget "Aagedal Photo Agent UI Smoke Tests" */;
+			buildPhases = (
+				F00D00000000000000000006 /* Sources */,
+				F00D00000000000000000005 /* Frameworks */,
+				F00D00000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F00D00000000000000000009 /* PBXTargetDependency */,
+			);
+			name = "Aagedal Photo Agent UI Smoke Tests";
+			productName = "Aagedal Photo Agent UI Smoke Tests";
+			productReference = F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 8E0556BE2F28C3F900BCFB49 /* Build configuration list for PBXNativeTarget "Aagedal Photo Agent" */;
@@ -448,6 +493,10 @@
 					8E0556B22F28C3F600BCFB49 = {
 						CreatedOnToolsVersion = 26.0;
 					};
+					F00D00000000000000000008 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = 8E0556B22F28C3F600BCFB49;
+					};
 				};
 			};
 			buildConfigurationList = 8E0556AE2F28C3F600BCFB49 /* Build configuration list for PBXProject "Aagedal Photo Agent" */;
@@ -470,11 +519,19 @@
 			targets = (
 				8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */,
 				DB6EB8B3A46DC2147D8DE710 /* Aagedal Photo Agent Tests */,
+				F00D00000000000000000008 /* Aagedal Photo Agent UI Smoke Tests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		F00D00000000000000000007 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		8E0556B12F28C3F600BCFB49 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -513,6 +570,14 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		F00D00000000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		32D292541781394DC612E9B2 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -629,6 +694,12 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		F00D00000000000000000009 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = "Aagedal Photo Agent";
+			target = 8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */;
+			targetProxy = F00D0000000000000000000A /* PBXContainerItemProxy */;
+		};
 		2974ADFA266F2A27871845CC /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = "Aagedal Photo Agent";
@@ -638,6 +709,44 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		F00D0000000000000000000B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
+				EXCLUDED_ARCHS = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent.UI-Smoke-Tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = "Aagedal Photo Agent";
+			};
+			name = Debug;
+		};
+		F00D0000000000000000000C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
+				EXCLUDED_ARCHS = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent.UI-Smoke-Tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = "Aagedal Photo Agent";
+			};
+			name = Release;
+		};
 		56C3E2B22B2BF8584C9A038F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -892,6 +1001,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		F00D0000000000000000000D /* Build configuration list for PBXNativeTarget "Aagedal Photo Agent UI Smoke Tests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F00D0000000000000000000B /* Debug */,
+				F00D0000000000000000000C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		8E0556AE2F28C3F600BCFB49 /* Build configuration list for PBXProject "Aagedal Photo Agent" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

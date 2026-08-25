@@ -94,8 +94,16 @@ the folder produced jersey data.
   against the real NorgeMarokko scan (Landslaget only): #10→Ødegaard, #5→Wolfe, #21→Schjelderup.
 
 ## Next
-- [ ] Team-sheet / startlist paste import is already present in the team editor.
-- [ ] Tournament-wide "recognised from earlier" via the `knownPersonID` bridge.
-- [ ] Referee / non-player exclude action.
-- [ ] `(number)` caption token.
+- [x] **Team-sheet / startlist paste import** — the existing Paste and File actions now share the
+  tested `RosterTextImporter`; space/comma/tab rows merge by number and retain an existing
+  `knownPersonID` when a sheet refresh changes only the display name.
+- [x] **Tournament-wide "recognised from earlier"** — Known-People matches persist their identity
+  on `FaceGroup.knownPersonID`; Sports resolves the linked roster number in later folders. The
+  explicit "Remember Player for Future Matches" action promotes a confirmed group, stamps the
+  roster bridge, and refreshes the folder snapshot.
+- [x] **Referee / non-player exclude action** — Sports group menus can reversibly exclude/include a
+  group from Person Shown. Exclusion persists, prevents face and number writes, and makes attached
+  number claims sticky rejections without deleting the faces.
+- [x] **`(number)` caption token** — per-image variable processing expands trusted confirmed/manual/
+  identity-backed jersey or bib numbers in sorted order; `{number}` is accepted as an alias.
 - [ ] Threshold calibration on real match photos.

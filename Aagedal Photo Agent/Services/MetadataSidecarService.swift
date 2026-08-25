@@ -36,7 +36,7 @@ struct MetadataSidecarService: Sendable {
 
     // MARK: - Load
 
-    func loadSidecar(for imageURL: URL, in folderURL: URL) -> MetadataSidecar? {
+    nonisolated func loadSidecar(for imageURL: URL, in folderURL: URL) -> MetadataSidecar? {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
@@ -297,6 +297,40 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
+    /// Serializes the complete JSON history transaction for one photo. History entries captured
+    /// by Caption/Metadata/face workflows are treated as field mutations and replayed onto the
+    /// latest on-disk record. This prevents a complete-but-stale draft from erasing an unrelated
+    /// field saved while that draft was queued.
+    nonisolated func saveSidecarMergingHistorySerialized(
+        _ sidecar: MetadataSidecar,
+        for imageURL: URL,
+        in folderURL: URL
+    ) async throws -> MetadataSidecar {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            for _ in 0..<4 {
+                let sourceTokens = try self.contentTokens(for: imageURL, in: folderURL)
+                let current = self.loadSidecar(for: imageURL, in: folderURL)
+                let merged = Self.mergingHistory(sidecar, onto: current)
+
+                await Task.yield()
+                guard try self.contentTokens(for: imageURL, in: folderURL) == sourceTokens else {
+                    continue
+                }
+
+                try self.saveSidecar(merged, for: imageURL, in: folderURL)
+                guard let readBack = self.loadSidecar(for: imageURL, in: folderURL),
+                      Self.samePersistedRecord(readBack, merged)
+                else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                return readBack
+            }
+            throw CocoaError(.fileWriteFileExists, userInfo: [
+                NSLocalizedDescriptionKey: "The metadata sidecar kept changing while the edit was being saved."
+            ])
+        }
+    }
+
     // MARK: - Delete
 
     func deleteSidecar(for imageURL: URL, in folderURL: URL) throws {
@@ -461,6 +495,73 @@ struct MetadataSidecarService: Sendable {
             withJSONObject: encoded,
             options: [.prettyPrinted, .sortedKeys]
         )) ?? encodedData
+    }
+
+    private nonisolated func contentTokens(for imageURL: URL, in folderURL: URL) throws -> [Data?] {
+        try sidecarCandidateURLs(for: imageURL, in: folderURL).map { url in
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            return try Data(contentsOf: url)
+        }
+    }
+
+    private nonisolated static func mergingHistory(
+        _ incoming: MetadataSidecar,
+        onto current: MetadataSidecar?
+    ) -> MetadataSidecar {
+        guard let current else { return incoming }
+
+        let currentIDs = Set(current.history.map(\.id))
+        let newEntries = incoming.history
+            .filter { !currentIDs.contains($0.id) }
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+                return lhs.id < rhs.id
+            }
+
+        // Callers that do not provide a history delta retain the established whole-record save
+        // contract. Transactional editor workflows always provide entries for their changed fields.
+        var metadata = newEntries.isEmpty ? incoming.metadata : current.metadata
+        for entry in newEntries {
+            if !entry.apply(to: &metadata) {
+                // Redacted structured fields cannot be replayed from history. They are uncommon in
+                // overlapping quick edits; use the incoming record rather than silently dropping
+                // the requested change.
+                metadata = incoming.metadata
+            }
+        }
+
+        var historyByID = Dictionary(uniqueKeysWithValues: current.history.map { ($0.id, $0) })
+        for entry in incoming.history { historyByID[entry.id] = entry }
+        var history = historyByID.values.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+            return lhs.id < rhs.id
+        }
+        history.trimToHistoryLimit()
+
+        return MetadataSidecar(
+            sourceFile: incoming.sourceFile,
+            lastModified: max(current.lastModified, incoming.lastModified),
+            pendingChanges: incoming.pendingChanges,
+            metadata: metadata,
+            imageMetadataSnapshot: incoming.imageMetadataSnapshot ?? current.imageMetadataSnapshot,
+            history: history
+        )
+    }
+
+    private nonisolated static func samePersistedRecord(
+        _ lhs: MetadataSidecar,
+        _ rhs: MetadataSidecar
+    ) -> Bool {
+        // saveSidecar refreshes lastModified. Compare the deterministic encoded payload after
+        // normalizing that installation timestamp.
+        var left = lhs
+        var right = rhs
+        left.lastModified = .distantPast
+        right.lastModified = .distantPast
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return (try? encoder.encode(left)) == (try? encoder.encode(right))
     }
 
     private nonisolated static func preserveUnknownMetadataFields(

@@ -4,6 +4,46 @@ struct PresetVariableInterpolator: Sendable {
     private static let gpsCityToken = "{gps:city}"
     private static let gpsCountryToken = "{gps:country}"
 
+    /// Resolves the Sports player/bib number token before ordinary interpolation. Both spellings
+    /// are accepted: `(number)` for Photo Mechanic-style caption templates and `{number}` for the
+    /// app's variable catalog. An image with multiple confirmed players expands in number order.
+    func resolvingSportsNumberVariables(in metadata: IPTCMetadata, number: String) -> IPTCMetadata {
+        func replace(_ value: String?) -> String? {
+            value?
+                .replacingOccurrences(of: "(number)", with: number)
+                .replacingOccurrences(of: "{number}", with: number)
+        }
+        var result = metadata
+        result.title = replace(result.title)
+        result.description = replace(result.description)
+        result.extendedDescription = replace(result.extendedDescription)
+        result.creators = IPTCMetadata.normalizedCreators(result.creators.compactMap(replace))
+        result.creatorJobTitle = replace(result.creatorJobTitle)
+        result.descriptionWriter = replace(result.descriptionWriter)
+        result.credit = replace(result.credit)
+        result.copyright = replace(result.copyright)
+        result.rightsUsageTerms = replace(result.rightsUsageTerms)
+        result.webStatementOfRights = replace(result.webStatementOfRights)
+        result.digitalImageGUID = replace(result.digitalImageGUID)
+        result.imageSupplierImageID = replace(result.imageSupplierImageID)
+        result.jobId = replace(result.jobId)
+        result.dateCreated = replace(result.dateCreated)
+        result.city = replace(result.city)
+        result.sublocation = replace(result.sublocation)
+        result.provinceState = replace(result.provinceState)
+        result.country = replace(result.country)
+        result.event = replace(result.event)
+        result.instructions = replace(result.instructions)
+        result.source = replace(result.source)
+        result.keywords = result.keywords.compactMap(replace)
+        result.personShown = result.personShown.compactMap(replace)
+        result.organisationsShownNames = result.organisationsShownNames.compactMap(replace)
+        result.organisationsShownCodes = result.organisationsShownCodes.compactMap(replace)
+        result.sceneCodes = result.sceneCodes.compactMap(replace)
+        result.subjectCodes = IPTCSubjectCode.normalizedValues(result.subjectCodes.compactMap(replace))
+        return result
+    }
+
     /// Resolves the two place-name variables with one reverse-geocode lookup, then returns a
     /// metadata copy that can continue through the normal synchronous variable interpolator.
     /// On lookup failure the tokens are deliberately preserved so processing can be retried.

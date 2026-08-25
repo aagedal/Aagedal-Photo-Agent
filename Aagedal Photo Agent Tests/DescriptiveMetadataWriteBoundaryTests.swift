@@ -187,6 +187,31 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(service.loadSidecar(for: source)?.title == "Newer external value")
     }
 
+    @Test("An external replacement before install retries the merge from the new content token")
+    func externalReplacementRetriesMerge() async throws {
+        let (directory, source) = try makeWorkspace(extension: "raf")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = XMPSidecarService()
+        try service.saveSidecar(metadata: IPTCMetadata(title: "Baseline"), for: source)
+
+        try await service.saveSidecarPreservingDevelopSettingsSerialized(
+            metadata: IPTCMetadata(description: "Caption edit"),
+            for: source,
+            mergeWithExisting: true,
+            beforeRevisionCheck: { attempt in
+                guard attempt == 0 else { return }
+                try? service.saveSidecar(
+                    metadata: IPTCMetadata(title: "External replacement"),
+                    for: source
+                )
+            }
+        )
+
+        let installed = try #require(service.loadSidecar(for: source))
+        #expect(installed.title == "External replacement")
+        #expect(installed.description == "Caption edit")
+    }
+
     @Test("Cancellation before the boundary does not create an XMP sidecar")
     func cancellationBeforeWrite() async throws {
         let (directory, source) = try makeWorkspace(extension: "dng")
@@ -207,5 +232,110 @@ struct DescriptiveMetadataWriteBoundaryTests {
             try await task.value
         }
         #expect(!service.sidecarExists(for: source))
+    }
+
+    @Test("Overlapping caption, face, and Develop transactions retain unrelated fields")
+    func overlappingSidecarTransactionsRetainFields() async throws {
+        let boundary = DescriptiveMetadataWriteBoundary(writeEngine: SwiftExifWriteEngine())
+        let xmp = XMPSidecarService()
+
+        // Repeat with fresh URLs so both possible enqueue orders are exercised by the runtime.
+        for iteration in 0..<40 {
+            let (directory, source) = try makeWorkspace(extension: "cr3")
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            var settings = CameraRawSettings()
+            settings.hasSettings = true
+            settings.exposure2012 = Double(iteration) / 10.0
+            let expectedExposure = settings.exposure2012
+
+            async let caption: DescriptiveMetadataWriteResult = boundary.write(
+                metadata: IPTCMetadata(title: "Caption \(iteration)"),
+                for: source,
+                requestedMode: .writeToXMPSidecar,
+                semantics: .merge
+            )
+            async let face: DescriptiveMetadataWriteResult = boundary.write(
+                metadata: IPTCMetadata(personShown: ["Person \(iteration)"]),
+                for: source,
+                requestedMode: .writeToXMPSidecar,
+                semantics: .merge
+            )
+            async let develop: Void = xmp.saveCameraRawOnlySerialized(
+                settings,
+                orientation: 1,
+                for: source
+            )
+            _ = try await (caption, face, develop)
+
+            let installed = try #require(xmp.loadSidecar(for: source))
+            #expect(installed.title == "Caption \(iteration)")
+            #expect(installed.personShown == ["Person \(iteration)"])
+            #expect(installed.cameraRaw?.exposure2012 == expectedExposure)
+        }
+    }
+
+    @Test("Overlapping JSON field histories merge in deterministic order")
+    func overlappingJSONHistoryIsDeterministic() async throws {
+        let (directory, source) = try makeWorkspace(extension: "nef")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let json = MetadataSidecarService()
+        let baseline = IPTCMetadata(title: "Before", personShown: [])
+        try json.saveSidecar(
+            MetadataSidecar(
+                sourceFile: source.lastPathComponent,
+                metadata: baseline,
+                imageMetadataSnapshot: baseline
+            ),
+            for: source,
+            in: directory
+        )
+
+        let captionTime = Date(timeIntervalSinceReferenceDate: 100)
+        var captionMetadata = baseline
+        captionMetadata.title = "After"
+        let caption = MetadataSidecar(
+            sourceFile: source.lastPathComponent,
+            metadata: captionMetadata,
+            imageMetadataSnapshot: baseline,
+            history: [MetadataHistoryEntry(
+                timestamp: captionTime,
+                fieldID: .headline,
+                oldValue: "Before",
+                newValue: "After"
+            )]
+        )
+
+        let faceTime = Date(timeIntervalSinceReferenceDate: 101)
+        var faceMetadata = baseline
+        faceMetadata.personShown = ["Ada"]
+        let face = MetadataSidecar(
+            sourceFile: source.lastPathComponent,
+            metadata: faceMetadata,
+            imageMetadataSnapshot: baseline,
+            history: [MetadataHistoryEntry(
+                timestamp: faceTime,
+                fieldID: .personShown,
+                oldValue: nil,
+                newValue: MetadataFieldID.personShown.historyValue(in: faceMetadata)
+            )]
+        )
+
+        async let captionWrite = json.saveSidecarMergingHistorySerialized(
+            caption,
+            for: source,
+            in: directory
+        )
+        async let faceWrite = json.saveSidecarMergingHistorySerialized(
+            face,
+            for: source,
+            in: directory
+        )
+        _ = try await (captionWrite, faceWrite)
+
+        let installed = try #require(json.loadSidecar(for: source, in: directory))
+        #expect(installed.metadata.title == "After")
+        #expect(installed.metadata.personShown == ["Ada"])
+        #expect(installed.history.map(\.fieldID) == [.headline, .personShown])
     }
 }

@@ -29,6 +29,7 @@ struct ImportView: View {
         }
         .frame(minWidth: 680, minHeight: 480)
         .frame(maxHeight: maxSheetHeight)
+        .accessibilityIdentifier("import.workspace")
         .alert("Thumbnail previews are slow", isPresented: $showSlowThumbnailWarning) {
             Button("OK") { }
         } message: {
@@ -1013,6 +1014,7 @@ struct ImportView: View {
             Button("Import") {
                 viewModel.startImport()
             }
+            .accessibilityIdentifier("import.start")
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
             .disabled(viewModel.importBlockingReason != nil)

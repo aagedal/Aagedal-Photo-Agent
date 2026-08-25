@@ -18,6 +18,21 @@ struct PresetVariableInterpolatorTests {
         #expect(result == "")
     }
 
+    @Test("Sports number caption token supports parenthesized and catalog spellings")
+    func sportsNumberToken() {
+        var metadata = IPTCMetadata()
+        metadata.description = "Player (number), alternate {number}"
+        let resolved = interpolator.resolvingSportsNumberVariables(in: metadata, number: "7, 9")
+        #expect(resolved.description == "Player 7, 9, alternate 7, 9")
+
+        let model = MetadataViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        model.editingMetadata.description = "Player (number)"
+        #expect(model.hasVariables)
+    }
+
     @Test("{initials} combines with a date format into a single keyword")
     func initialsWithDate() {
         let result = interpolator.resolve("{initials}{date:yyMMdd}", initials: "TA")

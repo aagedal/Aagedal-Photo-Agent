@@ -1186,7 +1186,7 @@ final class FaceRecognitionViewModel {
         guard stats.peopleCount > 0 else { return }
 
         // Batch-match all unnamed groups at once (single DB load)
-        let unnamedGroups = data.groups.filter { $0.name == nil }
+        let unnamedGroups = data.groups.filter { $0.name == nil && !$0.isExcludedFromPersonShown }
         let facesToMatch = unnamedGroups.compactMap { group -> (id: UUID, featurePrintData: Data)? in
             guard let face = faceLookup[group.representativeFaceID] else { return nil }
             return (id: group.id, featurePrintData: face.featurePrintData)
@@ -1223,6 +1223,7 @@ final class FaceRecognitionViewModel {
 
             // Name the target group
             data.groups[targetIndex].name = knownPerson.name
+            data.groups[targetIndex].knownPersonID = personID
 
             // Merge other matching groups into the target
             for match in sorted.dropFirst() {
@@ -1295,7 +1296,7 @@ final class FaceRecognitionViewModel {
         let policy = KnownPeopleService.shared.currentAutoMatchPolicy()
         let suggestionMinConfidence: Float = max(policy.minConfidence - 0.15, 0.40)
 
-        let groupsToCheck = unnamedGroups
+        let groupsToCheck = unnamedGroups.filter { !$0.isExcludedFromPersonShown }
         guard !groupsToCheck.isEmpty else {
             return KnownPeopleCheckResult(autoMatchCount: 0, suggestionCount: 0, noMatchCount: 0, totalChecked: 0)
         }
@@ -1340,7 +1341,7 @@ final class FaceRecognitionViewModel {
             }
 
             if passesAutoMatch {
-                nameGroup(group.id, name: best.match.person.name)
+                nameGroup(group.id, name: best.match.person.name, knownPersonID: best.match.person.id)
                 knownPersonMatchByGroup[group.id] = (personID: best.match.person.id, confidence: best.match.confidence)
                 lastAutoMatchedGroupID = group.id
                 autoMatchCount += 1
@@ -1378,7 +1379,7 @@ final class FaceRecognitionViewModel {
     }
 
     func acceptKnownPersonSuggestion(_ suggestion: KnownPersonSuggestion) {
-        nameGroup(suggestion.groupID, name: suggestion.personName)
+        nameGroup(suggestion.groupID, name: suggestion.personName, knownPersonID: suggestion.personID)
         knownPersonMatchByGroup[suggestion.groupID] = (personID: suggestion.personID, confidence: suggestion.confidence)
         knownPersonSuggestions.removeAll { $0.id == suggestion.id }
         selectGroupForThumbnailReplacement(suggestion.groupID)
@@ -1719,7 +1720,7 @@ final class FaceRecognitionViewModel {
         let teams = [match.team(for: .home), match.team(for: .away)].compactMap { $0 }
         guard !teams.isEmpty else { return nil }
 
-        if let personID = knownPersonMatchByGroup[groupID]?.personID {
+        if let personID = group.knownPersonID ?? knownPersonMatchByGroup[groupID]?.personID {
             for team in teams {
                 if let player = team.roster.first(where: { $0.knownPersonID == personID }) {
                     return player.number
@@ -1738,12 +1739,13 @@ final class FaceRecognitionViewModel {
         return nil
     }
 
-    func nameGroup(_ groupID: UUID, name: String) {
+    func nameGroup(_ groupID: UUID, name: String, knownPersonID: UUID? = nil) {
         guard var data = faceData else { return }
         let groupIdx = groupIndexMap(from: data)
         guard let index = groupIdx[groupID] else { return }
 
         data.groups[index].name = name.isEmpty ? nil : name
+        data.groups[index].knownPersonID = knownPersonID
         faceData = data
         do {
             try storageService.saveFaceData(data)
@@ -1765,6 +1767,31 @@ final class FaceRecognitionViewModel {
             try storageService.saveFaceData(data)
         } catch {
             errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
+    }
+
+    /// Reversibly exclude a referee or other non-player from Person Shown. The group stays in
+    /// face data for later correction, while attached Sports claims become sticky rejections.
+    func setExcludedFromPersonShown(_ excluded: Bool, forGroup groupID: UUID) {
+        guard var data = faceData,
+              let index = data.groups.firstIndex(where: { $0.id == groupID }) else { return }
+        data.groups[index].excludedFromPersonShown = excluded ? true : nil
+        if excluded, data.numberDetections != nil {
+            let faceIDs = Set(data.groups[index].faceIDs)
+            for detectionIndex in data.numberDetections!.indices {
+                guard let faceID = data.numberDetections![detectionIndex].associatedFaceID,
+                      faceIDs.contains(faceID) else { continue }
+                data.numberDetections![detectionIndex].claimState = .rejected
+                ambiguousNumberDetections.removeAll {
+                    $0.id == data.numberDetections![detectionIndex].id
+                }
+            }
+        }
+        faceData = data
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face exclusion: \(error.localizedDescription)"
         }
     }
 
@@ -1993,6 +2020,7 @@ final class FaceRecognitionViewModel {
     nonisolated static func independentFaceNamesByURL(faces: [DetectedFace], groups: [FaceGroup]) -> [URL: Set<String>] {
         let groupNameByID: [UUID: String] = Dictionary(
             groups.compactMap { group in
+                guard !group.isExcludedFromPersonShown else { return nil }
                 guard let name = group.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
                 else { return nil }
                 return (group.id, name)
@@ -2036,9 +2064,11 @@ final class FaceRecognitionViewModel {
         guard let match = matchRoster,
               case .resolved(let player, _) = playerResolver.resolve(number: number, side: side, match: match)
         else { return false }
-        nameGroup(groupID, name: resolvedDisplayName(for: player))
         if let personID = player.knownPersonID {
+            nameGroup(groupID, name: resolvedDisplayName(for: player), knownPersonID: personID)
             knownPersonMatchByGroup[groupID] = (personID: personID, confidence: 1.0)
+        } else {
+            nameGroup(groupID, name: resolvedDisplayName(for: player))
         }
         return true
     }
@@ -2168,8 +2198,33 @@ final class FaceRecognitionViewModel {
               let match = matchRoster,
               let group = groupLookup[groupID] else { return nil }
 
+        // A named group can be linked even when OCR missed the shirt entirely. Require a unique
+        // name match across the configured sheets; an existing bridge needs no repeat action.
+        if let personID = group.knownPersonID ?? knownPersonMatchByGroup[groupID]?.personID {
+            let alreadyLinked = [match.homeTeamSnapshot, match.awayTeamSnapshot]
+                .compactMap { $0 }
+                .flatMap(\.roster)
+                .contains { $0.knownPersonID == personID }
+            if alreadyLinked { return nil }
+        }
+        if let name = group.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            let namedCandidates: [(RosterPlayer, TeamSide, UUID?)] = [
+                match.homeTeamSnapshot.map { team in team.roster.filter { namesMatch($0.playerName, name) }.map { ($0, TeamSide.home, match.homeTeamID) } } ?? [],
+                match.awayTeamSnapshot.map { team in team.roster.filter { namesMatch($0.playerName, name) }.map { ($0, TeamSide.away, match.awayTeamID) } } ?? []
+            ].flatMap { $0 }
+            if namedCandidates.count == 1,
+               let candidate = namedCandidates.first,
+               candidate.0.knownPersonID == nil,
+               let teamID = candidate.2 {
+                return (candidate.0.number, teamID, candidate.0.playerName)
+            }
+        }
+
         let facesByID = Dictionary(data.faces.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var votes: [String: (count: Int, conf: Float, number: Int, side: TeamSide?)] = [:]
+        if let manual = group.manualNumber {
+            votes["manual"] = (Int.max, Float.greatestFiniteMagnitude, manual, nil)
+        }
         for faceID in group.faceIDs {
             guard let face = facesByID[faceID], let number = face.jerseyNumber else { continue }
             let key = "\(number)-\(face.teamSide?.rawValue ?? "?")"
@@ -2178,10 +2233,14 @@ final class FaceRecognitionViewModel {
             vote.conf += face.numberConfidence ?? 0
             votes[key] = vote
         }
-        guard let best = votes.values.max(by: { ($0.count, $0.conf) < ($1.count, $1.conf) }),
-              let side = best.side,
-              let teamID = (side == .home ? match.homeTeamID : match.awayTeamID),
-              let player = match.team(for: side)?.player(forNumber: best.number) else { return nil }
+        guard let best = votes.values.max(by: { ($0.count, $0.conf) < ($1.count, $1.conf) }) else { return nil }
+        guard case .resolved(let player, let side) = playerResolver.resolve(
+            number: best.number,
+            side: best.side,
+            match: match
+        ) else { return nil }
+        let teamID = side == .home ? match.homeTeamID : match.awayTeamID
+        guard player.knownPersonID == nil, let teamID else { return nil }
         return (best.number, teamID, player.playerName)
     }
 
@@ -2195,6 +2254,14 @@ final class FaceRecognitionViewModel {
         do {
             let result = try addGroupToKnownPeople(groupID: groupID, name: player.playerName)
             try RosterStore.shared.linkKnownPerson(result.personID, toPlayerNumber: playerNumber, teamID: teamID)
+            nameGroup(groupID, name: player.playerName, knownPersonID: result.personID)
+            knownPersonMatchByGroup[groupID] = (personID: result.personID, confidence: 1.0)
+            if var match = matchRoster, let updatedTeam = RosterStore.shared.team(byID: teamID) {
+                if match.homeTeamID == teamID { match.homeTeamSnapshot = updatedTeam }
+                if match.awayTeamID == teamID { match.awayTeamSnapshot = updatedTeam }
+                matchRoster = match
+                try matchRosterService.save(match)
+            }
             return true
         } catch {
             errorMessage = "Failed to link player to Known People: \(error.localizedDescription)"
@@ -2205,7 +2272,7 @@ final class FaceRecognitionViewModel {
     func applyNameToMetadata(groupID: UUID) {
         guard let data = faceData,
               renameQuiescenceFolderURL != data.folderURL.standardizedFileURL,
-              let group = groupLookup[groupID],
+              let group = groupLookup[groupID], !group.isExcludedFromPersonShown,
               let name = group.name, !name.isEmpty else { return }
 
         let names = splitPersonNames(name)
@@ -2296,7 +2363,7 @@ final class FaceRecognitionViewModel {
         for face in data.faces {
             guard availableURLs.contains(face.imageURL),
                   let groupID = face.groupID,
-                  let group = groupLookup[groupID],
+                  let group = groupLookup[groupID], !group.isExcludedFromPersonShown,
                   let rawName = group.name?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !rawName.isEmpty else { continue }
 
@@ -2322,8 +2389,10 @@ final class FaceRecognitionViewModel {
         // claims write; suggested/rejected/ambiguous ones never reach metadata. Names that overlap
         // a face group dedupe against the per-URL set built above.
         if activeLens == .sports {
+            let excludedFaceIDs = Set(data.groups.filter(\.isExcludedFromPersonShown).flatMap(\.faceIDs))
             for det in data.numberDetections ?? [] where det.effectiveClaimState == .confirmed {
                 guard availableURLs.contains(det.imageURL),
+                      det.associatedFaceID.map({ !excludedFaceIDs.contains($0) }) ?? true,
                       let rawName = det.resolvedPlayerName?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !rawName.isEmpty else { continue }
                 let names = splitPersonNames(rawName)
@@ -2499,15 +2568,25 @@ final class FaceRecognitionViewModel {
             history: history
         )
 
+        let installed: MetadataSidecar
         do {
-            try sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+            installed = try await sidecarService.saveSidecarMergingHistorySerialized(
+                sidecar,
+                for: url,
+                in: folderURL
+            )
         } catch {
             errorMessage = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            return
         }
 
         if writeXmpSidecar {
             do {
-                try xmpSidecarService.saveSidecar(metadata: updatedMetadata, for: url)
+                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                    metadata: installed.metadata,
+                    for: url,
+                    mergeWithExisting: true
+                )
             } catch {
                 errorMessage = "Failed to save XMP sidecar: \(error.localizedDescription)"
             }

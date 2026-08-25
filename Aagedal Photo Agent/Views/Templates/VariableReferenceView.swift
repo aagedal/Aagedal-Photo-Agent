@@ -142,6 +142,12 @@ enum VariableCatalog {
         example: "landscape, sunset, mountains"
     ),
     VariableDefinition(
+        variable: "(number)",
+        category: "Shortcuts",
+        description: "Confirmed jersey or bib number for the current photo. Multiple trusted numbers are comma-separated. {number} is accepted as an alias.",
+        example: "9"
+    ),
+    VariableDefinition(
         variable: "{gps}",
         category: "Shortcuts",
         description: "GPS latitude and longitude from the current metadata in decimal degrees.",

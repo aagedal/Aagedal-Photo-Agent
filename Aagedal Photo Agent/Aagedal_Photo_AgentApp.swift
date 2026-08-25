@@ -10,6 +10,13 @@ struct Aagedal_Photo_AgentApp: App {
     private let recentFolders = RecentFoldersStore.shared
 
     init() {
+        // UI smoke launches use disposable fixtures and must not start unrelated migrations,
+        // cloud watchers, network refreshes, or backup prompts. Normal launches never carry
+        // this explicit argument and retain the complete startup path below.
+        if UITestLaunchConfiguration.current.isEnabled {
+            return
+        }
+
         // One-shot migration from the legacy bookmark-pointed list files into the
         // managed `KeywordListsStore`. Must run before any service that reads from
         // the store touches its shared instance.

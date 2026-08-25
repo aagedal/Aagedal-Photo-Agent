@@ -913,6 +913,25 @@ final class FaceGroupCardView: NSView {
             let assignNumberItem = NSMenuItem(title: "Assign Number…", action: #selector(menuAssignNumber), keyEquivalent: "")
             assignNumberItem.target = self
             menu.addItem(assignNumberItem)
+
+            let excluded = group.isExcludedFromPersonShown
+            let excludeItem = NSMenuItem(
+                title: excluded ? "Include in Person Shown" : "Exclude Referee / Non-player",
+                action: #selector(menuTogglePersonShownExclusion),
+                keyEquivalent: ""
+            )
+            excludeItem.target = self
+            menu.addItem(excludeItem)
+
+            if group.name != nil, viewModel?.rosterLinkTarget(forGroup: group.id) != nil {
+                let rememberItem = NSMenuItem(
+                    title: "Remember Player for Future Matches",
+                    action: #selector(menuRememberPlayer),
+                    keyEquivalent: ""
+                )
+                rememberItem.target = self
+                menu.addItem(rememberItem)
+            }
         }
 
         if group.name != nil {
@@ -978,6 +997,22 @@ final class FaceGroupCardView: NSView {
         } else if let number = Int(trimmed), (0...99).contains(number) {
             viewModel.setManualNumber(number, forGroup: groupID)
         }
+    }
+
+    @objc private func menuTogglePersonShownExclusion() {
+        guard let group = currentGroup, let viewModel else { return }
+        viewModel.setExcludedFromPersonShown(!group.isExcludedFromPersonShown, forGroup: group.id)
+    }
+
+    @objc private func menuRememberPlayer() {
+        guard let groupID,
+              let viewModel,
+              let target = viewModel.rosterLinkTarget(forGroup: groupID) else { return }
+        _ = viewModel.linkPlayerToKnownPeople(
+            groupID: groupID,
+            playerNumber: target.number,
+            teamID: target.teamID
+        )
     }
 
     @objc private func menuSplitAllUnmatched() {

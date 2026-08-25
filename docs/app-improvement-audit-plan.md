@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 43 of 75 checklist substeps complete
+**Status:** implementation in progress — 46 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -29,8 +29,8 @@ removed the cited behavior or moved the cited lines.
   checked Phase 1.1 work below has since added build-and-test CI.
 - The worktree was already modified before this audit. This plan is a new file and does not alter app code.
 
-**Checklist reconciliation (2026-08-25):** the status count is exact: 43 of 75 substeps are checked and
-32 remain open. Each checked substep links to dated validation. A baseline current-source and
+**Checklist reconciliation (2026-08-25):** the status count is exact: 46 of 75 substeps are checked and
+29 remain open. Each checked substep links to dated validation. A baseline current-source and
 validation-record review found no definitive evidence that another unchecked substep was already complete;
 partial foundations such as the existing bookmark lifecycle tests, accessibility semantics, bounded image
 caches, and focused concurrency coverage do not satisfy their broader manual, system-level, or
@@ -123,10 +123,13 @@ workflows can write independently (`CaptionSession.swift:13-16`, `MetadataViewMo
 
 **Plan:**
 
-- [ ] Introduce a URL-keyed persistence actor for the entire read/merge/history/install transaction.
-- [ ] Compare a source revision/content token before install and retry a merge when it changed.
+- [x] Introduce a URL-keyed persistence actor for the entire read/merge/history/install transaction.
+  ([validation](sidecar-transaction-serialization-validation.md), 2026-08-25)
+- [x] Compare a source revision/content token before install and retry a merge when it changed.
+  ([validation](sidecar-transaction-serialization-validation.md), 2026-08-25)
 - [ ] Route Caption, Metadata, face, and Develop sidecar writes through the same boundary.
-- [ ] Preserve the existing atomic staging, backup, schema, and read-back practices.
+- [x] Preserve the existing atomic staging, backup, schema, and read-back practices.
+  ([validation](sidecar-transaction-serialization-validation.md), 2026-08-25)
 
 **Exit gate:** stress tests overlapping descriptive, face, and Develop writes never lose unrelated fields and
 produce deterministic history.
@@ -295,8 +298,9 @@ representative server tests cover failure and retry.
 
 **Plan:**
 
-- [ ] Add a small XCUITest smoke target for launch/open folder, import preflight, Caption save, Batch Rename,
+- [x] Add a small XCUITest smoke target for launch/open folder, import preflight, Caption save, Batch Rename,
   Deadline preflight, and recovery/error states.
+  ([validation](macos-ui-smoke-validation.md), 2026-08-25)
 - [x] Convert full-screen rating stars and label dots to labelled Buttons.
   ([validation](accessibility-keyboard-audit-validation.md), 2026-08-25)
 - [x] Convert face selection, ingest split cells, scope modes, and copyable metadata rows from gesture-only
