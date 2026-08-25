@@ -732,7 +732,7 @@ final class BrowserViewModel {
                     for file in nonDefault {
                         guard let index = self.urlToImageIndex[file.url] else { continue }
                         if self.images[index].exifOrientation != file.exifOrientation {
-                            self.logger.info("[\(file.url.lastPathComponent, privacy: .public)] eager orientation (loadFolder) \(self.images[index].exifOrientation) → \(file.exifOrientation)")
+                            self.logger.info("[\(file.url.lastPathComponent, privacy: .private(mask: .hash))] eager orientation (loadFolder) \(self.images[index].exifOrientation) → \(file.exifOrientation)")
                             // See applyBatchMetadataResults: drop model-orientation-derived
                             // renders produced under the old value.
                             self.thumbnailService.invalidateEditedThumbnail(for: file.url)
@@ -921,7 +921,7 @@ final class BrowserViewModel {
                     for index in merged.indices {
                         if let orientation = orientations[merged[index].url] {
                             if merged[index].exifOrientation != orientation {
-                                logger.info("[\(merged[index].url.lastPathComponent, privacy: .public)] eager orientation (refresh newURLs) \(merged[index].exifOrientation) → \(orientation)")
+                                logger.info("[\(merged[index].url.lastPathComponent, privacy: .private(mask: .hash))] eager orientation (refresh newURLs) \(merged[index].exifOrientation) → \(orientation)")
                             }
                             merged[index].exifOrientation = orientation
                         }
@@ -1298,7 +1298,7 @@ final class BrowserViewModel {
                 if updated[index].exifOrientation != previousOrientation {
                     let newOrientation = updated[index].exifOrientation
                     let dictOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? -1
-                    logger.info("[\(sourceURL.lastPathComponent, privacy: .public)] batch metadata orientation \(previousOrientation) → \(newOrientation) (dict=\(dictOrientation), xmp=\(xmpMeta?.exifOrientation ?? -1))")
+                    logger.info("[\(sourceURL.lastPathComponent, privacy: .private(mask: .hash))] batch metadata orientation \(previousOrientation) → \(newOrientation) (dict=\(dictOrientation), xmp=\(xmpMeta?.exifOrientation ?? -1))")
                     // Renders keyed off the model orientation (edited grid thumbs, loupe
                     // prefetch/warm entries) were produced under the old value — drop them
                     // or the loupe serves a stale-orientation frame until something else
@@ -1770,7 +1770,7 @@ final class BrowserViewModel {
         var newOrientations: [URL: Int] = [:]
         for image in selectedImages {
             newOrientations[image.url] = ImageFile.orientationAfterClockwiseRotation(image.exifOrientation)
-            logger.info("[\(image.url.lastPathComponent, privacy: .public)] rotateClockwise \(image.exifOrientation) → \(newOrientations[image.url] ?? -1)")
+            logger.info("[\(image.url.lastPathComponent, privacy: .private(mask: .hash))] rotateClockwise \(image.exifOrientation) → \(newOrientations[image.url] ?? -1)")
         }
         applyMetadataField(
             updateImage: { image in
@@ -1814,7 +1814,7 @@ final class BrowserViewModel {
         var newOrientations: [URL: Int] = [:]
         for image in selectedImages {
             newOrientations[image.url] = ImageFile.orientationAfterCounterclockwiseRotation(image.exifOrientation)
-            logger.info("[\(image.url.lastPathComponent, privacy: .public)] rotateCounterclockwise \(image.exifOrientation) → \(newOrientations[image.url] ?? -1)")
+            logger.info("[\(image.url.lastPathComponent, privacy: .private(mask: .hash))] rotateCounterclockwise \(image.exifOrientation) → \(newOrientations[image.url] ?? -1)")
         }
         applyMetadataField(
             updateImage: { image in

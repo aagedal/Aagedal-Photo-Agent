@@ -52,7 +52,7 @@ struct MetadataSidecarService: Sendable {
                 return sidecar
             } catch let error as EditorialJSONSchemaError where error.isNewerSchema {
                 sidecarLogger.warning(
-                    "Leaving newer sidecar \(fileURL.lastPathComponent, privacy: .public) untouched: \(error.localizedDescription, privacy: .public)"
+                    "Leaving newer sidecar \(fileURL.lastPathComponent, privacy: .private(mask: .hash)) untouched: \(error.localizedDescription, privacy: .private)"
                 )
                 continue
             } catch {
@@ -64,9 +64,9 @@ struct MetadataSidecarService: Sendable {
                     .appendingPathComponent("\(fileURL.lastPathComponent).corrupt.\(timestamp)")
                 do {
                     try FileManager.default.moveItem(at: fileURL, to: backupURL)
-                    sidecarLogger.warning("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .public)")
+                    sidecarLogger.warning("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .private(mask: .hash))")
                 } catch {
-                    sidecarLogger.error("Failed to move corrupt sidecar \(fileURL.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+                    sidecarLogger.error("Failed to move corrupt sidecar \(fileURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                 }
                 continue
             }
@@ -180,7 +180,7 @@ struct MetadataSidecarService: Sendable {
             return (imageURL, sidecar)
         } catch let error as EditorialJSONSchemaError where error.isNewerSchema {
             sidecarLogger.warning(
-                "Leaving newer sidecar \(file.lastPathComponent, privacy: .public) untouched: \(error.localizedDescription, privacy: .public)"
+                "Leaving newer sidecar \(file.lastPathComponent, privacy: .private(mask: .hash)) untouched: \(error.localizedDescription, privacy: .private)"
             )
             return nil
         } catch {
@@ -197,9 +197,9 @@ struct MetadataSidecarService: Sendable {
             .appendingPathComponent("\(file.lastPathComponent).corrupt.\(timestamp)")
         do {
             try FileManager.default.moveItem(at: file, to: backupURL)
-            sidecarLogger.warning("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .public)")
+            sidecarLogger.warning("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .private(mask: .hash))")
         } catch {
-            sidecarLogger.error("Failed to move corrupt sidecar \(file.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+            sidecarLogger.error("Failed to move corrupt sidecar \(file.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -292,7 +292,7 @@ struct MetadataSidecarService: Sendable {
             do {
                 try FileManager.default.removeItem(at: legacyURL)
             } catch {
-                sidecarLogger.warning("Failed to remove legacy sidecar \(legacyURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                sidecarLogger.warning("Failed to remove legacy sidecar \(legacyURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             }
         }
     }
@@ -345,7 +345,7 @@ struct MetadataSidecarService: Sendable {
             do {
                 try fm.removeItem(at: oldURL)
             } catch {
-                sidecarLogger.warning("Failed to remove old sidecar \(oldURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                sidecarLogger.warning("Failed to remove old sidecar \(oldURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             }
         }
     }
@@ -371,7 +371,7 @@ struct MetadataSidecarService: Sendable {
             do {
                 try fm.removeItem(at: extra)
             } catch {
-                sidecarLogger.warning("Failed to remove extra sidecar \(extra.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                sidecarLogger.warning("Failed to remove extra sidecar \(extra.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             }
         }
     }
@@ -411,7 +411,7 @@ struct MetadataSidecarService: Sendable {
             do {
                 try fm.removeItem(at: oldURL)
             } catch {
-                sidecarLogger.warning("Failed to remove relocated sidecar \(oldURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                sidecarLogger.warning("Failed to remove relocated sidecar \(oldURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             }
         }
     }
@@ -424,7 +424,7 @@ struct MetadataSidecarService: Sendable {
         guard var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             // Preserve an unreadable sidecar with the rejected image. Normal loading
             // will quarantine it as corrupt, while the original bytes remain recoverable.
-            sidecarLogger.warning("Relocating unreadable sidecar \(sourceURL.lastPathComponent, privacy: .public) without rewriting sourceFile")
+            sidecarLogger.warning("Relocating unreadable sidecar \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) without rewriting sourceFile")
             return data
         }
         object["sourceFile"] = filename
@@ -432,7 +432,7 @@ struct MetadataSidecarService: Sendable {
             withJSONObject: object,
             options: [.prettyPrinted, .sortedKeys]
         ) else {
-            sidecarLogger.warning("Could not rewrite sourceFile in \(sourceURL.lastPathComponent, privacy: .public); preserving original data")
+            sidecarLogger.warning("Could not rewrite sourceFile in \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)); preserving original data")
             return data
         }
         return updated

@@ -358,11 +358,11 @@ final class MetadataViewModel {
 
             metadataLoadTask = Task {
                 let loadStart = ContinuousClock.now
-                self.perfLog.info("[MetadataVM] loadMetadata START — \(imageURL.lastPathComponent, privacy: .public)")
+                self.perfLog.info("[MetadataVM] loadMetadata START — \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
                 do {
                     let (embedded, conflict) = try await readService.readFullMetadataWithConflictCheck(url: imageURL)
                     let exifMs = loadStart.elapsedMilliseconds()
-                    self.perfLog.info("[MetadataVM] metadata read returned — \(exifMs)ms for \(imageURL.lastPathComponent, privacy: .public)")
+                    self.perfLog.info("[MetadataVM] metadata read returned — \(exifMs)ms for \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
                     guard !Task.isCancelled else { return }
                     let xmpMeta = self.loadXMPMetadata(for: imageURL)
                     // Reconcile embedded vs sidecar: the sidecar is master unless the image
@@ -430,8 +430,8 @@ final class MetadataViewModel {
                     self.previousEditingMetadata = self.editingMetadata
                     self.metadataLoadGeneration += 1
                     let totalMs = loadStart.elapsedMilliseconds()
-                    self.perfLog.info("[MetadataVM] loadMetadata DONE — \(imageURL.lastPathComponent, privacy: .public) total \(totalMs)ms")
-                    self.logger.info("[\(imageURL.lastPathComponent, privacy: .public)] loadMetadata result: xmp=\(xmpMeta != nil), stale=\(sidecarIsStale), ref=\(String(describing: referenceSource), privacy: .public), reloadSame=\(isReloadingSameImage), title=\(self.editingMetadata.title ?? "nil", privacy: .public)")
+                    self.perfLog.info("[MetadataVM] loadMetadata DONE — \(imageURL.lastPathComponent, privacy: .private(mask: .hash)) total \(totalMs)ms")
+                    self.logger.info("[\(imageURL.lastPathComponent, privacy: .private(mask: .hash))] loadMetadata result: xmp=\(xmpMeta != nil), stale=\(sidecarIsStale), ref=\(String(describing: referenceSource), privacy: .public), reloadSame=\(isReloadingSameImage), title=\(self.editingMetadata.title ?? "nil", privacy: .private(mask: .hash))")
                     if self.metadataReferenceSource == .xmp, self.xmpMetadata == nil {
                         self.metadataReferenceSource = .embedded
                     }
@@ -440,7 +440,7 @@ final class MetadataViewModel {
                     self.editingMetadata = IPTCMetadata()
                     self.previousEditingMetadata = nil
                     self.saveError = "Failed to load metadata: \(error.localizedDescription)"
-                    self.logger.error("[\(imageURL.lastPathComponent, privacy: .public)] loadMetadata FAILED: \(error.localizedDescription, privacy: .public)")
+                    self.logger.error("[\(imageURL.lastPathComponent, privacy: .private(mask: .hash))] loadMetadata FAILED: \(error.localizedDescription, privacy: .private)")
                 }
                 guard !Task.isCancelled else { return }
                 self.isLoading = false
@@ -2663,7 +2663,7 @@ final class MetadataViewModel {
                     }
                 } catch {
                     failed += 1
-                    logger.warning("Reverse geocoding failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    logger.warning("Reverse geocoding failed for \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                 }
 
                 processed += 1
@@ -3110,7 +3110,7 @@ final class MetadataViewModel {
                 do {
                     try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
                 } catch {
-                    logger.warning("Failed to delete sidecar for \(imageURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    logger.warning("Failed to delete sidecar for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                 }
                 self.metadata = edited
                 self.originalImageMetadata = edited
@@ -3195,12 +3195,12 @@ final class MetadataViewModel {
                     do {
                         try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
                     } catch {
-                        logger.warning("Failed to delete sidecar for \(imageURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        logger.warning("Failed to delete sidecar for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                     }
                     writtenCount += 1
                 } catch {
                     failedCount += 1
-                    logger.warning("Failed to write metadata for \(imageURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    logger.warning("Failed to write metadata for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                 }
 
                 processed += 1

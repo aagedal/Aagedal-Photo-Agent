@@ -32,7 +32,7 @@ nonisolated enum FFmpegService {
             throw FFmpegError.ffmpegMissing
         }
 
-        ffmpegLogger.info("Running: ffmpeg \(arguments.joined(separator: " "), privacy: .public)")
+        ffmpegLogger.info("Running ffmpeg with \(arguments.count, privacy: .public) argument(s)")
 
         do {
             _ = try await Process.run(
@@ -41,7 +41,7 @@ nonisolated enum FFmpegService {
             )
         } catch {
             let message = error.localizedDescription
-            ffmpegLogger.error("ffmpeg failed: \(message, privacy: .public)")
+            ffmpegLogger.error("ffmpeg failed: \(message, privacy: .private)")
             throw FFmpegError.processFailed(message)
         }
     }

@@ -141,7 +141,7 @@ nonisolated enum EditedImageRenderer {
                 try await metadataCopier(sourceURL, destURL)
             } catch {
                 editedRendererLog.error(
-                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .public) → \(destURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(destURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
                 )
             }
         }
@@ -1058,7 +1058,7 @@ nonisolated enum EditedImageRenderer {
                 try await metadataCopier(sourceURL, destinationURL)
             } catch {
                 editedRendererLog.error(
-                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .public) → \(destinationURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(destinationURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
                 )
             }
         }
@@ -1117,7 +1117,7 @@ nonisolated enum EditedImageRenderer {
                 try await metadataCopier(sourceURL, destinationURL)
             } catch {
                 editedRendererLog.error(
-                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .public) → \(destinationURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(destinationURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
                 )
             }
         }
@@ -1165,7 +1165,7 @@ nonisolated enum EditedImageRenderer {
                 try await metadataCopier(sourceURL, destinationURL)
             } catch {
                 editedRendererLog.error(
-                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .public) → \(destinationURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(destinationURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
                 )
             }
         }
@@ -1232,7 +1232,7 @@ nonisolated enum EditedImageRenderer {
                 try await metadataCopier(sourceURL, destURL)
             } catch {
                 editedRendererLog.error(
-                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .public) → \(destURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(destURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
                 )
             }
         }

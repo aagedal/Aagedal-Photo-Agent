@@ -208,6 +208,9 @@ nonisolated enum UserDefaultsKeys {
     /// One-shot marker: bumped after the first launch that migrated the legacy
     /// bookmark-based quick/approved/structured files into the managed store.
     static let keywordListsMigratedVersion = "keywordLists.migratedVersion"
+    /// Stable per-list migration identifiers. Successful lists remain complete
+    /// while failed sources retry on a later launch.
+    static let keywordListsMigrationCompletedKeys = "keywordLists.migrationCompletedKeys"
 
     // MARK: - iCloud Sync (per-category opt-in; local-only, never synced)
     /// True when app preferences are mirrored via NSUbiquitousKeyValueStore.

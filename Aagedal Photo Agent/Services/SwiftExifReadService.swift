@@ -68,7 +68,7 @@ final class SwiftExifReadService {
 
     /// Read full IPTC + XMP + EXIF metadata for a single file.
     func readFullMetadata(url: URL) async throws -> IPTCMetadata {
-        swiftExifReadLog.debug("readFullMetadata: \(url.lastPathComponent, privacy: .public)")
+        swiftExifReadLog.debug("readFullMetadata: \(url.lastPathComponent, privacy: .private(mask: .hash))")
         guard let dict = await lockedReadDict(for: url)?.value else { return IPTCMetadata() }
         return iptcMetadataFromDict(dict)
     }
@@ -79,14 +79,14 @@ final class SwiftExifReadService {
     ) async throws -> (IPTCMetadata, DescriptionConflict?) {
         let singleStart = ContinuousClock.now
         swiftExifReadPerf.info(
-            "[Single] readFullMetadataWithConflictCheck START — \(url.lastPathComponent, privacy: .public)"
+            "[Single] readFullMetadataWithConflictCheck START — \(url.lastPathComponent, privacy: .private(mask: .hash))"
         )
         guard let dict = await lockedReadDict(for: url)?.value else {
             return (IPTCMetadata(), nil)
         }
         let singleMs = singleStart.elapsedMilliseconds()
         swiftExifReadPerf.info(
-            "[Single] readFullMetadataWithConflictCheck DONE — \(url.lastPathComponent, privacy: .public) in \(singleMs)ms"
+            "[Single] readFullMetadataWithConflictCheck DONE — \(url.lastPathComponent, privacy: .private(mask: .hash)) in \(singleMs)ms"
         )
         return (iptcMetadataFromDict(dict), descriptionConflict(in: dict))
     }
@@ -164,7 +164,7 @@ final class SwiftExifReadService {
             return dict
         } catch {
             swiftExifReadLog.warning(
-                "readDict failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                "readDict failed for \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
             )
             return nil
         }

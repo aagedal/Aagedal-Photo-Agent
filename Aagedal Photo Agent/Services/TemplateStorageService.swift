@@ -21,7 +21,7 @@ struct TemplateStorageService: Sendable {
                 let data = try CloudCoordinatedIO.readData(at: url)
                 return try JSONDecoder().decode(MetadataTemplate.self, from: data)
             } catch {
-                templateStorageLog.warning("Skipping template at \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                templateStorageLog.warning("Skipping template at \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                 return nil
             }
         }

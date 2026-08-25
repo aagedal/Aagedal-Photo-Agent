@@ -328,3 +328,87 @@ struct ApprovedListValidationTests {
         #expect(result.rejected.isEmpty)
     }
 }
+
+@Suite("Keyword list legacy migration", .serialized)
+@MainActor
+struct KeywordListLegacyMigrationTests {
+    @Test("Completed sources stay complete while a failed source retries and bookmarks remain")
+    func migrationRetriesPerSourceAfterReadBackVerifiedImports() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("KeywordMigrationTests-\(UUID().uuidString)", isDirectory: true)
+        let approvedSource = root.appendingPathComponent("legacy-approved.txt")
+        let quickSource = root.appendingPathComponent("legacy-quick.txt")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "Berlin\nParis\n".write(to: approvedSource, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let approvedBookmark = Data("approved".utf8)
+        let quickBookmark = Data("quick".utf8)
+        let defaults = UserDefaults.standard
+        let approvedKey = ApprovedListField.keywords.bookmarkKey
+        let quickKey = QuickListType.keywords.bookmarkKey
+        let legacyBookmarkKeys =
+            ApprovedListField.allCases.map(\.bookmarkKey)
+            + QuickListType.allCases.map(\.bookmarkKey)
+            + [UserDefaultsKeys.structuredKeywordsBookmark]
+        let migrationKeys = [
+            UserDefaultsKeys.keywordListsMigratedVersion,
+            UserDefaultsKeys.keywordListsMigrationCompletedKeys,
+        ] + legacyBookmarkKeys
+        let previous = Dictionary(uniqueKeysWithValues: migrationKeys.map { ($0, defaults.object(forKey: $0)) })
+        defer {
+            for (key, value) in previous {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+            KeywordListsStore.legacyBookmarkResolver = { data in
+                var isStale = false
+                return try? URL(
+                    resolvingBookmarkData: data,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+            }
+        }
+
+        for key in migrationKeys {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.set(approvedBookmark, forKey: approvedKey)
+        defaults.set(quickBookmark, forKey: quickKey)
+        KeywordListsStore.legacyBookmarkResolver = { data in
+            switch data {
+            case approvedBookmark: approvedSource
+            case quickBookmark: quickSource
+            default: nil
+            }
+        }
+
+        try KeywordListsStoreStorageOverride.$current.withValue(root.appendingPathComponent("store")) {
+            let store = KeywordListsStore.shared
+            store.migrateLegacyBookmarksIfNeeded()
+
+            #expect(defaults.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion) == 0)
+            #expect(store.readEntries(.approved(.keywords)) == ["Berlin", "Paris"])
+            #expect(
+                defaults.stringArray(forKey: UserDefaultsKeys.keywordListsMigrationCompletedKeys)?
+                    .contains("approved:keywords") == true
+            )
+
+            // A completed source must not be re-imported while the failed source retries.
+            try "Changed\n".write(to: approvedSource, atomically: true, encoding: .utf8)
+            try "Fast One\nFast Two\n".write(to: quickSource, atomically: true, encoding: .utf8)
+            store.migrateLegacyBookmarksIfNeeded()
+
+            #expect(store.readEntries(.approved(.keywords)) == ["Berlin", "Paris"])
+            #expect(store.readEntries(.quick(.keywords)) == ["Fast One", "Fast Two"])
+            #expect(defaults.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion) == 1)
+            #expect(defaults.data(forKey: approvedKey) == approvedBookmark)
+            #expect(defaults.data(forKey: quickKey) == quickBookmark)
+        }
+    }
+}

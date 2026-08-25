@@ -8,6 +8,46 @@ private let knownPeopleLog = Logger(
     category: "KnownPeopleService"
 )
 
+/// File operations used by the one-shot embedding-space migration. Keeping the
+/// whole transaction behind one seam lets tests prove that backup verification
+/// and reset failures never advance the migration stamp.
+struct KnownPeopleEmbeddingMigrationIO {
+    var contentsOfDirectory: (URL) throws -> [URL]
+    var mergeCopy: (URL, URL) throws -> Void
+    var readData: (URL) throws -> Data
+    var removeItem: (URL) throws -> Void
+    var ensureDirectory: (URL) throws -> Void
+    var backupURL: (URL, Int?, Int, Date) -> URL
+
+    static let live = KnownPeopleEmbeddingMigrationIO(
+        contentsOfDirectory: CloudCoordinatedIO.contentsOfDirectory,
+        mergeCopy: CloudCoordinatedIO.mergeCopy,
+        readData: CloudCoordinatedIO.readData,
+        removeItem: CloudCoordinatedIO.removeItem,
+        ensureDirectory: CloudCoordinatedIO.ensureDirectory,
+        backupURL: { source, stored, _, date in
+            let timestamp = ISO8601DateFormatter().string(from: date)
+                .replacingOccurrences(of: ":", with: "-")
+            return source.deletingLastPathComponent()
+                .appendingPathComponent(
+                    "\(source.lastPathComponent).backup-embv\(stored.map(String.init) ?? "1")-\(timestamp)",
+                    isDirectory: true
+                )
+        }
+    )
+}
+
+private enum KnownPeopleEmbeddingMigrationError: LocalizedError {
+    case backupDoesNotMatch(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .backupDoesNotMatch(let relativePath):
+            return "The Known People backup could not be verified at \(relativePath)."
+        }
+    }
+}
+
 @MainActor
 final class KnownPeopleService {
 
@@ -28,9 +68,24 @@ final class KnownPeopleService {
     /// it, call `reloadAfterStorageChange()` to drop the cache.
     static var storageOverrideURL: URL?
 
+    /// Process-wide fallback used by the test host whenever a focused test has
+    /// not installed its own override. This prevents teardown/reload code and
+    /// unrelated suites from ever resolving the user's live local or iCloud
+    /// Known People store.
+    private static let testProcessFallbackDirectory: URL? = {
+        guard AppPaths.isTestProcess else { return nil }
+        return FileManager.default.temporaryDirectory.appendingPathComponent(
+            "KnownPeople-TestFallback-\(ProcessInfo.processInfo.processIdentifier)",
+            isDirectory: true
+        )
+    }()
+
     /// Test-only failure injection for the shared durable deletion transaction.
     /// Production always uses coordinated iCloud-safe file operations.
     static var deletionIO = DurableDeletionIO.live
+
+    /// Test-only failure injection for the embedding-space migration.
+    static var embeddingMigrationIO = KnownPeopleEmbeddingMigrationIO.live
 
     /// How long a deletion tombstone is honored before it is garbage-collected.
     /// While present, a person's file is suppressed so a peer that still holds
@@ -50,6 +105,8 @@ final class KnownPeopleService {
         let url: URL
         if let override = Self.storageOverrideURL {
             url = override
+        } else if let testFallback = Self.testProcessFallbackDirectory {
+            url = testFallback
         } else if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
                   let cloud = AppPaths.iCloudKnownPeopleURL {
             url = cloud
@@ -231,7 +288,7 @@ final class KnownPeopleService {
             let data = try CloudCoordinatedIO.readData(at: url)
             return try JSONDecoder().decode(KnownPerson.self, from: data)
         } catch {
-            knownPeopleLog.error("Failed to load person file \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            knownPeopleLog.error("Failed to load person file \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             backupCorruptFile(at: url)
             return nil
         }
@@ -244,7 +301,7 @@ final class KnownPeopleService {
             .appendingPathComponent("\(url.lastPathComponent).corrupt.\(timestamp)")
         if let corrupt = try? CloudCoordinatedIO.readData(at: url) {
             try? CloudCoordinatedIO.writeData(corrupt, to: backupURL)
-            knownPeopleLog.warning("Backed up corrupted file to \(backupURL.lastPathComponent, privacy: .public)")
+            knownPeopleLog.warning("Backed up corrupted file to \(backupURL.lastPathComponent, privacy: .private(mask: .hash))")
         }
     }
 
@@ -367,9 +424,9 @@ final class KnownPeopleService {
             try writePerson(merged)
             for version in conflicts { version.isResolved = true }
             try NSFileVersion.removeOtherVersionsOfItem(at: url)
-            knownPeopleLog.info("Resolved \(conflicts.count, privacy: .public) conflict version(s) for \(url.lastPathComponent, privacy: .public)")
+            knownPeopleLog.info("Resolved \(conflicts.count, privacy: .public) conflict version(s) for \(url.lastPathComponent, privacy: .private(mask: .hash))")
         } catch {
-            knownPeopleLog.error("Failed to resolve conflicts for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            knownPeopleLog.error("Failed to resolve conflicts for \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
         }
         return merged
     }
@@ -438,7 +495,7 @@ final class KnownPeopleService {
             try CloudCoordinatedIO.removeItem(at: legacyURL)
             knownPeopleLog.info("Migrated \(legacy.people.count, privacy: .public) people from legacy database.json to per-person files")
         } catch {
-            knownPeopleLog.error("Legacy database migration failed: \(error.localizedDescription, privacy: .public)")
+            knownPeopleLog.error("Legacy database migration failed: \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -526,7 +583,7 @@ final class KnownPeopleService {
         do {
             try CloudCoordinatedIO.removeItem(at: url)
         } catch {
-            knownPeopleLog.warning("Failed to delete thumbnail for \(personID): \(error.localizedDescription, privacy: .public)")
+            knownPeopleLog.warning("Failed to delete thumbnail for \(personID, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -886,19 +943,80 @@ final class KnownPeopleService {
             .contains { $0.pathExtension == "json" }
 
         if hasExisting {
-            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-            let backup = knownPeopleDirectory.deletingLastPathComponent()
-                .appendingPathComponent("\(knownPeopleDirectory.lastPathComponent).backup-embv\(stored.map(String.init) ?? "1")-\(timestamp)", isDirectory: true)
+            let io = Self.embeddingMigrationIO
+            let backup = io.backupURL(knownPeopleDirectory, stored, current, Date())
             do {
-                try CloudCoordinatedIO.mergeCopy(from: knownPeopleDirectory, to: backup)
-                knownPeopleLog.warning("Backed up pre-v\(current) Known People store to \(backup.lastPathComponent, privacy: .public) before reset")
+                try io.mergeCopy(knownPeopleDirectory, backup)
+                try verifyEmbeddingMigrationBackup(
+                    source: knownPeopleDirectory,
+                    backup: backup,
+                    io: io
+                )
+                knownPeopleLog.warning("Backed up pre-v\(current) Known People store to \(backup.lastPathComponent, privacy: .private(mask: .hash)) before reset")
+                try resetDatabaseForEmbeddingMigration(io: io)
             } catch {
-                knownPeopleLog.error("Failed to back up Known People store before reset: \(error.localizedDescription, privacy: .public)")
+                knownPeopleLog.error("Known People embedding migration was not completed: \(error.localizedDescription, privacy: .private)")
+                return
             }
-            try? clearDatabase()
         }
 
         UserDefaults.standard.set(current, forKey: key)
+    }
+
+    private func verifyEmbeddingMigrationBackup(
+        source: URL,
+        backup: URL,
+        io: KnownPeopleEmbeddingMigrationIO
+    ) throws {
+        let sourceFiles = try embeddingMigrationFileInventory(at: source, relativeTo: source, io: io)
+        let backupFiles = try embeddingMigrationFileInventory(at: backup, relativeTo: backup, io: io)
+        let sourcePaths = Set(sourceFiles.keys)
+        let backupPaths = Set(backupFiles.keys)
+        guard sourcePaths == backupPaths else {
+            let mismatch = sourcePaths.symmetricDifference(backupPaths).sorted().first ?? "."
+            throw KnownPeopleEmbeddingMigrationError.backupDoesNotMatch(mismatch)
+        }
+        for path in sourceFiles.keys.sorted() where sourceFiles[path] != backupFiles[path] {
+            throw KnownPeopleEmbeddingMigrationError.backupDoesNotMatch(path)
+        }
+    }
+
+    private func embeddingMigrationFileInventory(
+        at directory: URL,
+        relativeTo root: URL,
+        io: KnownPeopleEmbeddingMigrationIO
+    ) throws -> [String: Data] {
+        var result: [String: Data] = [:]
+        for entry in try io.contentsOfDirectory(directory) {
+            let values = try entry.resourceValues(forKeys: [.isDirectoryKey])
+            if values.isDirectory == true {
+                result.merge(
+                    try embeddingMigrationFileInventory(at: entry, relativeTo: root, io: io),
+                    uniquingKeysWith: { _, rhs in rhs }
+                )
+            } else {
+                let rootPath = root.standardizedFileURL.path
+                let entryPath = entry.standardizedFileURL.path
+                let relativePath = entryPath.hasPrefix(rootPath + "/")
+                    ? String(entryPath.dropFirst(rootPath.count + 1))
+                    : entry.lastPathComponent
+                result[relativePath] = try io.readData(entry)
+            }
+        }
+        return result
+    }
+
+    private func resetDatabaseForEmbeddingMigration(io: KnownPeopleEmbeddingMigrationIO) throws {
+        try io.removeItem(knownPeopleDirectory)
+        try io.ensureDirectory(peopleDirectory)
+        try io.ensureDirectory(thumbnailsDirectory)
+        try io.ensureDirectory(embeddingThumbnailsDirectory)
+
+        featurePrintCache.removeAllObjects()
+        embeddingThumbnailCache.removeAllObjects()
+        recentLocalWrites.removeAll()
+        database = KnownPeopleDatabase()
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
     func clearDatabase() throws {
@@ -1177,7 +1295,7 @@ final class KnownPeopleService {
             do {
                 try FileManager.default.removeItem(at: tempDir)
             } catch {
-                knownPeopleLog.warning("Failed to clean up export temp dir: \(error.localizedDescription, privacy: .public)")
+                knownPeopleLog.warning("Failed to clean up export temp dir: \(error.localizedDescription, privacy: .private)")
             }
         }
 
@@ -1257,7 +1375,7 @@ final class KnownPeopleService {
             do {
                 try FileManager.default.removeItem(at: tempDir)
             } catch {
-                knownPeopleLog.warning("Failed to clean up import temp dir: \(error.localizedDescription, privacy: .public)")
+                knownPeopleLog.warning("Failed to clean up import temp dir: \(error.localizedDescription, privacy: .private)")
             }
         }
 

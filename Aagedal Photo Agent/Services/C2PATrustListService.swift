@@ -154,7 +154,7 @@ actor C2PATrustListService {
                     validator: Self.isValidInterimTrustConfig
                 )
             } catch {
-                trustListLogger.error("Could not refresh legacy C2PA compatibility list: \(error.localizedDescription, privacy: .public)")
+                trustListLogger.error("Could not refresh legacy C2PA compatibility list: \(error.localizedDescription, privacy: .private)")
             }
 
             let refreshed = Date()
@@ -165,7 +165,7 @@ actor C2PATrustListService {
         } catch {
             let message = error.localizedDescription
             AppDefaults.store.set(message, forKey: UserDefaultsKeys.c2paTrustListLastError)
-            trustListLogger.error("Could not refresh official C2PA trust anchors: \(message, privacy: .public)")
+            trustListLogger.error("Could not refresh official C2PA trust anchors: \(message, privacy: .private)")
             throw error
         }
     }

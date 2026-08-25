@@ -278,7 +278,7 @@ actor ImportCopyService {
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
-                    copyLog.warning("Backup copy failed for \(job.source.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    copyLog.warning("Backup copy failed for \(job.source.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                     backupOutcome = .failed(error.localizedDescription)
                     backupVerification = .skipped
                 }
@@ -444,7 +444,7 @@ actor ImportCopyService {
             if actual == expected {
                 return .verified
             }
-            copyLog.error("Verification mismatch for \(url.lastPathComponent, privacy: .public): expected \(expected.shortHex, privacy: .public), got \(actual.shortHex, privacy: .public)")
+            copyLog.error("Verification mismatch for \(url.lastPathComponent, privacy: .private(mask: .hash)): expected \(expected.shortHex, privacy: .private(mask: .hash)), got \(actual.shortHex, privacy: .private(mask: .hash))")
             return .mismatch(expected: expected, got: actual)
         } catch is CancellationError {
             throw CancellationError()

@@ -222,7 +222,7 @@ enum SidecarIPTCOverlay {
                 imageURL: sourceURL, sidecarURL: xmpService.sidecarURL(for: sourceURL),
                 embedded: embedded, sidecar: xmpMeta) == .fileNewerConflict {
                 exportPipelineLog.warning(
-                    "overlaySidecarIPTC: .xmp sidecar for \(sourceURL.lastPathComponent, privacy: .public) looks stale (image file newer and differs); exported embedded values instead"
+                    "overlaySidecarIPTC: .xmp sidecar for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) looks stale (image file newer and differs); exported embedded values instead"
                 )
                 return .staleSidecarSkipped
             }
@@ -256,7 +256,7 @@ enum SidecarIPTCOverlay {
                 return .applied
             } catch {
                 exportPipelineLog.error(
-                    "overlaySidecarIPTC XMP writeFields failed for \(sourceURL.lastPathComponent, privacy: .public) → \(renderedURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "overlaySidecarIPTC XMP writeFields failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(renderedURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
                 )
                 return .failed
             }
@@ -294,7 +294,7 @@ enum SidecarIPTCOverlay {
             return .applied
         } catch {
             exportPipelineLog.error(
-                "overlaySidecarIPTC JSON writeFields failed for \(sourceURL.lastPathComponent, privacy: .public) → \(renderedURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                "overlaySidecarIPTC JSON writeFields failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(renderedURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
             )
             return .failed
         }

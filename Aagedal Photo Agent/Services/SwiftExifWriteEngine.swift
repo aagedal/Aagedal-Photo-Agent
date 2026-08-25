@@ -42,7 +42,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             if SupportedImageFormats.isRaw(url: url) { skipped.append(url) } else { embeddable.append(url) }
         }
         if !skipped.isEmpty {
-            swiftExifLog.error("Refusing to embed metadata into \(skipped.count) RAW file(s) — RAW uses XMP sidecars; skipping \(skipped.map(\.lastPathComponent).joined(separator: ", "), privacy: .public)")
+            swiftExifLog.error("Refusing to embed metadata into \(skipped.count) RAW file(s) — RAW uses XMP sidecars; skipping \(skipped.map(\.lastPathComponent).joined(separator: ", "), privacy: .private(mask: .hash))")
         }
         return embeddable
     }
@@ -227,7 +227,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             }
         } catch {
             swiftExifLog.error(
-                "copyMetadataToRenderedFile: read source failed for \(source.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                "copyMetadataToRenderedFile: read source failed for \(source.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
             )
             throw error
         }
@@ -241,7 +241,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 destMetadata = try readMetadata(from: destination)
             } catch {
                 swiftExifLog.error(
-                    "copyMetadataToRenderedFile: read destination failed for \(destination.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "copyMetadataToRenderedFile: read destination failed for \(destination.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
                 )
                 throw error
             }
@@ -299,7 +299,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 try destMetadata.write(to: destination)
             } catch {
                 swiftExifLog.error(
-                    "copyMetadataToRenderedFile: write failed for \(destination.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "copyMetadataToRenderedFile: write failed for \(destination.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
                 )
                 throw error
             }

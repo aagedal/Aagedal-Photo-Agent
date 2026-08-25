@@ -25,16 +25,35 @@ struct KnownPeopleServiceTests {
     /// access reads from that directory.
     private func activate(_ dir: URL) {
         KnownPeopleService.deletionIO = .live
+        KnownPeopleService.embeddingMigrationIO = .live
         KnownPeopleService.storageOverrideURL = dir
         KnownPeopleService.shared.reloadAfterStorageChange()
     }
 
     private func teardown(_ dir: URL) {
         KnownPeopleService.deletionIO = .live
+        KnownPeopleService.embeddingMigrationIO = .live
         KnownPeopleService.storageOverrideURL = nil
         try? FileManager.default.removeItem(at: dir)
         // Reset the singleton's cache so the next test starts clean.
         KnownPeopleService.shared.reloadAfterStorageChange()
+    }
+
+    private func withIsolatedEmbeddingMigration(_ body: (URL) throws -> Void) rethrows {
+        let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
+        let previous = UserDefaults.standard.object(forKey: key)
+        let dir = makeTempDir()
+        activate(dir)
+        defer {
+            if let previous {
+                UserDefaults.standard.set(previous, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+            KnownPeopleService.embeddingMigrationIO = .live
+            teardown(dir)
+        }
+        try body(dir)
     }
 
     private func embedding(_ byte: UInt8) -> PersonEmbedding {
@@ -93,6 +112,73 @@ struct KnownPeopleServiceTests {
         KnownPeopleService.shared.reloadAfterStorageChange()
         #expect(KnownPeopleService.shared.getAllPeople().count == 2)
         #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+    }
+
+    @Test("Embedding migration verifies its backup before reset or version stamp")
+    func embeddingMigrationRequiresVerifiedBackup() throws {
+        try withIsolatedEmbeddingMigration { dir in
+            let person = try KnownPeopleService.shared.addPerson(
+                name: "Must Survive",
+                embeddings: [embedding(3)]
+            )
+            UserDefaults.standard.set(
+                FaceRecognitionDefaults.embeddingVersion - 1,
+                forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion
+            )
+
+            let backup = dir.deletingLastPathComponent()
+                .appendingPathComponent("KnownPeople-Unverified-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: backup) }
+            var io = KnownPeopleEmbeddingMigrationIO.live
+            io.backupURL = { _, _, _, _ in backup }
+            io.mergeCopy = { _, destination in
+                try CloudCoordinatedIO.ensureDirectory(destination)
+                // Deliberately omit the source files: read-back verification must fail.
+            }
+            KnownPeopleService.embeddingMigrationIO = io
+
+            KnownPeopleService.shared.reloadAfterStorageChange()
+
+            #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: dir).path))
+            #expect(KnownPeopleService.shared.person(byID: person.id) != nil)
+            #expect(
+                UserDefaults.standard.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+                    == FaceRecognitionDefaults.embeddingVersion - 1
+            )
+        }
+    }
+
+    @Test("Embedding migration stamps its version only after reset succeeds")
+    func embeddingMigrationDoesNotStampFailedReset() throws {
+        struct InjectedResetFailure: Error {}
+
+        try withIsolatedEmbeddingMigration { dir in
+            let person = try KnownPeopleService.shared.addPerson(
+                name: "Reset Failure Survivor",
+                embeddings: [embedding(4)]
+            )
+            UserDefaults.standard.set(
+                FaceRecognitionDefaults.embeddingVersion - 1,
+                forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion
+            )
+
+            let backup = dir.deletingLastPathComponent()
+                .appendingPathComponent("KnownPeople-Verified-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: backup) }
+            var io = KnownPeopleEmbeddingMigrationIO.live
+            io.backupURL = { _, _, _, _ in backup }
+            io.removeItem = { _ in throw InjectedResetFailure() }
+            KnownPeopleService.embeddingMigrationIO = io
+
+            KnownPeopleService.shared.reloadAfterStorageChange()
+
+            #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: dir).path))
+            #expect(KnownPeopleService.shared.person(byID: person.id) != nil)
+            #expect(
+                UserDefaults.standard.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+                    == FaceRecognitionDefaults.embeddingVersion - 1
+            )
+        }
     }
 
     // MARK: - 2. Concurrent edits to different people lose nothing

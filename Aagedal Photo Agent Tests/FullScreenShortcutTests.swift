@@ -65,6 +65,51 @@ struct FullScreenShortcutTests {
             )
         }
     }
+
+    @Test("Rating stars and color-label choices remain semantic buttons")
+    func accessibleRatingAndLabelControls() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/FullScreenImageView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        let ratingOverlay = try #require(source.slice(
+            from: "private func starRatingOverlay",
+            through: "// MARK: - Presenter"
+        ))
+        #expect(ratingOverlay.contains("ForEach(1...5"))
+        #expect(ratingOverlay.contains("Button {"))
+        #expect(!ratingOverlay.contains(".onTapGesture"))
+        #expect(ratingOverlay.contains(".accessibilityLabel(\"\\(star) star rating\")"))
+        #expect(ratingOverlay.contains(".accessibilityValue("))
+        #expect(ratingOverlay.contains(".accessibilityIdentifier(\"fullScreen.rating.\\(star)\")"))
+
+        let labelOverlay = try #require(source.slice(
+            from: "private func colorLabelOverlay",
+            through: "private func starRatingOverlay"
+        ))
+        #expect(labelOverlay.contains("ForEach(ColorLabel.allCases"))
+        #expect(labelOverlay.contains("Button {"))
+        #expect(labelOverlay.contains(".accessibilityLabel(\"\\(label.displayName) color label\")"))
+        #expect(labelOverlay.contains(".accessibilityValue("))
+        #expect(labelOverlay.contains(".accessibilityIdentifier(\"fullScreen.colorLabel.\\(label.rawValue)\")"))
+        #expect(labelOverlay.contains("picker \\(showLabelPicker ? \"expanded\" : \"collapsed\")"))
+    }
+}
+
+private extension String {
+    func slice(from startMarker: String, through endMarker: String) -> String? {
+        guard let start = range(of: startMarker),
+              let end = range(of: endMarker, range: start.upperBound..<endIndex) else {
+            return nil
+        }
+        return String(self[start.lowerBound..<end.lowerBound])
+    }
 }
 
 @Suite("Full-screen loading recovery")

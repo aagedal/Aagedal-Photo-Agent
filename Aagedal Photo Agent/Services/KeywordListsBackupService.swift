@@ -137,7 +137,7 @@ final class KeywordListsBackupService {
             prune(key)
             return true
         } catch {
-            logger.error("Failed to snapshot \(key.relativePath, privacy: .public): \(String(describing: error))")
+            logger.error("Failed to snapshot \(key.relativePath, privacy: .private(mask: .hash)): \(String(describing: error), privacy: .private)")
             return false
         }
     }
@@ -186,7 +186,7 @@ final class KeywordListsBackupService {
     @discardableResult
     func restore(_ version: Version) -> Bool {
         guard let text = try? String(contentsOf: version.url, encoding: .utf8) else {
-            logger.error("Restore failed: could not read \(version.url.lastPathComponent, privacy: .public)")
+            logger.error("Restore failed: could not read \(version.url.lastPathComponent, privacy: .private(mask: .hash))")
             return false
         }
         do {
@@ -194,7 +194,7 @@ final class KeywordListsBackupService {
             refreshRecoverable()
             return true
         } catch {
-            logger.error("Restore failed for \(version.key.relativePath, privacy: .public): \(String(describing: error))")
+            logger.error("Restore failed for \(version.key.relativePath, privacy: .private(mask: .hash)): \(String(describing: error), privacy: .private)")
             return false
         }
     }

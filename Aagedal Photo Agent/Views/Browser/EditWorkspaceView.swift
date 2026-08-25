@@ -2678,7 +2678,7 @@ struct EditWorkspaceView: View {
             developVersionPersistenceState = .failed(message)
             developVersionNotice = message
             editLog.error(
-                "Failed to flush named Develop version for \(String(describing: reason), privacy: .public): \(message, privacy: .public)"
+                "Failed to flush named Develop version for \(String(describing: reason), privacy: .public): \(message, privacy: .private)"
             )
             return .failed(message)
         }

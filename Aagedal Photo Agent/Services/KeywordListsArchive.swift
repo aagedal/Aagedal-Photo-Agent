@@ -177,7 +177,7 @@ enum KeywordListsArchive {
             if mode == .skip { continue }
 
             guard let fileURL = safeEntryURL(for: entry.path, in: payloadRoot) else {
-                logger.warning("Skipping keyword-list import entry with unsafe path: \(entry.path, privacy: .public)")
+                logger.warning("Skipping keyword-list import entry with unsafe path: \(entry.path, privacy: .private(mask: .hash))")
                 continue
             }
             guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }

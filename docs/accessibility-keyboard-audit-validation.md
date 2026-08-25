@@ -5,7 +5,9 @@ Analysis, Deadline Workspace, and Activity now expose stable automation identifi
 accessibility semantics. Image cells/previews, filmstrips, result and receipt rows, toolbar actions,
 sliders, filters, and icon-only controls have explicit labels or combined semantics. Metadata
 rating stars and color-label dots are real keyboard-operable buttons rather than gesture-only
-graphics. Caption and Activity use adaptive minimum/ideal sizing instead of fixed toolbar heights
+graphics in both Metadata and Full Screen. Full Screen additionally exposes selected/not-selected
+values, stable automation identifiers, selected traits, and the color-picker's expanded/collapsed state.
+Caption and Activity use adaptive minimum/ideal sizing instead of fixed toolbar heights
 or a single rigid detail width.
 
 A persisted culling-shortcut registry provides Photo Agent, Photo Mechanic-like, Bridge-like, and
@@ -21,6 +23,22 @@ The isolated accessibility suite now passes eleven tests, including source audit
 named accessibility-description control and the structured contact/location editor. The six
 adjacent workspace/interaction suites passed 83 tests, for 94 tests with no failures. Swift parsing
 and `git diff --check` passed.
+
+The Full Screen follow-up on 2026-08-25 converted the five gesture-only rating stars to semantic
+Buttons and completed the already-button-based color-label picker with explicit labels, values,
+hints, selected traits, stable identifiers, and expanded/collapsed state. The focused
+`FullScreenShortcutTests` suite includes a source regression that rejects a return to
+gesture-only stars and verifies the rating/label accessibility contract. Manual Full Keyboard
+Access focus-ring order and VoiceOver speech remain part of the OS-level validation below.
+
+Focused command:
+
+```sh
+xcodebuild test -scheme 'Aagedal Photo Agent Tests' -destination 'platform=macOS' \
+  -only-testing:'Aagedal Photo Agent Tests/FullScreenShortcutTests'
+```
+
+Result: 4 tests passed in 1 suite, including the new semantic-control source regression.
 
 This is the automatable audit, not a manual accessibility certification. The culling registry is
 deliberately limited to fifteen commands, while Caption owns a separate two-command registry;

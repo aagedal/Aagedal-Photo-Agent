@@ -157,7 +157,7 @@ final class RosterStore {
             let data = try CloudCoordinatedIO.readData(at: url)
             return try JSONDecoder().decode(Team.self, from: data)
         } catch {
-            rosterLog.error("Failed to load team file \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            rosterLog.error("Failed to load team file \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             backupCorruptFile(at: url)
             return nil
         }
@@ -288,7 +288,7 @@ final class RosterStore {
             for version in conflicts { version.isResolved = true }
             try NSFileVersion.removeOtherVersionsOfItem(at: url)
         } catch {
-            rosterLog.error("Failed to resolve conflicts for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            rosterLog.error("Failed to resolve conflicts for \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
         }
         return merged
     }

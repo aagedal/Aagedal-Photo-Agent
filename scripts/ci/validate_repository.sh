@@ -24,9 +24,13 @@ plist_count=0
 while IFS= read -r -d '' path; do
   plutil -lint -- "$path" >/dev/null
   plist_count=$((plist_count + 1))
-done < <(git ls-files -z -- '*.plist')
+done < <(git ls-files -z -- '*.plist' '*.xcprivacy')
 plutil -lint -- 'Aagedal Photo Agent.xcodeproj/project.pbxproj' >/dev/null
 printf 'validated %d property lists and project.pbxproj\n' "$plist_count"
+
+say "Checking unified-log privacy classifications"
+python3 scripts/ci/test_logger_privacy_validator.py
+python3 scripts/ci/validate_logger_privacy.py
 
 say "Scanning tracked files for unresolved conflict markers"
 conflict_output="$(git grep -n -I -E '^(<<<<<<< |=======$|>>>>>>> )' -- . 2>/dev/null || true)"

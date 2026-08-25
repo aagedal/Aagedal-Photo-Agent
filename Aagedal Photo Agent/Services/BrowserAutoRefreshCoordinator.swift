@@ -91,7 +91,7 @@ final class BrowserAutoRefreshCoordinator {
                 }
             }
             if monitors[paneID] == nil {
-                logger.warning("FSEvents unavailable for \(folderURL.path, privacy: .public); using fallback polling")
+                logger.warning("FSEvents unavailable for \(folderURL.path, privacy: .private(mask: .hash)); using fallback polling")
             }
         }
     }

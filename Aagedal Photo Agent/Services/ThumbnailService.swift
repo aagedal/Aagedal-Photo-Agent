@@ -320,7 +320,7 @@ final class ThumbnailService {
                     let thumbnail = try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
                     return thumbnail.nsImage
                 } catch {
-                    thumbnailLogger.debug("QLThumbnail failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    thumbnailLogger.debug("QLThumbnail failed for \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                     return nil
                 }
             }
@@ -331,7 +331,7 @@ final class ThumbnailService {
                     return nil
                 }
                 guard !Task.isCancelled else { return nil }
-                thumbnailLogger.warning("QLThumbnail timed out for \(url.lastPathComponent, privacy: .public)")
+                thumbnailLogger.warning("QLThumbnail timed out for \(url.lastPathComponent, privacy: .private(mask: .hash))")
                 return nil
             }
             let first = await group.next() ?? nil
@@ -504,7 +504,7 @@ final class ThumbnailService {
         guard values?.ubiquitousItemDownloadingStatus == .notDownloaded else { return true }
 
         try? fileManager.startDownloadingUbiquitousItem(at: url)
-        thumbnailLogger.info("Deferred thumbnail for not-downloaded iCloud item: \(url.lastPathComponent, privacy: .public)")
+        thumbnailLogger.info("Deferred thumbnail for not-downloaded iCloud item: \(url.lastPathComponent, privacy: .private(mask: .hash))")
         return false
     }
 }

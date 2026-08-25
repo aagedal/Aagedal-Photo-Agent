@@ -29,7 +29,7 @@ nonisolated struct MatchRosterService: Sendable {
             let data = try Data(contentsOf: url)
             return try JSONDecoder().decode(MatchRoster.self, from: data)
         } catch {
-            matchRosterLog.error("Failed to decode match roster at \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            matchRosterLog.error("Failed to decode match roster at \(url.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }

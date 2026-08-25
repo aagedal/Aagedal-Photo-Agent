@@ -103,6 +103,18 @@ final class KeywordListsStore {
     static let shared = KeywordListsStore()
     nonisolated static let changedKeyUserInfo = "key"
 
+    /// Test seam for stale, unavailable, and subsequently recovered legacy
+    /// bookmarks. Production uses security-scoped bookmark resolution.
+    static var legacyBookmarkResolver: (Data) -> URL? = { data in
+        var isStale = false
+        return try? URL(
+            resolvingBookmarkData: data,
+            options: .withSecurityScope,
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        )
+    }
+
     /// iCloud container identifier. Must match the entry in the entitlements file.
     static let iCloudContainerID = "iCloud.aagedal.Aagedal-Photo-Agent"
 
@@ -201,7 +213,7 @@ final class KeywordListsStore {
             let data = try CloudCoordinatedIO.readData(at: target)
             return String(decoding: data, as: UTF8.self)
         } catch {
-            logger.error("Failed to read \(key.relativePath, privacy: .public): \(String(describing: error))")
+            logger.error("Failed to read \(key.relativePath, privacy: .private(mask: .hash)): \(String(describing: error), privacy: .private)")
             return nil
         }
     }
@@ -320,49 +332,123 @@ final class KeywordListsStore {
     // MARK: - Migration
 
     /// One-shot import of legacy bookmark-pointed files into the managed store.
-    /// Idempotent: stamps `keywordListsMigratedVersion` once done so subsequent
-    /// launches skip the work.
+    /// Idempotent and retryable: every source records completion separately,
+    /// and the global stamp advances only when no configured source failed.
+    /// Legacy bookmark bytes are intentionally retained as recovery evidence.
     func migrateLegacyBookmarksIfNeeded() {
         let stamp = UserDefaults.standard.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion)
         if stamp >= 1 { return }
 
+        var completed = Set(
+            UserDefaults.standard.stringArray(
+                forKey: UserDefaultsKeys.keywordListsMigrationCompletedKeys
+            ) ?? []
+        )
+        var hadFailure = false
+
         // Approved list (single field today: .keywords)
         for field in ApprovedListField.allCases {
-            if let url = resolveBookmarkData(forKey: field.bookmarkKey) {
-                let didStart = url.startAccessingSecurityScopedResource()
-                defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-                if let entries = try? ApprovedListParser.parse(url) {
-                    try? writeEntries(entries, to: .approved(field))
+            let migrationID = "approved:\(field.rawValue)"
+            guard !completed.contains(migrationID) else { continue }
+            migrateLegacySource(
+                id: migrationID,
+                bookmarkKey: field.bookmarkKey,
+                completed: &completed,
+                hadFailure: &hadFailure
+            ) { url in
+                let entries = try ApprovedListParser.parse(url)
+                let expected = normalizedEntries(entries)
+                try writeEntries(entries, to: .approved(field))
+                guard readEntries(.approved(field)) == expected else {
+                    throw CocoaError(.fileWriteUnknown)
                 }
             }
         }
 
         // Structured keywords
-        if let url = resolveBookmarkData(forKey: UserDefaultsKeys.structuredKeywordsBookmark) {
-            let didStart = url.startAccessingSecurityScopedResource()
-            defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-            if let data = try? Data(contentsOf: url),
-               let text = String(data: data, encoding: .utf8) {
-                try? writeText(text, to: .structured)
+        migrateLegacySource(
+            id: "structured",
+            bookmarkKey: UserDefaultsKeys.structuredKeywordsBookmark,
+            completed: &completed,
+            hadFailure: &hadFailure
+        ) { url in
+            let data = try Data(contentsOf: url)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw CocoaError(.fileReadInapplicableStringEncoding)
+            }
+            try writeText(text, to: .structured)
+            guard readText(.structured) == text else {
+                throw CocoaError(.fileWriteUnknown)
             }
         }
 
         // Quick lists (8)
         for type in QuickListType.allCases {
-            if let url = resolveBookmarkData(forKey: type.bookmarkKey) {
-                let didStart = url.startAccessingSecurityScopedResource()
-                defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-                if let text = try? String(contentsOf: url, encoding: .utf8) {
-                    let lines = text
-                        .components(separatedBy: .newlines)
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        .filter { !$0.isEmpty }
-                    try? writeEntries(lines, to: .quick(type))
+            let migrationID = "quick:\(type.rawValue)"
+            guard !completed.contains(migrationID) else { continue }
+            migrateLegacySource(
+                id: migrationID,
+                bookmarkKey: type.bookmarkKey,
+                completed: &completed,
+                hadFailure: &hadFailure
+            ) { url in
+                let text = try String(contentsOf: url, encoding: .utf8)
+                let lines = text
+                    .components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                let expected = normalizedEntries(lines)
+                try writeEntries(lines, to: .quick(type))
+                guard readEntries(.quick(type)) == expected else {
+                    throw CocoaError(.fileWriteUnknown)
                 }
             }
         }
 
-        UserDefaults.standard.set(1, forKey: UserDefaultsKeys.keywordListsMigratedVersion)
+        UserDefaults.standard.set(
+            completed.sorted(),
+            forKey: UserDefaultsKeys.keywordListsMigrationCompletedKeys
+        )
+        if !hadFailure {
+            UserDefaults.standard.set(1, forKey: UserDefaultsKeys.keywordListsMigratedVersion)
+        }
+    }
+
+    private func migrateLegacySource(
+        id: String,
+        bookmarkKey: String,
+        completed: inout Set<String>,
+        hadFailure: inout Bool,
+        importAndVerify: (URL) throws -> Void
+    ) {
+        guard let bookmarkData = UserDefaults.standard.data(forKey: bookmarkKey) else {
+            completed.insert(id)
+            return
+        }
+        guard let url = Self.legacyBookmarkResolver(bookmarkData) else {
+            hadFailure = true
+            logger.error("Legacy list migration could not resolve \(id, privacy: .private(mask: .hash)); it will retry")
+            return
+        }
+
+        let didStart = url.startAccessingSecurityScopedResource()
+        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
+        do {
+            try importAndVerify(url)
+            completed.insert(id)
+        } catch {
+            hadFailure = true
+            logger.error("Legacy list migration failed for \(id, privacy: .private(mask: .hash)); it will retry: \(error.localizedDescription, privacy: .private)")
+        }
+    }
+
+    private func normalizedEntries(_ entries: [String]) -> [String] {
+        var seen = Set<String>()
+        return entries.compactMap { entry in
+            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
+            return trimmed
+        }
     }
 
     // MARK: - Internals
@@ -405,13 +491,7 @@ final class KeywordListsStore {
 
     private func resolveBookmarkData(forKey key: String) -> URL? {
         guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        var isStale = false
-        return try? URL(
-            resolvingBookmarkData: data,
-            options: .withSecurityScope,
-            relativeTo: nil,
-            bookmarkDataIsStale: &isStale
-        )
+        return Self.legacyBookmarkResolver(data)
     }
 
     /// Non-destructively brings `source`'s lists into `destination` when toggling

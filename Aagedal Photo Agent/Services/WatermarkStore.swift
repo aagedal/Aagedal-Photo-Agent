@@ -226,7 +226,7 @@ final class WatermarkStore {
             let data = try CloudCoordinatedIO.readData(at: url)
             return try JSONDecoder().decode(WatermarkAsset.self, from: data)
         } catch {
-            watermarkLog.error("Failed to load watermark meta \(id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            watermarkLog.error("Failed to load watermark meta \(id.uuidString, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }
@@ -382,7 +382,7 @@ final class WatermarkStore {
             for version in conflicts { version.isResolved = true }
             try NSFileVersion.removeOtherVersionsOfItem(at: url)
         } catch {
-            watermarkLog.error("Failed to resolve conflicts for \(id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            watermarkLog.error("Failed to resolve conflicts for \(id.uuidString, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
         }
         return merged
     }

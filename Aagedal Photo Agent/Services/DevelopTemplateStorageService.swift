@@ -25,7 +25,7 @@ struct DevelopTemplateStorageService: Sendable {
                 return try JSONDecoder().decode(DevelopTemplate.self, from: data)
             } catch {
                 developTemplateStorageLog.warning(
-                    "Skipping develop template at \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "Skipping develop template at \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
                 )
                 return nil
             }

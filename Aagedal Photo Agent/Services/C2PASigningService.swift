@@ -441,7 +441,7 @@ nonisolated enum C2PASigningService {
             "-f",
         ]
 
-        logger.info("Signing: \(imageURL.lastPathComponent, privacy: .public)")
+        logger.info("Signing: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
 
         do {
             _ = try await Process.run(
@@ -451,7 +451,7 @@ nonisolated enum C2PASigningService {
             )
         } catch {
             let message = error.localizedDescription
-            logger.error("c2patool failed: \(message, privacy: .public)")
+            logger.error("c2patool failed: \(message, privacy: .private)")
             throw C2PASigningError.processFailed(message)
         }
 
@@ -484,7 +484,7 @@ nonisolated enum C2PASigningService {
             )
         }
 
-        logger.info("Signed successfully: \(imageURL.lastPathComponent, privacy: .public)")
+        logger.info("Signed successfully: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
     }
 
     /// Sign an image that already has C2PA, preserving the history chain.
@@ -527,7 +527,7 @@ nonisolated enum C2PASigningService {
             )
         } catch {
             let message = error.localizedDescription
-            logger.error("c2patool ingredient extraction failed: \(message, privacy: .public)")
+            logger.error("c2patool ingredient extraction failed: \(message, privacy: .private)")
             throw C2PASigningError.processFailed("Ingredient extraction failed: \(message)")
         }
 
@@ -560,7 +560,7 @@ nonisolated enum C2PASigningService {
             "-f",
         ]
 
-        logger.info("Re-signing with history: \(imageURL.lastPathComponent, privacy: .public)")
+        logger.info("Re-signing with history: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
 
         do {
             _ = try await Process.run(
@@ -570,7 +570,7 @@ nonisolated enum C2PASigningService {
             )
         } catch {
             let message = error.localizedDescription
-            logger.error("c2patool signing failed: \(message, privacy: .public)")
+            logger.error("c2patool signing failed: \(message, privacy: .private)")
             throw C2PASigningError.processFailed(message)
         }
 
@@ -601,7 +601,7 @@ nonisolated enum C2PASigningService {
             )
         }
 
-        logger.info("Re-signed successfully: \(imageURL.lastPathComponent, privacy: .public)")
+        logger.info("Re-signed successfully: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
     }
 
     // MARK: - Sign Rendered Image with Parent Ingredient
@@ -643,7 +643,7 @@ nonisolated enum C2PASigningService {
             )
         } catch {
             let message = error.localizedDescription
-            logger.error("c2patool ingredient extraction failed: \(message, privacy: .public)")
+            logger.error("c2patool ingredient extraction failed: \(message, privacy: .private)")
             throw C2PASigningError.processFailed("Ingredient extraction failed: \(message)")
         }
 
@@ -676,7 +676,7 @@ nonisolated enum C2PASigningService {
             "-f",
         ]
 
-        logger.info("Signing rendered image with parent ingredient: \(imageURL.lastPathComponent, privacy: .public)")
+        logger.info("Signing rendered image with parent ingredient: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
 
         do {
             _ = try await Process.run(
@@ -686,7 +686,7 @@ nonisolated enum C2PASigningService {
             )
         } catch {
             let message = error.localizedDescription
-            logger.error("c2patool signing failed: \(message, privacy: .public)")
+            logger.error("c2patool signing failed: \(message, privacy: .private)")
             throw C2PASigningError.processFailed(message)
         }
 
@@ -717,7 +717,7 @@ nonisolated enum C2PASigningService {
             )
         }
 
-        logger.info("Signed with parent ingredient: \(imageURL.lastPathComponent, privacy: .public)")
+        logger.info("Signed with parent ingredient: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
     }
 
     // MARK: - Manifest Builder

@@ -792,7 +792,7 @@ struct MetadataPanel: View {
             do {
                 try "".write(to: url, atomically: true, encoding: .utf8)
             } catch {
-                metadataPanelLog.error("Failed to create quick list file at \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                metadataPanelLog.error("Failed to create quick list file at \(url.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             }
         }
         return url

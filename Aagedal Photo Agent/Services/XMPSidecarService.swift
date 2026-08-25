@@ -76,7 +76,7 @@ struct XMPSidecarService: Sendable {
             do {
                 try FileManager.default.removeItem(at: url)
             } catch {
-                xmpLog.warning("Failed to remove unreadable XMP sidecar for \(imageURL.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+                xmpLog.warning("Failed to remove unreadable XMP sidecar for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             }
             return
         }
@@ -96,13 +96,13 @@ struct XMPSidecarService: Sendable {
                     writesLocalizedTitleClearTombstone: false
                 )
             } catch {
-                xmpLog.error("Failed to save stripped XMP sidecar for \(imageURL.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+                xmpLog.error("Failed to save stripped XMP sidecar for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             }
         } else {
             do {
                 try FileManager.default.removeItem(at: url)
             } catch {
-                xmpLog.warning("Failed to remove empty XMP sidecar for \(imageURL.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+                xmpLog.warning("Failed to remove empty XMP sidecar for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             }
         }
     }

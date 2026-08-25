@@ -181,7 +181,7 @@ struct PersonEditSidebar: View {
                 person = updated
             }
         } catch {
-            knownPeopleSidebarLog.error("Failed to delete embedding: \(error.localizedDescription, privacy: .public)")
+            knownPeopleSidebarLog.error("Failed to delete embedding: \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -198,7 +198,7 @@ struct PersonEditSidebar: View {
             try KnownPeopleService.shared.updatePerson(person)
             loadThumbnail()
         } catch {
-            knownPeopleSidebarLog.error("Failed to set representative: \(error.localizedDescription, privacy: .public)")
+            knownPeopleSidebarLog.error("Failed to set representative: \(error.localizedDescription, privacy: .private)")
         }
     }
 }

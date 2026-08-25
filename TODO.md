@@ -102,28 +102,37 @@
 
 
 ## Version 2.3
-- [ ] Image analysis layout mode
-  - [ ] Two modes
-    - [ ] Pixel analysis (is this manipulated or AI-generated)
-    - [ ] OSINT (where was this image taken and when)
-  - [ ] Bigger scopes, on hover detail zoom
-  - [ ] Scope/view to more easily view compression, side by side with real image
+- [x] Image analysis layout mode
+  - [x] Two modes
+    - [x] Pixel Analysis workspace for manual forensic inspection. Automated AI-origin detection
+      remains conditional below.
+    - [x] OSINT (where was this image taken and when)
+  - [x] Bigger resizable scopes with linked hover and source-pixel inspection.
+  - [ ] Add a true-pixel hover detail loupe directly to Image Analysis. The shared hover/crop
+    geometry exists, but the full Analysis loupe remains open.
+  - [x] Compression/residual view beside the aligned normal image.
   - [ ] Pixel analysis to detect common AI-generated artifacts
-  - [ ] Suspicious metadata detection (e.g.: real images are rarely png)
-    - [ ] Output non-technical language
-  - [ ] Markup tools for manual verification
-    - [ ] Draw lines
-    - [ ] Meassure (optional pixel to cm conversion)
-    - [ ] Circle or put rectangle objects with labels (color pallet)
-    - [ ] Place images on a satellite map, as a OSINT companion tool.
-      - [ ] The satellite image itself may also need to support the markup tools, as to easily mark the location of objects/buildings with the same color as the markuplabel in the photo.
-  - [ ] Analysis report PDF export
-- [ ] Comparison view, letting the user select two images to view next to each other
-  - [ ] Zoom and pan lock, to make it easy to compare details. (should be possible to unlock/offset)
-  - [ ] Accessible both in the develop view, the full screen, and clean feed view.
-- [ ] Grading version: the ability for an image to store different edit versions (json only, not XMP)
+  - [x] Suspicious metadata detection
+    - [x] Output in non-technical language with alternatives and limitations.
+  - [x] Markup tools for manual verification
+    - [x] Draw lines and arrows.
+    - [x] Measure in source pixels with optional user-calibrated real-world conversion.
+    - [x] Circle/ellipse and rectangle objects with labels and an accessible color palette.
+    - [x] Place images on a satellite/hybrid map as an OSINT companion tool.
+      - [x] Support linked, color-preserving markup on the photo and map surfaces.
+  - [x] Analysis report PDF export
+- [x] Comparison view, letting the user select two images to view next to each other
+  - [x] Zoom and pan lock, including temporary unlock and saved alignment offset.
+  - [x] Accessible from Develop, full-screen, and Clean Feed as well as Browser.
+- [x] Grading versions: store source-bound named edit versions as private JSON, not XMP.
 - [ ] Separate the face recognition model file from the app, to minimize update size. The model is rarely updated.
   - [ ] The model should download in the background on first launch if a model isn't found locally.
   - [ ] Needs support for model versioning, in case an improved face recognition model is released.
 - [ ] Check if a users face database is problematic with relation to GDPR. If so warn the user that they may now want to use the known people database feature. The face grouping feature should still be legally safe.
 
+**3.0 status reconciliation (2026-08-25):** the completed investigation, comparison, and named-version
+items above are backed by the implementation and the dated validation records in
+[`docs/v2.3`](docs/v2.3/README.md). The automated AI-origin/artifact detector remains conditional and
+unapproved; the Analysis hover loupe, on-demand face-model component, and focused face-data privacy/legal
+review remain open. Release-level manual, hardware, privacy, recovery, and packaging gates continue in the
+[delivery plan](docs/v2.3/delivery-plan.md) and [app improvement audit](docs/app-improvement-audit-plan.md).

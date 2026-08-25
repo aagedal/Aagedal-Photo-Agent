@@ -42,7 +42,7 @@ nonisolated struct FaceDataStorageService: Sendable {
             let faceData = try JSONDecoder().decode(FolderFaceData.self, from: data)
             return faceData
         } catch {
-            faceDataLog.error("Failed to decode face data at \(fileURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            faceDataLog.error("Failed to decode face data at \(fileURL.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             // Move corrupt file aside so it doesn't block future loads
             let timestamp = ISO8601DateFormatter().string(from: Date())
                 .replacingOccurrences(of: ":", with: "-")
@@ -50,9 +50,9 @@ nonisolated struct FaceDataStorageService: Sendable {
                 .appendingPathComponent("\(Self.dataFileName).corrupt.\(timestamp)")
             do {
                 try FileManager.default.moveItem(at: fileURL, to: backupURL)
-                faceDataLog.error("Moved corrupt face data to \(backupURL.lastPathComponent, privacy: .public)")
+                faceDataLog.error("Moved corrupt face data to \(backupURL.lastPathComponent, privacy: .private(mask: .hash))")
             } catch {
-                faceDataLog.error("Failed to move corrupt face data aside: \(error.localizedDescription, privacy: .public)")
+                faceDataLog.error("Failed to move corrupt face data aside: \(error.localizedDescription, privacy: .private)")
             }
             return nil
         }
@@ -63,7 +63,7 @@ nonisolated struct FaceDataStorageService: Sendable {
         do {
             return try Data(contentsOf: url)
         } catch {
-            faceDataLog.warning("Failed to load thumbnail for face \(faceID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            faceDataLog.warning("Failed to load thumbnail for face \(faceID.uuidString, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }
@@ -98,7 +98,7 @@ nonisolated struct FaceDataStorageService: Sendable {
         } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
             // File already gone — not an error
         } catch {
-            faceDataLog.warning("Failed to delete thumbnail for face \(faceID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            faceDataLog.warning("Failed to delete thumbnail for face \(faceID.uuidString, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
         }
     }
 

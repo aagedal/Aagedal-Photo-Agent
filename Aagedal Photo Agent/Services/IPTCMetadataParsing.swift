@@ -548,7 +548,7 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> ParsedMaskCorr
 
         // Anything else — erase-brush MaskBrushTable, unknown mask type, multi-mask
         // intersection — is preserved verbatim so a develop save doesn't delete it.
-        parsingLog.warning("Preserving MaskGroupBasedCorrections[\(index)] (\(name, privacy: .public)) verbatim: unmodeled mask type \(what ?? "unknown", privacy: .public)")
+        parsingLog.warning("Preserving MaskGroupBasedCorrections[\(index)] (\(name, privacy: .private(mask: .hash))) verbatim: unmodeled mask type \(what ?? "unknown", privacy: .private)")
         result.preserved.append(PreservedMaskCorrection(fields: preservedFields(from: corr)))
     }
     return result

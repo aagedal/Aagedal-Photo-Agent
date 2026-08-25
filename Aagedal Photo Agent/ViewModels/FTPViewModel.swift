@@ -63,7 +63,7 @@ final class FTPViewModel {
         do {
             connections = try JSONDecoder().decode([FTPConnection].self, from: data)
         } catch {
-            ftpLog.error("Failed to decode FTP connections: \(error.localizedDescription, privacy: .public)")
+            ftpLog.error("Failed to decode FTP connections: \(error.localizedDescription, privacy: .private)")
             return
         }
 
@@ -80,7 +80,7 @@ final class FTPViewModel {
             let data = try JSONEncoder().encode(connections)
             UserDefaults.standard.set(data, forKey: connectionsKey)
         } catch {
-            ftpLog.error("Failed to encode FTP connections: \(error.localizedDescription, privacy: .public)")
+            ftpLog.error("Failed to encode FTP connections: \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -140,7 +140,7 @@ final class FTPViewModel {
         do {
             try KeychainService.save(password: editingPassword, forKey: editingConnection.keychainKey)
         } catch {
-            ftpLog.error("Keychain save failed for \(self.editingConnection.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            ftpLog.error("Keychain save failed for \(self.editingConnection.name, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             errorMessages = ["Failed to save password: \(error.localizedDescription)"]
             return
         }

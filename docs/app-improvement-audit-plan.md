@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 20 of 75 checklist substeps complete
+**Status:** implementation in progress — 28 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -18,12 +18,23 @@ accessibility, responsiveness, and maintainability.
 
 ## Audit baseline
 
+The evidence blocks below describe the original audit findings; checked implementation work may have
+removed the cited behavior or moved the cited lines.
+
 - A fresh isolated `build-for-testing` succeeded on 2026-08-24. The latest repository validation
   record reports 1,413 logical tests passing across 155 suites after the Command-S export-safety
   integration; this audit reconciliation did not rerun the test bundle.
 - The project has only the app and unit-test targets; there is no UI-test target.
-- The only GitHub Actions workflow publishes the backup appcast; it does not build or test the app.
+- At the original audit baseline, the only GitHub Actions workflow published the backup appcast; the
+  checked Phase 1.1 work below has since added build-and-test CI.
 - The worktree was already modified before this audit. This plan is a new file and does not alter app code.
+
+**Checklist reconciliation (2026-08-25):** the status count is exact: 28 of 75 substeps are checked and
+47 remain open. Each checked substep links to dated validation. A baseline current-source and
+validation-record review found no definitive evidence that another unchecked substep was already complete;
+partial foundations such as the existing bookmark lifecycle tests, accessibility semantics, bounded image
+caches, and focused concurrency coverage do not satisfy their broader manual, system-level, or
+cross-workflow exit gates.
 
 ## Phase 0 — Stop silent data loss and destructive surprises
 
@@ -66,10 +77,14 @@ resurrect a successfully deleted record; interrupted merges have a documented re
 
 **Plan:**
 
-- [ ] Require a complete, read-back-verified backup before resetting incompatible embeddings.
-- [ ] Stamp the embedding version only after backup and reset both succeed.
-- [ ] Record keyword migration completion per list/key, retaining retry state for failures.
-- [ ] Preserve source bookmarks until each corresponding import is verified.
+- [x] Require a complete, read-back-verified backup before resetting incompatible embeddings.
+  ([validation](one-shot-migration-recovery-validation.md), 2026-08-25)
+- [x] Stamp the embedding version only after backup and reset both succeed.
+  ([validation](one-shot-migration-recovery-validation.md), 2026-08-25)
+- [x] Record keyword migration completion per list/key, retaining retry state for failures.
+  ([validation](one-shot-migration-recovery-validation.md), 2026-08-25)
+- [x] Preserve source bookmarks until each corresponding import is verified.
+  ([validation](one-shot-migration-recovery-validation.md), 2026-08-25)
 - [ ] Show a plain-language recovery notice naming the affected category without exposing private values.
 
 **Exit gate:** disk-full, permission, unavailable security scope, corrupt input, and iCloud-placeholder tests
@@ -175,11 +190,14 @@ omitting any artifact fails preflight; shipped source/license claims match runti
   ([validation](security-policy-release-boundary-validation.md), 2026-08-25)
 - [x] Add a release check that the security policy covers the marketing version.
   ([validation](security-policy-release-boundary-validation.md), 2026-08-25)
-- [ ] Inventory all `Logger` calls and classify filenames, paths, face identifiers, metadata, destinations,
+- [x] Inventory all `Logger` calls and classify filenames, paths, face identifiers, metadata, destinations,
   subprocess arguments, and errors by sensitivity.
-- [ ] Default potentially identifying values to private/redacted and add static tests for prohibited public
+  ([validation](logger-privacy-and-manifest-validation.md), 2026-08-25)
+- [x] Default potentially identifying values to private/redacted and add static tests for prohibited public
   interpolation.
-- [ ] Audit whether a privacy manifest is required and document the conclusion.
+  ([validation](logger-privacy-and-manifest-validation.md), 2026-08-25)
+- [x] Audit whether a privacy manifest is required and document the conclusion.
+  ([validation](logger-privacy-and-manifest-validation.md), 2026-08-25)
 - [ ] Evaluate App Sandbox feasibility; if full sandboxing is impractical, document why and assess a
   constrained XPC/helper boundary for untrusted parsing and bundled tools.
 
@@ -213,7 +231,7 @@ useful VoiceOver announcement.
 ### 2.2 Add a clear face-data and iCloud lifecycle checkpoint
 
 **Priority:** P1, pending legal/privacy review; do not claim a legal conclusion from this audit.  
-**Evidence:** the open question remains at `TODO.md:123-126`; automatic matching is described at
+**Evidence:** the open privacy/legal question remains in `TODO.md` under **Version 2.3**; automatic matching is described at
 `SettingsView.swift:567-585`; iCloud can sync reference faces and clothing samples at `:1538-1544`.
 
 **Plan:**
@@ -254,8 +272,8 @@ representative server tests cover failure and retry.
 
 - [ ] Add a small XCUITest smoke target for launch/open folder, import preflight, Caption save, Batch Rename,
   Deadline preflight, and recovery/error states.
-- [ ] Convert full-screen rating stars and label dots to labelled Buttons
-  (`FullScreenImageView.swift:1941-1972,2008-2024`).
+- [x] Convert full-screen rating stars and label dots to labelled Buttons.
+  ([validation](accessibility-keyboard-audit-validation.md), 2026-08-25)
 - [ ] Convert face selection, ingest split cells, scope modes, and copyable metadata rows from gesture-only
   interactions to keyboard/VoiceOver-operable controls.
 - [ ] Give Metadata Review failures persistent icons/reasons and accessibility severity, not color/hover alone.
@@ -361,7 +379,7 @@ scenario is repeatable and clean.
 
 **Priority:** P3; depends on the artifact manifest and privacy checkpoint.  
 **Evidence:** AuraFace occupies about 125 MB and the existing roadmap already proposes an on-demand,
-versioned model (`TODO.md:123-125`).
+versioned model in `TODO.md` under **Version 2.3**.
 
 **Plan:**
 

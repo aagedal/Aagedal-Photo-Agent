@@ -9,6 +9,12 @@ the highest-risk forensic algorithms.
 No phase is complete with only a view mockup. Each phase includes model, persistence where relevant,
 tests, error states, accessibility, and a manual validation note.
 
+**Open-item reconciliation (2026-08-25):** 117 of 142 checklist items are complete and 25 remain open.
+The remaining items are genuine gates: four Phase 0 corpus/benchmark/model decisions, three manual
+validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer steps in Phase 11, and ten
+Phase 12 performance, device, privacy, accessibility, recovery, documentation, and release tasks. Current
+source and dated validation records do not justify closing any of those 25 items.
+
 ## Phase 0 — research, decisions, and fixtures
 
 **Exit gate:** the project can make evidence claims and distribute every required dependency/fixture

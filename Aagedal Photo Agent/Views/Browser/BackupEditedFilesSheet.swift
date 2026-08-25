@@ -290,7 +290,7 @@ struct BackupEditedFilesSheet: View {
                     self.phase = .cancelled
                 }
             } catch {
-                editedBackupLog.error("Edited folder backup failed: \(error.localizedDescription, privacy: .public)")
+                editedBackupLog.error("Edited folder backup failed: \(error.localizedDescription, privacy: .private)")
                 await MainActor.run {
                     self.summaryLine = error.localizedDescription
                     self.phase = .complete

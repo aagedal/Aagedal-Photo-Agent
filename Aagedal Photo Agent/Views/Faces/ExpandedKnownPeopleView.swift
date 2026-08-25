@@ -650,7 +650,7 @@ struct PersonContactCard: View {
         do {
             try KnownPeopleService.shared.removeEmbedding(embeddingID, fromPersonID: person.id)
         } catch {
-            knownPeopleViewLog.error("Failed to delete embedding: \(error.localizedDescription, privacy: .public)")
+            knownPeopleViewLog.error("Failed to delete embedding: \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -667,7 +667,7 @@ struct PersonContactCard: View {
             }
             try KnownPeopleService.shared.updatePerson(updated)
         } catch {
-            knownPeopleViewLog.error("Failed to set representative: \(error.localizedDescription, privacy: .public)")
+            knownPeopleViewLog.error("Failed to set representative: \(error.localizedDescription, privacy: .private)")
         }
     }
 }

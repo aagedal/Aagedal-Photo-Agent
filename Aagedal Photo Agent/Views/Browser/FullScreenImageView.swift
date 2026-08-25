@@ -2040,32 +2040,7 @@ struct FullScreenImageView: View {
             if showLabelPicker {
                 HStack(spacing: 6) {
                     ForEach(ColorLabel.allCases, id: \.self) { label in
-                        Button {
-                            viewModel.setLabel(label)
-                            showLabelPicker = false
-                        } label: {
-                            if let c = label.color {
-                                Circle()
-                                    .fill(c)
-                                    .frame(width: 20, height: 20)
-                                    .overlay(
-                                        Circle()
-                                            .strokeBorder(.white, lineWidth: file.colorLabel == label ? 2 : 0)
-                                    )
-                            } else {
-                                Circle()
-                                    .strokeBorder(.white.opacity(0.5), lineWidth: 1)
-                                    .frame(width: 20, height: 20)
-                                    .overlay(
-                                        file.colorLabel == .none
-                                            ? Image(systemName: "xmark")
-                                                .font(.caption2)
-                                                .foregroundStyle(.white)
-                                            : nil
-                                    )
-                            }
-                        }
-                        .buttonStyle(.plain)
+                        colorLabelButton(label, for: file)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -2099,26 +2074,77 @@ struct FullScreenImageView: View {
                 .background(.black.opacity(0.6), in: Capsule())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Color label")
+            .accessibilityValue(
+                "\(file.colorLabel.displayName), picker \(showLabelPicker ? "expanded" : "collapsed")"
+            )
+            .accessibilityHint(showLabelPicker ? "Close the color label picker" : "Open the color label picker")
+            .accessibilityIdentifier("fullScreen.colorLabelPicker")
         }
+    }
+
+    private func colorLabelButton(_ label: ColorLabel, for file: ImageFile) -> some View {
+        Button {
+            viewModel.setLabel(label)
+            showLabelPicker = false
+        } label: {
+            if let color = label.color {
+                Circle()
+                    .fill(color)
+                    .frame(width: 20, height: 20)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(.white, lineWidth: file.colorLabel == label ? 2 : 0)
+                    )
+            } else {
+                Circle()
+                    .strokeBorder(.white.opacity(0.5), lineWidth: 1)
+                    .frame(width: 20, height: 20)
+                    .overlay(
+                        file.colorLabel == .none
+                            ? Image(systemName: "xmark")
+                                .font(.caption2)
+                                .foregroundStyle(.white)
+                            : nil
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(label.displayName) color label")
+        .accessibilityValue(file.colorLabel == label ? "Selected" : "Not selected")
+        .accessibilityHint("Set this color label and close the picker")
+        .accessibilityIdentifier("fullScreen.colorLabel.\(label.rawValue)")
+        .accessibilityAddTraits(file.colorLabel == label ? .isSelected : [])
     }
 
     private func starRatingOverlay(for file: ImageFile) -> some View {
         HStack(spacing: 4) {
             ForEach(1...5, id: \.self) { star in
-                Image(systemName: star <= file.starRating.rawValue ? "star.fill" : "star")
-                    .font(.title3)
-                    .foregroundStyle(star <= file.starRating.rawValue ? .yellow : .white.opacity(0.5))
-                    .onTapGesture {
-                        let newRating: StarRating = star == file.starRating.rawValue
-                            ? .none
-                            : StarRating(rawValue: star) ?? .none
-                        viewModel.setRating(newRating)
-                    }
+                starRatingButton(star, for: file)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(.black.opacity(0.6), in: Capsule())
+    }
+
+    private func starRatingButton(_ star: Int, for file: ImageFile) -> some View {
+        Button {
+            let newRating: StarRating = star == file.starRating.rawValue
+                ? .none
+                : StarRating(rawValue: star) ?? .none
+            viewModel.setRating(newRating)
+        } label: {
+            Image(systemName: star <= file.starRating.rawValue ? "star.fill" : "star")
+                .font(.title3)
+                .foregroundStyle(star <= file.starRating.rawValue ? .yellow : .white.opacity(0.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(star) star rating")
+        .accessibilityValue(file.starRating.rawValue == star ? "Selected" : "Not selected")
+        .accessibilityHint("Select again to clear this rating")
+        .accessibilityIdentifier("fullScreen.rating.\(star)")
+        .accessibilityAddTraits(file.starRating.rawValue == star ? .isSelected : [])
     }
 }
 

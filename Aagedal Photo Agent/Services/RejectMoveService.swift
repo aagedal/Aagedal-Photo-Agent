@@ -99,7 +99,7 @@ nonisolated struct RejectMoveService: Sendable {
                     : " (\(recoveryErrors.joined(separator: "; ")))"
                 let message = error.localizedDescription + recoveryDetail
                 failed.append((url, message))
-                rejectLog.error("Failed to move \(url.lastPathComponent, privacy: .public): \(message, privacy: .public)")
+                rejectLog.error("Failed to move \(url.lastPathComponent, privacy: .private(mask: .hash)): \(message, privacy: .private)")
                 continue
             }
             moved.append(dest)

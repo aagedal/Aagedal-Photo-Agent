@@ -140,7 +140,7 @@ nonisolated final class FolderChangeMonitor: @unchecked Sendable {
             FSEventStreamRelease(stream)
             return nil
         }
-        folderChangeLog.debug("Watching \(url.path, privacy: .public)")
+        folderChangeLog.debug("Watching \(url.path, privacy: .private(mask: .hash))")
     }
 
     deinit {

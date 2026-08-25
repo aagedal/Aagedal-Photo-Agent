@@ -421,7 +421,7 @@ struct CleanFeedRenderView: NSViewRepresentable {
                     at: .zero
                 )
             } catch {
-                cleanFeedViewLog.error("Comparison render failed: \(error.localizedDescription, privacy: .public)")
+                cleanFeedViewLog.error("Comparison render failed: \(error.localizedDescription, privacy: .private)")
                 return
             }
             commandBuffer.present(drawable)
