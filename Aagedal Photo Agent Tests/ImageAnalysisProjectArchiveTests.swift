@@ -111,6 +111,64 @@ struct ImageAnalysisProjectArchiveTests {
             encoding: .utf8
         ) == "keep-me")
     }
+
+    @Test("an interrupted import preserves an empty destination and retry commits atomically")
+    func interruptedImportPreservesEmptyDestination() async throws {
+        let fixture = try ProjectArchiveFixture()
+        defer { fixture.remove() }
+        let imageURL = try fixture.write("evidence.jpg", contents: "source-image")
+        let archiveURL = fixture.root.appendingPathComponent("Project.pint")
+        try await ImageAnalysisProjectArchive.export(
+            sourceFolderURL: fixture.source,
+            imageURLs: [imageURL],
+            title: "Project",
+            destinationURL: archiveURL,
+            appVersion: "2.3",
+            appBuild: "1"
+        )
+
+        let destination = fixture.root.appendingPathComponent("Imported", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+
+        await #expect(throws: InjectedArchiveInterruption.beforeCommit) {
+            try await ImageAnalysisProjectArchive.importProject(
+                from: archiveURL,
+                to: destination,
+                installStaging: { staging, finalDestination, destinationExisted in
+                    #expect(FileManager.default.fileExists(
+                        atPath: staging.appendingPathComponent("evidence.jpg").path
+                    ))
+                    #expect(finalDestination == destination)
+                    #expect(destinationExisted)
+                    throw InjectedArchiveInterruption.beforeCommit
+                }
+            )
+        }
+
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).isEmpty)
+        let siblings = try FileManager.default.contentsOfDirectory(
+            at: fixture.root,
+            includingPropertiesForKeys: nil
+        )
+        #expect(!siblings.contains {
+            $0.lastPathComponent.hasPrefix(".Imported.")
+                && $0.lastPathComponent.hasSuffix(".importing")
+        })
+
+        _ = try await ImageAnalysisProjectArchive.importProject(
+            from: archiveURL,
+            to: destination
+        )
+        #expect(try String(
+            contentsOf: destination.appendingPathComponent("evidence.jpg"),
+            encoding: .utf8
+        ) == "source-image")
+    }
+}
+
+private enum InjectedArchiveInterruption: Error {
+    case beforeCommit
 }
 
 private struct ProjectArchiveFixture {

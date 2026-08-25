@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */; };
 		F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */; };
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftExif */; };
@@ -129,6 +130,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppStartupSignpostStateMachineTests.swift; sourceTree = "<group>"; };
 		F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoreWorkflowSmokeTests.swift; sourceTree = "<group>"; };
 		F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent UI Smoke Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -295,6 +297,7 @@
 		025F811ED39BE1D910E68E81 /* Aagedal Photo Agent Tests */ = {
 			isa = PBXGroup;
 			children = (
+				A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */,
 				38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */,
 				AB1000000000000000000001 /* FTPServiceTests.swift */,
 				9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */,
@@ -582,6 +585,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */,
 				1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */,
 				AB1000000000000000000002 /* FTPServiceTests.swift in Sources */,
 				E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */,

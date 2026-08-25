@@ -13,6 +13,14 @@ This document is the top-level index for product and implementation planning. It
 initiatives, their order and dependencies, while each linked sub-plan remains authoritative for its
 own scope, tasks, exit gates, and technical decisions.
 
+Release-facing 3.0 documentation lives outside the implementation plans:
+
+- [Feature guide](feature-help-3.0.md) — how to use the new focused workspaces and evidence workflows.
+- [Known limitations](limitations-3.0.md) — material product, evidence, interoperability, and release
+  boundaries.
+- [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
+- [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
+
 ## Portfolio
 
 | Initiative | Detailed plan | Status | Current gate |

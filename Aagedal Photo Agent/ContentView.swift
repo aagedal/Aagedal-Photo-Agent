@@ -141,7 +141,6 @@ struct ContentView: View {
     @State private var pendingDeadlineResumeWorkflowIdentifier: UUID?
     @State private var pendingDeadlineCaptionField: MetadataFieldID?
     @State private var isShowingDeadlineStagingActivity = false
-    @State private var deadlineLiveSettingsRevision: UInt64 = 0
     @State private var isShowingDeadlineProfileManager = false
     @State private var lastNonPeopleViewMode: MainViewMode = .browser
     @State private var navigationSplitViewVisibility: NavigationSplitViewVisibility = .all
@@ -248,7 +247,7 @@ struct ContentView: View {
                 await deadlineLiveSnapshot.refresh(request)
             }
             .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-                deadlineLiveSettingsRevision &+= 1
+                deadlineLiveSnapshot.refreshValidationPreferences()
             }
             .sheet(isPresented: $isShowingDeadlineProfileManager) {
                 DeadlineProfileManagementView(
@@ -1419,29 +1418,35 @@ struct ContentView: View {
 
     /// Value-only identity for scheduling a fresh background capture. No filesystem, image decode,
     /// capacity, encoder, security-scope, or network work is performed here.
-    private var deadlineLiveCaptureRevision: UInt64 {
+    private var deadlineLiveCaptureRevision: DeadlineLiveCaptureRevision? {
+        guard mainViewMode == .deadline,
+              deadlineProfileLibrary.selectedProfile != nil else { return nil }
         let selectedURLs = browserViewModel.selectedImageIDs
         let images = browserViewModel.sortedImages.filter {
             selectedURLs.contains($0.url) && $0.isImageFile
         }
-        var revision = deadlineSelectionSourceRevision(images)
-            ^ deadlineMetadataRevision(images)
-            ^ deadlineEncodableRevision(deadlineProfileLibrary.selectedProfile)
-            ^ deadlineEncodableRevision(deadlineRenameRecipeLibrary.presets)
-            ^ deadlineEncodableRevision(templateViewModel.templates)
-        revision ^= deadlineRevision(advancedExportConfiguration.previewSignature(isHDR: false).utf8)
-        revision ^= deadlineRevision(advancedExportConfiguration.previewSignature(isHDR: true).utf8)
-        revision ^= deadlineEncodableRevision(images.map {
-            browserViewModel.currentCameraRawSettings(for: $0.url)
-        })
-        revision ^= deadlineRevision(
-            ftpViewModel.connections.map { $0.id.uuidString.lowercased() }.sorted()
-                .joined(separator: "\n").utf8
+        return DeadlineLiveCaptureRevision(
+            selectionSource: deadlineSelectionSourceRevision(images),
+            metadata: deadlineMetadataRevision(images),
+            profile: deadlineEncodableRevision(deadlineProfileLibrary.selectedProfile),
+            renameResources: deadlineEncodableRevision(deadlineRenameRecipeLibrary.presets),
+            templateResources: deadlineEncodableRevision(
+                templateViewModel.templates.map { $0.id.uuidString.lowercased() }.sorted()
+            ),
+            exportConfiguration: deadlineEncodableRevision(
+                DeadlineExportSnapshot(advancedExportConfiguration)
+            ),
+            developSettings: deadlineEncodableRevision(images.map {
+                browserViewModel.currentCameraRawSettings(for: $0.url)
+            }),
+            connectionInventory: deadlineRevision(
+                ftpViewModel.connections.map { $0.id.uuidString.lowercased() }.sorted()
+                    .joined(separator: "\n").utf8
+            ),
+            requiredLists: KeywordListsStore.shared.version,
+            renameDirectory: browserViewModel.currentFolderURL?.standardizedFileURL.path,
+            validationPreferences: deadlineLiveSnapshot.validationPreferences
         )
-        revision ^= UInt64(bitPattern: Int64(KeywordListsStore.shared.version))
-        revision ^= deadlineLiveSettingsRevision
-        if mainViewMode == .deadline { revision ^= 0xD34D_11AE }
-        return revision
     }
 
     /// Captures only already-owned value state on the main actor. Every live probe happens inside

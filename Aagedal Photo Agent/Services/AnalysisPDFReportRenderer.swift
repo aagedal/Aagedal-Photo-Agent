@@ -27,8 +27,8 @@ nonisolated struct AnalysisReportExportOptions: Equatable, Sendable {
     var includeAnalyticalScopes = true
     var includeCanonicalPath = false
     var includeCameraSerialNumber = false
-    var includeLocationCoordinates = true
-    var includeRawMetadata = true
+    var includeLocationCoordinates = false
+    var includeRawMetadata = false
     var mapBasemap: AnalysisReportMapBasemap = .schematic
 }
 

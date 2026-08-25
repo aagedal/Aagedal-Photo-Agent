@@ -5055,7 +5055,47 @@ struct BrushMaskTests {
 /// (no compositing wiring yet — that's Phase 3). Skipped when no Metal device is available
 /// (headless runners without a GPU).
 @Suite("Brush mask rasterization")
+@MainActor
 struct BrushRasterizationTests {
+
+    @Test("Metal render-state entry points retain explicit executor preconditions")
+    func renderStateExecutorSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/MetalEditPipeline.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("private enum StateExecutor"))
+        #expect(source.contains("case mainThread"))
+        #expect(source.contains("case offscreenRenderQueue"))
+        #expect(source.contains("precondition(Thread.isMainThread, \"Live MetalEditPipeline instances"))
+        #expect(source.contains("dispatchPrecondition(condition: .onQueue(Self.offscreenRenderQueue))"))
+        #expect(source.contains("dispatchPrecondition(condition: .onQueue(offscreenRenderQueue))"))
+
+        for signature in [
+            "nonisolated func updateParams",
+            "nonisolated func updateOverlayParams",
+            "nonisolated func rebuildMaskAlpha",
+            "nonisolated func stampBrushStroke",
+            "nonisolated func render(",
+            "nonisolated func updateViewport",
+            "nonisolated func updateCropViewport",
+        ] {
+            let start = try #require(source.range(of: signature))
+            let suffix = source[start.lowerBound...]
+            let bodyStart = try #require(suffix.firstIndex(of: "{"))
+            let bodyPrefix = suffix[bodyStart...].prefix(180)
+            #expect(
+                bodyPrefix.contains("preconditionOnStateExecutor()"),
+                Comment(rawValue: signature)
+            )
+        }
+    }
 
     /// Builds a pipeline over the system default Metal device, or nil if none is available.
     private func makePipeline() -> MetalEditPipeline? {

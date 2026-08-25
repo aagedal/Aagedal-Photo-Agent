@@ -1444,9 +1444,9 @@ private struct AnalysisReportExportSheet: View {
     @State private var includeAnalyticalScopes = true
     @State private var includeCanonicalPath = false
     @State private var includeCameraSerialNumber = false
-    @State private var includeLocationCoordinates = true
-    @State private var includeRawMetadata = true
-    @State private var mapBasemap: AnalysisReportMapBasemap = .openStreetMap
+    @State private var includeLocationCoordinates = false
+    @State private var includeRawMetadata = false
+    @State private var mapBasemap: AnalysisReportMapBasemap = .schematic
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1469,6 +1469,11 @@ private struct AnalysisReportExportSheet: View {
                     ForEach(AnalysisReportMapBasemap.allCases, id: \.self) { basemap in
                         Text(basemap.displayName).tag(basemap)
                     }
+                }
+                if mapBasemap == .openStreetMap {
+                    Text("This sends the visible map region as tile coordinates to OpenStreetMap. Tiles are used only for this export and are not stored in the URL cache.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
 
                 Section("Pixel evidence") {

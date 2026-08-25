@@ -644,6 +644,8 @@ final class BrowserViewModel {
     @ObservationIgnored private var loadFolderTask: Task<Void, Never>?
 
     func loadFolder(url: URL, addToOpenFolders: Bool = true) {
+        AppStartupSignposts.shared.firstFolderLoadStarted()
+
         // Cancel any in-flight folder load to prevent stale results overwriting
         loadFolderTask?.cancel()
         pendingMetadataDrainTask?.cancel()
@@ -712,6 +714,7 @@ final class BrowserViewModel {
                 self.images = files
                 self.rebuildNow()
                 self.isLoading = false
+                AppStartupSignposts.shared.firstFolderLoadReady(itemCount: files.count)
 
                 // Phase 1.5: Read EXIF orientations in background (deferred).
                 // Thumbnails don't need this (QL/CGImageSource apply transforms internally).
@@ -784,9 +787,13 @@ final class BrowserViewModel {
                     showsProgress: true
                 )
             } catch {
-                guard !Task.isCancelled, self.currentFolderURL == url else { return }
+                guard !Task.isCancelled, self.currentFolderURL == url else {
+                    AppStartupSignposts.shared.firstFolderLoadFailed()
+                    return
+                }
                 self.folderLoadErrorMessage = error.localizedDescription
                 self.isLoading = false
+                AppStartupSignposts.shared.firstFolderLoadFailed()
             }
         }
     }

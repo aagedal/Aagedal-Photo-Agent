@@ -456,6 +456,17 @@ final class MTLTextureWrapper: @unchecked Sendable {
 /// and white balance. The LUT is regenerated on every slider change (~microseconds).
 final class MetalEditPipeline: @unchecked Sendable {
 
+    /// Owns mutable render-state buffers and caches. Live preview / Clean Feed instances are
+    /// main-thread-owned; the singleton export instance is owned by `offscreenRenderQueue`.
+    /// Source upload and adjacent-image precaching are deliberate worker-safe exceptions: they
+    /// only publish through `sourceTextureLock` or the thread-safe `NSCache`.
+    nonisolated private enum StateExecutor {
+        case mainThread
+        case offscreenRenderQueue
+    }
+
+    private let stateExecutor: StateExecutor
+
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLComputePipelineState
@@ -507,26 +518,48 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
     nonisolated(unsafe) var gamutClipMode: UInt32 = 0 {
-        didSet { mirror?.gamutClipMode = gamutClipMode }
+        didSet {
+            preconditionOnStateExecutor()
+            mirror?.gamutClipMode = gamutClipMode
+        }
     }
 
     /// When set, `updateParams` red-tints this mask's coverage (ACR-style) so a freshly painted
     /// brush mask is visible before any adjustment. The kernel auto-hides it once the mask gains
     /// an adjustment. Set by the editor from selection / paint-mode state.
-    nonisolated(unsafe) var maskOverlayMaskID: UUID? = nil
+    nonisolated(unsafe) var maskOverlayMaskID: UUID? = nil {
+        didSet { preconditionOnStateExecutor() }
+    }
 
     /// When set, the selected mask replaces the editor image with a black/white coverage matte.
     /// This is intentionally not mirrored to the clean-feed pipeline: it is a transient editor
     /// hover aid rather than part of the rendered develop state.
-    nonisolated(unsafe) var maskMattePreviewMaskID: UUID? = nil
+    nonisolated(unsafe) var maskMattePreviewMaskID: UUID? = nil {
+        didSet { preconditionOnStateExecutor() }
+    }
 
     /// As-shot white balance from the RAW decoder. Used as the reference point for WB
     /// adjustments so that "Custom at as-shot temperature" produces an identity matrix.
-    nonisolated(unsafe) var asShotTemperature: Double = 6500 {
-        didSet { mirror?.asShotTemperature = asShotTemperature }
+    /// Writes belong to the render-state owner; locked reads allow the deliberately detached
+    /// eyedropper solver to take a race-free reference snapshot.
+    private let whiteBalanceReferenceLock = NSLock()
+    nonisolated(unsafe) private var _asShotTemperature: Double = 6500
+    nonisolated(unsafe) private var _asShotTint: Double = 0
+    nonisolated var asShotTemperature: Double {
+        get { whiteBalanceReferenceLock.withLock { _asShotTemperature } }
+        set {
+            preconditionOnStateExecutor()
+            whiteBalanceReferenceLock.withLock { _asShotTemperature = newValue }
+            mirror?.asShotTemperature = newValue
+        }
     }
-    nonisolated(unsafe) var asShotTint: Double = 0 {
-        didSet { mirror?.asShotTint = asShotTint }
+    nonisolated var asShotTint: Double {
+        get { whiteBalanceReferenceLock.withLock { _asShotTint } }
+        set {
+            preconditionOnStateExecutor()
+            whiteBalanceReferenceLock.withLock { _asShotTint = newValue }
+            mirror?.asShotTint = newValue
+        }
     }
 
     // MARK: - Clean-feed mirror
@@ -540,12 +573,22 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// own viewport (letterboxed for the secondary display's aspect ratio) and a clean
     /// feed never shows mask-editing overlays. Setting/clearing happens on the main
     /// thread from the edit workspace; the weak reference avoids a retain cycle.
-    nonisolated(unsafe) weak var mirror: MetalEditPipeline?
+    private let mirrorLock = NSLock()
+    nonisolated(unsafe) private weak var _mirror: MetalEditPipeline?
+    nonisolated var mirror: MetalEditPipeline? {
+        get { mirrorLock.withLock { _mirror } }
+        set {
+            preconditionOnStateExecutor()
+            mirrorLock.withLock { _mirror = newValue }
+        }
+    }
 
     /// Invoked at the end of every `updateParams` so the mirror's view can request a
     /// redraw. Called on whichever thread `updateParams` runs on — the live edit call
     /// sites are all on the main thread, matching the existing coordinator-redraw model.
-    nonisolated(unsafe) var onParamsChanged: (() -> Void)?
+    nonisolated(unsafe) var onParamsChanged: (() -> Void)? {
+        didSet { preconditionOnStateExecutor() }
+    }
     nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
     /// Reusable interleave scratch buffer for uploadLUT — avoids a per-frame heap allocation
     /// while a white-balance/tone slider is being dragged.
@@ -658,7 +701,11 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated private static let sharedOffscreen: (device: MTLDevice, queue: MTLCommandQueue, pipeline: MetalEditPipeline)? = {
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue(),
-              let pipeline = MetalEditPipeline(device: device, commandQueue: queue) else {
+              let pipeline = MetalEditPipeline(
+                device: device,
+                commandQueue: queue,
+                stateExecutor: .offscreenRenderQueue
+              ) else {
             return nil
         }
         return (device, queue, pipeline)
@@ -740,9 +787,21 @@ final class MetalEditPipeline: @unchecked Sendable {
         return output
     }
 
-    nonisolated init?(device: MTLDevice, commandQueue: MTLCommandQueue) {
+    /// Creates a live-preview pipeline. Its mutable render state belongs to the main thread;
+    /// expensive source uploads and adjacent-image precaching remain explicitly worker-safe.
+    nonisolated convenience init?(device: MTLDevice, commandQueue: MTLCommandQueue) {
+        precondition(Thread.isMainThread, "Live MetalEditPipeline instances must be created on the main thread")
+        self.init(device: device, commandQueue: commandQueue, stateExecutor: .mainThread)
+    }
+
+    nonisolated private init?(
+        device: MTLDevice,
+        commandQueue: MTLCommandQueue,
+        stateExecutor: StateExecutor
+    ) {
         self.device = device
         self.commandQueue = commandQueue
+        self.stateExecutor = stateExecutor
 
         guard let library = device.makeDefaultLibrary(),
               let function = library.makeFunction(name: "editAdjustments") else {
@@ -900,6 +959,20 @@ final class MetalEditPipeline: @unchecked Sendable {
         self.colorLUTTexture = colorTexture
         for slot in 0..<Self.maxMasks {
             uploadIdentityColorLUT(slot: slot)
+        }
+    }
+
+    /// Enforces the executor contract that makes this type's remaining unchecked mutable
+    /// render state serial. Keep this at public state-entry boundaries, before early returns.
+    nonisolated private func preconditionOnStateExecutor() {
+        switch stateExecutor {
+        case .mainThread:
+            precondition(
+                Thread.isMainThread,
+                "Live MetalEditPipeline render state must be accessed on the main thread"
+            )
+        case .offscreenRenderQueue:
+            dispatchPrecondition(condition: .onQueue(Self.offscreenRenderQueue))
         }
     }
 
@@ -1087,6 +1160,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Converts CameraRawSettings into the GPU EditParams buffer.
     /// Generates and uploads a tone LUT when any tonal adjustment is active.
     nonisolated func updateParams(_ settings: CameraRawSettings?) {
+        preconditionOnStateExecutor()
         let start = ContinuousClock.now
         guard let buffer = paramsBuffer else { return }
         var params = EditParams()
@@ -1522,6 +1596,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Updates mask overlay parameters for Metal overlay rendering.
     nonisolated func updateOverlayParams(geometry: EllipseMaskGeometry?, visible: Bool) {
+        preconditionOnStateExecutor()
         guard let buffer = overlayParamsBuffer else { return }
         var params = MaskOverlayParams()
         if let geo = geometry, visible {
@@ -1654,6 +1729,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// the cached wrapper below on geometry/resolution changes only.
     @discardableResult
     nonisolated func rebuildMaskAlpha(_ sources: [MaskAlphaSource], size: MTLSize) -> MTLTexture? {
+        preconditionOnStateExecutor()
         guard let stampState = stampBrushPipelineState,
               let clearState = clearBrushAlphaPipelineState,
               let clearRegionState = clearBrushRegionPipelineState,
@@ -1858,6 +1934,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// the pipeline/texture is missing or `layer` is out of range. Returns true if it dispatched.
     @discardableResult
     nonisolated func stampBrushStroke(_ stroke: BrushStroke, layer: Int) -> Bool {
+        preconditionOnStateExecutor()
         guard let stampState = stampBrushPipelineState,
               let tex = brushAlphaTexture,
               layer >= 0, layer < tex.arrayLength,
@@ -1876,6 +1953,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Frees the brush alpha texture (e.g. when the last brush mask is removed).
     nonisolated func clearBrushAlpha() {
+        preconditionOnStateExecutor()
         brushAlphaTexture = nil
         brushEnvScratch = nil
         lastBuiltMaskAlphaSources = []
@@ -1885,6 +1963,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Cached wrapper around `rebuildMaskAlpha` for the live path: a full-resolution rebuild is
     /// skipped on unrelated tonal slider changes.
     nonisolated func refreshMaskAlpha(_ sources: [MaskAlphaSource], size: MTLSize) {
+        preconditionOnStateExecutor()
         guard !sources.isEmpty else {
             if brushAlphaTexture != nil { clearBrushAlpha() }
             return
@@ -1903,6 +1982,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Brush-only compatibility wrapper retained for focused rasterization tests and live-paint
     /// call sites that intentionally deal only in brush geometry.
     nonisolated func refreshBrushAlpha(_ brushMasks: [BrushMaskGeometry], size: MTLSize) {
+        preconditionOnStateExecutor()
         refreshMaskAlpha(brushMasks.map(MaskAlphaSource.brush), size: size)
     }
 
@@ -2010,6 +2090,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// texture at `updateParams` time).
     @discardableResult
     nonisolated func refreshWatermarkParams(_ layers: [WatermarkLayer], imageSize: MTLSize) -> [UUID: Int] {
+        preconditionOnStateExecutor()
         guard !layers.isEmpty, imageSize.width > 0, imageSize.height > 0,
               let wmBuf = watermarkParamsBuffer else {
             watermarkTexture = nil
@@ -2226,6 +2307,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         drawableSize: CGSize,
         useNearestNeighbor: Bool = false
     ) -> Bool {
+        preconditionOnStateExecutor()
         guard let source = sourceTexture,
               let buffer = paramsBuffer,
               let commandBuffer = commandQueue.makeCommandBuffer() else { return false }
@@ -2447,6 +2529,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     }
 
     nonisolated func clearSourceTexture() {
+        preconditionOnStateExecutor()
         setSourceTexture(nil)
         mirror?.clearSourceTexture()
     }
@@ -2455,6 +2538,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// reference — no copy). Used to seed the clean-feed mirror when it is enabled
     /// mid-edit, after the source texture has already been uploaded.
     nonisolated func shareSourceTexture(with other: MetalEditPipeline) {
+        preconditionOnStateExecutor()
         other.setSourceTexture(sourceTexture)
         other.setSourceOrientation(sourceOrientation)
     }
@@ -2470,6 +2554,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         containerSize: CGSize,
         imageSize: CGSize
     ) {
+        preconditionOnStateExecutor()
         guard let buffer = paramsBuffer else { return }
         guard containerSize.width > 0, containerSize.height > 0,
               imageSize.width > 0, imageSize.height > 0 else { return }
@@ -2558,6 +2643,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         offset: CGSize = .zero,
         handlePadding: CGFloat = 0
     ) {
+        preconditionOnStateExecutor()
         guard let buffer = paramsBuffer else { return }
         guard containerSize.width > 0, containerSize.height > 0,
               imageSize.width > 0, imageSize.height > 0 else { return }
@@ -2678,6 +2764,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Promote a pre-cached texture to sourceTexture. Returns as-shot WB on hit, nil on miss.
     /// `exifOrientation` is the orientation baked into the cached texture's pixels.
     nonisolated func applyCachedTexture(for url: URL, exifOrientation: Int = 1) -> (neutralTemperature: Float, neutralTint: Float)? {
+        preconditionOnStateExecutor()
         guard let wrapper = textureCache.object(forKey: url as NSURL) else { return nil }
         setSourceTexture(wrapper.texture)
         setSourceOrientation(exifOrientation)
@@ -2802,6 +2889,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         cropToOutput: Bool = false,
         outputSize: CGSize? = nil
     ) -> CIImage? {
+        dispatchPrecondition(condition: .onQueue(offscreenRenderQueue))
         guard let source else { return nil }
         guard var settings, !isIdentitySettings(settings) else { return nil }
         // `source` is display-oriented but mask geometry is sensor-frame —

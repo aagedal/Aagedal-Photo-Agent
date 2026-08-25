@@ -1,5 +1,7 @@
 import CoreGraphics
+import CoreImage
 import Foundation
+import Metal
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -821,5 +823,165 @@ struct ComparisonCoordinatorTests {
                 && abs(actual.y - expected.y) <= accuracy,
             sourceLocation: sourceLocation
         )
+    }
+}
+
+/// Repeatable host-side stress coverage for the render-state boundary shared by Develop preview,
+/// Clean Feed, and export. Keep this suite independently selectable: the TSAN runner intentionally
+/// repeats it more heavily than the ordinary test configuration.
+@Suite("Metal pipeline TSAN stress", .serialized)
+struct MetalPipelineTSANStressTests {
+    @Test("preview, Clean Feed, export cancellation, and navigation overlap")
+    @MainActor
+    func combinedRenderLifecycleStress() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let previewQueue = device.makeCommandQueue(),
+              let cleanFeedQueue = device.makeCommandQueue(),
+              let preview = MetalEditPipeline(device: device, commandQueue: previewQueue),
+              let cleanFeed = MetalEditPipeline(device: device, commandQueue: cleanFeedQueue) else {
+            Issue.record("The Metal TSAN stress scenario requires a system Metal device and edit shader")
+            return
+        }
+
+        let iterationCount = 8
+        let cleanFeedUpdates = MetalStressCounter()
+        cleanFeed.onParamsChanged = { cleanFeedUpdates.increment() }
+        preview.mirror = cleanFeed
+        defer {
+            preview.mirror = nil
+            cleanFeed.onParamsChanged = nil
+        }
+
+        let initialImage = Self.makeImage(width: 192, height: 128, seed: 0)
+        preview.uploadSourceImage(initialImage)
+        preview.updateParams(Self.makeSettings(iteration: 0))
+        #expect(preview.hasSourceTexture)
+        #expect(cleanFeed.hasSourceTexture)
+        #expect(preview.sourceTextureSize == cleanFeed.sourceTextureSize)
+
+        for iteration in 0..<iterationCount {
+            // Start real export work on the shared serialized offscreen renderer. Constructing
+            // inputs inside each detached task avoids sharing mutable Core Image filter graphs.
+            let exports = (0..<2).map { exportIndex in
+                Task.detached {
+                    let seed = iteration * 10 + exportIndex + 1
+                    return await MetalEditPipeline.renderOffscreenAsync(
+                        source: Self.makeImage(width: 384, height: 256, seed: seed),
+                        settings: Self.makeSettings(iteration: seed)
+                    )
+                }
+            }
+
+            // Model navigation's adjacent-image precache: upload on a worker, then promote the
+            // completed texture on the main-thread live-preview owner below.
+            let navigationURL = URL(fileURLWithPath: "/tmp/metal-tsan-navigation-\(iteration).tiff")
+            let navigationSize = CGSize(
+                width: 176 + (iteration % 5) * 8,
+                height: 120 + (iteration % 3) * 8
+            )
+            let navigation = Task.detached {
+                preview.precacheTexture(
+                    for: navigationURL,
+                    ciImage: Self.makeImage(
+                        width: Int(navigationSize.width),
+                        height: Int(navigationSize.height),
+                        seed: iteration + 100
+                    )
+                )
+            }
+
+            // Hold a render request until it is definitely cancelled, then release it into the
+            // production async entry. This deterministically exercises its cancellation fast path
+            // while sibling exports are already contending for the same serial renderer.
+            let cancellationGate = MetalStressGate()
+            let cancelledExport = Task.detached {
+                await cancellationGate.wait()
+                return await MetalEditPipeline.renderOffscreenAsync(
+                    source: Self.makeImage(width: 512, height: 320, seed: iteration + 200),
+                    settings: Self.makeSettings(iteration: iteration + 200)
+                )
+            }
+            await Task.yield()
+            cancelledExport.cancel()
+            await cancellationGate.open()
+
+            // Slider/viewport activity is main-thread-owned and mirrors each update into the
+            // dedicated Clean Feed pipeline while exports and navigation uploads run off-thread.
+            preview.updateParams(Self.makeSettings(iteration: iteration + 1))
+            preview.updateViewport(
+                zoomScale: 1 + CGFloat(iteration % 4) * 0.25,
+                offset: CGSize(
+                    width: CGFloat((iteration % 3) - 1) * 6,
+                    height: CGFloat((iteration % 5) - 2) * 4
+                ),
+                containerSize: CGSize(width: 640, height: 360),
+                imageSize: preview.sourceTextureSize ?? CGSize(width: 192, height: 128)
+            )
+
+            await navigation.value
+            let promotedWhiteBalance = preview.applyCachedTexture(for: navigationURL)
+            #expect(promotedWhiteBalance != nil)
+            #expect(preview.sourceTextureSize == navigationSize)
+            #expect(cleanFeed.sourceTextureSize == navigationSize)
+
+            for export in exports {
+                let result = await export.value
+                #expect(result != nil)
+                #expect((result?.extent.width ?? 0) > 0)
+                #expect((result?.extent.height ?? 0) > 0)
+            }
+            #expect(await cancelledExport.value == nil)
+        }
+
+        #expect(cleanFeedUpdates.value >= iterationCount + 1)
+    }
+
+    private nonisolated static func makeSettings(iteration: Int) -> CameraRawSettings {
+        var settings = CameraRawSettings()
+        settings.exposure2012 = Double((iteration % 9) - 4) * 0.08
+        settings.contrast2012 = (iteration % 31) - 15
+        settings.saturation = (iteration % 21) - 10
+        settings.vibrance = (iteration % 17) - 8
+        settings.hasSettings = true
+        return settings
+    }
+
+    private nonisolated static func makeImage(width: Int, height: Int, seed: Int) -> CIImage {
+        let red = CGFloat((seed * 37) % 255) / 255
+        let green = CGFloat((seed * 67 + 31) % 255) / 255
+        let blue = CGFloat((seed * 97 + 73) % 255) / 255
+        return CIImage(color: CIColor(red: red, green: green, blue: blue, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
+    }
+}
+
+private actor MetalStressGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll(keepingCapacity: false)
+        pending.forEach { $0.resume() }
+    }
+}
+
+private nonisolated final class MetalStressCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int { lock.withLock { count } }
+
+    func increment() {
+        lock.withLock { count += 1 }
     }
 }

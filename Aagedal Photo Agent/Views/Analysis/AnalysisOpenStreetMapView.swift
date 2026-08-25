@@ -305,11 +305,12 @@ nonisolated private final class AnalysisOpenStreetMapTileOverlay: MKTileOverlay 
         let appVersion = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"
         ) as? String ?? "unknown"
-        let configuration = URLSessionConfiguration.default
+        let configuration = URLSessionConfiguration.ephemeral
         configuration.httpAdditionalHeaders = [
             "User-Agent": "AagedalPhotoAgent/\(appVersion) (desktop OSINT map; contact: aagedal.no)",
         ]
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration)
     }()
 

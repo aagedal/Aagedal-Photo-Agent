@@ -257,22 +257,33 @@ close the broader manual performance, hardware, privacy, accessibility, recovery
 gates below.
 
 - [x] Full existing test suite; see the current-source follow-up in
-  [full-test-suite validation](../full-test-suite-validation.md#command-s-export-safety-follow-up--2026-08-25).
+  [full-test-suite validation](../full-test-suite-validation.md#plan-status-hardening-integration-follow-up--2026-08-25).
 - [x] New fixture-driven unit/render/persistence suites; included in the same fresh, unfiltered
-  [full-suite evidence](../full-test-suite-validation.md#command-s-export-safety-follow-up--2026-08-25).
+  [full-suite evidence](../full-test-suite-validation.md#plan-status-hardening-integration-follow-up--2026-08-25).
 - [ ] Performance and memory budgets on target hardware tiers.
 - [ ] Profile representative two-RAW comparison sessions on every target hardware tier.
 - [x] Thread Sanitizer/strict concurrency review for case, catalog, runner, and render coordination;
   see the [investigation concurrency validation](investigation-concurrency-validation.md).
 - [ ] GPU validation and long-running analysis cancellation.
 - [ ] Source/folder permission regression, including launch behavior.
-- [ ] Security/privacy review of logs, temp files, map requests, and reports.
+- [ ] Security/privacy review of logs, temp files, map requests, and reports; automated review and
+  remediations are recorded in the
+  [investigation privacy review](../investigation-privacy-review-validation.md), while runtime log,
+  filesystem-interruption, and network-capture evidence remains open.
 - [ ] Accessibility and localization readiness.
 - [x] Menu/shortcut conflict audit; see the
   [accessibility and keyboard audit](../accessibility-keyboard-audit-validation.md).
 - [ ] Upgrade/downgrade/newer-schema manual tests.
-- [ ] Backup/restore and crash-interruption drills.
-- [ ] README, feature help, limitations, privacy text, licenses, and CHANGELOG draft.
+- [ ] Backup/restore and crash-interruption drills; additive automated case and project-import
+  boundary evidence is recorded in the
+  [2026-08-25 recovery-drill validation](../backup-restore-crash-drill-validation-2026-08-25.md),
+  while hands-on process-kill, filesystem, and restore exercises remain open.
+- [ ] README, feature help, limitations, privacy text, licenses, and CHANGELOG draft; the
+  [2026-08-25 documentation-readiness validation](../documentation-readiness-validation-2026-08-25.md)
+  records complete README/help/limitations/privacy/CHANGELOG drafts and passing repository checks, but
+  this broad item remains open until the conflicting SwiftExif MIT/GPL labels and license text are
+  resolved from authoritative evidence and made consistent in the vendor copy, in-app Licenses tab, and
+  public component table.
 - [ ] Version/build bump, notarized archive, Sparkle/appcast, and Homebrew release steps only after
   release candidate sign-off.
 

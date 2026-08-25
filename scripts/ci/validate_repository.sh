@@ -38,6 +38,10 @@ say "Checking unified-log privacy classifications"
 python3 scripts/ci/test_logger_privacy_validator.py
 python3 scripts/ci/validate_logger_privacy.py
 
+say "Checking investigation privacy surfaces"
+python3 -B scripts/ci/test_investigation_privacy_validator.py
+python3 -B scripts/ci/validate_investigation_privacy.py
+
 say "Scanning tracked files for unresolved conflict markers"
 conflict_output="$(git grep -n -I -E '^(<<<<<<< |=======$|>>>>>>> )' -- . 2>/dev/null || true)"
 if [ -n "$conflict_output" ]; then

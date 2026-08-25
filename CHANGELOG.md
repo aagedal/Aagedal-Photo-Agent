@@ -6,6 +6,12 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel
+  inspection, photo/map annotations, measurement, timeline evidence, map context, offline
+  solar-position directions, portable projects, and immutable PDF reports.
+- Added synchronized two-image comparison with side-by-side, stacked, and wipe layouts across Browser,
+  Develop, full-screen, and Clean Feed, plus app-private named Develop versions with verified promotion
+  to Primary XMP.
 - Reworked Pixel Analysis around a larger, full-height image surface with Evidence and Scopes in
   a right-side inspector; added Alpha and fixed-parameter Edges views, plus privacy-labeled links
   to Meta's Content Seal checker and Google's SynthID check in Gemini.
@@ -19,6 +25,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   or replace `dc:title` or IPTC-IIM Object Name metadata.
 - Added local delivery receipts and resumable workflow evidence in Activity, with explicit cleanup and
   privacy-limited summaries.
+
+The 3.0 core does not include an AI-origin model, automatic AI-artifact or clone detection, or a
+sun/shadow consistency verdict. External authenticity-check commands open provider pages and do not
+upload the current image from Photo Agent.
 
 ### Delivery boundaries
 
@@ -54,6 +64,11 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Added a deterministic metadata-field support table generated from the stable field IDs, writer keys,
   authoritative overwrite registry, and semantic read-back rules. External Adobe Bridge, Photo Mechanic,
   and real-server validation remains explicitly unclaimed where no completed evidence exists.
+- Added a 3.0 feature guide, consolidated known-limitations document, and privacy draft covering local
+  storage, optional iCloud sync, network features, reports, delivery evidence, retention, and deletion.
+- Reconciled the README feature and licensing summaries with the implemented investigation, comparison,
+  named-version, metadata, and Deadline scope. External legal/privacy approval and the remaining manual
+  release-candidate gates are not claimed.
 
 ## 2.2.0 — 2026-07-30
 

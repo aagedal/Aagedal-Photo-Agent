@@ -10,6 +10,8 @@ struct Aagedal_Photo_AgentApp: App {
     private let recentFolders = RecentFoldersStore.shared
 
     init() {
+        AppStartupSignposts.shared.processStarted()
+
         // UI smoke launches use disposable fixtures and must not start unrelated migrations,
         // cloud watchers, network refreshes, or backup prompts. Normal launches never carry
         // this explicit argument and retain the complete startup path below.
@@ -71,6 +73,9 @@ struct Aagedal_Photo_AgentApp: App {
     var body: some Scene {
         Window("Aagedal Photo Agent", id: "main") {
             ContentView(settingsViewModel: settingsViewModel)
+                .onAppear {
+                    AppStartupSignposts.shared.mainContentAppeared()
+                }
         }
         .commands {
             CommandGroup(replacing: .appInfo) {
@@ -483,6 +488,16 @@ final class BackgroundOperationMonitor {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private let terminationReplyLatch = ApplicationTerminationReplyLatch()
+
+    @MainActor
+    func applicationWillBecomeActive(_ notification: Notification) {
+        AppStartupSignposts.shared.applicationWillBecomeActive()
+    }
+
+    @MainActor
+    func applicationDidBecomeActive(_ notification: Notification) {
+        AppStartupSignposts.shared.applicationDidBecomeActive()
+    }
 
     @MainActor
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

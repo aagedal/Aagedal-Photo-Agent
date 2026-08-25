@@ -275,6 +275,50 @@ struct DeadlinePreflightLiveSnapshotAdapterTests {
         #expect(wasCancelled)
     }
 
+    @Test("Deadline preference revision ignores unrelated defaults and advances for validation inputs")
+    @MainActor
+    func selectivePreferenceRevision() {
+        let suiteName = "apa-deadline-preference-revision-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = DeadlinePreflightLiveSnapshotModel(
+            captureDebounce: .zero,
+            defaults: defaults
+        )
+        let initial = model.validationPreferences
+
+        defaults.set(true, forKey: UserDefaultsKeys.showOriginalThumbnails)
+        #expect(!model.refreshValidationPreferences(from: defaults))
+        #expect(model.validationPreferences == initial)
+
+        MetadataRequirements.save([.city: .warnOnEmpty], to: defaults)
+        #expect(model.refreshValidationPreferences(from: defaults))
+        #expect(model.validationPreferences != initial)
+    }
+
+    @Test("cancelled debounce coalesces capture work and publishes the latest request")
+    @MainActor
+    func captureDebounceLatestWins() async throws {
+        let probe = DeadlineCaptureInvocationProbe()
+        let coordinator = DeadlinePreflightLiveSnapshotCoordinator { request in
+            await probe.record(request.profile.name)
+            return workspaceInput(for: request.profile)
+        }
+        let model = DeadlinePreflightLiveSnapshotModel(
+            coordinator: coordinator,
+            captureDebounce: .milliseconds(100)
+        )
+        let stale = Task { await model.refresh(captureRequest(named: "stale")) }
+        try await Task.sleep(for: .milliseconds(20))
+        stale.cancel()
+
+        await model.refresh(captureRequest(named: "current"))
+        await stale.value
+
+        #expect(await probe.names == ["current"])
+        #expect(model.workspaceInput?.request.profile.name == "current")
+    }
+
     @Test("capture projects exact source observations and never infers original writability")
     func sourceCapture() async throws {
         let source = renameRoot.appendingPathComponent("portrait.jpg")
@@ -503,6 +547,14 @@ private actor DeadlineCaptureCancellationProbe {
         gateWasReleased = true
         gateContinuation?.resume()
         gateContinuation = nil
+    }
+}
+
+private actor DeadlineCaptureInvocationProbe {
+    private(set) var names: [String] = []
+
+    func record(_ name: String) {
+        names.append(name)
     }
 }
 

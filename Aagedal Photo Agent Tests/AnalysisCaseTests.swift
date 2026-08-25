@@ -175,6 +175,47 @@ struct AnalysisCaseTests {
         ))
     }
 
+    @Test("repository recovers an exact case from backup after an interrupted primary write")
+    func recoversExactCaseFromBackup() async throws {
+        let fixture = try AnalysisFixture(contents: "case recovery source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        var analysisCase = AnalysisCase.create(
+            for: revision,
+            appBuild: "test",
+            now: Date(timeIntervalSince1970: 100)
+        )
+        analysisCase.title = "Recoverable case"
+        try await repository.save(analysisCase)
+        analysisCase.title = "Latest case"
+        analysisCase.updatedAt = Date(timeIntervalSince1970: 200)
+        try await repository.save(analysisCase)
+
+        let caseURL = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+            .appendingPathComponent(
+                "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+            )
+        let backupURL = caseURL.appendingPathExtension("backup")
+        let backupBeforeRecovery = try Data(contentsOf: backupURL)
+        let interruptedPrimary = Data(#"{"schemaVersion":9,"title":"partial""#.utf8)
+        try interruptedPrimary.write(to: caseURL)
+
+        let reopenedRepository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let load = await reopenedRepository.loadMostRelevantCaseWithStorage(for: revision)
+
+        guard case .exact(let recovered) = load.match else {
+            Issue.record("Expected the exact case from the bounded backup")
+            return
+        }
+        #expect(recovered.id == analysisCase.id)
+        #expect(recovered.title == "Recoverable case")
+        #expect(load.storage == .folderLocal)
+        #expect(try Data(contentsOf: caseURL) == interruptedPrimary)
+        #expect(try Data(contentsOf: backupURL) == backupBeforeRecovery)
+    }
+
     @Test("read-only photo folders use indexed Application Support case storage")
     func readOnlyFolderCaseFallback() async throws {
         let fixture = try AnalysisFixture(contents: "read-only source")

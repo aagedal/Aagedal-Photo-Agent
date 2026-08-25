@@ -1,0 +1,26 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_directory=${0:A:h}
+repository_root=${script_directory:h}
+iteration_count=${APA_TSAN_STRESS_ITERATIONS:-40}
+derived_data_path=${APA_TSAN_STRESS_DERIVED_DATA:-/private/tmp/aagedal-metal-pipeline-tsan-stress}
+
+if ! [[ ${iteration_count} =~ '^[0-9]+$' ]] || (( iteration_count < 1 || iteration_count > 200 )); then
+    print -u2 'APA_TSAN_STRESS_ITERATIONS must be an integer from 1 through 200.'
+    exit 64
+fi
+
+cd ${repository_root}
+
+xcodebuild test \
+    -project 'Aagedal Photo Agent.xcodeproj' \
+    -scheme 'Aagedal Photo Agent Tests' \
+    -configuration Debug \
+    -destination 'platform=macOS' \
+    -derivedDataPath ${derived_data_path} \
+    -parallel-testing-enabled NO \
+    -enableThreadSanitizer YES \
+    -test-iterations ${iteration_count} \
+    -only-testing:'Aagedal Photo Agent Tests/MetalPipelineTSANStressTests'

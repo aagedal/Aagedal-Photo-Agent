@@ -210,7 +210,11 @@ enum ImageAnalysisProjectArchive {
 
     /// Validates the complete archive before creating or modifying the destination.
     @discardableResult
-    static func importProject(from archiveURL: URL, to destinationURL: URL) async throws -> Manifest {
+    static func importProject(
+        from archiveURL: URL,
+        to destinationURL: URL,
+        installStaging: (@Sendable (URL, URL, Bool) throws -> Void)? = nil
+    ) async throws -> Manifest {
         let extracted = try extractArchive(archiveURL)
         defer { try? FileManager.default.removeItem(at: extracted.stagingRoot) }
         let manifest = try readManifest(in: extracted.archiveRoot)
@@ -248,11 +252,31 @@ enum ImageAnalysisProjectArchive {
             finalDestination: destination,
             manifest: manifest
         )
-        if destinationExisted {
-            try FileManager.default.removeItem(at: destination)
+        if let installStaging {
+            try installStaging(importStaging, destination, destinationExisted)
+        } else {
+            try installImportedProject(
+                from: importStaging,
+                to: destination,
+                replacingEmptyDestination: destinationExisted
+            )
         }
-        try FileManager.default.moveItem(at: importStaging, to: destination)
         return manifest
+    }
+
+    /// Commits the fully validated import in one filesystem operation. In particular, an empty
+    /// destination selected by `NSSavePanel` is replaced atomically instead of being removed in a
+    /// separate crash window before the staged project is moved into place.
+    private static func installImportedProject(
+        from importStaging: URL,
+        to destination: URL,
+        replacingEmptyDestination: Bool
+    ) throws {
+        if replacingEmptyDestination {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: importStaging)
+        } else {
+            try FileManager.default.moveItem(at: importStaging, to: destination)
+        }
     }
 
     private static func rebaseImportedAnalysisCases(

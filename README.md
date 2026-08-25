@@ -4,6 +4,10 @@ A native macOS desktop application for photo metadata management and face recogn
 
 **License:** GPL-3.0
 
+The next release is 3.0. See the [3.0 feature guide](docs/feature-help-3.0.md),
+[known limitations](docs/limitations-3.0.md), and [privacy draft](PRIVACY.md) for the release-candidate
+behavior and boundaries.
+
 
 
 ## Requirements
@@ -89,11 +93,11 @@ The generated [metadata field and delivery support table](docs/metadata-field-su
 current descriptive field ID, writer mapping, normalized read-back rule, and carrier boundary. It is
 an implementation-support statement, not a claim of completed manual round trips through Adobe
 Bridge, Photo Mechanic, or every supported browsing/export format.
-The current SwiftExif boundary exposes XMP language alternatives as `x-default` only; Photo Agent
-does not yet claim lossless editing of non-default `rdf:Alt` translations, and the shipped Headline/
-Title compatibility read fallback remains in place until that dependency model is extended.
-Headline writes are already independent: they do not create, clear, or replace `dc:title` or IIM
-Object Name.
+Headline and localized Dublin Core Title are independent. The checked-in SwiftExif fork preserves
+ordered `rdf:Alt` language alternatives and exact language tags through the supported read/write paths;
+Headline writes do not create, clear, or replace `dc:title` or IIM Object Name. External Adobe Bridge,
+Photo Mechanic, and remaining licensed-container round trips are still limited to the evidence named in
+the support table and validation records.
 
 ### Face Recognition
 
@@ -118,6 +122,37 @@ Rebuilt for 2.0 around a bundled on-device AuraFace (ArcFace) model, with eye-al
 - CIE 1931 chromaticity diagram (Shift+4) with target gamut overlay and HDR-aware display gamut indicator
 - Gamut clipping soft proof for both edit and browse views
 - All scopes rendered via Metal GPU compute shaders
+
+### Image Analysis, OSINT, and Reports
+
+- Source-revision-bound analysis cases that keep evidence separate from source metadata
+- Pixel Analysis views for channels, luminance, alpha, fixed-parameter edges, and a labeled
+  compression/residual visualization, with linked hover sampling and source-pixel inspection
+- Source facts, namespace-preserving metadata/provenance inspection, C2PA states, and narrow
+  consistency findings with alternatives and limitations instead of an authenticity verdict
+- Photo annotations, source-pixel measurement, and optional user calibration
+- OSINT timeline and map evidence with photo/map annotations, linked objects, field-of-view geometry,
+  and an offline solar-position direction overlay
+- Immutable PDF reports with selected findings, evidence figures, methodology, limitations, source
+  identity, and map attribution or a schematic fallback
+- Portable `.pint` Image Analysis Project export/import containing the working-folder images, matching
+  XMP sidecars, and folder-local Photo Agent case/metadata/version documents, with a manifest that checks
+  every archived file before import
+
+The app does not include an AI-origin detector, clone detector, automatic AI-artifact highlighting, or
+sun/shadow consistency verdict in 3.0. The Meta Content Seal and Google SynthID entries are
+privacy-labeled links to external services; Photo Agent does not upload the image to them.
+
+### Comparison and Named Develop Versions
+
+- Compare exactly two images in side-by-side, stacked, or adjustable wipe layouts
+- Synchronize normalized pan/zoom, temporarily unlock alignment, save an offset, and reset safely
+- Enter comparison from Browser, Develop, or full-screen and present it on Clean Feed
+- Save named Develop versions in an app-private JSON catalog without multiplying XMP states
+- Duplicate, rename, delete, compare, or promote a named version to Primary; promotion first creates a
+  recovery snapshot and verifies the resulting XMP read-back
+
+Named versions are not interoperable XMP edits until explicitly promoted to Primary.
 
 ### Export & Rendering
 
@@ -300,7 +335,7 @@ License texts ship with the app (Settings → Licenses) and live under `Aagedal 
 | [FFmpeg](https://ffmpeg.org) | AVIF / JPEG XL encoding | GPL-3.0 |
 | [c2patool](https://github.com/contentauth/c2pa-rs) | C2PA content credentials | MIT |
 | [Sparkle](https://sparkle-project.org) | Software updates | MIT |
-| [SwiftExif](https://github.com/aagedal/SwiftExif) | EXIF / IPTC metadata | GPL-3.0 |
+| [SwiftExif](https://github.com/aagedal/SwiftExif) | EXIF / IPTC metadata | **Release-blocking label reconciliation required**: the vendored README says MIT while its checked-in license text and current in-app label say GPL-3.0 |
 | [AuraFace-v1](https://huggingface.co/fal/AuraFace-v1) | Face recognition model | Apache-2.0 |
 
 ### Source for bundled GPL components (GPLv3 §6)
@@ -320,4 +355,7 @@ architectures, and expected runtime capabilities for bundled binaries and the op
 recorded in `Aagedal Photo Agent/Resources/bundled-components.json`. The repository validator checks that
 manifest against every present artifact; the required FFmpeg and c2patool binaries must always be present.
 
-The application's own source (GPL-3.0) and the **SwiftExif** source (GPL-3.0) are published on GitHub.
+The application's own source is published under GPL-3.0. SwiftExif source and its local maintained delta
+are checked in under `Vendor/SwiftExif`; its final public and in-app license label must be reconciled from
+authoritative upstream evidence before release. See the
+[documentation-readiness validation](docs/documentation-readiness-validation-2026-08-25.md).

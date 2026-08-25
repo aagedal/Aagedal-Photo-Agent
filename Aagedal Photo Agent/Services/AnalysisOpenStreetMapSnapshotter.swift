@@ -8,7 +8,8 @@ enum AnalysisOpenStreetMapSnapshotError: Error {
 }
 
 /// Downloads the small, visible OpenStreetMap tile set needed for one report figure.
-/// Requests identify the application and use the URL cache; the resulting PDF always includes
+/// Requests identify the application but deliberately use an ephemeral, cache-free session so a
+/// report request does not leave a durable local tile history. The resulting PDF always includes
 /// OpenStreetMap attribution next to the image.
 @MainActor
 enum AnalysisOpenStreetMapSnapshotter {
@@ -17,11 +18,12 @@ enum AnalysisOpenStreetMapSnapshotter {
         let appVersion = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"
         ) as? String ?? "unknown"
-        let configuration = URLSessionConfiguration.default
+        let configuration = URLSessionConfiguration.ephemeral
         configuration.httpAdditionalHeaders = [
             "User-Agent": "AagedalPhotoAgent/\(appVersion) (PDF map export; contact: aagedal.no)",
         ]
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration)
     }()
 

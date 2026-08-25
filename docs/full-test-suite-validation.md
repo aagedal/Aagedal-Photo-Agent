@@ -186,3 +186,19 @@ The three focused workstreams also passed their geometry, iCloud lifecycle, and 
 template/C2PA suites independently. `git diff --check` remains clean. Manual VoiceOver speech,
 privacy/legal review, external-server/device drills, performance budgets, recovery exercises, and
 signed release packaging remain separate release gates.
+
+## Plan-status hardening integration follow-up — 2026-08-25
+
+After integrating startup/first-folder signposts, typed and debounced Deadline capture revisions,
+Metal executor enforcement and its combined TSAN scenario, privacy-safe report/map defaults,
+analysis-case and project-import recovery coverage, and the 3.0 documentation drafts, a fresh
+isolated arm64 `xcodebuild test` run passed all **1,478 tests in 163 suites** with zero failures.
+Swift Testing reported 42.901 seconds and Xcode's complete test operation took 46.481 seconds.
+
+The result bundle is
+`/private/tmp/aagedal-plan-status-final-20260825-2120/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.25_21-17-53-+0200.xcresult`.
+The separate Metal Thread Sanitizer runner also passed 40 tests comprising 320 combined overlap
+loops without a sanitizer race report, and `scripts/ci/validate_repository.sh` passed the generated
+documentation, bundled-provenance, logger/investigation-privacy, project/plist/JSON, conflict-marker,
+and whitespace gates. Manual hardware/display/accessibility/network/recovery drills, external legal
+and license review, and signed release packaging remain separate release gates.

@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 46 of 75 checklist substeps complete
+**Status:** implementation in progress — 50 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -29,8 +29,8 @@ removed the cited behavior or moved the cited lines.
   checked Phase 1.1 work below has since added build-and-test CI.
 - The worktree was already modified before this audit. This plan is a new file and does not alter app code.
 
-**Checklist reconciliation (2026-08-25):** the status count is exact: 46 of 75 substeps are checked and
-29 remain open. Each checked substep links to dated validation. A baseline current-source and
+**Checklist reconciliation (2026-08-25):** the status count is exact: 50 of 75 substeps are checked and
+25 remain open. Each checked substep links to dated validation. A baseline current-source and
 validation-record review found no definitive evidence that another unchecked substep was already complete;
 partial foundations such as the existing bookmark lifecycle tests, accessibility semantics, bounded image
 caches, and focused concurrency coverage do not satisfy their broader manual, system-level, or
@@ -359,9 +359,11 @@ to general defaults changes at `ContentView.swift:230,237-238,1321-1452`.
 
 **Plan:**
 
-- [ ] Add launch and first-interaction signposts before deciding what to defer.
+- [x] Add launch and first-interaction signposts before deciding what to defer.
+  ([validation](startup-signpost-validation-2026-08-25.md), 2026-08-25)
 - [ ] Make startup jobs dependency-ordered, cancellable, and lazy when they are not needed for first paint.
-- [ ] Give Deadline an owned typed revision model; ignore unrelated preferences and debounce capture work.
+- [x] Give Deadline an owned typed revision model; ignore unrelated preferences and debounce capture work.
+  ([validation](deadline-capture-revision-validation-2026-08-25.md), 2026-08-25)
 - [x] Add the existing full-screen guidance to turn off edited previews when faster high-resolution loading
   matters, with Retry/Reveal/Copy Details on hard failure (`TODO.md:34-36`).
   ([validation](full-screen-loading-recovery-validation.md), 2026-08-25)
@@ -401,7 +403,12 @@ the intended window/pane; extracted units are independently testable.
 - [ ] Split a main-actor live-preview facade from a serialized offscreen renderer actor/executor.
 - [ ] Reduce unsafe nonisolated state to audited immutable Metal resources.
 - [ ] Add owner/executor preconditions for remaining call-site contracts.
-- [ ] Schedule a TSAN stress scenario combining preview, Clean Feed, export, cancellation, and navigation.
+  Partial 2026-08-25: MetalEditPipeline live render-state entry points now enforce main-thread
+  ownership, while the shared export renderer asserts its dedicated serial queue. Worker-safe source
+  upload/precache paths remain explicitly documented exceptions. Broader facade/actor isolation and
+  unsafe-state reduction remain open. ([validation](metal-edit-pipeline-executor-validation.md))
+- [x] Schedule a TSAN stress scenario combining preview, Clean Feed, export, cancellation, and navigation.
+  ([validation](metal-pipeline-tsan-stress-validation-2026-08-25.md), 2026-08-25)
 
 **Exit gate:** every remaining unsafe isolation escape has a written invariant and enforcement; the stress
 scenario is repeatable and clean.
