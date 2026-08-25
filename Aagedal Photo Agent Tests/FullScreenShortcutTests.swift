@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import Aagedal_Photo_Agent
 
 @Suite("Full-screen culling shortcuts")
@@ -63,5 +64,44 @@ struct FullScreenShortcutTests {
                 ) == nil
             )
         }
+    }
+}
+
+@Suite("Full-screen loading recovery")
+struct FullScreenLoadingRecoveryTests {
+    @Test("High-resolution speed guidance appears only for edited previews")
+    func editedPreviewGuidance() {
+        #expect(
+            FullScreenLoadingGuidance.message(
+                isRenderingEdits: true,
+                hasEdits: true
+            ) == "Edited previews can take longer. Press E to turn off edits when faster high-resolution loading matters."
+        )
+        #expect(
+            FullScreenLoadingGuidance.message(
+                isRenderingEdits: false,
+                hasEdits: true
+            ) == nil
+        )
+        #expect(
+            FullScreenLoadingGuidance.message(
+                isRenderingEdits: true,
+                hasEdits: false
+            ) == nil
+        )
+    }
+
+    @Test("Failure details identify the file, path, and preview mode")
+    func failureDetails() {
+        let url = URL(fileURLWithPath: "/Volumes/Archive/News Photos/frame 001.tiff")
+
+        let editedFailure = FullScreenLoadFailure(url: url, isRenderingEdits: true)
+        #expect(editedFailure.message == "Unable to load this image at high resolution.")
+        #expect(editedFailure.details.contains("File: frame 001.tiff"))
+        #expect(editedFailure.details.contains("Path: /Volumes/Archive/News Photos/frame 001.tiff"))
+        #expect(editedFailure.details.contains("Preview mode: Edited"))
+
+        let originalFailure = FullScreenLoadFailure(url: url, isRenderingEdits: false)
+        #expect(originalFailure.details.contains("Preview mode: Original"))
     }
 }

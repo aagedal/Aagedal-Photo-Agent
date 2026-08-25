@@ -58,6 +58,7 @@ struct DevelopTemplateListView: View {
 
 struct DevelopTemplateEditorView: View {
     @Bindable var viewModel: DevelopTemplateViewModel
+    @AccessibilityFocusState private var isSaveErrorFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -81,6 +82,35 @@ struct DevelopTemplateEditorView: View {
 
             LabeledContent("Included Settings", value: viewModel.editingTemplate.summary)
 
+            if let error = viewModel.saveError {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Template wasn’t saved", systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.red)
+                        .accessibilityFocused($isSaveErrorFocused)
+                        .accessibilityLabel("Template save failed. \(error.localizedDescription)")
+
+                    Text("Your edits are still here. Retry the save or save a new copy.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button("Retry Save") {
+                            viewModel.saveEditingTemplate()
+                        }
+                        .keyboardShortcut(.defaultAction)
+
+                        Button("Save as New") {
+                            viewModel.saveEditingTemplateAsNew()
+                        }
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityElement(children: .contain)
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel") {
@@ -95,5 +125,11 @@ struct DevelopTemplateEditorView: View {
         }
         .padding()
         .frame(minWidth: 380)
+        .onChange(of: viewModel.saveError) { _, newError in
+            guard newError != nil else { return }
+            DispatchQueue.main.async {
+                isSaveErrorFocused = true
+            }
+        }
     }
 }

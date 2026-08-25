@@ -34,6 +34,30 @@ struct ImportView: View {
         } message: {
             Text("Generating previews from this card is taking more than 10 seconds. Import can continue normally; thumbnails will load only when you hover a preview strip.")
         }
+        .alert(
+            "Confirm overwrite",
+            isPresented: Binding(
+                get: { viewModel.overwritePreflight != nil },
+                set: { if !$0 { viewModel.cancelOverwritePreflight() } }
+            ),
+            presenting: viewModel.overwritePreflight
+        ) { preflight in
+            Button("Cancel", role: .cancel) {
+                viewModel.cancelOverwritePreflight()
+            }
+            Button("Replace \(preflight.totalCollisionCount) existing files", role: .destructive) {
+                viewModel.confirmOverwritePreflight()
+            }
+        } message: { preflight in
+            let backupRoot = preflight.backupRoot?.path ?? "Not configured"
+            Text(
+                "Primary: \(preflight.primaryCollisionCount) existing files\n"
+                    + "\(preflight.primaryRoot.path)\n\n"
+                    + "Backup: \(preflight.backupCollisionCount) existing files\n"
+                    + backupRoot
+                    + "\n\nNo destination files will be changed unless you confirm."
+            )
+        }
     }
 
     // MARK: - Form Content

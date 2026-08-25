@@ -43,6 +43,15 @@ struct ActivityFileRecord: Codable, Sendable, Identifiable {
     }
 }
 
+/// Durable outcome totals for an import. Optional on `ActivityEntry` so history
+/// written by older app versions remains decodable.
+struct ActivityImportResultCounts: Codable, Sendable, Equatable {
+    let replaced: Int
+    let backupReplaced: Int
+    let skipped: Int
+    let renamed: Int
+}
+
 /// A single completed (or cancelled) background operation — the Layer 1 summary row.
 struct ActivityEntry: Codable, Sendable, Identifiable {
     let id: UUID
@@ -62,6 +71,7 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
     let verificationEnabled: Bool
     /// Whether the run was cancelled before finishing.
     let wasCancelled: Bool
+    let importResultCounts: ActivityImportResultCounts?
     let files: [ActivityFileRecord]
 
     init(
@@ -74,6 +84,7 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         verificationFailures: Int = 0,
         verificationEnabled: Bool = false,
         wasCancelled: Bool = false,
+        importResultCounts: ActivityImportResultCounts? = nil,
         files: [ActivityFileRecord]
     ) {
         self.id = id
@@ -85,6 +96,7 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         self.verificationFailures = verificationFailures
         self.verificationEnabled = verificationEnabled
         self.wasCancelled = wasCancelled
+        self.importResultCounts = importResultCounts
         self.files = files
     }
 

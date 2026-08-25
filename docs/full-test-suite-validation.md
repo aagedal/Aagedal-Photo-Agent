@@ -154,3 +154,20 @@ The subsequent unfiltered `test` run passed all 1,413 logical tests in 155 suite
 failures. Swift Testing reported 41.015 seconds and Xcode's complete test operation took 43.005
 seconds. The result bundle is
 `/tmp/aagedal-sony-flexible-sources/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.25_13-11-05-+0200.xcresult`.
+
+## App-improvement audit execution follow-up — 2026-08-25
+
+After integrating overwrite preflight safety, failure-retaining Metadata and Develop
+template saves, full-screen high-resolution recovery guidance, and the security-policy
+release check, the combined focused run passed all 35 tests in 6 suites. The subsequent
+unfiltered run passed all 1,420 logical tests in 156 suites with zero failures. Swift
+Testing reported 42.139 seconds and Xcode's complete test operation took 44.059 seconds.
+
+The result bundle is
+`/Users/truls.aagedal/Library/Developer/Xcode/DerivedData/Aagedal_Photo_Agent-hlgfpmukfpendwestygmmhxmllgk/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.25_14-09-30-+0200.xcresult`.
+
+The generated metadata support report is current, the Xcode project plist and all tracked
+JSON parse successfully, the source tree has no unresolved conflict markers,
+`scripts/release.sh` passes `bash -n`, and `git diff --check` passes. The audit backlog now
+records 10 completed substeps and 65 open substeps; manual, external-system, performance,
+security, recovery, UI-automation, and packaging gates remain open where identified.

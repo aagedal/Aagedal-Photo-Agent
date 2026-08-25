@@ -7,8 +7,14 @@ nonisolated private let developTemplateStorageLog = Logger(
 )
 
 struct DevelopTemplateStorageService: Sendable {
+    private let directoryOverride: URL?
+
+    init(directoryURL: URL? = nil) {
+        directoryOverride = directoryURL
+    }
+
     func loadAll() throws -> [DevelopTemplate] {
-        let (directory, release) = AppPaths.developTemplatesDirectory()
+        let (directory, release) = resolvedDirectory()
         defer { release() }
         let files = try CloudCoordinatedIO.contentsOfDirectory(at: directory)
             .filter { $0.pathExtension == "json" }
@@ -28,7 +34,7 @@ struct DevelopTemplateStorageService: Sendable {
     }
 
     func save(_ template: DevelopTemplate) throws {
-        let (directory, release) = AppPaths.developTemplatesDirectory()
+        let (directory, release) = resolvedDirectory()
         defer { release() }
         let data = try JSONEncoder().encode(template)
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
@@ -36,9 +42,16 @@ struct DevelopTemplateStorageService: Sendable {
     }
 
     func delete(_ template: DevelopTemplate) throws {
-        let (directory, release) = AppPaths.developTemplatesDirectory()
+        let (directory, release) = resolvedDirectory()
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
         try CloudCoordinatedIO.removeItem(at: url)
+    }
+
+    private func resolvedDirectory() -> (url: URL, release: () -> Void) {
+        if let directoryOverride {
+            return (directoryOverride, {})
+        }
+        return AppPaths.developTemplatesDirectory()
     }
 }

@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** proposed backlog from a read-only audit  
+**Status:** implementation in progress — 10 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -79,11 +79,16 @@ the service can replace both primary and backup destinations at
 
 **Plan:**
 
-- [ ] Keep Rename as the safe default.
-- [ ] Preflight primary and backup destinations and show exact collision counts and destination roots.
-- [ ] Require an explicit **Replace N existing files** confirmation immediately before the first write.
-- [ ] Allow cancellation after preflight with zero destination mutations.
-- [ ] Include replaced/skipped/renamed counts in the durable import result.
+- [x] Keep Rename as the safe default.
+  ([validation](import-overwrite-preflight-validation.md), 2026-08-25)
+- [x] Preflight primary and backup destinations and show exact collision counts and destination roots.
+  ([validation](import-overwrite-preflight-validation.md), 2026-08-25)
+- [x] Require an explicit **Replace N existing files** confirmation immediately before the first write.
+  ([validation](import-overwrite-preflight-validation.md), 2026-08-25)
+- [x] Allow cancellation after preflight with zero destination mutations.
+  ([validation](import-overwrite-preflight-validation.md), 2026-08-25)
+- [x] Include replaced/skipped/renamed counts in the durable import result.
+  ([validation](import-overwrite-preflight-validation.md), 2026-08-25)
 
 **Exit gate:** collision counts match execution for both legs; cancellation writes nothing; UI tests prove that
 Overwrite cannot begin without explicit confirmation.
@@ -157,8 +162,10 @@ omitting any artifact fails preflight; shipped source/license claims match runti
 
 **Plan:**
 
-- [ ] Update supported versions, reporting destination, response process, and parser/dependency inventory.
-- [ ] Add a release check that the security policy covers the marketing version.
+- [x] Update supported versions, reporting destination, response process, and parser/dependency inventory.
+  ([validation](security-policy-release-boundary-validation.md), 2026-08-25)
+- [x] Add a release check that the security policy covers the marketing version.
+  ([validation](security-policy-release-boundary-validation.md), 2026-08-25)
 - [ ] Inventory all `Logger` calls and classify filenames, paths, face identifiers, metadata, destinations,
   subprocess arguments, and errors by sensitivity.
 - [ ] Default potentially identifying values to private/redacted and add static tests for prohibited public
@@ -182,8 +189,10 @@ read failure is swallowed at `ContentView.swift:2923-2939`.
 
 **Plan:**
 
-- [ ] Make save operations return/throw a typed result; dismiss only after durable success.
-- [ ] Preserve the draft and show inline Retry/Save As actions on failure.
+- [x] Make save operations return/throw a typed result; dismiss only after durable success.
+  ([validation](template-save-recovery-validation.md), 2026-08-25)
+- [x] Preserve the draft and show inline Retry/Save As actions on failure.
+  ([validation](template-save-recovery-validation.md), 2026-08-25)
 - [ ] Present C2PA loading immediately, then distinguish absent, malformed, unavailable-tool, access-denied,
   and validation-failed states with Retry.
 - [ ] Centralize privacy-safe accessibility announcements for success, failure, cancellation, and recovery.
@@ -294,8 +303,9 @@ to general defaults changes at `ContentView.swift:230,237-238,1321-1452`.
 - [ ] Add launch and first-interaction signposts before deciding what to defer.
 - [ ] Make startup jobs dependency-ordered, cancellable, and lazy when they are not needed for first paint.
 - [ ] Give Deadline an owned typed revision model; ignore unrelated preferences and debounce capture work.
-- [ ] Add the existing full-screen guidance to turn off edited previews when faster high-resolution loading
+- [x] Add the existing full-screen guidance to turn off edited previews when faster high-resolution loading
   matters, with Retry/Reveal/Copy Details on hard failure (`TODO.md:34-36`).
+  ([validation](full-screen-loading-recovery-validation.md), 2026-08-25)
 
 **Exit gate:** recorded cold/warm launch and first-folder metrics meet explicit budgets; unrelated settings no
 longer restart Deadline capture; slow high-resolution loads offer actionable recovery.

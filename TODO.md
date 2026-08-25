@@ -32,8 +32,10 @@
   checkmarks are shown only while the thumbnail browser is active.
 
 ## Other improvements
-- [ ] In full-screen help or loading guidance, suggest turning off edit previews when
+- [x] In full-screen help or loading guidance, suggest turning off edit previews when
   faster high-resolution loading matters more than previewing the current Develop edits.
+  Loading overlays and shortcut help now identify the E-key fast path, and hard load
+  failures offer Retry, Reveal in Finder, and Copy Details. (2026-08-25)
 - [x] **Increase Develop preview zoom to 4000%.** (2026-07-26)
   Magnify gestures, scroll-wheel zoom, and the cursor-anchored 100% toggle now share
   the same 4000% upper bound as the full-screen viewer.
@@ -124,5 +126,4 @@
   - [ ] The model should download in the background on first launch if a model isn't found locally.
   - [ ] Needs support for model versioning, in case an improved face recognition model is released.
 - [ ] Check if a users face database is problematic with relation to GDPR. If so warn the user that they may now want to use the known people database feature. The face grouping feature should still be legally safe.
-
 

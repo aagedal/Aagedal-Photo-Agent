@@ -190,4 +190,51 @@ struct MetadataTemplatePersistenceTests {
         }
         #expect(try Data(contentsOf: source) == futureData)
     }
+
+    @Test("failed editor saves keep the metadata draft open and can be retried")
+    @MainActor
+    func failedEditorSaveKeepsMetadataDraftAndRetries() throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storageLocation = root.appendingPathComponent("templates")
+        try Data("blocks directory creation".utf8).write(to: storageLocation)
+
+        let original = MetadataTemplate(
+            name: "Original",
+            fields: [TemplateField(fieldKey: "title", templateValue: "Draft headline")]
+        )
+        let viewModel = TemplateViewModel(
+            storage: TemplateStorageService(directoryURL: storageLocation)
+        )
+        viewModel.startEditing(original)
+        viewModel.editingTemplate.name = "Edited name"
+
+        let failedResult = viewModel.saveEditingTemplate()
+
+        guard case let .failure(failure) = failedResult else {
+            Issue.record("Expected the injected storage failure")
+            return
+        }
+        #expect(failure.templateKind == .metadata)
+        #expect(viewModel.saveError == failure)
+        #expect(viewModel.isEditing)
+        #expect(viewModel.isEditingExistingTemplate)
+        #expect(viewModel.editingTemplate.id == original.id)
+        #expect(viewModel.editingTemplate.name == "Edited name")
+        #expect(viewModel.editingTemplate.fields.first?.templateValue == "Draft headline")
+
+        try FileManager.default.removeItem(at: storageLocation)
+        try FileManager.default.createDirectory(at: storageLocation, withIntermediateDirectories: false)
+
+        let retryResult = viewModel.saveEditingTemplate()
+
+        guard case let .success(saved) = retryResult else {
+            Issue.record("Expected retry to succeed after restoring writable storage")
+            return
+        }
+        #expect(saved.id == original.id)
+        #expect(!viewModel.isEditing)
+        #expect(viewModel.saveError == nil)
+        #expect(try TemplateStorageService(directoryURL: storageLocation).loadAll().first?.name == "Edited name")
+    }
 }

@@ -27,6 +27,25 @@ struct ImportFailureRecord: Identifiable, Sendable, Hashable {
     }
 }
 
+struct ImportOverwriteExpectation: Sendable, Hashable {
+    let primaryPath: String
+    let primaryExists: Bool
+    let backupPath: String?
+    let backupExists: Bool?
+    let isSkipped: Bool
+}
+
+struct ImportOverwritePreflight: Identifiable, Sendable, Equatable {
+    let id = UUID()
+    let primaryCollisionCount: Int
+    let backupCollisionCount: Int
+    let primaryRoot: URL
+    let backupRoot: URL?
+    let signature: [ImportOverwriteExpectation]
+
+    var totalCollisionCount: Int { primaryCollisionCount + backupCollisionCount }
+}
+
 /// Per-date group for sorting source files into separate destination folders.
 struct ImportDateGroup: Identifiable {
     let id = UUID()
@@ -70,6 +89,8 @@ final class ImportViewModel {
     var skippedFiles: Int = 0
     var duplicateSkippedFiles: Int = 0
     var renamedFiles: Int = 0
+    var replacedFiles: Int = 0
+    var backupReplacedFiles: Int = 0
     var failedFiles: Int = 0
     var verifiedFiles: Int = 0
     var mismatchedFiles: Int = 0
@@ -79,6 +100,8 @@ final class ImportViewModel {
     var importSummary: String = ""
     var errorMessage: String?
     var failureRecords: [ImportFailureRecord] = []
+    /// Non-nil only while Overwrite is waiting for explicit user confirmation.
+    var overwritePreflight: ImportOverwritePreflight?
 
     /// Sticky completion banner shown in the inspector until the user confirms it.
     /// A new import clears any previous (un-dismissed) banner.
@@ -130,6 +153,7 @@ final class ImportViewModel {
     @ObservationIgnored private var folderSuggestionTask: Task<Void, Never>?
     @ObservationIgnored private var folderSuggestionRequestID = UUID()
     @ObservationIgnored private var importTask: Task<Void, Never>?
+    @ObservationIgnored private var confirmedOverwriteSignature: [ImportOverwriteExpectation]?
     @ObservationIgnored private let copyService = ImportCopyService()
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
@@ -737,6 +761,8 @@ final class ImportViewModel {
         skippedFiles = 0
         duplicateSkippedFiles = 0
         renamedFiles = 0
+        replacedFiles = 0
+        backupReplacedFiles = 0
         failedFiles = 0
         verifiedFiles = 0
         mismatchedFiles = 0
@@ -920,7 +946,86 @@ final class ImportViewModel {
             ))
         }
 
+        // Overwrite confirmation must describe the jobs that will actually execute.
+        // Resolve same-day duplicate skips before counting collisions; otherwise the
+        // dialog could promise to replace a file that execution later skips.
+        if conflictPolicy == .overwrite && configuration.skipPreviouslyImported {
+            do {
+                let duplicateSources = try PreviousImportDetector.duplicateSources(
+                    among: previousImportCandidates,
+                    destinationBaseURL: baseURL
+                )
+                if !duplicateSources.isEmpty {
+                    jobs = jobs.map { job in
+                        var updated = job
+                        if duplicateSources.contains(job.source)
+                            || companionParentBySource[job.source].map(duplicateSources.contains) == true {
+                            updated.preflightSkipReason = .previouslyImported
+                        }
+                        return updated
+                    }
+                }
+            } catch {
+                importPhase = .idle
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
+
         totalFiles = jobs.count
+
+        if conflictPolicy == .overwrite {
+            let fm = FileManager.default
+            var plannedPrimaryPaths = Set<String>()
+            var plannedBackupPaths = Set<String>()
+            jobs = jobs.map { job in
+                var frozen = job
+                guard job.preflightSkipReason == nil else { return frozen }
+                let primaryPath = job.desiredPrimaryDest.standardizedFileURL.path
+                frozen.expectedPrimaryCollision = fm.fileExists(atPath: primaryPath)
+                    || !plannedPrimaryPaths.insert(primaryPath).inserted
+                if let backup = job.desiredBackupDest {
+                    let backupPath = backup.standardizedFileURL.path
+                    frozen.expectedBackupCollision = fm.fileExists(atPath: backupPath)
+                        || !plannedBackupPaths.insert(backupPath).inserted
+                }
+                return frozen
+            }
+            let signature = jobs.map { job in
+                ImportOverwriteExpectation(
+                    primaryPath: job.desiredPrimaryDest.standardizedFileURL.path,
+                    primaryExists: job.expectedPrimaryCollision ?? false,
+                    backupPath: job.desiredBackupDest?.standardizedFileURL.path,
+                    backupExists: job.expectedBackupCollision,
+                    isSkipped: job.preflightSkipReason != nil
+                )
+            }
+            let primaryCollisions = jobs.reduce(into: 0) { count, job in
+                if job.preflightSkipReason == nil && job.expectedPrimaryCollision == true { count += 1 }
+            }
+            let backupCollisions = jobs.reduce(into: 0) { count, job in
+                if job.preflightSkipReason == nil && job.expectedBackupCollision == true { count += 1 }
+            }
+
+            guard confirmedOverwriteSignature == signature else {
+                confirmedOverwriteSignature = nil
+                importPhase = .idle
+                overwritePreflight = ImportOverwritePreflight(
+                    primaryCollisionCount: primaryCollisions,
+                    backupCollisionCount: backupCollisions,
+                    primaryRoot: baseURL,
+                    backupRoot: backupDestination?.url,
+                    signature: signature
+                )
+                return
+            }
+            // A confirmation is single-use and belongs to this exact collision set.
+            confirmedOverwriteSignature = nil
+            overwritePreflight = nil
+        } else {
+            confirmedOverwriteSignature = nil
+            overwritePreflight = nil
+        }
 
         let allFolders = allDestFolders
         let folderToOpen = Self.commonAncestor(of: Array(allRevealFolders)) ?? destURL
@@ -950,19 +1055,8 @@ final class ImportViewModel {
 
             do {
                 let fm = FileManager.default
-                // The browser must never receive a folder URL before that folder exists. The old
-                // ordering posted `importStarted` on the main actor and only created directories
-                // later in this detached task, so a fast browser scan could fail with ENOENT.
-                // Create the exact reveal target while destination access is active, then close
-                // the sheet/open it. Child folders and copied files can continue arriving through
-                // the browser's existing auto-refresh path.
-                try fm.createDirectory(at: folderToOpen, withIntermediateDirectories: true)
-                await MainActor.run {
-                    NotificationCenter.default.post(name: .importStarted, object: folderToOpen)
-                }
-
                 var jobsToRun = jobs
-                if skipPreviouslyImported {
+                if skipPreviouslyImported && conflictPolicy != .overwrite {
                     await MainActor.run {
                         self.currentFile = "Checking same-date folders for duplicates…"
                     }
@@ -989,8 +1083,20 @@ final class ImportViewModel {
                     }
                 }
 
+                if conflictPolicy == .overwrite {
+                    try ImportCopyService.validateOverwritePreflight(jobs: jobsToRun)
+                }
+
                 for folder in allFolders {
                     try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+                }
+
+                // The browser must never receive a folder URL before that folder exists.
+                // Publish only after the frozen collision set has been validated and the
+                // exact reveal target exists.
+                try fm.createDirectory(at: folderToOpen, withIntermediateDirectories: true)
+                await MainActor.run {
+                    NotificationCenter.default.post(name: .importStarted, object: folderToOpen)
                 }
 
                 let results = try await copyService.run(
@@ -1083,6 +1189,14 @@ final class ImportViewModel {
                     self.recordCompletion(cancelled: true)
                     NotificationCenter.default.post(name: .importCompleted, object: destURL)
                 }
+            } catch ImportCopyService.CopyError.overwritePreflightChanged {
+                await MainActor.run {
+                    self.importPhase = .idle
+                    self.errorMessage = ImportCopyService.CopyError.overwritePreflightChanged.localizedDescription
+                    // Rebuild and present the changed collision set. No destination
+                    // file was staged or replaced after validation failed.
+                    self.startImport()
+                }
             } catch {
                 await MainActor.run {
                     self.importPhase = .failed(error.localizedDescription)
@@ -1100,18 +1214,35 @@ final class ImportViewModel {
         importTask?.cancel()
     }
 
+    /// Accepts only the exact preflight currently presented. `startImport()` rebuilds
+    /// and compares the collision signature before scheduling any destination write.
+    func confirmOverwritePreflight() {
+        guard let overwritePreflight else { return }
+        confirmedOverwriteSignature = overwritePreflight.signature
+        self.overwritePreflight = nil
+        startImport()
+    }
+
+    /// Dismisses overwrite preflight without creating a folder or destination file.
+    func cancelOverwritePreflight() {
+        confirmedOverwriteSignature = nil
+        overwritePreflight = nil
+        importPhase = .idle
+    }
+
     @MainActor
     private func applyProgress(_ result: ImportCopyService.CopyResult) {
         currentFile = result.source.lastPathComponent
         copyResults.append(result)
 
         switch result.primary {
-        case .copied(_, let renamed, _):
+        case .copied(_, let renamed, let replaced, _):
             copiedFiles += 1
             if result.source.pathExtension.lowercased() == "wav" {
                 voiceMemoCopiedFiles += 1
             }
             if renamed { renamedFiles += 1 }
+            if replaced { replacedFiles += 1 }
         case .skipped(let reason):
             skippedFiles += 1
             if reason == .previouslyImported { duplicateSkippedFiles += 1 }
@@ -1136,8 +1267,9 @@ final class ImportViewModel {
 
         if let backup = result.backup {
             switch backup {
-            case .copied:
+            case .copied(_, _, let replaced, _):
                 backupCopiedFiles += 1
+                if replaced { backupReplacedFiles += 1 }
             case .failed(let detail):
                 backupFailedFiles += 1
                 failureRecords.append(ImportFailureRecord(source: result.source, kind: .backupFailed, detail: detail))
@@ -1186,6 +1318,12 @@ final class ImportViewModel {
             verificationFailures: mismatchedFiles,
             verificationEnabled: verificationEnabled,
             wasCancelled: cancelled,
+            importResultCounts: ActivityImportResultCounts(
+                replaced: replacedFiles,
+                backupReplaced: backupReplacedFiles,
+                skipped: skippedFiles,
+                renamed: renamedFiles
+            ),
             files: files
         )
 
@@ -1986,6 +2124,8 @@ final class ImportViewModel {
         totalFiles = 0
         skippedFiles = 0
         renamedFiles = 0
+        replacedFiles = 0
+        backupReplacedFiles = 0
         failedFiles = 0
         verifiedFiles = 0
         mismatchedFiles = 0
@@ -1996,6 +2136,8 @@ final class ImportViewModel {
         importSummary = ""
         errorMessage = nil
         failureRecords = []
+        overwritePreflight = nil
+        confirmedOverwriteSignature = nil
         dateGroups = []
         sortByDate = preservedSortByDate
         isScanningDates = false

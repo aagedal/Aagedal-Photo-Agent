@@ -592,6 +592,184 @@ struct ImportViewModelTests {
 
         try await Task.sleep(for: .milliseconds(500))
     }
+
+    @Test("overwrite preflight counts both legs, cancellation writes nothing, and results persist exact counts")
+    func overwritePreflightIsExactAndDurable() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OverwritePreflightTests-\(UUID().uuidString)", isDirectory: true)
+        let card = root.appendingPathComponent("card", isDirectory: true)
+        let photos = root.appendingPathComponent("photos", isDirectory: true)
+        let backup = root.appendingPathComponent("backup", isDirectory: true)
+        for folder in [card, photos, backup] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let source = card.appendingPathComponent("photo.jpg")
+        let replacement = Data("new-photo".utf8)
+        let originalPrimary = Data("old-primary".utf8)
+        let originalBackup = Data("old-backup".utf8)
+        try replacement.write(to: source)
+
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        viewModel.configuration.sourceURL = card
+        viewModel.configuration.destinationBaseURL = photos
+        viewModel.configuration.importTitle = "Overwrite Audit"
+        viewModel.configuration.fileTypeFilter = .jpegOnly
+        viewModel.configuration.conflictPolicy = .overwrite
+        viewModel.configuration.createSubFolders = false
+        viewModel.configuration.verificationMode = .on
+        viewModel.configuration.skipPreviouslyImported = false
+        viewModel.configuration.applyMetadata = false
+        viewModel.configuration.backupDestination = BackupDestination(url: backup)
+        viewModel.sortByDate = false
+        viewModel.sourceFiles = [source]
+
+        let primary = viewModel.configuration.destinationFolderURL.appendingPathComponent(source.lastPathComponent)
+        let relative = try #require(ImportViewModel.relativePath(of: primary, under: photos))
+        let backupFile = backup.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(
+            at: primary.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: backupFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try originalPrimary.write(to: primary)
+        try originalBackup.write(to: backupFile)
+
+        viewModel.startImport()
+
+        let preflight = try #require(viewModel.overwritePreflight)
+        #expect(preflight.primaryCollisionCount == 1)
+        #expect(preflight.backupCollisionCount == 1)
+        #expect(preflight.totalCollisionCount == 2)
+        #expect(preflight.primaryRoot.standardizedFileURL == photos.standardizedFileURL)
+        #expect(preflight.backupRoot?.standardizedFileURL == backup.standardizedFileURL)
+        #expect(viewModel.importPhase == .idle)
+        #expect(try Data(contentsOf: primary) == originalPrimary)
+        #expect(try Data(contentsOf: backupFile) == originalBackup)
+
+        viewModel.cancelOverwritePreflight()
+        #expect(viewModel.overwritePreflight == nil)
+        #expect(try Data(contentsOf: primary) == originalPrimary)
+        #expect(try Data(contentsOf: backupFile) == originalBackup)
+
+        viewModel.startImport()
+        viewModel.confirmOverwritePreflight()
+        for _ in 0..<500 where viewModel.isImporting {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(try Data(contentsOf: primary) == replacement)
+        #expect(try Data(contentsOf: backupFile) == replacement)
+        #expect(viewModel.replacedFiles == 1)
+        #expect(viewModel.backupReplacedFiles == 1)
+        #expect(viewModel.lastCompletionEntry?.importResultCounts == ActivityImportResultCounts(
+            replaced: 1,
+            backupReplaced: 1,
+            skipped: 0,
+            renamed: 0
+        ))
+        let encoded = try JSONEncoder().encode(try #require(viewModel.lastCompletionEntry))
+        let decoded = try JSONDecoder().decode(ActivityEntry.self, from: encoded)
+        #expect(decoded.importResultCounts == viewModel.lastCompletionEntry?.importResultCounts)
+    }
+
+    @Test("overwrite confirmation is invalidated when the collision set changes")
+    func overwriteConfirmationCannotBeReusedAfterCollisionChange() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OverwriteSignatureTests-\(UUID().uuidString)", isDirectory: true)
+        let card = root.appendingPathComponent("card", isDirectory: true)
+        let photos = root.appendingPathComponent("photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let source = card.appendingPathComponent("photo.jpg")
+        try Data("source".utf8).write(to: source)
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        viewModel.configuration.sourceURL = card
+        viewModel.configuration.destinationBaseURL = photos
+        viewModel.configuration.importTitle = "Changing Set"
+        viewModel.configuration.fileTypeFilter = .jpegOnly
+        viewModel.configuration.conflictPolicy = .overwrite
+        viewModel.configuration.createSubFolders = false
+        viewModel.configuration.skipPreviouslyImported = false
+        viewModel.configuration.applyMetadata = false
+        viewModel.sourceFiles = [source]
+
+        viewModel.startImport()
+        #expect(viewModel.overwritePreflight?.primaryCollisionCount == 0)
+
+        let destination = viewModel.configuration.destinationFolderURL.appendingPathComponent("photo.jpg")
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let intervening = Data("arrived-after-preflight".utf8)
+        try intervening.write(to: destination)
+
+        viewModel.confirmOverwritePreflight()
+
+        #expect(viewModel.importPhase == .idle)
+        #expect(viewModel.overwritePreflight?.primaryCollisionCount == 1)
+        #expect(try Data(contentsOf: destination) == intervening)
+    }
+
+    @Test("overwrite preflight counts collisions created by earlier jobs in the same batch")
+    func overwritePreflightCountsPlannedBatchCollisions() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OverwriteBatchCollisionTests-\(UUID().uuidString)", isDirectory: true)
+        let firstCard = root.appendingPathComponent("card-1", isDirectory: true)
+        let secondCard = root.appendingPathComponent("card-2", isDirectory: true)
+        let photos = root.appendingPathComponent("photos", isDirectory: true)
+        for folder in [firstCard, secondCard, photos] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let first = firstCard.appendingPathComponent("photo.jpg")
+        let second = secondCard.appendingPathComponent("photo.jpg")
+        try Data("first".utf8).write(to: first)
+        let finalBytes = Data("second".utf8)
+        try finalBytes.write(to: second)
+
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        viewModel.configuration.sourceURL = firstCard
+        viewModel.configuration.destinationBaseURL = photos
+        viewModel.configuration.importTitle = "Same Names"
+        viewModel.configuration.fileTypeFilter = .jpegOnly
+        viewModel.configuration.conflictPolicy = .overwrite
+        viewModel.configuration.createSubFolders = false
+        viewModel.configuration.skipPreviouslyImported = false
+        viewModel.configuration.applyMetadata = false
+        viewModel.sourceFiles = [first, second]
+
+        let destinationFolder = viewModel.configuration.destinationFolderURL
+        viewModel.startImport()
+        #expect(viewModel.overwritePreflight?.primaryCollisionCount == 1)
+        #expect(!FileManager.default.fileExists(atPath: destinationFolder.path))
+
+        viewModel.confirmOverwritePreflight()
+        for _ in 0..<500 where viewModel.isImporting {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(try Data(contentsOf: destinationFolder.appendingPathComponent("photo.jpg")) == finalBytes)
+        #expect(viewModel.replacedFiles == 1)
+        #expect(viewModel.lastCompletionEntry?.importResultCounts?.replaced == 1)
+    }
 }
 
 @Suite("Safe import paths")

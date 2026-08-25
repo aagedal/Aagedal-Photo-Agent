@@ -2,17 +2,19 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest 2.0 release. Older releases (1.x and
-2.0 betas) are not maintained — please update before reporting.
+Security fixes are provided for the latest 3.0 release line. Older releases are
+not maintained — please update before reporting.
+
+Supported release line: `3.0.x`
 
 | Version | Supported |
 |---------|-----------|
-| 2.0.x   | ✅        |
-| < 2.0   | ❌        |
+| 3.0.x   | ✅        |
+| < 3.0   | ❌        |
 
 ## Reporting a vulnerability
 
-Report security issues through the project's Codeberg issue tracker:
+Report security issues through the project's GitHub issue tracker:
 
 **<https://github.com/aagedal/Aagedal-Photo-Agent/issues/new>**
 
@@ -31,7 +33,7 @@ To avoid handing out a working exploit before a fix is available, please:
 - Attach a minimal reproduction (a sample file or configuration) once asked, or
   from the start if the issue is low-risk.
 
-> Codeberg does not yet support confidential/private issues. If you believe a
+> GitHub issues in this repository are public. If you believe a
 > finding is too sensitive to describe in public at all, open a minimal issue
 > titled `[security] request private contact` with no technical detail, and a
 > maintainer will arrange a channel.
@@ -46,10 +48,12 @@ bug-bounty program.
 Aagedal Photo Agent is a local, single-user macOS application. The most relevant
 areas to look at:
 
-- **Untrusted file parsing.** The app reads images, EXIF/IPTC/XMP metadata, and
-  `.xmp` / JSON / face-data sidecars that may originate from untrusted sources.
-  Parsing is handled in-process (SwiftExif → libexif/libiptcdata, Apple ImageIO,
-  and the app's own XMP code). Memory-safety or injection issues triggered by a
+- **Untrusted file parsing.** The app reads images, video/audio metadata,
+  EXIF/IPTC/XMP metadata, PDFs, and `.xmp` / JSON / face-data sidecars that may
+  originate from untrusted sources. Parsing uses the vendored pure-Swift
+  SwiftExif package, Apple ImageIO and media frameworks, the app's own sidecar
+  decoders, and bundled command-line helpers where applicable. Memory-safety,
+  command-injection, path-handling, or parser-confusion issues triggered by a
   malicious file are in scope.
 - **Path traversal.** Imports that read paths from files — e.g. keyword-list and
   Known People / Teams database (ZIP) import — must stay within their intended
@@ -59,7 +63,8 @@ areas to look at:
   sidecars, exported metadata, or synced via iCloud.
 - **Content credentials (C2PA).** Signing certificate/key handling and manifest
   generation.
-- **Network paths.** FTP/SFTP upload and the Sparkle auto-update channel
+- **Network paths.** FTP/FTPS/SFTP upload, geocoding and map lookups, and the
+  Sparkle auto-update channel
   (appcast over HTTPS, releases verified with an EdDSA signature).
 - **iCloud sync.** Synced categories must never include passwords, signing keys,
   certificates, or machine-specific paths.

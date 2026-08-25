@@ -8,6 +8,7 @@ struct TemplateEditorView: View {
     @State private var activeFieldID: UUID?
     @State private var fieldSelections: [UUID: NSRange] = [:]
     @FocusState private var focusedTemplateValueFieldID: UUID?
+    @AccessibilityFocusState private var isSaveErrorFocused: Bool
 
     /// Returns field keys that are already used in the template
     private var usedFieldKeys: Set<String> {
@@ -49,6 +50,35 @@ struct TemplateEditorView: View {
             }
 
             Divider()
+
+            if let error = viewModel.saveError {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Template wasn’t saved", systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.red)
+                        .accessibilityFocused($isSaveErrorFocused)
+                        .accessibilityLabel("Template save failed. \(error.localizedDescription)")
+
+                    Text("Your edits are still here. Retry the save or save a new copy.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button("Retry Save") {
+                            viewModel.saveEditingTemplate()
+                        }
+                        .keyboardShortcut(.defaultAction)
+
+                        Button("Save as New") {
+                            viewModel.saveEditingTemplateAsNew()
+                        }
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityElement(children: .contain)
+            }
 
             HStack {
                 Text("Fields")
@@ -166,6 +196,12 @@ struct TemplateEditorView: View {
             activeFieldID = newValue
             if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
                 fieldSelections[newValue] = editor.selectedRange()
+            }
+        }
+        .onChange(of: viewModel.saveError) { _, newError in
+            guard newError != nil else { return }
+            DispatchQueue.main.async {
+                isSaveErrorFocused = true
             }
         }
     }

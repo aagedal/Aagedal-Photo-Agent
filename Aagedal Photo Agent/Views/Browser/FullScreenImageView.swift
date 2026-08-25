@@ -145,6 +145,35 @@ enum FullScreenNumberShortcut: Equatable, Sendable {
     }
 }
 
+// MARK: - Full-screen loading presentation
+
+enum FullScreenLoadingGuidance {
+    static let editedPreview = "Edited previews can take longer. Press E to turn off edits when faster high-resolution loading matters."
+
+    static func message(isRenderingEdits: Bool, hasEdits: Bool) -> String? {
+        guard isRenderingEdits, hasEdits else { return nil }
+        return editedPreview
+    }
+}
+
+struct FullScreenLoadFailure: Equatable, Sendable {
+    let url: URL
+    let isRenderingEdits: Bool
+
+    var message: String {
+        "Unable to load this image at high resolution."
+    }
+
+    var details: String {
+        """
+        Full-screen image load failed
+        File: \(url.lastPathComponent)
+        Path: \(url.path)
+        Preview mode: \(isRenderingEdits ? "Edited" : "Original")
+        """
+    }
+}
+
 // MARK: - Custom NSWindow that intercepts Escape and Space
 
 private class FullScreenWindow: NSWindow {
@@ -286,7 +315,7 @@ struct FullScreenImageView: View {
     /// the "Loading hires…" overlay, which is shown only while zoomed — the
     /// retina/preview background upgrades stay silent.
     @State private var isLoadingHires = false
-    @State private var loadError: String?
+    @State private var loadFailure: FullScreenLoadFailure?
     @State private var fullLoadTask: Task<Void, Never>?
     @State private var phase05Task: Task<CGImage?, Never>?
     @State private var fullResTask: Task<Void, Never>?
@@ -527,23 +556,22 @@ struct FullScreenImageView: View {
                     // preview is up, background quality upgrades (retina Phase 2)
                     // happen silently — no overlay.
                     if isLoading && currentImage == nil {
-                        loadingOverlay(text: "Loading\u{2026}")
+                        loadingOverlay(
+                            text: "Loading\u{2026}",
+                            guidance: highResolutionLoadingGuidance
+                        )
                     } else if isLoadingHires && zoomScale > 1.0 {
                         // Zoom-triggered full-resolution decode: the fit-view image is
                         // already sharp enough, so this overlay only appears when the
                         // user has zoomed in and is waiting for full detail.
-                        loadingOverlay(text: "Loading hires\u{2026}")
+                        loadingOverlay(
+                            text: "Loading hires\u{2026}",
+                            guidance: highResolutionLoadingGuidance
+                        )
                     }
 
-                    if let loadError, currentImage == nil {
-                        VStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle")
-                                .font(.largeTitle)
-                                .foregroundStyle(.white.opacity(0.6))
-                            Text(loadError)
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.6))
-                        }
+                    if let loadFailure {
+                        loadFailureOverlay(loadFailure)
                     }
 
                     if let file = currentImageFile {
@@ -1068,7 +1096,10 @@ struct FullScreenImageView: View {
                     .help("Collapse")
                 }
                 if file.hasDevelopEdits || file.hasCropEdits {
-                    shortcutRow("E", "Toggle edits / original")
+                    shortcutRow(
+                        "E",
+                        renderEdits ? "Turn off edits (faster high-res)" : "Show edits"
+                    )
                 }
                 if canOpenComparison {
                     shortcutRow("C", "Compare with another image")
@@ -1100,8 +1131,15 @@ struct FullScreenImageView: View {
         }
     }
 
+    private var highResolutionLoadingGuidance: String? {
+        FullScreenLoadingGuidance.message(
+            isRenderingEdits: renderEdits,
+            hasEdits: currentImageFile.map { $0.hasDevelopEdits || $0.hasCropEdits } ?? false
+        )
+    }
+
     @ViewBuilder
-    private func loadingOverlay(text: String) -> some View {
+    private func loadingOverlay(text: String, guidance: String?) -> some View {
         VStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
@@ -1109,9 +1147,54 @@ struct FullScreenImageView: View {
             Text(text)
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.7))
+            if let guidance {
+                Text(guidance)
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
+            }
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private func loadFailureOverlay(_ failure: FullScreenLoadFailure) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle)
+                .foregroundStyle(.white.opacity(0.7))
+            Text(failure.message)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.white)
+            if let guidance = highResolutionLoadingGuidance {
+                Text(guidance)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+            }
+            HStack(spacing: 8) {
+                Button("Retry") {
+                    loadFailure = nil
+                    isLoading = true
+                    Task { await loadImage() }
+                }
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([failure.url])
+                }
+                Button("Copy Details") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(failure.details, forType: .string)
+                }
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Image load failed")
     }
 
     private func loadImage() async {
@@ -1142,10 +1225,10 @@ struct FullScreenImageView: View {
             currentImage = nil
             sourcePixelSize = nil
             isLoading = false
-            loadError = nil
+            loadFailure = nil
             return
         }
-        loadError = nil
+        loadFailure = nil
         // Record the image + settings we're decoding so onChange(cameraRawSettings) can
         // tell an in-place edit from a navigation (handled by .task(id:)).
         lastDecodedURL = url
@@ -1289,6 +1372,16 @@ struct FullScreenImageView: View {
                 guard !Task.isCancelled else { return }
                 if image == nil {
                     guard let result = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
+                        imageLogger.error("\(filename, privacy: .private): Phase 2 failed — could not upgrade cached preview")
+                        await MainActor.run {
+                            if expectedGeneration == renderGeneration,
+                               currentImageFile?.url == url {
+                                loadFailure = FullScreenLoadFailure(
+                                    url: url,
+                                    isRenderingEdits: isEdited
+                                )
+                            }
+                        }
                         return
                     }
                     guard !Task.isCancelled else { return }
@@ -1371,11 +1464,15 @@ struct FullScreenImageView: View {
             guard !Task.isCancelled else { return }
             if image == nil {
                 guard let result = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
-                    imageLogger.error("\(filename): Phase 2 failed — could not decode image")
+                    imageLogger.error("\(filename, privacy: .private): Phase 2 failed — could not decode image")
                     await MainActor.run {
-                        if currentImageFile?.url == url {
+                        if expectedGeneration == renderGeneration,
+                           currentImageFile?.url == url {
                             isLoading = false
-                            loadError = "Unable to load image"
+                            loadFailure = FullScreenLoadFailure(
+                                url: url,
+                                isRenderingEdits: isEdited
+                            )
                         }
                     }
                     return
@@ -1401,7 +1498,7 @@ struct FullScreenImageView: View {
                     hiResApplied = true
                     lastLoadedOrientation = imageOrientation
                     isLoading = false
-                    loadError = nil
+                    loadFailure = nil
                     imageCache.store(
                         image,
                         for: url,

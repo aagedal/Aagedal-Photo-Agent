@@ -116,6 +116,55 @@ struct DevelopTemplateTests {
 
         #expect(decoded.includesCrop)
     }
+
+    @Test("failed editor saves keep the develop draft open and allow saving a new copy")
+    @MainActor
+    func failedEditorSaveKeepsDevelopDraftAndSavesCopy() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DevelopTemplateSaveTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storageLocation = root.appendingPathComponent("templates")
+        try Data("blocks directory creation".utf8).write(to: storageLocation)
+
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1.5
+        let original = DevelopTemplate(name: "Original", settings: settings)
+        let viewModel = DevelopTemplateViewModel(
+            storage: DevelopTemplateStorageService(directoryURL: storageLocation)
+        )
+        viewModel.startEditing(original)
+        viewModel.editingTemplate.name = "Edited develop draft"
+
+        let failedResult = viewModel.saveEditingTemplate()
+
+        guard case let .failure(failure) = failedResult else {
+            Issue.record("Expected the injected storage failure")
+            return
+        }
+        #expect(failure.templateKind == .develop)
+        #expect(viewModel.saveError == failure)
+        #expect(viewModel.isEditing)
+        #expect(viewModel.isEditingExistingTemplate)
+        #expect(viewModel.editingTemplate.id == original.id)
+        #expect(viewModel.editingTemplate.name == "Edited develop draft")
+        #expect(viewModel.editingTemplate.settings.exposure2012 == 1.5)
+
+        try FileManager.default.removeItem(at: storageLocation)
+        try FileManager.default.createDirectory(at: storageLocation, withIntermediateDirectories: false)
+
+        let saveAsResult = viewModel.saveEditingTemplateAsNew()
+
+        guard case let .success(saved) = saveAsResult else {
+            Issue.record("Expected Save as New to succeed after restoring writable storage")
+            return
+        }
+        #expect(saved.id != original.id)
+        #expect(viewModel.editingTemplate.id == saved.id)
+        #expect(!viewModel.isEditing)
+        #expect(viewModel.saveError == nil)
+        #expect(try DevelopTemplateStorageService(directoryURL: storageLocation).loadAll() == [saved])
+    }
 }
 
 private struct LegacyDevelopTemplate: Codable {

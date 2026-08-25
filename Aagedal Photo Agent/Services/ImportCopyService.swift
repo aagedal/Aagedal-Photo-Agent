@@ -31,6 +31,11 @@ actor ImportCopyService {
         /// Companion jobs run only after this job completed successfully. This keeps an audio
         /// companion from being copied by itself when its image copy or verification failed.
         var prerequisiteJobID: UUID? = nil
+        /// Frozen by overwrite preflight. When present, `run` verifies the complete
+        /// collision set before processing the first job so confirmation cannot be
+        /// reused after a destination appears or disappears.
+        var expectedPrimaryCollision: Bool? = nil
+        var expectedBackupCollision: Bool? = nil
     }
 
     enum SkipReason: String, Sendable, Equatable {
@@ -40,7 +45,7 @@ actor ImportCopyService {
     }
 
     enum DestinationOutcome: Sendable, Equatable {
-        case copied(URL, wasRenamed: Bool, hash: Data)
+        case copied(URL, wasRenamed: Bool, wasReplaced: Bool, hash: Data)
         case skipped(SkipReason)
         case failed(String)
     }
@@ -63,10 +68,13 @@ actor ImportCopyService {
 
     enum CopyError: Error, LocalizedError {
         case renameSuffixExhausted(URL)
+        case overwritePreflightChanged
         var errorDescription: String? {
             switch self {
             case .renameSuffixExhausted(let url):
                 return "Could not resolve filename conflict for \(url.lastPathComponent) after 10000 attempts."
+            case .overwritePreflightChanged:
+                return "Destination files changed after overwrite confirmation. Review the updated preflight before importing."
             }
         }
     }
@@ -82,6 +90,10 @@ actor ImportCopyService {
         verifyBackup: Bool,
         progress: @Sendable (CopyResult) async -> Void
     ) async throws -> [CopyResult] {
+        if conflictPolicy == .overwrite {
+            try Self.validateOverwritePreflight(jobs: jobs)
+        }
+
         var results: [CopyResult] = []
         results.reserveCapacity(jobs.count)
 
@@ -111,6 +123,33 @@ actor ImportCopyService {
             await progress(result)
         }
         return results
+    }
+
+    /// Validates the complete frozen collision set as one operation. The importer
+    /// calls this immediately before creating destination folders; `run` repeats it
+    /// defensively immediately before the first staged file is opened.
+    nonisolated static func validateOverwritePreflight(jobs: [CopyJob]) throws {
+        let fm = FileManager.default
+        var plannedPrimaryPaths = Set<String>()
+        var plannedBackupPaths = Set<String>()
+        for job in jobs where job.preflightSkipReason == nil {
+            let primaryPath = job.desiredPrimaryDest.standardizedFileURL.path
+            let primaryWillReplace = fm.fileExists(atPath: primaryPath)
+                || !plannedPrimaryPaths.insert(primaryPath).inserted
+            if let expected = job.expectedPrimaryCollision,
+               primaryWillReplace != expected {
+                throw CopyError.overwritePreflightChanged
+            }
+            if let destination = job.desiredBackupDest,
+               let expected = job.expectedBackupCollision {
+                let backupPath = destination.standardizedFileURL.path
+                let backupWillReplace = fm.fileExists(atPath: backupPath)
+                    || !plannedBackupPaths.insert(backupPath).inserted
+                if backupWillReplace != expected {
+                    throw CopyError.overwritePreflightChanged
+                }
+            }
+        }
     }
 
     nonisolated private static func skippedResult(
@@ -191,7 +230,10 @@ actor ImportCopyService {
             destination: primaryURL,
             wasRenamed: wasRenamed,
             shouldVerify: verificationMode == .on,
-            allowOverwrite: conflictPolicy == .overwrite
+            allowOverwrite: conflictPolicy == .overwrite,
+            wasReplaced: conflictPolicy == .overwrite
+                && (job.expectedPrimaryCollision
+                    ?? FileManager.default.fileExists(atPath: job.desiredPrimaryDest.path))
         )
 
         // Backup leg (best-effort, isolated from primary success).
@@ -228,7 +270,10 @@ actor ImportCopyService {
                         destination: backupURL,
                         wasRenamed: backupWasRenamed,
                         shouldVerify: verificationMode == .on && verifyBackup,
-                        allowOverwrite: conflictPolicy == .overwrite
+                        allowOverwrite: conflictPolicy == .overwrite,
+                        wasReplaced: conflictPolicy == .overwrite
+                            && (job.expectedBackupCollision
+                                ?? FileManager.default.fileExists(atPath: desiredBackup.path))
                     )
                 } catch is CancellationError {
                     throw CancellationError()
@@ -265,7 +310,8 @@ actor ImportCopyService {
         destination: URL,
         wasRenamed: Bool,
         shouldVerify: Bool,
-        allowOverwrite: Bool
+        allowOverwrite: Bool,
+        wasReplaced: Bool
     ) async throws -> (DestinationOutcome, VerificationOutcome) {
         if Self.filesReferToSameItem(source, destination) {
             return (
@@ -307,7 +353,12 @@ actor ImportCopyService {
                     to: destination,
                     allowOverwrite: allowOverwrite
                 )
-                return (.copied(destination, wasRenamed: wasRenamed, hash: staged.hash), verification)
+                return (.copied(
+                    destination,
+                    wasRenamed: wasRenamed,
+                    wasReplaced: wasReplaced,
+                    hash: staged.hash
+                ), verification)
             } catch {
                 try? FileManager.default.removeItem(at: staged.temporaryURL)
                 return (.failed(error.localizedDescription), verification)
@@ -507,12 +558,17 @@ nonisolated extension ImportCopyService.CopyResult {
     /// The destination URL for a successfully copied primary, or nil otherwise.
     /// Used by metadata application step to know which files are eligible.
     var primaryURL: URL? {
-        guard isPrimaryGood, case let .copied(url, _, _) = primary else { return nil }
+        guard isPrimaryGood, case let .copied(url, _, _, _) = primary else { return nil }
         return url
     }
 
     var wasRenamed: Bool {
-        if case let .copied(_, renamed, _) = primary { return renamed }
+        if case let .copied(_, renamed, _, _) = primary { return renamed }
+        return false
+    }
+
+    var wasReplaced: Bool {
+        if case let .copied(_, _, replaced, _) = primary { return replaced }
         return false
     }
 

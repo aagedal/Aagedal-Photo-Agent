@@ -1,5 +1,23 @@
 import Foundation
 
+nonisolated struct TemplateSaveError: Error, Equatable, LocalizedError, Sendable {
+    nonisolated enum TemplateKind: String, Equatable, Sendable {
+        case metadata = "Metadata"
+        case develop = "Develop"
+    }
+
+    let templateKind: TemplateKind
+    let reason: String
+
+    var errorDescription: String? {
+        "\(templateKind.rawValue) template wasn’t saved: \(reason)"
+    }
+
+    var recoverySuggestion: String? {
+        "Your edits are still here. Retry the save or save a new copy."
+    }
+}
+
 @Observable
 final class TemplateViewModel {
     var templates: [MetadataTemplate] = []
@@ -8,19 +26,27 @@ final class TemplateViewModel {
     var isEditingExistingTemplate = false
     var editingTemplate = MetadataTemplate()
     var errorMessage: String?
+    private(set) var saveError: TemplateSaveError?
 
-    private let storage = TemplateStorageService()
+    private let storage: TemplateStorageService
     private let interpolator = PresetVariableInterpolator()
+
+    init(storage: TemplateStorageService = TemplateStorageService()) {
+        self.storage = storage
+    }
 
     func loadTemplates() {
         do {
             templates = try storage.loadAll()
+            errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func saveTemplate(_ template: MetadataTemplate) {
+    @discardableResult
+    func saveTemplate(_ template: MetadataTemplate) -> Result<MetadataTemplate, TemplateSaveError> {
+        saveError = nil
         do {
             // If this template claims a shortcut slot, clear it from any other template
             if let slot = template.shortcutSlot {
@@ -32,8 +58,15 @@ final class TemplateViewModel {
             }
             try storage.save(template)
             loadTemplates()
+            return .success(template)
         } catch {
-            errorMessage = error.localizedDescription
+            let failure = TemplateSaveError(
+                templateKind: .metadata,
+                reason: error.localizedDescription
+            )
+            saveError = failure
+            errorMessage = failure.localizedDescription
+            return .failure(failure)
         }
     }
 
@@ -49,18 +82,41 @@ final class TemplateViewModel {
     func startEditing(_ template: MetadataTemplate? = nil) {
         editingTemplate = template ?? MetadataTemplate()
         isEditingExistingTemplate = template != nil
+        saveError = nil
         isEditing = true
     }
 
-    func saveEditingTemplate() {
-        saveTemplate(editingTemplate)
-        isEditingExistingTemplate = false
-        isEditing = false
+    @discardableResult
+    func saveEditingTemplate() -> Result<MetadataTemplate, TemplateSaveError> {
+        finishEditingIfSaved(saveTemplate(editingTemplate))
+    }
+
+    @discardableResult
+    func saveEditingTemplateAsNew() -> Result<MetadataTemplate, TemplateSaveError> {
+        var copy = editingTemplate
+        copy.id = UUID()
+        let result = saveTemplate(copy)
+        if case .success = result {
+            editingTemplate = copy
+        }
+        return finishEditingIfSaved(result)
     }
 
     func cancelEditing() {
         isEditingExistingTemplate = false
+        saveError = nil
         isEditing = false
+    }
+
+    @discardableResult
+    private func finishEditingIfSaved(
+        _ result: Result<MetadataTemplate, TemplateSaveError>
+    ) -> Result<MetadataTemplate, TemplateSaveError> {
+        if case .success = result {
+            isEditingExistingTemplate = false
+            isEditing = false
+        }
+        return result
     }
 
     /// Creates a template from the current metadata state.

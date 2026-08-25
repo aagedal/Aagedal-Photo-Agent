@@ -234,6 +234,15 @@ MIN_OS="$(get MACOSX_DEPLOYMENT_TARGET)"
 [ -n "$VERSION" ] && [ -n "$BUILD" ] && [ -n "$TEAM_ID" ] || die "Could not read version/build/team from the project."
 ok "Version $VERSION (build $BUILD), team $TEAM_ID, min macOS $MIN_OS"
 
+# Keep the public support promise tied to the release being produced. A stale
+# policy is a release-blocking documentation defect because it can tell users of
+# the current build that they are ineligible for security fixes.
+RELEASE_LINE="${VERSION%.*}.x"
+if ! grep -Fq "Supported release line: \`$RELEASE_LINE\`" SECURITY.md; then
+  die "SECURITY.md must declare 'Supported release line: \`$RELEASE_LINE\`' before releasing $VERSION."
+fi
+ok "Security policy covers release line $RELEASE_LINE"
+
 # ─── 3. Signing identity (Developer ID Application) ───────────────────────────
 # WHY: distribution outside the App Store must be signed with a "Developer ID
 # Application" certificate (Apple Development certs can't be notarized). This is
