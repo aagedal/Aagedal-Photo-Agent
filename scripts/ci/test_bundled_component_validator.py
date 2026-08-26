@@ -43,6 +43,17 @@ class BundledComponentValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "build recipe revision mismatch"):
             validator.validate_declaration(self.root, self.component)
 
+    def test_supporting_recipe_file_drift_fails_closed(self) -> None:
+        support = self.root / "lock.txt"
+        support.write_text("locked dependency graph\n", encoding="utf-8")
+        self.component["buildRecipe"]["supportingFiles"] = {
+            "lock.txt": f"sha256:{validator.sha256(support)}"
+        }
+        validator.validate_declaration(self.root, self.component)
+        support.write_text("drifted graph\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "supporting file revision mismatch"):
+            validator.validate_declaration(self.root, self.component)
+
     def test_missing_required_artifact_fails_closed(self) -> None:
         component = dict(self.component)
         component["required"] = True

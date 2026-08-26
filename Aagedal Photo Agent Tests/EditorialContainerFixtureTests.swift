@@ -206,3 +206,141 @@ struct EditorialContainerFixtureTests {
         return rendered ? sha256(Data(pixels)) : nil
     }
 }
+
+@Suite("Redistributable analysis fixture corpus")
+struct AnalysisFixtureCorpusTests {
+    @Test("Manifest inventories and hash-binds every CC0 analysis artifact")
+    func manifestInventoryAndHashes() throws {
+        let manifest = try manifest()
+        #expect(manifest["license"] as? String == "CC0-1.0")
+        #expect(manifest["containsPersonalData"] as? Bool == false)
+        let files = try #require(manifest["files"] as? [[String: Any]])
+
+        let declared = Set(try files.map { entry in
+            let filename = try #require(entry["filename"] as? String)
+            let digest = try #require(entry["sha256"] as? String)
+            #expect(digest.count == 64)
+            #expect((entry["origin"] as? String)?.isEmpty == false)
+            #expect((entry["expectedProperties"] as? [String: Any])?.isEmpty == false)
+            #expect(sha256(try Data(contentsOf: fixtureURL(filename))) == digest)
+            return filename
+        })
+
+        let actual = try Set(
+            FileManager.default.contentsOfDirectory(
+                at: corpusDirectory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+            .map(\.lastPathComponent)
+            .filter { !["README.md", "manifest.json"].contains($0) }
+        )
+        #expect(declared == actual)
+
+        let unavailable = try #require(
+            manifest["unavailableAuthenticArtifacts"] as? [[String: Any]]
+        )
+        #expect(
+            Set(unavailable.compactMap { $0["category"] as? String }) == [
+                "camera-jpeg", "heic-heif", "camera-raw-original", "signed-c2pa-media",
+                "hdr-gain-map",
+            ]
+        )
+        #expect(unavailable.allSatisfy { ($0["reason"] as? String)?.isEmpty == false })
+    }
+
+    @Test("Raster dimensions, frames, alpha, and all eight orientations match the manifest")
+    func imageProperties() throws {
+        let files = try #require(manifest()["files"] as? [[String: Any]])
+        for entry in files {
+            guard let expected = entry["expectedProperties"] as? [String: Any],
+                  let width = expected["width"] as? Int,
+                  let height = expected["height"] as? Int,
+                  let filename = entry["filename"] as? String
+            else { continue }
+
+            let source = try #require(
+                CGImageSourceCreateWithURL(fixtureURL(filename) as CFURL, nil),
+                "\(filename) must be ImageIO-decodable"
+            )
+            #expect(CGImageSourceGetCount(source) == (expected["frameCount"] as? Int ?? 1))
+            let properties = try #require(
+                CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+            )
+            #expect(properties[kCGImagePropertyPixelWidth] as? Int == width)
+            #expect(properties[kCGImagePropertyPixelHeight] as? Int == height)
+            if let orientation = expected["orientation"] as? Int {
+                #expect(properties[kCGImagePropertyOrientation] as? Int == orientation)
+            }
+            if expected["alpha"] as? Bool == true {
+                let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+                #expect([
+                    CGImageAlphaInfo.premultipliedFirst,
+                    .premultipliedLast,
+                    .first,
+                    .last,
+                ].contains(image.alphaInfo))
+            }
+        }
+    }
+
+    @Test("Compression recipes are distinct and malformed media fails ImageIO decode")
+    func compressionAndMalformedContracts() throws {
+        let single = try Data(contentsOf: fixtureURL("jpeg-single-q82.jpg"))
+        let double = try Data(contentsOf: fixtureURL("jpeg-double-q82-q60.jpg"))
+        #expect(single != double)
+        #expect(CGImageSourceCreateWithData(single as CFData, nil) != nil)
+        #expect(CGImageSourceCreateWithData(double as CFData, nil) != nil)
+
+        let malformed = try Data(contentsOf: fixtureURL("malformed-truncated.jpg"))
+        if let source = CGImageSourceCreateWithData(malformed as CFData, nil) {
+            #expect(CGImageSourceCreateImageAtIndex(source, 0, nil) == nil)
+        }
+    }
+
+    @Test("Metadata and C2PA JSON contracts remain synthetic, complete, and typed")
+    func semanticCaseContracts() throws {
+        let metadata = try jsonObject("metadata-cases.json")
+        let metadataCases = try #require(metadata["cases"] as? [[String: Any]])
+        #expect(Set(metadataCases.compactMap { $0["id"] as? String }) == [
+            "stripped", "conflicting-orientation", "non-ascii-and-multiline", "malformed-values",
+        ])
+        #expect(metadataCases.allSatisfy { ($0["expected"] as? [String])?.isEmpty == false })
+
+        let c2pa = try jsonObject("c2pa-status-cases.json")
+        #expect((c2pa["scope"] as? String)?.contains("not signed media") == true)
+        let c2paCases = try #require(c2pa["cases"] as? [[String: Any]])
+        #expect(Set(c2paCases.compactMap { $0["id"] as? String }) == [
+            "absent", "valid-untrusted", "valid-trusted", "invalid",
+        ])
+        #expect(c2paCases.allSatisfy {
+            ($0["validation"] as? String)?.isEmpty == false
+                && ($0["trust"] as? String)?.isEmpty == false
+        })
+    }
+
+    private var corpusDirectory: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/AnalysisCorpus", isDirectory: true)
+    }
+
+    private func fixtureURL(_ filename: String) -> URL {
+        corpusDirectory.appendingPathComponent(filename)
+    }
+
+    private func manifest() throws -> [String: Any] {
+        try jsonObject("manifest.json")
+    }
+
+    private func jsonObject(_ filename: String) throws -> [String: Any] {
+        try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL(filename)))
+                as? [String: Any]
+        )
+    }
+
+    private func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}

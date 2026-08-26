@@ -1464,19 +1464,25 @@ final class MetadataViewModel {
                 }
             }
             do {
-                try xmpSidecarService.saveSidecar(metadata: record, for: url)
+                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                    metadata: record,
+                    for: url
+                )
             } catch {
                 logger.error("Sidecar mirror failed for \(url.lastPathComponent): \(error.localizedDescription)")
             }
         }
     }
 
-    private func writeXMPSidecar() {
+    private func writeXMPSidecar() async {
         guard !selectedURLs.isEmpty else { return }
 
         if selectedCount == 1, let imageURL = selectedURLs.first {
             do {
-                try xmpSidecarService.saveSidecar(metadata: editingMetadata, for: imageURL)
+                try await xmpSidecarService.saveSidecarSerialized(
+                    metadata: editingMetadata,
+                    for: imageURL
+                )
                 if selectedCount == 1, selectedURLs.first == imageURL {
                     xmpMetadata = editingMetadata
                 }
@@ -1494,7 +1500,10 @@ final class MetadataViewModel {
                 ?? IPTCMetadata()
             applyBatchEdits(batchMeta, to: &existing, previousCommon: prevCommon)
             do {
-                try xmpSidecarService.saveSidecar(metadata: existing, for: imageURL)
+                try await xmpSidecarService.saveSidecarSerialized(
+                    metadata: existing,
+                    for: imageURL
+                )
                 batchMetadataByURL[imageURL] = existing
             } catch {
                 saveError = "Failed to save XMP sidecar: \(error.localizedDescription)"
@@ -1504,16 +1513,22 @@ final class MetadataViewModel {
 
     private func writeXMPSidecarAndPreserveHistory(onComplete: (() -> Void)? = nil) {
         guard let folderURL = currentFolderURL else {
-            writeXMPSidecar()
-            onComplete?()
+            writeTask?.cancel()
+            writeTask = Task {
+                await writeXMPSidecar()
+                onComplete?()
+            }
             return
         }
 
         if selectedCount > 1 {
-            writeXMPSidecar()
-            saveBatchSidecars(folderURL: folderURL, pendingChanges: false)
-            hasChanges = false
-            onComplete?()
+            writeTask?.cancel()
+            writeTask = Task {
+                await writeXMPSidecar()
+                await saveBatchSidecars(folderURL: folderURL, pendingChanges: false)
+                hasChanges = false
+                onComplete?()
+            }
             return
         }
 
@@ -1660,9 +1675,9 @@ final class MetadataViewModel {
         return fields
     }
 
-    private func syncCameraRawToXMPSidecar(for imageURL: URL, metadata: IPTCMetadata) {
+    private func syncCameraRawToXMPSidecar(for imageURL: URL, metadata: IPTCMetadata) async {
         guard metadata.cameraRaw != nil || originalImageMetadata?.cameraRaw != nil else { return }
-        try? xmpSidecarService.saveCameraRawOnly(
+        try? await xmpSidecarService.saveCameraRawOnlySerialized(
             metadata.cameraRaw,
             orientation: metadata.exifOrientation,
             for: imageURL
@@ -1735,7 +1750,9 @@ final class MetadataViewModel {
               let imageURL = selectedURLs.first,
               let folderURL = currentFolderURL else {
             writeMetadata()
-            if alsoWriteXMPSidecar { writeXMPSidecar() }
+            if alsoWriteXMPSidecar {
+                Task { await writeXMPSidecar() }
+            }
             onComplete?()
             return
         }
@@ -1781,12 +1798,22 @@ final class MetadataViewModel {
                     // writeToFile mode the file is the record, but any .xmp already on
                     // disk must mirror it — otherwise its stale descriptive values (or a
                     // develop-sync mtime bump) shadow the file on read and export.
-                    try xmpSidecarService.saveSidecar(metadata: edited, for: imageURL)
+                    try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                        metadata: edited,
+                        for: imageURL
+                    )
+                    if developChanged {
+                        try await xmpSidecarService.saveCameraRawOnlySerialized(
+                            edited.cameraRaw,
+                            orientation: edited.exifOrientation,
+                            for: imageURL
+                        )
+                    }
                     sidecarMirrored = true
                 } else {
                     // No sidecar yet: keep develop settings ACR-readable without
                     // creating a descriptive IPTC record next to an embedded-mode file.
-                    self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
+                    await self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
                 }
 
                 let now = Date()
@@ -1804,12 +1831,16 @@ final class MetadataViewModel {
                     imageMetadataSnapshot: edited,
                     history: history
                 )
-                try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+                let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
+                    sidecar,
+                    for: imageURL,
+                    in: folderURL
+                )
 
                 let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
                 if isStillSelected {
-                    self.sidecarHistory = history
-                    self.previousEditingMetadata = edited
+                    self.sidecarHistory = installed.history
+                    self.previousEditingMetadata = installed.metadata
                     self.metadata = edited
                     self.originalImageMetadata = edited
                     self.embeddedMetadata = edited
@@ -2228,13 +2259,24 @@ final class MetadataViewModel {
         switch mode {
         case .historyOnly:
             let sidecar = buildSidecar(pendingChanges: true, historyNote: "Saved to sidecar (history only)")
-            try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+            _ = try await sidecarService.saveSidecarMergingHistorySerialized(
+                sidecar,
+                for: url,
+                in: folder
+            )
             return .savedToHistory
 
         case .writeToXMPSidecar:
-            try xmpSidecarService.saveSidecar(metadata: resolved, for: url)
+            try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                metadata: resolved,
+                for: url
+            )
             let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to XMP sidecar")
-            try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+            _ = try await sidecarService.saveSidecarMergingHistorySerialized(
+                sidecar,
+                for: url,
+                in: folder
+            )
             return .writtenToXMPSidecar
 
         case .writeToFile, .writeToFileAndXMPSidecar:
@@ -2251,11 +2293,18 @@ final class MetadataViewModel {
             // mode any existing .xmp must mirror the file (full resolved record), or
             // its stale values shadow the freshly embedded ones on read and export.
             if mode.writesXMPSidecar || xmpSidecarService.sidecarExists(for: url) {
-                try xmpSidecarService.saveSidecar(metadata: resolved, for: url)
+                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                    metadata: resolved,
+                    for: url
+                )
             }
             let note = mode.writesXMPSidecar ? "Written to image file + XMP sidecar" : "Written to image file"
             let sidecar = buildSidecar(pendingChanges: false, historyNote: note)
-            try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+            _ = try await sidecarService.saveSidecarMergingHistorySerialized(
+                sidecar,
+                for: url,
+                in: folder
+            )
             return .writtenToFile
         }
     }
@@ -2711,12 +2760,22 @@ final class MetadataViewModel {
     func saveToSidecar() {
         guard let folderURL = currentFolderURL else { return }
 
-        if selectedCount == 1, let imageURL = selectedURLs.first {
-            // Single image mode - save with full history tracking
-            saveSingleImageSidecar(imageURL: imageURL, folderURL: folderURL, pendingChanges: true, snapshot: originalImageMetadata)
-        } else if selectedCount > 1 {
-            // Batch mode - merge edits into each image's sidecar
-            saveBatchSidecars(folderURL: folderURL)
+        isSaving = true
+        writeTask?.cancel()
+        writeTask = Task {
+            if selectedCount == 1, let imageURL = selectedURLs.first {
+                // Single image mode - save with full history tracking
+                await saveSingleImageSidecar(
+                    imageURL: imageURL,
+                    folderURL: folderURL,
+                    pendingChanges: true,
+                    snapshot: originalImageMetadata
+                )
+            } else if selectedCount > 1 {
+                // Batch mode - merge edits into each image's sidecar
+                await saveBatchSidecars(folderURL: folderURL)
+            }
+            isSaving = false
         }
     }
 
@@ -2769,7 +2828,7 @@ final class MetadataViewModel {
         folderURL: URL,
         pendingChanges: Bool,
         snapshot: IPTCMetadata?
-    ) {
+    ) async {
         let now = Date()
         let prev = previousEditingMetadata ?? IPTCMetadata()
         let newHistory = buildHistory(
@@ -2789,15 +2848,23 @@ final class MetadataViewModel {
         )
 
         do {
-            try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+            let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
+                sidecar,
+                for: imageURL,
+                in: folderURL
+            )
             if pendingChanges {
                 // C2PA: save full metadata to XMP sidecar for render+sign overlay
-                try xmpSidecarService.saveSidecar(metadata: editingMetadata, for: imageURL)
+                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                    metadata: installed.metadata,
+                    for: imageURL,
+                    mergeWithExisting: true
+                )
             } else {
-                syncCameraRawToXMPSidecar(for: imageURL, metadata: editingMetadata)
+                await syncCameraRawToXMPSidecar(for: imageURL, metadata: installed.metadata)
             }
-            sidecarHistory = newHistory
-            previousEditingMetadata = editingMetadata
+            sidecarHistory = installed.history
+            previousEditingMetadata = installed.metadata
             hasChanges = pendingChanges
         } catch {
             saveError = "Failed to save sidecar: \(error.localizedDescription)"
@@ -2826,7 +2893,7 @@ final class MetadataViewModel {
         pendingChanges: Bool = true,
         targetURLs: [URL]? = nil,
         updateState: Bool = true
-    ) {
+    ) async {
         let now = Date()
         let batchMeta = editingMetadata
         let prevCommon = previousEditingMetadata
@@ -2868,14 +2935,22 @@ final class MetadataViewModel {
             )
 
             do {
-                try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
-                batchMetadataByURL[imageURL] = existingMeta
+                let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
+                    sidecar,
+                    for: imageURL,
+                    in: folderURL
+                )
+                batchMetadataByURL[imageURL] = installed.metadata
                 if pendingChanges {
                     // C2PA: save full metadata to XMP sidecar for render+sign overlay.
                     // `existingMeta` is JSON-sourced (no crs) — preserve any develop
                     // edits already in the .xmp so a batch rating/keyword edit on a
                     // C2PA RAW doesn't wipe them.
-                    try xmpSidecarService.saveSidecarPreservingDevelopSettings(metadata: existingMeta, for: imageURL)
+                    try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                        metadata: installed.metadata,
+                        for: imageURL,
+                        mergeWithExisting: true
+                    )
                 }
             } catch {
                 saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
@@ -3411,10 +3486,17 @@ final class MetadataViewModel {
             imageMetadataSnapshot: originalImageMetadata,
             history: []
         )
-        do {
-            try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
-        } catch {
-            saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+        writeTask?.cancel()
+        writeTask = Task {
+            do {
+                _ = try await sidecarService.saveSidecarReplacingHistorySerialized(
+                    sidecar,
+                    for: imageURL,
+                    in: folderURL
+                )
+            } catch {
+                saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -3435,10 +3517,18 @@ final class MetadataViewModel {
                 imageMetadataSnapshot: originalImageMetadata,
                 history: sidecarHistory
             )
-            do {
-                try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
-            } catch {
-                saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            writeTask?.cancel()
+            writeTask = Task {
+                do {
+                    let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
+                        sidecar,
+                        for: imageURL,
+                        in: folderURL
+                    )
+                    sidecarHistory = installed.history
+                } catch {
+                    saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -3478,10 +3568,18 @@ final class MetadataViewModel {
                 imageMetadataSnapshot: originalImageMetadata,
                 history: sidecarHistory
             )
-            do {
-                try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
-            } catch {
-                saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            writeTask?.cancel()
+            writeTask = Task {
+                do {
+                    let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
+                        sidecar,
+                        for: imageURL,
+                        in: folderURL
+                    )
+                    sidecarHistory = installed.history
+                } catch {
+                    saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+                }
             }
         }
     }

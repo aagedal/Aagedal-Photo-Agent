@@ -225,6 +225,7 @@ struct MetadataBatchSelectionTests {
         model.editingMetadata.dateCreated = "2026-08-21T10:15:30-00:00"
         model.markChanged()
         model.saveToSidecar()
+        try await waitForSave(model)
 
         let sidecarService = MetadataSidecarService()
         let firstDraft = try #require(sidecarService.loadSidecar(for: firstURL, in: folder))
@@ -289,6 +290,15 @@ struct MetadataBatchSelectionTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(!model.isLoadingBatchMetadata)
+        #expect(model.saveError == nil)
+    }
+
+    private func waitForSave(_ model: MetadataViewModel) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while model.isSaving, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.isSaving)
         #expect(model.saveError == nil)
     }
 }

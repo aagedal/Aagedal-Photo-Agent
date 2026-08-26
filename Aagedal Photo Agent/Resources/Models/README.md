@@ -42,39 +42,28 @@ python3 scripts/fetch_auraface_source.py fetch
 python3 scripts/fetch_auraface_source.py verify build/model-sources/auraface/glintr100.onnx
 ```
 
-The conversion recipe below documents how the current package was produced, but it is **not yet a
-reproducible build contract**. Its Python environment is not transitively locked; the current package
-records Torch 2.12, an unversioned Core ML Tools conversion, a conversion date, and generated package
-identifiers. Do not update the manifest's CoreML output hashes from a newly converted package until the
-complete conversion environment is locked, generated identifiers/metadata are normalized, repeated clean
-builds are byte-identical, and Torch-vs-CoreML semantic validation passes. The audit-plan item for
-deterministic fetch/build/verify tooling therefore remains open.
+The conversion environment is locked by `scripts/auraface/uv.lock`. The manifest content-pins that lock,
+the project file, exact Python patch release, fetcher, and converter. `uv --frozen` refuses to resolve a
+different graph. The converter uses a fixed trace input and seed, removes converter timestamps, writes stable
+model metadata and package identifiers, and performs two clean conversions. It will not install an output
+unless every package file is byte-identical between those builds and three seeded Torch-vs-CoreML comparisons
+meet the declared cosine-similarity threshold.
 
 ```bash
-# Python 3.12 (coremltools/torch don't ship 3.14 wheels yet)
-uv venv --python 3.12 .venv && source .venv/bin/activate
-uv pip install coremltools torch onnx onnx2torch huggingface_hub numpy
-python - <<'PY'
-import numpy as np, torch, coremltools as ct
-from onnx2torch import convert
-onnx = "build/model-sources/auraface/glintr100.onnx"
-tm = convert(onnx).eval()
-ex = torch.randn(1,3,112,112)
-traced = torch.jit.trace(tm, ex)
-m = ct.convert(traced,
-               inputs=[ct.TensorType(name="input", shape=(1,3,112,112), dtype=np.float32)],
-               minimum_deployment_target=ct.target.macOS13,
-               compute_precision=ct.precision.FLOAT16, convert_to="mlprogram")
-# rename the auto-named output to "embedding"
-from coremltools.models import MLModel
-from coremltools.models.utils import rename_feature
-spec = m.get_spec()
-rename_feature(spec, spec.description.output[0].name, "embedding")
-MLModel(spec, weights_dir=m.weights_dir).save("AuraFaceR100.mlpackage")
-PY
-# then move AuraFaceR100.mlpackage into this folder
+# Standard-library/offline checks of the reviewed contract and shipped file hashes:
+python3 -B scripts/build_auraface_coreml.py contract
+python3 -B scripts/build_auraface_coreml.py verify
+
+# Materialize only the locked environment, then build twice and verify semantics:
+uv sync --frozen --project scripts/auraface
+uv run --frozen --project scripts/auraface \
+  python scripts/build_auraface_coreml.py reproduce
 ```
 
-Validate after converting: a torch-vs-CoreML cosine similarity of ~0.9999 on random inputs, and on
-real faces same-person cosine distance ≈ 0.45 vs different-person ≈ 0.9 (see `FaceEmbeddingTests`).
-If same-person distances look high, flip `CoreMLFaceEmbedder.inputIsRGB` (RGB vs BGR).
+`reproduce` defaults to `build/auraface/AuraFaceR100.mlpackage`, prints the three file hashes for review,
+and does not overwrite an existing output without `--replace`. To semantically recheck the manifest-declared
+package against the pinned ONNX source, run `verify --source build/model-sources/auraface/glintr100.onnx`
+through the same `uv run --frozen` command. A reviewed artifact update must copy the generated package into
+this folder, update all three `artifactFiles` hashes in `bundled-components.json`, and rerun repository
+validation. Keep the declared RGB channel order aligned with `CoreMLFaceEmbedder.inputIsRGB`; changing it
+changes the embedding space and requires a migration/version bump.

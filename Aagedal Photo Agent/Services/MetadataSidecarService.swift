@@ -331,6 +331,40 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
+    /// Serializes an intentional history replacement. The latest metadata record remains
+    /// authoritative so clearing history cannot erase a face/caption mutation that reached the
+    /// shared boundary first.
+    nonisolated func saveSidecarReplacingHistorySerialized(
+        _ sidecar: MetadataSidecar,
+        for imageURL: URL,
+        in folderURL: URL
+    ) async throws -> MetadataSidecar {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            for _ in 0..<4 {
+                let sourceTokens = try self.contentTokens(for: imageURL, in: folderURL)
+                let current = self.loadSidecar(for: imageURL, in: folderURL)
+                var replacement = current ?? sidecar
+                replacement.history = sidecar.history
+
+                await Task.yield()
+                guard try self.contentTokens(for: imageURL, in: folderURL) == sourceTokens else {
+                    continue
+                }
+
+                try self.saveSidecar(replacement, for: imageURL, in: folderURL)
+                guard let readBack = self.loadSidecar(for: imageURL, in: folderURL),
+                      Self.samePersistedRecord(readBack, replacement)
+                else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                return readBack
+            }
+            throw CocoaError(.fileWriteFileExists, userInfo: [
+                NSLocalizedDescriptionKey: "The metadata sidecar kept changing while the edit was being saved."
+            ])
+        }
+    }
+
     // MARK: - Delete
 
     func deleteSidecar(for imageURL: URL, in folderURL: URL) throws {

@@ -112,6 +112,62 @@ struct XMPSidecarService: Sendable {
         }
     }
 
+    /// Serialized destructive counterpart used by Metadata's remove-IPTC workflow. It keeps the
+    /// complete read/strip/install (or delete) decision inside the same URL boundary as caption,
+    /// face, and Develop mutations and retries if an external editor changes the source revision.
+    nonisolated func stripIPTCFromSidecarSerialized(for imageURL: URL) async throws {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            let url = self.sidecarURL(for: imageURL)
+            for _ in 0..<Self.transactionRetryLimit {
+                guard let sourceData = try Self.currentData(at: url) else { return }
+                var xmp = try XMPReader.readFromXML(sourceData)
+                let metadata = self.parseMetadata(from: xmp, imageAspect: { nil })
+                let stagedData: Data?
+
+                if let cameraRaw = metadata.cameraRaw, !cameraRaw.isEmpty {
+                    let editOnly = IPTCMetadata(
+                        localizedTitles: [],
+                        cameraRaw: cameraRaw,
+                        exifOrientation: metadata.exifOrientation
+                    )
+                    XMPDataBuilder.applyDescriptive(editOnly, into: &xmp)
+                    xmp.removeValue(
+                        namespace: XMPDataBuilder.aaphotoNamespace,
+                        property: localizedTitleClearedProperty
+                    )
+                    xmp.creatorTool = SwiftExifWriteEngine.creatorTool
+                    let xml = XMPWriter.generateXML(xmp)
+                    guard let encoded = xml.data(using: .utf8) else {
+                        throw CocoaError(.fileWriteInapplicableStringEncoding)
+                    }
+                    _ = try XMPReader.readFromXML(encoded)
+                    stagedData = encoded
+                } else {
+                    stagedData = nil
+                }
+
+                await Task.yield()
+                guard try Self.currentData(at: url) == sourceData else { continue }
+
+                if let stagedData {
+                    try stagedData.write(to: url, options: .atomic)
+                    let installedData = try Data(contentsOf: url)
+                    guard installedData == stagedData else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                    _ = try XMPReader.readFromXML(installedData)
+                } else {
+                    try FileManager.default.removeItem(at: url)
+                    guard !FileManager.default.fileExists(atPath: url.path) else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                }
+                return
+            }
+            throw DescriptiveMetadataWriteError.staleXMPSidecar(url)
+        }
+    }
+
     nonisolated func saveSidecar(metadata: IPTCMetadata, for imageURL: URL) throws {
         try saveSidecar(
             metadata: metadata,
@@ -205,6 +261,42 @@ struct XMPSidecarService: Sendable {
                         )
                     }
                 }
+                xmp.creatorTool = SwiftExifWriteEngine.creatorTool
+            }
+        }
+    }
+
+    /// Complete serialized full-record transaction for workflows that intentionally own both the
+    /// descriptive and Develop portions of the sidecar.
+    nonisolated func saveSidecarSerialized(
+        metadata: IPTCMetadata,
+        for imageURL: URL
+    ) async throws {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            try await self.updateXMPTransaction(for: imageURL) { xmp in
+                XMPDataBuilder.applyDescriptive(metadata, into: &xmp)
+                if let localizedTitles = metadata.localizedTitles {
+                    if localizedTitles.isEmpty {
+                        xmp.setValue(
+                            .simple("True"),
+                            namespace: XMPDataBuilder.aaphotoNamespace,
+                            property: localizedTitleClearedProperty
+                        )
+                    } else {
+                        xmp.removeValue(
+                            namespace: XMPDataBuilder.aaphotoNamespace,
+                            property: localizedTitleClearedProperty
+                        )
+                    }
+                }
+                XMPDataBuilder.applyCameraRaw(
+                    metadata.cameraRaw,
+                    imageAspect: self.imageAspectIfCropAngled(
+                        for: imageURL,
+                        crop: metadata.cameraRaw?.crop
+                    ),
+                    into: &xmp
+                )
                 xmp.creatorTool = SwiftExifWriteEngine.creatorTool
             }
         }

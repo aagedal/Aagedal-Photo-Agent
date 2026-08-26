@@ -2097,10 +2097,16 @@ final class BrowserViewModel {
             history: history
         )
 
+        let installed: MetadataSidecar
         do {
-            try sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+            installed = try await sidecarService.saveSidecarMergingHistorySerialized(
+                sidecar,
+                for: url,
+                in: folderURL
+            )
         } catch {
             errorMessage = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            return
         }
 
         if writeXmpSidecar {
@@ -2109,7 +2115,11 @@ final class BrowserViewModel {
             // Use the develop-preserving write so a rating/label/orientation change
             // doesn't strip the user's exposure/crop/mask edits from the sidecar.
             do {
-                try xmpSidecarService.saveSidecarPreservingDevelopSettings(metadata: metadata, for: url)
+                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                    metadata: installed.metadata,
+                    for: url,
+                    mergeWithExisting: true
+                )
             } catch {
                 errorMessage = "Failed to save XMP sidecar: \(error.localizedDescription)"
             }
@@ -2887,11 +2897,21 @@ final class BrowserViewModel {
             imageMetadataSnapshot: existing?.imageMetadataSnapshot ?? previous,
             history: history
         )
-        do {
-            try sidecarService.saveSidecar(record, for: url, in: folderURL)
-            try xmpSidecarService.saveSidecarPreservingDevelopSettings(metadata: edited, for: url)
-        } catch {
-            errorMessage = "Failed to save metadata for \(url.lastPathComponent): \(error.localizedDescription)"
+        Task {
+            do {
+                let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
+                    record,
+                    for: url,
+                    in: folderURL
+                )
+                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                    metadata: installed.metadata,
+                    for: url,
+                    mergeWithExisting: true
+                )
+            } catch {
+                errorMessage = "Failed to save metadata for \(url.lastPathComponent): \(error.localizedDescription)"
+            }
         }
     }
 
@@ -3450,22 +3470,26 @@ final class BrowserViewModel {
             fullScreenImageCache.invalidateEditedImage(for: url)
         }
 
-        // Clear CRS from the XMP sidecar for EVERY file (not just RAW). Develop edits now
-        // persist to the sidecar during editing for non-RAW too (the sidecar is authoritative
-        // and wins over embedded crs on load), so a reset that only cleared the embedded file
-        // crs would leave the sidecar's develop behind and resurface it on next load.
-        // saveCameraRawOnly(nil,…) is a no-op when no sidecar exists, so this is safe for all.
-        for url in urls {
-            do {
-                try xmpSidecarService.saveCameraRawOnly(nil, orientation: nil, for: url)
-            } catch {
-                logger.error("Failed to clear CRS from XMP sidecar for \(url.lastPathComponent): \(error.localizedDescription)")
-            }
-        }
-
-        // Write cleared CRS fields to XMP in the image files
         batchReadTask?.cancel()
         batchReadTask = Task {
+            // Clear CRS from the XMP sidecar for EVERY file (not just RAW). Develop edits now
+            // persist to the sidecar during editing for non-RAW too (the sidecar is authoritative
+            // and wins over embedded crs on load), so a reset that only cleared the embedded file
+            // crs would leave the sidecar's develop behind and resurface it on next load.
+            // The shared URL transaction keeps this reset from erasing a concurrent caption write.
+            for url in urls {
+                do {
+                    try await xmpSidecarService.saveCameraRawOnlySerialized(
+                        nil,
+                        orientation: nil,
+                        for: url
+                    )
+                } catch {
+                    logger.error("Failed to clear CRS from XMP sidecar for \(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+
+            // Write cleared CRS fields to XMP in the image files
             var clearFields: [MetadataFieldKey: String] = [:]
             clearFields[.crsVersion] = ""
             clearFields[.crsProcessVersion] = ""
@@ -3559,25 +3583,7 @@ final class BrowserViewModel {
 
         batchReadTask?.cancel()
         batchReadTask = Task {
-            do {
-                try await writeEngine.stripIPTCAndXMP(from: urls)
-            } catch {
-                self.errorMessage = "Failed to remove IPTC metadata: \(error.localizedDescription)"
-                return
-            }
-
-            for url in urls {
-                guard let index = urlToImageIndex[url] else { continue }
-                images[index].starRating = .none
-                images[index].colorLabel = .none
-                images[index].metadata = nil
-                images[index].personShown = []
-                images[index].hasPendingMetadataChanges = false
-                images[index].pendingFieldNames = []
-
-                try? sidecarService.deleteSidecar(for: url, in: folderURL)
-            }
-
+            guard await removeIPTCFromImageFiles(urls, folderURL: folderURL) else { return }
             onComplete?()
         }
     }
@@ -3585,20 +3591,59 @@ final class BrowserViewModel {
     func removeIPTCFromXMPSidecars(onComplete: (() -> Void)? = nil) {
         let urls = removeIPTCSelectedURLs
 
-        for url in urls {
-            xmpSidecarService.stripIPTCFromSidecar(for: url)
+        batchReadTask?.cancel()
+        batchReadTask = Task {
+            for url in urls {
+                do {
+                    try await xmpSidecarService.stripIPTCFromSidecarSerialized(for: url)
+                } catch {
+                    errorMessage = "Failed to remove IPTC metadata from \(url.lastPathComponent): \(error.localizedDescription)"
+                    return
+                }
+            }
+            onComplete?()
         }
-
-        onComplete?()
     }
 
     func removeIPTCFromBoth(onComplete: (() -> Void)? = nil) {
-        // Strip XMP sidecars synchronously first, then start async image file strip
+        guard let folderURL = currentFolderURL else { return }
         let urls = removeIPTCSelectedURLs
-        for url in urls {
-            xmpSidecarService.stripIPTCFromSidecar(for: url)
+
+        batchReadTask?.cancel()
+        batchReadTask = Task {
+            for url in urls {
+                do {
+                    try await xmpSidecarService.stripIPTCFromSidecarSerialized(for: url)
+                } catch {
+                    errorMessage = "Failed to remove IPTC metadata from \(url.lastPathComponent): \(error.localizedDescription)"
+                    return
+                }
+            }
+            guard await removeIPTCFromImageFiles(urls, folderURL: folderURL) else { return }
+            onComplete?()
         }
-        removeIPTCFromImageFiles(onComplete: onComplete)
+    }
+
+    private func removeIPTCFromImageFiles(_ urls: [URL], folderURL: URL) async -> Bool {
+        do {
+            try await writeEngine.stripIPTCAndXMP(from: urls)
+        } catch {
+            errorMessage = "Failed to remove IPTC metadata: \(error.localizedDescription)"
+            return false
+        }
+
+        for url in urls {
+            guard let index = urlToImageIndex[url] else { continue }
+            images[index].starRating = .none
+            images[index].colorLabel = .none
+            images[index].metadata = nil
+            images[index].personShown = []
+            images[index].hasPendingMetadataChanges = false
+            images[index].pendingFieldNames = []
+
+            try? sidecarService.deleteSidecar(for: url, in: folderURL)
+        }
+        return true
     }
 
     // MARK: - Manual Sort

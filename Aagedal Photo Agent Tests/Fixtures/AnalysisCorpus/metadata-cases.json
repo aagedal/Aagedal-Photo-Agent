@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "stripped",
+      "rawRecords": [],
+      "expected": ["no-embedded-metadata"]
+    },
+    {
+      "id": "conflicting-orientation",
+      "rawRecords": [
+        {"namespace": "EXIF", "path": "Orientation", "value": "6"},
+        {"namespace": "TIFF", "path": "Orientation", "value": "1"}
+      ],
+      "expected": ["orientation-conflict"]
+    },
+    {
+      "id": "non-ascii-and-multiline",
+      "rawRecords": [
+        {"namespace": "XMP-dc", "path": "description[x-default]", "value": "Blåtime — Tromsø\nLinje to: 東京"}
+      ],
+      "expected": ["preserve-unicode", "preserve-line-break"]
+    },
+    {
+      "id": "malformed-values",
+      "rawRecords": [
+        {"namespace": "EXIF", "path": "DateTimeOriginal", "value": "2026:99:42 27:61:00"},
+        {"namespace": "EXIF", "path": "GPSLatitude", "value": "not-a-coordinate"}
+      ],
+      "expected": ["invalid-timestamp", "invalid-coordinate", "retain-raw-value"]
+    }
+  ]
+}

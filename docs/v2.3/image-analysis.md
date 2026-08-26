@@ -415,6 +415,13 @@ Create a redistributable fixture corpus containing:
 
 Each fixture needs a provenance README and generation recipe where possible.
 
+The implemented [CC0 baseline corpus](analysis-fixture-corpus-validation.md) supplies deterministic
+known-pixel, alpha, SDR, orientation, frame/animation, compression, benign-edit, scan/photographic
+surrogate, malformed-input, and semantic-state fixtures. Its manifest explicitly records authentic
+camera JPEG/RAW, HEIC/HDR gain-map, and signed-C2PA media as unavailable rather than treating
+synthetic surrogates as vendor/device evidence. AI examples remain conditional on the separate
+model/license gate.
+
 ### Automated tests
 
 - rule evaluation from synthetic raw metadata records;

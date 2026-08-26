@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "scope": "typed-state contract only; these records are not signed media",
+  "cases": [
+    {"id": "absent", "validation": "absent", "trust": "notApplicable"},
+    {"id": "valid-untrusted", "validation": "valid", "trust": "untrusted"},
+    {"id": "valid-trusted", "validation": "valid", "trust": "trusted"},
+    {"id": "invalid", "validation": "invalid", "trust": "untrusted"}
+  ]
+}

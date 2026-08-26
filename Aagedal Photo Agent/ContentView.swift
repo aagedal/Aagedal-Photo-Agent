@@ -2817,10 +2817,12 @@ struct ContentView: View {
             // For C2PA images, write to XMP sidecar (preserving camera raw edits)
             let xmpService = XMPSidecarService()
             for image in c2paImages {
-                let existing = xmpService.loadSidecar(for: image.url) ?? IPTCMetadata()
-                let merged = existing.merged(preferring: copied)
                 do {
-                    try xmpService.saveSidecar(metadata: merged, for: image.url)
+                    try await xmpService.saveSidecarPreservingDevelopSettingsSerialized(
+                        metadata: copied,
+                        for: image.url,
+                        mergeWithExisting: true
+                    )
                 } catch {
                     browserViewModel.errorMessage = "Failed to save XMP sidecar for \(image.url.lastPathComponent): \(error.localizedDescription)"
                 }

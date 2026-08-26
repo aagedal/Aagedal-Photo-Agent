@@ -338,4 +338,70 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(installed.metadata.personShown == ["Ada"])
         #expect(installed.history.map(\.fieldID) == [.headline, .personShown])
     }
+
+    @Test("Intentional JSON replacement clears history inside the shared transaction")
+    func serializedJSONReplacementClearsHistory() async throws {
+        let (directory, source) = try makeWorkspace(extension: "nef")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = MetadataSidecarService()
+        let baseline = IPTCMetadata(title: "Before")
+        try service.saveSidecar(
+            MetadataSidecar(
+                sourceFile: source.lastPathComponent,
+                metadata: baseline,
+                imageMetadataSnapshot: baseline,
+                history: [MetadataHistoryEntry(
+                    timestamp: Date(timeIntervalSinceReferenceDate: 100),
+                    fieldID: .headline,
+                    oldValue: nil,
+                    newValue: "Before"
+                )]
+            ),
+            for: source,
+            in: directory
+        )
+
+        let replacement = MetadataSidecar(
+            sourceFile: source.lastPathComponent,
+            metadata: IPTCMetadata(title: "Reset"),
+            imageMetadataSnapshot: baseline,
+            history: []
+        )
+        let installed = try await service.saveSidecarReplacingHistorySerialized(
+            replacement,
+            for: source,
+            in: directory
+        )
+
+        #expect(installed.metadata.title == "Before")
+        #expect(installed.history.isEmpty)
+        #expect(service.loadSidecar(for: source, in: directory)?.history.isEmpty == true)
+    }
+
+    @Test("Serialized IPTC strip preserves Develop settings")
+    func serializedIPTCStripPreservesDevelop() async throws {
+        let (directory, source) = try makeWorkspace(extension: "cr3")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = XMPSidecarService()
+        var settings = CameraRawSettings()
+        settings.hasSettings = true
+        settings.exposure2012 = 1.25
+        try service.saveSidecar(
+            metadata: IPTCMetadata(
+                title: "Remove me",
+                description: "Also remove me",
+                keywords: ["remove"],
+                cameraRaw: settings
+            ),
+            for: source
+        )
+
+        try await service.stripIPTCFromSidecarSerialized(for: source)
+
+        let installed = try #require(service.loadSidecar(for: source))
+        #expect(installed.title == nil)
+        #expect(installed.description == nil)
+        #expect(installed.keywords.isEmpty)
+        #expect(installed.cameraRaw?.exposure2012 == 1.25)
+    }
 }

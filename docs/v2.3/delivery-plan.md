@@ -9,11 +9,11 @@ the highest-risk forensic algorithms.
 No phase is complete with only a view mockup. Each phase includes model, persistence where relevant,
 tests, error states, accessibility, and a manual validation note.
 
-**Open-item reconciliation (2026-08-25):** 117 of 142 checklist items are complete and 25 remain open.
-The remaining items are genuine gates: four Phase 0 corpus/benchmark/model decisions, three manual
+**Open-item reconciliation (2026-08-25):** 118 of 142 checklist items are complete and 24 remain open.
+The remaining items are genuine gates: three Phase 0 benchmark/model decisions, three manual
 validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer steps in Phase 11, and ten
 Phase 12 performance, device, privacy, accessibility, recovery, documentation, and release tasks. Current
-source and dated validation records do not justify closing any of those 25 items.
+source and dated validation records do not justify closing any of those 24 items.
 
 ## Phase 0 — research, decisions, and fixtures
 
@@ -25,7 +25,8 @@ legally and reproducibly.
   [source identity](adr-002-source-revision-identity.md),
   [map imagery in reports](adr-004-map-report-evidence.md), and
   [named-version save semantics](adr-003-named-version-save-semantics.md).
-- [ ] Build the redistributable analysis fixture corpus and provenance README.
+- [x] Build the
+  [redistributable analysis fixture corpus and provenance README](analysis-fixture-corpus-validation.md).
 - [x] Inventory existing comparison/loupe/viewport code suitable for extraction; see
   [Existing components to reuse](README.md#existing-components-to-reuse).
 - [ ] Benchmark current preview, RAW decode, scopes, hashing, and two-image memory use.
@@ -46,8 +47,9 @@ legally and reproducibly.
 required architecture decisions. The shipped implementation and dated validation notes also
 provide the Phase 0 component inventory, namespace-preserving raw metadata extraction, bounded
 compression-residual prototype and benign counterexamples, source-bound decoder/unparsed-correction
-policy, and shortcut-conflict audit linked above. This reconciliation does not claim the still-open
-fixture, benchmark, target-hardware, model/licensing, or manual-validation gates.
+policy, shortcut-conflict audit, and hash-bound CC0 analysis corpus linked above. The corpus records
+authentic camera/HEIC/HDR/signed-C2PA additions as explicit non-claims; this reconciliation does not
+claim the still-open benchmark, target-hardware, model/licensing, or manual-validation gates.
 
 **Scope lock (2026-08-24):** The authoritative `README.md` in this directory now provides explicit
 **Must ship in 3.0**, **Conditional scope**, and **Explicitly out of scope** lists. None of the

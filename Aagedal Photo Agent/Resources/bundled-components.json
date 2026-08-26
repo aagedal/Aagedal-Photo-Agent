@@ -72,8 +72,50 @@
       "license": "Apache-2.0",
       "licensePath": "Aagedal Photo Agent/Resources/Models/AuraFace-LICENSE.md",
       "buildRecipe": {
-        "repositoryPath": "Aagedal Photo Agent/Resources/Models/README.md",
-        "revision": "sha256:5e9d5b7a616fb0f609f2bf00104704b1c32592ae1570dd4e1d4bb5f342b29f7d"
+        "repositoryPath": "scripts/build_auraface_coreml.py",
+        "revision": "sha256:a57ecb9e837312a60dd0f11c73b7dbc45385c4cae2fd9065c371667da90c92a7",
+        "supportingFiles": {
+          "scripts/auraface/.python-version": "sha256:43fd694bd564dd2215f51a6b23f6a3712834850225e629d7781c81c71076092d",
+          "scripts/auraface/pyproject.toml": "sha256:31a32e6d9ab18f47b3a41dd8e691b43d53fb543f7e35f5ae0385d266f7f1dc3b",
+          "scripts/auraface/uv.lock": "sha256:fefc9d0fb967f7588c0fe864101805afd6908634296882d69397af4f78190355",
+          "scripts/fetch_auraface_source.py": "sha256:9c9be0fa8992eabb134f6d1a421299bb3f7c3d536f6791dc915b7e5a559cfce4"
+        }
+      },
+      "buildContract": {
+        "pythonVersion": "3.12.11",
+        "uvVersion": "0.11.19",
+        "dependencies": {
+          "coremltools": "9.0",
+          "numpy": "1.26.4",
+          "onnx": "1.18.0",
+          "onnx2torch": "1.5.15",
+          "torch": "2.8.0"
+        },
+        "determinism": {
+          "seed": 20260825,
+          "cleanBuilds": 2
+        },
+        "semanticVerification": {
+          "samples": 3,
+          "minimumCosineSimilarity": 0.999
+        },
+        "modelInterface": {
+          "inputName": "input",
+          "inputShape": [1, 3, 112, 112],
+          "inputType": "float32",
+          "layout": "NCHW",
+          "channelOrder": "RGB",
+          "normalization": "(x - 127.5) / 127.5",
+          "outputName": "embedding",
+          "outputLength": 512
+        },
+        "metadata": {
+          "author": "fal.ai / Aagedal Photo Agent deterministic conversion",
+          "license": "Apache-2.0",
+          "shortDescription": "AuraFace-v1 glintr100 face embedding model",
+          "sourceRevision": "af6d057c9b0ec4071d4c49c80e3539258798b609",
+          "versionString": "AuraFace-v1/glintr100"
+        }
       },
       "targetArchitectures": ["arm64"],
       "runtimeCapabilities": [

@@ -69,6 +69,29 @@ def validate_declaration(root: Path, component: dict) -> None:
                 f"{component_id}: build recipe revision mismatch: "
                 f"expected {revision}, got {actual_recipe_revision}"
             )
+        supporting_files = recipe.get("supportingFiles", {})
+        if not isinstance(supporting_files, dict):
+            fail(f"{component_id}: build recipe supportingFiles must be an object")
+        for supporting_path, supporting_revision in sorted(supporting_files.items()):
+            if (
+                not isinstance(supporting_path, str)
+                or not isinstance(supporting_revision, str)
+                or not supporting_revision.startswith("sha256:")
+            ):
+                fail(
+                    f"{component_id}: build recipe supportingFiles must map paths "
+                    "to SHA-256 content revisions"
+                )
+            resolved_supporting_path = root / supporting_path
+            if not resolved_supporting_path.is_file():
+                fail(f"{component_id}: build recipe supporting file is missing: {supporting_path}")
+            actual_supporting_revision = f"sha256:{sha256(resolved_supporting_path)}"
+            if supporting_revision != actual_supporting_revision:
+                fail(
+                    f"{component_id}: build recipe supporting file revision mismatch for "
+                    f"{supporting_path}: expected {supporting_revision}, "
+                    f"got {actual_supporting_revision}"
+                )
 
     for key in ("targetArchitectures", "runtimeCapabilities"):
         value = component[key]

@@ -17,6 +17,12 @@
   install. New field history entries are replayed onto the latest record, histories are
   de-duplicated and ordered by timestamp plus stable entry identity, and the installed schema is
   decoded and compared before success.
+- Intentional JSON history replacements (currently Clear History) use the same revision check and
+  read-back verification, retaining the latest metadata record without replaying the history that
+  the user explicitly cleared.
+- Destructive XMP stripping is also serialized. It retries against the exact source bytes,
+  preserves Develop settings when present, validates a rewritten document before and after
+  install, and verifies deletion when no Develop block remains.
 - Existing JSON schema refusal, unknown-field preservation, corrupt-file recovery backup, and
   atomic replacement behavior remain active because the transaction delegates installation to
   `MetadataSidecarService.saveSidecar`.
@@ -24,10 +30,12 @@
 ## Routed workflows
 
 The serialized boundary is used by the descriptive metadata write boundary, Caption's durable
-FIFO queue, the Metadata panel's single-image XMP/history commit, face-name sidecar persistence,
-and Develop-version promotion. A few older synchronous Metadata batch/reset helpers still call the
-legacy service methods, so the audit substep requiring every Caption, Metadata, face, and Develop
-write to use the boundary remains open.
+FIFO queue, face-name sidecar persistence, and Develop-version promotion. The remaining Metadata
+panel and browser workflows now use it as well: single and batch drafts, embedded-state mirroring,
+variable processing, rating/label edits, metadata review, history clear/restore, Develop reset,
+and XMP IPTC removal. The older synchronous service functions remain available for isolated
+fixtures and migration/copy operations, but no Caption, Metadata, face, or Develop mutation calls
+them.
 
 ## Automated validation
 
@@ -38,25 +46,27 @@ xcodebuild test -scheme 'Aagedal Photo Agent Tests' -destination 'platform=macOS
   -only-testing:'Aagedal Photo Agent Tests/DescriptiveMetadataWriteBoundaryTests'
 ```
 
-Result: **9 tests passed**. This includes a deterministic revision test that replaces XMP exactly
+Result: **11 tests passed**. This includes a deterministic revision test that replaces XMP exactly
 between staging and the token check and proves the merge restarts from the replacement, a
 40-iteration stress test that starts Caption,
 face-name, and Develop writes together against one XMP sidecar and verifies the headline, person,
-and Camera Raw exposure all survive, plus a JSON test that starts two stale history documents
-together and verifies both fields and deterministic history order.
+and Camera Raw exposure all survive, plus JSON tests for stale-history merging and explicit
+history replacement and an XMP strip test proving Develop settings survive.
 
 Regression command:
 
 ```text
 xcodebuild test-without-building -scheme 'Aagedal Photo Agent Tests' \
   -destination 'platform=macOS' \
+  -only-testing:'Aagedal Photo Agent Tests/DescriptiveMetadataWriteBoundaryTests' \
+  -only-testing:'Aagedal Photo Agent Tests/MetadataBatchSelectionTests' \
   -only-testing:'Aagedal Photo Agent Tests/CaptionSessionTests' \
-  -only-testing:'Aagedal Photo Agent Tests/ApplicationTerminationFlushCoordinatorTests' \
   -only-testing:'Aagedal Photo Agent Tests/MetadataSidecarServiceTests' \
   -only-testing:'Aagedal Photo Agent Tests/DevelopVersionCatalogTests'
 ```
 
-Result: **65 tests passed across 4 suites**.
+Result: **72 tests passed across 5 suites**. A fresh `build-for-testing` also succeeded before the
+focused run.
 
 The Xcode run emitted pre-existing App Intents extraction and LMDB map-size diagnostics; neither
 was a test failure. No project-file edit was needed for this work.

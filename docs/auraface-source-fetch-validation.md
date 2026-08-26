@@ -2,8 +2,9 @@
 
 ## Result
 
-The repository now has deterministic **source fetch and verification**, but not a deterministic CoreML
-conversion. The full audit checklist item remains open.
+This validation established deterministic **source fetch and verification**. At that stage it did not include
+a deterministic CoreML conversion, so the full audit checklist item remained open. The subsequent locked
+conversion gate closes that gap; see [AuraFace deterministic build tooling validation](auraface-deterministic-build-validation.md).
 
 `scripts/fetch_auraface_source.py` reads the AuraFace declaration from
 `Aagedal Photo Agent/Resources/bundled-components.json`, requires one `huggingface.co` repository, a full
@@ -31,7 +32,7 @@ Six offline tests cover exact command construction, rejection of mutable revisio
 hash drift, verified atomic installation, failed-download preservation, and reuse of an already verified
 source. They make no Hub request.
 
-## Why the build item remains open
+## Why the build item remained open at this stage
 
 The current README conversion snippet is a historical procedure, not a reproducible build environment:
 
@@ -41,10 +42,11 @@ The current README conversion snippet is a historical procedure, not a reproduci
 - its package manifest contains generated identifiers; and
 - the recipe traces a random input and does not perform an automated Torch-vs-CoreML comparison.
 
-Closing the audit item requires a complete macOS/Python/toolchain lock, deterministic input and normalized
+The missing requirements were a complete macOS/Python/toolchain lock, deterministic input and normalized
 metadata/package identifiers, two byte-identical clean builds, exact output-file hashes, and a deterministic
-semantic comparison including confirmation of RGB/BGR preprocessing. This follow-up deliberately does not
-invent output hashes or relabel the current package as reproducible.
+semantic comparison including confirmation of RGB/BGR preprocessing. This source-fetch follow-up deliberately
+did not invent output hashes or relabel the current package as reproducible; the later build gate implements
+those requirements.
 
 ## Validation
 
