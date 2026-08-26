@@ -53,6 +53,13 @@ python3 -B scripts/ci/validate_bundled_components.py \
   || die "Bundled component validation failed; restore or rebuild the declared artifacts before releasing."
 ok "Bundled release artifacts match their pinned manifest"
 
+# Catch version/build, changelog, security-policy, Sparkle, and appcast drift
+# before consulting CI, credentials, or the keychain.
+say "Verifying release metadata"
+python3 -B scripts/ci/validate_release_metadata.py \
+  || die "Release metadata validation failed; reconcile the project, changelog, security policy, Info.plist, and appcast."
+ok "Release metadata is internally consistent"
+
 # Verify this exact committed source before doing any keychain, signing,
 # notarization, archive, or appcast work. The verifier also records the accepted
 # workflow run (or the explicit emergency override) in OUTPUT_DIR.

@@ -19,7 +19,8 @@ if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
   exit 0
 fi
 if [ "${1:-}" = "run" ] && [ "${2:-}" = "list" ]; then
-  printf '[{"databaseId":42,"headSha":"%s","conclusion":"success","url":"https://example.invalid/actions/runs/42","workflowName":"macOS CI","event":"push","createdAt":"2026-08-25T12:00:00Z"}]\n' "${MOCK_HEAD_SHA:?}"
+  printf '[{"databaseId":42,"headSha":"%s","conclusion":"success","url":"https://example.invalid/actions/runs/42","workflowName":"macOS CI","event":"%s","createdAt":"2026-08-25T12:00:00Z"}]\n' \
+    "${MOCK_HEAD_SHA:?}" "${MOCK_EVENT:-push}"
   exit 0
 fi
 printf 'unexpected mock gh arguments: %s\n' "$*" >&2
@@ -50,6 +51,15 @@ if (
   exit 1
 fi
 
+if (
+  cd "$repo"
+  PATH="$mock_bin:$PATH" MOCK_HEAD_SHA="$revision" MOCK_EVENT=pull_request \
+    scripts/ci/verify_release_test_gate.sh .git/pull-request-result.json >/dev/null 2>&1
+); then
+  printf 'pull-request result was incorrectly accepted as a trusted release run\n' >&2
+  exit 1
+fi
+
 printf 'dirty\n' >> "$repo/tracked.txt"
 if (
   cd "$repo"
@@ -60,6 +70,17 @@ if (
   exit 1
 fi
 git -C "$repo" restore tracked.txt
+
+if (
+  cd "$repo"
+  RELEASE_TEST_GATE_OVERRIDE=EMERGENCY \
+  RELEASE_TEST_GATE_OVERRIDE_REASON='too short' \
+  RELEASE_TEST_GATE_OVERRIDE_CONFIRM="$revision" \
+    scripts/ci/verify_release_test_gate.sh .git/short-reason-result.json >/dev/null 2>&1
+); then
+  printf 'under-documented emergency override was incorrectly accepted\n' >&2
+  exit 1
+fi
 
 (
   cd "$repo"
@@ -72,4 +93,4 @@ python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"] == "e
   "$repo/.git/override-result.json"
 test "$(wc -l < "$repo/.git/release-test-gate-audit.jsonl" | tr -d ' ')" = 2
 
-printf 'release test-gate harness passed (exact, stale, dirty, override)\n'
+printf 'release test-gate harness passed (exact, stale, pull-request, dirty, override controls)\n'

@@ -12,6 +12,10 @@ say "Checking generated metadata support documentation"
 python3 scripts/generate_metadata_field_support.py --check
 python3 scripts/generate_bundled_component_docs.py --check
 
+say "Checking release metadata consistency"
+python3 -B scripts/ci/test_release_metadata_validator.py
+python3 -B scripts/ci/validate_release_metadata.py
+
 say "Validating tracked JSON documents"
 json_count=0
 while IFS= read -r -d '' path; do
@@ -33,6 +37,7 @@ say "Verifying bundled binary and model provenance"
 python3 -B scripts/ci/test_bundled_component_validator.py
 python3 -B scripts/ci/test_auraface_source_fetch.py
 python3 -B scripts/ci/test_auraface_coreml_build.py
+python3 -B scripts/ci/test_auraface_distribution.py
 python3 -B scripts/build_auraface_coreml.py contract
 python3 -B scripts/ci/validate_bundled_components.py
 

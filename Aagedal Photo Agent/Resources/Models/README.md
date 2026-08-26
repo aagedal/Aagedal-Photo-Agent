@@ -67,3 +67,22 @@ through the same `uv run --frozen` command. A reviewed artifact update must copy
 this folder, update all three `artifactFiles` hashes in `bundled-components.json`, and rerun repository
 validation. Keep the declared RGB channel order aligned with `CoreMLFaceEmbedder.inputIsRGB`; changing it
 changes the embedding space and requires a migration/version bump.
+
+## Prepare the pre-converted on-demand artifact
+
+After the reviewed package hashes are in `bundled-components.json`, create the user-facing archive and its
+download descriptor without invoking the conversion environment:
+
+```bash
+python3 -B scripts/package_auraface_distribution.py package \
+  --download-url https://aagedal.me/models/auraface/AuraFaceR100.mlpackage.zip
+python3 -B scripts/package_auraface_distribution.py verify
+```
+
+The ZIP uses sorted, uncompressed entries with fixed timestamps and permissions, so the same package bytes
+produce the same archive bytes on every run. The canonical JSON descriptor binds the exact archive SHA-256
+and byte count, all three inner package hashes, the model version, and `FaceRecognitionDefaults.embeddingVersion`
+to one credential-free HTTPS URL on `aagedal.me`. Packaging refuses undeclared files, package hash drift,
+embedding-version drift, mutable/query URLs, and overwrite unless `--replace` is explicitly supplied. This
+produces release candidates only; publishing the files, signing or pinning the descriptor in the app, and
+real-server download tests remain separate release operations.

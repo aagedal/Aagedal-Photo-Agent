@@ -3,29 +3,61 @@ import CoreML
 import CoreGraphics
 import Accelerate
 
-/// The face-recognition capability compiled into this app package. AuraFace is optional in source
-/// checkouts, so absence must be an explicit product state rather than a per-photo scan failure.
+/// Installation and compatibility state for the optional AuraFace component. The associated
+/// versions are distribution versions; the persisted embedding-space version is tracked separately.
 nonisolated enum FaceRecognitionModelAvailability: Equatable, Sendable {
-    case available
-    case unavailable
+    case notInstalled
+    case downloading(progress: Double)
+    case ready(version: String)
+    case updateAvailable(installedVersion: String, availableVersion: String)
+    case incompatible(requiredSystemVersion: String)
+    case verificationFailed
+    case offline
 
-    var isAvailable: Bool { self == .available }
+    /// Compatibility names retained while the download coordinator is integrated into the UI.
+    static var available: Self { .ready(version: CoreMLFaceEmbedder.modelVersion) }
+    static var unavailable: Self { .notInstalled }
+
+    var isAvailable: Bool {
+        switch self {
+        case .ready, .updateAvailable: true
+        case .notInstalled, .downloading, .incompatible, .verificationFailed, .offline: false
+        }
+    }
 
     var title: String {
         switch self {
-        case .available: "Face Recognition Available"
-        case .unavailable: "Face Recognition Unavailable"
+        case .notInstalled: "Face Recognition Unavailable"
+        case .downloading: "Downloading Face Model"
+        case .ready: "Face Recognition Available"
+        case .updateAvailable: "Face Model Update Available"
+        case .incompatible: "Face Model Incompatible"
+        case .verificationFailed: "Face Model Verification Failed"
+        case .offline: "Face Model Download Offline"
         }
     }
 
     var detail: String {
         switch self {
-        case .available:
-            "The AuraFace recognition model is included in this build."
-        case .unavailable:
-            "This build does not include the AuraFace recognition model. Face scanning and recognition are unavailable."
+        case .notInstalled:
+            "AuraFace is not installed. Face scanning and recognition remain unavailable until the verified model is downloaded."
+        case .downloading(let progress):
+            "Downloading and verifying AuraFace (\(Int(min(max(progress, 0), 1) * 100))%)."
+        case .ready(let version):
+            "AuraFace \(version) is installed and runs only on this Mac."
+        case .updateAvailable(let installedVersion, let availableVersion):
+            "AuraFace \(installedVersion) remains usable. Version \(availableVersion) is available to download."
+        case .incompatible(let requiredSystemVersion):
+            "This AuraFace model requires macOS \(requiredSystemVersion) or later."
+        case .verificationFailed:
+            "The downloaded AuraFace model could not be verified and was not installed."
+        case .offline:
+            "The AuraFace model is not installed and the download service is currently unreachable."
         }
     }
+
+    static let downloadExplanation =
+        "AuraFace is approximately 125 MB. It is downloaded from aagedal.me, verified before installation, used only on this Mac, works offline after installation, and can be removed later in Settings."
 
     /// Exact copy release operators can use when intentionally shipping without the optional model.
     static let releaseNotesDisclosure =
@@ -45,12 +77,16 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     static let shared = CoreMLFaceEmbedder()
 
     let dimension = 512
-    let version = 2
+    // Keep this synchronized with the persisted embedding-space version and the
+    // on-demand distribution descriptor. Changing model bytes or preprocessing
+    // requires a new value before either artifact can be published.
+    let version = FaceRecognitionDefaults.embeddingVersion
 
     private static let inputSize = 112
     private static let inputName = "input"
     private static let outputName = "embedding"
     private static let modelResource = "AuraFaceR100"
+    fileprivate static let modelVersion = "AuraFace-v1/glintr100"
     private static let mean: Float = 127.5
     private static let std: Float = 127.5
     /// Set false only if a future model expects BGR input.

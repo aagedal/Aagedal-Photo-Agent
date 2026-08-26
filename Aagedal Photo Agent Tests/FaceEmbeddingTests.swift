@@ -125,6 +125,29 @@ struct FaceEmbeddingTests {
         }
     }
 
+    @Test func modelAvailabilityStatesAreExplicitAndFailClosed() {
+        let ready = FaceRecognitionModelAvailability.ready(version: "AuraFace-v1/glintr100")
+        let update = FaceRecognitionModelAvailability.updateAvailable(
+            installedVersion: "AuraFace-v1/glintr100",
+            availableVersion: "AuraFace-v2/glintr100"
+        )
+        let unavailable: [FaceRecognitionModelAvailability] = [
+            .notInstalled,
+            .downloading(progress: 0.42),
+            .incompatible(requiredSystemVersion: "26.0"),
+            .verificationFailed,
+            .offline,
+        ]
+
+        #expect(ready.isAvailable)
+        #expect(update.isAvailable)
+        #expect(unavailable.allSatisfy { !$0.isAvailable })
+        #expect(FaceRecognitionModelAvailability.downloading(progress: 1.5).detail.contains("100%"))
+        #expect(FaceRecognitionModelAvailability.downloadExplanation.contains("125 MB"))
+        #expect(FaceRecognitionModelAvailability.downloadExplanation.contains("only on this Mac"))
+        #expect(FaceRecognitionModelAvailability.downloadExplanation.contains("works offline"))
+    }
+
     @Test @MainActor
     func unavailableModelRefusesScanBeforeStarting() {
         let viewModel = FaceRecognitionViewModel(

@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 52 of 75 checklist substeps complete
+**Status:** implementation in progress — 54 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -35,6 +35,11 @@ validation-record review found no definitive evidence that another unchecked sub
 partial foundations such as the existing bookmark lifecycle tests, accessibility semantics, bounded image
 caches, and focused concurrency coverage do not satisfy their broader manual, system-level, or
 cross-workflow exit gates.
+
+**Implementation follow-up (2026-08-26):** 54 of 75 substeps are now checked and 21 remain open. Startup
+work is dependency-ordered, deferred until after first content, idempotent, and cancellable, and the optional
+AuraFace component now has seven explicit fail-closed availability states. The broader startup performance
+gate and AuraFace download/install/rollback exit gate remain open.
 
 ## Phase 0 — Stop silent data loss and destructive surprises
 
@@ -363,7 +368,8 @@ to general defaults changes at `ContentView.swift:230,237-238,1321-1452`.
 
 - [x] Add launch and first-interaction signposts before deciding what to defer.
   ([validation](startup-signpost-validation-2026-08-25.md), 2026-08-25)
-- [ ] Make startup jobs dependency-ordered, cancellable, and lazy when they are not needed for first paint.
+- [x] Make startup jobs dependency-ordered, cancellable, and lazy when they are not needed for first paint.
+  ([validation](startup-work-orchestration-validation-2026-08-26.md), 2026-08-26)
 - [x] Give Deadline an owned typed revision model; ignore unrelated preferences and debounce capture work.
   ([validation](deadline-capture-revision-validation-2026-08-25.md), 2026-08-25)
 - [x] Add the existing full-screen guidance to turn off edited previews when faster high-resolution loading
@@ -429,8 +435,9 @@ Normal one-time Core ML preparation of an `.mlpackage` is not model conversion a
 
 **Plan:**
 
-- [ ] Define model availability states: not installed, downloading, ready, update available, incompatible,
+- [x] Define model availability states: not installed, downloading, ready, update available, incompatible,
   verification failed, and offline.
+  ([validation](auraface-on-demand-packaging-validation.md), 2026-08-26)
 - [ ] Download the pre-converted quantized Core ML artifact from `aagedal.me` over HTTPS, verify the manifest
   signature/hash before install, stage atomically, and retain a rollback version during migration.
 - [ ] Never reset stored embeddings until the new model and backup are both verified.

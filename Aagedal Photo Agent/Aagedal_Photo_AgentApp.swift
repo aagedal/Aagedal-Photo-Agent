@@ -11,47 +11,6 @@ struct Aagedal_Photo_AgentApp: App {
 
     init() {
         AppStartupSignposts.shared.processStarted()
-
-        // UI smoke launches use disposable fixtures and must not start unrelated migrations,
-        // cloud watchers, network refreshes, or backup prompts. Normal launches never carry
-        // this explicit argument and retain the complete startup path below.
-        if UITestLaunchConfiguration.current.isEnabled {
-            return
-        }
-
-        // One-shot migration from the legacy bookmark-pointed list files into the
-        // managed `KeywordListsStore`. Must run before any service that reads from
-        // the store touches its shared instance.
-        KeywordListsStore.shared.migrateLegacyBookmarksIfNeeded()
-
-        // Start the iCloud metadata-query watcher (no-op until the user opts in
-        // and the ubiquity container is reachable). Mirror portable preferences
-        // through the key-value store when that category is enabled.
-        Task { @MainActor in
-            KeywordListsCloudCoordinator.shared.refresh()
-            // One-shot migration of the legacy single `database.json` into
-            // per-person files; must run before the watcher starts reacting.
-            KnownPeopleService.shared.migrateLegacyDatabaseIfNeeded()
-            KnownPeopleCloudCoordinator.shared.refresh()
-            RosterCloudCoordinator.shared.refresh()
-            WatermarkCloudCoordinator.shared.refresh()
-            PreferencesSyncService.shared.start()
-            // Begin keeping local timestamped backups of every keyword list and
-            // watch for empty-list-at-launch so we can offer a restore.
-            KeywordListsBackupService.shared.start()
-        }
-
-        // Pre-generate the CIE chromaticity background on a background thread
-        // so it's ready before the user opens the Gamut scope
-        Task.detached(priority: .utility) {
-            ScopeRenderService.precomputeChromaticityBackground()
-        }
-
-        // Refreshing is opportunistic: validation uses the local cache immediately
-        // and never waits for this network request.
-        Task.detached(priority: .utility) {
-            await C2PATrustListService.shared.refreshIfNeeded()
-        }
     }
 
     /// Radio selection for the View-menu clean-feed display list: the active target
@@ -75,6 +34,11 @@ struct Aagedal_Photo_AgentApp: App {
             ContentView(settingsViewModel: settingsViewModel)
                 .onAppear {
                     AppStartupSignposts.shared.mainContentAppeared()
+                    // UI smoke launches use disposable fixtures and must not start unrelated
+                    // migrations, cloud watchers, network refreshes, or backup prompts.
+                    if !UITestLaunchConfiguration.current.isEnabled {
+                        AppStartupWorkCoordinator.shared.startAfterFirstPaint()
+                    }
                 }
         }
         .commands {
@@ -497,6 +461,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func applicationDidBecomeActive(_ notification: Notification) {
         AppStartupSignposts.shared.applicationDidBecomeActive()
+    }
+
+    @MainActor
+    func applicationWillTerminate(_ notification: Notification) {
+        AppStartupWorkCoordinator.shared.cancel()
     }
 
     @MainActor

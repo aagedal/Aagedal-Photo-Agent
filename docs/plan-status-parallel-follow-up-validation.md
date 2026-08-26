@@ -58,9 +58,12 @@ notarization, archive, or appcast work. A missing required binary, checksum drif
 drift, or declaration/recipe error therefore fails before release credentials or artifacts are touched. A
 focused negative test covers a missing required artifact.
 
-This does not close the remaining Phase 1.2 deterministic model conversion/fetch tooling. Explicit packaged
-unavailable-state disclosure was completed in a subsequent
-[validation](auraface-packaged-unavailable-validation.md).
+The deterministic model source-fetch and conversion tooling was completed and validated after this pass.
+The later [on-demand packaging validation](auraface-on-demand-packaging-validation.md) adds a reproducible
+hostable archive/descriptor contract, binds model and embedding versions, and defines seven explicit runtime
+availability states. Production hosting, trust anchoring, app-side download/install/rollback/removal, and
+real-server validation remain open. Explicit packaged-unavailable-state disclosure is recorded separately in
+[its validation](auraface-packaged-unavailable-validation.md).
 
 ## Delivery transport safety and evidence
 

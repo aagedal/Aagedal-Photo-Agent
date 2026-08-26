@@ -138,3 +138,9 @@ items above are backed by the implementation and the dated validation records in
 unapproved; the on-demand face-model component and focused face-data privacy/legal review remain open.
 Release-level manual, hardware, privacy, recovery, and packaging gates continue in the
 [delivery plan](docs/v2.3/delivery-plan.md) and [app improvement audit](docs/app-improvement-audit-plan.md).
+
+**On-demand model follow-up (2026-08-26):** deterministic developer fetch/conversion and hostable artifact
+packaging are complete, model/embedding versions are bound, and runtime availability states are explicit.
+Production hosting/trust, app-side download/install/rollback/removal, embedding-preserving migration, and
+real-server tests remain open; see the
+[AuraFace packaging validation](docs/auraface-on-demand-packaging-validation.md).
