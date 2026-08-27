@@ -137,6 +137,7 @@ final class MetadataViewModel {
     private let descriptiveWriteBoundary: DescriptiveMetadataWriteBoundary
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
+    private let sidecarPersistenceService = MetadataSidecarPersistenceService()
     private let geocodingService = GeocodingService()
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataViewModel")
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
@@ -1546,35 +1547,40 @@ final class MetadataViewModel {
 
         writeTask?.cancel()
         writeTask = Task {
-            do {
-                let now = Date()
-                let history = buildHistory(
-                    previous: previous,
-                    edited: edited,
-                    timestamp: now,
-                    existing: existingHistory
+            let now = Date()
+            let history = buildHistory(
+                previous: previous,
+                edited: edited,
+                timestamp: now,
+                existing: existingHistory
+            )
+            let sidecar = MetadataSidecar(
+                sourceFile: imageURL.lastPathComponent,
+                lastModified: now,
+                pendingChanges: false,
+                metadata: edited,
+                imageMetadataSnapshot: edited,
+                history: history
+            )
+            let result = await sidecarPersistenceService.persistHistoryAndMirrorXMP(
+                MetadataSidecarPersistenceRequest(
+                    sidecar: sidecar,
+                    imageURL: imageURL,
+                    folderURL: folderURL
                 )
-                let sidecar = MetadataSidecar(
-                    sourceFile: imageURL.lastPathComponent,
-                    lastModified: now,
-                    pendingChanges: false,
-                    metadata: edited,
-                    imageMetadataSnapshot: edited,
-                    history: history
-                )
-                let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
-                    sidecar,
-                    for: imageURL,
-                    in: folderURL
-                )
-                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
-                    metadata: installed.metadata,
-                    for: imageURL,
-                    mergeWithExisting: true
-                )
+            )
 
-                let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
-                if isStillSelected {
+            let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
+            if isStillSelected, let installed = result.installedSidecar {
+                // JSON may already be durable when cancellation or an XMP failure occurs. Advance
+                // the history baseline so Retry mirrors the existing record instead of appending
+                // duplicate deltas, while leaving `hasChanges` set until both artifacts commit.
+                self.sidecarHistory = installed.history
+                self.previousEditingMetadata = installed.metadata
+            }
+
+            if result.completed {
+                if isStillSelected, let installed = result.installedSidecar {
                     self.sidecarHistory = installed.history
                     self.previousEditingMetadata = installed.metadata
                     self.xmpMetadata = installed.metadata
@@ -1590,8 +1596,11 @@ final class MetadataViewModel {
                     }
                     self.hasChanges = false
                 }
-            } catch {
-                self.saveError = "Failed to write XMP sidecar: \(error.localizedDescription)"
+            } else if let failure = result.failure {
+                let artifact = failure.stage == .metadataSidecar ? "metadata history" : "XMP sidecar"
+                self.saveError = "Failed to save \(artifact): \(failure.message)"
+            } else if result.wasCancelled, result.installedSidecar != nil {
+                self.saveError = "Save cancelled after metadata history was written; the XMP sidecar was not changed."
             }
 
             self.isSaving = false

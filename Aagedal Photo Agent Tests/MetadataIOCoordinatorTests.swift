@@ -120,4 +120,112 @@ struct MetadataIOCoordinatorTests {
 
         #expect(await probe.counter == 50)
     }
+
+    @Test("metadata persistence returns the installed merged history record")
+    func persistenceReturnsInstalledMergedRecord() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-persistence-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let imageURL = folder.appendingPathComponent("photo.jpg")
+        try Data([0x01]).write(to: imageURL)
+
+        let metadataService = MetadataSidecarService()
+        let existingMetadata = IPTCMetadata(title: "Before", keywords: ["latest-keyword"])
+        try metadataService.saveSidecar(
+            MetadataSidecar(sourceFile: imageURL.lastPathComponent, metadata: existingMetadata),
+            for: imageURL,
+            in: folder
+        )
+
+        let editedMetadata = IPTCMetadata(title: "After", keywords: ["stale-keyword"])
+        let history = MetadataHistoryEntry.changes(
+            from: IPTCMetadata(title: "Before"),
+            to: IPTCMetadata(title: "After"),
+            timestamp: Date()
+        )
+        let request = MetadataSidecarPersistenceRequest(
+            sidecar: MetadataSidecar(
+                sourceFile: imageURL.lastPathComponent,
+                metadata: editedMetadata,
+                history: history
+            ),
+            imageURL: imageURL,
+            folderURL: folder
+        )
+
+        let result = await MetadataSidecarPersistenceService()
+            .persistHistoryAndMirrorXMP(request)
+
+        #expect(result.completed)
+        #expect(result.failure == nil)
+        #expect(result.installedSidecar?.metadata.title == "After")
+        #expect(result.installedSidecar?.metadata.keywords == ["latest-keyword"])
+        #expect(result.installedSidecar?.history.count == history.count)
+        #expect(XMPSidecarService().loadSidecar(for: imageURL)?.title == "After")
+    }
+
+    @Test("pre-cancelled metadata persistence performs no filesystem mutation")
+    func preCancelledPersistenceDoesNotWrite() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-persistence-cancel-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let imageURL = folder.appendingPathComponent("cancelled.jpg")
+        let request = MetadataSidecarPersistenceRequest(
+            sidecar: MetadataSidecar(
+                sourceFile: imageURL.lastPathComponent,
+                metadata: IPTCMetadata(title: "Must not persist")
+            ),
+            imageURL: imageURL,
+            folderURL: folder
+        )
+        let service = MetadataSidecarPersistenceService()
+
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.persistHistoryAndMirrorXMP(request)
+        }.value
+
+        #expect(result.wasCancelled)
+        #expect(result.installedSidecar == nil)
+        #expect(!result.wroteXMPSidecar)
+        #expect(result.failure == nil)
+        #expect(!FileManager.default.fileExists(
+            atPath: folder.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName).path
+        ))
+        #expect(!XMPSidecarService().sidecarExists(for: imageURL))
+    }
+
+    @Test("XMP failure reports durable JSON partial success")
+    func xmpFailureReportsPartialSuccess() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-persistence-partial-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let imageURL = folder.appendingPathComponent("partial.jpg")
+        let xmpURL = XMPSidecarService().sidecarURL(for: imageURL)
+        try FileManager.default.createDirectory(at: xmpURL, withIntermediateDirectories: true)
+        let request = MetadataSidecarPersistenceRequest(
+            sidecar: MetadataSidecar(
+                sourceFile: imageURL.lastPathComponent,
+                metadata: IPTCMetadata(title: "Durable history")
+            ),
+            imageURL: imageURL,
+            folderURL: folder
+        )
+
+        let result = await MetadataSidecarPersistenceService()
+            .persistHistoryAndMirrorXMP(request)
+
+        #expect(!result.completed)
+        #expect(!result.wasCancelled)
+        #expect(result.installedSidecar?.metadata.title == "Durable history")
+        #expect(!result.wroteXMPSidecar)
+        #expect(result.failure?.stage == .xmpSidecar)
+        #expect(MetadataSidecarService().loadSidecar(for: imageURL, in: folder)?.metadata.title == "Durable history")
+    }
 }

@@ -649,3 +649,141 @@ private extension EditorialJSONSchemaError {
         return false
     }
 }
+
+/// Immutable input for the two-artifact metadata save used by the single-image XMP workflow.
+/// Keeping the complete snapshot in one value prevents a selection change on the main actor from
+/// redirecting either half of the persistence operation to a different photo.
+nonisolated struct MetadataSidecarPersistenceRequest: Sendable {
+    let sidecar: MetadataSidecar
+    let imageURL: URL
+    let folderURL: URL
+    let mergeWithExistingXMP: Bool
+
+    init(
+        sidecar: MetadataSidecar,
+        imageURL: URL,
+        folderURL: URL,
+        mergeWithExistingXMP: Bool = true
+    ) {
+        self.sidecar = sidecar
+        self.imageURL = imageURL
+        self.folderURL = folderURL
+        self.mergeWithExistingXMP = mergeWithExistingXMP
+    }
+}
+
+/// The JSON history record is installed before its Adobe-compatible XMP mirror. A failure or
+/// cancellation between those commits is therefore partial success, not an all-or-nothing error.
+/// The main actor consumes this value without needing to inspect the filesystem again.
+nonisolated struct MetadataSidecarPersistenceResult: Sendable {
+    enum FailureStage: String, Sendable {
+        case metadataSidecar
+        case xmpSidecar
+    }
+
+    struct Failure: Sendable, Equatable {
+        let stage: FailureStage
+        let message: String
+    }
+
+    let installedSidecar: MetadataSidecar?
+    let wroteXMPSidecar: Bool
+    let wasCancelled: Bool
+    let failure: Failure?
+
+    var completed: Bool {
+        installedSidecar != nil && wroteXMPSidecar && !wasCancelled && failure == nil
+    }
+}
+
+/// Off-main orchestration for the metadata JSON + XMP transaction. Each artifact retains the
+/// existing per-photo `MetadataIOCoordinator` serialization and atomic-install behavior. The
+/// actor adds one async boundary for the view model and makes the only partial-commit point
+/// observable: JSON history installed, then cancellation/XMP failure before the mirror commits.
+actor MetadataSidecarPersistenceService {
+    private let metadataSidecarService: MetadataSidecarService
+    private let xmpSidecarService: XMPSidecarService
+
+    init(
+        metadataSidecarService: MetadataSidecarService = MetadataSidecarService(),
+        xmpSidecarService: XMPSidecarService = XMPSidecarService()
+    ) {
+        self.metadataSidecarService = metadataSidecarService
+        self.xmpSidecarService = xmpSidecarService
+    }
+
+    func persistHistoryAndMirrorXMP(
+        _ request: MetadataSidecarPersistenceRequest
+    ) async -> MetadataSidecarPersistenceResult {
+        guard !Task.isCancelled else {
+            return MetadataSidecarPersistenceResult(
+                installedSidecar: nil,
+                wroteXMPSidecar: false,
+                wasCancelled: true,
+                failure: nil
+            )
+        }
+
+        let installed: MetadataSidecar
+        do {
+            installed = try await metadataSidecarService.saveSidecarMergingHistorySerialized(
+                request.sidecar,
+                for: request.imageURL,
+                in: request.folderURL
+            )
+        } catch is CancellationError {
+            return MetadataSidecarPersistenceResult(
+                installedSidecar: nil,
+                wroteXMPSidecar: false,
+                wasCancelled: true,
+                failure: nil
+            )
+        } catch {
+            return MetadataSidecarPersistenceResult(
+                installedSidecar: nil,
+                wroteXMPSidecar: false,
+                wasCancelled: false,
+                failure: .init(stage: .metadataSidecar, message: error.localizedDescription)
+            )
+        }
+
+        // A Foundation atomic write that has returned is committed even if cancellation arrived
+        // during it. Stop before the next artifact and report that durable partial success.
+        guard !Task.isCancelled else {
+            return MetadataSidecarPersistenceResult(
+                installedSidecar: installed,
+                wroteXMPSidecar: false,
+                wasCancelled: true,
+                failure: nil
+            )
+        }
+
+        do {
+            try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                metadata: installed.metadata,
+                for: request.imageURL,
+                mergeWithExisting: request.mergeWithExistingXMP
+            )
+            return MetadataSidecarPersistenceResult(
+                installedSidecar: installed,
+                wroteXMPSidecar: true,
+                wasCancelled: false,
+                failure: nil
+            )
+        } catch is CancellationError {
+            return MetadataSidecarPersistenceResult(
+                installedSidecar: installed,
+                wroteXMPSidecar: false,
+                wasCancelled: true,
+                failure: nil
+            )
+        } catch {
+            return MetadataSidecarPersistenceResult(
+                installedSidecar: installed,
+                wroteXMPSidecar: false,
+                wasCancelled: false,
+                failure: .init(stage: .xmpSidecar, message: error.localizedDescription)
+            )
+        }
+    }
+}

@@ -2,7 +2,8 @@
 
 ## Scope
 
-This change addresses the first two implementation bullets in Phase 3.1 for the browser folder tree:
+This change addresses the first two implementation bullets in Phase 3.1 for the Browser filesystem and
+audited single-image Metadata persistence workflows:
 
 - Folder scans, subfolder enumeration, trash, rename, create, and move now cross an async
   `FileSystemService` actor boundary before touching `FileManager`.
@@ -19,6 +20,11 @@ This change addresses the first two implementation bullets in Phase 3.1 for the 
 - Existing move behavior for adjacent XMP and editorial JSON sidecars is preserved. Duplication retains its
   existing editorial JSON-sidecar copy behavior, including reporting a sidecar failure separately from a
   successfully-created primary duplicate.
+- The single-image Metadata save that installs JSON history and mirrors it into XMP now crosses one actor
+  boundary. Its immutable result distinguishes full completion, cancellation before either write, and the
+  durable partial-success case where merged JSON history committed but the XMP mirror failed or was skipped
+  after cancellation. MetadataViewModel advances its history baseline from a committed partial result so a
+  retry cannot manufacture duplicate history entries.
 
 ## Automated coverage
 
@@ -32,6 +38,12 @@ This change addresses the first two implementation bullets in Phase 3.1 for the 
 - image move with XMP and editorial sidecars; and
 - unique-name duplication with its editorial sidecar.
 
+`MetadataIOCoordinatorTests` additionally covers:
+
+- a completed metadata JSON + XMP save returning the installed merged-history record;
+- pre-cancelled persistence with no filesystem mutation; and
+- an XMP install failure returning the already-durable JSON record as explicit partial success.
+
 The existing `FileSystemOfflineAvailabilityTests` continue to cover deferred iCloud items and download
 requests at the same boundary.
 
@@ -39,5 +51,6 @@ requests at the same boundary.
 
 Phase 3.1 is not complete. Signposts and repeatable benchmarks still need to cover local SSD, network,
 iCloud-placeholder, read-only, and very large folders. Thread Performance Checker and slow-volume UI
-validation are also required. Remaining direct file work outside this bounded browser mutation slice should
-be migrated incrementally without weakening each workflow's recovery and partial-success behavior.
+validation are also required. Lower-priority direct file work outside the Browser mutations and audited
+single-image Metadata save should be migrated incrementally without weakening each workflow's recovery and
+partial-success behavior.
