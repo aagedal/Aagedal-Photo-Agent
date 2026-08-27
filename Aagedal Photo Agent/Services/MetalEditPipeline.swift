@@ -557,6 +557,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         cache.countLimit = 2
         return cache
     }()
+    private let imageMemoryCoordinator = ImageMemoryCoordinator.shared
+    nonisolated(unsafe) private var imageMemoryRegistration: ImageMemoryCoordinator.Registration?
     nonisolated(unsafe) private(set) var paramsBuffer: MTLBuffer?
     nonisolated(unsafe) private(set) var lutTexture: MTLTexture
     nonisolated(unsafe) private let identityLutTexture: MTLTexture
@@ -1063,6 +1065,15 @@ final class MetalEditPipeline: @unchecked Sendable {
         for slot in 0..<Self.maxMasks {
             uploadIdentityColorLUT(slot: slot)
         }
+        imageMemoryRegistration = imageMemoryCoordinator.register(
+            kind: .developSpeculative,
+            applyLimit: { [weak self] limit in
+                self?.textureCache.totalCostLimit = limit
+            },
+            evict: { [weak self] in
+                self?.textureCache.removeAllObjects()
+            }
+        )
     }
 
     /// Enforces the executor contract that makes this type's remaining unchecked mutable
@@ -1106,6 +1117,23 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         let width = Int(extent.width)
         let height = Int(extent.height)
+        let sourcePixelSize = CGSize(width: width, height: height)
+        let prefetchLimit = imageMemoryCoordinator.prefetchItemLimit(
+            for: .developSpeculative,
+            sourcePixelSize: sourcePixelSize,
+            bytesPerPixel: 8,
+            maximum: 2
+        )
+        guard prefetchLimit > 0 else {
+            textureCache.removeAllObjects()
+            return
+        }
+        textureCache.countLimit = prefetchLimit
+        textureCache.totalCostLimit = imageMemoryCoordinator.adaptiveLimit(
+            for: .developSpeculative,
+            sourcePixelSize: sourcePixelSize,
+            bytesPerPixel: 8
+        )
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float,
@@ -2870,7 +2898,18 @@ final class MetalEditPipeline: @unchecked Sendable {
         // so they need mips too — the Anonymizer effect can't tell a promoted texture apart
         // from a freshly-uploaded one.
         Self.generateMipmaps(for: texture, commandQueue: commandQueue)
-        textureCache.setObject(MTLTextureWrapper(texture, neutralTemperature: neutralTemperature, neutralTint: neutralTint), forKey: url as NSURL)
+        let levelZeroCost = width.multipliedReportingOverflow(by: height).partialValue
+            .multipliedReportingOverflow(by: 8).partialValue
+        let textureCost = levelZeroCost.multipliedReportingOverflow(by: 4).partialValue / 3
+        textureCache.setObject(
+            MTLTextureWrapper(
+                texture,
+                neutralTemperature: neutralTemperature,
+                neutralTint: neutralTint
+            ),
+            forKey: url as NSURL,
+            cost: textureCost
+        )
     }
 
     /// Promote a pre-cached texture to sourceTexture. Returns as-shot WB on hit, nil on miss.

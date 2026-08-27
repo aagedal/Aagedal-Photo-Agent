@@ -45,7 +45,7 @@ actor AnalysisDerivedViewCache {
         var lastAccess: UInt64
     }
 
-    private let maximumCost: Int
+    private var maximumCost: Int
     private let maximumEntryCount: Int
     private var entries: [AnalysisDerivedViewCacheKey: Entry] = [:]
     private var totalCost = 0
@@ -92,6 +92,11 @@ actor AnalysisDerivedViewCache {
         accessClock = 0
     }
 
+    func setMaximumCost(_ newMaximumCost: Int) {
+        maximumCost = max(0, newMaximumCost)
+        trimToLimits()
+    }
+
     func metrics() -> Metrics {
         Metrics(
             entryCount: entries.count,
@@ -117,6 +122,16 @@ actor AnalysisDerivedViewCache {
         }
     }
 
+    private func trimToLimits() {
+        while totalCost > maximumCost || entries.count > maximumEntryCount {
+            guard let leastRecent = entries.min(
+                by: { $0.value.lastAccess < $1.value.lastAccess }
+            ) else { break }
+            entries.removeValue(forKey: leastRecent.key)
+            totalCost -= leastRecent.value.cost
+        }
+    }
+
     nonisolated private static func cost(of image: CGImage) -> Int {
         let (cost, overflow) = image.bytesPerRow.multipliedReportingOverflow(by: image.height)
         return overflow ? Int.max : cost
@@ -131,14 +146,17 @@ actor AnalysisDerivedViewCache {
 nonisolated final class AnalysisDerivedViewService: Sendable {
     typealias Renderer = @Sendable (CGImage, AnalysisPixelViewMode) -> CGImage?
 
-    static let shared = AnalysisDerivedViewService()
+    static let shared = AnalysisDerivedViewService(memoryCoordinator: .shared)
 
     private let cache: AnalysisDerivedViewCache
     private let renderer: Renderer
+    private let memoryCoordinator: ImageMemoryCoordinator?
+    private let memoryRegistration: ImageMemoryCoordinator.Registration?
 
     init(
         maximumCost: Int = AnalysisDerivedViewCache.defaultMaximumCost,
         maximumEntryCount: Int = AnalysisDerivedViewCache.defaultMaximumEntryCount,
+        memoryCoordinator: ImageMemoryCoordinator? = nil,
         renderer: @escaping Renderer = AnalysisPixelViewRenderer.render
     ) {
         cache = AnalysisDerivedViewCache(
@@ -146,6 +164,20 @@ nonisolated final class AnalysisDerivedViewService: Sendable {
             maximumEntryCount: maximumEntryCount
         )
         self.renderer = renderer
+        self.memoryCoordinator = memoryCoordinator
+        if let memoryCoordinator {
+            memoryRegistration = memoryCoordinator.register(
+                kind: .scope,
+                applyLimit: { [cache] limit in
+                    Task { await cache.setMaximumCost(limit) }
+                },
+                evict: { [cache] in
+                    Task { await cache.removeAll() }
+                }
+            )
+        } else {
+            memoryRegistration = nil
+        }
     }
 
     func image(
@@ -154,6 +186,14 @@ nonisolated final class AnalysisDerivedViewService: Sendable {
     ) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
         guard key.mode != .normal else { return source }
+        if let memoryCoordinator {
+            let adaptiveLimit = memoryCoordinator.adaptiveLimit(
+                for: .scope,
+                sourcePixelSize: CGSize(width: source.width, height: source.height),
+                bytesPerPixel: max(source.bitsPerPixel / 8, 4)
+            )
+            await cache.setMaximumCost(adaptiveLimit)
+        }
         if let cached = await cache.image(for: key) {
             return Task.isCancelled ? nil : cached
         }

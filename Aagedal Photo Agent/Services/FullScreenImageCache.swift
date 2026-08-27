@@ -26,7 +26,10 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// write on libxml2's process-global state and crashes with EXC_BAD_ACCESS. Suppressing
     /// prefetch removes that out-of-band libxml2 consumer for the duration of editing.
     nonisolated(unsafe) private var _prefetchSuppressed = false
+    nonisolated(unsafe) private var _editingMemoryProfile = false
     private let lock = NSLock()
+    private let memoryCoordinator: ImageMemoryCoordinator
+    nonisolated(unsafe) private var memoryRegistrations: [ImageMemoryCoordinator.Registration] = []
     /// NSCache cannot enumerate or remove keys by URL. Track the exact variants written
     /// to each cache so invalidating one image does not flush every edited preview.
     nonisolated(unsafe) private var imageKeysByURL: [URL: Set<NSString>] = [:]
@@ -41,15 +44,38 @@ final class FullScreenImageCache: @unchecked Sendable {
         let isEdited: Bool
     }
 
-    init() {
-        cache.countLimit = 12
-        cache.totalCostLimit = 256 * 1024 * 1024            // 256 MB
+    init(memoryCoordinator: ImageMemoryCoordinator = .shared) {
+        self.memoryCoordinator = memoryCoordinator
+        memoryRegistrations = [
+            memoryCoordinator.register(
+                kind: .fullScreenPreview,
+                cancelSpeculativeWork: { [weak self] in self?.cancelAllPrefetch() },
+                applyLimit: { [weak self] limit in self?.applyPreviewLimit(limit) },
+                evict: { [weak self] in self?.clearDisplayPreviews() }
+            ),
+            memoryCoordinator.register(
+                kind: .fullScreenPrimary,
+                applyLimit: { [weak self] limit in self?.applyPrimaryLimit(limit) },
+                evict: { [weak self] in self?.clearPrimaryImages() }
+            ),
+        ]
+    }
+
+    nonisolated private func applyPreviewLimit(_ totalLimit: Int) {
+        let perVariant = max(0, totalLimit / 2)
         displayPreviewCache.countLimit = 50
-        displayPreviewCache.totalCostLimit = 128 * 1024 * 1024  // 128 MB
-        editedCache.countLimit = 12
-        editedCache.totalCostLimit = 256 * 1024 * 1024          // 256 MB
+        displayPreviewCache.totalCostLimit = perVariant
         editedDisplayPreviewCache.countLimit = 50
-        editedDisplayPreviewCache.totalCostLimit = 128 * 1024 * 1024  // 128 MB
+        editedDisplayPreviewCache.totalCostLimit = perVariant
+    }
+
+    nonisolated private func applyPrimaryLimit(_ totalLimit: Int) {
+        let editing = lock.withLock { _editingMemoryProfile }
+        let perVariant = max(0, totalLimit / 2)
+        cache.countLimit = 12
+        cache.totalCostLimit = perVariant
+        editedCache.countLimit = editing ? 2 : 12
+        editedCache.totalCostLimit = editing ? min(perVariant, 64 * 1_024 * 1_024) : perVariant
     }
 
     // MARK: - Cache Access
@@ -150,6 +176,15 @@ final class FullScreenImageCache: @unchecked Sendable {
         }
     }
 
+    nonisolated private func clearPrimaryImages() {
+        lock.withLock {
+            cache.removeAllObjects()
+            editedCache.removeAllObjects()
+            imageKeysByURL.removeAll()
+            editedImageKeysByURL.removeAll()
+        }
+    }
+
     nonisolated func invalidateImage(for url: URL) {
         let prefetches = lock.withLock {
             for key in imageKeysByURL.removeValue(forKey: url) ?? [] {
@@ -234,13 +269,12 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// memory (`IOSurface creation failed: e00002c2`) during heavy edit sessions. Lowering an
     /// NSCache limit evicts immediately.
     nonisolated func setEditingMemoryProfile(_ editing: Bool) {
-        if editing {
-            editedCache.countLimit = 2
-            editedCache.totalCostLimit = 64 * 1024 * 1024              // 64 MB
-        } else {
-            editedCache.countLimit = 12
-            editedCache.totalCostLimit = 256 * 1024 * 1024             // 256 MB — matches init()
-        }
+        lock.withLock { _editingMemoryProfile = editing }
+        applyPrimaryLimit(memoryCoordinator.adaptiveLimit(
+            for: .fullScreenPrimary,
+            sourcePixelSize: nil,
+            bytesPerPixel: 8
+        ))
     }
 
     // MARK: - Prefetching
@@ -252,22 +286,41 @@ final class FullScreenImageCache: @unchecked Sendable {
         // race the editor's concurrent NSXML sidecar write — see `_prefetchSuppressed`.
         if isPrefetchSuppressed { return }
 
-        let ahead: [Int]
-        let behind: [Int]
-
-        switch direction {
-        case .forward:
-            ahead = [currentIndex + 1, currentIndex + 2, currentIndex + 3, currentIndex + 4]
-            behind = [currentIndex - 1, currentIndex - 2]
-        case .backward:
-            ahead = [currentIndex - 1, currentIndex - 2, currentIndex - 3, currentIndex - 4]
-            behind = [currentIndex + 1, currentIndex + 2]
-        case .none:
-            ahead = [currentIndex + 1, currentIndex - 1, currentIndex + 2, currentIndex - 2]
-            behind = [currentIndex + 3, currentIndex - 3]
+        let sourceSize = CGSize(width: screenMaxPx, height: screenMaxPx)
+        applyPrimaryLimit(memoryCoordinator.adaptiveLimit(
+            for: .fullScreenPrimary,
+            sourcePixelSize: sourceSize,
+            bytesPerPixel: 8
+        ))
+        applyPreviewLimit(memoryCoordinator.adaptiveLimit(
+            for: .fullScreenPreview,
+            sourcePixelSize: sourceSize,
+            bytesPerPixel: 8
+        ))
+        let itemLimit = memoryCoordinator.prefetchItemLimit(
+            for: .fullScreenPrimary,
+            sourcePixelSize: sourceSize,
+            bytesPerPixel: 8,
+            maximum: 6
+        )
+        guard itemLimit > 0 else {
+            cancelAllPrefetch()
+            return
         }
 
-        let targetIndices = (ahead + behind).filter { $0 >= 0 && $0 < images.count }
+        let candidates: [Int]
+        switch direction {
+        case .forward:
+            candidates = [1, 2, 3, 4, -1, -2]
+        case .backward:
+            candidates = [-1, -2, -3, -4, 1, 2]
+        case .none:
+            candidates = [1, -1, 2, -2, 3, -3]
+        }
+
+        let targetIndices = candidates.prefix(itemLimit)
+            .map { currentIndex + $0 }
+            .filter { $0 >= 0 && $0 < images.count }
         let targetURLs = Set(targetIndices.map { images[$0] })
 
         let tasksToCancel = lock.withLock { () -> [Task<Void, Never>] in

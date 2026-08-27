@@ -17,10 +17,8 @@ final class ThumbnailService {
     @ObservationIgnored private var inFlightTasks: [URL: InFlightRequest] = [:]
     @ObservationIgnored private var editedInFlightTasks: [URL: InFlightRequest] = [:]
     private let thumbnailSize = CGSize(width: 240, height: 240)
-    /// A count-only cache allowed the original + edited stores to retain close to a
-    /// gigabyte of decoded 2x thumbnails. Keep the count cap as a final guard, but
-    /// make decoded bytes the primary eviction policy (128 MiB per variant).
-    private let cacheCostLimit = 128 * 1024 * 1024
+    @ObservationIgnored private let memoryCoordinator: ImageMemoryCoordinator
+    @ObservationIgnored private var memoryRegistration: ImageMemoryCoordinator.Registration? = nil
 
     /// Caps how many thumbnail decodes run concurrently across the whole app — visible cell loads
     /// and collection-view prefetch both funnel through it. Without a cap a fast scroll or a
@@ -28,11 +26,26 @@ final class ThumbnailService {
     /// and the cooperative pool so the thumbnails actually on screen queue behind off-screen ones.
     private let decodeGate = ThumbnailDecodeGate(limit: 6)
 
-    init() {
+    init(memoryCoordinator: ImageMemoryCoordinator = .shared) {
+        self.memoryCoordinator = memoryCoordinator
         cache.countLimit = 500
-        cache.totalCostLimit = cacheCostLimit
         editedCache.countLimit = 500
-        editedCache.totalCostLimit = cacheCostLimit
+        applyMemoryLimit(memoryCoordinator.policy().thumbnailLimit)
+        memoryRegistration = memoryCoordinator.register(
+            kind: .thumbnail,
+            applyLimit: { [weak self] limit in
+                Task { @MainActor [weak self] in self?.applyMemoryLimit(limit) }
+            },
+            evict: { [weak self] in
+                Task { @MainActor [weak self] in self?.clearCache() }
+            }
+        )
+    }
+
+    private func applyMemoryLimit(_ totalLimit: Int) {
+        let perVariant = max(0, totalLimit / 2)
+        cache.totalCostLimit = perVariant
+        editedCache.totalCostLimit = perVariant
     }
 
     /// Returns the best available thumbnail. Checks editedCache first unless preferOriginal is true.
