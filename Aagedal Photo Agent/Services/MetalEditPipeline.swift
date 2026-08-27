@@ -441,7 +441,7 @@ nonisolated enum EditRenderPassPlanner {
 ///
 /// NSCache-compatible wrapper for MTLTexture (value types can't be cached directly).
 final class MTLTextureWrapper: @unchecked Sendable {
-    nonisolated(unsafe) let texture: MTLTexture
+    nonisolated let texture: MTLTexture
     let neutralTemperature: Float
     let neutralTint: Float
     nonisolated init(_ texture: MTLTexture, neutralTemperature: Float = 6500, neutralTint: Float = 0) {
@@ -559,15 +559,17 @@ final class MetalEditPipeline: @unchecked Sendable {
     }()
     private let imageMemoryCoordinator = ImageMemoryCoordinator.shared
     nonisolated(unsafe) private var imageMemoryRegistration: ImageMemoryCoordinator.Registration?
-    nonisolated(unsafe) private(set) var paramsBuffer: MTLBuffer?
-    nonisolated(unsafe) private(set) var lutTexture: MTLTexture
-    nonisolated(unsafe) private let identityLutTexture: MTLTexture
-    nonisolated(unsafe) private(set) var maskBuffer: MTLBuffer?
-    nonisolated(unsafe) private(set) var hslBuffer: MTLBuffer?
+    /// Stable resource handles. The references never change after construction; mutations of
+    /// shared buffer contents remain confined to state-executor-checked entry points.
+    nonisolated let paramsBuffer: MTLBuffer?
+    nonisolated let lutTexture: MTLTexture
+    nonisolated private let identityLutTexture: MTLTexture
+    nonisolated let maskBuffer: MTLBuffer?
+    nonisolated let hslBuffer: MTLBuffer?
     /// Layer-processing order (buffer index 3): a sequence of `orderCount` UInt32 entries,
     /// each either `globalOrderSentinel` or a mask index into `maskBuffer`. Populated by
     /// `updateParams` from `CameraRawSettings.resolvedLayerOrder()`.
-    nonisolated(unsafe) private(set) var orderBuffer: MTLBuffer?
+    nonisolated let orderBuffer: MTLBuffer?
     /// Compiled compute segments for the currently uploaded order. A single entry retains the
     /// historical one-dispatch fast path; two or more entries use ping-pong intermediate
     /// textures so each spatial node samples the complete upstream composite.
@@ -672,7 +674,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // Overlay pipeline (mask overlay rendering)
     private let overlayPipelineState: MTLComputePipelineState?
-    nonisolated(unsafe) private let overlayParamsBuffer: MTLBuffer?
+    nonisolated private let overlayParamsBuffer: MTLBuffer?
 
     // Brush-mask rasterization (Phase 2). Optional — graceful degradation if the shaders are
     // missing, matching the overlay pipeline.
@@ -694,7 +696,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// are no raster masks, so the kernel's `texture2d_array` argument is always satisfied (Metal
     /// requires every declared texture bound) — it's never sampled in that case (no mask sets
     /// maskType == 1).
-    nonisolated(unsafe) private let emptyBrushAlpha: MTLTexture
+    nonisolated private let emptyBrushAlpha: MTLTexture
     /// Cache guarding `refreshMaskAlpha`: the raster-mask sources + resolution the current
     /// `brushAlphaTexture` was rasterized from. `updateParams` runs per slider drag, but raster
     /// sources change only on paint/mask refinement/undo/image-load — comparing against this skips
@@ -708,7 +710,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// up to `maxWatermarks` entries. Rewritten (cheaply) on every `updateParams`/
     /// `refreshWatermarkParams` call; the texture array behind it is only reloaded when the
     /// referenced asset IDs actually change (see `lastBuiltWatermarkAssetIDs`).
-    nonisolated(unsafe) private(set) var watermarkParamsBuffer: MTLBuffer?
+    nonisolated private let watermarkParamsBuffer: MTLBuffer?
     /// Deduped-by-asset watermark texture array (texture index 4), one RGBA8 premultiplied
     /// slice per distinct library asset referenced by the active watermark layers. Nil when
     /// there are none, so non-watermark edits pay zero extra GPU memory.
@@ -716,7 +718,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// A 1×1×1 fully-transparent placeholder bound to `editAdjustments`' watermark-texture slot
     /// whenever there are no active watermark layers, so the kernel's texture argument is
     /// always satisfied (mirrors `emptyBrushAlpha`).
-    nonisolated(unsafe) private let emptyWatermarkTexture: MTLTexture
+    nonisolated private let emptyWatermarkTexture: MTLTexture
     /// Cache guarding the texture (re)decode in `loadWatermarkTextures`: the distinct asset IDs
     /// the current `watermarkTexture` was built from.
     nonisolated(unsafe) private var lastBuiltWatermarkAssetIDs: [UUID] = []
@@ -735,7 +737,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Fixed 33³ LUT slots packed as `[mask slot × 33 blue slices]`. Identity data occupies
     /// slots without a valid imported cube, so malformed/missing LUTs safely no-op.
-    nonisolated(unsafe) private(set) var colorLUTTexture: MTLTexture
+    nonisolated let colorLUTTexture: MTLTexture
     /// Cache of source cube payloads by mask-buffer slot. Avoids parsing and uploading ~2 MB
     /// while unrelated sliders are dragged.
     nonisolated(unsafe) private var lastBuiltColorLUTData: [Data?] =

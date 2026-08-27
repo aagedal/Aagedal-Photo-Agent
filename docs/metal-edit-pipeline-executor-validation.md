@@ -32,9 +32,15 @@ async work assert the executor on entry. The reusable pipeline records that exac
 
 `SourceState`, `MirrorState`, and `WhiteBalanceReference` replace five separate mutable
 `nonisolated(unsafe)` fields. Source texture/orientation and white-balance temperature/tint now publish
-and snapshot as coherent pairs. The remaining unsafe mutable render fields are owner-serialized and
-still need a follow-up storage extraction before Phase 4.2 can be considered complete; immutable Metal
-and Core Image resources remain documented unchecked framework references.
+and snapshot as coherent pairs.
+
+The follow-up stable-resource audit converted twelve initialization-only Metal buffer/texture handles
+from unsafe declarations to `nonisolated let`. The references cannot be rebound after construction;
+their underlying buffer and texture contents are still written only through executor-checked render
+entry points. This reduces `MetalEditPipeline.swift` from 41 to 29 explicit
+`nonisolated(unsafe)` escapes at current HEAD. The remaining escapes are mutable render plans, caches,
+controls, scratch arrays, lazily allocated textures, and viewport/white-balance cache values; they
+remain owner-serialized and need storage extraction before Phase 4.2 can be considered complete.
 
 ## Regression coverage
 
@@ -42,7 +48,8 @@ and Core Image resources remain documented unchecked framework references.
 enforcement, executor separation, sync re-entry and queue assertions, lock-backed publication state,
 cross-pipeline owner checking, and the primary public render-state entry guards. The GPU rasterization
 suite is main-actor isolated so its direct pipeline construction obeys the production live-instance
-contract.
+contract. The same source contract now enumerates the stable `nonisolated let` resource handles and
+caps the remaining unsafe-escape count at 29.
 
 ## Verification
 
