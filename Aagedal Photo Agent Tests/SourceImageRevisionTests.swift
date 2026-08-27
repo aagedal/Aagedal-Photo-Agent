@@ -166,6 +166,95 @@ struct FileSystemOfflineAvailabilityTests {
     }
 }
 
+@Suite("Serialized file system service")
+struct SerializedFileSystemServiceTests {
+    @Test("folder mutations return immutable committed results")
+    func folderMutationResults() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let service = FileSystemService()
+        let createdURL = fixture.directoryURL.appendingPathComponent("Zulu", isDirectory: true)
+        let renamedURL = fixture.directoryURL.appendingPathComponent("Alpha", isDirectory: true)
+        let destinationURL = fixture.directoryURL.appendingPathComponent("Destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: false)
+
+        let created = try await service.createFolder(at: createdURL)
+        #expect(created.kind == .create)
+        #expect(created.sourceURL == nil)
+        #expect(created.resultingURL == createdURL)
+        #expect(created.cancellationRequestedAfterCommit == false)
+
+        let renamed = try await service.renameFolder(at: createdURL, to: renamedURL)
+        #expect(renamed.kind == .rename)
+        #expect(renamed.sourceURL == createdURL)
+        #expect(renamed.resultingURL == renamedURL)
+
+        let movedURL = destinationURL.appendingPathComponent("Alpha", isDirectory: true)
+        let moved = try await service.moveFolder(from: renamedURL, to: movedURL)
+        #expect(moved.kind == .move)
+        #expect(moved.sourceURL == renamedURL)
+        #expect(moved.resultingURL == movedURL)
+        #expect(FileManager.default.fileExists(atPath: movedURL.path))
+    }
+
+    @Test("listing is sorted and excludes packages and ordinary files")
+    func listsSubfolders() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let service = FileSystemService()
+        for name in ["Zulu", "Alpha"] {
+            try FileManager.default.createDirectory(
+                at: fixture.directoryURL.appendingPathComponent(name, isDirectory: true),
+                withIntermediateDirectories: false
+            )
+        }
+        try FileManager.default.createDirectory(
+            at: fixture.directoryURL.appendingPathComponent("Ignored.app", isDirectory: true),
+            withIntermediateDirectories: false
+        )
+        _ = try fixture.write("ordinary.txt", contents: "file")
+
+        let listed = try await service.listSubfolders(at: fixture.directoryURL)
+
+        #expect(listed.map(\.lastPathComponent) == ["Alpha", "Zulu"])
+    }
+
+    @Test("pre-cancelled mutation makes no filesystem change")
+    func mutationHonorsPreCancellation() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let service = FileSystemService()
+        let newURL = fixture.directoryURL.appendingPathComponent("Cancelled", isDirectory: true)
+        let task = Task {
+            await Task.yield()
+            return try await service.createFolder(at: newURL)
+        }
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+        #expect(!FileManager.default.fileExists(atPath: newURL.path))
+    }
+
+    @Test("destination collision reports no partial mutation")
+    func collisionHasNoPartialMutation() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let service = FileSystemService()
+        let sourceURL = fixture.directoryURL.appendingPathComponent("Source", isDirectory: true)
+        let destinationURL = fixture.directoryURL.appendingPathComponent("Destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: false)
+
+        await #expect(throws: FileSystemService.Error.destinationAlreadyExists(destinationURL)) {
+            _ = try await service.moveFolder(from: sourceURL, to: destinationURL)
+        }
+        #expect(FileManager.default.fileExists(atPath: sourceURL.path))
+        #expect(FileManager.default.fileExists(atPath: destinationURL.path))
+    }
+}
+
 private struct TemporaryFixture {
     let directoryURL: URL
     let fileURL: URL

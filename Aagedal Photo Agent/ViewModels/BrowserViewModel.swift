@@ -752,7 +752,7 @@ final class BrowserViewModel {
                 // utility task just as the initial image scan is forced off the main actor.
                 let service = fileSystemService
                 let discoveredSubfolders = await Task.detached(priority: .utility) {
-                    (try? service.listSubfolders(at: url)) ?? []
+                    (try? await service.listSubfolders(at: url)) ?? []
                 }.value
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.subfoldersByOpenFolder[url] = discoveredSubfolders
@@ -2181,7 +2181,7 @@ final class BrowserViewModel {
             let results: [(URL, [URL])] = await withTaskGroup(of: (URL, [URL]).self) { group in
                 for url in toLoad {
                     group.addTask {
-                        let subs = (try? service.listSubfolders(at: url)) ?? []
+                        let subs = (try? await service.listSubfolders(at: url)) ?? []
                         return (url, subs)
                     }
                 }
@@ -2210,7 +2210,7 @@ final class BrowserViewModel {
         pendingSubfolderLoads.insert(url)
         let service = fileSystemService
         Task.detached(priority: .userInitiated) {
-            let discovered = (try? service.listSubfolders(at: url)) ?? []
+            let discovered = (try? await service.listSubfolders(at: url)) ?? []
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.pendingSubfolderLoads.remove(url)
@@ -2234,7 +2234,7 @@ final class BrowserViewModel {
             let results: [(URL, [URL])] = await withTaskGroup(of: (URL, [URL]).self) { group in
                 for url in toScan {
                     group.addTask {
-                        let subs = (try? service.listSubfolders(at: url)) ?? []
+                        let subs = (try? await service.listSubfolders(at: url)) ?? []
                         return (url, subs)
                     }
                 }
@@ -2311,7 +2311,7 @@ final class BrowserViewModel {
         let parentURL = outputFolderURL.deletingLastPathComponent()
         let service = fileSystemService
         Task.detached(priority: .userInitiated) {
-            let discovered = (try? service.listSubfolders(at: parentURL)) ?? []
+            let discovered = (try? await service.listSubfolders(at: parentURL)) ?? []
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.subfoldersByOpenFolder[parentURL] = discovered
@@ -2340,7 +2340,7 @@ final class BrowserViewModel {
             let results: [(URL, [URL]?)] = await withTaskGroup(of: (URL, [URL]?).self) { group in
                 for url in urls {
                     group.addTask {
-                        let subs = try? service.listSubfolders(at: url)
+                        let subs = try? await service.listSubfolders(at: url)
                         return (url, subs)
                     }
                 }
@@ -2458,13 +2458,14 @@ final class BrowserViewModel {
         guard subfoldersByOpenFolder[url] == nil else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let subs = (try? self.fileSystemService.listSubfolders(at: url)) ?? []
+            let subs = (try? await self.fileSystemService.listSubfolders(at: url)) ?? []
             self.subfoldersByOpenFolder[url] = subs
         }
     }
 
     var showTrashSubfolderConfirmation = false
     @ObservationIgnored var pendingTrashSubfolderURL: URL?
+    @ObservationIgnored private var folderMutationTask: Task<Void, Never>?
 
     func confirmTrashSubfolder(_ url: URL) {
         pendingTrashSubfolderURL = url
@@ -2475,33 +2476,40 @@ final class BrowserViewModel {
         guard let subfolderURL = pendingTrashSubfolderURL else { return }
         pendingTrashSubfolderURL = nil
 
-        do {
-            try FileManager.default.trashItem(at: subfolderURL, resultingItemURL: nil)
-        } catch {
-            errorMessage = "Failed to trash folder: \(error.localizedDescription)"
-            return
-        }
-
-        // Remove from parent's children list
-        for (parentURL, subfolders) in subfoldersByOpenFolder {
-            if subfolders.contains(subfolderURL) {
-                subfoldersByOpenFolder[parentURL] = subfolders.filter { $0 != subfolderURL }
-                break
+        folderMutationTask?.cancel()
+        folderMutationTask = Task {
+            do {
+                _ = try await fileSystemService.trashFolder(at: subfolderURL)
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = "Failed to trash folder: \(error.localizedDescription)"
+                return
             }
-        }
 
-        // Recursively clean up all cached descendants
-        removeSubfolderCacheRecursively(for: subfolderURL)
+            // Remove from parent's children list only after the service returns immutable commit
+            // evidence. A cancellation requested during Foundation's uninterruptible trash call
+            // still returns success, keeping this model reconciled with disk.
+            for (parentURL, subfolders) in subfoldersByOpenFolder {
+                if subfolders.contains(subfolderURL) {
+                    subfoldersByOpenFolder[parentURL] = subfolders.filter { $0 != subfolderURL }
+                    break
+                }
+            }
 
-        // If the trashed folder was the currently viewed folder, navigate away
-        if currentFolderURL == subfolderURL {
-            if let parent = openFolders.first {
-                loadFolder(url: parent)
-            } else {
-                currentFolderURL = nil
-                currentFolderName = nil
-                images = []
-                selectedImageIDs.removeAll()
+            // Recursively clean up all cached descendants
+            removeSubfolderCacheRecursively(for: subfolderURL)
+
+            // If the trashed folder was the currently viewed folder, navigate away
+            if currentFolderURL == subfolderURL {
+                if let parent = openFolders.first {
+                    loadFolder(url: parent)
+                } else {
+                    currentFolderURL = nil
+                    currentFolderName = nil
+                    images = []
+                    selectedImageIDs.removeAll()
+                }
             }
         }
     }
@@ -2533,48 +2541,56 @@ final class BrowserViewModel {
             errorMessage = "Folder name resolves outside its current parent."
             return
         }
-        do {
-            try FileManager.default.moveItem(at: oldURL, to: newURL)
-        } catch {
-            errorMessage = "Failed to rename folder: \(error.localizedDescription)"
-            return
-        }
-
-        // Update parent's children list: replace old URL with new
-        for (parentURL, subfolders) in subfoldersByOpenFolder {
-            if let idx = subfolders.firstIndex(of: oldURL) {
-                var updated = subfolders
-                updated[idx] = newURL
-                subfoldersByOpenFolder[parentURL] = updated
-                break
+        folderMutationTask?.cancel()
+        folderMutationTask = Task {
+            do {
+                _ = try await fileSystemService.renameFolder(at: oldURL, to: newURL)
+            } catch is CancellationError {
+                return
+            } catch FileSystemService.Error.destinationAlreadyExists {
+                errorMessage = "A folder named \"\(trimmed)\" already exists."
+                return
+            } catch {
+                errorMessage = "Failed to rename folder: \(error.localizedDescription)"
+                return
             }
-        }
 
-        let favoriteExpansionRoots = expandedFavoriteFolders.compactMap {
-            $0.url == oldURL ? $0.rootID : nil
-        }
-        let wasExpandedInOpenFolders = expandedOpenFolders.contains(oldURL)
+            // Update parent's children list: replace old URL with new
+            for (parentURL, subfolders) in subfoldersByOpenFolder {
+                if let idx = subfolders.firstIndex(of: oldURL) {
+                    var updated = subfolders
+                    updated[idx] = newURL
+                    subfoldersByOpenFolder[parentURL] = updated
+                    break
+                }
+            }
 
-        // Remove all cached descendants of the old path (they have stale URLs)
-        removeSubfolderCacheRecursively(for: oldURL)
+            let favoriteExpansionRoots = expandedFavoriteFolders.compactMap {
+                $0.url == oldURL ? $0.rootID : nil
+            }
+            let wasExpandedInOpenFolders = expandedOpenFolders.contains(oldURL)
 
-        // Update expansion state and re-discover children of renamed folder
-        for rootID in favoriteExpansionRoots {
-            expandedFavoriteFolders.insert(
-                FavoriteFolderExpansion(rootID: rootID, url: newURL)
-            )
-        }
-        if wasExpandedInOpenFolders {
-            expandedOpenFolders.insert(newURL)
-        }
-        let migrated = !favoriteExpansionRoots.isEmpty || wasExpandedInOpenFolders
-        if migrated {
-            ensureSubfoldersLoaded(for: newURL)
-        }
+            // Remove all cached descendants of the old path (they have stale URLs)
+            removeSubfolderCacheRecursively(for: oldURL)
 
-        // If the renamed folder was the current folder, reload it
-        if currentFolderURL == oldURL {
-            loadFolder(url: newURL)
+            // Update expansion state and re-discover children of renamed folder
+            for rootID in favoriteExpansionRoots {
+                expandedFavoriteFolders.insert(
+                    FavoriteFolderExpansion(rootID: rootID, url: newURL)
+                )
+            }
+            if wasExpandedInOpenFolders {
+                expandedOpenFolders.insert(newURL)
+            }
+            let migrated = !favoriteExpansionRoots.isEmpty || wasExpandedInOpenFolders
+            if migrated {
+                ensureSubfoldersLoaded(for: newURL)
+            }
+
+            // If the renamed folder was the current folder, reload it
+            if currentFolderURL == oldURL {
+                loadFolder(url: newURL)
+            }
         }
     }
 
@@ -2602,26 +2618,29 @@ final class BrowserViewModel {
         }
 
         let newFolderURL = parentURL.appendingPathComponent(trimmed, isDirectory: true)
-        if FileManager.default.fileExists(atPath: newFolderURL.path) {
-            errorMessage = "A folder named \"\(trimmed)\" already exists."
-            return
-        }
+        folderMutationTask?.cancel()
+        folderMutationTask = Task {
+            do {
+                _ = try await fileSystemService.createFolder(at: newFolderURL)
+            } catch is CancellationError {
+                return
+            } catch FileSystemService.Error.destinationAlreadyExists {
+                errorMessage = "A folder named \"\(trimmed)\" already exists."
+                return
+            } catch {
+                errorMessage = "Failed to create subfolder: \(error.localizedDescription)"
+                return
+            }
 
-        do {
-            try FileManager.default.createDirectory(at: newFolderURL, withIntermediateDirectories: false)
-        } catch {
-            errorMessage = "Failed to create subfolder: \(error.localizedDescription)"
-            return
+            // Update cache: append and re-sort
+            if subfoldersByOpenFolder[parentURL] != nil {
+                subfoldersByOpenFolder[parentURL]!.append(newFolderURL)
+                subfoldersByOpenFolder[parentURL]!.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            } else {
+                ensureSubfoldersLoaded(for: parentURL)
+            }
+            expandFolderInAllSidebarTrees(parentURL)
         }
-
-        // Update cache: append and re-sort
-        if subfoldersByOpenFolder[parentURL] != nil {
-            subfoldersByOpenFolder[parentURL]!.append(newFolderURL)
-            subfoldersByOpenFolder[parentURL]!.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-        } else {
-            ensureSubfoldersLoaded(for: parentURL)
-        }
-        expandFolderInAllSidebarTrees(parentURL)
     }
 
     // MARK: - Move Folder
@@ -2641,23 +2660,18 @@ final class BrowserViewModel {
         guard sourceURL.deletingLastPathComponent().path(percentEncoded: false) != destPath else { return }
 
         let newURL = destinationURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: true)
-        if FileManager.default.fileExists(atPath: newURL.path) {
-            errorMessage = "A folder named \"\(sourceURL.lastPathComponent)\" already exists in \"\(destinationURL.lastPathComponent)\"."
-            return
-        }
 
-        Task {
-            let moveError: String? = await Task.detached(priority: .userInitiated) {
-                do {
-                    try FileManager.default.moveItem(at: sourceURL, to: newURL)
-                    return nil
-                } catch {
-                    return "Failed to move folder: \(error.localizedDescription)"
-                }
-            }.value
-
-            if let moveError {
-                errorMessage = moveError
+        folderMutationTask?.cancel()
+        folderMutationTask = Task {
+            do {
+                _ = try await fileSystemService.moveFolder(from: sourceURL, to: newURL)
+            } catch is CancellationError {
+                return
+            } catch FileSystemService.Error.destinationAlreadyExists {
+                errorMessage = "A folder named \"\(sourceURL.lastPathComponent)\" already exists in \"\(destinationURL.lastPathComponent)\"."
+                return
+            } catch {
+                errorMessage = "Failed to move folder: \(error.localizedDescription)"
                 return
             }
 
