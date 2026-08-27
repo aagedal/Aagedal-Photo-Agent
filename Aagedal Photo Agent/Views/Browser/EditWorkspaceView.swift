@@ -19,38 +19,6 @@ private struct DevelopTemplateNotificationHandler: ViewModifier {
     }
 }
 
-private enum DevelopVersionPersistenceState: Equatable {
-    case unavailable
-    case loading
-    case clean
-    case dirty
-    case saving
-    case saved
-    case failed(String)
-
-    var label: String {
-        switch self {
-        case .unavailable: "Unavailable"
-        case .loading: "Loading…"
-        case .clean: "Ready"
-        case .dirty: "Unsaved"
-        case .saving: "Saving…"
-        case .saved: "Saved"
-        case .failed: "Save Failed"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .unavailable: "nosign"
-        case .loading, .saving: "arrow.triangle.2.circlepath"
-        case .clean, .saved: "checkmark.circle.fill"
-        case .dirty: "circle.fill"
-        case .failed: "exclamationmark.triangle.fill"
-        }
-    }
-}
-
 private enum DevelopVersionNameAction: Identifiable, Equatable {
     case create
     case rename(UUID)
@@ -291,18 +259,8 @@ struct EditWorkspaceView: View {
     @State private var developComparisonLiveSource: ComparisonRenderedSource?
     @State private var developVersionComparisonRightSource: ComparisonRenderedSource?
     @State private var developComparisonError: String?
-    @State private var developVersionCatalog: DevelopVersionCatalog?
-    @State private var developVersionRepository: DevelopVersionCatalogRepository?
-    @State private var developVersionRevision: SourceImageRevision?
-    @State private var developVersionStorage: DevelopVersionCatalogStorage?
-    @State private var developVersionPersistenceState: DevelopVersionPersistenceState = .unavailable
-    @State private var developVersionNotice: String?
-    @State private var developVersionLoadTask: Task<Void, Never>?
-    @State private var developVersionSaveTask: Task<Void, Never>?
-    @State private var developVersionTransitionTask: Task<Void, Never>?
+    @State private var developVersionSession = DevelopVersionSessionCoordinator()
     @State private var developVersionFlushRegistrationID: UUID?
-    @State private var primaryDevelopSettings: CameraRawSettings?
-    @State private var hasInstalledLoadedDevelopVersion = false
     @State private var developVersionNameAction: DevelopVersionNameAction?
     @State private var developVersionNameDraft = ""
     @State private var developVersionPendingDeleteID: UUID?
@@ -485,9 +443,40 @@ struct EditWorkspaceView: View {
         )
     }
 
+    // Transitional view aliases keep presentation code readable while the coordinator remains
+    // the sole owner of named-version session state and asynchronous persistence.
+    private var developVersionCatalog: DevelopVersionCatalog? {
+        get { developVersionSession.catalog }
+        nonmutating set { developVersionSession.catalog = newValue }
+    }
+
+    private var developVersionRevision: SourceImageRevision? {
+        get { developVersionSession.revision }
+        nonmutating set { developVersionSession.revision = newValue }
+    }
+
+    private var developVersionStorage: DevelopVersionCatalogStorage? {
+        get { developVersionSession.storage }
+        nonmutating set { developVersionSession.storage = newValue }
+    }
+
+    private var developVersionPersistenceState: DevelopVersionPersistenceState {
+        get { developVersionSession.persistenceState }
+        nonmutating set { developVersionSession.persistenceState = newValue }
+    }
+
+    private var developVersionNotice: String? {
+        get { developVersionSession.notice }
+        nonmutating set { developVersionSession.notice = newValue }
+    }
+
+    private var primaryDevelopSettings: CameraRawSettings? {
+        get { developVersionSession.primarySettings }
+        nonmutating set { developVersionSession.primarySettings = newValue }
+    }
+
     private var activeNamedDevelopVersion: DevelopNamedVersion? {
-        guard let activeID = developVersionCatalog?.activeVersionID else { return nil }
-        return developVersionCatalog?.versions.first(where: { $0.id == activeID })
+        developVersionSession.activeVersion
     }
 
     private var activeDevelopVersionLabel: String {
@@ -508,7 +497,7 @@ struct EditWorkspaceView: View {
     }
 
     private var isDevelopVersionTransitioning: Bool {
-        developVersionPersistenceState == .saving || developVersionTransitionTask != nil
+        developVersionSession.isTransitioning
     }
 
     private var isDevelopComparisonActive: Bool {
@@ -2221,23 +2210,11 @@ struct EditWorkspaceView: View {
     }
 
     private func resetDevelopVersionState() {
-        developVersionLoadTask?.cancel()
-        developVersionLoadTask = nil
-        developVersionSaveTask?.cancel()
-        developVersionSaveTask = nil
-        developVersionTransitionTask?.cancel()
-        developVersionTransitionTask = nil
-        developVersionCatalog = nil
-        developVersionRepository = nil
-        developVersionRevision = nil
-        developVersionStorage = nil
-        developVersionPersistenceState = .unavailable
-        developVersionNotice = nil
-        primaryDevelopSettings = nil
-        hasInstalledLoadedDevelopVersion = false
+        developVersionSession.reset()
         developVersionNameAction = nil
         developVersionNameDraft = ""
         developVersionPendingDeleteID = nil
+        developVersionPendingPromotionID = nil
     }
 
     private func loadDevelopVersionCatalog() {
@@ -2246,61 +2223,11 @@ struct EditWorkspaceView: View {
             return
         }
 
-        let imageURL = image.url
-        let orientation = image.exifOrientation
-        let repository = DevelopVersionCatalogRepository(
-            sourceFolderURL: imageURL.deletingLastPathComponent()
-        )
-        developVersionLoadTask?.cancel()
-        developVersionSaveTask?.cancel()
-        developVersionCatalog = nil
-        developVersionRepository = repository
-        developVersionRevision = nil
-        developVersionStorage = nil
-        developVersionPersistenceState = .loading
-        developVersionNotice = nil
-        primaryDevelopSettings = nil
-        hasInstalledLoadedDevelopVersion = false
-
-        developVersionLoadTask = Task {
-            do {
-                let revision = try await SourceImageRevision.capture(
-                    at: imageURL,
-                    exifOrientation: orientation
-                )
-                guard !Task.isCancelled, selectedImageURL == imageURL else { return }
-
-                let match = await repository.loadMostRelevantCatalog(for: revision)
-                guard !Task.isCancelled, selectedImageURL == imageURL else { return }
-
-                developVersionRevision = revision
-                switch match {
-                case let .exact(catalog, _, storage):
-                    developVersionCatalog = catalog
-                    developVersionStorage = storage
-                    developVersionPersistenceState = .clean
-                    installLoadedDevelopVersionIfReady()
-                case .none:
-                    developVersionCatalog = DevelopVersionCatalog.create(for: revision)
-                    developVersionPersistenceState = .clean
-                    installLoadedDevelopVersionIfReady()
-                case .sourceChanged:
-                    developVersionCatalog = nil
-                    developVersionPersistenceState = .unavailable
-                    developVersionNotice = "The source bytes changed. Reassociate the preserved catalog before applying a named version."
-                case let .newerSchema(schemaVersion, _, _, _):
-                    developVersionCatalog = nil
-                    developVersionPersistenceState = .unavailable
-                    developVersionNotice = "This catalog uses newer schema \(schemaVersion) and is read-only in this build."
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                guard selectedImageURL == imageURL else { return }
-                developVersionCatalog = nil
-                developVersionPersistenceState = .unavailable
-                developVersionNotice = error.localizedDescription
-            }
+        developVersionSession.beginLoading(
+            imageURL: image.url,
+            orientation: image.exifOrientation
+        ) {
+            installLoadedDevelopVersionIfReady()
         }
     }
 
@@ -2308,20 +2235,13 @@ struct EditWorkspaceView: View {
     /// this image has finished loading. That Primary snapshot remains in memory for lossless
     /// switching back without adding it to the JSON catalog.
     private func installLoadedDevelopVersionIfReady() {
-        guard !hasInstalledLoadedDevelopVersion,
-              !metadataViewModel.isLoading,
-              metadataViewModel.selectedCount == 1,
-              metadataViewModel.selectedURLs.first == selectedImageURL,
-              let catalog = developVersionCatalog else { return }
-
-        primaryDevelopSettings = metadataViewModel.editingMetadata.cameraRaw
-        hasInstalledLoadedDevelopVersion = true
-        guard let activeID = catalog.activeVersionID,
-              let activeVersion = catalog.versions.first(where: { $0.id == activeID }) else {
-            return
-        }
-        installDevelopSettings(activeVersion.snapshot.settings)
-        developVersionPersistenceState = .saved
+        guard let installation = developVersionSession.loadedSettingsToInstallIfReady(
+            metadataIsLoading: metadataViewModel.isLoading,
+            selectedCount: metadataViewModel.selectedCount,
+            metadataSelectedURL: metadataViewModel.selectedURLs.first,
+            currentPrimarySettings: metadataViewModel.editingMetadata.cameraRaw
+        ) else { return }
+        installDevelopSettings(installation.settings)
     }
 
     private func installDevelopSettings(_ settings: CameraRawSettings?) {
@@ -2372,8 +2292,7 @@ struct EditWorkspaceView: View {
     }
 
     private func createDevelopVersion(name: String) {
-        guard let repository = developVersionRepository,
-              var candidate = developVersionCatalog else { return }
+        guard var candidate = developVersionCatalog else { return }
         let settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
         if candidate.activeVersionID == nil {
             primaryDevelopSettings = metadataViewModel.editingMetadata.cameraRaw
@@ -2389,55 +2308,50 @@ struct EditWorkspaceView: View {
             developVersionNotice = error.localizedDescription
             return
         }
-        persistDevelopVersionCatalog(candidate, through: repository)
+        persistDevelopVersionCatalog(candidate)
     }
 
     private func duplicateDevelopVersion(id: UUID, name: String) {
-        guard let repository = developVersionRepository,
-              var candidate = developVersionCatalog else { return }
+        guard var candidate = developVersionCatalog else { return }
         do {
             _ = try candidate.duplicateVersion(id: id, name: name)
         } catch {
             developVersionNotice = error.localizedDescription
             return
         }
-        persistDevelopVersionCatalog(candidate, through: repository)
+        persistDevelopVersionCatalog(candidate)
     }
 
     private func renameDevelopVersion(id: UUID, name: String) {
-        guard let repository = developVersionRepository,
-              var candidate = developVersionCatalog else { return }
+        guard var candidate = developVersionCatalog else { return }
         do {
             try candidate.renameVersion(id: id, name: name)
         } catch {
             developVersionNotice = error.localizedDescription
             return
         }
-        persistDevelopVersionCatalog(candidate, through: repository)
+        persistDevelopVersionCatalog(candidate)
     }
 
     private func toggleDefaultDevelopVersion(_ id: UUID) {
-        guard let repository = developVersionRepository,
-              var candidate = developVersionCatalog else { return }
+        guard var candidate = developVersionCatalog else { return }
         do {
             try candidate.setDefaultVersion(candidate.defaultVersionID == id ? nil : id)
         } catch {
             developVersionNotice = error.localizedDescription
             return
         }
-        persistDevelopVersionCatalog(candidate, through: repository)
+        persistDevelopVersionCatalog(candidate)
     }
 
     private func deleteDevelopVersion(id: UUID) {
         developVersionPendingDeleteID = nil
         closeDevelopComparison()
-        guard let repository = developVersionRepository,
-              var candidate = developVersionCatalog else { return }
+        guard var candidate = developVersionCatalog else { return }
         let wasActive = candidate.activeVersionID == id
         guard candidate.deleteVersion(id: id) else { return }
         persistDevelopVersionCatalog(
             candidate,
-            through: repository,
             settingsToInstall: wasActive ? primaryDevelopSettings : nil,
             installsSettings: wasActive
         )
@@ -2467,13 +2381,12 @@ struct EditWorkspaceView: View {
 
     private func promoteDevelopVersion(id: UUID) {
         developVersionPendingPromotionID = nil
-        guard developVersionTransitionTask == nil,
-              let repository = developVersionRepository,
+        guard !developVersionSession.hasTransition,
+              let repository = developVersionSession.repository as? DevelopVersionCatalogRepository,
               let imageURL = selectedImageURL,
               var candidate = developVersionCatalog else { return }
         closeDevelopComparison()
-        developVersionSaveTask?.cancel()
-        developVersionSaveTask = nil
+        developVersionSession.cancelSave()
 
         let versionName = candidate.versions.first(where: { $0.id == id })?.name ?? "Named version"
         let recoveryName = "Primary before promotion — \(Date().formatted(date: .abbreviated, time: .shortened))"
@@ -2500,8 +2413,7 @@ struct EditWorkspaceView: View {
         let sourceHash = preparation.catalog.source.sha256
         developVersionPersistenceState = .saving
         developVersionNotice = nil
-        developVersionTransitionTask = Task {
-            defer { developVersionTransitionTask = nil }
+        developVersionSession.startTransition {
             do {
                 let result = try await service.promote(preparation)
                 guard !Task.isCancelled,
@@ -2535,11 +2447,10 @@ struct EditWorkspaceView: View {
 
     private func switchDevelopVersion(to targetID: UUID?) {
         guard targetID != developVersionCatalog?.activeVersionID,
-              let repository = developVersionRepository,
               var candidate = developVersionCatalog else { return }
         closeDevelopComparison()
 
-        developVersionSaveTask?.cancel()
+        developVersionSession.cancelSave()
         let currentSettings = metadataViewModel.editingMetadata.cameraRaw
         let targetSettings: CameraRawSettings?
         do {
@@ -2558,7 +2469,6 @@ struct EditWorkspaceView: View {
         // the editor. A write failure leaves the visible version untouched.
         persistDevelopVersionCatalog(
             candidate,
-            through: repository,
             settingsToInstall: targetSettings,
             installsSettings: true
         )
@@ -2566,121 +2476,39 @@ struct EditWorkspaceView: View {
 
     private func persistDevelopVersionCatalog(
         _ candidate: DevelopVersionCatalog,
-        through repository: DevelopVersionCatalogRepository,
         settingsToInstall: CameraRawSettings? = nil,
         installsSettings: Bool = false
     ) {
-        let sourceHash = candidate.source.sha256
-        developVersionSaveTask?.cancel()
-        developVersionPersistenceState = .saving
-        developVersionNotice = nil
-        developVersionSaveTask = Task {
-            do {
-                let storage = try await repository.save(candidate)
-                guard !Task.isCancelled,
-                      developVersionRevision?.sha256 == sourceHash else { return }
-                developVersionCatalog = candidate
-                developVersionStorage = storage
-                developVersionPersistenceState = .saved
-                if installsSettings {
-                    installDevelopSettings(settingsToInstall)
-                } else {
-                    metadataViewModel.hasChanges = false
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                guard developVersionRevision?.sha256 == sourceHash else { return }
-                developVersionPersistenceState = .failed(error.localizedDescription)
-                developVersionNotice = error.localizedDescription
+        developVersionSession.persist(candidate) {
+            if installsSettings {
+                installDevelopSettings(settingsToInstall)
+            } else {
+                metadataViewModel.hasChanges = false
             }
         }
     }
 
     private func scheduleActiveDevelopVersionSave() {
-        guard let activeID = developVersionCatalog?.activeVersionID,
-              let repository = developVersionRepository,
-              var candidate = developVersionCatalog else { return }
-        do {
-            try candidate.updateVersion(
-                id: activeID,
-                settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings(),
-                watermarkDataProvider: watermarkStore.imageData(forAssetID:)
-            )
-        } catch {
-            developVersionPersistenceState = .failed(error.localizedDescription)
-            developVersionNotice = error.localizedDescription
-            return
+        let didSchedule = developVersionSession.scheduleActiveSave(
+            settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings(),
+            watermarkDataProvider: watermarkStore.imageData(forAssetID:)
+        ) {
+            metadataViewModel.hasChanges = false
         }
-
-        developVersionCatalog = candidate
-        developVersionPersistenceState = .dirty
-        metadataViewModel.hasChanges = false
-        developVersionSaveTask?.cancel()
-        developVersionSaveTask = Task {
-            do {
-                try await Task.sleep(for: .milliseconds(650))
-                guard !Task.isCancelled else { return }
-                let storage = try await repository.save(candidate)
-                guard !Task.isCancelled,
-                      developVersionRevision?.sha256 == candidate.source.sha256 else { return }
-                developVersionCatalog = candidate
-                developVersionStorage = storage
-                developVersionPersistenceState = .saved
-                metadataViewModel.hasChanges = false
-            } catch is CancellationError {
-                return
-            } catch {
-                guard developVersionRevision?.sha256 == candidate.source.sha256 else { return }
-                developVersionPersistenceState = .failed(error.localizedDescription)
-                developVersionNotice = error.localizedDescription
-            }
+        if didSchedule {
+            metadataViewModel.hasChanges = false
         }
     }
 
     private func flushActiveDevelopVersion(
         reason: DevelopVersionFlushReason
     ) async -> DevelopVersionFlushOutcome {
-        developVersionSaveTask?.cancel()
-        developVersionSaveTask = nil
-        guard let activeID = developVersionCatalog?.activeVersionID,
-              let repository = developVersionRepository,
-              var candidate = developVersionCatalog else { return .succeeded }
-        do {
-            try candidate.updateVersion(
-                id: activeID,
-                settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings(),
-                watermarkDataProvider: watermarkStore.imageData(forAssetID:)
-            )
-        } catch {
-            developVersionPersistenceState = .failed(error.localizedDescription)
-            developVersionNotice = error.localizedDescription
-            return .failed(error.localizedDescription)
-        }
-
-        developVersionPersistenceState = .saving
-        developVersionNotice = nil
-        do {
-            let storage = try await repository.save(candidate)
-            guard developVersionRevision?.sha256 == candidate.source.sha256 else {
-                let message = "The source changed before the named version could be saved."
-                developVersionPersistenceState = .failed(message)
-                developVersionNotice = message
-                return .failed(message)
-            }
-            developVersionCatalog = candidate
-            developVersionStorage = storage
-            developVersionPersistenceState = .saved
+        await developVersionSession.flushActive(
+            reason: reason,
+            settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings(),
+            watermarkDataProvider: watermarkStore.imageData(forAssetID:)
+        ) {
             metadataViewModel.hasChanges = false
-            return .succeeded
-        } catch {
-            let message = error.localizedDescription
-            developVersionPersistenceState = .failed(message)
-            developVersionNotice = message
-            editLog.error(
-                "Failed to flush named Develop version for \(String(describing: reason), privacy: .public): \(message, privacy: .private)"
-            )
-            return .failed(message)
         }
     }
 
@@ -2688,24 +2516,20 @@ struct EditWorkspaceView: View {
         _ imageURL: URL,
         modifiers: NSEvent.ModifierFlags = []
     ) {
-        guard developVersionTransitionTask == nil else { return }
+        guard !developVersionSession.hasTransition else { return }
         let oldSelectedIDs = browserViewModel.selectedImageIDs
         let oldAnchor = browserViewModel.lastClickedImageURL
         let visibleImages = browserViewModel.visibleImages
         let visibleIndex = browserViewModel.urlToVisibleIndex
 
-        developVersionTransitionTask = Task {
+        developVersionSession.startTransition {
             let outcome = await flushActiveDevelopVersion(reason: .imageNavigation)
-            guard !Task.isCancelled else {
-                developVersionTransitionTask = nil
-                return
-            }
+            guard !Task.isCancelled else { return }
             guard outcome == .succeeded else {
                 // Explicitly retain both pieces of selection state. This also protects against
                 // future callers that optimistically mutate selection before requesting a flush.
                 browserViewModel.selectedImageIDs = oldSelectedIDs
                 browserViewModel.lastClickedImageURL = oldAnchor
-                developVersionTransitionTask = nil
                 return
             }
 
@@ -2728,7 +2552,6 @@ struct EditWorkspaceView: View {
             browserViewModel.lastClickedImageURL = imageURL
             filmstripKeyboardScrollTarget = imageURL
             isWorkspaceFocused = true
-            developVersionTransitionTask = nil
         }
     }
 
@@ -2741,14 +2564,10 @@ struct EditWorkspaceView: View {
     }
 
     private func requestEditWorkspaceExit() {
-        guard developVersionTransitionTask == nil else { return }
-        developVersionTransitionTask = Task {
+        guard !developVersionSession.hasTransition else { return }
+        developVersionSession.startTransition {
             let outcome = await flushActiveDevelopVersion(reason: .workspaceExit)
-            guard !Task.isCancelled else {
-                developVersionTransitionTask = nil
-                return
-            }
-            developVersionTransitionTask = nil
+            guard !Task.isCancelled else { return }
             if outcome == .succeeded {
                 onExit()
             }
@@ -2775,6 +2594,7 @@ struct EditWorkspaceView: View {
             DevelopVersionFlushCoordinator.shared.unregister(registrationID)
             developVersionFlushRegistrationID = nil
         }
+        developVersionSession.reset()
 
         // Tear down the clean-feed mirror; browse mode resumes driving the feed.
         metalPipeline?.mirror = nil
