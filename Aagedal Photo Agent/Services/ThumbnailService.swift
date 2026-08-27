@@ -7,6 +7,8 @@ nonisolated private let thumbnailLogger = Logger(subsystem: "com.aagedal.photo-a
 
 @Observable
 final class ThumbnailService {
+    typealias OriginalThumbnailLoader = @Sendable (URL) async -> NSImage?
+
     nonisolated(unsafe) private let cache = NSCache<NSURL, NSImage>()
     nonisolated(unsafe) private let editedCache = NSCache<NSURL, NSImage>()
     private struct InFlightRequest {
@@ -18,6 +20,7 @@ final class ThumbnailService {
     @ObservationIgnored private var editedInFlightTasks: [URL: InFlightRequest] = [:]
     private let thumbnailSize = CGSize(width: 240, height: 240)
     @ObservationIgnored private let memoryCoordinator: ImageMemoryCoordinator
+    @ObservationIgnored private let originalThumbnailLoader: OriginalThumbnailLoader?
     @ObservationIgnored private var memoryRegistration: ImageMemoryCoordinator.Registration? = nil
 
     /// Caps how many thumbnail decodes run concurrently across the whole app — visible cell loads
@@ -26,13 +29,20 @@ final class ThumbnailService {
     /// and the cooperative pool so the thumbnails actually on screen queue behind off-screen ones.
     private let decodeGate = ThumbnailDecodeGate(limit: 6)
 
-    init(memoryCoordinator: ImageMemoryCoordinator = .shared) {
+    init(
+        memoryCoordinator: ImageMemoryCoordinator = .shared,
+        originalThumbnailLoader: OriginalThumbnailLoader? = nil
+    ) {
         self.memoryCoordinator = memoryCoordinator
+        self.originalThumbnailLoader = originalThumbnailLoader
         cache.countLimit = 500
         editedCache.countLimit = 500
         applyMemoryLimit(memoryCoordinator.policy().thumbnailLimit)
         memoryRegistration = memoryCoordinator.register(
             kind: .thumbnail,
+            cancelSpeculativeWork: { [weak self] in
+                Task { @MainActor [weak self] in self?.cancelInFlightWork() }
+            },
             applyLimit: { [weak self] limit in
                 Task { @MainActor [weak self] in self?.applyMemoryLimit(limit) }
             },
@@ -83,8 +93,19 @@ final class ThumbnailService {
             request = existing
         } else {
             let requestID = UUID()
+            let originalThumbnailLoader = originalThumbnailLoader
             let task = Task<NSImage?, Never> {
                 guard !Task.isCancelled else { return nil }
+                if let originalThumbnailLoader {
+                    guard let loaded = await originalThumbnailLoader(url),
+                          !Task.isCancelled else { return nil }
+                    cache.setObject(
+                        loaded,
+                        forKey: url as NSURL,
+                        cost: Self.decodedCost(of: loaded)
+                    )
+                    return loaded
+                }
                 if let oriented = await self.generateOrientedThumbnail(for: url) {
                     guard !Task.isCancelled else { return nil }
                     cache.setObject(oriented, forKey: url as NSURL, cost: Self.decodedCost(of: oriented))
@@ -476,6 +497,12 @@ final class ThumbnailService {
     func clearCache() {
         cache.removeAllObjects()
         editedCache.removeAllObjects()
+        cancelInFlightWork()
+    }
+
+    /// Cancels producers without discarding completed thumbnails. Warning pressure uses this
+    /// lighter operation; critical pressure follows it with `clearCache` in eviction order.
+    private func cancelInFlightWork() {
         for request in inFlightTasks.values {
             request.task.cancel()
         }

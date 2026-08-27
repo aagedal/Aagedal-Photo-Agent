@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// Exact identity for one bounded Pixel Analysis visualization.
 ///
@@ -138,6 +139,33 @@ actor AnalysisDerivedViewCache {
     }
 }
 
+/// Owns the detached render tasks that can populate the derived-view cache. Memory-pressure
+/// callbacks arrive on a Dispatch source rather than the caller's task, so relying only on
+/// SwiftUI task cancellation leaves those renders able to finish after an eviction.
+nonisolated private final class AnalysisDerivedRenderRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [UUID: Task<CGImage?, Never>] = [:]
+
+    func insert(_ task: Task<CGImage?, Never>) -> UUID {
+        let id = UUID()
+        lock.withLock { tasks[id] = task }
+        return id
+    }
+
+    func remove(_ id: UUID) {
+        _ = lock.withLock { tasks.removeValue(forKey: id) }
+    }
+
+    func cancelAll() {
+        let pending = lock.withLock { () -> [Task<CGImage?, Never>] in
+            let pending = Array(tasks.values)
+            tasks.removeAll()
+            return pending
+        }
+        for task in pending { task.cancel() }
+    }
+}
+
 /// Renders and caches spatially aligned Pixel Analysis views.
 ///
 /// SwiftUI cancels its preview task whenever the source or mode changes. That cancellation is
@@ -150,6 +178,7 @@ nonisolated final class AnalysisDerivedViewService: Sendable {
 
     private let cache: AnalysisDerivedViewCache
     private let renderer: Renderer
+    private let renderRegistry = AnalysisDerivedRenderRegistry()
     private let memoryCoordinator: ImageMemoryCoordinator?
     private let memoryRegistration: ImageMemoryCoordinator.Registration?
 
@@ -168,6 +197,9 @@ nonisolated final class AnalysisDerivedViewService: Sendable {
         if let memoryCoordinator {
             memoryRegistration = memoryCoordinator.register(
                 kind: .scope,
+                cancelSpeculativeWork: { [renderRegistry] in
+                    renderRegistry.cancelAll()
+                },
                 applyLimit: { [cache] limit in
                     Task { await cache.setMaximumCost(limit) }
                 },
@@ -205,6 +237,8 @@ nonisolated final class AnalysisDerivedViewService: Sendable {
             let rendered = renderer(source, mode)
             return Task.isCancelled ? nil : rendered
         }
+        let renderID = renderRegistry.insert(renderTask)
+        defer { renderRegistry.remove(renderID) }
         let rendered = await withTaskCancellationHandler {
             await renderTask.value
         } onCancel: {

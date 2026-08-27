@@ -456,6 +456,37 @@ final class MTLTextureWrapper: @unchecked Sendable {
 /// and white balance. The LUT is regenerated on every slider change (~microseconds).
 final class MetalEditPipeline: @unchecked Sendable {
 
+    /// A memory-pressure cancellation token for synchronous Metal precache uploads. Metal command
+    /// buffers cannot be cancelled after commit, so the gate invalidates work at every safe
+    /// boundary and, critically, prevents a completed buffer from repopulating the evicted cache.
+    nonisolated private final class SpeculativePrecacheGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var generation: UInt64 = 0
+        private var enabled = true
+
+        func begin() -> UInt64? {
+            lock.withLock { enabled ? generation : nil }
+        }
+
+        func isValid(_ permit: UInt64) -> Bool {
+            lock.withLock { enabled && generation == permit }
+        }
+
+        func cancelAndSuppress() {
+            lock.withLock {
+                generation &+= 1
+                enabled = false
+            }
+        }
+
+        func resume() {
+            lock.withLock {
+                generation &+= 1
+                enabled = true
+            }
+        }
+    }
+
     /// Immutable identity wrapper for non-Sendable Metal protocol values. The wrapper makes only
     /// the handle binding Sendable; resource contents still require the pipeline's executor.
     nonisolated private struct StableMetalHandle<Resource>: @unchecked Sendable {
@@ -563,7 +594,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         cache.countLimit = 2
         return cache
     }()
-    private let imageMemoryCoordinator = ImageMemoryCoordinator.shared
+    private let imageMemoryCoordinator: ImageMemoryCoordinator
+    private let speculativePrecacheGate = SpeculativePrecacheGate()
     nonisolated(unsafe) private var imageMemoryRegistration: ImageMemoryCoordinator.Registration?
     /// Stable resource handles. The references never change after construction; mutations of
     /// shared buffer contents remain confined to state-executor-checked entry points. Main-actor
@@ -909,19 +941,30 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Creates a live-preview pipeline. Its mutable render state belongs to the main thread;
     /// expensive source uploads and adjacent-image precaching remain explicitly worker-safe.
-    nonisolated convenience init?(device: MTLDevice, commandQueue: MTLCommandQueue) {
+    nonisolated convenience init?(
+        device: MTLDevice,
+        commandQueue: MTLCommandQueue,
+        imageMemoryCoordinator: ImageMemoryCoordinator = .shared
+    ) {
         precondition(Thread.isMainThread, "Live MetalEditPipeline instances must be created on the main thread")
-        self.init(device: device, commandQueue: commandQueue, stateExecutor: .mainThread)
+        self.init(
+            device: device,
+            commandQueue: commandQueue,
+            stateExecutor: .mainThread,
+            imageMemoryCoordinator: imageMemoryCoordinator
+        )
     }
 
     nonisolated private init?(
         device: MTLDevice,
         commandQueue: MTLCommandQueue,
-        stateExecutor: StateExecutor
+        stateExecutor: StateExecutor,
+        imageMemoryCoordinator: ImageMemoryCoordinator = .shared
     ) {
         self.device = device
         self.commandQueue = commandQueue
         self.stateExecutor = stateExecutor
+        self.imageMemoryCoordinator = imageMemoryCoordinator
 
         guard let library = device.makeDefaultLibrary(),
               let function = library.makeFunction(name: "editAdjustments") else {
@@ -1085,6 +1128,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         imageMemoryRegistration = imageMemoryCoordinator.register(
             kind: .developSpeculative,
+            cancelSpeculativeWork: { [weak self] in
+                self?.speculativePrecacheGate.cancelAndSuppress()
+            },
             applyLimit: { [weak self] limit in
                 self?.textureCache.totalCostLimit = limit
             },
@@ -1135,23 +1181,9 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         let width = Int(extent.width)
         let height = Int(extent.height)
-        let sourcePixelSize = CGSize(width: width, height: height)
-        let prefetchLimit = imageMemoryCoordinator.prefetchItemLimit(
-            for: .developSpeculative,
-            sourcePixelSize: sourcePixelSize,
-            bytesPerPixel: 8,
-            maximum: 2
-        )
-        guard prefetchLimit > 0 else {
-            textureCache.removeAllObjects()
-            return
-        }
-        textureCache.countLimit = prefetchLimit
-        textureCache.totalCostLimit = imageMemoryCoordinator.adaptiveLimit(
-            for: .developSpeculative,
-            sourcePixelSize: sourcePixelSize,
-            bytesPerPixel: 8
-        )
+        // A foreground source transition is the boundary that permits adjacent-image work again
+        // after memory pressure. The live source itself is never treated as speculative.
+        speculativePrecacheGate.resume()
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float,
@@ -2879,10 +2911,29 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Call from a background task for adjacent images (prev/next).
     nonisolated func precacheTexture(for url: URL, ciImage: CIImage, neutralTemperature: Float = 6500, neutralTint: Float = 0) {
         let extent = ciImage.extent
-        guard extent.width > 0, extent.height > 0 else { return }
+        guard extent.width > 0,
+              extent.height > 0,
+              let precachePermit = speculativePrecacheGate.begin() else { return }
 
         let width = Int(extent.width)
         let height = Int(extent.height)
+        let sourcePixelSize = CGSize(width: width, height: height)
+        let prefetchLimit = imageMemoryCoordinator.prefetchItemLimit(
+            for: .developSpeculative,
+            sourcePixelSize: sourcePixelSize,
+            bytesPerPixel: 8,
+            maximum: 2
+        )
+        guard prefetchLimit > 0 else {
+            textureCache.removeAllObjects()
+            return
+        }
+        textureCache.countLimit = prefetchLimit
+        textureCache.totalCostLimit = imageMemoryCoordinator.adaptiveLimit(
+            for: .developSpeculative,
+            sourcePixelSize: sourcePixelSize,
+            bytesPerPixel: 8
+        )
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float, width: width, height: height, mipmapped: true
         )
@@ -2911,12 +2962,15 @@ final class MetalEditPipeline: @unchecked Sendable {
             )
         } catch { return }
 
+        guard speculativePrecacheGate.isValid(precachePermit) else { return }
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        guard speculativePrecacheGate.isValid(precachePermit) else { return }
         // Pre-cached textures get promoted to sourceTexture on navigation (applyCachedTexture),
         // so they need mips too — the Anonymizer effect can't tell a promoted texture apart
         // from a freshly-uploaded one.
         Self.generateMipmaps(for: texture, commandQueue: commandQueue)
+        guard speculativePrecacheGate.isValid(precachePermit) else { return }
         let levelZeroCost = width.multipliedReportingOverflow(by: height).partialValue
             .multipliedReportingOverflow(by: 8).partialValue
         let textureCost = levelZeroCost.multipliedReportingOverflow(by: 4).partialValue / 3

@@ -1,5 +1,8 @@
+import AppKit
+import CoreImage
 import CoreGraphics
 import Foundation
+import Metal
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -131,6 +134,78 @@ struct ImageMemoryCoordinatorTests {
         ])
     }
 
+    @Test("warning pressure cancels thumbnail producers before they can populate the cache")
+    @MainActor
+    func thumbnailPressureCancellation() async {
+        let coordinator = ImageMemoryCoordinator(
+            availableMemory: { 8 * 1_024 * 1_024 * 1_024 },
+            observesSystemPressure: false
+        )
+        let probe = AsyncCancellationProbe()
+        let service = ThumbnailService(
+            memoryCoordinator: coordinator,
+            originalThumbnailLoader: { _ in
+                probe.recordStart()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+                probe.recordCancellation()
+                return NSImage(size: NSSize(width: 32, height: 32))
+            }
+        )
+        let url = URL(fileURLWithPath: "/tmp/thumbnail-pressure-\(UUID().uuidString).jpg")
+        let load = Task { await service.loadThumbnail(for: url) }
+
+        while !probe.started {
+            await Task.yield()
+        }
+        coordinator.handleMemoryPressure(.warning)
+
+        #expect(await load.value == nil)
+        #expect(probe.cancelled)
+        #expect(service.thumbnail(for: url) == nil)
+    }
+
+    @Test("warning pressure suppresses Develop precache until the next foreground source")
+    @MainActor
+    func developPressureCancellation() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            return
+        }
+        let coordinator = ImageMemoryCoordinator(
+            availableMemory: { 8 * 1_024 * 1_024 * 1_024 },
+            observesSystemPressure: false
+        )
+        guard let pipeline = MetalEditPipeline(
+            device: device,
+            commandQueue: commandQueue,
+            imageMemoryCoordinator: coordinator
+        ) else {
+            return
+        }
+        let image = CIImage(color: CIColor(red: 0.2, green: 0.4, blue: 0.6))
+            .cropped(to: CGRect(x: 0, y: 0, width: 32, height: 32))
+        let beforePressure = URL(fileURLWithPath: "/tmp/develop-precache-before.tiff")
+        let suppressed = URL(fileURLWithPath: "/tmp/develop-precache-suppressed.tiff")
+        let resumed = URL(fileURLWithPath: "/tmp/develop-precache-resumed.tiff")
+
+        pipeline.uploadSourceImage(image)
+        pipeline.precacheTexture(for: beforePressure, ciImage: image)
+        #expect(pipeline.applyCachedTexture(for: beforePressure) != nil)
+
+        pipeline.precacheTexture(for: beforePressure, ciImage: image)
+        coordinator.handleMemoryPressure(.warning)
+        #expect(pipeline.applyCachedTexture(for: beforePressure) == nil)
+
+        pipeline.precacheTexture(for: suppressed, ciImage: image)
+        #expect(pipeline.applyCachedTexture(for: suppressed) == nil)
+
+        pipeline.uploadSourceImage(image)
+        pipeline.precacheTexture(for: resumed, ciImage: image)
+        #expect(pipeline.applyCachedTexture(for: resumed) != nil)
+    }
+
     private func sumOfCacheLimits(_ policy: ImageMemoryCoordinator.Policy) -> Int {
         policy.fullScreenPrimaryLimit
             + policy.fullScreenPreviewLimit
@@ -185,4 +260,16 @@ nonisolated private final class IntegerRecorder: @unchecked Sendable {
 
     func setFirst(_ value: Int) { lock.withLock { firstStorage = value } }
     func setSecond(_ value: Int) { lock.withLock { secondStorage = value } }
+}
+
+nonisolated private final class AsyncCancellationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didStart = false
+    private var didCancel = false
+
+    var started: Bool { lock.withLock { didStart } }
+    var cancelled: Bool { lock.withLock { didCancel } }
+
+    func recordStart() { lock.withLock { didStart = true } }
+    func recordCancellation() { lock.withLock { didCancel = true } }
 }

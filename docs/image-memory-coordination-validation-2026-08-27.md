@@ -34,7 +34,10 @@ directional prefetch similarly shortens its six-item candidate window based on d
 ## Memory-pressure protocol
 
 Both warning and critical pressure first cancel registered speculative work, preventing a completed
-decode from immediately repopulating a purged cache. Eviction then follows this documented order:
+decode from immediately repopulating a purged cache. Full-screen and thumbnail producers cancel
+their tracked tasks, Analysis cancels its detached derived-render registry, and Develop invalidates
+the current Metal precache generation and suppresses new adjacent-image uploads until the next
+foreground source transition. Eviction then follows this documented order:
 
 1. speculative Develop textures;
 2. derived Analysis/scope rasters;
@@ -53,6 +56,7 @@ folder-switch cleanup remain unchanged.
 - hardware-scaled budget clamping and the exact 100% allocation invariant;
 - dimension-aware limit reduction and zero speculative GPU prefetch for a representative 48 MP source;
 - cancellation-before-eviction behavior;
+- production cancellation of thumbnail, Analysis render, and Develop Metal precache producers;
 - warning and critical eviction order.
 
 The focused build also runs the existing `FullScreenImageCacheTests` and

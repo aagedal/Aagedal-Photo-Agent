@@ -531,6 +531,45 @@ struct AnalysisDerivedViewCacheTests {
         #expect(await service.cachedImage(for: key) == nil)
     }
 
+    @Test("memory pressure cancels an in-flight render before scope eviction")
+    func memoryPressureCancelsInFlightRender() async throws {
+        let coordinator = ImageMemoryCoordinator(
+            availableMemory: { 8 * 1_024 * 1_024 * 1_024 },
+            observesSystemPressure: false
+        )
+        let probe = RenderProbe()
+        let service = AnalysisDerivedViewService(
+            maximumCost: 1_024,
+            memoryCoordinator: coordinator,
+            renderer: { source, _ in
+                probe.recordRender()
+                while !Task.isCancelled {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                probe.recordCancellation()
+                return source
+            }
+        )
+        let source = try makeImage(width: 4, height: 4, value: 128)
+        let key = AnalysisDerivedViewCacheKey(
+            sourceIdentifier: "pressure-cancelled",
+            mode: .compressionResidual,
+            source: source
+        )
+        let render = Task {
+            await service.image(for: key, source: source)
+        }
+
+        while probe.renderCount == 0 {
+            await Task.yield()
+        }
+        coordinator.handleMemoryPressure(.warning)
+
+        #expect(await render.value == nil)
+        #expect(probe.observedCancellation)
+        #expect(await service.cachedImage(for: key) == nil)
+    }
+
     private func makeImage(width: Int, height: Int, value: UInt8) throws -> CGImage {
         var bytes = [UInt8](repeating: value, count: width * height * 4)
         for alphaOffset in stride(from: 3, to: bytes.count, by: 4) {
