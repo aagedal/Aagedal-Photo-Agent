@@ -285,12 +285,10 @@ the final packaging prerequisite but does not close the signed release item or a
   boundary evidence is recorded in the
   [2026-08-25 recovery-drill validation](../backup-restore-crash-drill-validation-2026-08-25.md),
   while hands-on process-kill, filesystem, and restore exercises remain open.
-- [ ] README, feature help, limitations, privacy text, licenses, and CHANGELOG draft; the
+- [x] README, feature help, limitations, privacy text, licenses, and CHANGELOG draft; the
   [2026-08-25 documentation-readiness validation](../documentation-readiness-validation-2026-08-25.md)
-  records complete README/help/limitations/privacy/CHANGELOG drafts and passing repository checks, but
-  this broad item remains open until the conflicting SwiftExif MIT/GPL labels and license text are
-  resolved from authoritative evidence and made consistent in the vendor copy, in-app Licenses tab, and
-  public component table.
+  records the complete drafts and the 2026-08-27 authoritative GPL-3.0 reconciliation for the pinned
+  SwiftExif revision, vendor copy, in-app Licenses tab, and public component table.
 - [ ] Version/build bump, notarized archive, Sparkle/appcast, and Homebrew release steps only after
   release candidate sign-off.
 

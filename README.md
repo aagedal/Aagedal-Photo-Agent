@@ -335,7 +335,7 @@ License texts ship with the app (Settings → Licenses) and live under `Aagedal 
 | [FFmpeg](https://ffmpeg.org) | AVIF / JPEG XL encoding | GPL-3.0 |
 | [c2patool](https://github.com/contentauth/c2pa-rs) | C2PA content credentials | MIT |
 | [Sparkle](https://sparkle-project.org) | Software updates | MIT |
-| [SwiftExif](https://github.com/aagedal/SwiftExif) | EXIF / IPTC metadata | **Release-blocking label reconciliation required**: the vendored README says MIT while its checked-in license text and current in-app label say GPL-3.0 |
+| [SwiftExif](https://github.com/aagedal/SwiftExif) | EXIF / IPTC metadata | GPL-3.0 |
 | [AuraFace-v1](https://huggingface.co/fal/AuraFace-v1) | Face recognition model | Apache-2.0 |
 
 ### Source for bundled GPL components (GPLv3 §6)
@@ -356,6 +356,6 @@ recorded in `Aagedal Photo Agent/Resources/bundled-components.json`. The reposit
 manifest against every present artifact; the required FFmpeg and c2patool binaries must always be present.
 
 The application's own source is published under GPL-3.0. SwiftExif source and its local maintained delta
-are checked in under `Vendor/SwiftExif`; its final public and in-app license label must be reconciled from
-authoritative upstream evidence before release. See the
+are checked in under `Vendor/SwiftExif`; the pinned upstream revision, vendored license text, public table,
+and in-app label consistently identify GPL-3.0. See the
 [documentation-readiness validation](docs/documentation-readiness-validation-2026-08-25.md).

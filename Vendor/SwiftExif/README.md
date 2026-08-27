@@ -2,7 +2,7 @@
 
 This directory is a source-preserving fork of
 [aagedal/SwiftExif](https://github.com/aagedal/SwiftExif) 1.9.10 at revision
-`47249c72b613ebab8e4514f4adf05bb8000a1908`. Its MIT license is retained in `LICENSE`.
+`47249c72b613ebab8e4514f4adf05bb8000a1908`. Its GPL-3.0 license is retained in `LICENSE`.
 
 Photo Agent maintains one carrier-model delta that upstream 1.9.10 cannot express:
 `XMPValue.languageAlternative` retains every ordered `rdf:Alt` item and its `xml:lang` tag.
