@@ -310,12 +310,12 @@ struct Aagedal_Photo_AgentApp: App {
                     Divider()
 
                     Button("Previous Image") {
-                        NotificationCenter.default.post(name: .selectPreviousImage, object: nil)
+                        commandRouter.send(.selectPreviousImage)
                     }
                     .keyboardShortcut("b", modifiers: .command)
 
                     Button("Next Image") {
-                        NotificationCenter.default.post(name: .selectNextImage, object: nil)
+                        commandRouter.send(.selectNextImage)
                     }
                     .keyboardShortcut("n", modifiers: .command)
 
@@ -536,8 +536,6 @@ extension Notification.Name {
     static let showImport = Notification.Name("showImport")
     static let importStarted = Notification.Name("importStarted")
     static let importCompleted = Notification.Name("importCompleted")
-    static let selectPreviousImage = Notification.Name("selectPreviousImage")
-    static let selectNextImage = Notification.Name("selectNextImage")
     static let processVariablesSelected = Notification.Name("processVariablesSelected")
     static let processVariablesAll = Notification.Name("processVariablesAll")
     static let showTemplatePalette = Notification.Name("showTemplatePalette")

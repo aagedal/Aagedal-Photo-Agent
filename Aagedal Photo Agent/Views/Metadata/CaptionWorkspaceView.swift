@@ -40,6 +40,7 @@ struct CaptionWorkspaceView: View {
     @State private var isAwaitingTemplatePalette = false
     @FocusState private var focusedAction: CaptionActionFocus?
     @Environment(\.openSettings) private var openSettings
+    @Environment(AppCommandRouter.self) private var commandRouter
 
     private var visibleImages: [ImageFile] {
         browserViewModel.visibleImages.filter(\.isImageFile)
@@ -220,11 +221,18 @@ struct CaptionWorkspaceView: View {
         .onChange(of: metadataViewModel.saveError) { _, saveError in
             if let saveError { errorMessage = saveError }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .selectPreviousImage)) { _ in
-            navigate(previous: true)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .selectNextImage)) { _ in
-            navigate(previous: false)
+        .onChange(of: commandRouter.latestDelivery) { _, delivery in
+            guard let delivery else { return }
+            switch delivery.command {
+            case .selectPreviousImage:
+                navigate(previous: true)
+            case .selectNextImage:
+                navigate(previous: false)
+            case .openFolder, .openRecentFolder, .setRating, .setLabel,
+                 .renderSelected, .advancedExportSelected, .renderAll,
+                 .saveAsJPEG, .saveAsPNG, .archiveRAW:
+                break
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .restoreCaptionEditorFocus)) { _ in
             isAwaitingTemplatePalette = false

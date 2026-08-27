@@ -65,6 +65,18 @@ struct AppCommandRouterTests {
         #expect(try #require(router.latestDelivery).command == .archiveRAW(.dngLossless))
         #expect(try #require(router.latestDelivery).sequence == 3)
     }
+
+    @Test("image navigation commands preserve direction and ordering")
+    func navigationCommandIdentity() throws {
+        let router = AppCommandRouter()
+
+        router.send(.selectPreviousImage)
+        #expect(try #require(router.latestDelivery).command == .selectPreviousImage)
+
+        router.send(.selectNextImage)
+        #expect(try #require(router.latestDelivery).command == .selectNextImage)
+        #expect(try #require(router.latestDelivery).sequence == 2)
+    }
 }
 
 @Suite("App startup signpost lifecycle")

@@ -725,7 +725,8 @@ struct ContentView: View {
                     saveSelectedAs(format: .png)
                 case .archiveRAW(let format):
                     archiveSelectedRAW(as: format)
-                case .openFolder, .openRecentFolder, .setRating, .setLabel:
+                case .openFolder, .openRecentFolder, .setRating, .setLabel,
+                     .selectPreviousImage, .selectNextImage:
                     break
                 }
             }
@@ -3747,6 +3748,14 @@ struct ContentViewModifiers: ViewModifier {
                     browserViewModel.setRating(rating)
                 case .setLabel(let label):
                     browserViewModel.setLabel(label)
+                case .selectPreviousImage:
+                    if mainViewMode != .caption {
+                        browserViewModel.selectPrevious()
+                    }
+                case .selectNextImage:
+                    if mainViewMode != .caption {
+                        browserViewModel.selectNext()
+                    }
                 case .renderSelected, .advancedExportSelected, .renderAll,
                      .saveAsJPEG, .saveAsPNG, .archiveRAW:
                     break
@@ -3757,16 +3766,6 @@ struct ContentViewModifiers: ViewModifier {
             }
             .onReceive(NotificationCenter.default.publisher(for: .deleteSelected)) { _ in
                 browserViewModel.confirmDeleteSelectedImages()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .selectPreviousImage)) { _ in
-                if mainViewMode != .caption {
-                    browserViewModel.selectPrevious()
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .selectNextImage)) { _ in
-                if mainViewMode != .caption {
-                    browserViewModel.selectNext()
-                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .rotateClockwise)) { _ in
                 browserViewModel.rotateClockwise()

@@ -16,6 +16,8 @@ enum AppCommand: Equatable, Sendable {
     case saveAsJPEG
     case saveAsPNG
     case archiveRAW(RAWArchiveFormat)
+    case selectPreviousImage
+    case selectNextImage
 }
 
 struct AppCommandDelivery: Equatable, Sendable {
