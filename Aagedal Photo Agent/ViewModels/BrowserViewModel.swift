@@ -13,16 +13,6 @@ struct FavoriteFolderExpansion: Hashable {
     let url: URL
 }
 
-nonisolated protocol ImageTrashHandling: Sendable {
-    func trashItem(at url: URL) throws
-}
-
-nonisolated struct SystemImageTrashHandler: ImageTrashHandling {
-    func trashItem(at url: URL) throws {
-        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
-    }
-}
-
 @Observable
 final class BrowserViewModel {
     struct MetadataLoadingProgress: Equatable {
@@ -202,6 +192,7 @@ final class BrowserViewModel {
     @ObservationIgnored private let imageTrashHandler: any ImageTrashHandling
 
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
+    @ObservationIgnored private var imageMutationTask: Task<Void, Never>?
     @ObservationIgnored private var needsSortRebuild = false
     @ObservationIgnored private var needsVisibleRebuild = false
     @ObservationIgnored private var needsForceSortOnRebuild = false
@@ -2980,53 +2971,56 @@ final class BrowserViewModel {
         let orderedURLs = visibleImages.map(\.url)
         let anchorURL = lastClickedImageURL.flatMap { urlsToDelete.contains($0) ? $0 : nil }
             ?? orderedURLs.first(where: urlsToDelete.contains)
-        var deletedURLs: Set<URL> = []
-        var failures: [(url: URL, message: String)] = []
+        let handler = imageTrashHandler
 
-        for url in urlsToDelete {
-            do {
-                try imageTrashHandler.trashItem(at: url)
-                deletedURLs.insert(url)
-            } catch {
-                failures.append((url, error.localizedDescription))
+        imageMutationTask?.cancel()
+        imageMutationTask = Task {
+            let result = await fileSystemService.trashItems(Array(urlsToDelete), using: handler)
+            let deletedURLs = result.completedSourceURLs
+            if !deletedURLs.isEmpty {
+                images.removeAll { deletedURLs.contains($0.url) }
+                manualOrder.removeAll { deletedURLs.contains($0) }
+                pendingMetadataURLs.subtract(deletedURLs)
+
+                // `loadBasicMetadata` deliberately suppresses the normal images.didSet cascade
+                // while it awaits each metadata batch. C2PA assets can make that window longer
+                // while their embedded manifests are parsed. A deletion during the window must
+                // therefore rebuild identity/sort/visible caches explicitly; otherwise the file
+                // is in the Trash but its stale thumbnail remains visible and appears undeletable.
+                urlToImageIndex = Dictionary(
+                    uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) }
+                )
+                rebuildSortedCache(forceSort: true)
+
+                let closestURL = Self.closestSurvivingImageURL(
+                    in: orderedURLs,
+                    around: anchorURL,
+                    deleting: deletedURLs
+                )
+                selectedImageIDs = closestURL.map { Set([$0]) } ?? []
+                lastClickedImageURL = closestURL
+                onImagesDeleted?(deletedURLs)
+
+                for url in deletedURLs {
+                    thumbnailService.invalidateThumbnail(for: url)
+                    fullScreenImageCache.invalidateImage(for: url)
+                    Task { await C2PASigningService.invalidateValidationCache(for: url) }
+                }
+            }
+
+            if let firstFailure = result.failures.first {
+                let suffix = result.failures.count == 1
+                    ? ""
+                    : " and \(result.failures.count - 1) other file(s)"
+                errorMessage = "Couldn’t move \(firstFailure.sourceURL.lastPathComponent)\(suffix) to the Trash: \(firstFailure.message)"
             }
         }
+    }
 
-        if !deletedURLs.isEmpty {
-            images.removeAll { deletedURLs.contains($0.url) }
-            manualOrder.removeAll { deletedURLs.contains($0) }
-            pendingMetadataURLs.subtract(deletedURLs)
-
-            // `loadBasicMetadata` deliberately suppresses the normal images.didSet cascade
-            // while it awaits each metadata batch. C2PA assets can make that window longer
-            // while their embedded manifests are parsed. A deletion during the window must
-            // therefore rebuild identity/sort/visible caches explicitly; otherwise the file
-            // is in the Trash but its stale thumbnail remains visible and appears undeletable.
-            urlToImageIndex = Dictionary(
-                uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) }
-            )
-            rebuildSortedCache(forceSort: true)
-
-            let closestURL = Self.closestSurvivingImageURL(
-                in: orderedURLs,
-                around: anchorURL,
-                deleting: deletedURLs
-            )
-            selectedImageIDs = closestURL.map { Set([$0]) } ?? []
-            lastClickedImageURL = closestURL
-            onImagesDeleted?(deletedURLs)
-
-            for url in deletedURLs {
-                thumbnailService.invalidateThumbnail(for: url)
-                fullScreenImageCache.invalidateImage(for: url)
-                Task { await C2PASigningService.invalidateValidationCache(for: url) }
-            }
-        }
-
-        if let firstFailure = failures.first {
-            let suffix = failures.count == 1 ? "" : " and \(failures.count - 1) other file(s)"
-            errorMessage = "Couldn’t move \(firstFailure.url.lastPathComponent)\(suffix) to the Trash: \(firstFailure.message)"
-        }
+    /// Test/UI coordination seam that waits for the current batch mutation without exposing its
+    /// mutable task or moving any result application away from the main actor.
+    func waitForPendingImageMutation() async {
+        await imageMutationTask?.value
     }
 
     // MARK: - Move to Subfolder
@@ -3064,79 +3058,56 @@ final class BrowserViewModel {
 
     private func moveSelectedImages(toSubfolderNamed name: String, in folderURL: URL) {
         let destinationFolder = folderURL.appendingPathComponent(name)
-        let fileManager = FileManager.default
+        let urlsToMove = Array(selectedImageIDs)
+        let xmpService = xmpSidecarService
+        let metaService = sidecarService
 
-        if fileManager.fileExists(atPath: destinationFolder.path) {
-            var isDirectory: ObjCBool = false
-            if fileManager.fileExists(atPath: destinationFolder.path, isDirectory: &isDirectory), !isDirectory.boolValue {
+        imageMutationTask?.cancel()
+        imageMutationTask = Task {
+            let result: FileSystemService.ImageMoveResult
+            do {
+                result = try await fileSystemService.moveImageItems(
+                    urlsToMove,
+                    into: destinationFolder,
+                    createDestinationIfNeeded: true,
+                    xmpSidecarService: xmpService,
+                    metadataSidecarService: metaService
+                )
+            } catch is CancellationError {
+                return
+            } catch FileSystemService.Error.destinationIsNotDirectory {
                 presentMoveErrorAlert(message: "A file named \"\(name)\" already exists in this folder.")
                 return
-            }
-        } else {
-            do {
-                try fileManager.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
             } catch {
                 presentMoveErrorAlert(message: "Failed to create subfolder: \(error.localizedDescription)")
                 return
             }
-        }
 
-        let urlsToMove = selectedImageIDs
-        var moved: Set<URL> = []
-        var failures: [String] = []
-
-        for url in urlsToMove {
-            let destinationURL = destinationFolder.appendingPathComponent(url.lastPathComponent)
-            if fileManager.fileExists(atPath: destinationURL.path) {
-                failures.append("\(url.lastPathComponent) already exists in \"\(name)\".")
-                continue
-            }
-            do {
-                try fileManager.moveItem(at: url, to: destinationURL)
-
-                let xmpSource = xmpSidecarService.sidecarURL(for: url)
-                if fileManager.fileExists(atPath: xmpSource.path) {
-                    let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
-                    do {
-                        try fileManager.moveItem(at: xmpSource, to: xmpDestination)
-                    } catch {
-                        failures.append("\(url.lastPathComponent) XMP sidecar: \(error.localizedDescription)")
-                    }
+            let moved = result.movedSourceURLs
+            if !moved.isEmpty {
+                images.removeAll { moved.contains($0.url) }
+                manualOrder.removeAll { moved.contains($0) }
+                selectedImageIDs.subtract(moved)
+                if let last = lastClickedImageURL, moved.contains(last) {
+                    lastClickedImageURL = nil
                 }
+                onImagesDeleted?(moved)
+            }
 
-                do {
-                    try sidecarService.moveSidecar(for: url, from: folderURL, to: destinationFolder)
-                } catch {
-                    failures.append("\(url.lastPathComponent) metadata sidecar: \(error.localizedDescription)")
+            if !result.failures.isEmpty {
+                presentMoveErrorAlert(message: "Failed to move \(result.failures.count) item(s).")
+            }
+
+            if result.destinationWasCreated || !moved.isEmpty {
+                var subfolders = subfoldersByOpenFolder[folderURL] ?? []
+                if !subfolders.contains(destinationFolder) {
+                    subfolders.append(destinationFolder)
+                    subfolders.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                    subfoldersByOpenFolder[folderURL] = subfolders
                 }
-
-                moved.insert(url)
-            } catch {
-                failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                expandFolderInAllSidebarTrees(folderURL)
             }
         }
-
-        if !moved.isEmpty {
-            images.removeAll { moved.contains($0.url) }
-            manualOrder.removeAll { moved.contains($0) }
-            selectedImageIDs.subtract(moved)
-            if let last = lastClickedImageURL, moved.contains(last) {
-                lastClickedImageURL = nil
-            }
-            onImagesDeleted?(moved)
-        }
-
-        if !failures.isEmpty {
-            presentMoveErrorAlert(message: "Failed to move \(failures.count) item(s).")
-        }
-
-        var subfolders = subfoldersByOpenFolder[folderURL] ?? []
-        if !subfolders.contains(destinationFolder) {
-            subfolders.append(destinationFolder)
-            subfolders.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-            subfoldersByOpenFolder[folderURL] = subfolders
-        }
-        expandFolderInAllSidebarTrees(folderURL)
     }
 
     func promptMoveSelectedImagesToFolder() {
@@ -3184,78 +3155,42 @@ final class BrowserViewModel {
         let xmpService = xmpSidecarService
         let metaService = sidecarService
 
-        Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                Self.performImageMoves(
-                    urlsToMove: urlsToMove,
-                    destinationFolder: destinationFolder,
-                    xmpSidecarService: xmpService,
-                    sidecarService: metaService
-                )
-            }.value
-
-            if !result.moved.isEmpty {
-                images.removeAll { result.moved.contains($0.url) }
-                manualOrder.removeAll { result.moved.contains($0) }
-                selectedImageIDs.subtract(result.moved)
-                if let last = lastClickedImageURL, result.moved.contains(last) {
-                    lastClickedImageURL = nil
-                }
-                onImagesDeleted?(result.moved)
-            }
-
-            if !result.failures.isEmpty {
-                presentMoveErrorAlert(message: "Failed to move \(result.failures.count) item(s):\n" + result.failures.prefix(5).joined(separator: "\n"))
-            }
-        }
-    }
-
-    private nonisolated static func performImageMoves(
-        urlsToMove: [URL],
-        destinationFolder: URL,
-        xmpSidecarService: XMPSidecarService,
-        sidecarService: MetadataSidecarService
-    ) -> (moved: Set<URL>, failures: [String]) {
-        var moved: Set<URL> = []
-        var failures: [String] = []
-        let fileManager = FileManager.default
-
-        for url in urlsToMove {
-            let destinationURL = destinationFolder.appendingPathComponent(url.lastPathComponent)
-            if fileManager.fileExists(atPath: destinationURL.path) {
-                failures.append("\(url.lastPathComponent) already exists in destination.")
-                continue
-            }
+        imageMutationTask?.cancel()
+        imageMutationTask = Task {
             do {
-                try fileManager.moveItem(at: url, to: destinationURL)
+                let result = try await fileSystemService.moveImageItems(
+                    urlsToMove,
+                    into: destinationFolder,
+                    createDestinationIfNeeded: false,
+                    xmpSidecarService: xmpService,
+                    metadataSidecarService: metaService
+                )
 
-                // Move XMP sidecar
-                let xmpSource = xmpSidecarService.sidecarURL(for: url)
-                if fileManager.fileExists(atPath: xmpSource.path) {
-                    let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
-                    do {
-                        try fileManager.moveItem(at: xmpSource, to: xmpDestination)
-                    } catch {
-                        failures.append("\(url.lastPathComponent) XMP sidecar: \(error.localizedDescription)")
+                if !result.movedSourceURLs.isEmpty {
+                    images.removeAll { result.movedSourceURLs.contains($0.url) }
+                    manualOrder.removeAll { result.movedSourceURLs.contains($0) }
+                    selectedImageIDs.subtract(result.movedSourceURLs)
+                    if let last = lastClickedImageURL, result.movedSourceURLs.contains(last) {
+                        lastClickedImageURL = nil
                     }
+                    onImagesDeleted?(result.movedSourceURLs)
                 }
 
-                // Move metadata sidecar (source folder is derived per-URL so this works
-                // even when the dragged set spans multiple parent folders).
-                do {
-                    try sidecarService.moveSidecar(for: url, from: url.deletingLastPathComponent(), to: destinationFolder)
-                } catch {
-                    failures.append("\(url.lastPathComponent) metadata sidecar: \(error.localizedDescription)")
+                if !result.failures.isEmpty {
+                    let details = result.failures.prefix(5).map {
+                        "\($0.sourceURL.lastPathComponent) \($0.stage.rawValue): \($0.message)"
+                    }
+                    presentMoveErrorAlert(message: "Failed to move \(result.failures.count) item(s):\n" + details.joined(separator: "\n"))
                 }
-
-                moved.insert(url)
+            } catch is CancellationError {
+                return
             } catch {
-                failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                presentMoveErrorAlert(message: "Failed to move items: \(error.localizedDescription)")
             }
         }
-
-        return (moved, failures)
     }
+
+    // MARK: - Metadata helpers
 
     private func presentMoveErrorAlert(message: String) {
         let alert = NSAlert()
@@ -3403,65 +3338,60 @@ final class BrowserViewModel {
         guard let folderURL = currentFolderURL, !selectedImageIDs.isEmpty else { return }
 
         let sorted = sortedImages.filter { selectedImageIDs.contains($0.url) }
-        var newSelectionURLs: Set<URL> = []
-        var insertions: [(afterIndex: Int, sourceURL: URL, image: ImageFile)] = []
+        let requests = sorted.map { FileSystemService.DuplicateRequest(source: $0) }
+        let metaService = sidecarService
 
-        for source in sorted {
-            guard let sourceIndex = urlToImageIndex[source.url] else { continue }
-            let ext = source.url.pathExtension
-            let baseName = source.url.deletingPathExtension().lastPathComponent
+        imageMutationTask?.cancel()
+        imageMutationTask = Task {
+            let result = await fileSystemService.duplicateImages(
+                requests,
+                in: folderURL,
+                metadataSidecarService: metaService
+            )
+            let completedBySource = Dictionary(uniqueKeysWithValues: result.completed.map {
+                ($0.sourceURL, $0.duplicate)
+            })
+            var newSelectionURLs: Set<URL> = []
 
-            // Find available "copy" name
-            var copyName = "\(baseName) copy"
-            var destURL = folderURL.appendingPathComponent(copyName).appendingPathExtension(ext)
-            var counter = 2
-            while FileManager.default.fileExists(atPath: destURL.path) {
-                copyName = "\(baseName) copy \(counter)"
-                destURL = folderURL.appendingPathComponent(copyName).appendingPathExtension(ext)
-                counter += 1
-            }
-
-            do {
-                try FileManager.default.copyItem(at: source.url, to: destURL)
-
-                // Copy metadata sidecar
-                if let sidecar = sidecarService.loadSidecar(for: source.url, in: folderURL) {
-                    try? sidecarService.saveSidecar(sidecar, for: destURL, in: folderURL)
+            // Build one replacement array so multiple duplicates are inserted deterministically
+            // and no stale pre-await indices can target the wrong image.
+            var updatedImages: [ImageFile] = []
+            updatedImages.reserveCapacity(images.count + result.completed.count)
+            for image in images {
+                updatedImages.append(image)
+                if let duplicate = completedBySource[image.url] {
+                    updatedImages.append(duplicate)
+                    newSelectionURLs.insert(duplicate.url)
                 }
+            }
+            images = updatedImages
 
-                let newImage = ImageFile(url: destURL, copyingFrom: source)
-                insertions.append((afterIndex: sourceIndex, sourceURL: source.url, image: newImage))
-                newSelectionURLs.insert(destURL)
-            } catch {
-                logger.error("Duplicate failed for \(source.filename): \(error.localizedDescription)")
+            // Update manual order — single-pass O(N+M) rebuild instead of O(N*M) repeated scans.
+            let duplicateURLBySource = completedBySource.mapValues(\.url)
+            var newManualOrder: [URL] = []
+            newManualOrder.reserveCapacity(manualOrder.count + result.completed.count)
+            for url in manualOrder {
+                newManualOrder.append(url)
+                if let duplicateURL = duplicateURLBySource[url] {
+                    newManualOrder.append(duplicateURL)
+                }
+            }
+            let addedURLs = Set(newManualOrder)
+            for completion in result.completed where !addedURLs.contains(completion.duplicate.url) {
+                newManualOrder.append(completion.duplicate.url)
+            }
+            manualOrder = newManualOrder
+
+            selectedImageIDs = newSelectionURLs
+            lastClickedImageURL = newSelectionURLs.first
+
+            if let firstFailure = result.failures.first {
+                let suffix = result.failures.count == 1
+                    ? ""
+                    : " and \(result.failures.count - 1) other operation(s)"
+                errorMessage = "Couldn’t fully duplicate \(firstFailure.sourceURL.lastPathComponent)\(suffix): \(firstFailure.message)"
             }
         }
-
-        // Insert duplicates after their originals (process in reverse to maintain indices)
-        for insertion in insertions.reversed() {
-            let insertAt = min(insertion.afterIndex + 1, images.count)
-            images.insert(insertion.image, at: insertAt)
-        }
-
-        // Update manual order — single-pass O(N+M) rebuild instead of O(N*M) repeated scans
-        let dupeAfterSource = Dictionary(uniqueKeysWithValues: insertions.map { ($0.sourceURL, $0.image.url) })
-        var newManualOrder: [URL] = []
-        newManualOrder.reserveCapacity(manualOrder.count + insertions.count)
-        for url in manualOrder {
-            newManualOrder.append(url)
-            if let dupeURL = dupeAfterSource[url] {
-                newManualOrder.append(dupeURL)
-            }
-        }
-        // Append any duplicates whose source wasn't in the manual order
-        let addedURLs = Set(newManualOrder)
-        for insertion in insertions where !addedURLs.contains(insertion.image.url) {
-            newManualOrder.append(insertion.image.url)
-        }
-        manualOrder = newManualOrder
-
-        selectedImageIDs = newSelectionURLs
-        lastClickedImageURL = newSelectionURLs.first
     }
 
     // MARK: - Reset All Edits

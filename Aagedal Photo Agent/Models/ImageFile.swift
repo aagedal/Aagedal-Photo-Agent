@@ -106,7 +106,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.keywordsLowercased = []
     }
 
-    init(url: URL, copyingFrom source: ImageFile) {
+    nonisolated init(url: URL, copyingFrom source: ImageFile) {
         self.url = url
         self.filename = url.lastPathComponent
         self.filenameLowercased = url.lastPathComponent.lowercased()

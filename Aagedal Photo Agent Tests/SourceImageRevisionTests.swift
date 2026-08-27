@@ -253,6 +253,108 @@ struct SerializedFileSystemServiceTests {
         #expect(FileManager.default.fileExists(atPath: sourceURL.path))
         #expect(FileManager.default.fileExists(atPath: destinationURL.path))
     }
+
+    @Test("batch trash reports partial success without losing failures")
+    func batchTrashPartialSuccess() async throws {
+        let first = URL(fileURLWithPath: "/virtual/first.jpg")
+        let second = URL(fileURLWithPath: "/virtual/second.jpg")
+        let service = FileSystemService()
+
+        let result = await service.trashItems(
+            [first, second],
+            using: SelectiveTrashHandler(failingURLs: [second])
+        )
+
+        #expect(result.completedSourceURLs == [first])
+        #expect(result.failures.count == 1)
+        #expect(result.failures.first?.sourceURL == second)
+        #expect(result.failures.first?.stage == .primary)
+        #expect(result.cancellationStoppedRemainingItems == false)
+    }
+
+    @Test("pre-cancelled batch trash explicitly stops all remaining items")
+    func batchTrashPreCancellation() async throws {
+        let url = URL(fileURLWithPath: "/virtual/cancelled.jpg")
+        let service = FileSystemService()
+        let task = Task {
+            await Task.yield()
+            return await service.trashItems([url], using: SelectiveTrashHandler())
+        }
+        task.cancel()
+
+        let result = await task.value
+        #expect(result.completedSourceURLs.isEmpty)
+        #expect(result.failures.isEmpty)
+        #expect(result.cancellationStoppedRemainingItems)
+    }
+
+    @Test("image move keeps XMP and editorial sidecars with committed primary")
+    func imageMovePreservesSidecars() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let destinationFolder = fixture.directoryURL.appendingPathComponent("Destination", isDirectory: true)
+        let imageURL = try fixture.write("photo.jpg", contents: "image")
+        let xmpURL = imageURL.deletingPathExtension().appendingPathExtension("xmp")
+        try Data("xmp".utf8).write(to: xmpURL)
+        let metadataService = MetadataSidecarService()
+        try metadataService.saveSidecar(
+            MetadataSidecar(
+                sourceFile: imageURL.lastPathComponent,
+                metadata: IPTCMetadata(title: "Preserved")
+            ),
+            for: imageURL,
+            in: fixture.directoryURL
+        )
+
+        let result = try await FileSystemService().moveImageItems(
+            [imageURL],
+            into: destinationFolder,
+            createDestinationIfNeeded: true,
+            xmpSidecarService: XMPSidecarService(),
+            metadataSidecarService: metadataService
+        )
+
+        let movedImageURL = destinationFolder.appendingPathComponent("photo.jpg")
+        #expect(result.movedSourceURLs == [imageURL])
+        #expect(result.failures.isEmpty)
+        #expect(result.destinationWasCreated)
+        #expect(FileManager.default.fileExists(atPath: movedImageURL.path))
+        #expect(FileManager.default.fileExists(
+            atPath: movedImageURL.deletingPathExtension().appendingPathExtension("xmp").path
+        ))
+        #expect(metadataService.loadSidecar(for: movedImageURL, in: destinationFolder)?.metadata.title == "Preserved")
+    }
+
+    @Test("duplicate selects a unique name and copies editorial sidecar")
+    func duplicatePreservesEditorialSidecar() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let imageURL = try fixture.write("photo.jpg", contents: "image")
+        _ = try fixture.write("photo copy.jpg", contents: "existing")
+        let metadataService = MetadataSidecarService()
+        try metadataService.saveSidecar(
+            MetadataSidecar(
+                sourceFile: imageURL.lastPathComponent,
+                metadata: IPTCMetadata(title: "Copied")
+            ),
+            for: imageURL,
+            in: fixture.directoryURL
+        )
+
+        let result = await FileSystemService().duplicateImages(
+            [.init(source: ImageFile(url: imageURL))],
+            in: fixture.directoryURL,
+            metadataSidecarService: metadataService
+        )
+
+        let duplicateURL = fixture.directoryURL.appendingPathComponent("photo copy 2.jpg")
+        #expect(result.completed.count == 1)
+        #expect(result.completed.first?.sourceURL == imageURL)
+        #expect(result.completed.first?.duplicate.url == duplicateURL)
+        #expect(result.failures.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: duplicateURL.path))
+        #expect(metadataService.loadSidecar(for: duplicateURL, in: fixture.directoryURL)?.metadata.title == "Copied")
+    }
 }
 
 private struct TemporaryFixture {
@@ -288,6 +390,16 @@ nonisolated private final class DownloadRequestProbe: @unchecked Sendable {
     func record(_ url: URL) {
         lock.withLock {
             recordedURLs.append(url)
+        }
+    }
+}
+
+nonisolated private struct SelectiveTrashHandler: ImageTrashHandling {
+    var failingURLs: Set<URL> = []
+
+    func trashItem(at url: URL) throws {
+        if failingURLs.contains(url) {
+            throw CocoaError(.fileWriteUnknown)
         }
     }
 }

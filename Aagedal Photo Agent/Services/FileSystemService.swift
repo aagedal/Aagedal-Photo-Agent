@@ -1,8 +1,19 @@
 import Foundation
 
+nonisolated protocol ImageTrashHandling: Sendable {
+    func trashItem(at url: URL) throws
+}
+
+nonisolated struct SystemImageTrashHandler: ImageTrashHandling {
+    func trashItem(at url: URL) throws {
+        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+    }
+}
+
 actor FileSystemService {
     enum Error: Swift.Error, Sendable, Equatable {
         case destinationAlreadyExists(URL)
+        case destinationIsNotDirectory(URL)
     }
 
     struct FolderScanResult: Sendable {
@@ -30,6 +41,46 @@ actor FileSystemService {
         let sourceURL: URL?
         let resultingURL: URL
         let cancellationRequestedAfterCommit: Bool
+    }
+
+    struct ItemFailure: Sendable, Equatable {
+        enum Stage: String, Sendable, Equatable {
+            case primary
+            case xmpSidecar
+            case metadataSidecar
+        }
+
+        let sourceURL: URL
+        let stage: Stage
+        let message: String
+    }
+
+    struct BatchMutationResult: Sendable, Equatable {
+        let completedSourceURLs: Set<URL>
+        let failures: [ItemFailure]
+        let cancellationStoppedRemainingItems: Bool
+    }
+
+    struct ImageMoveResult: Sendable, Equatable {
+        let movedSourceURLs: Set<URL>
+        let failures: [ItemFailure]
+        let destinationWasCreated: Bool
+        let cancellationStoppedRemainingItems: Bool
+    }
+
+    struct DuplicateRequest: Sendable {
+        let source: ImageFile
+    }
+
+    struct DuplicateCompletion: Sendable {
+        let sourceURL: URL
+        let duplicate: ImageFile
+    }
+
+    struct DuplicateResult: Sendable {
+        let completed: [DuplicateCompletion]
+        let failures: [ItemFailure]
+        let cancellationStoppedRemainingItems: Bool
     }
 
     private let isLocallyAvailable: @Sendable (URL) -> Bool
@@ -164,6 +215,204 @@ actor FileSystemService {
 
     func moveFolder(from sourceURL: URL, to destinationURL: URL) throws -> FolderMutationResult {
         try moveFolder(from: sourceURL, to: destinationURL, kind: .move)
+    }
+
+    /// Trashes as many items as possible. Cancellation stops before the next item; a synchronous
+    /// trash already in progress is allowed to commit and is included in `completedSourceURLs`.
+    func trashItems(
+        _ urls: [URL],
+        using handler: any ImageTrashHandling
+    ) -> BatchMutationResult {
+        var completed: Set<URL> = []
+        var failures: [ItemFailure] = []
+        var cancellationStoppedRemainingItems = false
+
+        for url in urls {
+            if Task.isCancelled {
+                cancellationStoppedRemainingItems = true
+                break
+            }
+            do {
+                try handler.trashItem(at: url)
+                completed.insert(url)
+            } catch {
+                failures.append(ItemFailure(
+                    sourceURL: url,
+                    stage: .primary,
+                    message: error.localizedDescription
+                ))
+            }
+        }
+        return BatchMutationResult(
+            completedSourceURLs: completed,
+            failures: failures,
+            cancellationStoppedRemainingItems: cancellationStoppedRemainingItems
+        )
+    }
+
+    /// Moves primary images and their existing XMP/editorial sidecars. A primary move is a
+    /// committed success even when a companion move fails, matching the browser's existing
+    /// partial-success contract while making each companion failure explicit.
+    func moveImageItems(
+        _ sourceURLs: [URL],
+        into destinationFolder: URL,
+        createDestinationIfNeeded: Bool,
+        xmpSidecarService: XMPSidecarService,
+        metadataSidecarService: MetadataSidecarService
+    ) throws -> ImageMoveResult {
+        try Task.checkCancellation()
+        let fileManager = FileManager.default
+        var destinationWasCreated = false
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: destinationFolder.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else { throw Error.destinationIsNotDirectory(destinationFolder) }
+        } else if createDestinationIfNeeded {
+            try Task.checkCancellation()
+            try fileManager.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+            destinationWasCreated = true
+        } else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+
+        var moved: Set<URL> = []
+        var failures: [ItemFailure] = []
+        var cancellationStoppedRemainingItems = false
+        for sourceURL in sourceURLs {
+            if Task.isCancelled {
+                cancellationStoppedRemainingItems = true
+                break
+            }
+            let destinationURL = destinationFolder.appendingPathComponent(sourceURL.lastPathComponent)
+            guard !fileManager.fileExists(atPath: destinationURL.path) else {
+                failures.append(ItemFailure(
+                    sourceURL: sourceURL,
+                    stage: .primary,
+                    message: "The destination already contains this filename."
+                ))
+                continue
+            }
+            do {
+                try fileManager.moveItem(at: sourceURL, to: destinationURL)
+                moved.insert(sourceURL)
+            } catch {
+                failures.append(ItemFailure(
+                    sourceURL: sourceURL,
+                    stage: .primary,
+                    message: error.localizedDescription
+                ))
+                continue
+            }
+
+            let xmpSource = xmpSidecarService.sidecarURL(for: sourceURL)
+            if fileManager.fileExists(atPath: xmpSource.path) {
+                do {
+                    try fileManager.moveItem(
+                        at: xmpSource,
+                        to: xmpSidecarService.sidecarURL(for: destinationURL)
+                    )
+                } catch {
+                    failures.append(ItemFailure(
+                        sourceURL: sourceURL,
+                        stage: .xmpSidecar,
+                        message: error.localizedDescription
+                    ))
+                }
+            }
+
+            do {
+                try metadataSidecarService.moveSidecar(
+                    for: sourceURL,
+                    from: sourceURL.deletingLastPathComponent(),
+                    to: destinationFolder
+                )
+            } catch {
+                failures.append(ItemFailure(
+                    sourceURL: sourceURL,
+                    stage: .metadataSidecar,
+                    message: error.localizedDescription
+                ))
+            }
+        }
+        return ImageMoveResult(
+            movedSourceURLs: moved,
+            failures: failures,
+            destinationWasCreated: destinationWasCreated,
+            cancellationStoppedRemainingItems: cancellationStoppedRemainingItems
+        )
+    }
+
+    /// Copies primary images using collision-free names selected inside this actor, then preserves
+    /// the existing editorial JSON-sidecar behavior. Sidecar failures are reported without hiding
+    /// a successfully-created primary duplicate.
+    func duplicateImages(
+        _ requests: [DuplicateRequest],
+        in folderURL: URL,
+        metadataSidecarService: MetadataSidecarService
+    ) -> DuplicateResult {
+        let fileManager = FileManager.default
+        var completed: [DuplicateCompletion] = []
+        var failures: [ItemFailure] = []
+        var cancellationStoppedRemainingItems = false
+
+        for request in requests {
+            if Task.isCancelled {
+                cancellationStoppedRemainingItems = true
+                break
+            }
+            let source = request.source
+            let fileExtension = source.url.pathExtension
+            let baseName = source.url.deletingPathExtension().lastPathComponent
+            var copyName = "\(baseName) copy"
+            var destinationURL = folderURL.appendingPathComponent(copyName)
+                .appendingPathExtension(fileExtension)
+            var counter = 2
+            while fileManager.fileExists(atPath: destinationURL.path) {
+                copyName = "\(baseName) copy \(counter)"
+                destinationURL = folderURL.appendingPathComponent(copyName)
+                    .appendingPathExtension(fileExtension)
+                counter += 1
+            }
+            if Task.isCancelled {
+                cancellationStoppedRemainingItems = true
+                break
+            }
+
+            do {
+                try fileManager.copyItem(at: source.url, to: destinationURL)
+            } catch {
+                failures.append(ItemFailure(
+                    sourceURL: source.url,
+                    stage: .primary,
+                    message: error.localizedDescription
+                ))
+                continue
+            }
+
+            if let sidecar = metadataSidecarService.loadSidecar(for: source.url, in: folderURL) {
+                do {
+                    try metadataSidecarService.saveSidecar(
+                        sidecar,
+                        for: destinationURL,
+                        in: folderURL
+                    )
+                } catch {
+                    failures.append(ItemFailure(
+                        sourceURL: source.url,
+                        stage: .metadataSidecar,
+                        message: error.localizedDescription
+                    ))
+                }
+            }
+            completed.append(DuplicateCompletion(
+                sourceURL: source.url,
+                duplicate: ImageFile(url: destinationURL, copyingFrom: source)
+            ))
+        }
+        return DuplicateResult(
+            completed: completed,
+            failures: failures,
+            cancellationStoppedRemainingItems: cancellationStoppedRemainingItems
+        )
     }
 
     private func moveFolder(

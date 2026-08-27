@@ -53,6 +53,7 @@ struct DevelopInteractionBehaviorTests {
         viewModel.lastClickedImageURL = signedImage.url
 
         viewModel.deleteSelectedImages()
+        await viewModel.waitForPendingImageMutation()
 
         #expect(viewModel.images.map(\.url) == [survivingImage.url])
         #expect(viewModel.visibleImages.map(\.url) == [survivingImage.url])
@@ -72,6 +73,7 @@ struct DevelopInteractionBehaviorTests {
         viewModel.selectedImageIDs = [signedImage.url]
 
         viewModel.deleteSelectedImages()
+        await viewModel.waitForPendingImageMutation()
 
         #expect(viewModel.images.map(\.url) == [signedImage.url])
         #expect(viewModel.selectedImageIDs == [signedImage.url])
