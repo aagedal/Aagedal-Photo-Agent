@@ -129,7 +129,9 @@
 - [ ] Separate the face recognition model file from the app, to minimize update size. The model is rarely updated.
   - [ ] Download the pre-converted quantized Core ML artifact from `aagedal.me` in the background when the
     model is not installed. Users must never download ONNX or run the developer conversion toolchain.
-  - [ ] Needs support for model versioning, in case an improved face recognition model is released.
+  - [x] Needs support for model versioning, in case an improved face recognition model is released.
+    (2026-08-27) Signed descriptors bind component, model, embedding, schema, and minimum-app versions;
+    installed receipts are revalidated and update availability is explicit.
 - [ ] Check if a users face database is problematic with relation to GDPR. If so warn the user that they may now want to use the known people database feature. The face grouping feature should still be legally safe.
 
 **3.0 status reconciliation (2026-08-25):** the completed investigation, comparison, and named-version
@@ -139,8 +141,9 @@ unapproved; the on-demand face-model component and focused face-data privacy/leg
 Release-level manual, hardware, privacy, recovery, and packaging gates continue in the
 [delivery plan](docs/v2.3/delivery-plan.md) and [app improvement audit](docs/app-improvement-audit-plan.md).
 
-**On-demand model follow-up (2026-08-26):** deterministic developer fetch/conversion and hostable artifact
-packaging are complete, model/embedding versions are bound, and runtime availability states are explicit.
-Production hosting/trust, app-side download/install/rollback/removal, embedding-preserving migration, and
-real-server tests remain open; see the
-[AuraFace packaging validation](docs/auraface-on-demand-packaging-validation.md).
+**On-demand model follow-up (2026-08-27):** deterministic developer fetch/conversion, hostable artifact
+packaging, signed runtime verification, atomic install/rollback/removal, embedding-preserving migration,
+source-aware bundled/downloaded UI, and model/embedding version binding are complete. Production publishing
+at `aagedal.me`, a model-omitted release candidate, measured update-size reduction, and real-server/macOS-tier
+tests remain open; see the [AuraFace packaging validation](docs/auraface-on-demand-packaging-validation.md)
+and [runtime validation](docs/auraface-on-demand-runtime-validation-2026-08-27.md).

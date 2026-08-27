@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 54 of 75 checklist substeps complete
+**Status:** implementation in progress — 59 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -40,6 +40,19 @@ cross-workflow exit gates.
 work is dependency-ordered, deferred until after first content, idempotent, and cancellable, and the optional
 AuraFace component now has seven explicit fail-closed availability states. The broader startup performance
 gate and AuraFace download/install/rollback exit gate remain open.
+
+**Resource-control follow-up (2026-08-27):** 57 of 75 substeps are now checked and 18 remain open. A shared
+image-memory coordinator now budgets full-screen, Develop, thumbnail, analysis, and scope caches; adapts
+limits and prefetch to source dimensions and available memory; and performs ordered warning/critical
+eviction after cancelling full-screen prefetch, analysis renders, thumbnail producers, and Metal precache.
+The Instruments and target-hardware benchmark remains open.
+
+**On-demand model runtime follow-up (2026-08-27):** 59 of 75 substeps are now checked and 16 remain open.
+The fixture-tested runtime verifies a signed HTTPS descriptor and complete artifact file set, installs
+atomically with rollback, revalidates signed receipts, defers embedding migration until the new model is
+verified, and provides download/removal/offline disclosure. The production-download item remains open until
+the artifacts are published at `aagedal.me`, a model-omitted release candidate is built, and real-server
+macOS-tier drills pass.
 
 ## Phase 0 — Stop silent data loss and destructive surprises
 
@@ -337,6 +350,12 @@ result is announced once; CI runs the smoke suite; dated manual evidence covers 
 - [ ] Add signposts and benchmarks for local SSD, network volume, iCloud placeholder, read-only volume, and
   large folder cases.
 
+**Async-boundary follow-up (2026-08-27):** Browser folder scans and mutations, batch trash/move/duplicate
+operations, and the audited Metadata JSON-history/XMP save now cross serialized actor boundaries and return
+immutable results with explicit cancellation and durable-partial-success semantics. Lower-priority direct
+filesystem paths, signposts/volume benchmarks, and Thread Performance Checker evidence remain open.
+([validation](filesystem-async-boundary-validation-2026-08-27.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -349,9 +368,12 @@ before thumbnails, scopes, masks, and render intermediates.
 
 **Plan:**
 
-- [ ] Create a shared image-memory coordinator across full-screen, Develop, thumbnail, and scope caches.
-- [ ] Scale prefetch and limits by source dimensions and available memory.
-- [ ] Respond to memory pressure by cancelling speculative work and evicting in a documented order.
+- [x] Create a shared image-memory coordinator across full-screen, Develop, thumbnail, and scope caches.
+  ([validation](image-memory-coordination-validation-2026-08-27.md), 2026-08-27)
+- [x] Scale prefetch and limits by source dimensions and available memory.
+  ([validation](image-memory-coordination-validation-2026-08-27.md), 2026-08-27)
+- [x] Respond to memory pressure by cancelling speculative work and evicting in a documented order.
+  ([validation](image-memory-coordination-validation-2026-08-27.md), 2026-08-27)
 - [ ] Benchmark rapid navigation/edit/export of representative large RAW/HDR files with Instruments.
 
 **Exit gate:** the benchmark has an agreed peak-memory budget, no IOSurface/allocation failures, and bounded
@@ -397,6 +419,17 @@ longer restart Deadline capture; slow high-resolution loads offer actionable rec
   router; retain NotificationCenter for genuine system/process broadcasts.
 - [ ] Add a characterization test before each extraction and keep UI behavior unchanged.
 
+**Command-router follow-up (2026-08-27):** Open Folder/Open Recent, rating/label, core export, and previous/
+next-image commands now use a typed, scene-owned `AppCommandRouter`, including explicit AppKit bridging and
+typed payload/sequence contract coverage. Other command families and state-owning coordinator extractions
+remain incremental work.
+
+**State-owner follow-up (2026-08-27):** `DevelopVersionSessionCoordinator` now owns named-version catalog,
+revision, storage, cancellation, debounce/flush persistence, and stale-result gating. A separate
+`AIMaskSelectionCoordinator` owns AI-mask selection/generation request identity, cancellation, image-session
+binding, and late-result rejection. Characterization tests cover both extractions; brush/matte/gesture and
+render ownership remain in `EditWorkspaceView` and keep the broader extraction items open.
+
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.
 
@@ -417,6 +450,13 @@ the intended window/pane; extracted units are independently testable.
   unsafe-state reduction remain open. ([validation](metal-edit-pipeline-executor-validation.md))
 - [x] Schedule a TSAN stress scenario combining preview, Clean Feed, export, cancellation, and navigation.
   ([validation](metal-pipeline-tsan-stress-validation-2026-08-25.md), 2026-08-25)
+
+**Executor-isolation follow-up (2026-08-27):** a dedicated serialized offscreen renderer owns its queue,
+cancellation, and reusable pipeline; source/mirror/white-balance state is lock-backed; executor and
+cross-pipeline owner preconditions are enforced; and immutable Metal handles reduced explicit
+`nonisolated(unsafe)` declarations from 41 to 30. A compile-time live-preview facade and extraction of the
+remaining mutable caches/plans/scratch state remain open.
+([validation](metal-edit-pipeline-executor-validation.md))
 
 **Exit gate:** every remaining unsafe isolation escape has a written invariant and enforcement; the stress
 scenario is repeatable and clean.
@@ -440,8 +480,13 @@ Normal one-time Core ML preparation of an `.mlpackage` is not model conversion a
   ([validation](auraface-on-demand-packaging-validation.md), 2026-08-26)
 - [ ] Download the pre-converted quantized Core ML artifact from `aagedal.me` over HTTPS, verify the manifest
   signature/hash before install, stage atomically, and retain a rollback version during migration.
-- [ ] Never reset stored embeddings until the new model and backup are both verified.
-- [ ] Explain download size, on-device use, removal, and offline behavior before downloading.
+  Partial 2026-08-27: the signed descriptor, complete artifact verification, atomic install, receipt
+  revalidation, rollback, and failure-injection tests are implemented; production publishing and real-server
+  validation remain open. ([validation](auraface-on-demand-runtime-validation-2026-08-27.md))
+- [x] Never reset stored embeddings until the new model and backup are both verified.
+  ([validation](auraface-on-demand-runtime-validation-2026-08-27.md), 2026-08-27)
+- [x] Explain download size, on-device use, removal, and offline behavior before downloading.
+  ([validation](auraface-on-demand-runtime-validation-2026-08-27.md), 2026-08-27)
 
 **Exit gate:** clean install/offline/update/rollback/corrupt-download scenarios are tested; app update size
 drops by the model payload without silently disabling face features.

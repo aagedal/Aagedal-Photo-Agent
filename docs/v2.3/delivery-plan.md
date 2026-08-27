@@ -9,11 +9,11 @@ the highest-risk forensic algorithms.
 No phase is complete with only a view mockup. Each phase includes model, persistence where relevant,
 tests, error states, accessibility, and a manual validation note.
 
-**Open-item reconciliation (2026-08-25):** 118 of 142 checklist items are complete and 24 remain open.
+**Open-item reconciliation (updated 2026-08-27):** 119 of 142 checklist items are complete and 23 remain open.
 The remaining items are genuine gates: three Phase 0 benchmark/model decisions, three manual
-validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer steps in Phase 11, and ten
-Phase 12 performance, device, privacy, accessibility, recovery, documentation, and release tasks. Current
-source and dated validation records do not justify closing any of those 24 items.
+validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer steps in Phase 11, and nine
+Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
+validation records do not justify closing any of those 23 items.
 
 ## Phase 0 — research, decisions, and fixtures
 
