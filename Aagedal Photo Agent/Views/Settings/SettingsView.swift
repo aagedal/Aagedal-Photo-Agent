@@ -511,26 +511,32 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                switch auraFaceComponent.availability {
-                case .downloading(let progress):
-                    ProgressView(value: progress)
-                        .accessibilityLabel("AuraFace download progress")
-                case .ready, .updateAvailable:
-                    Text("Removing AuraFace disables face matching but does not delete your photos or Known People data. You can download it again later; face matching works offline while it is installed.")
+                switch auraFaceComponent.source {
+                case .bundled:
+                    Text("AuraFace is included with this build, works offline, and cannot be removed separately. No download is required.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Button("Remove AuraFace…", role: .destructive) {
-                        showAuraFaceRemovalConfirmation = true
+                case .downloaded:
+                    if auraFaceComponent.canRemove {
+                        Text("Removing the downloaded AuraFace component disables face matching but does not delete your photos or Known People data. You can download it again later; face matching works offline while it is installed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Remove AuraFace…", role: .destructive) {
+                            showAuraFaceRemovalConfirmation = true
+                        }
                     }
-                case .notInstalled, .offline, .verificationFailed:
-                    Text(FaceRecognitionModelAvailability.downloadExplanation)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Button("Download AuraFace…") {
-                        showAuraFaceDownloadConfirmation = true
+                case .none:
+                    if case .downloading(let progress) = auraFaceComponent.availability {
+                        ProgressView(value: progress)
+                            .accessibilityLabel("AuraFace download progress")
+                    } else if auraFaceComponent.canDownload {
+                        Text(FaceRecognitionModelAvailability.downloadExplanation)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Download AuraFace…") {
+                            showAuraFaceDownloadConfirmation = true
+                        }
                     }
-                case .incompatible:
-                    EmptyView()
                 }
 
                 if let error = auraFaceComponent.lastError {

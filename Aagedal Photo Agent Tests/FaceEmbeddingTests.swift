@@ -458,6 +458,51 @@ struct FaceEmbeddingTests {
     }
 
     @Test @MainActor
+    func auraFaceBundledFallbackExposesNoMisleadingComponentActions() {
+        let manager = AuraFaceComponentManager(
+            installerFactory: { fatalError("Bundled AuraFace must not invoke the component installer") },
+            initialSnapshot: AuraFaceComponentSnapshot(
+                availability: .ready(version: CoreMLFaceEmbedder.modelVersion),
+                source: .bundled
+            )
+        )
+
+        #expect(manager.availability.isAvailable)
+        #expect(manager.source == .bundled)
+        #expect(!manager.canDownload)
+        #expect(!manager.canRemove)
+
+        manager.downloadConfirmed()
+        manager.removeConfirmed()
+
+        #expect(manager.source == .bundled)
+        #expect(manager.availability == .ready(version: CoreMLFaceEmbedder.modelVersion))
+    }
+
+    @Test @MainActor
+    func auraFaceDownloadedAndMissingSourcesExposeOnlyValidActions() {
+        let downloaded = AuraFaceComponentManager(
+            installerFactory: { fatalError("Capability checks must not invoke the installer") },
+            initialSnapshot: AuraFaceComponentSnapshot(
+                availability: .ready(version: "AuraFace-v1/glintr100"),
+                source: .downloaded
+            )
+        )
+        let missing = AuraFaceComponentManager(
+            installerFactory: { fatalError("Capability checks must not invoke the installer") },
+            initialSnapshot: AuraFaceComponentSnapshot(
+                availability: .notInstalled,
+                source: .none
+            )
+        )
+
+        #expect(downloaded.canRemove)
+        #expect(!downloaded.canDownload)
+        #expect(!missing.canRemove)
+        #expect(missing.canDownload)
+    }
+
+    @Test @MainActor
     func unavailableModelRefusesScanBeforeStarting() {
         let viewModel = FaceRecognitionViewModel(
             readService: SwiftExifReadService(),

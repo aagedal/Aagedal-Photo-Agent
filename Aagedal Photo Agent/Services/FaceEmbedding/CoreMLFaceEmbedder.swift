@@ -112,7 +112,14 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     /// source-package hash still verify.
     nonisolated static func resolvedModelURL(bundle: Bundle = .main) -> URL? {
         AuraFaceComponentStore.installedModelURL()
-            ?? bundle.url(forResource: Self.modelResource, withExtension: "mlmodelc")
+            ?? bundledModelURL(bundle: bundle)
+    }
+
+    /// Kept separate from `resolvedModelURL` so Settings can distinguish an app-bundled
+    /// fallback from a downloaded component. Both are usable, but only the latter is
+    /// independently removable.
+    nonisolated static func bundledModelURL(bundle: Bundle = .main) -> URL? {
+        bundle.url(forResource: Self.modelResource, withExtension: "mlmodelc")
     }
 
     /// Known People migration uses this as its fail-closed model boundary. A release-bundled

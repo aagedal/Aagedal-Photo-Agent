@@ -419,37 +419,79 @@ actor AuraFaceComponentInstaller {
     }
 }
 
+nonisolated enum AuraFaceComponentSource: Equatable, Sendable {
+    case none
+    case bundled
+    case downloaded
+}
+
+nonisolated struct AuraFaceComponentSnapshot: Equatable, Sendable {
+    let availability: FaceRecognitionModelAvailability
+    let source: AuraFaceComponentSource
+}
+
 @MainActor
 final class AuraFaceComponentManager: ObservableObject {
     static let shared = AuraFaceComponentManager()
 
     @Published private(set) var availability: FaceRecognitionModelAvailability
+    @Published private(set) var source: AuraFaceComponentSource
     @Published private(set) var lastError: String?
 
     private let installerFactory: () throws -> AuraFaceComponentInstaller
 
-    init(installerFactory: @escaping () throws -> AuraFaceComponentInstaller = {
-        try AuraFaceComponentInstaller()
-    }) {
+    init(
+        installerFactory: @escaping () throws -> AuraFaceComponentInstaller = {
+            try AuraFaceComponentInstaller()
+        },
+        initialSnapshot: AuraFaceComponentSnapshot? = nil
+    ) {
         self.installerFactory = installerFactory
-        if AuraFaceComponentStore.installedModelURL() != nil,
-           let descriptor = AuraFaceComponentStore.installedDescriptor() {
-            availability = .ready(version: descriptor.modelVersion)
-        } else if CoreMLFaceEmbedder.shared.availability.isAvailable {
-            availability = .ready(version: CoreMLFaceEmbedder.modelVersion)
-        } else {
-            availability = .notInstalled
+        let snapshot = initialSnapshot ?? Self.currentSnapshot()
+        availability = snapshot.availability
+        source = snapshot.source
+    }
+
+    var canDownload: Bool {
+        guard source == .none else { return false }
+        switch availability {
+        case .notInstalled, .offline, .verificationFailed:
+            return true
+        case .downloading, .ready, .updateAvailable, .incompatible:
+            return false
         }
     }
 
+    var canRemove: Bool {
+        source == .downloaded && availability.isAvailable
+    }
+
+    private static func currentSnapshot() -> AuraFaceComponentSnapshot {
+        if AuraFaceComponentStore.installedModelURL() != nil,
+           let descriptor = AuraFaceComponentStore.installedDescriptor() {
+            return AuraFaceComponentSnapshot(
+                availability: .ready(version: descriptor.modelVersion),
+                source: .downloaded
+            )
+        }
+        if CoreMLFaceEmbedder.bundledModelURL() != nil {
+            return AuraFaceComponentSnapshot(
+                availability: .ready(version: CoreMLFaceEmbedder.modelVersion),
+                source: .bundled
+            )
+        }
+        return AuraFaceComponentSnapshot(availability: .notInstalled, source: .none)
+    }
+
     func downloadConfirmed() {
-        if case .ready = availability { return }
+        guard canDownload else { return }
         availability = .downloading(progress: 0)
         lastError = nil
         Task {
             do {
                 let descriptor = try await installerFactory().downloadAndInstall()
                 CoreMLFaceEmbedder.shared.refreshAfterComponentChange()
+                source = .downloaded
                 availability = .ready(version: descriptor.modelVersion)
                 KnownPeopleService.shared.reloadAfterStorageChange()
             } catch {
@@ -466,13 +508,18 @@ final class AuraFaceComponentManager: ObservableObject {
     }
 
     func removeConfirmed() {
+        guard canRemove else { return }
         Task {
             do {
                 try await installerFactory().removeInstalledComponent()
                 CoreMLFaceEmbedder.shared.refreshAfterComponentChange()
-                availability = CoreMLFaceEmbedder.shared.availability.isAvailable
-                    ? .ready(version: CoreMLFaceEmbedder.modelVersion)
-                    : .notInstalled
+                if CoreMLFaceEmbedder.bundledModelURL() != nil {
+                    source = .bundled
+                    availability = .ready(version: CoreMLFaceEmbedder.modelVersion)
+                } else {
+                    source = .none
+                    availability = .notInstalled
+                }
                 lastError = nil
             } catch {
                 lastError = error.localizedDescription
