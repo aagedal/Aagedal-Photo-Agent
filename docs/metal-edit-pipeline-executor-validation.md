@@ -2,16 +2,18 @@
 
 ## Scope
 
-This is bounded Phase 4.2 progress, not completion of the phase. It adds runtime enforcement to the
-existing ownership model without splitting the pipeline or changing startup/instrumentation code.
+This is bounded Phase 4.2 progress, not completion of the phase. It separates offscreen scheduling
+and lifetime ownership from the live-preview facade and narrows worker-safe state publication without
+changing shader behavior or startup/instrumentation code.
 
 - Live preview and Clean Feed render state is owned by the main thread.
-- The singleton offscreen/export pipeline is owned by `offscreenRenderQueue`.
+- The singleton offscreen/export pipeline and its queue are owned together by
+  `OffscreenRendererExecutor`; `MetalEditPipeline.renderOffscreen*` are compatibility facades.
 - Source-image upload and adjacent-image precaching remain worker-safe exceptions: source publication
-  uses `sourceTextureLock`, mirror lookup is locked, the texture cache is `NSCache`, and their GPU work
-  uses call-local command buffers/textures.
+  uses lock-backed `SourceState`, mirror lookup uses lock-backed `MirrorState`, the texture cache is
+  `NSCache`, and their GPU work uses call-local command buffers/textures.
 - White-balance reference writes remain owner-only; locked reads support the deliberately detached
-  eyedropper solver.
+  eyedropper solver. Temperature and tint are now captured as one atomic reference snapshot.
 
 ## Enforcement added
 
@@ -22,15 +24,25 @@ incremental brush stamping, watermark refresh, live rendering, source clear/shar
 and viewport/crop updates. Directly set live controls (gamut mode, mask previews, mirror wiring,
 white-balance reference, and redraw callback) enforce the same contract.
 
-`renderOffscreenSerial` independently asserts `offscreenRenderQueue`, protecting the contract even if
-a future internal caller bypasses the public sync/async wrappers.
+`OffscreenRendererExecutor` owns serial submission and cancellation. Its synchronous facade asserts
+that it was not called recursively on its own queue before a deadlock is possible; queued sync and
+async work assert the executor on entry. The reusable pipeline records that exact queue in
+`StateExecutor`, and `renderOffscreenSerial` independently checks it through
+`preconditionOnStateExecutor()`.
+
+`SourceState`, `MirrorState`, and `WhiteBalanceReference` replace five separate mutable
+`nonisolated(unsafe)` fields. Source texture/orientation and white-balance temperature/tint now publish
+and snapshot as coherent pairs. The remaining unsafe mutable render fields are owner-serialized and
+still need a follow-up storage extraction before Phase 4.2 can be considered complete; immutable Metal
+and Core Image resources remain documented unchecked framework references.
 
 ## Regression coverage
 
-`BrushRasterizationTests.renderStateExecutorSourceContract` checks that both owner kinds, live
-construction enforcement, both offscreen queue assertions, and the primary public render-state entry
-guards remain in source. The GPU rasterization suite is main-actor isolated so its direct pipeline
-construction obeys the production live-instance contract.
+`BrushRasterizationTests.renderStateExecutorSourceContract` checks both owner kinds, live construction
+enforcement, executor separation, sync re-entry and queue assertions, lock-backed publication state,
+cross-pipeline owner checking, and the primary public render-state entry guards. The GPU rasterization
+suite is main-actor isolated so its direct pipeline construction obeys the production live-instance
+contract.
 
 ## Verification
 
@@ -40,6 +52,9 @@ construction obeys the production live-instance contract.
 - `xcodebuild test -scheme 'Aagedal Photo Agent Tests' -destination 'platform=macOS'
   -only-testing:'Aagedal Photo Agent Tests/BrushCompositingTests'`
   — **passed**, 10 tests in 1 suite, 0 failures. This exercised the shared offscreen queue owner.
+- `xcodebuild build-for-testing -scheme 'Aagedal Photo Agent Tests' -destination 'platform=macOS'
+  -only-testing:'Aagedal Photo Agent Tests/BrushRasterizationTests'`
+  — **passed** after the executor split under Swift 6.
 - `git diff --check -- 'Aagedal Photo Agent/Services/MetalEditPipeline.swift'
   'Aagedal Photo Agent Tests/IPTCMetadataTests.swift' docs/app-improvement-audit-plan.md
   docs/metal-edit-pipeline-executor-validation.md` — **passed**, no whitespace errors.

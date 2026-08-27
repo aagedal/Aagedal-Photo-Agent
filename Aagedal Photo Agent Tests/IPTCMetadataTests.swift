@@ -5072,10 +5072,25 @@ struct BrushRasterizationTests {
 
         #expect(source.contains("private enum StateExecutor"))
         #expect(source.contains("case mainThread"))
-        #expect(source.contains("case offscreenRenderQueue"))
+        #expect(source.contains("case offscreenRenderQueue(DispatchQueue)"))
         #expect(source.contains("precondition(Thread.isMainThread, \"Live MetalEditPipeline instances"))
-        #expect(source.contains("dispatchPrecondition(condition: .onQueue(Self.offscreenRenderQueue))"))
-        #expect(source.contains("dispatchPrecondition(condition: .onQueue(offscreenRenderQueue))"))
+        #expect(source.contains("private final class OffscreenRendererExecutor"))
+        #expect(source.contains("dispatchPrecondition(condition: .notOnQueue(queue))"))
+        #expect(source.contains("dispatchPrecondition(condition: .onQueue(self.queue))"))
+        #expect(source.contains("dispatchPrecondition(condition: .onQueue(queue))"))
+        #expect(source.contains("await offscreenRenderer.renderAsync("))
+
+        // Worker-safe state is concentrated in lock-backed publication objects instead of one
+        // unsafe isolation escape per field. These names intentionally guard against regressing
+        // to independently published texture/orientation or white-balance values.
+        #expect(source.contains("private final class SourceState"))
+        #expect(source.contains("private final class MirrorState"))
+        #expect(source.contains("private final class WhiteBalanceReference"))
+        #expect(!source.contains("private var _sourceTexture"))
+        #expect(!source.contains("private var _sourceOrientation"))
+        #expect(!source.contains("private var _asShotTemperature"))
+        #expect(!source.contains("private var _asShotTint"))
+        #expect(source.contains("other.preconditionOnStateExecutor()"))
 
         for signature in [
             "nonisolated func updateParams",

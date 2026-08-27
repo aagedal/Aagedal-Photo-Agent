@@ -456,13 +456,71 @@ final class MTLTextureWrapper: @unchecked Sendable {
 /// and white balance. The LUT is regenerated on every slider change (~microseconds).
 final class MetalEditPipeline: @unchecked Sendable {
 
+    /// Lock-backed publication boundary for source pixels. Source decode/upload may finish on a
+    /// worker while the main-thread preview reads the last completed texture. Keeping the pair in
+    /// one storage object makes it impossible to publish the texture and its baked orientation
+    /// through unrelated unsafe isolation escapes.
+    nonisolated private final class SourceState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var texture: MTLTexture?
+        private var orientation = 1
+
+        func snapshot() -> (texture: MTLTexture?, orientation: Int) {
+            lock.withLock { (texture, orientation) }
+        }
+
+        func publish(texture: MTLTexture?, orientation: Int? = nil) {
+            lock.withLock {
+                self.texture = texture
+                if let orientation {
+                    self.orientation = orientation
+                }
+            }
+        }
+    }
+
+    /// Lock-backed weak mirror reference. The mirror is installed by the main-thread facade but
+    /// source uploads are deliberately worker-safe and need a race-free snapshot for publication.
+    nonisolated private final class MirrorState: @unchecked Sendable {
+        private let lock = NSLock()
+        private weak var value: MetalEditPipeline?
+
+        func get() -> MetalEditPipeline? {
+            lock.withLock { value }
+        }
+
+        func set(_ value: MetalEditPipeline?) {
+            lock.withLock { self.value = value }
+        }
+    }
+
+    /// White-balance references are owner-written and may be read by the detached eyedropper
+    /// solver. The pair is snapshotted atomically so one matrix cannot mix two reference updates.
+    nonisolated private final class WhiteBalanceReference: @unchecked Sendable {
+        private let lock = NSLock()
+        private var temperature = 6500.0
+        private var tint = 0.0
+
+        func snapshot() -> (temperature: Double, tint: Double) {
+            lock.withLock { (temperature, tint) }
+        }
+
+        func setTemperature(_ value: Double) {
+            lock.withLock { temperature = value }
+        }
+
+        func setTint(_ value: Double) {
+            lock.withLock { tint = value }
+        }
+    }
+
     /// Owns mutable render-state buffers and caches. Live preview / Clean Feed instances are
     /// main-thread-owned; the singleton export instance is owned by `offscreenRenderQueue`.
     /// Source upload and adjacent-image precaching are deliberate worker-safe exceptions: they
     /// only publish through `sourceTextureLock` or the thread-safe `NSCache`.
     nonisolated private enum StateExecutor {
         case mainThread
-        case offscreenRenderQueue
+        case offscreenRenderQueue(DispatchQueue)
     }
 
     private let stateExecutor: StateExecutor
@@ -471,28 +529,25 @@ final class MetalEditPipeline: @unchecked Sendable {
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLComputePipelineState
 
-    private let sourceTextureLock = NSLock()
-    nonisolated(unsafe) private var _sourceTexture: MTLTexture?
+    private let sourceState = SourceState()
     /// EXIF orientation baked into the source texture's pixels. Mask geometry
     /// arrives in the sensor (XMP) frame, so `updateParams` uses this to
     /// transform masks into the texture's display frame. Guarded by
     /// `sourceTextureLock` like the texture it describes.
-    nonisolated(unsafe) private var _sourceOrientation: Int = 1
-
     nonisolated var sourceTexture: MTLTexture? {
-        sourceTextureLock.withLock { _sourceTexture }
+        sourceState.snapshot().texture
     }
 
     nonisolated var sourceOrientation: Int {
-        sourceTextureLock.withLock { _sourceOrientation }
+        sourceState.snapshot().orientation
     }
 
     nonisolated private func setSourceTexture(_ value: MTLTexture?) {
-        sourceTextureLock.withLock { _sourceTexture = value }
+        sourceState.publish(texture: value)
     }
 
-    nonisolated private func setSourceOrientation(_ value: Int) {
-        sourceTextureLock.withLock { _sourceOrientation = value }
+    nonisolated private func setSourceTexture(_ value: MTLTexture?, orientation: Int) {
+        sourceState.publish(texture: value, orientation: orientation)
     }
     /// Pre-cached Metal textures for adjacent images (prev/next), keyed by URL.
     /// Limited to 2 entries to bound GPU memory. At full sensor resolution (e.g. 45MP),
@@ -542,22 +597,20 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// adjustments so that "Custom at as-shot temperature" produces an identity matrix.
     /// Writes belong to the render-state owner; locked reads allow the deliberately detached
     /// eyedropper solver to take a race-free reference snapshot.
-    private let whiteBalanceReferenceLock = NSLock()
-    nonisolated(unsafe) private var _asShotTemperature: Double = 6500
-    nonisolated(unsafe) private var _asShotTint: Double = 0
+    private let whiteBalanceReference = WhiteBalanceReference()
     nonisolated var asShotTemperature: Double {
-        get { whiteBalanceReferenceLock.withLock { _asShotTemperature } }
+        get { whiteBalanceReference.snapshot().temperature }
         set {
             preconditionOnStateExecutor()
-            whiteBalanceReferenceLock.withLock { _asShotTemperature = newValue }
+            whiteBalanceReference.setTemperature(newValue)
             mirror?.asShotTemperature = newValue
         }
     }
     nonisolated var asShotTint: Double {
-        get { whiteBalanceReferenceLock.withLock { _asShotTint } }
+        get { whiteBalanceReference.snapshot().tint }
         set {
             preconditionOnStateExecutor()
-            whiteBalanceReferenceLock.withLock { _asShotTint = newValue }
+            whiteBalanceReference.setTint(newValue)
             mirror?.asShotTint = newValue
         }
     }
@@ -573,13 +626,12 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// own viewport (letterboxed for the secondary display's aspect ratio) and a clean
     /// feed never shows mask-editing overlays. Setting/clearing happens on the main
     /// thread from the edit workspace; the weak reference avoids a retain cycle.
-    private let mirrorLock = NSLock()
-    nonisolated(unsafe) private weak var _mirror: MetalEditPipeline?
+    private let mirrorState = MirrorState()
     nonisolated var mirror: MetalEditPipeline? {
-        get { mirrorLock.withLock { _mirror } }
+        get { mirrorState.get() }
         set {
             preconditionOnStateExecutor()
-            mirrorLock.withLock { _mirror = newValue }
+            mirrorState.set(newValue)
         }
     }
 
@@ -691,51 +743,103 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     nonisolated private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
-    /// Shared pipeline for offscreen (export) renders. Built once and reused so we don't
-    /// rebuild the MTLDevice / CIContext / compute pipeline state (expensive — pipeline-state
-    /// compilation alone can take hundreds of ms) on every exported image. The pipeline carries
-    /// mutable per-render state (LUT, params buffer, cached WB matrix), so all renders are
-    /// serialized on `offscreenRenderQueue`; that also bounds GPU memory during batch export by
-    /// preventing many full-resolution textures from being live at once.
-    nonisolated private static let sharedOffscreen: (device: MTLDevice, queue: MTLCommandQueue, pipeline: MetalEditPipeline)? = {
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let queue = device.makeCommandQueue(),
-              let pipeline = MetalEditPipeline(
-                device: device,
-                commandQueue: queue,
-                stateExecutor: .offscreenRenderQueue
-              ) else {
-            return nil
+    /// Dedicated serialized owner for export rendering. The public `MetalEditPipeline` static
+    /// methods are only compatibility facades; this object alone owns the queue and the reusable
+    /// offscreen pipeline. Keeping queue submission, cancellation and resource lifetime together
+    /// prevents live-preview instances from becoming accidental export executors.
+    nonisolated private final class OffscreenRendererExecutor: @unchecked Sendable {
+        /// Carries a non-Sendable `CIImage` across the render-queue hop. The render only reads the
+        /// image and the box is never shared, so transferring the reference is safe.
+        private struct CIImageBox: @unchecked Sendable {
+            let image: CIImage?
         }
-        return (device, queue, pipeline)
-    }()
 
-    /// Dedicated serial queue that owns the shared offscreen pipeline. This replaces the
-    /// old `NSLock`: serializing on a real, dedicated thread (rather than blocking whichever
-    /// caller thread holds a lock across `waitUntilCompleted`) lets async callers `await`
-    /// `renderOffscreenAsync` and *suspend* instead of blocking. A slow or stalled GPU wait
-    /// can then never tie up — and exhaust — Swift concurrency's fixed-width cooperative
-    /// thread pool, which was the cause of the freeze-on-rotate hang.
-    nonisolated private static let offscreenRenderQueue = DispatchQueue(
-        label: "com.aagedal.photo-agent.offscreen-render", qos: .userInitiated
-    )
+        /// Thread-safe cancellation state for queued async work.
+        private final class CancelFlag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var cancelled = false
+            var isCancelled: Bool { lock.withLock { cancelled } }
+            func cancel() { lock.withLock { cancelled = true } }
+        }
 
-    /// Carries a non-Sendable `CIImage` across the render-queue hop. The render only reads the
-    /// image and the box is never shared, so transferring the reference is safe.
-    nonisolated private struct CIImageBox: @unchecked Sendable {
-        let image: CIImage?
+        private let queue: DispatchQueue
+        private let pipeline: MetalEditPipeline?
+
+        init() {
+            let ownerQueue = DispatchQueue(
+                label: "com.aagedal.photo-agent.offscreen-render",
+                qos: .userInitiated
+            )
+            queue = ownerQueue
+            if let device = MTLCreateSystemDefaultDevice(),
+               let commandQueue = device.makeCommandQueue() {
+                pipeline = MetalEditPipeline(
+                    device: device,
+                    commandQueue: commandQueue,
+                    stateExecutor: .offscreenRenderQueue(ownerQueue)
+                )
+            } else {
+                pipeline = nil
+            }
+        }
+
+        func render(
+            source: CIImage,
+            settings: CameraRawSettings?,
+            exifOrientation: Int,
+            cropToOutput: Bool,
+            outputSize: CGSize? = nil
+        ) -> CIImage? {
+            // A synchronous recursive submission would deadlock. Assert the calling contract at
+            // the facade boundary, before Dispatch attempts to wait on its own serial executor.
+            dispatchPrecondition(condition: .notOnQueue(queue))
+            let input = CIImageBox(image: source)
+            return queue.sync {
+                dispatchPrecondition(condition: .onQueue(queue))
+                return pipeline?.renderOffscreenSerial(
+                    source: input.image,
+                    settings: settings,
+                    exifOrientation: exifOrientation,
+                    cropToOutput: cropToOutput,
+                    outputSize: outputSize
+                )
+            }
+        }
+
+        func renderAsync(
+            source: CIImage,
+            settings: CameraRawSettings?,
+            exifOrientation: Int,
+            cropToOutput: Bool
+        ) async -> CIImage? {
+            if Task.isCancelled { return nil }
+            let input = CIImageBox(image: source)
+            let flag = CancelFlag()
+            let output: CIImageBox = await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    queue.async {
+                        dispatchPrecondition(condition: .onQueue(self.queue))
+                        guard !flag.isCancelled else {
+                            continuation.resume(returning: CIImageBox(image: nil))
+                            return
+                        }
+                        let result = self.pipeline?.renderOffscreenSerial(
+                            source: input.image,
+                            settings: settings,
+                            exifOrientation: exifOrientation,
+                            cropToOutput: cropToOutput
+                        )
+                        continuation.resume(returning: CIImageBox(image: result))
+                    }
+                }
+            } onCancel: {
+                flag.cancel()
+            }
+            return output.image
+        }
     }
 
-    /// Thread-safe cancellation flag for `renderOffscreenAsync`. The serial queue runs FIFO, so
-    /// a cancelled job (e.g. a prefetch the user navigated past) would otherwise still execute its
-    /// full GPU render once it reached the head — letting a backlog of stale renders starve the
-    /// foreground. Checking this flag when the job dequeues lets cancelled renders bail in µs.
-    nonisolated private final class CancelFlag: @unchecked Sendable {
-        private let lock = NSLock()
-        private var cancelled = false
-        var isCancelled: Bool { lock.withLock { cancelled } }
-        func cancel() { lock.withLock { cancelled = true } }
-    }
+    nonisolated private static let offscreenRenderer = OffscreenRendererExecutor()
 
     /// Max 2D texture dimension. Metal exposes no runtime query for this; every macOS GPU
     /// family (Apple and Mac2) caps a 2D texture at 16384 px per side, so we use that.
@@ -970,8 +1074,8 @@ final class MetalEditPipeline: @unchecked Sendable {
                 Thread.isMainThread,
                 "Live MetalEditPipeline render state must be accessed on the main thread"
             )
-        case .offscreenRenderQueue:
-            dispatchPrecondition(condition: .onQueue(Self.offscreenRenderQueue))
+        case let .offscreenRenderQueue(queue):
+            dispatchPrecondition(condition: .onQueue(queue))
         }
     }
 
@@ -1044,11 +1148,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         Self.generateMipmaps(for: texture, commandQueue: commandQueue)
-        setSourceTexture(texture)
-        setSourceOrientation(exifOrientation)
+        setSourceTexture(texture, orientation: exifOrientation)
         // Share the same texture object with the clean-feed mirror (zero-copy).
-        mirror?.setSourceTexture(texture)
-        mirror?.setSourceOrientation(exifOrientation)
+        mirror?.setSourceTexture(texture, orientation: exifOrientation)
     }
 
     // MARK: - LUT Upload
@@ -2380,9 +2482,10 @@ final class MetalEditPipeline: @unchecked Sendable {
             return nil
         }
 
+        let reference = whiteBalanceReference.snapshot()
         guard let target = settings.resolvedWhiteBalanceTarget(
-            absoluteDefaultTemperature: asShotTemperature,
-            absoluteDefaultTint: asShotTint
+            absoluteDefaultTemperature: reference.temperature,
+            absoluteDefaultTint: reference.tint
         ) else {
             cachedWBKey = nil
             cachedWBMatrix = nil
@@ -2392,22 +2495,31 @@ final class MetalEditPipeline: @unchecked Sendable {
         // Return cached matrix if temperature/tint and as-shot reference haven't changed
         if let key = cachedWBKey,
            key.0 == target.temperature, key.1 == target.tint,
-           key.2 == asShotTemperature, key.3 == asShotTint {
+           key.2 == reference.temperature, key.3 == reference.tint {
             return cachedWBMatrix
         }
 
-        let matrix = extractWBMatrix(temperature: target.temperature, tint: target.tint)
-        cachedWBKey = (target.temperature, target.tint, asShotTemperature, asShotTint)
+        let matrix = extractWBMatrix(
+            temperature: target.temperature,
+            tint: target.tint,
+            reference: reference
+        )
+        cachedWBKey = (target.temperature, target.tint, reference.temperature, reference.tint)
         cachedWBMatrix = matrix
         return matrix
     }
 
-    nonisolated private func extractWBMatrix(temperature: Double, tint: Double) -> simd_float3x3 {
+    nonisolated private func extractWBMatrix(
+        temperature: Double,
+        tint: Double,
+        reference: (temperature: Double, tint: Double)? = nil
+    ) -> simd_float3x3 {
         let colorSpace = Self.colorSpace
         // Use as-shot WB as the target neutral so that "Custom at as-shot" = identity.
         // The CIRAWFilter already decoded the image referenced to the as-shot WB.
-        let targetTemp = asShotTemperature
-        let targetTint = asShotTint
+        let reference = reference ?? whiteBalanceReference.snapshot()
+        let targetTemp = reference.temperature
+        let targetTint = reference.tint
 
         func renderBasis(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> SIMD3<Float> {
             let ciImage = CIImage(color: CIColor(red: r, green: g, blue: b, colorSpace: colorSpace)!)
@@ -2453,6 +2565,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated func solveWhiteBalance(forNeutralLinearRGB rgb: SIMD3<Float>) -> (temperature: Double, tint: Double)? {
         guard max(rgb.x, max(rgb.y, rgb.z)) > 1e-5 else { return nil }
         let sample = rgb
+        let reference = whiteBalanceReference.snapshot()
 
         // Search floor sits ABOVE CITemperatureAndTint's 2000 K identity clamp: at that floor
         // the matrix is rank-deficient and can map a mild-cast sample *exactly* to grey (chroma
@@ -2470,7 +2583,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         // Matrix-transformed chroma (0 when R == G == B) plus the neutral regularizer.
         func cost(_ temp: Double, _ tint: Double) -> Float {
-            let o = extractWBMatrix(temperature: temp, tint: tint) * sample
+            let o = extractWBMatrix(temperature: temp, tint: tint, reference: reference) * sample
             let mean = (o.x + o.y + o.z) / 3
             guard mean > 1e-6 else { return .greatestFiniteMagnitude }
             let dr = o.x - o.y, db = o.z - o.y
@@ -2538,8 +2651,9 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// mid-edit, after the source texture has already been uploaded.
     nonisolated func shareSourceTexture(with other: MetalEditPipeline) {
         preconditionOnStateExecutor()
-        other.setSourceTexture(sourceTexture)
-        other.setSourceOrientation(sourceOrientation)
+        other.preconditionOnStateExecutor()
+        let source = sourceState.snapshot()
+        other.setSourceTexture(source.texture, orientation: source.orientation)
     }
 
     // MARK: - Viewport
@@ -2722,7 +2836,6 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         let width = Int(extent.width)
         let height = Int(extent.height)
-
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float, width: width, height: height, mipmapped: true
         )
@@ -2765,10 +2878,8 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated func applyCachedTexture(for url: URL, exifOrientation: Int = 1) -> (neutralTemperature: Float, neutralTint: Float)? {
         preconditionOnStateExecutor()
         guard let wrapper = textureCache.object(forKey: url as NSURL) else { return nil }
-        setSourceTexture(wrapper.texture)
-        setSourceOrientation(exifOrientation)
-        mirror?.setSourceTexture(wrapper.texture)
-        mirror?.setSourceOrientation(exifOrientation)
+        setSourceTexture(wrapper.texture, orientation: exifOrientation)
+        mirror?.setSourceTexture(wrapper.texture, orientation: exifOrientation)
         textureCache.removeObject(forKey: url as NSURL)
         return (neutralTemperature: wrapper.neutralTemperature, neutralTint: wrapper.neutralTint)
     }
@@ -2778,7 +2889,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Renders adjustments via the Metal compute shader and returns the result as CIImage.
     /// `outputSize` is primarily useful for exercising the live preview's downsampled footprint;
     /// nil preserves the source dimensions used by normal offscreen/export callers.
-    /// Synchronous entry: serializes on `offscreenRenderQueue` and **blocks** the caller until
+    /// Synchronous entry: serializes on the offscreen executor and **blocks** the caller until
     /// the render completes. Safe, but from an async context prefer `renderOffscreenAsync` so the
     /// caller suspends rather than tying up a cooperative-pool thread across the GPU wait.
     nonisolated static func renderOffscreen(
@@ -2787,14 +2898,13 @@ final class MetalEditPipeline: @unchecked Sendable {
         exifOrientation: Int = 1,
         outputSize: CGSize? = nil
     ) -> CIImage? {
-        offscreenRenderQueue.sync {
-            renderOffscreenSerial(
-                source: source,
-                settings: settings,
-                exifOrientation: exifOrientation,
-                outputSize: outputSize
-            )
-        }
+        offscreenRenderer.render(
+            source: source,
+            settings: settings,
+            exifOrientation: exifOrientation,
+            cropToOutput: false,
+            outputSize: outputSize
+        )
     }
 
     /// Renders the confirmed crop directly, so watermark coordinates and margins resolve
@@ -2804,14 +2914,15 @@ final class MetalEditPipeline: @unchecked Sendable {
         settings: CameraRawSettings?,
         exifOrientation: Int = 1
     ) -> CIImage? {
-        offscreenRenderQueue.sync {
-            renderOffscreenSerial(
-                source: source, settings: settings, exifOrientation: exifOrientation, cropToOutput: true
-            )
-        }
+        offscreenRenderer.render(
+            source: source,
+            settings: settings,
+            exifOrientation: exifOrientation,
+            cropToOutput: true
+        )
     }
 
-    /// Asynchronous entry: runs the render on `offscreenRenderQueue` and **suspends** the caller
+    /// Asynchronous entry: runs the render on the offscreen executor and **suspends** the caller
     /// while it executes, so the blocking GPU wait happens on the dedicated render thread and
     /// never starves Swift concurrency's cooperative thread pool. Prefer this from any `Task`.
     ///
@@ -2824,26 +2935,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         settings: CameraRawSettings?,
         exifOrientation: Int = 1
     ) async -> CIImage? {
-        if Task.isCancelled { return nil }
-        let inBox = CIImageBox(image: source)
-        let flag = CancelFlag()
-        let outBox: CIImageBox = await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                offscreenRenderQueue.async {
-                    guard !flag.isCancelled else {
-                        continuation.resume(returning: CIImageBox(image: nil))
-                        return
-                    }
-                    let result = renderOffscreenSerial(
-                        source: inBox.image, settings: settings, exifOrientation: exifOrientation
-                    )
-                    continuation.resume(returning: CIImageBox(image: result))
-                }
-            }
-        } onCancel: {
-            flag.cancel()
-        }
-        return outBox.image
+        await offscreenRenderer.renderAsync(
+            source: source,
+            settings: settings,
+            exifOrientation: exifOrientation,
+            cropToOutput: false
+        )
     }
 
     /// Async sibling of `renderOffscreenCropped`.
@@ -2852,45 +2949,28 @@ final class MetalEditPipeline: @unchecked Sendable {
         settings: CameraRawSettings?,
         exifOrientation: Int = 1
     ) async -> CIImage? {
-        if Task.isCancelled { return nil }
-        let inBox = CIImageBox(image: source)
-        let flag = CancelFlag()
-        let outBox: CIImageBox = await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                offscreenRenderQueue.async {
-                    guard !flag.isCancelled else {
-                        continuation.resume(returning: CIImageBox(image: nil))
-                        return
-                    }
-                    let result = renderOffscreenSerial(
-                        source: inBox.image,
-                        settings: settings,
-                        exifOrientation: exifOrientation,
-                        cropToOutput: true
-                    )
-                    continuation.resume(returning: CIImageBox(image: result))
-                }
-            }
-        } onCancel: {
-            flag.cancel()
-        }
-        return outBox.image
+        await offscreenRenderer.renderAsync(
+            source: source,
+            settings: settings,
+            exifOrientation: exifOrientation,
+            cropToOutput: true
+        )
     }
 
-    /// The actual render. Assumes it is running on `offscreenRenderQueue` (the serial owner of
+    /// The actual render. Assumes it is running on the executor recorded in `stateExecutor` (the owner of
     /// the shared pipeline's mutable LUT/params/WB-cache state); never call it directly off-queue.
     /// Uses the exact same shader as the live preview: LUT, vibrance, saturation,
     /// white balance, and highlight desaturation. No CIFilter approximation.
-    nonisolated private static func renderOffscreenSerial(
+    nonisolated private func renderOffscreenSerial(
         source: CIImage?,
         settings: CameraRawSettings?,
         exifOrientation: Int = 1,
         cropToOutput: Bool = false,
         outputSize: CGSize? = nil
     ) -> CIImage? {
-        dispatchPrecondition(condition: .onQueue(offscreenRenderQueue))
+        preconditionOnStateExecutor()
         guard let source else { return nil }
-        guard var settings, !isIdentitySettings(settings) else { return nil }
+        guard var settings, !Self.isIdentitySettings(settings) else { return nil }
         // `source` is display-oriented but mask geometry is sensor-frame —
         // transform before the params upload (the ephemeral pipeline has no
         // source texture of its own, so updateParams can't do it there).
@@ -2910,17 +2990,16 @@ final class MetalEditPipeline: @unchecked Sendable {
         let originalExtent = source.extent
         guard originalExtent.width > 0, originalExtent.height > 0 else { return nil }
 
-        // Reuse the shared offscreen pipeline (device/queue/CIContext/pipeline-state).
-        guard let shared = sharedOffscreen else { return nil }
-        let device = shared.device
-        let queue = shared.queue
-        let pipeline = shared.pipeline
+        // Reuse this executor-owned device/queue/CIContext/pipeline-state.
+        let renderDevice = device
+        let renderQueue = commandQueue
+        let pipeline = self
 
         // OOM / Metal-limit guard: cap to the device's max 2D texture dimension. Stitched
         // panoramas and other oversized inputs would otherwise fail texture allocation or
         // exhaust memory. Downscaling here keeps the export fully edited (masks/HSL included)
         // rather than crashing or silently dropping to the CIFilter fallback.
-        let maxDim = CGFloat(maxTextureDimension)
+        let maxDim = CGFloat(Self.maxTextureDimension)
         var working = source
         if originalExtent.width > maxDim || originalExtent.height > maxDim {
             let scale = min(maxDim / originalExtent.width, maxDim / originalExtent.height)
@@ -2950,8 +3029,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         } else if let outputSize,
                   outputSize.width.isFinite, outputSize.height.isFinite,
                   outputSize.width > 0, outputSize.height > 0 {
-            outputWidth = max(1, Int(min(outputSize.width.rounded(), CGFloat(maxTextureDimension))))
-            outputHeight = max(1, Int(min(outputSize.height.rounded(), CGFloat(maxTextureDimension))))
+            outputWidth = max(1, Int(min(outputSize.width.rounded(), CGFloat(Self.maxTextureDimension))))
+            outputHeight = max(1, Int(min(outputSize.height.rounded(), CGFloat(Self.maxTextureDimension))))
         } else {
             outputWidth = width
             outputHeight = height
@@ -2966,15 +3045,15 @@ final class MetalEditPipeline: @unchecked Sendable {
         )
         srcDesc.usage = [.shaderRead, .shaderWrite]
         srcDesc.storageMode = .private
-        guard let srcTexture = device.makeTexture(descriptor: srcDesc),
-              let uploadCmdBuf = queue.makeCommandBuffer() else { return nil }
+        guard let srcTexture = renderDevice.makeTexture(descriptor: srcDesc),
+              let uploadCmdBuf = renderQueue.makeCommandBuffer() else { return nil }
 
         let dest = CIRenderDestination(
             width: width, height: height, pixelFormat: .rgba16Float,
             commandBuffer: uploadCmdBuf, mtlTextureProvider: { srcTexture }
         )
         dest.isFlipped = true
-        dest.colorSpace = colorSpace
+        dest.colorSpace = Self.colorSpace
 
         let translated = working.transformed(by: CGAffineTransform(
             translationX: -extent.origin.x, y: -extent.origin.y
@@ -2993,7 +3072,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         uploadCmdBuf.waitUntilCompleted()
         // Export must mosaic/blur at the same fidelity as the live preview — the Anonymizer
         // kernel fetches an explicit mip level, so this texture needs a full mip chain too.
-        generateMipmaps(for: srcTexture, commandQueue: queue)
+        Self.generateMipmaps(for: srcTexture, commandQueue: renderQueue)
 
         // 2. Propagate as-shot WB reference so the ephemeral pipeline computes
         //    the same white balance matrix as the live edit preview.
@@ -3042,11 +3121,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         )
         outDesc.usage = [.shaderRead, .shaderWrite]
         outDesc.storageMode = .shared
-        guard let outTexture = device.makeTexture(descriptor: outDesc) else { return nil }
+        guard let outTexture = renderDevice.makeTexture(descriptor: outDesc) else { return nil }
 
         // 4. Dispatch the same compiled render graph used by the live preview.
         guard let paramsBuffer = pipeline.paramsBuffer,
-              let computeCmdBuf = queue.makeCommandBuffer() else { return nil }
+              let computeCmdBuf = renderQueue.makeCommandBuffer() else { return nil }
 
         let ptr = paramsBuffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee.scale = SIMD2<Float>(
@@ -3090,7 +3169,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         // 5. Create CIImage from output texture
         // CIImage(mtlTexture:) produces a vertically flipped image — correct with orientation
         guard let result = CIImage(mtlTexture: outTexture, options: [
-            .colorSpace: colorSpace
+            .colorSpace: Self.colorSpace
         ]) else { return nil }
         return result.oriented(.downMirrored)
     }
