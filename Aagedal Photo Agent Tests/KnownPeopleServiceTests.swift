@@ -26,6 +26,7 @@ struct KnownPeopleServiceTests {
     private func activate(_ dir: URL) {
         KnownPeopleService.deletionIO = .live
         KnownPeopleService.embeddingMigrationIO = .live
+        KnownPeopleService.embeddingMigrationModelReadiness = { true }
         KnownPeopleService.storageOverrideURL = dir
         KnownPeopleService.shared.reloadAfterStorageChange()
     }
@@ -33,6 +34,9 @@ struct KnownPeopleServiceTests {
     private func teardown(_ dir: URL) {
         KnownPeopleService.deletionIO = .live
         KnownPeopleService.embeddingMigrationIO = .live
+        KnownPeopleService.embeddingMigrationModelReadiness = {
+            CoreMLFaceEmbedder.hasVerifiedCurrentModel()
+        }
         KnownPeopleService.storageOverrideURL = nil
         try? FileManager.default.removeItem(at: dir)
         // Reset the singleton's cache so the next test starts clean.
@@ -52,6 +56,9 @@ struct KnownPeopleServiceTests {
                 UserDefaults.standard.removeObject(forKey: key)
             }
             KnownPeopleService.embeddingMigrationIO = .live
+            KnownPeopleService.embeddingMigrationModelReadiness = {
+                CoreMLFaceEmbedder.hasVerifiedCurrentModel()
+            }
             KnownPeopleService.migrationRecoveryNotices = .shared
             teardown(dir)
         }
@@ -151,6 +158,34 @@ struct KnownPeopleServiceTests {
             #expect(notice?.affectedCategories == [.knownPeople])
             #expect(notice?.message.contains("Known People") == true)
             #expect(notice?.message.contains(person.id.uuidString) == false)
+        }
+    }
+
+    @Test("Embedding migration waits for the new model before touching stored embeddings")
+    func embeddingMigrationRequiresVerifiedModel() throws {
+        try withIsolatedEmbeddingMigration { dir in
+            let person = try KnownPeopleService.shared.addPerson(
+                name: "Deferred Until Model",
+                embeddings: [embedding(8)]
+            )
+            let priorVersion = FaceRecognitionDefaults.embeddingVersion - 1
+            UserDefaults.standard.set(priorVersion, forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+
+            var backupAttempted = false
+            var io = KnownPeopleEmbeddingMigrationIO.live
+            io.mergeCopy = { _, _ in backupAttempted = true }
+            KnownPeopleService.embeddingMigrationIO = io
+            KnownPeopleService.embeddingMigrationModelReadiness = { false }
+
+            KnownPeopleService.shared.reloadAfterStorageChange()
+
+            #expect(!backupAttempted)
+            #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: dir).path))
+            #expect(KnownPeopleService.shared.person(byID: person.id) != nil)
+            #expect(
+                UserDefaults.standard.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+                    == priorVersion
+            )
         }
     }
 

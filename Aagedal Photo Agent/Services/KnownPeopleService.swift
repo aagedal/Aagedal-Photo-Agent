@@ -87,6 +87,12 @@ final class KnownPeopleService {
     /// Test-only failure injection for the embedding-space migration.
     static var embeddingMigrationIO = KnownPeopleEmbeddingMigrationIO.live
 
+    /// Embeddings must remain untouched until the corresponding model is present and
+    /// verified. The on-demand installer re-triggers loading only after its atomic commit.
+    static var embeddingMigrationModelReadiness: () -> Bool = {
+        CoreMLFaceEmbedder.hasVerifiedCurrentModel()
+    }
+
     /// Injectable so focused migration tests do not mutate launch UI state.
     static var migrationRecoveryNotices = MigrationRecoveryNoticeCenter.shared
 
@@ -942,6 +948,10 @@ final class KnownPeopleService {
         let current = FaceRecognitionDefaults.embeddingVersion
         guard stored != current else {
             Self.migrationRecoveryNotices.clear(.knownPeople)
+            return
+        }
+        guard Self.embeddingMigrationModelReadiness() else {
+            knownPeopleLog.info("Known People embedding migration deferred until the current face model is verified")
             return
         }
 

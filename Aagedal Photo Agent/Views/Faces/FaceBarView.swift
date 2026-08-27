@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct FaceBarView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
+    @ObservedObject private var auraFaceComponent = AuraFaceComponentManager.shared
     let folderURL: URL?
     let images: [ImageFile]
     let settingsViewModel: SettingsViewModel

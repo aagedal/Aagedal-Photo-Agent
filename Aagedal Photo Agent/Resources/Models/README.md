@@ -84,5 +84,19 @@ produce the same archive bytes on every run. The canonical JSON descriptor binds
 and byte count, all three inner package hashes, the model version, and `FaceRecognitionDefaults.embeddingVersion`
 to one credential-free HTTPS URL on `aagedal.me`. Packaging refuses undeclared files, package hash drift,
 embedding-version drift, mutable/query URLs, and overwrite unless `--replace` is explicitly supplied. This
-produces release candidates only; publishing the files, signing or pinning the descriptor in the app, and
-real-server download tests remain separate release operations.
+produces release candidates only.
+
+Before publishing, sign the descriptor bytes with Sparkle's `sign_update` tool and the same keychain private
+key used for app updates. Extract only the `edSignature` base64 value into
+`AuraFaceR100.distribution.json.sig` (with an optional trailing newline). The app verifies that detached
+Ed25519 signature against `SUPublicEDKey` before it parses any descriptor field, then verifies the declared
+archive and package hashes before compiling or installing the model. Publish the descriptor and signature at
+the fixed URLs below, and the archive at the descriptor's immutable `downloadURL`:
+
+```text
+https://aagedal.me/models/auraface/AuraFaceR100.distribution.json
+https://aagedal.me/models/auraface/AuraFaceR100.distribution.json.sig
+```
+
+The three hosted files and supported-macOS smoke tests remain release operations; the app never downloads
+the ONNX source and never runs the developer conversion environment.

@@ -11,6 +11,9 @@ struct SettingsView: View {
     @State private var developTemplateViewModel = DevelopTemplateViewModel()
     @State private var selectedTemplateKind: TemplateKind = .metadata
     @StateObject private var sparkle = SparkleUpdaterService.shared
+    @StateObject private var auraFaceComponent = AuraFaceComponentManager.shared
+    @State private var showAuraFaceDownloadConfirmation = false
+    @State private var showAuraFaceRemovalConfirmation = false
 
     // Known People state
     @State private var knownPeopleStats: (peopleCount: Int, embeddingCount: Int) = (0, 0)
@@ -497,6 +500,46 @@ struct SettingsView: View {
     @ViewBuilder
     private var faceRecognitionTab: some View {
         Form {
+            Section("AuraFace Model") {
+                Label(
+                    auraFaceComponent.availability.title,
+                    systemImage: auraFaceComponent.availability.isAvailable
+                        ? "checkmark.circle.fill"
+                        : "person.crop.circle.badge.exclamationmark"
+                )
+                Text(auraFaceComponent.availability.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                switch auraFaceComponent.availability {
+                case .downloading(let progress):
+                    ProgressView(value: progress)
+                        .accessibilityLabel("AuraFace download progress")
+                case .ready, .updateAvailable:
+                    Text("Removing AuraFace disables face matching but does not delete your photos or Known People data. You can download it again later; face matching works offline while it is installed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Remove AuraFace…", role: .destructive) {
+                        showAuraFaceRemovalConfirmation = true
+                    }
+                case .notInstalled, .offline, .verificationFailed:
+                    Text(FaceRecognitionModelAvailability.downloadExplanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Download AuraFace…") {
+                        showAuraFaceDownloadConfirmation = true
+                    }
+                case .incompatible:
+                    EmptyView()
+                }
+
+                if let error = auraFaceComponent.lastError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
             Section("Detection") {
                 VStack(alignment: .leading, spacing: 6) {
                     Picker("Scan Mode", selection: $settingsViewModel.faceTiledDetection) {
@@ -565,6 +608,23 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .alert("Download AuraFace?", isPresented: $showAuraFaceDownloadConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Download") {
+                auraFaceComponent.downloadConfirmed()
+            }
+            .keyboardShortcut(.defaultAction)
+        } message: {
+            Text(FaceRecognitionModelAvailability.downloadExplanation)
+        }
+        .alert("Remove AuraFace?", isPresented: $showAuraFaceRemovalConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                auraFaceComponent.removeConfirmed()
+            }
+        } message: {
+            Text("The on-device model and its rollback copy will be removed. Your photos and Known People data are not deleted. Face matching will remain unavailable offline until you download the model again.")
+        }
     }
 
     // MARK: - Known People Tab

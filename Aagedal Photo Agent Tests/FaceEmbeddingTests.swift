@@ -1,12 +1,116 @@
 import Testing
 import Foundation
 import CoreGraphics
+import CryptoKit
 @testable import Aagedal_Photo_Agent
 
 /// Tests for the face-embedding serialization + distance layer that replaced the old
 /// `VNFeaturePrintObservation` payload, plus a smoke test of the bundled CoreML embedder.
 @Suite("FaceEmbedding")
 struct FaceEmbeddingTests {
+
+    private struct AuraFaceFixture {
+        let descriptor: AuraFaceDistributionDescriptor
+        let descriptorData: Data
+        let signatureData: Data
+        let archiveData: Data
+        let packageFiles: [String: Data]
+    }
+
+    private enum InjectedAuraFaceFailure: Error {
+        case move
+    }
+
+    private func makeAuraFaceFixture(
+        privateKey: Curve25519.Signing.PrivateKey,
+        version: String = "AuraFace-v1/glintr100",
+        archiveData: Data = Data("fixture archive".utf8)
+    ) throws -> AuraFaceFixture {
+        let packageFiles = [
+            "Data/com.apple.CoreML/model.mlmodel": Data("model-\(version)".utf8),
+            "Data/com.apple.CoreML/weights/weight.bin": Data("weights-\(version)".utf8),
+            "Manifest.json": Data("{\"version\":\"\(version)\"}\n".utf8),
+        ]
+        let descriptor = AuraFaceDistributionDescriptor(
+            schemaVersion: 1,
+            componentID: AuraFaceComponentStore.componentID,
+            modelVersion: version,
+            embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
+            packageDirectory: AuraFaceComponentStore.packageDirectory,
+            packageFiles: packageFiles.mapValues {
+                Data(SHA256.hash(data: $0)).lowercaseHexString
+            },
+            archive: .init(
+                fileName: "AuraFaceR100.mlpackage.zip",
+                byteCount: Int64(archiveData.count),
+                sha256: Data(SHA256.hash(data: archiveData)).lowercaseHexString
+            ),
+            downloadURL: URL(
+                string: "https://aagedal.me/models/auraface/AuraFaceR100.mlpackage.zip"
+            )!
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let descriptorData = try encoder.encode(descriptor)
+        let signature = try privateKey.signature(for: descriptorData)
+        return AuraFaceFixture(
+            descriptor: descriptor,
+            descriptorData: descriptorData,
+            signatureData: Data(signature).base64EncodedData(),
+            archiveData: archiveData,
+            packageFiles: packageFiles
+        )
+    }
+
+    private func makeAuraFaceIO(
+        packageFiles: [String: Data],
+        failCandidateCommit: Bool = false,
+        corruptPackage: Bool = false
+    ) -> AuraFaceComponentIO {
+        var io = AuraFaceComponentIO.live
+        io.fetch = { _ in throw URLError(.notConnectedToInternet) }
+        io.extractArchive = { _, destination in
+            let package = destination.appendingPathComponent(
+                AuraFaceComponentStore.packageDirectory,
+                isDirectory: true
+            )
+            for (relative, original) in packageFiles {
+                let file = package.appendingPathComponent(relative)
+                try FileManager.default.createDirectory(
+                    at: file.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                let data = corruptPackage && relative == "Manifest.json"
+                    ? Data("corrupt".utf8)
+                    : original
+                try data.write(to: file)
+            }
+        }
+        io.compileModel = { _, destination in
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            try Data("compiled fixture".utf8).write(
+                to: destination.appendingPathComponent("model.bin")
+            )
+        }
+        if failCandidateCommit {
+            let liveMove = io.move
+            io.move = { source, destination in
+                if source.lastPathComponent == "candidate",
+                   destination.lastPathComponent == "current" {
+                    throw InjectedAuraFaceFailure.move
+                }
+                try liveMove(source, destination)
+            }
+        }
+        return io
+    }
+
+    private func temporaryAuraFaceRoot() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AuraFaceInstallerTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
 
     // MARK: - EmbeddingCodec
 
@@ -146,6 +250,211 @@ struct FaceEmbeddingTests {
         #expect(FaceRecognitionModelAvailability.downloadExplanation.contains("125 MB"))
         #expect(FaceRecognitionModelAvailability.downloadExplanation.contains("only on this Mac"))
         #expect(FaceRecognitionModelAvailability.downloadExplanation.contains("works offline"))
+    }
+
+    @Test func auraFaceDescriptorRequiresValidSignatureAndPinnedHTTPSContract() throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let fixture = try makeAuraFaceFixture(privateKey: key)
+
+        let verified = try AuraFaceComponentStore.verifySignedDescriptor(
+            fixture.descriptorData,
+            signatureData: fixture.signatureData,
+            publicKeyData: key.publicKey.rawRepresentation
+        )
+        #expect(verified == fixture.descriptor)
+
+        var tampered = fixture.descriptorData
+        tampered.append(0x20)
+        #expect(throws: AuraFaceComponentError.invalidDescriptorSignature) {
+            try AuraFaceComponentStore.verifySignedDescriptor(
+                tampered,
+                signatureData: fixture.signatureData,
+                publicKeyData: key.publicKey.rawRepresentation
+            )
+        }
+        #expect(!AuraFaceComponentStore.isAllowedDownloadURL(
+            URL(string: "http://aagedal.me/models/auraface.zip")!
+        ))
+        #expect(!AuraFaceComponentStore.isAllowedDownloadURL(
+            URL(string: "https://example.com/models/auraface.zip")!
+        ))
+        #expect(!AuraFaceComponentStore.isAllowedDownloadURL(
+            URL(string: "https://aagedal.me/models/auraface.zip?latest=1")!
+        ))
+    }
+
+    @Test func auraFaceCleanInstallVerifiesAndPersistsSignedReceipt() async throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let fixture = try makeAuraFaceFixture(privateKey: key)
+        let root = try temporaryAuraFaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let io = makeAuraFaceIO(packageFiles: fixture.packageFiles)
+        let installer = try AuraFaceComponentInstaller(
+            io: io,
+            publicKeyData: key.publicKey.rawRepresentation,
+            root: root
+        )
+
+        let installed = try await installer.install(
+            descriptorData: fixture.descriptorData,
+            signatureData: fixture.signatureData,
+            archiveData: fixture.archiveData
+        )
+
+        #expect(installed == fixture.descriptor)
+        let current = root.appendingPathComponent("current", isDirectory: true)
+        #expect(FileManager.default.fileExists(atPath: current
+            .appendingPathComponent(AuraFaceComponentStore.compiledDirectory).path))
+        let reverified = try AuraFaceComponentStore.verifySignedDescriptor(
+            Data(contentsOf: current.appendingPathComponent(AuraFaceComponentStore.descriptorFile)),
+            signatureData: Data(contentsOf: current.appendingPathComponent(AuraFaceComponentStore.signatureFile)),
+            publicKeyData: key.publicKey.rawRepresentation
+        )
+        try AuraFaceComponentStore.verifyPackage(
+            at: current.appendingPathComponent(AuraFaceComponentStore.packageDirectory),
+            descriptor: reverified,
+            io: io
+        )
+    }
+
+    @Test func auraFaceCorruptArchiveAndPackageFailBeforeInstall() async throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let fixture = try makeAuraFaceFixture(privateKey: key)
+
+        let archiveRoot = try temporaryAuraFaceRoot()
+        defer { try? FileManager.default.removeItem(at: archiveRoot) }
+        let archiveInstaller = try AuraFaceComponentInstaller(
+            io: makeAuraFaceIO(packageFiles: fixture.packageFiles),
+            publicKeyData: key.publicKey.rawRepresentation,
+            root: archiveRoot
+        )
+        await #expect(throws: AuraFaceComponentError.archiveSizeMismatch) {
+            try await archiveInstaller.install(
+                descriptorData: fixture.descriptorData,
+                signatureData: fixture.signatureData,
+                archiveData: fixture.archiveData + Data([0])
+            )
+        }
+        #expect(!FileManager.default.fileExists(
+            atPath: archiveRoot.appendingPathComponent("current").path
+        ))
+
+        let packageRoot = try temporaryAuraFaceRoot()
+        defer { try? FileManager.default.removeItem(at: packageRoot) }
+        let packageInstaller = try AuraFaceComponentInstaller(
+            io: makeAuraFaceIO(packageFiles: fixture.packageFiles, corruptPackage: true),
+            publicKeyData: key.publicKey.rawRepresentation,
+            root: packageRoot
+        )
+        do {
+            _ = try await packageInstaller.install(
+                descriptorData: fixture.descriptorData,
+                signatureData: fixture.signatureData,
+                archiveData: fixture.archiveData
+            )
+            Issue.record("A package with a corrupt file unexpectedly installed")
+        } catch let error as AuraFaceComponentError {
+            guard case .packageHashMismatch("Manifest.json") = error else {
+                Issue.record("Expected the corrupt Manifest.json hash to fail, got \(error)")
+                return
+            }
+        }
+        #expect(!FileManager.default.fileExists(
+            atPath: packageRoot.appendingPathComponent("current").path
+        ))
+    }
+
+    @Test func auraFaceFailedUpdateRestoresCurrentAndSuccessfulUpdateRetainsRollback() async throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let first = try makeAuraFaceFixture(privateKey: key)
+        let second = try makeAuraFaceFixture(
+            privateKey: key,
+            version: "AuraFace-v2/glintr100",
+            archiveData: Data("second fixture archive".utf8)
+        )
+        let root = try temporaryAuraFaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstInstaller = try AuraFaceComponentInstaller(
+            io: makeAuraFaceIO(packageFiles: first.packageFiles),
+            publicKeyData: key.publicKey.rawRepresentation,
+            root: root
+        )
+        _ = try await firstInstaller.install(
+            descriptorData: first.descriptorData,
+            signatureData: first.signatureData,
+            archiveData: first.archiveData
+        )
+
+        let failingInstaller = try AuraFaceComponentInstaller(
+            io: makeAuraFaceIO(packageFiles: second.packageFiles, failCandidateCommit: true),
+            publicKeyData: key.publicKey.rawRepresentation,
+            root: root
+        )
+        await #expect(throws: AuraFaceComponentError.installationFailed) {
+            try await failingInstaller.install(
+                descriptorData: second.descriptorData,
+                signatureData: second.signatureData,
+                archiveData: second.archiveData
+            )
+        }
+        let decoder = JSONDecoder()
+        let currentAfterFailure = try decoder.decode(
+            AuraFaceDistributionDescriptor.self,
+            from: Data(contentsOf: root.appendingPathComponent("current/distribution.json"))
+        )
+        #expect(currentAfterFailure.modelVersion == first.descriptor.modelVersion)
+
+        let successfulInstaller = try AuraFaceComponentInstaller(
+            io: makeAuraFaceIO(packageFiles: second.packageFiles),
+            publicKeyData: key.publicKey.rawRepresentation,
+            root: root
+        )
+        _ = try await successfulInstaller.install(
+            descriptorData: second.descriptorData,
+            signatureData: second.signatureData,
+            archiveData: second.archiveData
+        )
+        let current = try decoder.decode(
+            AuraFaceDistributionDescriptor.self,
+            from: Data(contentsOf: root.appendingPathComponent("current/distribution.json"))
+        )
+        let rollback = try decoder.decode(
+            AuraFaceDistributionDescriptor.self,
+            from: Data(contentsOf: root.appendingPathComponent("rollback/distribution.json"))
+        )
+        #expect(current.modelVersion == second.descriptor.modelVersion)
+        #expect(rollback.modelVersion == first.descriptor.modelVersion)
+    }
+
+    @Test func auraFaceDownloadUsesOnlyDeclaredEndpointsAndRemovalWorksOffline() async throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let fixture = try makeAuraFaceFixture(privateKey: key)
+        let root = try temporaryAuraFaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var io = makeAuraFaceIO(packageFiles: fixture.packageFiles)
+        let descriptorURL = AuraFaceComponentStore.descriptorURL
+        let signatureURL = AuraFaceComponentStore.signatureURL
+        let archiveURL = fixture.descriptor.downloadURL
+        io.fetch = { url in
+            switch url {
+            case descriptorURL: AuraFaceHTTPPayload(data: fixture.descriptorData, statusCode: 200)
+            case signatureURL: AuraFaceHTTPPayload(data: fixture.signatureData, statusCode: 200)
+            case archiveURL: AuraFaceHTTPPayload(data: fixture.archiveData, statusCode: 200)
+            default: throw URLError(.unsupportedURL)
+            }
+        }
+        let installer = try AuraFaceComponentInstaller(
+            io: io,
+            publicKeyData: key.publicKey.rawRepresentation,
+            root: root
+        )
+
+        _ = try await installer.downloadAndInstall()
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("current").path))
+        try await installer.removeInstalledComponent()
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("current").path))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("rollback").path))
     }
 
     @Test @MainActor

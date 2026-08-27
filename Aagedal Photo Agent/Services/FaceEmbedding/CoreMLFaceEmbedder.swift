@@ -86,28 +86,55 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     private static let inputName = "input"
     private static let outputName = "embedding"
     private static let modelResource = "AuraFaceR100"
-    fileprivate static let modelVersion = "AuraFace-v1/glintr100"
+    static let modelVersion = "AuraFace-v1/glintr100"
     private static let mean: Float = 127.5
     private static let std: Float = 127.5
     /// Set false only if a future model expects BGR input.
     private static let inputIsRGB = true
 
     private let lock = NSLock()
-    private let modelURL: URL?
+    private var modelURL: URL?
+    private let allowsDynamicResolution: Bool
     private var loadedModel: MLModel?
     private var loadError: Error?
 
     nonisolated var availability: FaceRecognitionModelAvailability {
-        modelURL == nil ? .unavailable : .available
+        lock.lock(); defer { lock.unlock() }
+        return modelURL != nil ? .available : .unavailable
     }
 
     nonisolated convenience init(bundle: Bundle = .main) {
-        self.init(modelURL: bundle.url(forResource: Self.modelResource, withExtension: "mlmodelc"))
+        self.init(modelURL: Self.resolvedModelURL(bundle: bundle), allowsDynamicResolution: true)
+    }
+
+    /// A downloaded component wins over the bundled compatibility path. Downloaded
+    /// packages are accepted only when their persisted signed descriptor and every
+    /// source-package hash still verify.
+    nonisolated static func resolvedModelURL(bundle: Bundle = .main) -> URL? {
+        AuraFaceComponentStore.installedModelURL()
+            ?? bundle.url(forResource: Self.modelResource, withExtension: "mlmodelc")
+    }
+
+    /// Known People migration uses this as its fail-closed model boundary. A release-bundled
+    /// model is protected by the signed app; an on-demand model is independently reverified.
+    nonisolated static func hasVerifiedCurrentModel(bundle: Bundle = .main) -> Bool {
+        resolvedModelURL(bundle: bundle) != nil
     }
 
     /// Internal injection point keeps the omitted-package state deterministic in focused tests.
-    nonisolated init(modelURL: URL?) {
+    nonisolated init(modelURL: URL?, allowsDynamicResolution: Bool = false) {
         self.modelURL = modelURL
+        self.allowsDynamicResolution = allowsDynamicResolution
+    }
+
+    /// Makes an installed or removed component visible without relaunching. Any cached model
+    /// or failure belongs to the previous installation and must not cross this boundary.
+    nonisolated func refreshAfterComponentChange() {
+        lock.lock(); defer { lock.unlock() }
+        guard allowsDynamicResolution else { return }
+        loadedModel = nil
+        loadError = nil
+        modelURL = Self.resolvedModelURL()
     }
 
     enum EmbedError: LocalizedError {
@@ -130,6 +157,9 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
         if let m = loadedModel { return m }
         if let e = loadError { throw e }
         do {
+            if modelURL == nil, allowsDynamicResolution {
+                modelURL = Self.resolvedModelURL()
+            }
             guard let url = modelURL else {
                 throw EmbedError.modelNotFound
             }

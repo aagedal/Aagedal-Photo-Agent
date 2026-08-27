@@ -90,9 +90,13 @@ final class FaceRecognitionViewModel {
     /// scan start from reopening the writer race after the current scan has been drained.
     @ObservationIgnored private var renameQuiescenceFolderURL: URL?
     var scanComplete = false
-    /// Package-level capability. This is immutable for the lifetime of the app because bundled
-    /// resources cannot appear after launch.
-    let faceModelAvailability: FaceRecognitionModelAvailability
+    /// Explicit tests and packaged-unavailable builds can pin a state. Normal app use resolves
+    /// the on-demand component dynamically so a verified install/removal takes effect without
+    /// requiring a relaunch.
+    @ObservationIgnored private let faceModelAvailabilityOverride: FaceRecognitionModelAvailability?
+    var faceModelAvailability: FaceRecognitionModelAvailability {
+        faceModelAvailabilityOverride ?? CoreMLFaceEmbedder.shared.availability
+    }
     /// The expanded manager can work with partial results from a cancelled or interrupted scan.
     /// Keep scan completion separate so the face bar can still offer to resume scanning.
     var canShowExpandedFaceManagement: Bool {
@@ -575,12 +579,12 @@ final class FaceRecognitionViewModel {
         readService: SwiftExifReadService,
         writeEngine: any MetadataWriteEngine,
         activityHistory: ActivityHistoryStore? = nil,
-        faceModelAvailability: FaceRecognitionModelAvailability = CoreMLFaceEmbedder.shared.availability
+        faceModelAvailability: FaceRecognitionModelAvailability? = nil
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
         self.activityHistory = activityHistory
-        self.faceModelAvailability = faceModelAvailability
+        self.faceModelAvailabilityOverride = faceModelAvailability
     }
 
     deinit {
