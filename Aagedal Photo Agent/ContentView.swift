@@ -3743,15 +3743,9 @@ struct ContentViewModifiers: ViewModifier {
                     browserViewModel.openFolder()
                 case .openRecentFolder(let url):
                     panes.active.loadFolder(url: url, addToOpenFolders: true)
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .setRating)) { notification in
-                if let rating = notification.object as? StarRating {
+                case .setRating(let rating):
                     browserViewModel.setRating(rating)
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .setLabel)) { notification in
-                if let label = notification.object as? ColorLabel {
+                case .setLabel(let label):
                     browserViewModel.setLabel(label)
                 }
             }

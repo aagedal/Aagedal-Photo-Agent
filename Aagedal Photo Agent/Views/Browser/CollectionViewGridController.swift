@@ -7,6 +7,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     enum Section { case main }
 
     let viewModel: BrowserViewModel
+    let commandRouter: AppCommandRouter
     /// Called when the user clicks into this grid — split-view container uses it to
     /// mark the pane active.
     var onFocus: (() -> Void)?
@@ -37,8 +38,9 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     /// Last width we reflowed at, so `viewDidLayout` only re-lays-out on real width changes.
     private var lastLayoutWidth: CGFloat = 0
 
-    init(viewModel: BrowserViewModel) {
+    init(viewModel: BrowserViewModel, commandRouter: AppCommandRouter) {
         self.viewModel = viewModel
+        self.commandRouter = commandRouter
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -63,6 +65,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
 
         collectionView = ThumbnailCollectionView()
         collectionView.viewModel = viewModel
+        collectionView.commandRouter = commandRouter
         collectionView.onFocus = { [weak self] in self?.onFocus?() }
         collectionView.isSelectable = false // We handle selection ourselves
         collectionView.backgroundColors = [.clear]

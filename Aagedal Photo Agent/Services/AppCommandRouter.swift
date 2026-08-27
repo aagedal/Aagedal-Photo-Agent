@@ -8,6 +8,8 @@ import Observation
 enum AppCommand: Equatable, Sendable {
     case openFolder
     case openRecentFolder(URL)
+    case setRating(StarRating)
+    case setLabel(ColorLabel)
 }
 
 struct AppCommandDelivery: Equatable, Sendable {

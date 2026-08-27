@@ -4,6 +4,7 @@ import AppKit
 final class ThumbnailCollectionView: NSCollectionView {
 
     weak var viewModel: BrowserViewModel?
+    weak var commandRouter: AppCommandRouter?
 
     /// Fired on mouseDown so the split-view container can mark this pane active.
     var onFocus: (() -> Void)?
@@ -343,10 +344,10 @@ final class ThumbnailCollectionView: NSCollectionView {
         switch action {
         case let .rating(value):
             guard let rating = StarRating(rawValue: value) else { return }
-            NotificationCenter.default.post(name: .setRating, object: rating)
+            commandRouter?.send(.setRating(rating))
         case let .colorLabel(index):
             guard let label = ColorLabel.fromShortcutIndex(index) else { return }
-            NotificationCenter.default.post(name: .setLabel, object: label)
+            commandRouter?.send(.setLabel(label))
         }
     }
 
@@ -560,12 +561,12 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     @objc private func contextSetRating(_ sender: NSMenuItem) {
         guard let rating = sender.representedObject as? StarRating else { return }
-        NotificationCenter.default.post(name: .setRating, object: rating)
+        commandRouter?.send(.setRating(rating))
     }
 
     @objc private func contextSetLabel(_ sender: NSMenuItem) {
         guard let label = sender.representedObject as? ColorLabel else { return }
-        NotificationCenter.default.post(name: .setLabel, object: label)
+        commandRouter?.send(.setLabel(label))
     }
 
     @objc private func contextSaveAsJPEG(_ sender: Any?) {

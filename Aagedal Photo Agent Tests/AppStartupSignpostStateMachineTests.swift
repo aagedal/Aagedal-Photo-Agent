@@ -38,6 +38,18 @@ struct AppCommandRouterTests {
         #expect(second.sequence == 2)
         #expect(first != second)
     }
+
+    @Test("rating and label commands preserve their domain payloads")
+    func cullingCommandPayloads() throws {
+        let router = AppCommandRouter()
+
+        router.send(.setRating(.three))
+        #expect(try #require(router.latestDelivery).command == .setRating(.three))
+
+        router.send(.setLabel(.red))
+        #expect(try #require(router.latestDelivery).command == .setLabel(.red))
+        #expect(try #require(router.latestDelivery).sequence == 2)
+    }
 }
 
 @Suite("App startup signpost lifecycle")

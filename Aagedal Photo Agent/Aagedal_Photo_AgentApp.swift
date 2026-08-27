@@ -33,6 +33,7 @@ struct Aagedal_Photo_AgentApp: App {
     var body: some Scene {
         Window("Aagedal Photo Agent", id: "main") {
             ContentView(settingsViewModel: settingsViewModel, commandRouter: commandRouter)
+                .environment(commandRouter)
                 .onAppear {
                     AppStartupSignposts.shared.mainContentAppeared()
                     // UI smoke launches use disposable fixtures and must not start unrelated
@@ -132,28 +133,26 @@ struct Aagedal_Photo_AgentApp: App {
                 // don't fire while a metadata field is being edited). CMD+digits
                 // are reserved for the color labels below.
                 Button("No Rating") {
-                    NotificationCenter.default.post(name: .setRating, object: StarRating.none)
+                    commandRouter.send(.setRating(.none))
                 }
 
                 ForEach(1...5, id: \.self) { rating in
                     Button("\(rating) Star\(rating > 1 ? "s" : "")") {
-                        NotificationCenter.default.post(
-                            name: .setRating,
-                            object: StarRating(rawValue: rating)
-                        )
+                        guard let rating = StarRating(rawValue: rating) else { return }
+                        commandRouter.send(.setRating(rating))
                     }
                 }
 
                 Divider()
 
                 Button("No Label") {
-                    NotificationCenter.default.post(name: .setLabel, object: ColorLabel.none)
+                    commandRouter.send(.setLabel(.none))
                 }
                 .keyboardShortcut("0", modifiers: .command)
 
                 ForEach(Array(ColorLabel.allCases.dropFirst().enumerated()), id: \.element) { index, label in
                     Button(label.displayName) {
-                        NotificationCenter.default.post(name: .setLabel, object: label)
+                        commandRouter.send(.setLabel(label))
                     }
                     .keyboardShortcut(
                         KeyEquivalent(Character(String(index + 1))),
@@ -529,8 +528,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension Notification.Name {
-    static let setRating = Notification.Name("setRating")
-    static let setLabel = Notification.Name("setLabel")
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")
     static let openInExternalEditor = Notification.Name("openInExternalEditor")
     static let openInInternalEditor = Notification.Name("openInInternalEditor")

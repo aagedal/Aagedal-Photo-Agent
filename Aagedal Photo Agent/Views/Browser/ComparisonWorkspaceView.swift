@@ -37,6 +37,7 @@ struct ComparisonWorkspaceView: View {
     @State private var missingReplacement: [ComparisonPane: ImageFile] = [:]
     @State private var publishedCleanFeedSessionID: UUID?
     @FocusState private var workspaceFocused: Bool
+    @Environment(AppCommandRouter.self) private var commandRouter
 
     var body: some View {
         VStack(spacing: 0) {
@@ -770,10 +771,10 @@ struct ComparisonWorkspaceView: View {
         switch action {
         case let .rating(value):
             guard let rating = StarRating(rawValue: value) else { return .ignored }
-            NotificationCenter.default.post(name: .setRating, object: rating)
+            commandRouter.send(.setRating(rating))
         case let .colorLabel(index):
             guard let label = ColorLabel.fromShortcutIndex(index) else { return .ignored }
-            NotificationCenter.default.post(name: .setLabel, object: label)
+            commandRouter.send(.setLabel(label))
         }
         return .handled
     }
