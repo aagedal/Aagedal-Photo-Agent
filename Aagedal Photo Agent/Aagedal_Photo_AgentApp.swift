@@ -7,6 +7,7 @@ struct Aagedal_Photo_AgentApp: App {
     @StateObject private var updater = SparkleUpdaterService.shared
     @ObservedObject private var imageScaling = ImageScalingController.shared
     @State private var settingsViewModel = SettingsViewModel()
+    @State private var commandRouter = AppCommandRouter()
     private let recentFolders = RecentFoldersStore.shared
 
     init() {
@@ -31,7 +32,7 @@ struct Aagedal_Photo_AgentApp: App {
 
     var body: some Scene {
         Window("Aagedal Photo Agent", id: "main") {
-            ContentView(settingsViewModel: settingsViewModel)
+            ContentView(settingsViewModel: settingsViewModel, commandRouter: commandRouter)
                 .onAppear {
                     AppStartupSignposts.shared.mainContentAppeared()
                     // UI smoke launches use disposable fixtures and must not start unrelated
@@ -55,14 +56,14 @@ struct Aagedal_Photo_AgentApp: App {
 
             CommandGroup(after: .newItem) {
                 Button("Open Folder...") {
-                    NotificationCenter.default.post(name: .openFolder, object: nil)
+                    commandRouter.send(.openFolder)
                 }
                 .keyboardShortcut("o", modifiers: .command)
 
                 Menu("Open Recent") {
                     ForEach(recentFolders.folders) { recent in
                         Button(recent.name) {
-                            NotificationCenter.default.post(name: .openRecentFolder, object: recent.url)
+                            commandRouter.send(.openRecentFolder(recent.url))
                         }
                     }
 
@@ -528,8 +529,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension Notification.Name {
-    static let openFolder = Notification.Name("openFolder")
-    static let openRecentFolder = Notification.Name("openRecentFolder")
     static let setRating = Notification.Name("setRating")
     static let setLabel = Notification.Name("setLabel")
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")

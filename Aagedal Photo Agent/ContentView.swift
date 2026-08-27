@@ -174,6 +174,7 @@ struct ContentView: View {
     @State private var comparisonOrigin: ComparisonOriginWorkspace = .browser
     @State private var comparisonInitialLeftRepresentation: ComparisonRepresentation?
     private let uiTestLaunchConfiguration: UITestLaunchConfiguration
+    private let commandRouter: AppCommandRouter
 
     // Keyword-list backup recovery (prompts when a list comes back empty at launch).
     @State private var isShowingListRecoveryPrompt = false
@@ -183,7 +184,7 @@ struct ContentView: View {
     /// moment so the alert and sheet describe exactly what was flagged.
     @State private var listRecoveryAffectedNames: [String] = []
 
-    init(settingsViewModel: SettingsViewModel) {
+    init(settingsViewModel: SettingsViewModel, commandRouter: AppCommandRouter) {
         let uiTestLaunchConfiguration = UITestLaunchConfiguration.current
         let deliverySession = DeadlineDeliveryProductionSession()
         let thumbnailService = ThumbnailService()
@@ -226,6 +227,7 @@ struct ContentView: View {
         _pendingDeadlineResumeWorkflowIdentifier = State(initialValue: nil)
         _importViewModel = State(initialValue: ImportViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine, activityHistory: history))
         self.uiTestLaunchConfiguration = uiTestLaunchConfiguration
+        self.commandRouter = commandRouter
     }
 
     @Environment(\.openWindow) private var openWindow
@@ -325,6 +327,7 @@ struct ContentView: View {
                 settingsViewModel: settingsViewModel,
                 importViewModel: importViewModel,
                 mainViewMode: mainViewMode,
+                commandRouter: commandRouter,
                 loadTechnicalMetadata: loadTechnicalMetadata,
                 technicalMetadataCache: $technicalMetadataCache,
                 technicalMetadata: $technicalMetadata
@@ -3677,6 +3680,7 @@ struct ContentViewModifiers: ViewModifier {
     let settingsViewModel: SettingsViewModel
     let importViewModel: ImportViewModel
     let mainViewMode: MainViewMode
+    let commandRouter: AppCommandRouter
     let loadTechnicalMetadata: () -> Void
     @Binding var technicalMetadataCache: [URL: TechnicalMetadata]
     @Binding var technicalMetadata: TechnicalMetadata?
@@ -3732,8 +3736,14 @@ struct ContentViewModifiers: ViewModifier {
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 handleDrop(providers: providers)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .openFolder)) { _ in
-                browserViewModel.openFolder()
+            .onChange(of: commandRouter.latestDelivery) { _, delivery in
+                guard let delivery else { return }
+                switch delivery.command {
+                case .openFolder:
+                    browserViewModel.openFolder()
+                case .openRecentFolder(let url):
+                    panes.active.loadFolder(url: url, addToOpenFolders: true)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .setRating)) { notification in
                 if let rating = notification.object as? StarRating {
@@ -3805,10 +3815,6 @@ struct ContentViewModifiers: ViewModifier {
             }
             // Lives outside `base`: that modifier chain is at the
             // type-checker's expression-complexity limit already.
-            .onReceive(NotificationCenter.default.publisher(for: .openRecentFolder)) { notification in
-                guard let url = notification.object as? URL else { return }
-                panes.active.loadFolder(url: url, addToOpenFolders: true)
-            }
             .onReceive(NotificationCenter.default.publisher(for: .browserDidOpenRootFolder)) { notification in
                 guard let url = notification.object as? URL else { return }
                 panes.panes[0].registerOpenFolderForSidebar(url)

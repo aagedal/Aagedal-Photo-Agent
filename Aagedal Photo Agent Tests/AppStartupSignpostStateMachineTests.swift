@@ -1,5 +1,44 @@
 import Testing
+import Foundation
 @testable import Aagedal_Photo_Agent
+
+@Suite("Scene app command router")
+@MainActor
+struct AppCommandRouterTests {
+    @Test("folder commands preserve their typed payloads")
+    func folderCommandPayloads() throws {
+        let router = AppCommandRouter()
+        let recentFolder = URL(fileURLWithPath: "/tmp/recent-folder", isDirectory: true)
+
+        #expect(router.latestDelivery == nil)
+
+        router.send(.openFolder)
+        #expect(router.latestDelivery == AppCommandDelivery(
+            sequence: 1,
+            command: .openFolder
+        ))
+
+        router.send(.openRecentFolder(recentFolder))
+        let delivery = try #require(router.latestDelivery)
+        #expect(delivery.sequence == 2)
+        #expect(delivery.command == .openRecentFolder(recentFolder))
+    }
+
+    @Test("repeated commands remain distinct deliveries")
+    func repeatedCommandsAreDistinct() throws {
+        let router = AppCommandRouter()
+
+        router.send(.openFolder)
+        let first = try #require(router.latestDelivery)
+        router.send(.openFolder)
+        let second = try #require(router.latestDelivery)
+
+        #expect(first.command == second.command)
+        #expect(first.sequence == 1)
+        #expect(second.sequence == 2)
+        #expect(first != second)
+    }
+}
 
 @Suite("App startup signpost lifecycle")
 struct AppStartupSignpostStateMachineTests {
