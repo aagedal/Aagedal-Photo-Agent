@@ -367,12 +367,7 @@ struct EditWorkspaceView: View {
     @State private var brushErase = false             // subtract from the mask instead of adding
     // AI subject/object selection owns one click over the preview. No layer is added until Vision
     // returns a real foreground instance, so cancelling or clicking the letterbox leaves no junk.
-    @State private var isSelectingAIMask = false
-    @State private var isGeneratingAIMask = false
-    @State private var replacingAIMaskID: UUID?
-    @State private var aiMaskTarget: AIMaskTarget = .automatic
-    @State private var aiMaskTask: Task<Void, Never>?
-    @State private var aiMaskError: String?
+    @State private var aiMaskSelection = AIMaskSelectionCoordinator()
     @FocusState private var isWorkspaceFocused: Bool
     @ObservedObject private var scaling = ImageScalingController.shared
 
@@ -473,6 +468,20 @@ struct EditWorkspaceView: View {
     private var primaryDevelopSettings: CameraRawSettings? {
         get { developVersionSession.primarySettings }
         nonmutating set { developVersionSession.primarySettings = newValue }
+    }
+
+    private var isSelectingAIMask: Bool { aiMaskSelection.isSelecting }
+    private var isGeneratingAIMask: Bool { aiMaskSelection.isGenerating }
+    private var replacingAIMaskID: UUID? { aiMaskSelection.replacingMaskID }
+
+    private var aiMaskTarget: AIMaskTarget {
+        get { aiMaskSelection.target }
+        nonmutating set { aiMaskSelection.target = newValue }
+    }
+
+    private var aiMaskError: String? {
+        get { aiMaskSelection.errorMessage }
+        nonmutating set { aiMaskSelection.errorMessage = newValue }
     }
 
     private var activeNamedDevelopVersion: DevelopNamedVersion? {
@@ -837,14 +846,11 @@ struct EditWorkspaceView: View {
             // Leaving a brush layer (e.g. after deleting one) exits paint mode, so the brush
             // controls don't linger on Global or radial layers. Selecting a brush layer keeps it.
             if !selectedMaskIsBrush { isBrushPainting = false }
-            if !isGeneratingAIMask {
-                isSelectingAIMask = false
-                replacingAIMaskID = nil
-            }
+            aiMaskSelection.cancelSelectionIfIdle()
             if let id = selectedMaskID,
                let target = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
                 .first(where: { $0.id == id })?.aiMask?.resolvedTarget {
-                aiMaskTarget = target
+                aiMaskSelection.adoptTarget(target)
             }
             syncMaskOverlayTarget()
             metalCoordinator.requestRedraw()
@@ -2595,6 +2601,7 @@ struct EditWorkspaceView: View {
             developVersionFlushRegistrationID = nil
         }
         developVersionSession.reset()
+        aiMaskSelection.endImageSession()
 
         // Tear down the clean-feed mirror; browse mode resumes driving the feed.
         metalPipeline?.mirror = nil
@@ -2805,12 +2812,7 @@ struct EditWorkspaceView: View {
         sourceLoadedOrientation = nil
         asShotWhiteBalance = nil
         isPickingWhiteBalance = false
-        aiMaskTask?.cancel()
-        aiMaskTask = nil
-        isSelectingAIMask = false
-        isGeneratingAIMask = false
-        replacingAIMaskID = nil
-        aiMaskError = nil
+        aiMaskSelection.beginImageSession(selectedImageURL)
         wbPickDragRect = nil
         maskMattePreviewMaskID = nil
         metalPipeline?.maskMattePreviewMaskID = nil
@@ -7000,18 +7002,15 @@ struct EditWorkspaceView: View {
         isBrushPainting = false
         isPickingWhiteBalance = false
         wbPickDragRect = nil
-        if maskID == nil { aiMaskTarget = .automatic }
-        replacingAIMaskID = maskID
-        isSelectingAIMask = true
+        guard aiMaskSelection.beginSelection(
+            replacing: maskID,
+            resetsTarget: maskID == nil
+        ) else { return }
         syncMaskOverlayTarget()
     }
 
     private func cancelAIMaskSelection() {
-        aiMaskTask?.cancel()
-        aiMaskTask = nil
-        isSelectingAIMask = false
-        isGeneratingAIMask = false
-        replacingAIMaskID = nil
+        aiMaskSelection.cancelSelection()
         NSCursor.arrow.set()
     }
 
@@ -7046,71 +7045,56 @@ struct EditWorkspaceView: View {
         else { return }
 
         let sourcePoint = aiSourcePoint(fromDisplayedUV: displayedUV)
-        let orientation = selectedImageOrientation
-        let replacementID = replacingAIMaskID
-        let target = aiMaskTarget
-        isGeneratingAIMask = true
-        aiMaskTask?.cancel()
-        aiMaskTask = Task {
-            do {
-                let generated = try await Task.detached(priority: .userInitiated) {
-                    try AIMaskGenerator.generate(
-                        from: source,
-                        displayPoint: sourcePoint,
-                        sourceOrientation: orientation,
-                        target: target
-                    )
-                }.value
-                guard !Task.isCancelled, selectedImageURL == imageURL else { return }
-
-                let targetID: UUID
-                if let replacementID,
-                   metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
-                    .contains(where: { $0.id == replacementID }) == true {
-                    updateCameraRaw { cameraRaw in
-                        guard let index = cameraRaw.localAdjustments?
-                            .firstIndex(where: { $0.id == replacementID }) else { return }
-                        let previousRefinements = cameraRaw.localAdjustments?[index].aiMask
-                        var replacement = generated.raster
-                        replacement.blackPoint = previousRefinements?.blackPoint
-                        replacement.whitePoint = previousRefinements?.whitePoint
-                        replacement.blurRadius = previousRefinements?.blurRadius
-                        cameraRaw.localAdjustments?[index].brush = nil
-                        cameraRaw.localAdjustments?[index].aiMask = replacement
-                    }
-                    targetID = replacementID
-                } else {
-                    let count = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
-                    let newMask = MaskAdjustment(name: "AI Mask \(count + 1)", aiMask: generated.raster)
-                    updateCameraRaw { cameraRaw in
-                        if cameraRaw.localAdjustments == nil { cameraRaw.localAdjustments = [] }
-                        cameraRaw.localAdjustments?.append(newMask)
-                        if cameraRaw.layerOrder != nil {
-                            cameraRaw.layerOrder?.append(.mask(newMask.id))
-                        }
-                    }
-                    targetID = newMask.id
-                }
-
-                isGeneratingAIMask = false
-                isSelectingAIMask = false
-                replacingAIMaskID = nil
-                selectedLayer = .mask(targetID)
-                if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                    pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
-                    metalCoordinator.requestRedraw()
-                }
-                syncMaskOverlayTarget()
-                commitEditAdjustments()
-            } catch is CancellationError {
-                isGeneratingAIMask = false
-            } catch {
-                guard !Task.isCancelled, selectedImageURL == imageURL else { return }
-                isGeneratingAIMask = false
-                aiMaskError = error.localizedDescription
-            }
-            aiMaskTask = nil
+        aiMaskSelection.generate(
+            from: source,
+            sourcePoint: sourcePoint,
+            sourceOrientation: selectedImageOrientation,
+            imageURL: imageURL
+        ) { generated, replacementID in
+            installGeneratedAIMask(generated, replacing: replacementID)
         }
+    }
+
+    private func installGeneratedAIMask(
+        _ generated: GeneratedAIMask,
+        replacing replacementID: UUID?
+    ) {
+        let targetID: UUID
+        if let replacementID,
+           metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+            .contains(where: { $0.id == replacementID }) == true {
+            updateCameraRaw { cameraRaw in
+                guard let index = cameraRaw.localAdjustments?
+                    .firstIndex(where: { $0.id == replacementID }) else { return }
+                let previousRefinements = cameraRaw.localAdjustments?[index].aiMask
+                var replacement = generated.raster
+                replacement.blackPoint = previousRefinements?.blackPoint
+                replacement.whitePoint = previousRefinements?.whitePoint
+                replacement.blurRadius = previousRefinements?.blurRadius
+                cameraRaw.localAdjustments?[index].brush = nil
+                cameraRaw.localAdjustments?[index].aiMask = replacement
+            }
+            targetID = replacementID
+        } else {
+            let count = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
+            let newMask = MaskAdjustment(name: "AI Mask \(count + 1)", aiMask: generated.raster)
+            updateCameraRaw { cameraRaw in
+                if cameraRaw.localAdjustments == nil { cameraRaw.localAdjustments = [] }
+                cameraRaw.localAdjustments?.append(newMask)
+                if cameraRaw.layerOrder != nil {
+                    cameraRaw.layerOrder?.append(.mask(newMask.id))
+                }
+            }
+            targetID = newMask.id
+        }
+
+        selectedLayer = .mask(targetID)
+        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+            pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+            metalCoordinator.requestRedraw()
+        }
+        syncMaskOverlayTarget()
+        commitEditAdjustments()
     }
 
     // MARK: - Watermark layers

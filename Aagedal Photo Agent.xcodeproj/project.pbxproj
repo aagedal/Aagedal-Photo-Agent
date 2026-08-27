@@ -73,6 +73,7 @@
 		AB4800000000000000000002 /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */; };
 		AB4900000000000000000002 /* DevelopVersionCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */; };
 		D3C001000000000000000002 /* DevelopVersionSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C001000000000000000001 /* DevelopVersionSessionCoordinatorTests.swift */; };
+		D3C002000000000000000002 /* AIMaskSelectionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C002000000000000000001 /* AIMaskSelectionCoordinatorTests.swift */; };
 		AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */; };
 		AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */; };
 		AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5200000000000000000001 /* MetadataValidationTests.swift */; };
@@ -204,6 +205,7 @@
 		AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ComparisonCoordinatorTests.swift; sourceTree = "<group>"; };
 		AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopVersionCatalogTests.swift; sourceTree = "<group>"; };
 		D3C001000000000000000001 /* DevelopVersionSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopVersionSessionCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C002000000000000000001 /* AIMaskSelectionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AIMaskSelectionCoordinatorTests.swift; sourceTree = "<group>"; };
 		AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataTemplatePersistenceTests.swift; sourceTree = "<group>"; };
 		AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisSolarPositionCalculatorTests.swift; sourceTree = "<group>"; };
 		AB5200000000000000000001 /* MetadataValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataValidationTests.swift; sourceTree = "<group>"; };
@@ -362,6 +364,7 @@
 				AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */,
 				AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */,
 				D3C001000000000000000001 /* DevelopVersionSessionCoordinatorTests.swift */,
+				D3C002000000000000000001 /* AIMaskSelectionCoordinatorTests.swift */,
 				AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */,
 				AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */,
 				AB5200000000000000000001 /* MetadataValidationTests.swift */,
@@ -653,6 +656,7 @@
 				AB4800000000000000000002 /* ComparisonCoordinatorTests.swift in Sources */,
 				AB4900000000000000000002 /* DevelopVersionCatalogTests.swift in Sources */,
 				D3C001000000000000000002 /* DevelopVersionSessionCoordinatorTests.swift in Sources */,
+				D3C002000000000000000002 /* AIMaskSelectionCoordinatorTests.swift in Sources */,
 				AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */,
 				AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */,
 				AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */,
