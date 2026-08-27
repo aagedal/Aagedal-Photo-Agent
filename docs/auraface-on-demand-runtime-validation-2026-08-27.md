@@ -23,6 +23,12 @@ Settings → Face Recognition shows model state and explains the approximately 1
 processing, offline behavior, and later removal before confirmation. Removal separately explains that photos
 and Known People data remain and that offline matching becomes unavailable until another verified download.
 
+The developer `.mlpackage` is now an explicit synchronized-group target exception, so it remains available to
+the deterministic build and packaging tools without being compiled into ordinary app builds. The release
+assistant independently rejects an exported app containing `Contents/Resources/AuraFaceR100.mlmodelc` before
+notarization. This closes the local app/component separation boundary even on a release machine that has the
+ignored source package present; production publishing and real-server validation remain separate gates.
+
 ## Automated validation
 
 ```text

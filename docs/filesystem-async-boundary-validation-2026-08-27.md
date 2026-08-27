@@ -2,8 +2,8 @@
 
 ## Scope
 
-This change addresses the first two implementation bullets in Phase 3.1 for the Browser filesystem and
-audited single-image Metadata persistence workflows:
+This change advances the first two implementation bullets in Phase 3.1 for the Browser filesystem,
+audited single-image Metadata persistence, FTP upload staging, and Delivery Receipt summary export:
 
 - Folder scans, subfolder enumeration, trash, rename, create, and move now cross an async
   `FileSystemService` actor boundary before touching `FileManager`.
@@ -25,6 +25,15 @@ audited single-image Metadata persistence workflows:
   durable partial-success case where merged JSON history committed but the XMP mirror failed or was skipped
   after cancellation. MetadataViewModel advances its history baseline from a committed partial result so a
   retry cannot manufacture duplicate history entries.
+- FTP upload history file scans, temporary-workspace creation/cleanup, duplicate-name hard-link/copy staging,
+  persistent `Uploaded`-folder creation, and rendered-file sequencing now cross a serialized
+  `FTPUploadFileSystemBoundary`. The main actor consumes immutable inventory/commit evidence, cancellation is
+  checked before scans and mutations, and staging/sequencing results record cancellation arriving after their
+  synchronous commit instead of misreporting the on-disk state.
+- Delivery Receipt's privacy-preserving summary export now performs its exclusive-create write through the
+  shared serialized `DeliveryReceiptSummaryExportBoundary`. A pre-cancelled export returns without creating
+  the destination; a completed write returns immutable destination/byte-count evidence and records
+  cancellation that arrived after the synchronous commit. Existing destinations remain untouched.
 
 ## Automated coverage
 
@@ -44,6 +53,27 @@ audited single-image Metadata persistence workflows:
 - pre-cancelled persistence with no filesystem mutation; and
 - an XMP install failure returning the already-durable JSON record as explicit partial success.
 
+`FTPUploadFileSystemBoundaryTests` additionally covers:
+
+- ordered immutable file inventory with missing-file fallback facts;
+- source-preserving duplicate-name staging;
+- rendered-file sequencing across both on-disk and in-batch collisions; and
+- pre-cancelled sequencing with zero filesystem mutation.
+
+`DeliveryReceiptLibraryModelTests` additionally covers:
+
+- privacy-safe summary export with exclusive-create/no-overwrite behavior;
+- pre-cancellation leaving no destination and producing a typed model error; and
+- immutable destination/byte-count commit evidence from the serialized writer.
+
+Focused verification on 2026-08-27 passed all four tests in that suite with `** TEST SUCCEEDED **`. A clean
+integration build also compiled the app and all test targets, and the four FTP boundary tests passed within
+the 1,544-test run. Six unrelated coordinator timing assertions failed only under the fully parallel run;
+their two focused suites then passed all six tests against the same build.
+
+Focused Delivery Receipt verification on 2026-08-27 passed all eight Activity-library tests, including the
+pre-cancellation/no-mutation and immutable commit-evidence cases, with `** TEST SUCCEEDED **`.
+
 The existing `FileSystemOfflineAvailabilityTests` continue to cover deferred iCloud items and download
 requests at the same boundary.
 
@@ -52,5 +82,5 @@ requests at the same boundary.
 Phase 3.1 is not complete. Signposts and repeatable benchmarks still need to cover local SSD, network,
 iCloud-placeholder, read-only, and very large folders. Thread Performance Checker and slow-volume UI
 validation are also required. Lower-priority direct file work outside the Browser mutations and audited
-single-image Metadata save should be migrated incrementally without weakening each workflow's recovery and
-partial-success behavior.
+single-image Metadata/FTP/Delivery Receipt paths should be migrated incrementally without weakening each
+workflow's recovery and partial-success behavior.

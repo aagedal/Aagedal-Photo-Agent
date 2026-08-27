@@ -18,6 +18,8 @@ enum AppCommand: Equatable, Sendable {
     case archiveRAW(RAWArchiveFormat)
     case selectPreviousImage
     case selectNextImage
+    case rotateClockwise
+    case rotateCounterclockwise
 }
 
 struct AppCommandDelivery: Equatable, Sendable {

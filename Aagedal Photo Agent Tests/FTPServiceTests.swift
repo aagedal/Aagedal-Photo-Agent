@@ -115,6 +115,110 @@ struct FTPServiceCancellationTests {
     }
 }
 
+@Suite("FTP upload filesystem boundary")
+struct FTPUploadFileSystemBoundaryTests {
+    @Test("inventory returns immutable ordered facts and a stable fallback date")
+    func inventory() async throws {
+        let fixture = try FTPFileSystemFixture()
+        defer { fixture.remove() }
+        let first = try fixture.write("first.jpg", bytes: [1, 2, 3])
+        let second = fixture.root.appendingPathComponent("missing.jpg")
+        let fallback = Date(timeIntervalSince1970: 1_234)
+        let boundary = FTPUploadFileSystemBoundary(temporaryRoot: fixture.root)
+
+        let inventory = try await boundary.inventory(
+            for: [first, second],
+            fallbackDate: fallback
+        )
+
+        #expect(inventory.totalBytes == 3)
+        #expect(inventory.records.map(\.fileName) == ["first.jpg", "missing.jpg"])
+        #expect(inventory.records.map(\.fileSize) == [3, 0])
+        #expect(inventory.records[1].modifiedDate == fallback)
+    }
+
+    @Test("staging preserves the source and returns committed immutable evidence")
+    func stageOriginal() async throws {
+        let fixture = try FTPFileSystemFixture()
+        defer { fixture.remove() }
+        let source = try fixture.write("source.jpg", bytes: [4, 5, 6])
+        let boundary = FTPUploadFileSystemBoundary(temporaryRoot: fixture.root)
+        let workspace = try await boundary.createTemporaryDirectory()
+
+        let prepared = try await boundary.stageOriginal(
+            source,
+            as: "source-2.jpg",
+            in: workspace,
+            index: 1
+        )
+
+        #expect(prepared.wasStaged)
+        #expect(!prepared.cancellationRequestedAfterCommit)
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(try Data(contentsOf: prepared.url) == Data([4, 5, 6]))
+    }
+
+    @Test("render sequencing skips disk and in-batch collisions before moving")
+    func sequenceRenderedFile() async throws {
+        let fixture = try FTPFileSystemFixture()
+        defer { fixture.remove() }
+        let source = try fixture.write("render.jpg", bytes: [7, 8])
+        _ = try fixture.write("render_1.jpg", bytes: [1])
+        let boundary = FTPUploadFileSystemBoundary(temporaryRoot: fixture.root)
+
+        let prepared = try await boundary.sequenceRenderedFile(
+            source,
+            avoiding: ["render_2.jpg"]
+        )
+
+        #expect(prepared.url.lastPathComponent == "render_3.jpg")
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+        #expect(try Data(contentsOf: prepared.url) == Data([7, 8]))
+    }
+
+    @Test("pre-cancelled sequencing leaves the rendered file untouched")
+    func preCancelledSequence() async throws {
+        let fixture = try FTPFileSystemFixture()
+        defer { fixture.remove() }
+        let source = try fixture.write("render.jpg", bytes: [9])
+        let boundary = FTPUploadFileSystemBoundary(temporaryRoot: fixture.root)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            _ = try await boundary.sequenceRenderedFile(source, avoiding: [])
+        }
+
+        await #expect(throws: CancellationError.self) {
+            try await task.value
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(!FileManager.default.fileExists(
+            atPath: fixture.root.appendingPathComponent("render_1.jpg").path
+        ))
+    }
+}
+
+private struct FTPFileSystemFixture {
+    let root: URL
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "FTPFileSystemBoundaryTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    func write(_ name: String, bytes: [UInt8]) throws -> URL {
+        let url = root.appendingPathComponent(name)
+        try Data(bytes).write(to: url)
+        return url
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
 @Suite("FTPService.remoteUploadURL")
 struct FTPRemoteURLTests {
 

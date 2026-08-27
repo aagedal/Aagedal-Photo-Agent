@@ -551,6 +551,20 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
+    /// Mutable compiled render-plan storage. This object does not synchronize itself: every
+    /// access passes through the executor-checked pipeline wrappers below.
+    nonisolated private final class ExecutorOwnedRenderPassState: @unchecked Sendable {
+        private var plan: [EditRenderPass] = []
+
+        func replace(with plan: [EditRenderPass]) {
+            self.plan = plan
+        }
+
+        func snapshot() -> [EditRenderPass] {
+            plan
+        }
+    }
+
     /// Owns mutable render-state buffers and caches. Live preview / Clean Feed instances are
     /// main-thread-owned; the singleton export instance is owned by `offscreenRenderQueue`.
     /// Source upload and adjacent-image precaching are deliberate worker-safe exceptions: they
@@ -617,7 +631,17 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Compiled compute segments for the currently uploaded order. A single entry retains the
     /// historical one-dispatch fast path; two or more entries use ping-pong intermediate
     /// textures so each spatial node samples the complete upstream composite.
-    nonisolated(unsafe) private var renderPassPlan: [EditRenderPass] = []
+    private let renderPassState = ExecutorOwnedRenderPassState()
+
+    nonisolated private func replaceRenderPassPlan(with plan: [EditRenderPass]) {
+        preconditionOnStateExecutor()
+        renderPassState.replace(with: plan)
+    }
+
+    nonisolated private func renderPassPlanSnapshot() -> [EditRenderPass] {
+        preconditionOnStateExecutor()
+        return renderPassState.snapshot()
+    }
 
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
     nonisolated(unsafe) var gamutClipMode: UInt32 = 0 {
@@ -1355,11 +1379,11 @@ final class MetalEditPipeline: @unchecked Sendable {
                 [.global], maskIndexByID: [:], watermarkIndexByID: [:]
             )
             params.orderCount = UInt32(orderEntries.count)
-            renderPassPlan = EditRenderPassPlanner.makePlan(
+            replaceRenderPassPlan(with: EditRenderPassPlanner.makePlan(
                 orderEntries: orderEntries,
                 globalSpatialEffectsActive: false,
                 anonymizerMaskIndices: []
-            )
+            ))
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
             ptr.pointee.gamutClipMode = gamutClipMode
@@ -1702,17 +1726,17 @@ final class MetalEditPipeline: @unchecked Sendable {
            let globalIndex = orderEntries.firstIndex(of: EditRenderPassPlanner.globalOrderSentinel) {
             // Preserve the privacy guarantee of global Black Out: it is terminal and cannot
             // be lifted by a later tone curve, mask, or watermark.
-            renderPassPlan = [EditRenderPass(
+            replaceRenderPassPlan(with: [EditRenderPass(
                 orderOffset: globalIndex,
                 orderCount: 1,
                 requiresMipmappedInput: false
-            )]
+            )])
         } else {
-            renderPassPlan = EditRenderPassPlanner.makePlan(
+            replaceRenderPassPlan(with: EditRenderPassPlanner.makePlan(
                 orderEntries: orderEntries,
                 globalSpatialEffectsActive: globalAnonymizerActive || globalFilmSpatialActive,
                 anonymizerMaskIndices: anonymizerMaskIndices
-            )
+            ))
         }
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
@@ -2372,6 +2396,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         workingInOutputFrame: Bool,
         commandBuffer: MTLCommandBuffer
     ) -> Bool {
+        let renderPassPlan = renderPassPlanSnapshot()
         guard renderPassPlan.count > 1 else {
             var params = baseParams
             params.orderOffset = UInt32(renderPassPlan.first?.orderOffset ?? 0)

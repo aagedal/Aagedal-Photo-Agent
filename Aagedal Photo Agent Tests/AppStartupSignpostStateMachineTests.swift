@@ -77,6 +77,18 @@ struct AppCommandRouterTests {
         #expect(try #require(router.latestDelivery).command == .selectNextImage)
         #expect(try #require(router.latestDelivery).sequence == 2)
     }
+
+    @Test("image rotation commands preserve direction and ordering")
+    func rotationCommandIdentity() throws {
+        let router = AppCommandRouter()
+
+        router.send(.rotateClockwise)
+        #expect(try #require(router.latestDelivery).command == .rotateClockwise)
+
+        router.send(.rotateCounterclockwise)
+        #expect(try #require(router.latestDelivery).command == .rotateCounterclockwise)
+        #expect(try #require(router.latestDelivery).sequence == 2)
+    }
 }
 
 @Suite("App startup signpost lifecycle")

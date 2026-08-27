@@ -251,6 +251,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Resources/Models/AuraFaceR100.mlpackage,
 			);
 			target = 8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */;
 		};

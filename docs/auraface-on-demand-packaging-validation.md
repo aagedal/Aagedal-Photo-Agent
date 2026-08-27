@@ -24,7 +24,7 @@ removal/offline disclosure ready for the eventual download UI.
 
 ```text
 python3 -B scripts/ci/test_auraface_distribution.py
-Ran 5 tests — OK
+Ran 6 tests — OK
 
 python3 -B scripts/ci/test_auraface_source_fetch.py
 Ran 6 tests — OK
@@ -50,17 +50,16 @@ coverage and the existing unavailable-build behavior intact.
 
 ## Remaining external/product blockers
 
-The app still cannot truthfully enable on-demand installation until release ownership supplies and reviews:
+The later [runtime integration](auraface-on-demand-runtime-validation-2026-08-27.md) completed the signed
+descriptor trust boundary, background download, archive verification, Core ML preparation, atomic
+install/rollback/removal, relaunch-safe receipts, and embedding-preserving migration policy that were still
+open when this packaging record was first written. The remaining blockers are now external release work:
 
-1. the final immutable `aagedal.me` upload location and production upload itself;
-2. a trust anchor for the descriptor (for example, a pinned signing public key or a descriptor hash shipped
-   with the app), plus the corresponding offline signing procedure;
-3. the app-side background downloader, archive extraction, Core ML compilation/preparation, atomic install,
-   retained rollback, removal UI, and relaunch-safe state persistence;
-4. a migration policy proving that existing embeddings remain intact until both the new model and rollback
-   model are verified;
-5. clean-install, offline, interrupted/corrupt download, update, rollback, removal, and supported-macOS-tier
-   tests against the real production server.
+1. create the production archive and descriptor, sign the descriptor with the private key matching the
+   shipped Sparkle public key, and publish all immutable files at `aagedal.me`;
+2. build a model-omitted release candidate and record the actual app/update size reduction; and
+3. run clean-install, offline, interrupted/corrupt download, update, rollback, removal, and relaunch tests on
+   every supported macOS tier against the production server, including its real TLS and cache behavior.
 
-Those items require product integration, a production trust decision, or external server state. This local
-packaging work does not claim that the TODO on-demand component or its exit gate is complete.
+The local app/component separation boundary is complete, but these publishing and real-server gates keep the
+background-download TODO and the overall on-demand component exit gate open.

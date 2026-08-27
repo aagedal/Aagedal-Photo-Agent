@@ -126,7 +126,9 @@
   - [x] Zoom and pan lock, including temporary unlock and saved alignment offset.
   - [x] Accessible from Develop, full-screen, and Clean Feed as well as Browser.
 - [x] Grading versions: store source-bound named edit versions as private JSON, not XMP.
-- [ ] Separate the face recognition model file from the app, to minimize update size. The model is rarely updated.
+- [x] Separate the face recognition model file from the app, to minimize update size. The model is rarely updated.
+  (2026-08-27) The developer `.mlpackage` is explicitly excluded from the synchronized app target, and the
+  release assistant rejects any exported app that contains the compiled model.
   - [ ] Download the pre-converted quantized Core ML artifact from `aagedal.me` in the background when the
     model is not installed. Users must never download ONNX or run the developer conversion toolchain.
   - [x] Needs support for model versioning, in case an improved face recognition model is released.

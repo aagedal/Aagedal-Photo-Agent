@@ -351,9 +351,10 @@ result is announced once; CI runs the smoke suite; dated manual evidence covers 
   large folder cases.
 
 **Async-boundary follow-up (2026-08-27):** Browser folder scans and mutations, batch trash/move/duplicate
-operations, and the audited Metadata JSON-history/XMP save now cross serialized actor boundaries and return
-immutable results with explicit cancellation and durable-partial-success semantics. Lower-priority direct
-filesystem paths, signposts/volume benchmarks, and Thread Performance Checker evidence remain open.
+operations, the audited Metadata JSON-history/XMP save, FTP upload inventory/staging, and Delivery Receipt
+summary export now cross serialized actor boundaries and return immutable results with explicit cancellation
+and durable-partial-success semantics. Lower-priority direct filesystem paths, signposts/volume benchmarks,
+and Thread Performance Checker evidence remain open.
 ([validation](filesystem-async-boundary-validation-2026-08-27.md))
 
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
@@ -419,10 +420,12 @@ longer restart Deadline capture; slow high-resolution loads offer actionable rec
   router; retain NotificationCenter for genuine system/process broadcasts.
 - [ ] Add a characterization test before each extraction and keep UI behavior unchanged.
 
-**Command-router follow-up (2026-08-27):** Open Folder/Open Recent, rating/label, core export, and previous/
-next-image commands now use a typed, scene-owned `AppCommandRouter`, including explicit AppKit bridging and
-typed payload/sequence contract coverage. Other command families and state-owning coordinator extractions
-remain incremental work.
+**Command-router follow-up (2026-08-27):** Open Folder/Open Recent, rating/label, core export, previous/
+next-image, and clockwise/counterclockwise rotation commands now use a typed, scene-owned
+`AppCommandRouter`, including explicit AppKit bridging and typed payload/sequence contract coverage. The
+rotation slice removed its process-wide notification names while preserving the existing menu shortcuts and
+browser actions. Other command families and state-owning coordinator extractions remain incremental work.
+([validation](app-command-router-validation-2026-08-27.md))
 
 **State-owner follow-up (2026-08-27):** `DevelopVersionSessionCoordinator` now owns named-version catalog,
 revision, storage, cancellation, debounce/flush persistence, and stale-result gating. A separate
@@ -454,8 +457,9 @@ the intended window/pane; extracted units are independently testable.
 **Executor-isolation follow-up (2026-08-27):** a dedicated serialized offscreen renderer owns its queue,
 cancellation, and reusable pipeline; source/mirror/white-balance state is lock-backed; executor and
 cross-pipeline owner preconditions are enforced; and immutable Metal handles reduced explicit
-`nonisolated(unsafe)` declarations from 41 to 30. A compile-time live-preview facade and extraction of the
-remaining mutable caches/plans/scratch state remain open.
+`nonisolated(unsafe)` declarations from 41 to 30. A bounded 2026-08-27 follow-up moved the compiled render
+plan behind executor-checked replace/snapshot accessors, reducing the count again to 29. A compile-time
+live-preview facade and extraction of the remaining mutable caches/scratch state remain open.
 ([validation](metal-edit-pipeline-executor-validation.md))
 
 **Exit gate:** every remaining unsafe isolation escape has a written invariant and enforcement; the stress

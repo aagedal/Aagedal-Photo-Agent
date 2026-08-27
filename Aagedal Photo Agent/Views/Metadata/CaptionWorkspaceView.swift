@@ -230,7 +230,8 @@ struct CaptionWorkspaceView: View {
                 navigate(previous: false)
             case .openFolder, .openRecentFolder, .setRating, .setLabel,
                  .renderSelected, .advancedExportSelected, .renderAll,
-                 .saveAsJPEG, .saveAsPNG, .archiveRAW:
+                 .saveAsJPEG, .saveAsPNG, .archiveRAW,
+                 .rotateClockwise, .rotateCounterclockwise:
                 break
             }
         }

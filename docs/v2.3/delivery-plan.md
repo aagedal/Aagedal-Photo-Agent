@@ -261,7 +261,7 @@ gates below.
 **Release preflight follow-up (2026-08-26):** credential-free validation now rejects inconsistent Xcode,
 Info.plist, CHANGELOG, SECURITY, and appcast release metadata before CI credentials, keychain access, signing,
 or notarization. The [validation record](../release-metadata-preflight-validation-2026-08-26.md) strengthens
-the final packaging prerequisite but does not close the signed release item or any of the 24 open gates.
+the final packaging prerequisite but does not close the signed release item or any of the 23 open gates.
 
 - [x] Full existing test suite; see the current-source follow-up in
   [full-test-suite validation](../full-test-suite-validation.md#plan-status-hardening-integration-follow-up--2026-08-25).

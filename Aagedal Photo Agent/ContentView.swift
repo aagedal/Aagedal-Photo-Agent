@@ -726,7 +726,8 @@ struct ContentView: View {
                 case .archiveRAW(let format):
                     archiveSelectedRAW(as: format)
                 case .openFolder, .openRecentFolder, .setRating, .setLabel,
-                     .selectPreviousImage, .selectNextImage:
+                     .selectPreviousImage, .selectNextImage,
+                     .rotateClockwise, .rotateCounterclockwise:
                     break
                 }
             }
@@ -3756,6 +3757,10 @@ struct ContentViewModifiers: ViewModifier {
                     if mainViewMode != .caption {
                         browserViewModel.selectNext()
                     }
+                case .rotateClockwise:
+                    browserViewModel.rotateClockwise()
+                case .rotateCounterclockwise:
+                    browserViewModel.rotateCounterclockwise()
                 case .renderSelected, .advancedExportSelected, .renderAll,
                      .saveAsJPEG, .saveAsPNG, .archiveRAW:
                     break
@@ -3766,12 +3771,6 @@ struct ContentViewModifiers: ViewModifier {
             }
             .onReceive(NotificationCenter.default.publisher(for: .deleteSelected)) { _ in
                 browserViewModel.confirmDeleteSelectedImages()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .rotateClockwise)) { _ in
-                browserViewModel.rotateClockwise()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .rotateCounterclockwise)) { _ in
-                browserViewModel.rotateCounterclockwise()
             }
             .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
                 guard !metadataViewModel.hasChanges else { return }

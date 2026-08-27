@@ -176,6 +176,50 @@ struct DeliveryReceiptLibraryModelTests {
         #expect(!summary.contains(String(repeating: "a", count: 64)))
         #expect(!summary.contains(String(repeating: "b", count: 64)))
     }
+
+    @Test("pre-cancelled summary export leaves no destination and reports cancellation")
+    func summaryExportPreCancellation() async throws {
+        let receipt = makeActivityReceipt(filename: "cancelled-source.jpg")
+        let repository = ReceiptLibraryStub(receipts: [receipt.id: receipt])
+        let model = DeliveryReceiptLibraryModel(repository: repository)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "receipt-activity-cancelled-export-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("summary.txt")
+
+        let export = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await model.exportSummary(id: receipt.id, to: destination)
+        }
+
+        #expect(!(await export.value))
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(model.error == .summaryExportCancelled(receiptID: receipt.id))
+    }
+
+    @Test("summary writer returns immutable commit evidence")
+    func summaryWriterCommitEvidence() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "receipt-summary-writer-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("summary.txt")
+        let boundary = DeliveryReceiptSummaryExportBoundary()
+
+        let result = try await boundary.write("Summary", to: destination)
+
+        #expect(result == .committed(DeliveryReceiptSummaryExportCommit(
+            destinationURL: destination,
+            byteCount: 8,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(try String(contentsOf: destination, encoding: .utf8) == "Summary\n")
+    }
 }
 
 private enum ReceiptLibraryStubError: Error, LocalizedError, Sendable {

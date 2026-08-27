@@ -83,6 +83,7 @@ nonisolated enum DeliveryReceiptLibraryError: Error, Equatable, LocalizedError, 
     case detailLoadFailed(receiptID: UUID, reason: String)
     case deleteFailed(receiptID: UUID, reason: String)
     case summaryExportFailed(receiptID: UUID, reason: String)
+    case summaryExportCancelled(receiptID: UUID)
 
     var errorDescription: String? {
         switch self {
@@ -94,7 +95,40 @@ nonisolated enum DeliveryReceiptLibraryError: Error, Equatable, LocalizedError, 
             "Receipt \(receiptID.uuidString.lowercased()) could not be deleted. \(reason)"
         case let .summaryExportFailed(receiptID, reason):
             "The summary for receipt \(receiptID.uuidString.lowercased()) could not be exported. \(reason)"
+        case let .summaryExportCancelled(receiptID):
+            "The summary export for receipt \(receiptID.uuidString.lowercased()) was cancelled."
         }
+    }
+}
+
+nonisolated struct DeliveryReceiptSummaryExportCommit: Equatable, Sendable {
+    let destinationURL: URL
+    let byteCount: Int
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum DeliveryReceiptSummaryExportResult: Equatable, Sendable {
+    case committed(DeliveryReceiptSummaryExportCommit)
+    case cancelledBeforeWrite
+}
+
+/// Shared exclusive-create boundary for receipt summaries. All potentially blocking writes are
+/// serialized off the MainActor, while callers receive immutable evidence of whether bytes were
+/// committed or cancellation prevented the write from starting.
+actor DeliveryReceiptSummaryExportBoundary {
+    static let shared = DeliveryReceiptSummaryExportBoundary()
+
+    func write(_ text: String, to destination: URL) throws -> DeliveryReceiptSummaryExportResult {
+        guard !Task.isCancelled else { return .cancelledBeforeWrite }
+        let data = Data((text + "\n").utf8)
+        // Foundation does not support combining `.atomic` and `.withoutOverwriting`.
+        // Exclusive create is the important transaction boundary: export never replaces bytes.
+        try data.write(to: destination, options: .withoutOverwriting)
+        return .committed(DeliveryReceiptSummaryExportCommit(
+            destinationURL: destination,
+            byteCount: data.count,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        ))
     }
 }
 
@@ -111,10 +145,12 @@ final class DeliveryReceiptLibraryModel {
 
     @ObservationIgnored private let repository: any DeliveryReceiptLibraryRepository
     @ObservationIgnored private let summaryGenerator: DeliveryReceiptSummaryGenerator
+    @ObservationIgnored private let summaryExporter: DeliveryReceiptSummaryExportBoundary
 
     init(
         repository: (any DeliveryReceiptLibraryRepository)? = nil,
-        summaryGenerator: DeliveryReceiptSummaryGenerator = DeliveryReceiptSummaryGenerator()
+        summaryGenerator: DeliveryReceiptSummaryGenerator = DeliveryReceiptSummaryGenerator(),
+        summaryExporter: DeliveryReceiptSummaryExportBoundary = .shared
     ) {
         self.repository = repository ?? DeliveryReceiptRepository(
             documentURL: AppPaths.applicationSupport
@@ -122,6 +158,7 @@ final class DeliveryReceiptLibraryModel {
                 .appendingPathComponent("receipts.json")
         )
         self.summaryGenerator = summaryGenerator
+        self.summaryExporter = summaryExporter
     }
 
     /// Reloads every time Activity appears as well as at app launch. A failed refresh keeps the
@@ -192,12 +229,14 @@ final class DeliveryReceiptLibraryModel {
                 let receipt = try await repository.read(id: id)
                 text = summaryGenerator.summary(for: receipt)
             }
-            // Foundation does not support combining `.atomic` and `.withoutOverwriting`.
-            // The latter uses an exclusive create, which is the important safety boundary here:
-            // an export can never replace bytes already present at the chosen destination.
-            try Data((text + "\n").utf8).write(to: destination, options: .withoutOverwriting)
-            error = nil
-            return true
+            switch try await summaryExporter.write(text, to: destination) {
+            case .committed:
+                error = nil
+                return true
+            case .cancelledBeforeWrite:
+                error = .summaryExportCancelled(receiptID: id)
+                return false
+            }
         } catch {
             self.error = .summaryExportFailed(receiptID: id, reason: Self.reason(for: error))
             return false

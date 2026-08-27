@@ -13,6 +13,7 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "package_auraface_distribution.py"
+REPOSITORY = SCRIPT.parents[1]
 SPEC = importlib.util.spec_from_file_location("package_auraface_distribution", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 packager = importlib.util.module_from_spec(SPEC)
@@ -124,6 +125,19 @@ class AuraFaceDistributionTests(unittest.TestCase):
             )
         self.assertEqual(archive.read_bytes(), b"old archive")
         self.assertEqual(descriptor.read_bytes(), b"old descriptor")
+
+    def test_app_target_and_release_gate_enforce_model_separation(self) -> None:
+        project = (REPOSITORY / "Aagedal Photo Agent.xcodeproj/project.pbxproj").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Resources/Models/AuraFaceR100.mlpackage,", project)
+
+        release = (REPOSITORY / "scripts/release.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'AURAFACE_BUNDLED_MODEL="$APP/Contents/Resources/AuraFaceR100.mlmodelc"',
+            release,
+        )
+        self.assertIn('[ ! -e "$AURAFACE_BUNDLED_MODEL" ]', release)
 
 
 if __name__ == "__main__":

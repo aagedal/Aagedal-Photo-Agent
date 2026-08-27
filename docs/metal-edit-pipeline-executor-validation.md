@@ -38,10 +38,17 @@ The follow-up stable-resource audit converted eleven initialization-only Metal b
 from unsafe declarations to immutable `StableMetalHandle` wrappers. The references cannot be rebound
 after construction; their underlying buffer and texture contents are still written only through
 executor-checked render entry points. (`MTLTextureWrapper` retains one unsafe immutable cache payload
-because the Metal protocol itself is not `Sendable`.) This reduces `MetalEditPipeline.swift` from 41 to 30 explicit
-`nonisolated(unsafe)` escapes at current HEAD. The remaining escapes are mutable render plans, caches,
-controls, scratch arrays, lazily allocated textures, and viewport/white-balance cache values; they
+because the Metal protocol itself is not `Sendable`.) This reduces `MetalEditPipeline.swift` from 41 to 30
+explicit `nonisolated(unsafe)` escapes at current HEAD. The remaining escapes are mutable render plans,
+caches, controls, scratch arrays, lazily allocated textures, and viewport/white-balance cache values; they
 remain owner-serialized and need storage extraction before Phase 4.2 can be considered complete.
+
+The 2026-08-27 follow-up extracts the compiled render-pass array into
+`ExecutorOwnedRenderPassState`. The storage deliberately has no independent lock: its only accessors are
+pipeline wrappers that first enforce the live-main-thread or offscreen-render-queue owner. Parameter
+compilation replaces the complete plan, while render encoding takes one immutable snapshot for the whole
+command-buffer graph. This removes one direct unsafe isolation escape (30 to 29) without broadening
+cross-executor access.
 
 ## Regression coverage
 
@@ -49,11 +56,16 @@ remain owner-serialized and need storage extraction before Phase 4.2 can be cons
 enforcement, executor separation, sync re-entry and queue assertions, lock-backed publication state,
 cross-pipeline owner checking, and the primary public render-state entry guards. The GPU rasterization
 suite is main-actor isolated so its direct pipeline construction obeys the production live-instance
-contract. The same source contract now enumerates the stable Sendable resource handles and caps the
-remaining unsafe-escape count at 30.
+contract. The same source contract now enumerates the stable Sendable resource handles. The follow-up also
+rejects a direct unsafe `renderPassPlan`, requires both plan accessors to retain their executor precondition,
+and caps the remaining unsafe-escape count at 29.
 
 ## Verification
 
+- 2026-08-27 follow-up: isolated `xcodebuild build-for-testing` for
+  `BrushRasterizationTests` passed under Swift 6, followed by `test-without-building` with **16 tests
+  passed, 0 failures, 0 skipped**.
+- `xcrun swiftc -parse` passed for both `MetalEditPipeline.swift` and the focused test source.
 - `xcodebuild test -scheme 'Aagedal Photo Agent Tests' -destination 'platform=macOS'
   -only-testing:'Aagedal Photo Agent Tests/BrushRasterizationTests'`
   — **passed**, 16 tests in 1 suite, 0 failures. This built the app and test targets under Swift 6.

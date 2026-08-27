@@ -3,6 +3,140 @@ import os
 
 nonisolated private let ftpLog = Logger(subsystem: "com.aagedal.photo-agent", category: "FTPViewModel")
 
+/// Immutable file facts used to create one upload-history entry after filesystem work has
+/// completed away from the main actor.
+nonisolated struct FTPUploadFileInventory: Sendable {
+    let records: [FTPUploadFileRecord]
+    let totalBytes: Int64
+}
+
+/// Immutable evidence that a local file was prepared for upload.
+nonisolated struct FTPPreparedUploadFile: Sendable, Equatable {
+    let url: URL
+    let wasStaged: Bool
+    let usedCopyFallback: Bool
+    let cancellationRequestedAfterCommit: Bool
+}
+
+/// Serializes potentially blocking upload-history scans and local staging mutations away from
+/// the app's default MainActor. Foundation mutations are allowed to finish once started; their
+/// immutable result records cancellation that arrived after commit so callers can reconcile with
+/// disk rather than pretending the mutation did not happen.
+actor FTPUploadFileSystemBoundary {
+    private let temporaryRoot: URL
+
+    init(temporaryRoot: URL = FileManager.default.temporaryDirectory) {
+        self.temporaryRoot = temporaryRoot
+    }
+
+    func inventory(for urls: [URL], fallbackDate: Date) throws -> FTPUploadFileInventory {
+        var records: [FTPUploadFileRecord] = []
+        records.reserveCapacity(urls.count)
+        var totalBytes: Int64 = 0
+
+        for url in urls {
+            try Task.checkCancellation()
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            let modified = (attributes?[.modificationDate] as? Date) ?? fallbackDate
+            totalBytes += size
+            records.append(FTPUploadFileRecord(
+                filePath: url.path,
+                fileName: url.lastPathComponent,
+                fileSize: size,
+                modifiedDate: modified
+            ))
+        }
+
+        return FTPUploadFileInventory(records: records, totalBytes: totalBytes)
+    }
+
+    func createTemporaryDirectory() throws -> URL {
+        try Task.checkCancellation()
+        let url = temporaryRoot.appendingPathComponent("FTPRender_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    func ensureDirectory(_ url: URL) throws {
+        try Task.checkCancellation()
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
+    func stageOriginal(
+        _ sourceURL: URL,
+        as fileName: String,
+        in temporaryDirectory: URL,
+        index: Int
+    ) throws -> FTPPreparedUploadFile {
+        try Task.checkCancellation()
+        let itemDirectory = temporaryDirectory.appendingPathComponent("o\(index)", isDirectory: true)
+        try FileManager.default.createDirectory(at: itemDirectory, withIntermediateDirectories: true)
+        let destinationURL = itemDirectory.appendingPathComponent(fileName)
+
+        do {
+            try FileManager.default.linkItem(at: sourceURL, to: destinationURL)
+            return FTPPreparedUploadFile(
+                url: destinationURL,
+                wasStaged: true,
+                usedCopyFallback: false,
+                cancellationRequestedAfterCommit: Task.isCancelled
+            )
+        } catch {
+            try Task.checkCancellation()
+            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            return FTPPreparedUploadFile(
+                url: destinationURL,
+                wasStaged: true,
+                usedCopyFallback: true,
+                cancellationRequestedAfterCommit: Task.isCancelled
+            )
+        }
+    }
+
+    func sequenceRenderedFile(
+        _ sourceURL: URL,
+        avoiding reservedNames: Set<String>
+    ) throws -> FTPPreparedUploadFile {
+        let directory = sourceURL.deletingLastPathComponent()
+        let base = sourceURL.deletingPathExtension().lastPathComponent
+        let ext = sourceURL.pathExtension
+        var counter = 1
+
+        while true {
+            try Task.checkCancellation()
+            let name = ext.isEmpty ? "\(base)_\(counter)" : "\(base)_\(counter).\(ext)"
+            let destinationURL = directory.appendingPathComponent(name)
+            guard !reservedNames.contains(name),
+                  !FileManager.default.fileExists(atPath: destinationURL.path) else {
+                counter += 1
+                continue
+            }
+            do {
+                try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+                return FTPPreparedUploadFile(
+                    url: destinationURL,
+                    wasStaged: true,
+                    usedCopyFallback: false,
+                    cancellationRequestedAfterCommit: Task.isCancelled
+                )
+            } catch let error as CocoaError where error.code == .fileWriteFileExists {
+                counter += 1
+            }
+        }
+    }
+
+    func removeItem(at url: URL) throws {
+        try FileManager.default.removeItem(at: url)
+    }
+
+    /// `defer` cannot await actor cleanup. Scheduling it here keeps removal on this serialized
+    /// boundary even when the parent upload task exits through cancellation or an error.
+    nonisolated func removeEventually(_ url: URL) {
+        Task { try? await self.removeItem(at: url) }
+    }
+}
+
 @Observable
 final class FTPViewModel {
     var connections: [FTPConnection] = []
@@ -46,11 +180,16 @@ final class FTPViewModel {
     @ObservationIgnored var activityHistory: ActivityHistoryStore?
 
     private let ftpService = FTPService()
+    @ObservationIgnored private let fileSystem: FTPUploadFileSystemBoundary
     private let connectionsKey = UserDefaultsKeys.ftpConnections
     @ObservationIgnored private var uploadTask: Task<Void, Never>?
     @ObservationIgnored private var completionTask: Task<Void, Never>?
     @ObservationIgnored private var connectionTestTask: Task<Void, Never>?
     @ObservationIgnored private var uploadGeneration = UUID()
+
+    init(fileSystem: FTPUploadFileSystemBoundary = FTPUploadFileSystemBoundary()) {
+        self.fileSystem = fileSystem
+    }
 
     deinit {
         uploadTask?.cancel()
@@ -215,38 +354,26 @@ final class FTPViewModel {
         }
     }
 
-    func recordUploadStart(files: [URL], connection: FTPConnection, didRenderJPEG: Bool) -> UUID {
-        let fm = FileManager.default
-        var fileRecords: [FTPUploadFileRecord] = []
-        var totalBytes: Int64 = 0
-
-        for url in files {
-            let attrs = try? fm.attributesOfItem(atPath: url.path)
-            let size = (attrs?[.size] as? Int64) ?? 0
-            let modified = (attrs?[.modificationDate] as? Date) ?? Date()
-            totalBytes += size
-            fileRecords.append(FTPUploadFileRecord(
-                filePath: url.path,
-                fileName: url.lastPathComponent,
-                fileSize: size,
-                modifiedDate: modified
-            ))
-        }
-
+    func recordUploadStart(
+        inventory: FTPUploadFileInventory,
+        connection: FTPConnection,
+        didRenderJPEG: Bool,
+        id: UUID,
+        startedAt: Date
+    ) {
         let entry = FTPUploadHistoryEntry(
-            id: UUID(),
+            id: id,
             serverName: connection.name,
-            startedAt: Date(),
+            startedAt: startedAt,
             completedAt: nil,
-            fileCount: files.count,
-            totalBytes: totalBytes,
-            files: fileRecords,
+            fileCount: inventory.records.count,
+            totalBytes: inventory.totalBytes,
+            files: inventory.records,
             didRenderJPEG: didRenderJPEG
         )
 
         uploadHistory.addEntry(entry)
         saveHistory()
-        return entry.id
     }
 
     func recordUploadCompletion(id: UUID) {
@@ -263,7 +390,8 @@ final class FTPViewModel {
             return
         }
 
-        let historyID = recordUploadStart(files: urls, connection: connection, didRenderJPEG: false)
+        let historyID = UUID()
+        let historyStartedAt = Date()
 
         isUploading = true
         isRendering = false
@@ -280,6 +408,26 @@ final class FTPViewModel {
         uploadGeneration = generation
         uploadTask = Task { [weak self] in
             guard let self else { return }
+            do {
+                let inventory = try await fileSystem.inventory(
+                    for: urls,
+                    fallbackDate: historyStartedAt
+                )
+                guard !Task.isCancelled, self.uploadGeneration == generation else { return }
+                self.recordUploadStart(
+                    inventory: inventory,
+                    connection: connection,
+                    didRenderJPEG: false,
+                    id: historyID,
+                    startedAt: historyStartedAt
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                self.errorMessages = ["Failed to inspect upload files: \(error.localizedDescription)"]
+                self.isUploading = false
+                return
+            }
             for (index, url) in urls.enumerated() {
                 guard !Task.isCancelled else { break }
                 do {
@@ -318,10 +466,10 @@ final class FTPViewModel {
     }
 
     /// Uploads `urls`, rendering to JPEG only the files in `renderURLs` and sending every other
-    /// file as its original. Rendered output names are de-duplicated in a temp dir; non-rendered
-    /// originals upload in place unless a name collision forces staging a safe hard-link/copy
-    /// (the user's real files are never moved or renamed). Falls back to the plain
-    /// `uploadFiles(_:to:)` fast path when nothing in the batch needs rendering.
+    /// file as its original. Rendered output names are de-duplicated in their persistent output
+    /// folders; non-rendered originals upload in place unless a name collision forces staging a
+    /// safe hard-link/copy (the user's real files are never moved or renamed). Falls back to the
+    /// plain `uploadFiles(_:to:)` fast path when nothing in the batch needs rendering.
     func uploadFiles(
         _ urls: [URL],
         renderURLs: Set<URL>,
@@ -342,7 +490,8 @@ final class FTPViewModel {
             return
         }
 
-        let historyID = recordUploadStart(files: urls, connection: connection, didRenderJPEG: true)
+        let historyID = UUID()
+        let historyStartedAt = Date()
 
         isRendering = true
         isUploading = false
@@ -361,10 +510,32 @@ final class FTPViewModel {
         uploadGeneration = generation
         uploadTask = Task { [weak self] in
             guard let self else { return }
-            let tempDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("FTPRender_\(UUID().uuidString)")
             do {
-                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                let inventory = try await fileSystem.inventory(
+                    for: urls,
+                    fallbackDate: historyStartedAt
+                )
+                guard !Task.isCancelled, self.uploadGeneration == generation else { return }
+                self.recordUploadStart(
+                    inventory: inventory,
+                    connection: connection,
+                    didRenderJPEG: true,
+                    id: historyID,
+                    startedAt: historyStartedAt
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                self.errorMessages = ["Failed to inspect upload files: \(error.localizedDescription)"]
+                self.isRendering = false
+                return
+            }
+
+            let tempDir: URL
+            do {
+                tempDir = try await fileSystem.createTemporaryDirectory()
+            } catch is CancellationError {
+                return
             } catch {
                 self.errorMessages = ["Failed to create temp directory: \(error.localizedDescription)"]
                 self.isRendering = false
@@ -372,7 +543,7 @@ final class FTPViewModel {
             }
 
             defer {
-                try? FileManager.default.removeItem(at: tempDir)
+                fileSystem.removeEventually(tempDir)
             }
 
             // Read batch metadata + resolve edit settings only for the files we'll render,
@@ -400,7 +571,23 @@ final class FTPViewModel {
                 guard renderURLs.contains(url) else {
                     // Upload the untouched original (staged only on a name collision).
                     do {
-                        uploadURLs.append(try self.stagedOriginal(url, avoiding: &usedNames, in: tempDir, index: index))
+                        if usedNames.insert(url.lastPathComponent).inserted {
+                            uploadURLs.append(url)
+                        } else {
+                            let stagedName = self.reserveUploadName(
+                                for: url,
+                                avoiding: &usedNames
+                            )
+                            let staged = try await fileSystem.stageOriginal(
+                                url,
+                                as: stagedName,
+                                in: tempDir,
+                                index: index
+                            )
+                            uploadURLs.append(staged.url)
+                        }
+                    } catch is CancellationError {
+                        return
                     } catch {
                         self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
                     }
@@ -410,18 +597,22 @@ final class FTPViewModel {
                     // Render into an `Uploaded` sub-folder of the source's own folder so the
                     // rendered JPEG persists for the user (the prior temp-dir output was lost
                     // on cleanup). The render output name is derived from the source basename,
-                    // so apply an always-incrementing `_N` suffix afterward (see
-                    // `sequencedUploadName`): this keeps two same-named sources from clobbering
-                    // each other on disk and de-duplicates the remote name (which is derived
-                    // from the local filename).
+                    // so apply an always-incrementing `_N` suffix afterward: this keeps two
+                    // same-named sources from clobbering each other on disk and de-duplicates
+                    // the remote name (which is derived from the local filename).
                     let uploadedDir = url.deletingLastPathComponent()
                         .appendingPathComponent("Uploaded", isDirectory: true)
-                    try FileManager.default.createDirectory(at: uploadedDir, withIntermediateDirectories: true)
+                    try await fileSystem.ensureDirectory(uploadedDir)
                     let outputURL = try await EditExportPipeline.renderItem(
                         sourceURL: url, cameraRaw: metadataMap[url]?.cameraRaw, kind: .jpeg,
                         outputFolder: uploadedDir, folderURL: url.deletingLastPathComponent(),
                         writeEngine: writeEngine, failureTracker: failureTracker)
-                    let renderedURL = try sequencedUploadName(for: outputURL, avoiding: &usedNames)
+                    let prepared = try await fileSystem.sequenceRenderedFile(
+                        outputURL,
+                        avoiding: usedNames
+                    )
+                    let renderedURL = prepared.url
+                    usedNames.insert(renderedURL.lastPathComponent)
                     uploadURLs.append(renderedURL)
                     renderedUploadURLs.append(renderedURL)
                     if !self.renderedUploadedFolders.contains(uploadedDir) {
@@ -532,45 +723,15 @@ final class FTPViewModel {
         return true
     }
 
-    /// Returns the URL to upload for a non-rendered original. The original is uploaded in
-    /// place while its filename is still free; on a collision it's hard-linked (or copied on
-    /// failure, e.g. across volumes) into `tempDir` under a de-duplicated name, so the user's
-    /// real file is never moved or renamed.
-    private func stagedOriginal(_ url: URL, avoiding usedNames: inout Set<String>, in tempDir: URL, index: Int) throws -> URL {
-        if usedNames.insert(url.lastPathComponent).inserted { return url }
+    /// Reserves a de-duplicated upload filename. The potentially blocking hard-link/copy that
+    /// follows is owned by `FTPUploadFileSystemBoundary`.
+    private func reserveUploadName(for url: URL, avoiding usedNames: inout Set<String>) -> String {
         let base = url.deletingPathExtension().lastPathComponent
         let ext = url.pathExtension
-        let itemDir = tempDir.appendingPathComponent("o\(index)", isDirectory: true)
-        try FileManager.default.createDirectory(at: itemDir, withIntermediateDirectories: true)
         var counter = 2
         while true {
             let candidate = ext.isEmpty ? "\(base)-\(counter)" : "\(base)-\(counter).\(ext)"
             if usedNames.insert(candidate).inserted {
-                let dest = itemDir.appendingPathComponent(candidate)
-                do { try FileManager.default.linkItem(at: url, to: dest) }
-                catch { try FileManager.default.copyItem(at: url, to: dest) }
-                return dest
-            }
-            counter += 1
-        }
-    }
-
-    /// Renames a freshly rendered file in place with an always-incrementing `_N` suffix,
-    /// starting at `_1` and counting up past any name already present on disk (a render
-    /// from a previous upload) or already taken in this batch. Because the remote upload
-    /// name is derived from the local filename, the suffix also keeps repeated uploads of
-    /// the same photo from overwriting each other on the server. Returns the renamed URL.
-    private func sequencedUploadName(for url: URL, avoiding usedNames: inout Set<String>) throws -> URL {
-        let dir = url.deletingLastPathComponent()
-        let base = url.deletingPathExtension().lastPathComponent
-        let ext = url.pathExtension
-        var counter = 1
-        while true {
-            let name = ext.isEmpty ? "\(base)_\(counter)" : "\(base)_\(counter).\(ext)"
-            let candidate = dir.appendingPathComponent(name)
-            if !FileManager.default.fileExists(atPath: candidate.path),
-               usedNames.insert(name).inserted {
-                try FileManager.default.moveItem(at: url, to: candidate)
                 return candidate
             }
             counter += 1

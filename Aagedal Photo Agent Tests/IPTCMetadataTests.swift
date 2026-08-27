@@ -5086,11 +5086,26 @@ struct BrushRasterizationTests {
         #expect(source.contains("private final class SourceState"))
         #expect(source.contains("private final class MirrorState"))
         #expect(source.contains("private final class WhiteBalanceReference"))
+        #expect(source.contains("private final class ExecutorOwnedRenderPassState"))
         #expect(!source.contains("private var _sourceTexture"))
         #expect(!source.contains("private var _sourceOrientation"))
         #expect(!source.contains("private var _asShotTemperature"))
         #expect(!source.contains("private var _asShotTint"))
         #expect(source.contains("other.preconditionOnStateExecutor()"))
+        #expect(!source.contains("nonisolated(unsafe) private var renderPassPlan"))
+        for signature in [
+            "nonisolated private func replaceRenderPassPlan",
+            "nonisolated private func renderPassPlanSnapshot",
+        ] {
+            let start = try #require(source.range(of: signature))
+            let suffix = source[start.lowerBound...]
+            let bodyStart = try #require(suffix.firstIndex(of: "{"))
+            let bodyPrefix = suffix[bodyStart...].prefix(180)
+            #expect(
+                bodyPrefix.contains("preconditionOnStateExecutor()"),
+                Comment(rawValue: signature)
+            )
+        }
 
         // Metal resource references allocated during initialization are immutable Sendable
         // wrappers. Their buffer/texture contents are still mutated only through the
@@ -5113,7 +5128,7 @@ struct BrushRasterizationTests {
             #expect(source.contains(declaration), Comment(rawValue: declaration))
         }
         let unsafeEscapeCount = source.components(separatedBy: "nonisolated(unsafe)").count - 1
-        #expect(unsafeEscapeCount <= 30)
+        #expect(unsafeEscapeCount <= 29)
 
         for signature in [
             "nonisolated func updateParams",

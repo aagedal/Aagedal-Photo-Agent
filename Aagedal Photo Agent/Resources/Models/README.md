@@ -1,21 +1,21 @@
 # Face recognition model — NOT in git
 
-The face-recognition feature loads a bundled CoreML model at runtime:
+The face-recognition feature is built from this developer-only CoreML source package:
 
 ```
 Aagedal Photo Agent/Resources/Models/AuraFaceR100.mlpackage   (~125 MB)
 ```
 
-This file is **excluded from git** (see the repo `.gitignore`) because of its size. The app still
-**builds and runs without it**, but the omission is an explicit packaged capability: the face bar shows
-**Unavailable**, its help text explains that AuraFace is not included, and scan requests fail closed before
-changing face data. Drop the model at the path above (Xcode's synchronized group picks it up automatically)
-to enable recognition.
+This file is **excluded from git** (see the repo `.gitignore`) because of its size and explicitly excluded
+from the app target even when it exists in a developer checkout. It is input to deterministic conversion and
+distribution packaging only; normal app builds obtain the pre-converted, signed component through the
+on-demand installer. The app still **builds and runs without it**. Until the production component is
+published, the face bar shows **Unavailable** and scan requests fail closed before changing face data.
 
-For an intentionally model-free release, inspect the archived app to confirm that
-`Contents/Resources/AuraFaceR100.mlmodelc` is absent and add the exact disclosure required by the root
-`README.md` release checklist to `CHANGELOG.md` under `### Highlights`. A release that advertises face
-recognition must instead contain the compiled resource and pass manifest verification.
+The release assistant rejects an exported app containing
+`Contents/Resources/AuraFaceR100.mlmodelc`, preventing an ignored local package from silently inflating app
+updates. Until the production on-demand files are published and validated, add the exact disclosure required
+by the root `README.md` release checklist to `CHANGELOG.md` under `### Highlights`.
 
 ## What the model is
 
