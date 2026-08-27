@@ -281,6 +281,7 @@ final class BatchRenameSheetSession {
                 reassociation = RenameReassociationResult(
                     faceReferenceCount: reassociation.faceReferenceCount,
                     analysisCaseCount: reassociation.analysisCaseCount,
+                    voiceMemoCompanionCount: reassociation.voiceMemoCompanionCount,
                     issues: reassociation.issues + [RenameReassociationIssue(
                         subsystem: .imageAnalysis,
                         detail: Self.executionBarrierMessage(for: error)

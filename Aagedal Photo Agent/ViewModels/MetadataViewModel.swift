@@ -2240,6 +2240,7 @@ final class MetadataViewModel {
 
         // Build JSON sidecar with history entry
         func buildSidecar(pendingChanges: Bool, historyNote: String) -> MetadataSidecar {
+            let timestamp = Date()
             var sidecar = MetadataSidecar(
                 sourceFile: url.lastPathComponent,
                 pendingChanges: pendingChanges,
@@ -2247,12 +2248,21 @@ final class MetadataViewModel {
                 imageMetadataSnapshot: embedded
             )
             sidecar.history = existingSidecar?.history ?? []
+            // The serialized sidecar boundary replays new history entries onto the latest
+            // on-disk record. Record the actual variable substitutions as field deltas; the
+            // audit-only entry below deliberately carries no replayable metadata value.
+            sidecar.history.append(contentsOf: MetadataHistoryEntry.changes(
+                from: existingSidecar?.metadata ?? original,
+                to: resolved,
+                timestamp: timestamp
+            ))
             sidecar.history.append(MetadataHistoryEntry(
-                timestamp: Date(),
+                timestamp: timestamp,
                 fieldName: "Variables processed",
                 oldValue: nil,
                 newValue: historyNote
             ))
+            sidecar.history.trimToHistoryLimit()
             return sidecar
         }
 

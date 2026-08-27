@@ -11,10 +11,10 @@ struct MaskParams {
 
     float exposure;         // EV delta
     float contrast;         // -1..1
-    float highlights;       // -1..1 (not yet implemented)
-    float shadows;          // -1..1 (not yet implemented)
-    float whites;           // -1..1 (not yet implemented)
-    float blacks;           // -1..1 (not yet implemented)
+    float highlights;       // -1..1
+    float shadows;          // -1..1
+    float whites;           // -1..1
+    float blacks;           // -1..1
     float saturation;       // 0..2 (1=identity)
     float vibrance;         // -1..1
     uint  activeFlags;      // bitmask: bit0=exposure, bit1=contrast,

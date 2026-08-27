@@ -53,6 +53,9 @@ struct FileSystemService: Sendable {
         var files: [ImageFile] = []
         files.reserveCapacity(contents.count)
         for item in contents {
+            // Camera voice memos are companions, never browser photos. Keep this boundary even
+            // when the user asks to show otherwise-unsupported files.
+            if item.pathExtension.lowercased() == "wav" { continue }
             if locallyAvailableForEnumeration(item) {
                 let isSupported = includeAllFiles
                     ? ((try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true)

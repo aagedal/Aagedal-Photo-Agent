@@ -339,6 +339,97 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(installed.history.map(\.fieldID) == [.headline, .personShown])
     }
 
+    @Test("Variable-processing deltas update an existing JSON sidecar")
+    func variableProcessingDeltasUpdateExistingJSONSidecar() async throws {
+        let (directory, source) = try makeWorkspace(extension: "nef")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = MetadataSidecarService()
+        let baseline = IPTCMetadata(title: "{filename}", personShown: ["Ada"])
+        try service.saveSidecar(
+            MetadataSidecar(sourceFile: source.lastPathComponent, metadata: baseline),
+            for: source,
+            in: directory
+        )
+
+        var resolved = baseline
+        resolved.title = "capture"
+        let timestamp = Date(timeIntervalSinceReferenceDate: 200)
+        var history = MetadataHistoryEntry.changes(
+            from: baseline,
+            to: resolved,
+            timestamp: timestamp
+        )
+        history.append(MetadataHistoryEntry(
+            timestamp: timestamp,
+            fieldName: "Variables processed",
+            oldValue: nil,
+            newValue: "Saved to sidecar (history only)"
+        ))
+
+        _ = try await service.saveSidecarMergingHistorySerialized(
+            MetadataSidecar(
+                sourceFile: source.lastPathComponent,
+                metadata: resolved,
+                history: history
+            ),
+            for: source,
+            in: directory
+        )
+
+        let installed = try #require(service.loadSidecar(for: source, in: directory))
+        #expect(installed.metadata.title == "capture")
+        #expect(installed.metadata.personShown == ["Ada"])
+        #expect(installed.history.contains { $0.fieldName == "Variables processed" })
+    }
+
+    @Test("Non-replayable field deltas preserve concurrent unrelated metadata")
+    func nonReplayableDeltasPreserveConcurrentUnrelatedMetadata() async throws {
+        let (directory, source) = try makeWorkspace(extension: "nef")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = MetadataSidecarService()
+        let baseline = IPTCMetadata(
+            description: "Before",
+            creatorContactInfo: CreatorContactInfo(city: "Before")
+        )
+        try service.saveSidecar(
+            MetadataSidecar(sourceFile: source.lastPathComponent, metadata: baseline),
+            for: source,
+            in: directory
+        )
+
+        var incomingMetadata = baseline
+        incomingMetadata.description = String(repeating: "resolved-", count: 30)
+        incomingMetadata.creatorContactInfo = CreatorContactInfo(city: "After")
+        let history = MetadataHistoryEntry.changes(
+            from: baseline,
+            to: incomingMetadata,
+            timestamp: Date(timeIntervalSinceReferenceDate: 300)
+        )
+
+        var concurrentMetadata = baseline
+        concurrentMetadata.personShown = ["Grace"]
+        try service.saveSidecar(
+            MetadataSidecar(sourceFile: source.lastPathComponent, metadata: concurrentMetadata),
+            for: source,
+            in: directory
+        )
+
+        _ = try await service.saveSidecarMergingHistorySerialized(
+            MetadataSidecar(
+                sourceFile: source.lastPathComponent,
+                metadata: incomingMetadata,
+                history: history
+            ),
+            for: source,
+            in: directory
+        )
+
+        let installed = try #require(service.loadSidecar(for: source, in: directory))
+        #expect(installed.metadata.description == incomingMetadata.description)
+        #expect(installed.metadata.creatorContactInfo == incomingMetadata.creatorContactInfo)
+        #expect(installed.metadata.personShown == ["Grace"])
+    }
+
     @Test("Intentional JSON replacement clears history inside the shared transaction")
     func serializedJSONReplacementClearsHistory() async throws {
         let (directory, source) = try makeWorkspace(extension: "nef")

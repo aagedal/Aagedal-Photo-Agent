@@ -682,6 +682,17 @@ without entering photo metadata writes. Ambiguous or unproven WAVs are visibly c
 The next boundary is persisted companion identity through browser/file operations, followed by
 playback and transcription.
 
+**Persistence/rename progress — 2026-08-26:** Verified image↔WAV relationships now persist after
+import as versioned hidden per-image records on both successful primary and backup legs. Browser
+refresh continues to exclude WAVs from the photo grid, while batch rename reloads the durable
+relationship and moves the image, WAV, and record in one transactional bundle. The moved record
+remains resolvable from its new sidecar name without a fallible post-transaction rewrite. Missing,
+corrupt, newer-schema, ambiguous-import, and shared RAW/JPEG memo states fail closed; shared memo
+groups are not renamed until group-aware planning exists. Batch record creation preflights every
+relationship before writing and rolls back earlier record bytes on an I/O failure. This is a
+bounded slice: the lifecycle checkbox remains open because generic copy/archive, move/reject,
+delete, and source-reassociation paths do not yet carry the record.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

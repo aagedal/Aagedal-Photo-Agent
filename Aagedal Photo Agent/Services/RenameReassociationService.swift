@@ -14,6 +14,7 @@ nonisolated struct RenameReassociationIssue: Equatable, Sendable {
     enum Subsystem: String, Equatable, Sendable {
         case faceData
         case imageAnalysis
+        case voiceMemoCompanion
     }
 
     let subsystem: Subsystem
@@ -23,6 +24,7 @@ nonisolated struct RenameReassociationIssue: Equatable, Sendable {
 nonisolated struct RenameReassociationResult: Equatable, Sendable {
     let faceReferenceCount: Int
     let analysisCaseCount: Int
+    let voiceMemoCompanionCount: Int
     let issues: [RenameReassociationIssue]
 
     var succeeded: Bool { issues.isEmpty }
@@ -30,6 +32,7 @@ nonisolated struct RenameReassociationResult: Equatable, Sendable {
     static let noChanges = RenameReassociationResult(
         faceReferenceCount: 0,
         analysisCaseCount: 0,
+        voiceMemoCompanionCount: 0,
         issues: []
     )
 }
@@ -48,6 +51,7 @@ nonisolated struct RenameReassociationService: Sendable {
 
         var faceReferenceCount = 0
         var analysisCaseCount = 0
+        var voiceMemoCompanionCount = 0
         var issues: [RenameReassociationIssue] = []
 
         let hadPersistedFaceData = faceStorage.faceDataExists(for: folderURL)
@@ -81,9 +85,20 @@ nonisolated struct RenameReassociationService: Sendable {
             ))
         }
 
+        do {
+            voiceMemoCompanionCount = try VoiceMemoCompanionRepository()
+                .reassociateRenamedRecords(using: mappings)
+        } catch {
+            issues.append(RenameReassociationIssue(
+                subsystem: .voiceMemoCompanion,
+                detail: error.localizedDescription
+            ))
+        }
+
         return RenameReassociationResult(
             faceReferenceCount: faceReferenceCount,
             analysisCaseCount: analysisCaseCount,
+            voiceMemoCompanionCount: voiceMemoCompanionCount,
             issues: issues
         )
     }

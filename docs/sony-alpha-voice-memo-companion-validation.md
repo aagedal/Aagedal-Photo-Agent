@@ -50,6 +50,25 @@ completion-summary paths. Image and WAV conflicts reserve one common suffix so t
 not broken by independent renaming. Duplicate-image skipping also skips its WAV. WAVs are excluded
 from the metadata-writing pass and from the browser's image list.
 
+### Durable import and batch-rename slice — 2026-08-26
+
+After verified copy results are known, the importer writes a versioned hidden relationship record
+beside each imported image on every successful primary and backup leg. It matches image and memo
+destinations by the already accepted same-folder stem and never reconstructs a destination from a
+source filename. The complete record batch is validated before the first write; write failures
+restore pre-existing record bytes and remove records created earlier in the failed batch.
+
+Browser scans exclude WAVs even when Show All Files is enabled. Batch rename reloads each selected
+image's relationship from disk and freezes both the concrete WAV and relationship record into the
+existing transaction. A moved record is interpreted from its new sidecar filename, so the
+relationship survives commit without a second, fallible content rewrite. Missing WAVs and corrupt
+or newer records are reported and left untouched.
+
+A WAV referenced by multiple persisted image records (for example a RAW/JPEG pair) is deliberately
+blocked for both partial and full selections. Current rename planning models one image bundle at a
+time, so this fail-closed boundary prevents two bundles from staging the same WAV or a partial
+selection from orphaning the unselected photo. Group-aware shared-memo rename remains open.
+
 ## Automated evidence
 
 The original association-and-rename foundation command was:
@@ -101,12 +120,41 @@ Portable synthetic tests validate negative and conflict boundaries. A separate o
 the private sample validated the three real ILCE-1 v4.00 pairs through the production metadata
 reader; its absolute path is deliberately not retained in the repository.
 
+The 2026-08-26 persistence slice adds focused coverage for durable repository recreation, browser
+refresh exclusion, browser rename reload, missing/corrupt/newer records, verified primary and
+backup records, all-or-nothing deterministic import validation, partial and full shared RAW/JPEG
+selection blocking, transactional memo/record rename, and lookup after commit without rewriting
+record bytes. A follow-up injectable record-I/O seam proves the actual mid-batch failure path: when
+record two fails, a pre-existing record one is restored byte-for-byte, while a newly created record
+one is removed.
+
+The focused persistence regression command was:
+
+```text
+xcodebuild test -project 'Aagedal Photo Agent.xcodeproj' \
+  -scheme 'Aagedal Photo Agent Tests' -destination 'platform=macOS' \
+  -derivedDataPath /private/tmp/aagedal-voice-memo-persistence-build \
+  -only-testing:'Aagedal Photo Agent Tests/VoiceMemoCompanionRepositoryTests' \
+  -only-testing:'Aagedal Photo Agent Tests/VoiceMemoAssociationServiceTests' \
+  -only-testing:'Aagedal Photo Agent Tests/RenamePlanningServiceTests' \
+  -only-testing:'Aagedal Photo Agent Tests/RenameExecutionServiceTests' \
+  -only-testing:'Aagedal Photo Agent Tests/ImportViewModelTests'
+```
+
+Result: **61 tests passed across five suites**. The result bundle is
+`/tmp/aagedal-voice-memo-persistence-build/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.26_23-00-49-+0200.xcresult`.
+
+The subsequent fault-injection run selected only
+`VoiceMemoCompanionRepositoryTests`: **12 tests passed in one suite**. Its result bundle is
+`/tmp/aagedal-voice-memo-persistence-build/Logs/Test/Test-Aagedal Photo Agent Tests-2026.08.26_23-06-38-+0200.xcresult`.
+
 ## Remaining gates
 
 - Obtain additional authorized Sony body/firmware samples plus rollover, duplicate, missing-JPEG,
   orphan, and modified-timestamp cases before claiming compatibility beyond ILCE-1 v4.00.
-- Persist the proven relationship after ingest and carry it through browser refresh,
-  move/reject/archive, and source reassociation.
+- Carry the persisted relationship through generic copy/archive, move/reject, delete, and source
+  reassociation. Browser refresh and single-owner batch rename are implemented; group-aware rename
+  for a memo shared by RAW/JPEG remains open.
 - Add Caption Workspace playback and explicit state presentation.
 - Add local cancellable transcription, reviewed transcript persistence, and the shared
   `{voiceMemoTranscript}` variable path.

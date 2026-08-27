@@ -391,23 +391,26 @@ Detailed sequencing and gates are in [delivery-plan.md](delivery-plan.md).
 - Online or model-backed analyzers are opt-in additions, not requirements for the core
   analysis workspace.
 
-## Open product decisions
+## Product decisions
 
-These decisions should be resolved during F0 before their dependent phase begins:
+The F0 decisions are recorded here. The AI-origin scoring question remains open and conditional on
+an evidence-quality gate; the other decisions have been implemented:
 
 1. **Resolved:** analysis cases live beside the image in `.photo_analysis` by default. Read-only
    photo folders use an indexed Application Support fallback and show a portability warning; the
    fallback is local-only and does not silently enter portable settings sync.
-2. Should the report embed the full source image, a bounded preview, or only annotated crops?
-   The recommendation is a bounded preview plus user-selected evidence crops.
-3. Should satellite imagery be limited to MapKit, and can snapshots be redistributed inside
-   exported reports under the applicable terms and attribution rules?
-4. What calibrated model and corpus, if any, justify shipping AI-origin scoring?
-5. Should a version switch auto-save the current named version, prompt, or keep an in-memory
-   dirty buffer? The recommendation is auto-save to the version JSON after explicit version
-   creation, with visible dirty/error state and undo remaining session-local.
-6. Does Clean Feed show side-by-side, wipe, or the currently focused comparison pane by
-   default? The recommendation is side-by-side with a View-menu choice.
+2. **Resolved:** reports include an aspect-preserving annotated source overview plus an optional
+   user-selected evidence crop extracted 1:1 from the original source pixels.
+3. **Resolved:** live analysis supports Apple Maps and OpenStreetMap. Report export defaults to an
+   app-rendered WGS-84 schematic and optionally fetches attributed OpenStreetMap tiles for that
+   export; Apple Maps tiles and imagery are never embedded.
+4. **Open:** what calibrated model and corpus, if any, justify shipping AI-origin scoring?
+5. **Resolved:** switching away from a named version first atomically persists its current snapshot
+   and surfaces Unsaved, Saving, Saved, or Save Failed state. A failed flush prevents the switch,
+   and undo remains session-local.
+6. **Resolved:** Clean Feed supports side-by-side, stacked, and focused-pane comparison layouts.
+   Side-by-side is the default, and the View-menu selection persists independently of the main
+   comparison workspace layout.
 
 ## Plan documents
 

@@ -60,6 +60,7 @@
 		AB3700000000000000000002 /* SourceImageRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000001 /* SourceImageRevisionTests.swift */; };
 		AB3800000000000000000002 /* AtomicJSONDocumentStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */; };
 		AB3900000000000000000002 /* SourceImageDiscoveryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */; };
+		A02608260000000000000002 /* VoiceMemoCompanionRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */; };
 		AB4000000000000000000002 /* DisplayImageTransformTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4000000000000000000001 /* DisplayImageTransformTests.swift */; };
 		AB4100000000000000000002 /* ViewportStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4100000000000000000001 /* ViewportStateTests.swift */; };
 		AB4200000000000000000002 /* AnalysisCaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4200000000000000000001 /* AnalysisCaseTests.swift */; };
@@ -188,6 +189,7 @@
 		AB3700000000000000000001 /* SourceImageRevisionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SourceImageRevisionTests.swift; sourceTree = "<group>"; };
 		AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AtomicJSONDocumentStoreTests.swift; sourceTree = "<group>"; };
 		AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SourceImageDiscoveryServiceTests.swift; sourceTree = "<group>"; };
+		A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceMemoCompanionRepositoryTests.swift; sourceTree = "<group>"; };
 		AB4000000000000000000001 /* DisplayImageTransformTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DisplayImageTransformTests.swift; sourceTree = "<group>"; };
 		AB4100000000000000000001 /* ViewportStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ViewportStateTests.swift; sourceTree = "<group>"; };
 		AB4200000000000000000001 /* AnalysisCaseTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisCaseTests.swift; sourceTree = "<group>"; };
@@ -343,6 +345,7 @@
 				AB3700000000000000000001 /* SourceImageRevisionTests.swift */,
 				AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */,
 				AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */,
+				A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */,
 				AB4000000000000000000001 /* DisplayImageTransformTests.swift */,
 				AB4100000000000000000001 /* ViewportStateTests.swift */,
 				AB4200000000000000000001 /* AnalysisCaseTests.swift */,
@@ -631,6 +634,7 @@
 				AB3700000000000000000002 /* SourceImageRevisionTests.swift in Sources */,
 				AB3800000000000000000002 /* AtomicJSONDocumentStoreTests.swift in Sources */,
 				AB3900000000000000000002 /* SourceImageDiscoveryServiceTests.swift in Sources */,
+				A02608260000000000000002 /* VoiceMemoCompanionRepositoryTests.swift in Sources */,
 				AB4000000000000000000002 /* DisplayImageTransformTests.swift in Sources */,
 				AB4100000000000000000002 /* ViewportStateTests.swift in Sources */,
 				AB4200000000000000000002 /* AnalysisCaseTests.swift in Sources */,

@@ -1033,6 +1033,7 @@ final class ImportViewModel {
         let skipPreviouslyImported = configuration.skipPreviouslyImported
         let copyService = self.copyService
         let imageSources = Set(filesToCopy)
+        let voiceMemoAssociationsToPersist = selectedVoiceMemoAssociations
         let primarySourceURL = configuration.sourceURL
         let voiceMemoSourceURL = configuration.voiceMemoSourceURL
 
@@ -1109,6 +1110,13 @@ final class ImportViewModel {
                             self?.applyProgress(result)
                         }
                     }
+                )
+                // Persist only relationships whose image and memo both survived the primary copy
+                // and verification boundary. A missing or ambiguous destination is surfaced as an
+                // import failure rather than reconstructing a relationship from filenames later.
+                try VoiceMemoCompanionRepository().saveImportedAssociations(
+                    voiceMemoAssociationsToPersist,
+                    results: results
                 )
                 // Pull successful primary URLs (verified or verification disabled) for metadata pass.
                 let copiedURLs = results.compactMap { result in

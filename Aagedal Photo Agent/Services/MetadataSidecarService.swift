@@ -556,12 +556,11 @@ struct MetadataSidecarService: Sendable {
         // contract. Transactional editor workflows always provide entries for their changed fields.
         var metadata = newEntries.isEmpty ? incoming.metadata : current.metadata
         for entry in newEntries {
-            if !entry.apply(to: &metadata) {
-                // Redacted structured fields cannot be replayed from history. They are uncommon in
-                // overlapping quick edits; use the incoming record rather than silently dropping
-                // the requested change.
-                metadata = incoming.metadata
-            }
+            guard !entry.apply(to: &metadata) else { continue }
+            // Summarized/redacted values are intentionally absent from history. Copy only the
+            // field named by the delta from the captured incoming record so an unrelated field
+            // that changed while this draft was queued remains authoritative.
+            _ = Self.applyNonReplayableChange(entry, from: incoming.metadata, to: &metadata)
         }
 
         var historyByID = Dictionary(uniqueKeysWithValues: current.history.map { ($0.id, $0) })
@@ -580,6 +579,34 @@ struct MetadataSidecarService: Sendable {
             imageMetadataSnapshot: incoming.imageMetadataSnapshot ?? current.imageMetadataSnapshot,
             history: history
         )
+    }
+
+    private nonisolated static func applyNonReplayableChange(
+        _ entry: MetadataHistoryEntry,
+        from incoming: IPTCMetadata,
+        to metadata: inout IPTCMetadata
+    ) -> Bool {
+        if let fieldID = entry.fieldID {
+            fieldID.setHistoryValue(fieldID.historyValue(in: incoming), in: &metadata)
+            return true
+        }
+
+        switch entry.fieldName {
+        case "Creator Contact Information":
+            metadata.creatorContactInfo = incoming.creatorContactInfo
+        case "Location Created":
+            metadata.locationsCreated = incoming.locationsCreated
+        case "Location Shown":
+            metadata.locationsShown = incoming.locationsShown
+        case "GPS", "GPS Coordinates":
+            metadata.latitude = incoming.latitude
+            metadata.longitude = incoming.longitude
+        default:
+            // Audit-only and unknown future events do not authorize replacing a complete
+            // metadata record. Their history is retained while the latest record stays intact.
+            return false
+        }
+        return true
     }
 
     private nonisolated static func samePersistedRecord(

@@ -3258,9 +3258,10 @@ final class BrowserViewModel {
         let selectedInVisibleOrder = sortedImages.filter { selectedImageIDs.contains($0.url) }
         guard !selectedInVisibleOrder.isEmpty else { return }
 
-        batchRenameSheetRequest = BatchRenameSheetRequest(
-            folderURL: folderURL,
-            items: selectedInVisibleOrder.map { image in
+        let companionRepository = VoiceMemoCompanionRepository()
+        let items: [RenamePlanningItem]
+        do {
+            items = try selectedInVisibleOrder.map { image in
                 RenamePlanningItem(
                     sourceImageURL: image.url,
                     context: BatchRenameContext(
@@ -3269,9 +3270,18 @@ final class BrowserViewModel {
                         fileCreationDate: image.dateAdded,
                         fileModificationDate: image.dateModified,
                         metadata: Self.renameMetadata(for: image)
-                    )
+                    ),
+                    associatedArtifacts: try companionRepository.planningArtifacts(for: image.url)
                 )
             }
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+
+        batchRenameSheetRequest = BatchRenameSheetRequest(
+            folderURL: folderURL,
+            items: items
         )
     }
 

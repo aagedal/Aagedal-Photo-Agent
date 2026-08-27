@@ -631,21 +631,20 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// dabs are max-stamped here, then source-over composited into `brushAlphaTexture` so
     /// separate strokes accumulate. Lazily sized to match the alpha array.
     nonisolated(unsafe) private var brushEnvScratch: MTLTexture?
-    /// Per-brush-mask alpha coverage: one `texture2d_array` R16Float slice per brush mask,
-    /// lazily (re)built by `rebuildBrushAlpha`. Nil when there are no brush masks, so non-brush
+    /// Shared raster-mask alpha coverage: one `texture2d_array` R16Float slice per brush or AI
+    /// mask, lazily (re)built by `rebuildMaskAlpha`. Nil when there are no raster masks, so other
     /// edits pay zero GPU memory (an unconditional 8-slice array at export resolution would be
-    /// ~1-1.5GB). Sized to the render source so the compositing kernel (Phase 3) can sample it
-    /// in source UV space. Not yet read by `editAdjustments` — wired in Phase 3.
+    /// ~1-1.5GB). Sized to the render source and sampled by `editAdjustments` in source UV space.
     nonisolated(unsafe) private(set) var brushAlphaTexture: MTLTexture?
     /// A 1×1×1 zeroed R16Float array bound to `editAdjustments`' brush-alpha slot whenever there
-    /// are no brush masks, so the kernel's `texture2d_array` argument is always satisfied (Metal
+    /// are no raster masks, so the kernel's `texture2d_array` argument is always satisfied (Metal
     /// requires every declared texture bound) — it's never sampled in that case (no mask sets
     /// maskType == 1).
     nonisolated(unsafe) private let emptyBrushAlpha: MTLTexture
-    /// Cache guarding `refreshBrushAlpha`: the brush masks + resolution the current
-    /// `brushAlphaTexture` was rasterized from. `updateParams` runs per slider drag, but strokes
-    /// only change on paint/undo/image-load — comparing against this skips the full-res rebuild
-    /// (a synchronous GPU rasterization) on every unrelated tonal edit.
+    /// Cache guarding `refreshMaskAlpha`: the raster-mask sources + resolution the current
+    /// `brushAlphaTexture` was rasterized from. `updateParams` runs per slider drag, but raster
+    /// sources change only on paint/mask refinement/undo/image-load — comparing against this skips
+    /// the full-res rebuild (a synchronous GPU rasterization) on every unrelated tonal edit.
     nonisolated(unsafe) private var lastBuiltMaskAlphaSources: [MaskAlphaSource] = []
     nonisolated(unsafe) private var lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
 
