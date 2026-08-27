@@ -34,10 +34,11 @@ async work assert the executor on entry. The reusable pipeline records that exac
 `nonisolated(unsafe)` fields. Source texture/orientation and white-balance temperature/tint now publish
 and snapshot as coherent pairs.
 
-The follow-up stable-resource audit converted twelve initialization-only Metal buffer/texture handles
-from unsafe declarations to `nonisolated let`. The references cannot be rebound after construction;
-their underlying buffer and texture contents are still written only through executor-checked render
-entry points. This reduces `MetalEditPipeline.swift` from 41 to 29 explicit
+The follow-up stable-resource audit converted eleven initialization-only Metal buffer/texture handles
+from unsafe declarations to immutable `StableMetalHandle` wrappers. The references cannot be rebound
+after construction; their underlying buffer and texture contents are still written only through
+executor-checked render entry points. (`MTLTextureWrapper` retains one unsafe immutable cache payload
+because the Metal protocol itself is not `Sendable`.) This reduces `MetalEditPipeline.swift` from 41 to 30 explicit
 `nonisolated(unsafe)` escapes at current HEAD. The remaining escapes are mutable render plans, caches,
 controls, scratch arrays, lazily allocated textures, and viewport/white-balance cache values; they
 remain owner-serialized and need storage extraction before Phase 4.2 can be considered complete.
@@ -48,8 +49,8 @@ remain owner-serialized and need storage extraction before Phase 4.2 can be cons
 enforcement, executor separation, sync re-entry and queue assertions, lock-backed publication state,
 cross-pipeline owner checking, and the primary public render-state entry guards. The GPU rasterization
 suite is main-actor isolated so its direct pipeline construction obeys the production live-instance
-contract. The same source contract now enumerates the stable `nonisolated let` resource handles and
-caps the remaining unsafe-escape count at 29.
+contract. The same source contract now enumerates the stable Sendable resource handles and caps the
+remaining unsafe-escape count at 30.
 
 ## Verification
 

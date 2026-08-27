@@ -441,7 +441,7 @@ nonisolated enum EditRenderPassPlanner {
 ///
 /// NSCache-compatible wrapper for MTLTexture (value types can't be cached directly).
 final class MTLTextureWrapper: @unchecked Sendable {
-    nonisolated let texture: MTLTexture
+    nonisolated(unsafe) let texture: MTLTexture
     let neutralTemperature: Float
     let neutralTint: Float
     nonisolated init(_ texture: MTLTexture, neutralTemperature: Float = 6500, neutralTint: Float = 0) {
@@ -455,6 +455,12 @@ final class MTLTextureWrapper: @unchecked Sendable {
 /// (Exposure, Contrast, Blacks, Shadows, Highlights, Whites), plus vibrance, saturation,
 /// and white balance. The LUT is regenerated on every slider change (~microseconds).
 final class MetalEditPipeline: @unchecked Sendable {
+
+    /// Immutable identity wrapper for non-Sendable Metal protocol values. The wrapper makes only
+    /// the handle binding Sendable; resource contents still require the pipeline's executor.
+    nonisolated private struct StableMetalHandle<Resource>: @unchecked Sendable {
+        let resource: Resource
+    }
 
     /// Lock-backed publication boundary for source pixels. Source decode/upload may finish on a
     /// worker while the main-thread preview reads the last completed texture. Keeping the pair in
@@ -560,16 +566,22 @@ final class MetalEditPipeline: @unchecked Sendable {
     private let imageMemoryCoordinator = ImageMemoryCoordinator.shared
     nonisolated(unsafe) private var imageMemoryRegistration: ImageMemoryCoordinator.Registration?
     /// Stable resource handles. The references never change after construction; mutations of
-    /// shared buffer contents remain confined to state-executor-checked entry points.
-    nonisolated let paramsBuffer: MTLBuffer?
-    nonisolated let lutTexture: MTLTexture
-    nonisolated private let identityLutTexture: MTLTexture
-    nonisolated let maskBuffer: MTLBuffer?
-    nonisolated let hslBuffer: MTLBuffer?
+    /// shared buffer contents remain confined to state-executor-checked entry points. Main-actor
+    /// computed properties expose the subset consumed by the live scope view.
+    nonisolated private let paramsBufferHandle: StableMetalHandle<MTLBuffer?>
+    nonisolated private let lutTextureHandle: StableMetalHandle<MTLTexture>
+    nonisolated private let identityLutTextureHandle: StableMetalHandle<MTLTexture>
+    nonisolated private let maskBufferHandle: StableMetalHandle<MTLBuffer?>
+    nonisolated private let hslBufferHandle: StableMetalHandle<MTLBuffer?>
+    var paramsBuffer: MTLBuffer? { paramsBufferHandle.resource }
+    var lutTexture: MTLTexture { lutTextureHandle.resource }
+    var maskBuffer: MTLBuffer? { maskBufferHandle.resource }
+    var hslBuffer: MTLBuffer? { hslBufferHandle.resource }
     /// Layer-processing order (buffer index 3): a sequence of `orderCount` UInt32 entries,
     /// each either `globalOrderSentinel` or a mask index into `maskBuffer`. Populated by
     /// `updateParams` from `CameraRawSettings.resolvedLayerOrder()`.
-    nonisolated let orderBuffer: MTLBuffer?
+    nonisolated private let orderBufferHandle: StableMetalHandle<MTLBuffer?>
+    var orderBuffer: MTLBuffer? { orderBufferHandle.resource }
     /// Compiled compute segments for the currently uploaded order. A single entry retains the
     /// historical one-dispatch fast path; two or more entries use ping-pong intermediate
     /// textures so each spatial node samples the complete upstream composite.
@@ -674,7 +686,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // Overlay pipeline (mask overlay rendering)
     private let overlayPipelineState: MTLComputePipelineState?
-    nonisolated private let overlayParamsBuffer: MTLBuffer?
+    nonisolated private let overlayParamsBufferHandle: StableMetalHandle<MTLBuffer?>
 
     // Brush-mask rasterization (Phase 2). Optional — graceful degradation if the shaders are
     // missing, matching the overlay pipeline.
@@ -696,7 +708,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// are no raster masks, so the kernel's `texture2d_array` argument is always satisfied (Metal
     /// requires every declared texture bound) — it's never sampled in that case (no mask sets
     /// maskType == 1).
-    nonisolated private let emptyBrushAlpha: MTLTexture
+    nonisolated private let emptyBrushAlphaHandle: StableMetalHandle<MTLTexture>
     /// Cache guarding `refreshMaskAlpha`: the raster-mask sources + resolution the current
     /// `brushAlphaTexture` was rasterized from. `updateParams` runs per slider drag, but raster
     /// sources change only on paint/mask refinement/undo/image-load — comparing against this skips
@@ -710,7 +722,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// up to `maxWatermarks` entries. Rewritten (cheaply) on every `updateParams`/
     /// `refreshWatermarkParams` call; the texture array behind it is only reloaded when the
     /// referenced asset IDs actually change (see `lastBuiltWatermarkAssetIDs`).
-    nonisolated private let watermarkParamsBuffer: MTLBuffer?
+    nonisolated private let watermarkParamsBufferHandle: StableMetalHandle<MTLBuffer?>
     /// Deduped-by-asset watermark texture array (texture index 4), one RGBA8 premultiplied
     /// slice per distinct library asset referenced by the active watermark layers. Nil when
     /// there are none, so non-watermark edits pay zero extra GPU memory.
@@ -718,7 +730,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// A 1×1×1 fully-transparent placeholder bound to `editAdjustments`' watermark-texture slot
     /// whenever there are no active watermark layers, so the kernel's texture argument is
     /// always satisfied (mirrors `emptyBrushAlpha`).
-    nonisolated private let emptyWatermarkTexture: MTLTexture
+    nonisolated private let emptyWatermarkTextureHandle: StableMetalHandle<MTLTexture>
     /// Cache guarding the texture (re)decode in `loadWatermarkTextures`: the distinct asset IDs
     /// the current `watermarkTexture` was built from.
     nonisolated(unsafe) private var lastBuiltWatermarkAssetIDs: [UUID] = []
@@ -737,7 +749,8 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Fixed 33³ LUT slots packed as `[mask slot × 33 blue slices]`. Identity data occupies
     /// slots without a valid imported cube, so malformed/missing LUTs safely no-op.
-    nonisolated let colorLUTTexture: MTLTexture
+    nonisolated private let colorLUTTextureHandle: StableMetalHandle<MTLTexture>
+    var colorLUTTexture: MTLTexture { colorLUTTextureHandle.resource }
     /// Cache of source cube payloads by mask-buffer slot. Avoids parsing and uploading ~2 MB
     /// while unrelated sliders are dragged.
     nonisolated(unsafe) private var lastBuiltColorLUTData: [Data?] =
@@ -927,10 +940,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         } else {
             self.overlayPipelineState = nil
         }
-        self.overlayParamsBuffer = device.makeBuffer(
+        self.overlayParamsBufferHandle = StableMetalHandle(resource: device.makeBuffer(
             length: MemoryLayout<MaskOverlayParams>.stride,
             options: .storageModeShared
-        )
+        ))
 
         // Brush-mask rasterization pipelines (optional — graceful degradation if missing).
         if let stampFunc = library.makeFunction(name: "stampBrush") {
@@ -968,23 +981,26 @@ final class MetalEditPipeline: @unchecked Sendable {
             .workingFormat: CIFormat.RGBAf,
             .workingColorSpace: Self.colorSpace,
         ])
-        self.paramsBuffer = device.makeBuffer(length: MemoryLayout<EditParams>.stride, options: .storageModeShared)
-        self.maskBuffer = device.makeBuffer(
+        self.paramsBufferHandle = StableMetalHandle(resource: device.makeBuffer(
+            length: MemoryLayout<EditParams>.stride,
+            options: .storageModeShared
+        ))
+        self.maskBufferHandle = StableMetalHandle(resource: device.makeBuffer(
             length: MemoryLayout<MaskParams>.stride * Self.maxMasks,
             options: .storageModeShared
-        )
-        self.hslBuffer = device.makeBuffer(
+        ))
+        self.hslBufferHandle = StableMetalHandle(resource: device.makeBuffer(
             length: MemoryLayout<HSLParams>.stride,
             options: .storageModeShared
-        )
-        self.orderBuffer = device.makeBuffer(
+        ))
+        self.orderBufferHandle = StableMetalHandle(resource: device.makeBuffer(
             length: MemoryLayout<UInt32>.stride * Self.maxOrderEntries,
             options: .storageModeShared
-        )
-        self.watermarkParamsBuffer = device.makeBuffer(
+        ))
+        self.watermarkParamsBufferHandle = StableMetalHandle(resource: device.makeBuffer(
             length: MemoryLayout<WatermarkParams>.stride * Self.maxWatermarks,
             options: .storageModeShared
-        )
+        ))
         metalPipelineLog.info("MaskParams stride=\(MemoryLayout<MaskParams>.stride) size=\(MemoryLayout<MaskParams>.size) alignment=\(MemoryLayout<MaskParams>.alignment)")
         metalPipelineLog.info("EditParams stride=\(MemoryLayout<EditParams>.stride) size=\(MemoryLayout<EditParams>.size) alignment=\(MemoryLayout<EditParams>.alignment)")
         metalPipelineLog.info("HSLParams stride=\(MemoryLayout<HSLParams>.stride) size=\(MemoryLayout<HSLParams>.size) alignment=\(MemoryLayout<HSLParams>.alignment)")
@@ -1004,7 +1020,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         var identityData = Self.floatsToHalfs([dMin, dMin, dMin, 0, dMax, dMax, dMax, 0])
         identityTex.replace(region: MTLRegionMake1D(0, 2), mipmapLevel: 0,
                             withBytes: &identityData, bytesPerRow: 2 * 4 * MemoryLayout<UInt16>.size)
-        self.identityLutTexture = identityTex
+        self.identityLutTextureHandle = StableMetalHandle(resource: identityTex)
 
         // 1×1×1 zeroed brush-alpha placeholder (always-bound fallback; see property doc).
         let emptyBrushDesc = MTLTextureDescriptor()
@@ -1020,7 +1036,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         emptyBrushTex.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, slice: 0,
                               withBytes: &zeroHalf, bytesPerRow: MemoryLayout<UInt16>.size,
                               bytesPerImage: MemoryLayout<UInt16>.size)
-        self.emptyBrushAlpha = emptyBrushTex
+        self.emptyBrushAlphaHandle = StableMetalHandle(resource: emptyBrushTex)
 
         // 1×1×1 fully-transparent watermark-texture placeholder (always-bound fallback; see
         // property doc). Zeroed — alpha 0 means applyWatermark's blend is a no-op even if a
@@ -1040,7 +1056,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         emptyWatermarkTex.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, slice: 0,
                                   withBytes: &zeroRGBA, bytesPerRow: MemoryLayout<UInt32>.size,
                                   bytesPerImage: MemoryLayout<UInt32>.size)
-        self.emptyWatermarkTexture = emptyWatermarkTex
+        self.emptyWatermarkTextureHandle = StableMetalHandle(resource: emptyWatermarkTex)
 
         // Pre-allocate the main LUT texture (4096 entries, rgba16Float, ~32KB).
         // R/G/B channels carry per-channel LUT for curve editor support.
@@ -1052,7 +1068,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         lutDesc.usage = .shaderRead
         lutDesc.storageMode = .shared
         guard let preallocLUT = device.makeTexture(descriptor: lutDesc) else { return nil }
-        self.lutTexture = preallocLUT
+        self.lutTextureHandle = StableMetalHandle(resource: preallocLUT)
 
         let colorDesc = MTLTextureDescriptor()
         colorDesc.textureType = .type2DArray
@@ -1063,7 +1079,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         colorDesc.usage = .shaderRead
         colorDesc.storageMode = .shared
         guard let colorTexture = device.makeTexture(descriptor: colorDesc) else { return nil }
-        self.colorLUTTexture = colorTexture
+        self.colorLUTTextureHandle = StableMetalHandle(resource: colorTexture)
         for slot in 0..<Self.maxMasks {
             uploadIdentityColorLUT(slot: slot)
         }
@@ -1200,7 +1216,7 @@ final class MetalEditPipeline: @unchecked Sendable {
                 }
             }
             var halfs = Self.floatsToHalfs(floats)
-            colorLUTTexture.replace(
+            colorLUTTextureHandle.resource.replace(
                 region: MTLRegionMake2D(0, 0, size, size),
                 mipmapLevel: 0,
                 slice: slot * size + blue,
@@ -1232,7 +1248,7 @@ final class MetalEditPipeline: @unchecked Sendable {
                 parsedColorLUTs[slot] = parsed
                 for (blue, floats) in parsed.resampledSlices(size: Self.colorLUTSize).enumerated() {
                     var halfs = Self.floatsToHalfs(floats)
-                    colorLUTTexture.replace(
+                    colorLUTTextureHandle.resource.replace(
                         region: MTLRegionMake2D(0, 0, Self.colorLUTSize, Self.colorLUTSize),
                         mipmapLevel: 0,
                         slice: slot * Self.colorLUTSize + blue,
@@ -1277,7 +1293,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             }
         }
         float16Buffer.withUnsafeBufferPointer { ptr in
-            lutTexture.replace(
+            lutTextureHandle.resource.replace(
                 region: MTLRegionMake1D(0, count),
                 mipmapLevel: 0,
                 withBytes: ptr.baseAddress!,
@@ -1293,7 +1309,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated func updateParams(_ settings: CameraRawSettings?) {
         preconditionOnStateExecutor()
         let start = ContinuousClock.now
-        guard let buffer = paramsBuffer else { return }
+        guard let buffer = paramsBufferHandle.resource else { return }
         var params = EditParams()
         var flags: UInt32 = 0
 
@@ -1449,7 +1465,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         var enabledMaskIndexByID: [UUID: Int] = [:]
         var anonymizerMaskIndices = Set<Int>()
         var maskAlphaSources: [MaskAlphaSource] = []
-        if maskCount > 0, let maskBuf = maskBuffer {
+        if maskCount > 0, let maskBuf = maskBufferHandle.resource {
             let maskPtr = maskBuf.contents().bindMemory(to: MaskParams.self, capacity: Self.maxMasks)
             for i in 0..<maskCount {
                 let mask = masks[i]
@@ -1578,7 +1594,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         // 6. HSL per-color adjustments
-        if let hslBuf = hslBuffer {
+        if let hslBuf = hslBufferHandle.resource {
             var hslP = HSLParams()
             var hslActive = false
 
@@ -1701,7 +1717,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         maskIndexByID: [UUID: Int],
         watermarkIndexByID: [UUID: Int]
     ) -> [UInt32] {
-        guard let orderBuf = orderBuffer else { return [] }
+        guard let orderBuf = orderBufferHandle.resource else { return [] }
         let ptr = orderBuf.contents().bindMemory(to: UInt32.self, capacity: Self.maxOrderEntries)
         var entries: [UInt32] = []
         entries.reserveCapacity(min(resolved.count, Self.maxOrderEntries))
@@ -1728,7 +1744,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Updates mask overlay parameters for Metal overlay rendering.
     nonisolated func updateOverlayParams(geometry: EllipseMaskGeometry?, visible: Bool) {
         preconditionOnStateExecutor()
-        guard let buffer = overlayParamsBuffer else { return }
+        guard let buffer = overlayParamsBufferHandle.resource else { return }
         var params = MaskOverlayParams()
         if let geo = geometry, visible {
             params.center = SIMD2<Float>(Float(geo.centerX), Float(geo.centerY))
@@ -2223,7 +2239,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated func refreshWatermarkParams(_ layers: [WatermarkLayer], imageSize: MTLSize) -> [UUID: Int] {
         preconditionOnStateExecutor()
         guard !layers.isEmpty, imageSize.width > 0, imageSize.height > 0,
-              let wmBuf = watermarkParamsBuffer else {
+              let wmBuf = watermarkParamsBufferHandle.resource else {
             watermarkTexture = nil
             lastBuiltWatermarkAssetIDs = []
             lastBuiltWatermarkAspects = [:]
@@ -2285,21 +2301,21 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setComputePipelineState(pipelineState)
         encoder.setTexture(source, index: 0)
         encoder.setTexture(destination, index: 1)
-        encoder.setTexture(lutTexture, index: 2)
-        encoder.setTexture(brushAlphaTexture ?? emptyBrushAlpha, index: 3)
-        encoder.setTexture(watermarkTexture ?? emptyWatermarkTexture, index: 4)
-        encoder.setTexture(colorLUTTexture, index: 5)
+        encoder.setTexture(lutTextureHandle.resource, index: 2)
+        encoder.setTexture(brushAlphaTexture ?? emptyBrushAlphaHandle.resource, index: 3)
+        encoder.setTexture(watermarkTexture ?? emptyWatermarkTextureHandle.resource, index: 4)
+        encoder.setTexture(colorLUTTextureHandle.resource, index: 5)
         encoder.setBytes(&passParams, length: MemoryLayout<EditParams>.stride, index: 0)
-        if let maskBuffer {
+        if let maskBuffer = maskBufferHandle.resource {
             encoder.setBuffer(maskBuffer, offset: 0, index: 1)
         }
-        if let hslBuffer {
+        if let hslBuffer = hslBufferHandle.resource {
             encoder.setBuffer(hslBuffer, offset: 0, index: 2)
         }
-        if let orderBuffer {
+        if let orderBuffer = orderBufferHandle.resource {
             encoder.setBuffer(orderBuffer, offset: 0, index: 3)
         }
-        if let watermarkParamsBuffer {
+        if let watermarkParamsBuffer = watermarkParamsBufferHandle.resource {
             encoder.setBuffer(watermarkParamsBuffer, offset: 0, index: 4)
         }
         encoder.dispatchThreads(
@@ -2440,7 +2456,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     ) -> Bool {
         preconditionOnStateExecutor()
         guard let source = sourceTexture,
-              let buffer = paramsBuffer,
+              let buffer = paramsBufferHandle.resource,
               let commandBuffer = commandQueue.makeCommandBuffer() else { return false }
 
         let w = Int(drawableSize.width)
@@ -2479,7 +2495,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         ) else { return false }
 
         // Overlay pass — composites mask overlay shapes onto the drawable
-        if let overlayState = overlayPipelineState, let overlayBuf = overlayParamsBuffer {
+        if let overlayState = overlayPipelineState,
+           let overlayBuf = overlayParamsBufferHandle.resource {
             let overlayPtr = overlayBuf.contents().bindMemory(to: MaskOverlayParams.self, capacity: 1)
             if overlayPtr.pointee.visible != 0 {
                 overlayPtr.pointee.scale = SIMD2<Float>(scaleX, scaleY)
@@ -2698,7 +2715,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         imageSize: CGSize
     ) {
         preconditionOnStateExecutor()
-        guard let buffer = paramsBuffer else { return }
+        guard let buffer = paramsBufferHandle.resource else { return }
         guard containerSize.width > 0, containerSize.height > 0,
               imageSize.width > 0, imageSize.height > 0 else { return }
 
@@ -2760,7 +2777,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         // Also update overlay params
-        if let overlayBuf = overlayParamsBuffer {
+        if let overlayBuf = overlayParamsBufferHandle.resource {
             let overlayPtr = overlayBuf.contents().bindMemory(to: MaskOverlayParams.self, capacity: 1)
             overlayPtr.pointee.viewportOrigin = cachedViewportOrigin
             overlayPtr.pointee.viewportSize = cachedViewportSize
@@ -2787,7 +2804,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         handlePadding: CGFloat = 0
     ) {
         preconditionOnStateExecutor()
-        guard let buffer = paramsBuffer else { return }
+        guard let buffer = paramsBufferHandle.resource else { return }
         guard containerSize.width > 0, containerSize.height > 0,
               imageSize.width > 0, imageSize.height > 0 else { return }
 
@@ -3165,7 +3182,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         guard let outTexture = renderDevice.makeTexture(descriptor: outDesc) else { return nil }
 
         // 4. Dispatch the same compiled render graph used by the live preview.
-        guard let paramsBuffer = pipeline.paramsBuffer,
+        guard let paramsBuffer = pipeline.paramsBufferHandle.resource,
               let computeCmdBuf = renderQueue.makeCommandBuffer() else { return nil }
 
         let ptr = paramsBuffer.contents().bindMemory(to: EditParams.self, capacity: 1)
