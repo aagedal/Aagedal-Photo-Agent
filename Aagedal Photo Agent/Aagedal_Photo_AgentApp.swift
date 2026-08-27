@@ -90,27 +90,27 @@ struct Aagedal_Photo_AgentApp: App {
                 Divider()
 
                 Button("Render Selected") {
-                    NotificationCenter.default.post(name: .renderSelected, object: nil)
+                    commandRouter.send(.renderSelected)
                 }
                 .keyboardShortcut("s", modifiers: .command)
 
                 Button("Advanced Export Selected...") {
-                    NotificationCenter.default.post(name: .advancedExportSelected, object: nil)
+                    commandRouter.send(.advancedExportSelected)
                 }
 
                 Button("Render All") {
-                    NotificationCenter.default.post(name: .renderAll, object: nil)
+                    commandRouter.send(.renderAll)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
 
                 Divider()
 
                 Button("Save as JPEG") {
-                    NotificationCenter.default.post(name: .saveAsJPEG, object: nil)
+                    commandRouter.send(.saveAsJPEG)
                 }
 
                 Button("Save as PNG") {
-                    NotificationCenter.default.post(name: .saveAsPNG, object: nil)
+                    commandRouter.send(.saveAsPNG)
                 }
 
                 Divider()
@@ -548,12 +548,6 @@ extension Notification.Name {
     static let rotateClockwise = Notification.Name("rotateClockwise")
     static let rotateCounterclockwise = Notification.Name("rotateCounterclockwise")
     static let writeAllPendingMetadata = Notification.Name("writeAllPendingMetadata")
-    static let renderSelected = Notification.Name("renderSelected")
-    static let advancedExportSelected = Notification.Name("advancedExportSelected")
-    static let renderAll = Notification.Name("renderAll")
-    static let saveAsJPEG = Notification.Name("saveAsJPEG")
-    static let saveAsPNG = Notification.Name("saveAsPNG")
-    static let archiveRAW = Notification.Name("archiveRAW")
     static let renameSelected = Notification.Name("renameSelected")
     static let duplicateSelected = Notification.Name("duplicateSelected")
     static let resetAllEdits = Notification.Name("resetAllEdits")

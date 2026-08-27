@@ -570,16 +570,16 @@ final class ThumbnailCollectionView: NSCollectionView {
     }
 
     @objc private func contextSaveAsJPEG(_ sender: Any?) {
-        NotificationCenter.default.post(name: .saveAsJPEG, object: nil)
+        commandRouter?.send(.saveAsJPEG)
     }
 
     @objc private func contextSaveAsPNG(_ sender: Any?) {
-        NotificationCenter.default.post(name: .saveAsPNG, object: nil)
+        commandRouter?.send(.saveAsPNG)
     }
 
     @objc private func contextArchiveRAW(_ sender: NSMenuItem) {
         guard let format = sender.representedObject as? RAWArchiveFormat else { return }
-        NotificationCenter.default.post(name: .archiveRAW, object: format)
+        commandRouter?.send(.archiveRAW(format))
     }
 
     @objc private func contextShowDNGConverterInstructions(_ sender: Any?) {

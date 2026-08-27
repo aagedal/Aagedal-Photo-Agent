@@ -709,25 +709,25 @@ struct ContentView: View {
 
     private var contentWithFileOperationHandlers: some View {
         contentWithOverlay
-            .onReceive(NotificationCenter.default.publisher(for: .renderSelected)) { _ in
-                let urls = browserViewModel.selectedImages.map(\.url)
-                renderAndSaveEditedFolder(urls: urls)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .advancedExportSelected)) { _ in
-                showAdvancedExportSelected()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .renderAll)) { _ in
-                renderAndSaveEditedFolder()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .saveAsJPEG)) { _ in
-                saveSelectedAs(format: .jpeg)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .saveAsPNG)) { _ in
-                saveSelectedAs(format: .png)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .archiveRAW)) { notification in
-                guard let format = notification.object as? RAWArchiveFormat else { return }
-                archiveSelectedRAW(as: format)
+            .onChange(of: commandRouter.latestDelivery) { _, delivery in
+                guard let delivery else { return }
+                switch delivery.command {
+                case .renderSelected:
+                    let urls = browserViewModel.selectedImages.map(\.url)
+                    renderAndSaveEditedFolder(urls: urls)
+                case .advancedExportSelected:
+                    showAdvancedExportSelected()
+                case .renderAll:
+                    renderAndSaveEditedFolder()
+                case .saveAsJPEG:
+                    saveSelectedAs(format: .jpeg)
+                case .saveAsPNG:
+                    saveSelectedAs(format: .png)
+                case .archiveRAW(let format):
+                    archiveSelectedRAW(as: format)
+                case .openFolder, .openRecentFolder, .setRating, .setLabel:
+                    break
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .renameSelected)) { _ in
                 browserViewModel.renameSelected()
@@ -3747,6 +3747,9 @@ struct ContentViewModifiers: ViewModifier {
                     browserViewModel.setRating(rating)
                 case .setLabel(let label):
                     browserViewModel.setLabel(label)
+                case .renderSelected, .advancedExportSelected, .renderAll,
+                     .saveAsJPEG, .saveAsPNG, .archiveRAW:
+                    break
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .openInExternalEditor)) { _ in

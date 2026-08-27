@@ -10,6 +10,12 @@ enum AppCommand: Equatable, Sendable {
     case openRecentFolder(URL)
     case setRating(StarRating)
     case setLabel(ColorLabel)
+    case renderSelected
+    case advancedExportSelected
+    case renderAll
+    case saveAsJPEG
+    case saveAsPNG
+    case archiveRAW(RAWArchiveFormat)
 }
 
 struct AppCommandDelivery: Equatable, Sendable {

@@ -50,6 +50,21 @@ struct AppCommandRouterTests {
         #expect(try #require(router.latestDelivery).command == .setLabel(.red))
         #expect(try #require(router.latestDelivery).sequence == 2)
     }
+
+    @Test("export commands preserve operation identity and archive format")
+    func exportCommandPayloads() throws {
+        let router = AppCommandRouter()
+
+        router.send(.renderSelected)
+        #expect(try #require(router.latestDelivery).command == .renderSelected)
+
+        router.send(.advancedExportSelected)
+        #expect(try #require(router.latestDelivery).command == .advancedExportSelected)
+
+        router.send(.archiveRAW(.dngLossless))
+        #expect(try #require(router.latestDelivery).command == .archiveRAW(.dngLossless))
+        #expect(try #require(router.latestDelivery).sequence == 3)
+    }
 }
 
 @Suite("App startup signpost lifecycle")
