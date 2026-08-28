@@ -129,8 +129,9 @@
 - [x] Separate the face recognition model file from the app, to minimize update size. The model is rarely updated.
   (2026-08-27) The developer `.mlpackage` is explicitly excluded from the synchronized app target, and the
   release assistant rejects any exported app that contains the compiled model.
-  - [ ] Download the pre-converted quantized Core ML artifact from `aagedal.me` in the background when the
-    model is not installed. Users must never download ONNX or run the developer conversion toolchain.
+  - [ ] Publish the pre-converted quantized Core ML artifact and signed descriptor at `aagedal.me`, then
+    validate the implemented background download/install/rollback flow against the production server on
+    every supported macOS tier. Users must never download ONNX or run the developer conversion toolchain.
   - [x] Needs support for model versioning, in case an improved face recognition model is released.
     (2026-08-27) Signed descriptors bind component, model, embedding, schema, and minimum-app versions;
     installed receipts are revalidated and update availability is explicit.

@@ -231,7 +231,9 @@ struct CaptionWorkspaceView: View {
             case .openFolder, .openRecentFolder, .setRating, .setLabel,
                  .renderSelected, .advancedExportSelected, .renderAll,
                  .saveAsJPEG, .saveAsPNG, .archiveRAW,
-                 .rotateClockwise, .rotateCounterclockwise:
+                 .rotateClockwise, .rotateCounterclockwise,
+                 .renameSelected, .duplicateSelected,
+                 .resetAllEdits, .removeAllIPTC:
                 break
             }
         }

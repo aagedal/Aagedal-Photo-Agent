@@ -7,6 +7,11 @@ audited single-image Metadata persistence, FTP upload staging, and Delivery Rece
 
 - Folder scans, subfolder enumeration, trash, rename, create, and move now cross an async
   `FileSystemService` actor boundary before touching `FileManager`.
+- Primary and secondary-card import source discovery now cross a serialized
+  `ImportSourceDiscoveryService` actor boundary. Recursive enumeration filters to regular files, skips
+  hidden/package descendants, checks cancellation for each item, emits privacy-safe ready/cancelled/failed
+  signposts, and returns explicit enumeration failures instead of silently treating an unreadable source as
+  empty. Main-actor consumers reject stale results when the selected source changes.
 - The actor serializes these potentially blocking operations, while the observable browser model only
   consumes immutable `Sendable` scan/mutation results on the main actor.
 - Cancellation is checked before enumeration and mutation, and periodically during large enumerations.
@@ -53,6 +58,11 @@ audited single-image Metadata persistence, FTP upload staging, and Delivery Rece
 - pre-cancelled persistence with no filesystem mutation; and
 - an XMP install failure returning the already-durable JSON record as explicit partial success.
 
+`ImportSourceDiscoveryServiceTests` additionally covers:
+
+- recursive regular-file discovery while skipping hidden files and package descendants; and
+- pre-I/O cancellation surfacing `CancellationError` without touching the source.
+
 `FTPUploadFileSystemBoundaryTests` additionally covers:
 
 - ordered immutable file inventory with missing-file fallback facts;
@@ -73,6 +83,10 @@ their two focused suites then passed all six tests against the same build.
 
 Focused Delivery Receipt verification on 2026-08-27 passed all eight Activity-library tests, including the
 pre-cancellation/no-mutation and immutable commit-evidence cases, with `** TEST SUCCEEDED **`.
+
+Focused import-source discovery verification on 2026-08-27 passed both tests in an isolated DerivedData
+directory with `** TEST SUCCEEDED **`. The initial shared DerivedData attempt encountered an unrelated build
+database lock; the isolated rerun compiled cleanly and passed.
 
 The existing `FileSystemOfflineAvailabilityTests` continue to cover deferred iCloud items and download
 requests at the same boundary.

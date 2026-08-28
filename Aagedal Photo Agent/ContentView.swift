@@ -725,23 +725,19 @@ struct ContentView: View {
                     saveSelectedAs(format: .png)
                 case .archiveRAW(let format):
                     archiveSelectedRAW(as: format)
+                case .renameSelected:
+                    browserViewModel.renameSelected()
+                case .duplicateSelected:
+                    browserViewModel.duplicateSelectedImages()
+                case .resetAllEdits:
+                    browserViewModel.confirmResetAllEdits()
+                case .removeAllIPTC:
+                    browserViewModel.confirmRemoveAllIPTC()
                 case .openFolder, .openRecentFolder, .setRating, .setLabel,
                      .selectPreviousImage, .selectNextImage,
                      .rotateClockwise, .rotateCounterclockwise:
                     break
                 }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .renameSelected)) { _ in
-                browserViewModel.renameSelected()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .duplicateSelected)) { _ in
-                browserViewModel.duplicateSelectedImages()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .resetAllEdits)) { _ in
-                browserViewModel.confirmResetAllEdits()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .removeAllIPTC)) { _ in
-                browserViewModel.confirmRemoveAllIPTC()
             }
     }
 
@@ -3762,7 +3758,9 @@ struct ContentViewModifiers: ViewModifier {
                 case .rotateCounterclockwise:
                     browserViewModel.rotateCounterclockwise()
                 case .renderSelected, .advancedExportSelected, .renderAll,
-                     .saveAsJPEG, .saveAsPNG, .archiveRAW:
+                     .saveAsJPEG, .saveAsPNG, .archiveRAW,
+                     .renameSelected, .duplicateSelected,
+                     .resetAllEdits, .removeAllIPTC:
                     break
                 }
             }

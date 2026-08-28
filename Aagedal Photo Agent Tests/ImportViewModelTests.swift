@@ -3,6 +3,52 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
+@Suite("Import source discovery")
+struct ImportSourceDiscoveryServiceTests {
+    @Test("Discovery recursively returns regular files while skipping hidden and package contents")
+    func discoversRegularFilesOnly() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportSourceDiscoveryTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let nested = root.appendingPathComponent("nested", isDirectory: true)
+        let package = root.appendingPathComponent("ignored.bundle", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        let visible = nested.appendingPathComponent("visible.jpg")
+        let hidden = root.appendingPathComponent(".hidden.jpg")
+        let packaged = package.appendingPathComponent("packaged.jpg")
+        try Data("visible".utf8).write(to: visible)
+        try Data("hidden".utf8).write(to: hidden)
+        try Data("packaged".utf8).write(to: packaged)
+
+        let files = try await ImportSourceDiscoveryService().discoverFiles(at: root)
+
+        #expect(
+            files.map { $0.resolvingSymlinksInPath().path }
+                == [visible.resolvingSymlinksInPath().path]
+        )
+    }
+
+    @Test("Discovery surfaces cancellation before touching the source")
+    func cancellationIsExplicit() async {
+        let service = ImportSourceDiscoveryService()
+        let task = Task {
+            try await service.discoverFiles(at: URL(fileURLWithPath: "/source-is-never-read"))
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected source discovery to throw CancellationError")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            Issue.record("Expected CancellationError, received \(error)")
+        }
+    }
+}
+
 @Suite("ImportViewModel", .serialized)
 @MainActor
 struct ImportViewModelTests {

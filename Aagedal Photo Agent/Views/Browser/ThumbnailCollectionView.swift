@@ -599,19 +599,19 @@ final class ThumbnailCollectionView: NSCollectionView {
     }
 
     @objc private func contextRename(_ sender: Any?) {
-        NotificationCenter.default.post(name: .renameSelected, object: nil)
+        commandRouter?.send(.renameSelected)
     }
 
     @objc private func contextDuplicate(_ sender: Any?) {
-        NotificationCenter.default.post(name: .duplicateSelected, object: nil)
+        commandRouter?.send(.duplicateSelected)
     }
 
     @objc private func contextResetAllEdits(_ sender: Any?) {
-        NotificationCenter.default.post(name: .resetAllEdits, object: nil)
+        commandRouter?.send(.resetAllEdits)
     }
 
     @objc private func contextRemoveAllIPTC(_ sender: Any?) {
-        NotificationCenter.default.post(name: .removeAllIPTC, object: nil)
+        commandRouter?.send(.removeAllIPTC)
     }
 
     @objc private func contextMoveToFolder(_ sender: Any?) {

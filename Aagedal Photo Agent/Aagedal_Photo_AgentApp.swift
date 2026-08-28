@@ -116,11 +116,11 @@ struct Aagedal_Photo_AgentApp: App {
                 Divider()
 
                 Button("Rename...") {
-                    NotificationCenter.default.post(name: .renameSelected, object: nil)
+                    commandRouter.send(.renameSelected)
                 }
 
                 Button("Duplicate") {
-                    NotificationCenter.default.post(name: .duplicateSelected, object: nil)
+                    commandRouter.send(.duplicateSelected)
                 }
                 .keyboardShortcut("d", modifiers: .command)
             }
@@ -211,11 +211,11 @@ struct Aagedal_Photo_AgentApp: App {
                 Divider()
 
                 Button("Reset All Edits") {
-                    NotificationCenter.default.post(name: .resetAllEdits, object: nil)
+                    commandRouter.send(.resetAllEdits)
                 }
 
                 Button("Remove All IPTC Metadata") {
-                    NotificationCenter.default.post(name: .removeAllIPTC, object: nil)
+                    commandRouter.send(.removeAllIPTC)
                 }
             }
 
@@ -544,10 +544,6 @@ extension Notification.Name {
     static let showKnownPeopleDatabase = Notification.Name("showKnownPeopleDatabase")
     static let knownPeopleDatabaseDidChange = Notification.Name("knownPeopleDatabaseDidChange")
     static let writeAllPendingMetadata = Notification.Name("writeAllPendingMetadata")
-    static let renameSelected = Notification.Name("renameSelected")
-    static let duplicateSelected = Notification.Name("duplicateSelected")
-    static let resetAllEdits = Notification.Name("resetAllEdits")
-    static let removeAllIPTC = Notification.Name("removeAllIPTC")
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
     static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")

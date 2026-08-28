@@ -89,6 +89,24 @@ struct AppCommandRouterTests {
         #expect(try #require(router.latestDelivery).command == .rotateCounterclockwise)
         #expect(try #require(router.latestDelivery).sequence == 2)
     }
+
+    @Test("selection file and edit commands preserve operation identity")
+    func selectionOperationCommandIdentity() throws {
+        let router = AppCommandRouter()
+        let commands: [AppCommand] = [
+            .renameSelected,
+            .duplicateSelected,
+            .resetAllEdits,
+            .removeAllIPTC,
+        ]
+
+        for (index, command) in commands.enumerated() {
+            router.send(command)
+            let delivery = try #require(router.latestDelivery)
+            #expect(delivery.command == command)
+            #expect(delivery.sequence == UInt64(index + 1))
+        }
+    }
 }
 
 @Suite("App startup signpost lifecycle")

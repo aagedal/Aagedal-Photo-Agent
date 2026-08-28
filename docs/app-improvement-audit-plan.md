@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 59 of 75 checklist substeps complete
+**Status:** implementation in progress — 60 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -53,6 +53,11 @@ atomically with rollback, revalidates signed receipts, defers embedding migratio
 verified, and provides download/removal/offline disclosure. The production-download item remains open until
 the artifacts are published at `aagedal.me`, a model-omitted release candidate is built, and real-server
 macOS-tier drills pass.
+
+**Executor-contract reconciliation (2026-08-27):** 60 of 75 substeps are now checked and 15 remain open.
+The existing executor-isolation validation proves owner/executor preconditions at live render-state,
+offscreen-renderer, and cross-pipeline boundaries. The compile-time live-preview facade and remaining
+mutable Metal storage extraction are still open.
 
 ## Phase 0 — Stop silent data loss and destructive surprises
 
@@ -353,8 +358,10 @@ result is announced once; CI runs the smoke suite; dated manual evidence covers 
 **Async-boundary follow-up (2026-08-27):** Browser folder scans and mutations, batch trash/move/duplicate
 operations, the audited Metadata JSON-history/XMP save, FTP upload inventory/staging, and Delivery Receipt
 summary export now cross serialized actor boundaries and return immutable results with explicit cancellation
-and durable-partial-success semantics. Lower-priority direct filesystem paths, signposts/volume benchmarks,
-and Thread Performance Checker evidence remain open.
+and durable-partial-success semantics. Primary and secondary-card import discovery also crosses a serialized
+actor boundary with cooperative cancellation, stale-result rejection, explicit enumeration errors, and
+privacy-safe scan signposts. Lower-priority direct filesystem paths, volume benchmarks, and Thread Performance
+Checker evidence remain open.
 ([validation](filesystem-async-boundary-validation-2026-08-27.md))
 
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
@@ -421,10 +428,11 @@ longer restart Deadline capture; slow high-resolution loads offer actionable rec
 - [ ] Add a characterization test before each extraction and keep UI behavior unchanged.
 
 **Command-router follow-up (2026-08-27):** Open Folder/Open Recent, rating/label, core export, previous/
-next-image, and clockwise/counterclockwise rotation commands now use a typed, scene-owned
-`AppCommandRouter`, including explicit AppKit bridging and typed payload/sequence contract coverage. The
-rotation slice removed its process-wide notification names while preserving the existing menu shortcuts and
-browser actions. Other command families and state-owning coordinator extractions remain incremental work.
+next-image, clockwise/counterclockwise rotation, Rename, Duplicate, Reset All Edits, and Remove All IPTC
+commands now use a typed, scene-owned `AppCommandRouter`, including explicit AppKit bridging and typed
+payload/sequence contract coverage. The migrated slices removed their process-wide notification names while
+preserving existing menu, context-menu, shortcut, and browser behavior. Other command families and
+state-owning coordinator extractions remain incremental work.
 ([validation](app-command-router-validation-2026-08-27.md))
 
 **State-owner follow-up (2026-08-27):** `DevelopVersionSessionCoordinator` now owns named-version catalog,
@@ -446,11 +454,12 @@ the intended window/pane; extracted units are independently testable.
 
 - [ ] Split a main-actor live-preview facade from a serialized offscreen renderer actor/executor.
 - [ ] Reduce unsafe nonisolated state to audited immutable Metal resources.
-- [ ] Add owner/executor preconditions for remaining call-site contracts.
-  Partial 2026-08-25: MetalEditPipeline live render-state entry points now enforce main-thread
+- [x] Add owner/executor preconditions for remaining call-site contracts.
+  MetalEditPipeline live render-state entry points enforce main-thread
   ownership, while the shared export renderer asserts its dedicated serial queue. Worker-safe source
-  upload/precache paths remain explicitly documented exceptions. Broader facade/actor isolation and
-  unsafe-state reduction remain open. ([validation](metal-edit-pipeline-executor-validation.md))
+  upload/precache paths remain explicitly documented exceptions; cross-pipeline owner contracts are also
+  enforced. Broader facade/actor isolation and unsafe-state reduction remain open.
+  ([validation](metal-edit-pipeline-executor-validation.md), 2026-08-27)
 - [x] Schedule a TSAN stress scenario combining preview, Clean Feed, export, cancellation, and navigation.
   ([validation](metal-pipeline-tsan-stress-validation-2026-08-25.md), 2026-08-25)
 
@@ -482,11 +491,11 @@ Normal one-time Core ML preparation of an `.mlpackage` is not model conversion a
 - [x] Define model availability states: not installed, downloading, ready, update available, incompatible,
   verification failed, and offline.
   ([validation](auraface-on-demand-packaging-validation.md), 2026-08-26)
-- [ ] Download the pre-converted quantized Core ML artifact from `aagedal.me` over HTTPS, verify the manifest
-  signature/hash before install, stage atomically, and retain a rollback version during migration.
-  Partial 2026-08-27: the signed descriptor, complete artifact verification, atomic install, receipt
-  revalidation, rollback, and failure-injection tests are implemented; production publishing and real-server
-  validation remain open. ([validation](auraface-on-demand-runtime-validation-2026-08-27.md))
+- [ ] Publish the pre-converted quantized Core ML artifact and signed descriptor at `aagedal.me`, build a
+  model-omitted release candidate, and validate clean install, offline, update, rollback, and corrupt-download
+  behavior against the production server on every supported macOS tier. The HTTPS runtime, signature/hash
+  verification, atomic install, receipt revalidation, rollback, and failure-injection tests are implemented.
+  ([validation](auraface-on-demand-runtime-validation-2026-08-27.md))
 - [x] Never reset stored embeddings until the new model and backup are both verified.
   ([validation](auraface-on-demand-runtime-validation-2026-08-27.md), 2026-08-27)
 - [x] Explain download size, on-device use, removal, and offline behavior before downloading.

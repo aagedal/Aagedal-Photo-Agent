@@ -155,6 +155,7 @@ final class ImportViewModel {
     @ObservationIgnored private var importTask: Task<Void, Never>?
     @ObservationIgnored private var confirmedOverwriteSignature: [ImportOverwriteExpectation]?
     @ObservationIgnored private let copyService = ImportCopyService()
+    @ObservationIgnored private let sourceDiscoveryService = ImportSourceDiscoveryService()
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
     init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, activityHistory: ActivityHistoryStore? = nil) {
@@ -325,11 +326,11 @@ final class ImportViewModel {
         sourceVoiceMemoFiles = []
         dateGroups = []
 
-        scanTask = Task.detached(priority: .userInitiated) {
-            let allURLs = Self.enumerateFiles(at: url)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
+        scanTask = Task(priority: .userInitiated) { [sourceDiscoveryService] in
+            do {
+                let allURLs = try await sourceDiscoveryService.discoverFiles(at: url)
+                try Task.checkCancellation()
+                guard self.configuration.sourceURL == url else { return }
                 self.sourceFiles = allURLs
                     .filter { SupportedImageFormats.isSupported(url: $0) }
                     .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
@@ -342,6 +343,12 @@ final class ImportViewModel {
                 if self.sortByDate {
                     self.scanCaptureDates()
                 }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.configuration.sourceURL == url else { return }
+                self.importPhase = .idle
+                self.errorMessage = error.localizedDescription
             }
         }
     }
@@ -382,18 +389,18 @@ final class ImportViewModel {
         voiceMemoAssociationReport = nil
         isScanningVoiceMemoSource = true
 
-        voiceMemoScanTask = Task.detached(priority: .userInitiated) {
+        voiceMemoScanTask = Task(priority: .userInitiated) { [sourceDiscoveryService] in
             let didStartAccessing = url.startAccessingSecurityScopedResource()
             defer {
                 if didStartAccessing { url.stopAccessingSecurityScopedResource() }
             }
-            let files = Self.enumerateFiles(at: url).filter {
-                SupportedImageFormats.isSupported(url: $0)
-                    || $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame
-            }
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard !Task.isCancelled, self.configuration.voiceMemoSourceURL == url else { return }
+            do {
+                let files = try await sourceDiscoveryService.discoverFiles(at: url).filter {
+                    SupportedImageFormats.isSupported(url: $0)
+                        || $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame
+                }
+                try Task.checkCancellation()
+                guard self.configuration.voiceMemoSourceURL == url else { return }
                 self.voiceMemoSourceFiles = files.sorted {
                     $0.path.localizedStandardCompare($1.path) == .orderedAscending
                 }
@@ -401,6 +408,12 @@ final class ImportViewModel {
                 if self.sortByDate {
                     self.scanCaptureDates()
                 }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.configuration.voiceMemoSourceURL == url else { return }
+                self.isScanningVoiceMemoSource = false
+                self.errorMessage = error.localizedDescription
             }
         }
     }
@@ -507,24 +520,6 @@ final class ImportViewModel {
             captureSignature: signature,
             capturedAt: capturedAt
         )
-    }
-
-    /// Enumerate all regular files under `url` off the main actor.
-    nonisolated private static func enumerateFiles(at url: URL) -> [URL] {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else {
-            return []
-        }
-
-        var found: [URL] = []
-        while let fileURL = enumerator.nextObject() as? URL {
-            found.append(fileURL)
-        }
-        return found
     }
 
     // MARK: - Destination Selection

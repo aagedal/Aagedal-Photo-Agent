@@ -20,6 +20,10 @@ enum AppCommand: Equatable, Sendable {
     case selectNextImage
     case rotateClockwise
     case rotateCounterclockwise
+    case renameSelected
+    case duplicateSelected
+    case resetAllEdits
+    case removeAllIPTC
 }
 
 struct AppCommandDelivery: Equatable, Sendable {
