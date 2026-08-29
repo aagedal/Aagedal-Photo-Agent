@@ -31,6 +31,13 @@ enum AppCommand: Equatable, Sendable {
     case openInExternalEditor
     case deleteSelected
     case moveRejectedToFolder
+    case addNewMask
+    case removeOrResetSelectedEditLayer
+    case toggleHDR
+    case setScopeMode(ScopeViewModel.ScopeMode)
+    case toggleGamutClipping
+    case uploadSelected
+    case uploadAll
 }
 
 struct AppCommandDelivery: Equatable, Sendable {

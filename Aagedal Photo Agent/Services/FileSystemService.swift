@@ -85,6 +85,7 @@ actor FileSystemService {
 
     private let isLocallyAvailable: @Sendable (URL) -> Bool
     private let requestDownload: @Sendable (URL) -> Void
+    private let rejectMove: @Sendable ([URL], URL) -> RejectMoveService.MoveResult
 
     init(
         isLocallyAvailable: @escaping @Sendable (URL) -> Bool = {
@@ -92,10 +93,14 @@ actor FileSystemService {
         },
         requestDownload: @escaping @Sendable (URL) -> Void = {
             try? FileManager.default.startDownloadingUbiquitousItem(at: $0)
+        },
+        rejectMove: @escaping @Sendable ([URL], URL) -> RejectMoveService.MoveResult = { urls, folderURL in
+            RejectMoveService.moveRejected(urls: urls, in: folderURL)
         }
     ) {
         self.isLocallyAvailable = isLocallyAvailable
         self.requestDownload = requestDownload
+        self.rejectMove = rejectMove
     }
 
     /// Scans a folder for image files on this service's serialized actor executor. Directory
@@ -215,6 +220,13 @@ actor FileSystemService {
 
     func moveFolder(from sourceURL: URL, to destinationURL: URL) throws -> FolderMutationResult {
         try moveFolder(from: sourceURL, to: destinationURL, kind: .move)
+    }
+
+    /// Moves rejected image bundles on the same serialized actor used by the browser's other
+    /// scans and mutations. The mover observes cancellation between complete bundles so an
+    /// image, XMP, and editorial sidecar are never left in an interrupted transaction.
+    func moveRejectedItems(_ urls: [URL], in folderURL: URL) -> RejectMoveService.MoveResult {
+        rejectMove(urls, folderURL)
     }
 
     /// Trashes as many items as possible. Cancellation stops before the next item; a synchronous

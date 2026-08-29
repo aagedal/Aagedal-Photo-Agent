@@ -365,6 +365,21 @@ immutable file/image/WAV count snapshots every five seconds for both source sele
 filesystem paths, volume benchmarks, and Thread Performance Checker evidence remain open.
 ([validation](filesystem-async-boundary-validation-2026-08-27.md))
 
+**Rejected-bundle follow-up (2026-08-29):** Move Rejected to Folder now performs destination creation,
+collision probing, image/XMP/editorial-sidecar moves, and rollback on the serialized filesystem actor.
+Cancellation stops between transactional bundles, and stale completion after folder navigation cannot
+reload the previous folder. Before release-candidate integration, manually verify a slow external/network
+volume, navigation during the move, rollback presentation, and Thread Performance Checker behavior using the
+[dated procedure](plan-status-follow-up-validation-2026-08-29.md#manual-validation-still-required).
+Lower-priority direct paths and the broader measurement exit gate remain open.
+
+**Import-preflight follow-up (2026-08-29):** Same-date duplicate discovery and primary/backup overwrite
+collision probes now cross a serialized `ImportPreflightService` actor boundary. The service returns one
+immutable job plan with duplicate skips and exact collision evidence frozen together; cancellation is
+explicit, reset invalidates late results, and the execution boundary still revalidates the confirmed
+collision signature before writing. Other direct filesystem paths and the broader measurement exit gate
+remain open. ([validation](plan-status-follow-up-validation-2026-08-29.md#import-preflight-async-boundary))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -431,11 +446,19 @@ longer restart Deadline capture; slow high-resolution loads offer actionable rec
 **Command-router follow-ups (2026-08-27 through 2026-08-29):** Open Folder/Open Recent, rating/label, core
 export, previous/next-image, clockwise/counterclockwise rotation, Rename, Duplicate, Reset All Edits, Remove
 All IPTC, Import Photos, Back Up Edited Files, internal/external editor opening, Move to Trash, and Move
-Rejected to Folder commands now use a typed, scene-owned `AppCommandRouter`, including explicit AppKit
-bridging and typed payload/sequence contract coverage. The migrated slices removed their process-wide
+Rejected to Folder, Upload Selected, and Upload All commands now use a typed, scene-owned
+`AppCommandRouter`, including explicit AppKit bridging and typed payload/sequence contract coverage. The
+migrated slices removed their process-wide
 notification names while preserving existing menu, context-menu, shortcut, preference, and browser behavior.
 Other command families and state-owning coordinator extractions remain incremental work.
 ([validation](app-command-router-validation-2026-08-27.md))
+
+**Develop/scope command follow-up (2026-08-29):** Add Mask, Remove/Reset Selected Layer, Toggle HDR,
+scope-mode selection, and Gamut Clipping now use five more typed scene commands. Develop-only and
+single-selection scope ownership is preserved, while rendered scope-image and slider-drag state remain
+process-local state broadcasts. Menu, shortcut, focus, unavailable-workspace, and multi-window behavior must
+be checked manually before release-candidate integration using the
+[dated procedure](plan-status-follow-up-validation-2026-08-29.md#manual-validation-still-required).
 
 **State-owner follow-up (2026-08-27):** `DevelopVersionSessionCoordinator` now owns named-version catalog,
 revision, storage, cancellation, debounce/flush persistence, and stale-result gating. A separate

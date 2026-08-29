@@ -24,6 +24,10 @@ audited single-image Metadata persistence, FTP upload staging, and Delivery Rece
 - Batch image trash, image moves, move-to-new-subfolder, and duplication now use the same actor. Their
   immutable results distinguish committed primary files, companion-sidecar failures, and cancellation that
   stopped unstarted items. Main-actor browser state is reconciled only from those results.
+- Moving rejected image bundles now crosses that actor as well. Cancellation is observed before destination
+  creation and between complete image/XMP/editorial-sidecar bundles, so an in-progress bundle still commits
+  or rolls back transactionally. The browser snapshots the source folder before awaiting and rejects a stale
+  completion if the user navigated elsewhere, preventing slow-volume work from reopening the old folder.
 - Existing move behavior for adjacent XMP and editorial JSON sidecars is preserved. Duplication retains its
   existing editorial JSON-sidecar copy behavior, including reporting a sidecar failure separately from a
   successfully-created primary duplicate.
@@ -54,6 +58,15 @@ audited single-image Metadata persistence, FTP upload staging, and Delivery Rece
 - image move with XMP and editorial sidecars; and
 - unique-name duplication with its editorial sidecar.
 
+`RejectMoveServiceTests` additionally covers:
+
+- collision-safe association of an image with both sidecar formats through the actor boundary;
+- transactional rollback after a sidecar move failure;
+- pre-cancellation with no `.Rejected` directory or other filesystem mutation; and
+- deterministic cancellation between two bundles, preserving the first complete commit and leaving the
+  unstarted second bundle at its source; and
+- stale completion from a previous folder leaving the browser's new folder selection intact.
+
 `MetadataIOCoordinatorTests` additionally covers:
 
 - a completed metadata JSON + XMP save returning the installed merged-history record;
@@ -66,6 +79,12 @@ audited single-image Metadata persistence, FTP upload staging, and Delivery Rece
 - pre-I/O cancellation surfacing `CancellationError` without touching the source;
 - the five-second production progress cadence; and
 - exact final progress counts for regular files, supported images, and WAV files.
+
+`ImportPreflightServiceTests` and `ImportViewModelTests` additionally cover:
+
+- duplicate image/voice-memo skip propagation and immutable primary/backup collision evidence;
+- serialized overlapping preflights and pre-cancellation before any filesystem probe; and
+- reset invalidating a late preflight publication without creating a destination.
 
 `FTPUploadFileSystemBoundaryTests` additionally covers:
 
@@ -90,6 +109,29 @@ pre-cancellation/no-mutation and immutable commit-evidence cases, with `** TEST 
 
 Focused import-source discovery verification on 2026-08-29 passed all four tests after the progress follow-up,
 including a complete application/test-target compile, with `** TEST SUCCEEDED **`.
+
+Focused rejected-move and command-router verification on 2026-08-29 compiled the current application and
+test targets and passed all **13 tests in 2 suites** (four rejected-move tests and nine router tests) with
+`** TEST SUCCEEDED **`. The result bundle is:
+
+```text
+/tmp/aagedal-reject-boundary-20260829-1548/Logs/Test/
+Test-Aagedal Photo Agent Tests-2026.08.29_15-46-01-+0200.xcresult
+```
+
+Manual slow-volume, navigation-during-move, failure-presentation, and Thread Performance Checker validation
+is still required before this rejected-file slice enters a release candidate. Repeat the slow-volume check
+on every supported macOS tier before marking the broader Phase 3.1 exit gate complete. The exact procedure
+is listed under **Manual validation still required** in
+[`plan-status-follow-up-validation-2026-08-29.md`](plan-status-follow-up-validation-2026-08-29.md).
+
+The 2026-08-29 integrated continuation then completed a full `build-for-testing` and passed all **34 tests
+in 4 focused suites**: `AppCommandRouterTests`, `RejectMoveServiceTests`, `ImportPreflightServiceTests`, and
+`ImportViewModelTests`. The action status was `succeeded`; the preserved result bundle is:
+
+```text
+/private/tmp/aagedal-focused-20260829-172219.xcresult
+```
 
 The existing `FileSystemOfflineAvailabilityTests` continue to cover deferred iCloud items and download
 requests at the same boundary.

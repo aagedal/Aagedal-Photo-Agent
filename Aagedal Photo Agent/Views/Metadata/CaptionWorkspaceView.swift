@@ -236,7 +236,10 @@ struct CaptionWorkspaceView: View {
                  .resetAllEdits, .removeAllIPTC,
                  .showImport, .backupEditedFiles, .backupEditedFilesForFolder,
                  .openInInternalEditor, .openInExternalEditor,
-                 .deleteSelected, .moveRejectedToFolder:
+                 .deleteSelected, .moveRejectedToFolder,
+                 .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
+                 .setScopeMode, .toggleGamutClipping,
+                 .uploadSelected, .uploadAll:
                 break
             }
         }

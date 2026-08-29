@@ -15,13 +15,15 @@ nonisolated struct RejectMoveService: Sendable {
         let rejectedFolder: URL
         let movedFiles: [URL]
         let failedFiles: [(URL, String)]
+        let cancellationStoppedRemainingItems: Bool
     }
 
     /// Move the given image URLs (and per-image sidecars) into `.Rejected/` under
     /// `folderURL`. The destination folder is created lazily.
     static func moveRejected(
         urls: [URL],
-        in folderURL: URL
+        in folderURL: URL,
+        bundleDidCommit: @Sendable (URL) -> Void = { _ in }
     ) -> MoveResult {
         let fm = FileManager.default
         let sidecarService = MetadataSidecarService()
@@ -29,9 +31,27 @@ nonisolated struct RejectMoveService: Sendable {
 
         var moved: [URL] = []
         var failed: [(URL, String)] = []
+        var cancellationStoppedRemainingItems = false
 
         guard !urls.isEmpty else {
-            return MoveResult(rejectedFolder: rejectedFolder, movedFiles: [], failedFiles: [])
+            return MoveResult(
+                rejectedFolder: rejectedFolder,
+                movedFiles: [],
+                failedFiles: [],
+                cancellationStoppedRemainingItems: false
+            )
+        }
+
+        // Do not create an otherwise-empty destination when the caller was cancelled before
+        // this serialized operation began. Once a bundle move starts it runs through commit or
+        // rollback; cancellation is observed between bundles so disk state remains explicit.
+        guard !Task.isCancelled else {
+            return MoveResult(
+                rejectedFolder: rejectedFolder,
+                movedFiles: [],
+                failedFiles: [],
+                cancellationStoppedRemainingItems: true
+            )
         }
 
         do {
@@ -40,7 +60,8 @@ nonisolated struct RejectMoveService: Sendable {
             return MoveResult(
                 rejectedFolder: rejectedFolder,
                 movedFiles: [],
-                failedFiles: urls.map { ($0, "Could not create .Rejected folder: \(error.localizedDescription)") }
+                failedFiles: urls.map { ($0, "Could not create .Rejected folder: \(error.localizedDescription)") },
+                cancellationStoppedRemainingItems: false
             )
         }
 
@@ -48,6 +69,10 @@ nonisolated struct RejectMoveService: Sendable {
         // - JSON sidecar at <folder>/.photo_metadata/<file>.meta.json
         // - XMP sidecar at <folder>/<basename>.xmp
         for url in urls {
+            if Task.isCancelled {
+                cancellationStoppedRemainingItems = true
+                break
+            }
             guard let dest = uniqueBundleDestination(
                 for: url.lastPathComponent,
                 in: rejectedFolder,
@@ -103,10 +128,19 @@ nonisolated struct RejectMoveService: Sendable {
                 continue
             }
             moved.append(dest)
+            // A synchronous seam lets cancellation tests pause after a complete bundle commits.
+            // Production uses the no-op default, so cancellation remains observable only between
+            // transactional bundles and can never interrupt image/sidecar commit or rollback.
+            bundleDidCommit(dest)
         }
 
         rejectLog.info("Rejected move complete: \(moved.count) moved, \(failed.count) failed")
-        return MoveResult(rejectedFolder: rejectedFolder, movedFiles: moved, failedFiles: failed)
+        return MoveResult(
+            rejectedFolder: rejectedFolder,
+            movedFiles: moved,
+            failedFiles: failed,
+            cancellationStoppedRemainingItems: cancellationStoppedRemainingItems
+        )
     }
 
     /// Append `-1`, `-2`, etc. until the image and every sidecar name are all

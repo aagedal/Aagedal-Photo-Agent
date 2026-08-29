@@ -230,6 +230,7 @@ nonisolated enum EditCropPreviewFraming {
 }
 
 struct EditWorkspaceView: View {
+    @Environment(AppCommandRouter.self) private var commandRouter
     @Bindable var metadataViewModel: MetadataViewModel
     @Bindable var browserViewModel: BrowserViewModel
     let settingsViewModel: SettingsViewModel
@@ -865,30 +866,45 @@ struct EditWorkspaceView: View {
         .onChange(of: scopeViewModel.targetGamut) { _, _ in
             updateGamutClipMode()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .addNewMask)) { _ in
-            guard canEditSingleImage else { return }
-            addNewMask(center: maskCenterUnderCursor())
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .removeOrResetSelectedEditLayer)) { _ in
-            guard canEditSingleImage else { return }
-            removeOrResetSelectedEditLayer()
+        .onChange(of: commandRouter.latestDelivery) { _, delivery in
+            guard let delivery else { return }
+            switch delivery.command {
+            case .addNewMask:
+                guard canEditSingleImage else { return }
+                addNewMask(center: maskCenterUnderCursor())
+            case .removeOrResetSelectedEditLayer:
+                guard canEditSingleImage else { return }
+                removeOrResetSelectedEditLayer()
+            case .toggleHDR:
+                guard canEditSingleImage else { return }
+                hdrToggleBinding.wrappedValue.toggle()
+                // Auto-switch soft-proof target gamut and display gamut from format settings
+                if scopeViewModel.showClippedGamut {
+                    scopeViewModel.targetGamut = isHDREnabled
+                        ? settingsViewModel.exportColorGamutHDR
+                        : settingsViewModel.exportColorGamutSDR
+                }
+                // Refresh gamut clip pipeline so HDR flag is immediately applied/cleared
+                updateGamutClipMode()
+            case .openFolder, .openRecentFolder, .setRating, .setLabel,
+                 .renderSelected, .advancedExportSelected, .renderAll,
+                 .saveAsJPEG, .saveAsPNG, .archiveRAW,
+                 .selectPreviousImage, .selectNextImage,
+                 .rotateClockwise, .rotateCounterclockwise,
+                 .renameSelected, .duplicateSelected,
+                 .resetAllEdits, .removeAllIPTC,
+                 .showImport, .backupEditedFiles, .backupEditedFilesForFolder,
+                 .openInInternalEditor, .openInExternalEditor,
+                 .deleteSelected, .moveRejectedToFolder,
+                 .setScopeMode, .toggleGamutClipping,
+                 .uploadSelected, .uploadAll:
+                break
+            }
         }
         .modifier(DevelopTemplateNotificationHandler { template in
             guard canEditSingleImage else { return }
             applyDevelopTemplate(template)
         })
-        .onReceive(NotificationCenter.default.publisher(for: .toggleHDR)) { _ in
-            guard canEditSingleImage else { return }
-            hdrToggleBinding.wrappedValue.toggle()
-            // Auto-switch soft-proof target gamut and display gamut from format settings
-            if scopeViewModel.showClippedGamut {
-                scopeViewModel.targetGamut = isHDREnabled
-                    ? settingsViewModel.exportColorGamutHDR
-                    : settingsViewModel.exportColorGamutSDR
-            }
-            // Refresh gamut clip pipeline so HDR flag is immediately applied/cleared
-            updateGamutClipMode()
-        }
         .overlay(alignment: .top) {
             if let feedback = copyPasteFeedback {
                 Text(feedback)

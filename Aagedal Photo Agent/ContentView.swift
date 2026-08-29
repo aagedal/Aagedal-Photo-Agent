@@ -78,7 +78,10 @@ private struct SafetyAndCullingHandlers: ViewModifier {
                      .renameSelected, .duplicateSelected,
                      .resetAllEdits, .removeAllIPTC,
                      .showImport, .openInInternalEditor, .openInExternalEditor,
-                     .deleteSelected:
+                     .deleteSelected,
+                     .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
+                     .setScopeMode, .toggleGamutClipping,
+                     .uploadSelected, .uploadAll:
                     break
                 }
             }
@@ -749,12 +752,24 @@ struct ContentView: View {
                     isShowingImport = true
                 case .openInInternalEditor:
                     openEditWorkspace()
+                case .uploadSelected:
+                    let urls = browserViewModel.selectedImages.map(\.url)
+                    if !urls.isEmpty {
+                        ftpUploadItem = FTPUploadItem(urls: urls)
+                    }
+                case .uploadAll:
+                    let urls = browserViewModel.images.map(\.url)
+                    if !urls.isEmpty {
+                        ftpUploadItem = FTPUploadItem(urls: urls)
+                    }
                 case .openFolder, .openRecentFolder, .setRating, .setLabel,
                      .selectPreviousImage, .selectNextImage,
                      .rotateClockwise, .rotateCounterclockwise,
                      .backupEditedFiles, .backupEditedFilesForFolder,
                      .openInExternalEditor,
-                     .deleteSelected, .moveRejectedToFolder:
+                     .deleteSelected, .moveRejectedToFolder,
+                     .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
+                     .setScopeMode, .toggleGamutClipping:
                     break
                 }
             }
@@ -808,18 +823,6 @@ struct ContentView: View {
                     if let template = developTemplateViewModel.template(forSlot: slot) {
                         NotificationCenter.default.post(name: .applyDevelopTemplate, object: template)
                     }
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .uploadSelected)) { _ in
-                let urls = browserViewModel.selectedImages.map(\.url)
-                if !urls.isEmpty {
-                    ftpUploadItem = FTPUploadItem(urls: urls)
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .uploadAll)) { _ in
-                let urls = browserViewModel.images.map(\.url)
-                if !urls.isEmpty {
-                    ftpUploadItem = FTPUploadItem(urls: urls)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .showKnownPeopleDatabase)) { _ in
@@ -2313,9 +2316,26 @@ struct ContentView: View {
                         scopeViewModel.isDragMode = isDragging
                     }
                 }
-                .onReceive(NotificationCenter.default.publisher(for: .setScopeMode)) { notification in
-                    if let mode = notification.object as? ScopeViewModel.ScopeMode {
+                .onChange(of: commandRouter.latestDelivery) { _, delivery in
+                    guard let delivery else { return }
+                    switch delivery.command {
+                    case .setScopeMode(let mode):
                         scopeViewModel.scopeMode = mode
+                    case .toggleGamutClipping:
+                        scopeViewModel.showClippedGamut.toggle()
+                    case .openFolder, .openRecentFolder, .setRating, .setLabel,
+                         .renderSelected, .advancedExportSelected, .renderAll,
+                         .saveAsJPEG, .saveAsPNG, .archiveRAW,
+                         .selectPreviousImage, .selectNextImage,
+                         .rotateClockwise, .rotateCounterclockwise,
+                         .renameSelected, .duplicateSelected,
+                         .resetAllEdits, .removeAllIPTC,
+                         .showImport, .backupEditedFiles, .backupEditedFilesForFolder,
+                         .openInInternalEditor, .openInExternalEditor,
+                         .deleteSelected, .moveRejectedToFolder,
+                         .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
+                         .uploadSelected, .uploadAll:
+                        break
                     }
                 }
                 .onChange(of: settingsViewModel.exportColorGamutSDR) { _, newValue in
@@ -2330,9 +2350,6 @@ struct ContentView: View {
                 }
                 .onChange(of: settingsViewModel.showOriginalThumbnails) { _, newValue in
                     browserViewModel.showOriginalThumbnails = newValue
-                }
-                .onReceive(NotificationCenter.default.publisher(for: .toggleGamutClipping)) { _ in
-                    scopeViewModel.showClippedGamut.toggle()
                 }
             }
         }
@@ -3780,7 +3797,10 @@ struct ContentViewModifiers: ViewModifier {
                      .resetAllEdits, .removeAllIPTC,
                      .showImport, .backupEditedFiles, .backupEditedFilesForFolder,
                      .openInInternalEditor,
-                     .moveRejectedToFolder:
+                     .moveRejectedToFolder,
+                     .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
+                     .setScopeMode, .toggleGamutClipping,
+                     .uploadSelected, .uploadAll:
                     break
                 }
             }

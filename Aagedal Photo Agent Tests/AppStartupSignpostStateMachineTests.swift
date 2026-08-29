@@ -129,6 +129,37 @@ struct AppCommandRouterTests {
             #expect(delivery.sequence == UInt64(index + 1))
         }
     }
+
+    @Test("Develop and scope commands preserve operation identity and scope mode")
+    func developAndScopeCommandIdentity() throws {
+        let router = AppCommandRouter()
+        let commands: [AppCommand] = [
+            .addNewMask,
+            .removeOrResetSelectedEditLayer,
+            .toggleHDR,
+            .setScopeMode(.chromaticity),
+            .toggleGamutClipping,
+        ]
+
+        for (index, command) in commands.enumerated() {
+            router.send(command)
+            let delivery = try #require(router.latestDelivery)
+            #expect(delivery.command == command)
+            #expect(delivery.sequence == UInt64(index + 1))
+        }
+    }
+
+    @Test("upload commands preserve selection scope and ordering")
+    func uploadCommandIdentity() throws {
+        let router = AppCommandRouter()
+
+        router.send(.uploadSelected)
+        #expect(try #require(router.latestDelivery).command == .uploadSelected)
+
+        router.send(.uploadAll)
+        #expect(try #require(router.latestDelivery).command == .uploadAll)
+        #expect(try #require(router.latestDelivery).sequence == 2)
+    }
 }
 
 @Suite("App startup signpost lifecycle")

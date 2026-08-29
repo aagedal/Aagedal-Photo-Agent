@@ -1,5 +1,32 @@
 # Scene app-command router validation — 2026-08-27
 
+## Develop and scope command slice — 2026-08-29
+
+Add New Mask, Remove or Reset Selected Edit Layer, Toggle HDR, the four scope-mode choices, and Toggle
+Gamut Clipping now use five typed scene commands. The scope-mode command carries
+`ScopeViewModel.ScopeMode` directly rather than recovering an untyped notification object.
+
+Ownership remains identical to the previous UI behavior: the mounted Develop workspace consumes mask/HDR
+commands only while it can edit one image, and the conditional single-selection scope panel consumes scope
+commands only while that panel exists. Other scene consumers explicitly ignore the cases. Internal rendered
+scope-image and slider-drag-state changes remain on `NotificationCenter` because they are state broadcasts,
+not application commands.
+
+Five obsolete process-wide notification declarations, their menu posts, and their subscriptions were
+removed. Characterization coverage asserts exact command identity, the scope-mode payload, and monotonic
+delivery ordering. A fresh combined build passed all **13 tests in 2 suites**: four
+`RejectMoveServiceTests` and nine `AppCommandRouterTests`, with `** TEST SUCCEEDED **`. The result bundle is:
+
+```text
+/tmp/aagedal-reject-boundary-20260829-1548/Logs/Test/
+Test-Aagedal Photo Agent Tests-2026.08.29_15-46-01-+0200.xcresult
+```
+
+Manual menu, shortcut, focus, unavailable-workspace, and multi-window checks are still required before this
+slice enters a release candidate. The exact procedure and completion boundary are listed under **Manual
+validation still required** in
+[`plan-status-follow-up-validation-2026-08-29.md`](plan-status-follow-up-validation-2026-08-29.md).
+
 ## Workspace and safety command slice — 2026-08-29
 
 Import Photos, Back Up Edited Files, Open in Editor, Move to Trash, and Move Rejected to Folder now send
@@ -57,3 +84,19 @@ Result: 6 tests passed in the `Scene app command router` suite, including the ne
 
 The selection-operation follow-up added a characterization for typed identity and monotonic delivery order.
 The same focused selector then passed all **7 tests** in the suite with `** TEST SUCCEEDED **`.
+
+## Upload command slice — 2026-08-29
+
+Upload Selected and Upload All now send typed commands through the owning scene router. `ContentView`
+preserves the existing selected-image versus full-folder URL collection and does not present the upload
+sheet for an empty set. The two obsolete process-wide notification declarations, menu posts, and
+subscriptions were removed; all other command and state notifications are unchanged.
+
+Characterization asserts both command identities and monotonic ordering. The integrated focused run below
+passed this suite together with the Import preflight and rejected-bundle suites; the broader Phase 4.1 item
+remains open for the metadata, template, workspace, and other user-command families.
+
+```text
+/private/tmp/aagedal-focused-20260829-172219.xcresult
+34 tests passed in 4 suites; action status: succeeded
+```

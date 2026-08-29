@@ -199,12 +199,12 @@ struct Aagedal_Photo_AgentApp: App {
                 .keyboardShortcut("r", modifiers: [.command, .shift])
 
                 Button("Add New Mask") {
-                    NotificationCenter.default.post(name: .addNewMask, object: nil)
+                    commandRouter.send(.addNewMask)
                 }
                 .keyboardShortcut("j", modifiers: .command)
 
                 Button("Remove or Reset Selected Edit Layer") {
-                    NotificationCenter.default.post(name: .removeOrResetSelectedEditLayer, object: nil)
+                    commandRouter.send(.removeOrResetSelectedEditLayer)
                 }
                 .keyboardShortcut(.delete, modifiers: [.control, .option])
 
@@ -322,7 +322,7 @@ struct Aagedal_Photo_AgentApp: App {
                     Divider()
 
                     Button("Toggle HDR") {
-                        NotificationCenter.default.post(name: .toggleHDR, object: nil)
+                        commandRouter.send(.toggleHDR)
                     }
                     .keyboardShortcut("h", modifiers: [.control, .option])
 
@@ -333,29 +333,29 @@ struct Aagedal_Photo_AgentApp: App {
 
                 Section("Scopes") {
                     Button("Waveform") {
-                        NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.waveform)
+                        commandRouter.send(.setScopeMode(.waveform))
                     }
                     .keyboardShortcut("1", modifiers: [.control, .option])
 
                     Button("Parade") {
-                        NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.parade)
+                        commandRouter.send(.setScopeMode(.parade))
                     }
                     .keyboardShortcut("2", modifiers: [.control, .option])
 
                     Button("Vectorscope") {
-                        NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.vectorscope)
+                        commandRouter.send(.setScopeMode(.vectorscope))
                     }
                     .keyboardShortcut("3", modifiers: [.control, .option])
 
                     Button("Gamut") {
-                        NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.chromaticity)
+                        commandRouter.send(.setScopeMode(.chromaticity))
                     }
                     .keyboardShortcut("4", modifiers: [.control, .option])
 
                     Divider()
 
                     Button("Toggle Gamut Clipping") {
-                        NotificationCenter.default.post(name: .toggleGamutClipping, object: nil)
+                        commandRouter.send(.toggleGamutClipping)
                     }
                     .keyboardShortcut("g", modifiers: [.control, .option])
                 }
@@ -404,12 +404,12 @@ struct Aagedal_Photo_AgentApp: App {
 
             CommandMenu("Upload") {
                 Button("Upload Selected") {
-                    NotificationCenter.default.post(name: .uploadSelected, object: nil)
+                    commandRouter.send(.uploadSelected)
                 }
                 .keyboardShortcut("u", modifiers: .command)
 
                 Button("Upload All") {
-                    NotificationCenter.default.post(name: .uploadAll, object: nil)
+                    commandRouter.send(.uploadAll)
                 }
                 .keyboardShortcut("u", modifiers: [.command, .shift])
             }
@@ -535,8 +535,6 @@ extension Notification.Name {
     static let processVariablesSelected = Notification.Name("processVariablesSelected")
     static let processVariablesAll = Notification.Name("processVariablesAll")
     static let showTemplatePalette = Notification.Name("showTemplatePalette")
-    static let uploadSelected = Notification.Name("uploadSelected")
-    static let uploadAll = Notification.Name("uploadAll")
     static let showKnownPeopleDatabase = Notification.Name("showKnownPeopleDatabase")
     static let knownPeopleDatabaseDidChange = Notification.Name("knownPeopleDatabaseDidChange")
     static let writeAllPendingMetadata = Notification.Name("writeAllPendingMetadata")
@@ -549,12 +547,7 @@ extension Notification.Name {
     static let showRawMetadata = Notification.Name("showRawMetadata")
     static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
     static let applyDevelopTemplate = Notification.Name("applyDevelopTemplate")
-    static let addNewMask = Notification.Name("addNewMask")
-    static let removeOrResetSelectedEditLayer = Notification.Name("removeOrResetSelectedEditLayer")
-    static let setScopeMode = Notification.Name("setScopeMode")
-    static let toggleGamutClipping = Notification.Name("toggleGamutClipping")
     static let renderAndSignSelected = Notification.Name("renderAndSignSelected")
-    static let toggleHDR = Notification.Name("toggleHDR")
     static let showVariableReference = Notification.Name("showVariableReference")
     static let copyIPTCMetadata = Notification.Name("copyIPTCMetadata")
     static let pasteIPTCMetadata = Notification.Name("pasteIPTCMetadata")

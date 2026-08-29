@@ -15,6 +15,252 @@ private actor ImportSourceDiscoveryProgressRecorder {
     }
 }
 
+private nonisolated final class ImportPreflightTestGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = false
+    private var released = false
+
+    func waitUntilStarted() async -> Bool {
+        for _ in 0..<200 {
+            if hasStarted { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    func suspend() {
+        condition.lock()
+        started = true
+        condition.broadcast()
+        while !released {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private var hasStarted: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return started
+    }
+}
+
+private nonisolated final class ImportPreflightProbeRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func record() {
+        lock.withLock {
+            count += 1
+        }
+    }
+
+    var recordedCount: Int {
+        lock.withLock { count }
+    }
+}
+
+private nonisolated final class ImportPreflightSerializationGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var activeProbeCount = 0
+    private var maximumProbeCount = 0
+    private var firstProbeStarted = false
+    private var released = false
+
+    func probe(_ path: String) -> Bool {
+        condition.lock()
+        activeProbeCount += 1
+        maximumProbeCount = max(maximumProbeCount, activeProbeCount)
+        let shouldSuspend = path == "/photos/first.jpg"
+        if shouldSuspend {
+            firstProbeStarted = true
+            condition.broadcast()
+            while !released {
+                condition.wait()
+            }
+        }
+        activeProbeCount -= 1
+        condition.unlock()
+        return false
+    }
+
+    func waitForFirstProbe() async -> Bool {
+        for _ in 0..<200 {
+            if hasStarted { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var maximumConcurrentProbeCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumProbeCount
+    }
+
+    private var hasStarted: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return firstProbeStarted
+    }
+}
+
+@Suite("Import duplicate and collision preflight")
+struct ImportPreflightServiceTests {
+    @Test("Preflight freezes duplicate skips and complete collision evidence")
+    func freezesDuplicateAndCollisionEvidence() async throws {
+        let source = URL(fileURLWithPath: "/card/photo.jpg")
+        let memo = URL(fileURLWithPath: "/card/photo.wav")
+        let primary = URL(fileURLWithPath: "/photos/photo.jpg")
+        let memoPrimary = URL(fileURLWithPath: "/photos/photo.wav")
+        let backup = URL(fileURLWithPath: "/backup/photo.jpg")
+        let otherSource = URL(fileURLWithPath: "/card/other.jpg")
+        let sharedDestination = URL(fileURLWithPath: "/photos/shared.jpg")
+        let jobs = [
+            ImportCopyService.CopyJob(
+                source: source,
+                desiredPrimaryDest: primary,
+                desiredBackupDest: backup
+            ),
+            ImportCopyService.CopyJob(
+                source: memo,
+                desiredPrimaryDest: memoPrimary,
+                desiredBackupDest: nil
+            ),
+            ImportCopyService.CopyJob(
+                source: otherSource,
+                desiredPrimaryDest: sharedDestination,
+                desiredBackupDest: backup
+            ),
+            ImportCopyService.CopyJob(
+                source: URL(fileURLWithPath: "/card/final.jpg"),
+                desiredPrimaryDest: sharedDestination,
+                desiredBackupDest: nil
+            ),
+        ]
+        let service = ImportPreflightService(
+            findDuplicateSources: { _, _ in [source] },
+            fileExists: { $0 == backup.standardizedFileURL.path }
+        )
+
+        let result = try await service.prepare(ImportPreflightService.Request(
+            jobs: jobs,
+            previousImportCandidates: [
+                PreviousImportDetector.Candidate(
+                    source: source,
+                    dateFolderName: "2026-08-29"
+                ),
+            ],
+            companionParentBySource: [memo: source],
+            destinationBaseURL: URL(fileURLWithPath: "/photos", isDirectory: true),
+            skipPreviouslyImported: true,
+            freezeOverwriteCollisions: true
+        ))
+
+        #expect(result.jobs[0].preflightSkipReason == .previouslyImported)
+        #expect(result.jobs[1].preflightSkipReason == .previouslyImported)
+        #expect(result.jobs[2].expectedPrimaryCollision == false)
+        #expect(result.jobs[2].expectedBackupCollision == true)
+        #expect(result.jobs[3].expectedPrimaryCollision == true)
+        #expect(result.overwrite?.primaryCollisionCount == 1)
+        #expect(result.overwrite?.backupCollisionCount == 1)
+        #expect(result.overwrite?.signature.map(\.isSkipped) == [true, true, false, false])
+    }
+
+    @Test("Pre-cancelled preflight performs no filesystem probes")
+    func preCancelledPreflightIsExplicit() async {
+        let probes = ImportPreflightProbeRecorder()
+        let service = ImportPreflightService(
+            findDuplicateSources: { _, _ in
+                probes.record()
+                return []
+            },
+            fileExists: { _ in
+                probes.record()
+                return false
+            }
+        )
+        let task = Task {
+            try await service.prepare(ImportPreflightService.Request(
+                jobs: [],
+                previousImportCandidates: [],
+                companionParentBySource: [:],
+                destinationBaseURL: URL(fileURLWithPath: "/photos", isDirectory: true),
+                skipPreviouslyImported: true,
+                freezeOverwriteCollisions: true
+            ))
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected preflight cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            Issue.record("Expected CancellationError, received \(error)")
+        }
+        #expect(probes.recordedCount == 0)
+    }
+
+    @Test("Actor serializes overlapping collision preflights")
+    func serializesOverlappingPreflights() async throws {
+        let gate = ImportPreflightSerializationGate()
+        let service = ImportPreflightService(fileExists: { gate.probe($0) })
+        let first = ImportPreflightService.Request(
+            jobs: [ImportCopyService.CopyJob(
+                source: URL(fileURLWithPath: "/card/first.jpg"),
+                desiredPrimaryDest: URL(fileURLWithPath: "/photos/first.jpg"),
+                desiredBackupDest: nil
+            )],
+            previousImportCandidates: [],
+            companionParentBySource: [:],
+            destinationBaseURL: URL(fileURLWithPath: "/photos", isDirectory: true),
+            skipPreviouslyImported: false,
+            freezeOverwriteCollisions: true
+        )
+        let second = ImportPreflightService.Request(
+            jobs: [ImportCopyService.CopyJob(
+                source: URL(fileURLWithPath: "/card/second.jpg"),
+                desiredPrimaryDest: URL(fileURLWithPath: "/photos/second.jpg"),
+                desiredBackupDest: nil
+            )],
+            previousImportCandidates: [],
+            companionParentBySource: [:],
+            destinationBaseURL: URL(fileURLWithPath: "/photos", isDirectory: true),
+            skipPreviouslyImported: false,
+            freezeOverwriteCollisions: true
+        )
+
+        let firstTask = Task { try await service.prepare(first) }
+        defer { gate.release() }
+        let firstProbeDidStart = await gate.waitForFirstProbe()
+        #expect(firstProbeDidStart)
+        let secondTask = Task { try await service.prepare(second) }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(gate.maximumConcurrentProbeCount == 1)
+        gate.release()
+
+        _ = try await firstTask.value
+        _ = try await secondTask.value
+        #expect(gate.maximumConcurrentProbeCount == 1)
+    }
+}
+
 @Suite("Import source discovery")
 struct ImportSourceDiscoveryServiceTests {
     @Test("Discovery progress uses a five-second production cadence")
@@ -800,6 +1046,10 @@ struct ImportViewModelTests {
 
         viewModel.startImport()
 
+        for _ in 0..<500 where viewModel.overwritePreflight == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
         let preflight = try #require(viewModel.overwritePreflight)
         #expect(preflight.primaryCollisionCount == 1)
         #expect(preflight.backupCollisionCount == 1)
@@ -816,6 +1066,9 @@ struct ImportViewModelTests {
         #expect(try Data(contentsOf: backupFile) == originalBackup)
 
         viewModel.startImport()
+        for _ in 0..<500 where viewModel.overwritePreflight == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         viewModel.confirmOverwritePreflight()
         for _ in 0..<500 where viewModel.isImporting {
             try await Task.sleep(for: .milliseconds(10))
@@ -837,7 +1090,7 @@ struct ImportViewModelTests {
     }
 
     @Test("overwrite confirmation is invalidated when the collision set changes")
-    func overwriteConfirmationCannotBeReusedAfterCollisionChange() throws {
+    func overwriteConfirmationCannotBeReusedAfterCollisionChange() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("OverwriteSignatureTests-\(UUID().uuidString)", isDirectory: true)
         let card = root.appendingPathComponent("card", isDirectory: true)
@@ -863,6 +1116,9 @@ struct ImportViewModelTests {
         viewModel.sourceFiles = [source]
 
         viewModel.startImport()
+        for _ in 0..<500 where viewModel.overwritePreflight == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(viewModel.overwritePreflight?.primaryCollisionCount == 0)
 
         let destination = viewModel.configuration.destinationFolderURL.appendingPathComponent("photo.jpg")
@@ -874,6 +1130,10 @@ struct ImportViewModelTests {
         try intervening.write(to: destination)
 
         viewModel.confirmOverwritePreflight()
+
+        for _ in 0..<500 where viewModel.overwritePreflight?.primaryCollisionCount != 1 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
 
         #expect(viewModel.importPhase == .idle)
         #expect(viewModel.overwritePreflight?.primaryCollisionCount == 1)
@@ -914,6 +1174,9 @@ struct ImportViewModelTests {
 
         let destinationFolder = viewModel.configuration.destinationFolderURL
         viewModel.startImport()
+        for _ in 0..<500 where viewModel.overwritePreflight == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(viewModel.overwritePreflight?.primaryCollisionCount == 1)
         #expect(!FileManager.default.fileExists(atPath: destinationFolder.path))
 
@@ -925,6 +1188,56 @@ struct ImportViewModelTests {
         #expect(try Data(contentsOf: destinationFolder.appendingPathComponent("photo.jpg")) == finalBytes)
         #expect(viewModel.replacedFiles == 1)
         #expect(viewModel.lastCompletionEntry?.importResultCounts?.replaced == 1)
+    }
+
+    @Test("Reset rejects a late duplicate and collision preflight result")
+    func resetRejectsStalePreflightResult() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StaleImportPreflightTests-\(UUID().uuidString)", isDirectory: true)
+        let card = root.appendingPathComponent("card", isDirectory: true)
+        let photos = root.appendingPathComponent("photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let source = card.appendingPathComponent("photo.jpg")
+        try Data("source".utf8).write(to: source)
+        let gate = ImportPreflightTestGate()
+        defer { gate.release() }
+        let service = ImportPreflightService(
+            findDuplicateSources: { _, _ in
+                gate.suspend()
+                return []
+            }
+        )
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            preflightService: service
+        )
+        viewModel.configuration.sourceURL = card
+        viewModel.configuration.destinationBaseURL = photos
+        viewModel.configuration.importTitle = "Stale Preflight"
+        viewModel.configuration.fileTypeFilter = .jpegOnly
+        viewModel.configuration.conflictPolicy = .overwrite
+        viewModel.configuration.createSubFolders = false
+        viewModel.configuration.skipPreviouslyImported = true
+        viewModel.configuration.applyMetadata = false
+        viewModel.sourceFiles = [source]
+
+        viewModel.startImport()
+        let preflightDidStart = await gate.waitUntilStarted()
+        #expect(preflightDidStart)
+        viewModel.reset()
+        gate.release()
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        #expect(viewModel.importPhase == .idle)
+        #expect(viewModel.overwritePreflight == nil)
+        #expect(viewModel.sourceFiles.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: photos.appendingPathComponent("Stale Preflight").path))
     }
 }
 

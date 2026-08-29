@@ -162,7 +162,7 @@ final class BrowserViewModel {
     var copiedCameraRawSettings: CameraRawSettings?
     var copiedIPTCMetadata: IPTCMetadata?
 
-    let fileSystemService = FileSystemService()
+    let fileSystemService: FileSystemService
     /// Injected so split-view panes can share a single decode gate + NSCache rather than
     /// each pane spinning up its own (which would double concurrent decodes and thrash).
     let thumbnailService: ThumbnailService
@@ -239,10 +239,12 @@ final class BrowserViewModel {
 
     init(thumbnailService: ThumbnailService = ThumbnailService(),
          fullScreenImageCache: FullScreenImageCache = FullScreenImageCache(),
-         imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler()) {
+         imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler(),
+         fileSystemService: FileSystemService = FileSystemService()) {
         self.thumbnailService = thumbnailService
         self.fullScreenImageCache = fullScreenImageCache
         self.imageTrashHandler = imageTrashHandler
+        self.fileSystemService = fileSystemService
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
@@ -266,6 +268,7 @@ final class BrowserViewModel {
         autoRefreshTask?.cancel()
         metadataWriteTask?.cancel()
         batchReadTask?.cancel()
+        imageMutationTask?.cancel()
     }
 
     var selectedImages: [ImageFile] { selectedImagesCache }
@@ -1745,22 +1748,30 @@ final class BrowserViewModel {
     }
 
     /// Move all images currently labeled `.trash` to a sibling `.Rejected/`
-    /// subfolder, along with their JSON and XMP sidecars. Reloads the folder
-    /// when finished so the grid reflects the move. Returns the count moved.
-    @discardableResult
-    func moveRejectedToFolder() -> Int {
-        guard let folderURL = currentFolderURL else { return 0 }
+    /// subfolder, along with their JSON and XMP sidecars. The blocking bundle moves cross the
+    /// browser's serialized filesystem actor before the current folder is reloaded.
+    func moveRejectedToFolder() {
+        guard let folderURL = currentFolderURL else { return }
         let rejectedURLs = visibleImages.filter { $0.colorLabel == .trash }.map(\.url)
-        guard !rejectedURLs.isEmpty else { return 0 }
+        guard !rejectedURLs.isEmpty else { return }
 
-        let result = RejectMoveService.moveRejected(urls: rejectedURLs, in: folderURL)
-        if !result.failedFiles.isEmpty {
-            errorMessage = "Failed to move \(result.failedFiles.count) rejected file(s) to \(RejectMoveService.rejectedFolderName)/."
+        imageMutationTask?.cancel()
+        imageMutationTask = Task {
+            let result = await fileSystemService.moveRejectedItems(rejectedURLs, in: folderURL)
+
+            // The user can navigate while a slow volume is moving bundles. Never let completion
+            // from the old folder navigate the browser back or overwrite the new folder's state.
+            guard currentFolderURL == folderURL else { return }
+
+            if !result.failedFiles.isEmpty {
+                errorMessage = "Failed to move \(result.failedFiles.count) rejected file(s) to \(RejectMoveService.rejectedFolderName)/."
+            }
+
+            // A pre-cancelled operation made no filesystem change and needs no reload. Any moved
+            // or failed bundle preserves the previous behavior of reconciling from disk.
+            guard !result.movedFiles.isEmpty || !result.failedFiles.isEmpty else { return }
+            loadFolder(url: folderURL, addToOpenFolders: false)
         }
-
-        // Reload current folder so the grid drops the moved files.
-        loadFolder(url: folderURL, addToOpenFolders: false)
-        return result.movedFiles.count
     }
 
     func rotateClockwise() {
