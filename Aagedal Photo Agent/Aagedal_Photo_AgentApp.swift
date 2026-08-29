@@ -539,5 +539,4 @@ extension Notification.Name {
     /// Posted (object: URL) when a pane opens a root folder, so the shared sidebar —
     /// always backed by the primary pane — lists it even if a non-primary split pane opened it.
     static let browserDidOpenRootFolder = Notification.Name("browserDidOpenRootFolder")
-    static let applyDevelopTemplate = Notification.Name("applyDevelopTemplate")
 }

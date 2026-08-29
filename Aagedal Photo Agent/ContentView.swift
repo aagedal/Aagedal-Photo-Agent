@@ -83,7 +83,7 @@ private struct SafetyAndCullingHandlers: ViewModifier {
                      .setScopeMode, .toggleGamutClipping,
                      .uploadSelected, .uploadAll,
                      .processVariablesSelected, .processVariablesAll,
-                     .showTemplatePalette, .applyTemplateShortcut,
+                     .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                      .showVariableReference, .showRawMetadata, .showStructuredKeywords:
@@ -707,7 +707,7 @@ struct ContentView: View {
                     DevelopTemplatePaletteView(
                         templates: developTemplateViewModel.templates,
                         onApply: { template in
-                            NotificationCenter.default.post(name: .applyDevelopTemplate, object: template)
+                            commandRouter.send(.applyDevelopTemplate(template))
                             closeDevelopTemplatePalette()
                         },
                         onSaveNew: {
@@ -773,7 +773,7 @@ struct ContentView: View {
                      .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                      .setScopeMode, .toggleGamutClipping,
                      .processVariablesSelected, .processVariablesAll,
-                     .showTemplatePalette, .applyTemplateShortcut,
+                     .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                      .showVariableReference, .showRawMetadata, .showStructuredKeywords:
@@ -830,7 +830,7 @@ struct ContentView: View {
                     case .develop:
                         developTemplateViewModel.loadTemplates()
                         if let template = developTemplateViewModel.template(forSlot: slot) {
-                            NotificationCenter.default.post(name: .applyDevelopTemplate, object: template)
+                            commandRouter.send(.applyDevelopTemplate(template))
                         }
                     }
                 case .writeAllPendingMetadata:
@@ -2342,7 +2342,7 @@ struct ContentView: View {
                          .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                          .uploadSelected, .uploadAll,
                          .processVariablesSelected, .processVariablesAll,
-                         .showTemplatePalette, .applyTemplateShortcut,
+                         .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                          .writeAllPendingMetadata, .openCaptionWorkspace,
                          .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                          .showVariableReference, .showRawMetadata, .showStructuredKeywords:
@@ -3813,7 +3813,7 @@ struct ContentViewModifiers: ViewModifier {
                      .setScopeMode, .toggleGamutClipping,
                      .uploadSelected, .uploadAll,
                      .processVariablesSelected, .processVariablesAll,
-                     .showTemplatePalette, .applyTemplateShortcut,
+                     .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                      .showVariableReference, .showRawMetadata, .showStructuredKeywords:

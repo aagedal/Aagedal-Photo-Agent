@@ -5089,6 +5089,9 @@ struct BrushRasterizationTests {
         #expect(source.contains("private final class ExecutorOwnedRenderPassState"))
         #expect(source.contains("private struct ViewportStateSnapshot: Sendable"))
         #expect(source.contains("private final class ExecutorOwnedViewportState"))
+        #expect(source.contains("private final class ExecutorOwnedCacheState"))
+        #expect(source.contains("private func withExecutorOwnedCacheState"))
+        #expect(source.contains("this holder can escape that closure"))
         #expect(!source.contains("private var _sourceTexture"))
         #expect(!source.contains("private var _sourceOrientation"))
         #expect(!source.contains("private var _asShotTemperature"))
@@ -5105,6 +5108,7 @@ struct BrushRasterizationTests {
             "nonisolated private func renderPassPlanSnapshot",
             "nonisolated private func replaceViewportState",
             "nonisolated private func viewportStateSnapshot",
+            "nonisolated private func withExecutorOwnedCacheState",
         ] {
             let start = try #require(source.range(of: signature))
             let suffix = source[start.lowerBound...]
@@ -5115,6 +5119,23 @@ struct BrushRasterizationTests {
                 Comment(rawValue: signature)
             )
         }
+
+        // CPU-only conversion scratch and parsed/matrix caches are one executor-owned lifetime,
+        // rather than six independently unsafe fields. Their only pipeline-level storage is the
+        // immutable holder above, and its checked synchronous access boundary is exercised by
+        // LUT upload, cube refresh, and white-balance resolution.
+        for removedDeclaration in [
+            "nonisolated(unsafe) private var float16Buffer",
+            "nonisolated(unsafe) private var lutInterleaveBuffer",
+            "nonisolated(unsafe) private var lastBuiltColorLUTData",
+            "nonisolated(unsafe) private var parsedColorLUTs",
+            "nonisolated(unsafe) private var cachedWBKey",
+            "nonisolated(unsafe) private var cachedWBMatrix",
+        ] {
+            #expect(!source.contains(removedDeclaration), Comment(rawValue: removedDeclaration))
+        }
+        #expect(source.contains("withExecutorOwnedCacheState { cacheState in"))
+        #expect(source.contains("withExecutorOwnedCacheState({ $0.parsedColorLUTs[i] })"))
 
         // Metal resource references allocated during initialization are immutable Sendable
         // wrappers. Their buffer/texture contents are still mutated only through the
@@ -5137,7 +5158,7 @@ struct BrushRasterizationTests {
             #expect(source.contains(declaration), Comment(rawValue: declaration))
         }
         let unsafeEscapeCount = source.components(separatedBy: "nonisolated(unsafe)").count - 1
-        #expect(unsafeEscapeCount <= 24)
+        #expect(unsafeEscapeCount <= 18)
 
         for signature in [
             "nonisolated func updateParams",

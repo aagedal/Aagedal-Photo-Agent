@@ -241,7 +241,7 @@ struct CaptionWorkspaceView: View {
                  .setScopeMode, .toggleGamutClipping,
                  .uploadSelected, .uploadAll,
                  .processVariablesSelected, .processVariablesAll,
-                 .showTemplatePalette, .applyTemplateShortcut,
+                 .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                  .writeAllPendingMetadata, .openCaptionWorkspace,
                  .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                  .showVariableReference, .showRawMetadata, .showStructuredKeywords:

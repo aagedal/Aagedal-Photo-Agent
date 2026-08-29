@@ -58,6 +58,8 @@ struct AnalysisWorkspaceView: View {
     @State private var reportExportError: String?
     @State private var reportExportTask: Task<Void, Never>?
     @State private var evidenceExportTask: Task<Void, Never>?
+    @State private var reportExportRequestID: UUID?
+    @State private var evidenceExportRequestID: UUID?
     @State private var projectArchiveTask: Task<Void, Never>?
     @State private var copiedPhotoAnnotations: [AnalysisAnnotation] = []
     @State private var copiedAnnotationSourceName: String?
@@ -202,6 +204,7 @@ struct AnalysisWorkspaceView: View {
         .onChange(of: model.analysisCase?.id) {
             selectedAnnotationID = nil
             selectedMapAnnotationID = nil
+            cancelRenderedExports()
         }
         .onChange(of: model.displayPreference) {
             pixelInspectionSample = nil
@@ -236,6 +239,7 @@ struct AnalysisWorkspaceView: View {
     }
 
     private func resetForSourceChange() {
+        cancelRenderedExports()
         pixelInspectionSample = nil
         displayedScopeImage = nil
         selectedScopeRegion = nil
@@ -246,6 +250,19 @@ struct AnalysisWorkspaceView: View {
         mapDraftCoordinateCount = 0
         photoPolygonDraftCount = 0
         photoPolygonCancelRequestID += 1
+    }
+
+    /// Invalidates main-actor publication immediately. A write already inside Foundation's
+    /// synchronous atomic commit may still finish, and its immutable result continues to report
+    /// that durable outcome without clearing or overwriting state belonging to a newer request.
+    private func cancelRenderedExports() {
+        reportExportTask?.cancel()
+        evidenceExportTask?.cancel()
+        reportExportTask = nil
+        evidenceExportTask = nil
+        reportExportRequestID = nil
+        evidenceExportRequestID = nil
+        reportExportProgress = nil
     }
 
     private func updateSelectedAnnotationStyle() {
@@ -478,11 +495,16 @@ struct AnalysisWorkspaceView: View {
         let evidenceCropRect = options.includeSelectedEvidenceCrop
             ? reportEvidenceCropRect
             : nil
+        let requestID = UUID()
+        reportExportRequestID = requestID
         reportExportProgress = 0
         reportExportTask = Task { @MainActor in
             defer {
-                reportExportProgress = nil
-                reportExportTask = nil
+                if reportExportRequestID == requestID {
+                    reportExportProgress = nil
+                    reportExportTask = nil
+                    reportExportRequestID = nil
+                }
             }
             do {
                 let snapshot = try await AnalysisReportSnapshot.capture(
@@ -497,16 +519,26 @@ struct AnalysisWorkspaceView: View {
                 let data = try await AnalysisPDFReportRenderer.makePDF(
                     snapshot: snapshot,
                     options: options,
-                    progress: { reportExportProgress = 0.08 + $0 * 0.90 }
+                    progress: {
+                        guard reportExportRequestID == requestID else { return }
+                        reportExportProgress = 0.08 + $0 * 0.90
+                    }
                 )
                 try Task.checkCancellation()
-                try data.write(to: outputURL, options: .atomic)
+                let result = try await AnalysisExportFileService.shared.write(
+                    data,
+                    to: outputURL,
+                    requestID: requestID
+                )
+                guard reportExportRequestID == requestID else { return }
+                guard case .committed = result else { return }
                 reportExportProgress = 1
             } catch is CancellationError {
                 return
             } catch AnalysisPDFReportError.cancelled {
                 return
             } catch {
+                guard reportExportRequestID == requestID else { return }
                 reportExportError = error.localizedDescription.isEmpty
                     ? "The report could not be exported."
                     : error.localizedDescription
@@ -547,18 +579,30 @@ struct AnalysisWorkspaceView: View {
             suggestedName: "\(analysisCase.title) Annotated.jpg"
         ) else { return }
 
+        let requestID = UUID()
+        evidenceExportRequestID = requestID
         evidenceExportTask = Task { @MainActor in
-            defer { evidenceExportTask = nil }
+            defer {
+                if evidenceExportRequestID == requestID {
+                    evidenceExportTask = nil
+                    evidenceExportRequestID = nil
+                }
+            }
             do {
                 let data = try await AnalysisEvidenceJPEGRenderer.photoJPEG(
                     sourceURL: sourceURL,
                     annotations: analysisCase.annotations
                 )
                 try Task.checkCancellation()
-                try data.write(to: outputURL, options: .atomic)
+                _ = try await AnalysisExportFileService.shared.write(
+                    data,
+                    to: outputURL,
+                    requestID: requestID
+                )
             } catch is CancellationError {
                 return
             } catch {
+                guard evidenceExportRequestID == requestID else { return }
                 reportExportError = error.localizedDescription.isEmpty
                     ? "The annotated image could not be exported."
                     : error.localizedDescription
@@ -577,15 +621,27 @@ struct AnalysisWorkspaceView: View {
             suggestedName: "\(analysisCase.title) Map.jpg"
         ) else { return }
 
+        let requestID = UUID()
+        evidenceExportRequestID = requestID
         evidenceExportTask = Task { @MainActor in
-            defer { evidenceExportTask = nil }
+            defer {
+                if evidenceExportRequestID == requestID {
+                    evidenceExportTask = nil
+                    evidenceExportRequestID = nil
+                }
+            }
             do {
                 let data = try await AnalysisEvidenceJPEGRenderer.mapJPEG(evidence: evidence)
                 try Task.checkCancellation()
-                try data.write(to: outputURL, options: .atomic)
+                _ = try await AnalysisExportFileService.shared.write(
+                    data,
+                    to: outputURL,
+                    requestID: requestID
+                )
             } catch is CancellationError {
                 return
             } catch {
+                guard evidenceExportRequestID == requestID else { return }
                 reportExportError = error.localizedDescription.isEmpty
                     ? "The annotated map could not be exported."
                     : error.localizedDescription

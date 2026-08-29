@@ -388,6 +388,14 @@ explicit, reset invalidates late results, and the execution boundary still reval
 collision signature before writing. Other direct filesystem paths and the broader measurement exit gate
 remain open. ([validation](plan-status-follow-up-validation-2026-08-29.md#import-preflight-async-boundary))
 
+**Analysis-export follow-up (2026-08-29):** final PDF, annotated-photo JPEG, and annotated-map JPEG writes
+now cross a serialized `AnalysisExportFileService` actor instead of calling synchronous `Data.write` from
+the main-actor workspace. Immutable commit evidence distinguishes cancellation before a write from
+cancellation observed after a durable atomic commit; request identities and source/case invalidation prevent
+late results from clearing or replacing newer export UI state. Other direct filesystem paths, slow-volume
+measurements, and the broader exit gate remain open.
+([validation](plan-status-follow-up-validation-2026-08-29.md#analysis-export-filesystem-boundary))
+
 **Face-group deletion follow-up (2026-08-29):** deleting a face group with its source photos now sends the
 photo-trash batch through the serialized `FileSystemService` actor. The main actor receives immutable
 committed URLs, item failures, cancellation status, and face-data disposition. Pre-cancellation performs no
@@ -485,6 +493,14 @@ template handoff and genuine state broadcasts remain notifications. Other user-c
 multi-window/menu/focus verification keep the broad router item open.
 ([validation](plan-status-follow-up-validation-2026-08-29.md#metadata-template-caption-and-c2pa-command-router-continuation))
 
+**Develop-template payload follow-up (2026-08-29):** the remaining template-to-Develop handoff now uses a
+typed `AppCommand.applyDevelopTemplate(DevelopTemplate)` payload in the owning scene. Both palette and
+numbered-shortcut paths preserve the editable-single-image guard, and the obsolete notification declaration,
+publisher, and modifier have been removed. Genuine process/state notifications and a small number of other
+UI handoffs remain subject to separate ownership review; the broad router item and manual multi-window gate
+remain open.
+([validation](plan-status-follow-up-validation-2026-08-29.md#develop-template-command-payload))
+
 **State-owner follow-up (2026-08-27):** `DevelopVersionSessionCoordinator` now owns named-version catalog,
 revision, storage, cancellation, debounce/flush persistence, and stale-result gating. A separate
 `AIMaskSelectionCoordinator` owns AI-mask selection/generation request identity, cancellation, image-session
@@ -527,6 +543,14 @@ snapshot accessors. Parameter upload takes one coherent snapshot, so a render ca
 different zoom/pan or crop generations. This reduces explicit unsafe isolation escapes from 29 to 24; the
 live-preview facade and remaining mutable cache/scratch extraction are still open.
 ([validation](plan-status-follow-up-validation-2026-08-29.md#metal-viewport-state-isolation))
+
+**CPU cache/scratch follow-up (2026-08-29):** LUT half/interleave scratch, color-LUT payload/parse caches,
+and white-balance key/matrix caching now share one `ExecutorOwnedCacheState`. Its only access wrapper checks
+the selected state executor and exposes synchronous `inout` value storage, preventing the holder reference
+from escaping the checked scope. Six former unsafe fields are gone and the explicit
+`nonisolated(unsafe)` count is reduced from 24 to 18. Brush/watermark GPU lifecycle state, owner callbacks,
+memory registration, and the live-preview facade remain open.
+([validation](plan-status-follow-up-validation-2026-08-29.md#metal-cpu-cache-and-scratch-isolation))
 
 **Exit gate:** every remaining unsafe isolation escape has a written invariant and enforcement; the stress
 scenario is repeatable and clean.

@@ -590,6 +590,39 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
+    /// CPU-only caches and conversion scratch reused by the render path. This storage is not
+    /// internally synchronized: its invariant is stronger and cheaper — every access must pass
+    /// through `withExecutorOwnedCacheState`, which enforces the pipeline's selected serial state
+    /// executor before exposing inout value storage to a synchronous closure. No reference to
+    /// this holder can escape that closure.
+    nonisolated private final class ExecutorOwnedCacheState: @unchecked Sendable {
+        struct Storage {
+            var float16Buffer: [UInt16]
+            var lutInterleaveBuffer: [Float]
+            var lastBuiltColorLUTData: [Data?]
+            var parsedColorLUTs: [ParsedCubeLUT?]
+            var cachedWBKey: (Double, Double, Double, Double)?
+            var cachedWBMatrix: simd_float3x3?
+        }
+
+        private var storage: Storage
+
+        init(lutEntryCount: Int, colorLUTSlotCount: Int) {
+            storage = Storage(
+                float16Buffer: [UInt16](repeating: 0, count: lutEntryCount * 4),
+                lutInterleaveBuffer: [Float](repeating: 0, count: lutEntryCount * 4),
+                lastBuiltColorLUTData: Array(repeating: nil, count: colorLUTSlotCount),
+                parsedColorLUTs: Array(repeating: nil, count: colorLUTSlotCount)
+            )
+        }
+
+        func withMutableStorage<Result>(
+            _ body: (inout Storage) throws -> Result
+        ) rethrows -> Result {
+            try body(&storage)
+        }
+    }
+
     /// Owns mutable render-state buffers and caches. Live preview / Clean Feed instances are
     /// main-thread-owned; the singleton export instance is owned by `offscreenRenderQueue`.
     /// Source upload and adjacent-image precaching are deliberate worker-safe exceptions: they
@@ -680,6 +713,20 @@ final class MetalEditPipeline: @unchecked Sendable {
         return viewportState.snapshot()
     }
 
+    private let executorOwnedCacheState = ExecutorOwnedCacheState(
+        lutEntryCount: ToneCurveGenerator.lutSize,
+        colorLUTSlotCount: maxMasks
+    )
+
+    /// The sole access boundary for `ExecutorOwnedCacheState`; keeping the closure synchronous
+    /// prevents the mutable reference from surviving beyond the checked executor scope.
+    nonisolated private func withExecutorOwnedCacheState<Result>(
+        _ body: (inout ExecutorOwnedCacheState.Storage) throws -> Result
+    ) rethrows -> Result {
+        preconditionOnStateExecutor()
+        return try executorOwnedCacheState.withMutableStorage(body)
+    }
+
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
     nonisolated(unsafe) var gamutClipMode: UInt32 = 0 {
         didSet {
@@ -750,10 +797,6 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) var onParamsChanged: (() -> Void)? {
         didSet { preconditionOnStateExecutor() }
     }
-    nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
-    /// Reusable interleave scratch buffer for uploadLUT — avoids a per-frame heap allocation
-    /// while a white-balance/tone slider is being dragged.
-    nonisolated(unsafe) private var lutInterleaveBuffer = [Float](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
     nonisolated private static let maxMasks = 8
     /// Every imported cube is CPU-resampled to this dimension, then packed into 33 consecutive
@@ -844,13 +887,6 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// slots without a valid imported cube, so malformed/missing LUTs safely no-op.
     nonisolated private let colorLUTTextureHandle: StableMetalHandle<MTLTexture>
     var colorLUTTexture: MTLTexture { colorLUTTextureHandle.resource }
-    /// Cache of source cube payloads by mask-buffer slot. Avoids parsing and uploading ~2 MB
-    /// while unrelated sliders are dragged.
-    nonisolated(unsafe) private var lastBuiltColorLUTData: [Data?] =
-        Array(repeating: nil, count: maxMasks)
-    nonisolated(unsafe) private var parsedColorLUTs: [ParsedCubeLUT?] =
-        Array(repeating: nil, count: maxMasks)
-
     nonisolated private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
     /// Dedicated serialized owner for export rendering. The public `MetalEditPipeline` static
@@ -959,10 +995,6 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Separate lightweight CIContext for white balance 1×1 pixel renders.
     /// Avoids contention with the main ciContext which handles large texture uploads/precaches.
     private let wbCIContext: CIContext
-
-    // Cached WB matrix — only recompute when temperature/tint or as-shot reference change
-    nonisolated(unsafe) private var cachedWBKey: (Double, Double, Double, Double)?
-    nonisolated(unsafe) private var cachedWBMatrix: simd_float3x3?
 
     nonisolated var hasSourceTexture: Bool { sourceTexture != nil }
 
@@ -1315,36 +1347,38 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// by the layer-order buffer. Invalid data becomes identity; the UI reports validation errors
     /// before committing imports, but this defensive fallback also protects hand-edited XMP.
     nonisolated private func refreshColorLUTs(_ masks: [MaskAdjustment]) {
-        for slot in 0..<Self.maxMasks {
-            let data: Data? = masks.indices.contains(slot)
-                && masks[slot].colorTransform?.mode == .lut
-                ? masks[slot].colorTransform?.lutData
-                : nil
-            guard data != lastBuiltColorLUTData[slot] else { continue }
-            lastBuiltColorLUTData[slot] = data
-            parsedColorLUTs[slot] = nil
-            guard let data else {
-                uploadIdentityColorLUT(slot: slot)
-                continue
-            }
-            do {
-                let parsed = try CubeLUTParser.parse(data)
-                parsedColorLUTs[slot] = parsed
-                for (blue, floats) in parsed.resampledSlices(size: Self.colorLUTSize).enumerated() {
-                    var halfs = Self.floatsToHalfs(floats)
-                    colorLUTTextureHandle.resource.replace(
-                        region: MTLRegionMake2D(0, 0, Self.colorLUTSize, Self.colorLUTSize),
-                        mipmapLevel: 0,
-                        slice: slot * Self.colorLUTSize + blue,
-                        withBytes: &halfs,
-                        bytesPerRow: Self.colorLUTSize * 4 * MemoryLayout<UInt16>.size,
-                        bytesPerImage: Self.colorLUTSize * Self.colorLUTSize * 4
-                            * MemoryLayout<UInt16>.size
-                    )
+        withExecutorOwnedCacheState { cacheState in
+            for slot in 0..<Self.maxMasks {
+                let data: Data? = masks.indices.contains(slot)
+                    && masks[slot].colorTransform?.mode == .lut
+                    ? masks[slot].colorTransform?.lutData
+                    : nil
+                guard data != cacheState.lastBuiltColorLUTData[slot] else { continue }
+                cacheState.lastBuiltColorLUTData[slot] = data
+                cacheState.parsedColorLUTs[slot] = nil
+                guard let data else {
+                    uploadIdentityColorLUT(slot: slot)
+                    continue
                 }
-            } catch {
-                metalPipelineLog.error("Invalid color LUT in slot \(slot): \(error.localizedDescription)")
-                uploadIdentityColorLUT(slot: slot)
+                do {
+                    let parsed = try CubeLUTParser.parse(data)
+                    cacheState.parsedColorLUTs[slot] = parsed
+                    for (blue, floats) in parsed.resampledSlices(size: Self.colorLUTSize).enumerated() {
+                        var halfs = Self.floatsToHalfs(floats)
+                        colorLUTTextureHandle.resource.replace(
+                            region: MTLRegionMake2D(0, 0, Self.colorLUTSize, Self.colorLUTSize),
+                            mipmapLevel: 0,
+                            slice: slot * Self.colorLUTSize + blue,
+                            withBytes: &halfs,
+                            bytesPerRow: Self.colorLUTSize * 4 * MemoryLayout<UInt16>.size,
+                            bytesPerImage: Self.colorLUTSize * Self.colorLUTSize * 4
+                                * MemoryLayout<UInt16>.size
+                        )
+                    }
+                } catch {
+                    metalPipelineLog.error("Invalid color LUT in slot \(slot): \(error.localizedDescription)")
+                    uploadIdentityColorLUT(slot: slot)
+                }
             }
         }
     }
@@ -1352,37 +1386,40 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Updates the pre-allocated 4096-entry RGBA LUT texture in-place (~32KB, no allocation).
     /// R/G/B channels carry independent per-channel tone curves.
     nonisolated private func uploadLUT(r: [Float], g: [Float], b: [Float]) {
-        let count = r.count
-        // Interleave R, G, B, A(0) into the reusable scratch buffer, then convert to half.
-        // Fall back to a fresh allocation if the LUT size ever differs from the preallocation.
-        if lutInterleaveBuffer.count != count * 4 {
-            lutInterleaveBuffer = [Float](repeating: 0, count: count * 4)
-        }
-        for i in 0..<count {
-            lutInterleaveBuffer[i * 4 + 0] = r[i]
-            lutInterleaveBuffer[i * 4 + 1] = g[i]
-            lutInterleaveBuffer[i * 4 + 2] = b[i]
-            // A channel unused, stays 0
-        }
-        let totalCount = lutInterleaveBuffer.count
-        lutInterleaveBuffer.withUnsafeMutableBufferPointer { srcPtr in
-            float16Buffer.withUnsafeMutableBufferPointer { dstPtr in
-                var src = vImage_Buffer(data: srcPtr.baseAddress!, height: 1,
-                                        width: vImagePixelCount(totalCount),
-                                        rowBytes: totalCount * MemoryLayout<Float>.size)
-                var dst = vImage_Buffer(data: dstPtr.baseAddress!, height: 1,
-                                        width: vImagePixelCount(totalCount),
-                                        rowBytes: totalCount * MemoryLayout<UInt16>.size)
-                vImageConvert_PlanarFtoPlanar16F(&src, &dst, 0)
+        withExecutorOwnedCacheState { cacheState in
+            let count = r.count
+            // Interleave R, G, B, A(0) into the reusable scratch buffer, then convert to half.
+            // Fall back to a fresh allocation if the LUT size ever differs from the preallocation.
+            if cacheState.lutInterleaveBuffer.count != count * 4 {
+                cacheState.lutInterleaveBuffer = [Float](repeating: 0, count: count * 4)
+                cacheState.float16Buffer = [UInt16](repeating: 0, count: count * 4)
             }
-        }
-        float16Buffer.withUnsafeBufferPointer { ptr in
-            lutTextureHandle.resource.replace(
-                region: MTLRegionMake1D(0, count),
-                mipmapLevel: 0,
-                withBytes: ptr.baseAddress!,
-                bytesPerRow: count * 4 * MemoryLayout<UInt16>.size
-            )
+            for i in 0..<count {
+                cacheState.lutInterleaveBuffer[i * 4 + 0] = r[i]
+                cacheState.lutInterleaveBuffer[i * 4 + 1] = g[i]
+                cacheState.lutInterleaveBuffer[i * 4 + 2] = b[i]
+                // A channel unused, stays 0
+            }
+            let totalCount = cacheState.lutInterleaveBuffer.count
+            cacheState.lutInterleaveBuffer.withUnsafeMutableBufferPointer { srcPtr in
+                cacheState.float16Buffer.withUnsafeMutableBufferPointer { dstPtr in
+                    var src = vImage_Buffer(data: srcPtr.baseAddress!, height: 1,
+                                            width: vImagePixelCount(totalCount),
+                                            rowBytes: totalCount * MemoryLayout<Float>.size)
+                    var dst = vImage_Buffer(data: dstPtr.baseAddress!, height: 1,
+                                            width: vImagePixelCount(totalCount),
+                                            rowBytes: totalCount * MemoryLayout<UInt16>.size)
+                    vImageConvert_PlanarFtoPlanar16F(&src, &dst, 0)
+                }
+            }
+            cacheState.float16Buffer.withUnsafeBufferPointer { ptr in
+                lutTextureHandle.resource.replace(
+                    region: MTLRegionMake1D(0, count),
+                    mipmapLevel: 0,
+                    withBytes: ptr.baseAddress!,
+                    bytesPerRow: count * 4 * MemoryLayout<UInt16>.size
+                )
+            }
         }
     }
 
@@ -1570,7 +1607,7 @@ final class MetalEditPipeline: @unchecked Sendable {
                     mp.activeFlags = transform.mode == .lut ? 1 : 2
                     mp.temperature = Float(transform.inputSpace.gpuIndex)
                     mp.tint = Float(transform.outputSpace.gpuIndex)
-                    if let cube = parsedColorLUTs[i] {
+                    if let cube = withExecutorOwnedCacheState({ $0.parsedColorLUTs[i] }) {
                         mp.center = SIMD2<Float>(cube.domainMin.x, cube.domainMin.y)
                         mp.rotation = cube.domainMin.z
                         mp.radii = SIMD2<Float>(cube.domainMax.x, cube.domainMax.y)
@@ -2609,37 +2646,44 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Extracts the effective color transform by rendering basis vectors through CITemperatureAndTint.
     /// Caches the result — only recomputes when temperature/tint values actually change.
     nonisolated private func computeWhiteBalanceMatrix(settings: CameraRawSettings) -> simd_float3x3? {
-        if settings.whiteBalance == "As Shot" {
-            cachedWBKey = nil
-            cachedWBMatrix = nil
-            return nil
-        }
+        withExecutorOwnedCacheState { cacheState in
+            if settings.whiteBalance == "As Shot" {
+                cacheState.cachedWBKey = nil
+                cacheState.cachedWBMatrix = nil
+                return nil
+            }
 
-        let reference = whiteBalanceReference.snapshot()
-        guard let target = settings.resolvedWhiteBalanceTarget(
-            absoluteDefaultTemperature: reference.temperature,
-            absoluteDefaultTint: reference.tint
-        ) else {
-            cachedWBKey = nil
-            cachedWBMatrix = nil
-            return nil
-        }
+            let reference = whiteBalanceReference.snapshot()
+            guard let target = settings.resolvedWhiteBalanceTarget(
+                absoluteDefaultTemperature: reference.temperature,
+                absoluteDefaultTint: reference.tint
+            ) else {
+                cacheState.cachedWBKey = nil
+                cacheState.cachedWBMatrix = nil
+                return nil
+            }
 
-        // Return cached matrix if temperature/tint and as-shot reference haven't changed
-        if let key = cachedWBKey,
-           key.0 == target.temperature, key.1 == target.tint,
-           key.2 == reference.temperature, key.3 == reference.tint {
-            return cachedWBMatrix
-        }
+            // Return cached matrix if temperature/tint and as-shot reference haven't changed
+            if let key = cacheState.cachedWBKey,
+               key.0 == target.temperature, key.1 == target.tint,
+               key.2 == reference.temperature, key.3 == reference.tint {
+                return cacheState.cachedWBMatrix
+            }
 
-        let matrix = extractWBMatrix(
-            temperature: target.temperature,
-            tint: target.tint,
-            reference: reference
-        )
-        cachedWBKey = (target.temperature, target.tint, reference.temperature, reference.tint)
-        cachedWBMatrix = matrix
-        return matrix
+            let matrix = extractWBMatrix(
+                temperature: target.temperature,
+                tint: target.tint,
+                reference: reference
+            )
+            cacheState.cachedWBKey = (
+                target.temperature,
+                target.tint,
+                reference.temperature,
+                reference.tint
+            )
+            cacheState.cachedWBMatrix = matrix
+            return matrix
+        }
     }
 
     nonisolated private func extractWBMatrix(

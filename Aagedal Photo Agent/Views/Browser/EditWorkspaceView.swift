@@ -8,17 +8,6 @@ nonisolated private let editLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "EditWorkspace"
 )
 
-private struct DevelopTemplateNotificationHandler: ViewModifier {
-    let onApply: (DevelopTemplate) -> Void
-
-    func body(content: Content) -> some View {
-        content.onReceive(NotificationCenter.default.publisher(for: .applyDevelopTemplate)) { notification in
-            guard let template = notification.object as? DevelopTemplate else { return }
-            onApply(template)
-        }
-    }
-}
-
 private enum DevelopVersionNameAction: Identifiable, Equatable {
     case create
     case rename(UUID)
@@ -886,6 +875,9 @@ struct EditWorkspaceView: View {
                 }
                 // Refresh gamut clip pipeline so HDR flag is immediately applied/cleared
                 updateGamutClipMode()
+            case .applyDevelopTemplate(let template):
+                guard canEditSingleImage else { return }
+                applyDevelopTemplate(template)
             case .openFolder, .openRecentFolder, .setRating, .setLabel,
                  .renderSelected, .advancedExportSelected, .renderAll,
                  .saveAsJPEG, .saveAsPNG, .archiveRAW,
@@ -906,10 +898,6 @@ struct EditWorkspaceView: View {
                 break
             }
         }
-        .modifier(DevelopTemplateNotificationHandler { template in
-            guard canEditSingleImage else { return }
-            applyDevelopTemplate(template)
-        })
         .overlay(alignment: .top) {
             if let feedback = copyPasteFeedback {
                 Text(feedback)

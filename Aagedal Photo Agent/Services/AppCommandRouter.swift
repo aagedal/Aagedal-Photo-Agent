@@ -42,6 +42,7 @@ enum AppCommand: Equatable, Sendable {
     case processVariablesAll
     case showTemplatePalette
     case applyTemplateShortcut(Int)
+    case applyDevelopTemplate(DevelopTemplate)
     case writeAllPendingMetadata
     case openCaptionWorkspace
     case renderAndSignSelected

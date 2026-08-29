@@ -224,3 +224,60 @@ mutable Metal cache/scratch state. Manual/release work still includes slow-volum
 Checker evidence, menu/shortcut/focus/multi-window checks, accessibility and Instruments passes, protected
 branch configuration, external privacy/legal review, real FTP/FTPS/SFTP drills, and publishing/drilling the
 production AuraFace component.
+
+## Analysis export filesystem boundary
+
+Analysis PDF, annotated-photo JPEG, and annotated-map JPEG exports no longer perform their final synchronous
+`Data.write` on the main actor. A serialized `AnalysisExportFileService` owns the atomic commit and returns
+an immutable result containing request identity, destination, byte count, and whether cancellation arrived
+after a durable write. Pre-cancelled or queued-and-cancelled requests do not call the writer.
+
+The workspace now binds report and evidence exports to request identities, cancels them when the source or
+case changes, and ignores stale progress, errors, and cleanup. Four focused tests cover overwrite-compatible
+atomic commit evidence, pre-cancellation, serialization and off-main execution, queued cancellation, and
+cancellation observed after a committed write.
+
+## Develop-template command payload
+
+Applying a selected Develop template now crosses the scene-owned router as
+`AppCommand.applyDevelopTemplate(DevelopTemplate)`. Palette and numbered-shortcut producers send the exact
+typed payload; `EditWorkspaceView` retains the existing editable-single-image guard before applying it. The
+obsolete notification name, publisher modifier, and both posts were removed. Router characterization now
+covers the exact template payload in the ordered delivery stream.
+
+## Metal CPU cache and scratch isolation
+
+Six CPU-only mutable fields in `MetalEditPipeline` were replaced by one `ExecutorOwnedCacheState`: the LUT
+float/half conversion buffers, color-LUT source and parsed caches, and white-balance key/matrix cache. Every
+access crosses `withExecutorOwnedCacheState`, which asserts the pipeline's selected state executor and lends
+only synchronous `inout` value storage so the mutable holder cannot escape the checked scope.
+
+Source-contract coverage requires the holder and checked wrapper, rejects all six former declarations, and
+sets the explicit `nonisolated(unsafe)` ceiling to 18, down from 24. Remaining escapes cover GPU texture and
+cache lifecycles, memory registration, brush/watermark state, owner callbacks/settings, and render timing;
+the main-actor live-preview facade remains open.
+
+## Integrated validation for the additional continuation
+
+A fresh isolated `build-for-testing` compiled the complete application and unit-test targets with
+`** TEST BUILD SUCCEEDED **`. A combined `test-without-building` run then passed all **41 tests in 5 suites**:
+`AppCommandRouterTests`, `AnalysisExportFileServiceTests`, `BrushRasterizationTests`,
+`ColorTransformLayerTests`, and `CameraRawWhiteBalanceResolutionTests`. The preserved result bundle is:
+
+```text
+/private/tmp/aagedal-v3-continuation-20260829.xcresult
+```
+
+The host emitted the previously documented LMDB map-size, App Intents connection, entitlement, and
+background-publication diagnostics. They did not produce a build failure, test issue, or failure in any of
+the 41 selected tests.
+
+## Remaining boundary after the additional continuation
+
+The audit remains at **60 of 75 checklist substeps complete**. This continuation advances but does not close
+the broad Phase 3.1, Phase 4.1, or Phase 4.2 items. Remaining automated implementation includes other direct
+filesystem paths, ownership review for the few remaining UI handoffs, a compile-time live-preview facade,
+and isolation of the remaining brush/watermark GPU lifecycle and owner state. Manual and external gates are
+unchanged: slow-volume/Thread Performance Checker and Instruments evidence, menu/focus/multi-window and
+accessibility passes, protected-branch configuration, privacy/legal review, real delivery-server drills,
+and production AuraFace publishing and platform validation.

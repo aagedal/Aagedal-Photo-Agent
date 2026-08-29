@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AE3A10000000000000000002 /* AnalysisExportFileServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
 		A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */; };
 		F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */; };
@@ -134,6 +135,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisExportFileServiceTests.swift; sourceTree = "<group>"; };
 		1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageMemoryCoordinatorTests.swift; sourceTree = "<group>"; };
 		A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppStartupSignpostStateMachineTests.swift; sourceTree = "<group>"; };
 		F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoreWorkflowSmokeTests.swift; sourceTree = "<group>"; };
@@ -306,6 +308,7 @@
 		025F811ED39BE1D910E68E81 /* Aagedal Photo Agent Tests */ = {
 			isa = PBXGroup;
 			children = (
+				AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */,
 				1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */,
 				A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */,
 				38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */,
@@ -598,6 +601,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AE3A10000000000000000002 /* AnalysisExportFileServiceTests.swift in Sources */,
 				1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */,
 				A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */,
 				1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */,

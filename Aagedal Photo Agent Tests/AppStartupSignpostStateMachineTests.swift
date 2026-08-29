@@ -164,11 +164,13 @@ struct AppCommandRouterTests {
     @Test("metadata and caption commands preserve operation identity and template slot")
     func metadataAndCaptionCommandIdentity() throws {
         let router = AppCommandRouter()
+        let developTemplate = DevelopTemplate(name: "Bright")
         let commands: [AppCommand] = [
             .processVariablesSelected,
             .processVariablesAll,
             .showTemplatePalette,
             .applyTemplateShortcut(7),
+            .applyDevelopTemplate(developTemplate),
             .writeAllPendingMetadata,
             .openCaptionWorkspace,
             .renderAndSignSelected,
