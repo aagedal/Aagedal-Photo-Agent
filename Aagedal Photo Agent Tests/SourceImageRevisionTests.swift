@@ -320,6 +320,26 @@ struct SerializedFileSystemServiceTests {
         #expect(probe.callCount == 0)
     }
 
+    @Test("content-area folder drops use the serialized classification boundary")
+    func contentAreaDropSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent("Aagedal Photo Agent/ContentView.swift"),
+            encoding: .utf8
+        )
+        let start = try #require(source.range(of: "private func handleDrop(providers:"))
+        let suffix = source[start.lowerBound...]
+        let end = try #require(suffix.range(of: "private func openSelectedInExternalEditor"))
+        let implementation = suffix[..<end.lowerBound]
+
+        #expect(implementation.contains("Task { @MainActor in"))
+        #expect(implementation.contains("dropSourceSnapshot(for: [url])"))
+        #expect(implementation.contains("snapshot.directories.first == url"))
+        #expect(!implementation.contains("FileManager.default.fileExists"))
+    }
+
     @Test("pre-cancelled mutation makes no filesystem change")
     func mutationHonorsPreCancellation() async throws {
         let fixture = try OfflineFileFixture()

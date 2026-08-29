@@ -59,6 +59,126 @@ evidence commits into `AnalysisExportFileService`. The invariant now checks the 
 system writer for `.atomic` installation, and its self-test includes a fail-closed mutation that removes that
 option. The validator passes all 22 reviewed invariants and its positive-plus-five-regression self-test.
 
+## Develop single-image export directory boundary
+
+Develop's single-image Save action no longer creates its `Edited` destination with synchronous
+`FileManager` work in the inherited main-actor task. It awaits the existing serialized
+`ExportDirectoryService` and consumes its immutable commit evidence before starting the detached render.
+Pre-commit cancellation creates no directory. If cancellation arrives during the non-preemptible directory
+creation, the durable empty directory remains while the expensive render is suppressed; cancellation is not
+presented as a save failure.
+
+A focused source-contract characterization keeps this specific UI path on the serialized service, requires
+the durable-after-cancel branch and a final cancellation check before rendering, and rejects a regression to
+direct directory creation. The existing service characterizations continue to cover off-main execution,
+pre-cancellation with no mutation, queued cancellation, serialization, and cancellation after a durable
+commit. This advances Phase 3.1 without completing its broader filesystem inventory or measurement gates.
+
+An isolated focused `xcodebuild test` compiled the complete application and unit-test targets, then passed
+all **5 tests** in `ExportDirectoryServiceTests`, including the new Develop-path contract. The result was
+`** TEST SUCCEEDED **`; the preserved result bundle is:
+
+```text
+/private/tmp/aagedal-v3-single-save-20260830-2.xcresult
+```
+
+The host emitted the previously documented App Intents metadata, LMDB map-size, detached-signature, and
+background-publication diagnostics. They did not produce a build failure or test issue.
+
+## Content-area folder-drop boundary
+
+The main content drop target no longer calls `FileManager.fileExists` from the item-provider callback. Each
+provider URL is classified by `FileSystemService.dropSourceSnapshot`; only the immutable directory result is
+then handed back to the main actor for folder loading. This reuses the sidebar drop boundary's existing
+off-main, input-order, missing-item, and pre-cancellation behavior.
+
+A focused source contract rejects direct existence probing in `ContentView.handleDrop` and requires the
+serialized classification call before folder loading. This removes another lower-priority direct filesystem
+path while leaving the broader slow-volume and measurement exit gate open.
+
+## Final Metal unsafe-escape isolation
+
+The final four explicit `nonisolated(unsafe)` declarations in `MetalEditPipeline` are gone. Render-log width
+is part of the executor-owned live-state generation, so its read/update is checked against the live main
+thread or dedicated offscreen render queue like the other mutable render state. Speculative `NSCache`
+storage and the `ImageMemoryCoordinator.Registration` now share one lock-backed lifetime holder. Every cache
+limit change, eviction, insertion, and promotion crosses that holder; registration is installed exactly once
+and is released with the cache owner.
+
+The memory-pressure generation gate now stays locked across final cache publication. This closes the former
+check-then-insert interval in which pressure could cancel and evict a completed precache immediately before
+that worker repopulated the cache. The remaining unchecked boundary is type-level and documented:
+`MTLTextureWrapper` carries a fully rendered, mip-complete Metal handle across the worker/cache boundary, and
+the texture contents are immutable while cached. Stable pipeline resource handles retain their existing
+executor-checked content-mutation invariant.
+
+The focused source contract requires zero explicit `nonisolated(unsafe)` occurrences, the executor-owned
+render-log field, the lock-backed cache/registration holder, its one-shot registration, the atomic generation
+commit, and the immutable cached-texture invariant. This completes the Phase 4.2 unsafe-state reduction
+substep, but does not claim the separate compile-time live-preview facade or the broader Phase 4.2 exit gate.
+
+A clean focused test built the complete application and unit-test targets, then passed all **23 tests in 2
+suites**:
+
+- `BrushRasterizationTests` (16), including the strengthened source contract;
+- `ImageMemoryCoordinatorTests` (7), including memory-pressure cancellation/eviction and speculative-cache
+  suppression.
+
+```text
+xcodebuild test -project "Aagedal Photo Agent.xcodeproj" \
+  -scheme "Aagedal Photo Agent Tests" -destination "platform=macOS,arch=arm64" \
+  -derivedDataPath /private/tmp/aagedal-v3-metal-final CODE_SIGNING_ALLOWED=NO \
+  -only-testing:"Aagedal Photo Agent Tests/BrushRasterizationTests" \
+  -only-testing:"Aagedal Photo Agent Tests/ImageMemoryCoordinatorTests"
+** TEST SUCCEEDED **
+```
+
+The result bundle is:
+
+```text
+/private/tmp/aagedal-v3-metal-final/Logs/Test/
+Test-Aagedal Photo Agent Tests-2026.08.30_00-43-30-+0200.xcresult
+```
+
+The same current-source build then passed all **15 tests** in `SerializedFileSystemServiceTests`, including
+the concurrent content-area folder-drop source contract:
+
+```text
+xcodebuild test-without-building -project "Aagedal Photo Agent.xcodeproj" \
+  -scheme "Aagedal Photo Agent Tests" -destination "platform=macOS,arch=arm64" \
+  -derivedDataPath /private/tmp/aagedal-v3-metal-final CODE_SIGNING_ALLOWED=NO \
+  -only-testing:"Aagedal Photo Agent Tests/SerializedFileSystemServiceTests"
+** TEST EXECUTE SUCCEEDED **
+```
+
+Its result bundle is:
+
+```text
+/private/tmp/aagedal-v3-metal-final/Logs/Test/
+Test-Aagedal Photo Agent Tests-2026.08.30_00-46-43-+0200.xcresult
+```
+
+The existing preview/Clean Feed/offscreen export/cancellation/navigation overlap characterization also
+passed from the same build. This invocation did not enable Thread Sanitizer and therefore supplements rather
+than replaces the separately documented TSAN procedure:
+
+```text
+xcodebuild test-without-building -project "Aagedal Photo Agent.xcodeproj" \
+  -scheme "Aagedal Photo Agent Tests" -destination "platform=macOS,arch=arm64" \
+  -derivedDataPath /private/tmp/aagedal-v3-metal-final CODE_SIGNING_ALLOWED=NO \
+  -only-testing:"Aagedal Photo Agent Tests/MetalPipelineTSANStressTests"
+** TEST EXECUTE SUCCEEDED ** — 1 test in 1 suite
+```
+
+```text
+/private/tmp/aagedal-v3-metal-final/Logs/Test/
+Test-Aagedal Photo Agent Tests-2026.08.30_00-47-31-+0200.xcresult
+```
+
+The host emitted the previously documented App Intents/KVS, LMDB map-size, detached-signature, and SwiftUI
+background-publication diagnostics. They did not produce a build failure, test issue, cancellation, or test
+failure. `git diff --check` also passed.
+
 ## Integrated validation
 
 A stable `xcodebuild test` compiled the complete application and unit-test targets, then passed all **43
@@ -84,10 +204,10 @@ privacy checks, conflict-marker scanning, and whitespace validation.
 
 ## Remaining boundary after this session
 
-The audit remains **61 of 75 checklist substeps complete**. These four bounded slices advance the broad Phase
+The audit is now **62 of 75 checklist substeps complete**. These seven bounded slices advance the broad Phase
 3.1, Phase 4.1, and Phase 4.2 items without satisfying their full exit gates. Automated implementation still
 includes lower-priority direct filesystem paths, broader Develop/render coordinator extraction, a compile-time
-live-preview facade, and isolation or written invariants for the final four Metal unsafe escapes. Manual and
+live-preview facade, and continued enforcement of the audited Metal unchecked-Sendable invariants. Manual and
 external work still includes slow-volume and Thread Performance Checker evidence, Instruments memory
 benchmarks, menu/shortcut/focus/multi-window and accessibility passes, protected release-branch configuration,
 focused privacy/legal review, real FTP/FTPS/SFTP drills, and production AuraFace publishing and supported-macOS

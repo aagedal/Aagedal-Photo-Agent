@@ -207,6 +207,33 @@ private nonisolated struct AnalysisExportFixture {
 
 @Suite("Export directory filesystem boundary")
 struct ExportDirectoryServiceTests {
+    @Test("Develop single-image save uses the serialized directory boundary")
+    func developSingleImageSaveSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func saveCurrentRenderedImage()"))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n    private func signedIntString"))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains(
+            "try await ExportDirectoryService.shared.ensureDirectory("
+        ))
+        #expect(functionSource.contains(
+            "guard !directoryCommit.cancellationRequestedAfterCommit else { return }"
+        ))
+        #expect(functionSource.contains("try Task.checkCancellation()"))
+        #expect(functionSource.contains("catch is CancellationError"))
+        #expect(!functionSource.contains("FileManager.default.createDirectory"))
+    }
+
     @Test("directory creation returns immutable commit evidence off the main thread")
     @MainActor
     func committedCreationRunsOffMainActor() async throws {

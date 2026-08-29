@@ -5095,6 +5095,9 @@ struct BrushRasterizationTests {
         #expect(source.contains("private final class ExecutorOwnedLiveState"))
         #expect(source.contains("private func liveStateSnapshot"))
         #expect(source.contains("private func updateLiveState"))
+        #expect(source.contains("var lastLoggedDrawableWidth = 0"))
+        #expect(source.contains("state.lastLoggedDrawableWidth = w"))
+        #expect(!source.contains("lastLoggedWidth"))
         #expect(source.contains("private final class ExecutorOwnedWatermarkState"))
         #expect(source.contains("private func watermarkStateSnapshot"))
         #expect(source.contains("private func updateWatermarkState"))
@@ -5229,8 +5232,11 @@ struct BrushRasterizationTests {
 
         // Metal resource references allocated during initialization are immutable Sendable
         // wrappers. Their buffer/texture contents are still mutated only through the
-        // executor-checked methods below; only MTLTextureWrapper's cache payload retains an
-        // unsafe annotation because the Metal protocol itself is not Sendable.
+        // executor-checked methods below. A cached MTLTexture is fully populated before it
+        // crosses the audited unchecked-Sendable wrapper and remains immutable while cached.
+        #expect(source.contains("nonisolated final class MTLTextureWrapper: @unchecked Sendable"))
+        #expect(source.contains("never mutate its"))
+        #expect(source.contains("contents while it is cached"))
         #expect(source.contains("private struct StableMetalHandle<Resource>: @unchecked Sendable"))
         for declaration in [
             "nonisolated private let paramsBufferHandle: StableMetalHandle<MTLBuffer?>",
@@ -5247,8 +5253,21 @@ struct BrushRasterizationTests {
         ] {
             #expect(source.contains(declaration), Comment(rawValue: declaration))
         }
+        // Speculative cache mutation and its memory-budget registration have one lock-backed
+        // lifetime. Memory-pressure cancellation holds the generation lock across final cache
+        // publication, preventing a checked worker from repopulating a just-evicted cache.
+        #expect(source.contains("private final class SpeculativeTextureCacheState"))
+        #expect(source.contains("private let lock = NSLock()"))
+        #expect(source.contains("private var memoryRegistration: ImageMemoryCoordinator.Registration?"))
+        #expect(source.contains("func installMemoryRegistration"))
+        #expect(source.contains("func commitIfValid"))
+        #expect(source.contains("cacheState.installMemoryRegistration(registration)"))
+        #expect(source.contains("speculativePrecacheGate.commitIfValid(precachePermit)"))
+        #expect(!source.contains("private let textureCache:"))
+        #expect(!source.contains("private var imageMemoryRegistration:"))
+
         let unsafeEscapeCount = source.components(separatedBy: "nonisolated(unsafe)").count - 1
-        #expect(unsafeEscapeCount <= 4)
+        #expect(unsafeEscapeCount == 0)
 
         for signature in [
             "nonisolated func updateParams",

@@ -439,9 +439,14 @@ nonisolated enum EditRenderPassPlanner {
 
 /// Manages the Metal compute pipeline for real-time edit preview.
 ///
-/// NSCache-compatible wrapper for MTLTexture (value types can't be cached directly).
-final class MTLTextureWrapper: @unchecked Sendable {
-    nonisolated(unsafe) let texture: MTLTexture
+/// NSCache-compatible wrapper for an immutable, fully-populated Metal texture handle.
+///
+/// `MTLTexture` does not declare `Sendable`, so this wrapper supplies the audited unchecked
+/// boundary. A texture enters the speculative cache only after its CI render and mip generation
+/// have completed. Cache owners may retain, remove, and promote that handle, but never mutate its
+/// contents while it is cached. The scalar white-balance values are immutable as well.
+nonisolated final class MTLTextureWrapper: @unchecked Sendable {
+    let texture: MTLTexture
     let neutralTemperature: Float
     let neutralTint: Float
     nonisolated init(_ texture: MTLTexture, neutralTemperature: Float = 6500, neutralTint: Float = 0) {
@@ -472,6 +477,17 @@ final class MetalEditPipeline: @unchecked Sendable {
             lock.withLock { enabled && generation == permit }
         }
 
+        /// Runs the final cache publication while holding the same generation lock used by
+        /// memory-pressure cancellation. This closes the check-then-insert gap that could
+        /// otherwise repopulate the cache immediately after an eviction.
+        func commitIfValid(_ permit: UInt64, _ body: () -> Void) -> Bool {
+            lock.withLock {
+                guard enabled && generation == permit else { return false }
+                body()
+                return true
+            }
+        }
+
         func cancelAndSuppress() {
             lock.withLock {
                 generation &+= 1
@@ -483,6 +499,58 @@ final class MetalEditPipeline: @unchecked Sendable {
             lock.withLock {
                 generation &+= 1
                 enabled = true
+            }
+        }
+    }
+
+    /// Thread-safe lifetime owner for speculative textures and their memory-budget registration.
+    /// All `NSCache` access, including limit changes from the memory-pressure callback and worker
+    /// publication from adjacent-image precaching, passes through this lock. The registration is
+    /// installed exactly once and retained for the same lifetime as the cache; releasing this
+    /// holder releases the registration and unregisters the participant.
+    nonisolated private final class SpeculativeTextureCacheState: @unchecked Sendable {
+        private let lock = NSLock()
+        private let cache = NSCache<NSURL, MTLTextureWrapper>()
+        private var memoryRegistration: ImageMemoryCoordinator.Registration?
+
+        init(countLimit: Int) {
+            cache.countLimit = countLimit
+        }
+
+        func installMemoryRegistration(_ registration: ImageMemoryCoordinator.Registration) {
+            lock.withLock {
+                precondition(memoryRegistration == nil, "Image-memory registration may only be installed once")
+                memoryRegistration = registration
+            }
+        }
+
+        func setTotalCostLimit(_ limit: Int) {
+            lock.withLock { cache.totalCostLimit = limit }
+        }
+
+        func configure(countLimit: Int, totalCostLimit: Int) {
+            lock.withLock {
+                cache.countLimit = countLimit
+                cache.totalCostLimit = totalCostLimit
+            }
+        }
+
+        func removeAll() {
+            lock.withLock { cache.removeAllObjects() }
+        }
+
+        func insert(_ wrapper: MTLTextureWrapper, for url: URL, cost: Int) {
+            lock.withLock {
+                cache.setObject(wrapper, forKey: url as NSURL, cost: cost)
+            }
+        }
+
+        func take(for url: URL) -> MTLTextureWrapper? {
+            lock.withLock {
+                let key = url as NSURL
+                guard let wrapper = cache.object(forKey: key) else { return nil }
+                cache.removeObject(forKey: key)
+                return wrapper
             }
         }
     }
@@ -632,6 +700,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         var maskOverlayMaskID: UUID?
         var maskMattePreviewMaskID: UUID?
         var onParamsChanged: (() -> Void)?
+        var lastLoggedDrawableWidth = 0
     }
 
     /// Mutable live-preview storage with no internal synchronization. All access is routed
@@ -644,7 +713,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             value
         }
 
-        func update(_ body: (inout LiveStateSnapshot) -> Void) {
+        func update<Result>(_ body: (inout LiveStateSnapshot) -> Result) -> Result {
             body(&value)
         }
     }
@@ -700,7 +769,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Owns mutable render-state buffers and caches. Live preview / Clean Feed instances are
     /// main-thread-owned; the singleton export instance is owned by `offscreenRenderQueue`.
     /// Source upload and adjacent-image precaching are deliberate worker-safe exceptions: they
-    /// only publish through `sourceTextureLock` or the thread-safe `NSCache`.
+    /// publish through lock-backed source and speculative-cache holders.
     nonisolated private enum StateExecutor {
         case mainThread
         case offscreenRenderQueue(DispatchQueue)
@@ -732,17 +801,12 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated private func setSourceTexture(_ value: MTLTexture?, orientation: Int) {
         sourceState.publish(texture: value, orientation: orientation)
     }
-    /// Pre-cached Metal textures for adjacent images (prev/next), keyed by URL.
-    /// Limited to 2 entries to bound GPU memory. At full sensor resolution (e.g. 45MP),
-    /// each texture is ~363MB rgba16Float, so this cache can use ~726MB.
-    nonisolated(unsafe) private let textureCache: NSCache<NSURL, MTLTextureWrapper> = {
-        let cache = NSCache<NSURL, MTLTextureWrapper>()
-        cache.countLimit = 2
-        return cache
-    }()
+    /// Pre-cached Metal textures for adjacent images (prev/next), keyed by URL. The lock-backed
+    /// holder is shared by worker precaching and memory-pressure callbacks. It starts with a
+    /// two-item ceiling; adaptive byte limits may reduce that further for large sources.
+    private let speculativeTextureCacheState = SpeculativeTextureCacheState(countLimit: 2)
     private let imageMemoryCoordinator: ImageMemoryCoordinator
     private let speculativePrecacheGate = SpeculativePrecacheGate()
-    nonisolated(unsafe) private var imageMemoryRegistration: ImageMemoryCoordinator.Registration?
     /// Stable resource handles. The references never change after construction; mutations of
     /// shared buffer contents remain confined to state-executor-checked entry points. Main-actor
     /// computed properties expose the subset consumed by the live scope view.
@@ -808,9 +872,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         return executorOwnedLiveState.snapshot()
     }
 
-    nonisolated private func updateLiveState(_ body: (inout LiveStateSnapshot) -> Void) {
+    @discardableResult
+    nonisolated private func updateLiveState<Result>(
+        _ body: (inout LiveStateSnapshot) -> Result
+    ) -> Result {
         preconditionOnStateExecutor()
-        executorOwnedLiveState.update(body)
+        return executorOwnedLiveState.update(body)
     }
 
     private let executorOwnedWatermarkState = ExecutorOwnedWatermarkState()
@@ -1358,18 +1425,20 @@ final class MetalEditPipeline: @unchecked Sendable {
         for slot in 0..<Self.maxMasks {
             uploadIdentityColorLUT(slot: slot)
         }
-        imageMemoryRegistration = imageMemoryCoordinator.register(
+        let cacheState = speculativeTextureCacheState
+        let registration = imageMemoryCoordinator.register(
             kind: .developSpeculative,
             cancelSpeculativeWork: { [weak self] in
                 self?.speculativePrecacheGate.cancelAndSuppress()
             },
-            applyLimit: { [weak self] limit in
-                self?.textureCache.totalCostLimit = limit
+            applyLimit: { [weak cacheState] limit in
+                cacheState?.setTotalCostLimit(limit)
             },
-            evict: { [weak self] in
-                self?.textureCache.removeAllObjects()
+            evict: { [weak cacheState] in
+                cacheState?.removeAll()
             }
         )
+        cacheState.installMemoryRegistration(registration)
     }
 
     /// Enforces the executor contract that makes this type's remaining unchecked mutable
@@ -2728,8 +2797,6 @@ final class MetalEditPipeline: @unchecked Sendable {
     }
 
     /// Renders the compiled graph to a drawable. Returns true on success.
-    nonisolated(unsafe) private var lastLoggedWidth: Int = 0
-
     nonisolated func render(
         to drawable: CAMetalDrawable,
         drawableSize: CGSize,
@@ -2741,9 +2808,13 @@ final class MetalEditPipeline: @unchecked Sendable {
               let commandBuffer = commandQueue.makeCommandBuffer() else { return false }
 
         let w = Int(drawableSize.width)
-        if w != lastLoggedWidth {
+        let shouldLogDrawableSize = updateLiveState { state in
+            guard state.lastLoggedDrawableWidth != w else { return false }
+            state.lastLoggedDrawableWidth = w
+            return true
+        }
+        if shouldLogDrawableSize {
             metalPipelineLog.debug("Metal render: \(w)×\(Int(drawableSize.height)) (source: \(source.width)×\(source.height))")
-            lastLoggedWidth = w
         }
 
         // Stretch-to-fill: parent SwiftUI .frame() already handles aspect ratio.
@@ -3185,14 +3256,16 @@ final class MetalEditPipeline: @unchecked Sendable {
             maximum: 2
         )
         guard prefetchLimit > 0 else {
-            textureCache.removeAllObjects()
+            speculativeTextureCacheState.removeAll()
             return
         }
-        textureCache.countLimit = prefetchLimit
-        textureCache.totalCostLimit = imageMemoryCoordinator.adaptiveLimit(
-            for: .developSpeculative,
-            sourcePixelSize: sourcePixelSize,
-            bytesPerPixel: 8
+        speculativeTextureCacheState.configure(
+            countLimit: prefetchLimit,
+            totalCostLimit: imageMemoryCoordinator.adaptiveLimit(
+                for: .developSpeculative,
+                sourcePixelSize: sourcePixelSize,
+                bytesPerPixel: 8
+            )
         )
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float, width: width, height: height, mipmapped: true
@@ -3230,29 +3303,29 @@ final class MetalEditPipeline: @unchecked Sendable {
         // so they need mips too — the Anonymizer effect can't tell a promoted texture apart
         // from a freshly-uploaded one.
         Self.generateMipmaps(for: texture, commandQueue: commandQueue)
-        guard speculativePrecacheGate.isValid(precachePermit) else { return }
         let levelZeroCost = width.multipliedReportingOverflow(by: height).partialValue
             .multipliedReportingOverflow(by: 8).partialValue
         let textureCost = levelZeroCost.multipliedReportingOverflow(by: 4).partialValue / 3
-        textureCache.setObject(
-            MTLTextureWrapper(
-                texture,
-                neutralTemperature: neutralTemperature,
-                neutralTint: neutralTint
-            ),
-            forKey: url as NSURL,
-            cost: textureCost
-        )
+        _ = speculativePrecacheGate.commitIfValid(precachePermit) {
+            speculativeTextureCacheState.insert(
+                MTLTextureWrapper(
+                    texture,
+                    neutralTemperature: neutralTemperature,
+                    neutralTint: neutralTint
+                ),
+                for: url,
+                cost: textureCost
+            )
+        }
     }
 
     /// Promote a pre-cached texture to sourceTexture. Returns as-shot WB on hit, nil on miss.
     /// `exifOrientation` is the orientation baked into the cached texture's pixels.
     nonisolated func applyCachedTexture(for url: URL, exifOrientation: Int = 1) -> (neutralTemperature: Float, neutralTint: Float)? {
         preconditionOnStateExecutor()
-        guard let wrapper = textureCache.object(forKey: url as NSURL) else { return nil }
+        guard let wrapper = speculativeTextureCacheState.take(for: url) else { return nil }
         setSourceTexture(wrapper.texture, orientation: exifOrientation)
         mirror?.setSourceTexture(wrapper.texture, orientation: exifOrientation)
-        textureCache.removeObject(forKey: url as NSURL)
         return (neutralTemperature: wrapper.neutralTemperature, neutralTint: wrapper.neutralTint)
     }
 

@@ -7648,9 +7648,17 @@ struct EditWorkspaceView: View {
         isSavingRenderedJPEG = true
 
         Task {
+            defer { isSavingRenderedJPEG = false }
             do {
                 let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
-                try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+                let directoryCommit = try await ExportDirectoryService.shared.ensureDirectory(
+                    at: outputFolder
+                )
+                // Directory creation is a synchronous durable commit once the filesystem call
+                // starts. If cancellation arrived during it, retain the folder but do not begin
+                // the substantially more expensive render.
+                guard !directoryCommit.cancellationRequestedAfterCommit else { return }
+                try Task.checkCancellation()
                 let engine = browserViewModel.writeEngine
                 let failureTracker = MetadataFailureTracker()
                 let copier: EditedImageRenderer.MetadataCopier = { src, dst in
@@ -7668,10 +7676,12 @@ struct EditWorkspaceView: View {
                 if await !failureTracker.metadataCopyFailures.isEmpty {
                     saveError = "Image saved but metadata copy failed — IPTC data may be missing"
                 }
+            } catch is CancellationError {
+                // Cancellation before the directory commit writes nothing; cancellation after a
+                // committed directory intentionally leaves that harmless directory in place.
             } catch {
                 saveError = "Failed to save image: \(error.localizedDescription)"
             }
-            isSavingRenderedJPEG = false
         }
     }
 

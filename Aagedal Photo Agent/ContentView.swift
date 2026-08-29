@@ -3868,11 +3868,12 @@ struct ContentViewModifiers: ViewModifier {
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url else { return }
-                var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                    Task { @MainActor in
-                        panes.active.loadFolder(url: url, addToOpenFolders: true)
-                    }
+                Task { @MainActor in
+                    guard let snapshot = try? await browserViewModel.fileSystemService
+                        .dropSourceSnapshot(for: [url]),
+                          snapshot.directories.first == url
+                    else { return }
+                    panes.active.loadFolder(url: url, addToOpenFolders: true)
                 }
             }
         }

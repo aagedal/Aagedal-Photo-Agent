@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 61 of 75 checklist substeps complete
+**Status:** implementation in progress — 62 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -84,6 +84,13 @@ now owns brush preferences/tool mode, image-session binding, and matte-hover ide
 and cache fields now share executor-checked storage, reducing `MetalEditPipeline`'s explicit
 `nonisolated(unsafe)` declarations from 14 to 8. A fresh application/test build and all 34 integrated focused
 tests passed.
+
+**Final unsafe-state and filesystem continuation (2026-08-30):** 62 of 75 substeps are now checked and 13
+remain open. Develop single-image destination creation and main content-area folder-drop classification now
+cross existing serialized filesystem actors. The final four explicit `MetalEditPipeline`
+`nonisolated(unsafe)` declarations were replaced by executor-owned or lock-backed state, with a documented
+immutable cached-texture boundary; the separate compile-time live-preview facade remains open. All 44 focused
+tests across the touched filesystem, export, Metal, memory, and stress suites passed.
 
 ## Phase 0 — Stop silent data loss and destructive surprises
 
@@ -445,6 +452,20 @@ serialized exclusive-create writer with off-main execution, queued-cancellation,
 stale-result coverage. Lower-priority direct paths and the slow-volume/signpost/benchmark gate remain open.
 ([validation](plan-status-follow-up-validation-2026-08-30.md))
 
+**Develop single-image export follow-up (2026-08-30):** the Develop Save action now creates its `Edited`
+output directory through the serialized `ExportDirectoryService` instead of calling synchronous
+`FileManager` from its inherited main-actor task. Pre-commit cancellation creates nothing; cancellation
+reported after the synchronous directory commit retains that harmless folder and suppresses the expensive
+render. Other direct filesystem paths and the slow-volume/signpost/benchmark gate remain open.
+([validation](plan-status-follow-up-validation-2026-08-30.md#develop-single-image-export-directory-boundary))
+
+**Content-area folder-drop follow-up (2026-08-30):** the main content drop target now sends each provider URL
+through `FileSystemService.dropSourceSnapshot` before loading a folder, reusing the same serialized,
+cancellable classification boundary as sidebar drops. Direct `FileManager.fileExists` probing has been
+removed from the provider callback. Other direct filesystem paths and the slow-volume/signpost/benchmark
+gate remain open.
+([validation](plan-status-follow-up-validation-2026-08-30.md#content-area-folder-drop-boundary))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -582,12 +603,14 @@ the intended window/pane; extracted units are independently testable.
 **Plan:**
 
 - [ ] Split a main-actor live-preview facade from a serialized offscreen renderer actor/executor.
-- [ ] Reduce unsafe nonisolated state to audited immutable Metal resources.
+- [x] Reduce unsafe nonisolated state to audited immutable Metal resources.
+  ([validation](plan-status-follow-up-validation-2026-08-30.md#final-metal-unsafe-escape-isolation), 2026-08-30)
 - [x] Add owner/executor preconditions for remaining call-site contracts.
   MetalEditPipeline live render-state entry points enforce main-thread
   ownership, while the shared export renderer asserts its dedicated serial queue. Worker-safe source
   upload/precache paths remain explicitly documented exceptions; cross-pipeline owner contracts are also
-  enforced. Broader facade/actor isolation and unsafe-state reduction remain open.
+  enforced. Broader facade/actor isolation remains open; the unsafe-state reduction is completed by the
+  final 2026-08-30 follow-up below.
   ([validation](metal-edit-pipeline-executor-validation.md), 2026-08-27)
 - [x] Schedule a TSAN stress scenario combining preview, Clean Feed, export, cancellation, and navigation.
   ([validation](metal-pipeline-tsan-stress-validation-2026-08-25.md), 2026-08-25)
@@ -636,6 +659,15 @@ now share `ExecutorOwnedBrushRasterState`, accessed only through executor-checke
 Four more unsafe stored properties are gone, reducing the explicit count from 8 to 4. Texture-cache payload,
 image-memory registration, render timing, and the compile-time live-preview facade remain open.
 ([validation](plan-status-follow-up-validation-2026-08-30.md#metal-brush-raster-state-isolation))
+
+**Final unsafe-escape follow-up (2026-08-30):** render-log width now belongs to the executor-checked live
+state generation, while speculative textures and their image-memory registration share one lock-backed
+lifetime holder. Cache limit changes, eviction, publication, and promotion are serialized, and cancellation
+holds its generation lock across final publication so a late precache cannot repopulate an evicted cache.
+The fully populated cached `MTLTexture` crosses one precisely documented `@unchecked Sendable` wrapper and
+is immutable while cached. Explicit `nonisolated(unsafe)` declarations are reduced from 4 to 0, completing
+the unsafe-state reduction substep. The separate compile-time live-preview facade remains open.
+([validation](plan-status-follow-up-validation-2026-08-30.md#final-metal-unsafe-escape-isolation))
 
 **Exit gate:** every remaining unsafe isolation escape has a written invariant and enforcement; the stress
 scenario is repeatable and clean.
