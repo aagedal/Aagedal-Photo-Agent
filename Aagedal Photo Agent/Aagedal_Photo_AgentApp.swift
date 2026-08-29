@@ -423,6 +423,7 @@ struct Aagedal_Photo_AgentApp: App {
 
         Settings {
             SettingsView(settingsViewModel: settingsViewModel)
+                .environment(commandRouter)
         }
     }
 }
@@ -531,12 +532,8 @@ extension Notification.Name {
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")
     static let importStarted = Notification.Name("importStarted")
     static let importCompleted = Notification.Name("importCompleted")
-    static let showKnownPeopleDatabase = Notification.Name("showKnownPeopleDatabase")
     static let knownPeopleDatabaseDidChange = Notification.Name("knownPeopleDatabaseDidChange")
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
     static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
-    /// Posted (object: URL) when a pane opens a root folder, so the shared sidebar —
-    /// always backed by the primary pane — lists it even if a non-primary split pane opened it.
-    static let browserDidOpenRootFolder = Notification.Name("browserDidOpenRootFolder")
 }

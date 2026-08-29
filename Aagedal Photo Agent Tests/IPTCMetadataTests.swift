@@ -5091,6 +5091,10 @@ struct BrushRasterizationTests {
         #expect(source.contains("private final class ExecutorOwnedViewportState"))
         #expect(source.contains("private final class ExecutorOwnedCacheState"))
         #expect(source.contains("private func withExecutorOwnedCacheState"))
+        #expect(source.contains("private struct LiveStateSnapshot"))
+        #expect(source.contains("private final class ExecutorOwnedLiveState"))
+        #expect(source.contains("private func liveStateSnapshot"))
+        #expect(source.contains("private func updateLiveState"))
         #expect(source.contains("this holder can escape that closure"))
         #expect(!source.contains("private var _sourceTexture"))
         #expect(!source.contains("private var _sourceOrientation"))
@@ -5109,6 +5113,8 @@ struct BrushRasterizationTests {
             "nonisolated private func replaceViewportState",
             "nonisolated private func viewportStateSnapshot",
             "nonisolated private func withExecutorOwnedCacheState",
+            "nonisolated private func liveStateSnapshot",
+            "nonisolated private func updateLiveState",
         ] {
             let start = try #require(source.range(of: signature))
             let suffix = source[start.lowerBound...]
@@ -5137,6 +5143,32 @@ struct BrushRasterizationTests {
         #expect(source.contains("withExecutorOwnedCacheState { cacheState in"))
         #expect(source.contains("withExecutorOwnedCacheState({ $0.parsedColorLUTs[i] })"))
 
+        // Gamut/overlay/matte/redraw choices form one executor-owned live-state generation.
+        // Public computed properties retain their call-site API, gamut changes still propagate
+        // to the clean-feed mirror, and updateParams consumes one checked snapshot rather than
+        // four independent unsafe mutable fields.
+        for removedDeclaration in [
+            "nonisolated(unsafe) var gamutClipMode",
+            "nonisolated(unsafe) var maskOverlayMaskID",
+            "nonisolated(unsafe) var maskMattePreviewMaskID",
+            "nonisolated(unsafe) var onParamsChanged",
+        ] {
+            #expect(!source.contains(removedDeclaration), Comment(rawValue: removedDeclaration))
+        }
+        for declaration in [
+            "nonisolated var gamutClipMode: UInt32",
+            "nonisolated var maskOverlayMaskID: UUID?",
+            "nonisolated var maskMattePreviewMaskID: UUID?",
+            "nonisolated var onParamsChanged: (() -> Void)?",
+        ] {
+            #expect(source.contains(declaration), Comment(rawValue: declaration))
+        }
+        #expect(source.contains("updateLiveState { $0.gamutClipMode = newValue }"))
+        #expect(source.contains("mirror?.gamutClipMode = newValue"))
+        #expect(source.contains("let liveState = liveStateSnapshot()"))
+        #expect(source.contains("ptr.pointee.gamutClipMode = liveState.gamutClipMode"))
+        #expect(source.contains("liveState.onParamsChanged?()"))
+
         // Metal resource references allocated during initialization are immutable Sendable
         // wrappers. Their buffer/texture contents are still mutated only through the
         // executor-checked methods below; only MTLTextureWrapper's cache payload retains an
@@ -5158,7 +5190,7 @@ struct BrushRasterizationTests {
             #expect(source.contains(declaration), Comment(rawValue: declaration))
         }
         let unsafeEscapeCount = source.components(separatedBy: "nonisolated(unsafe)").count - 1
-        #expect(unsafeEscapeCount <= 18)
+        #expect(unsafeEscapeCount <= 14)
 
         for signature in [
             "nonisolated func updateParams",

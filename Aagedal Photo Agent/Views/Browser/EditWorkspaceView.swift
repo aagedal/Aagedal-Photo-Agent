@@ -894,7 +894,9 @@ struct EditWorkspaceView: View {
                  .showTemplatePalette, .applyTemplateShortcut,
                  .writeAllPendingMetadata, .openCaptionWorkspace,
                  .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
-                 .showVariableReference, .showRawMetadata, .showStructuredKeywords:
+                 .showVariableReference, .showRawMetadata, .showStructuredKeywords,
+                 .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
+                 .restoreCaptionEditorFocus:
                 break
             }
         }

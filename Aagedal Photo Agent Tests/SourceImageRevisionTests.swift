@@ -219,6 +219,59 @@ struct SerializedFileSystemServiceTests {
         #expect(listed.map(\.lastPathComponent) == ["Alpha", "Zulu"])
     }
 
+    @Test("supported URL snapshot is filtered, non-recursive, and name-sorted")
+    func supportedFilesSnapshot() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let nestedFolder = fixture.directoryURL.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedFolder, withIntermediateDirectories: false)
+        _ = try fixture.write("zulu.jpeg", contents: "image")
+        _ = try fixture.write("Alpha.RAF", contents: "raw")
+        _ = try fixture.write("notes.txt", contents: "ordinary")
+        _ = try fixture.write(".hidden.jpg", contents: "hidden")
+        try Data("nested".utf8).write(to: nestedFolder.appendingPathComponent("nested.jpg"))
+        try FileManager.default.createDirectory(
+            at: fixture.directoryURL.appendingPathComponent("not-a-file.jpg", isDirectory: true),
+            withIntermediateDirectories: false
+        )
+
+        let snapshot = try await FileSystemService().supportedFilesSnapshot(at: fixture.directoryURL)
+
+        #expect(snapshot.map(\.lastPathComponent) == ["Alpha.RAF", "zulu.jpeg"])
+    }
+
+    @Test("supported URL snapshot honors pre-cancellation")
+    func supportedFilesSnapshotHonorsPreCancellation() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        _ = try fixture.write("photo.jpg", contents: "image")
+        let service = FileSystemService()
+        let task = Task {
+            await Task.yield()
+            return try await service.supportedFilesSnapshot(at: fixture.directoryURL)
+        }
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+    }
+
+    @Test("supported URL enumeration crosses off the main actor")
+    @MainActor
+    func supportedFilesSnapshotRunsOffMain() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        _ = try fixture.write("photo.jpg", contents: "image")
+        let probe = DirectoryEnumerationThreadProbe()
+        let service = FileSystemService(supportedFilesContents: probe.contents)
+
+        let snapshot = try await service.supportedFilesSnapshot(at: fixture.directoryURL)
+
+        #expect(snapshot.map(\.lastPathComponent) == ["photo.jpg"])
+        #expect(!probe.ranOnMainThread)
+    }
+
     @Test("pre-cancelled mutation makes no filesystem change")
     func mutationHonorsPreCancellation() async throws {
         let fixture = try OfflineFileFixture()
@@ -391,6 +444,26 @@ nonisolated private final class DownloadRequestProbe: @unchecked Sendable {
         lock.withLock {
             recordedURLs.append(url)
         }
+    }
+}
+
+nonisolated private final class DirectoryEnumerationThreadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observedMainThread = false
+
+    var ranOnMainThread: Bool {
+        lock.withLock { observedMainThread }
+    }
+
+    func contents(at url: URL) throws -> [URL] {
+        lock.withLock {
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return try FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        )
     }
 }
 

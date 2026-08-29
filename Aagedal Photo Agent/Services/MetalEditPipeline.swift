@@ -623,6 +623,32 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
+    /// Live preview choices consumed together by one parameter upload. This value is owned by
+    /// the pipeline's selected serial state executor; taking one snapshot at the start of
+    /// `updateParams` prevents a render generation from mixing a new gamut mode or mask target
+    /// with an older redraw callback.
+    nonisolated private struct LiveStateSnapshot {
+        var gamutClipMode: UInt32 = 0
+        var maskOverlayMaskID: UUID?
+        var maskMattePreviewMaskID: UUID?
+        var onParamsChanged: (() -> Void)?
+    }
+
+    /// Mutable live-preview storage with no internal synchronization. All access is routed
+    /// through the checked pipeline wrappers below, so the holder and its mutable storage remain
+    /// confined to the selected serial state executor.
+    nonisolated private final class ExecutorOwnedLiveState: @unchecked Sendable {
+        private var value = LiveStateSnapshot()
+
+        func snapshot() -> LiveStateSnapshot {
+            value
+        }
+
+        func update(_ body: (inout LiveStateSnapshot) -> Void) {
+            body(&value)
+        }
+    }
+
     /// Owns mutable render-state buffers and caches. Live preview / Clean Feed instances are
     /// main-thread-owned; the singleton export instance is owned by `offscreenRenderQueue`.
     /// Source upload and adjacent-image precaching are deliberate worker-safe exceptions: they
@@ -727,26 +753,41 @@ final class MetalEditPipeline: @unchecked Sendable {
         return try executorOwnedCacheState.withMutableStorage(body)
     }
 
+    private let executorOwnedLiveState = ExecutorOwnedLiveState()
+
+    nonisolated private func liveStateSnapshot() -> LiveStateSnapshot {
+        preconditionOnStateExecutor()
+        return executorOwnedLiveState.snapshot()
+    }
+
+    nonisolated private func updateLiveState(_ body: (inout LiveStateSnapshot) -> Void) {
+        preconditionOnStateExecutor()
+        executorOwnedLiveState.update(body)
+    }
+
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
-    nonisolated(unsafe) var gamutClipMode: UInt32 = 0 {
-        didSet {
-            preconditionOnStateExecutor()
-            mirror?.gamutClipMode = gamutClipMode
+    nonisolated var gamutClipMode: UInt32 {
+        get { liveStateSnapshot().gamutClipMode }
+        set {
+            updateLiveState { $0.gamutClipMode = newValue }
+            mirror?.gamutClipMode = newValue
         }
     }
 
     /// When set, `updateParams` red-tints this mask's coverage (ACR-style) so a freshly painted
     /// brush mask is visible before any adjustment. The kernel auto-hides it once the mask gains
     /// an adjustment. Set by the editor from selection / paint-mode state.
-    nonisolated(unsafe) var maskOverlayMaskID: UUID? = nil {
-        didSet { preconditionOnStateExecutor() }
+    nonisolated var maskOverlayMaskID: UUID? {
+        get { liveStateSnapshot().maskOverlayMaskID }
+        set { updateLiveState { $0.maskOverlayMaskID = newValue } }
     }
 
     /// When set, the selected mask replaces the editor image with a black/white coverage matte.
     /// This is intentionally not mirrored to the clean-feed pipeline: it is a transient editor
     /// hover aid rather than part of the rendered develop state.
-    nonisolated(unsafe) var maskMattePreviewMaskID: UUID? = nil {
-        didSet { preconditionOnStateExecutor() }
+    nonisolated var maskMattePreviewMaskID: UUID? {
+        get { liveStateSnapshot().maskMattePreviewMaskID }
+        set { updateLiveState { $0.maskMattePreviewMaskID = newValue } }
     }
 
     /// As-shot white balance from the RAW decoder. Used as the reference point for WB
@@ -794,8 +835,9 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Invoked at the end of every `updateParams` so the mirror's view can request a
     /// redraw. Called on whichever thread `updateParams` runs on — the live edit call
     /// sites are all on the main thread, matching the existing coordinator-redraw model.
-    nonisolated(unsafe) var onParamsChanged: (() -> Void)? {
-        didSet { preconditionOnStateExecutor() }
+    nonisolated var onParamsChanged: (() -> Void)? {
+        get { liveStateSnapshot().onParamsChanged }
+        set { updateLiveState { $0.onParamsChanged = newValue } }
     }
 
     nonisolated private static let maxMasks = 8
@@ -1432,6 +1474,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         let start = ContinuousClock.now
         guard let buffer = paramsBufferHandle.resource else { return }
         let viewport = viewportStateSnapshot()
+        let liveState = liveStateSnapshot()
         var params = EditParams()
         var flags: UInt32 = 0
 
@@ -1452,7 +1495,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             ))
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
-            ptr.pointee.gamutClipMode = gamutClipMode
+            ptr.pointee.gamutClipMode = liveState.gamutClipMode
             ptr.pointee.viewportOrigin = viewport.origin
             ptr.pointee.viewportSize = viewport.size
             ptr.pointee.viewportCenter = viewport.center
@@ -1460,7 +1503,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             ptr.pointee.cropHalfExtent = viewport.cropHalfExtent
             // Mirror to the clean-feed pipeline (its own viewport is preserved).
             mirror?.updateParams(nil)
-            onParamsChanged?()
+            liveState.onParamsChanged?()
             return
         }
 
@@ -1563,7 +1606,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         // A muted mask normally has no GPU slot. Include the hovered matte target solely for
         // coverage visualization, while keeping it out of the processing-order map below so its
         // adjustments remain muted. Put it first so it remains previewable at the mask limit.
-        if let previewID = maskMattePreviewMaskID,
+        if let previewID = liveState.maskMattePreviewMaskID,
            !masks.contains(where: { $0.id == previewID }),
            let previewMask = displaySettings.localAdjustments?.first(where: { $0.id == previewID }) {
             masks.insert(previewMask, at: 0)
@@ -1701,11 +1744,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         // The hover matte takes precedence over the automatic red paint-coverage tint. Both use
         // the same selected-mask slot, with an explicit mode so the shader can either replace the
         // image with coverage or blend the legacy red overlay.
-        if let previewID = maskMattePreviewMaskID, let idx = maskIndexByID[previewID] {
+        if let previewID = liveState.maskMattePreviewMaskID, let idx = maskIndexByID[previewID] {
             params.maskOverlayIndex = Int32(idx)
             params.maskOverlayOpacity = 1
             params.maskOverlayMode = 1
-        } else if let oid = maskOverlayMaskID, let idx = maskIndexByID[oid] {
+        } else if let oid = liveState.maskOverlayMaskID, let idx = maskIndexByID[oid] {
             params.maskOverlayIndex = Int32(idx)
             params.maskOverlayOpacity = 0.5
             params.maskOverlayMode = 0
@@ -1807,7 +1850,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee = params
-        ptr.pointee.gamutClipMode = gamutClipMode
+        ptr.pointee.gamutClipMode = liveState.gamutClipMode
         ptr.pointee.viewportOrigin = viewport.origin
         ptr.pointee.viewportSize = viewport.size
         ptr.pointee.viewportCenter = viewport.center
@@ -1819,7 +1862,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         // edit live. The mirror computes against its OWN cached viewport, so its
         // letterboxing for the secondary display is preserved.
         mirror?.updateParams(settings)
-        onParamsChanged?()
+        liveState.onParamsChanged?()
 
         let elapsed = ContinuousClock.now - start
         if elapsed > .milliseconds(1) {

@@ -86,6 +86,7 @@ actor FileSystemService {
     private let isLocallyAvailable: @Sendable (URL) -> Bool
     private let requestDownload: @Sendable (URL) -> Void
     private let rejectMove: @Sendable ([URL], URL) -> RejectMoveService.MoveResult
+    private let supportedFilesContents: @Sendable (URL) throws -> [URL]
 
     init(
         isLocallyAvailable: @escaping @Sendable (URL) -> Bool = {
@@ -96,11 +97,19 @@ actor FileSystemService {
         },
         rejectMove: @escaping @Sendable ([URL], URL) -> RejectMoveService.MoveResult = { urls, folderURL in
             RejectMoveService.moveRejected(urls: urls, in: folderURL)
+        },
+        supportedFilesContents: @escaping @Sendable (URL) throws -> [URL] = { url in
+            try FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+            )
         }
     ) {
         self.isLocallyAvailable = isLocallyAvailable
         self.requestDownload = requestDownload
         self.rejectMove = rejectMove
+        self.supportedFilesContents = supportedFilesContents
     }
 
     /// Scans a folder for image files on this service's serialized actor executor. Directory
@@ -152,6 +161,30 @@ actor FileSystemService {
             files: files,
             deferredICloudItemCount: deferredICloudItemCount
         )
+    }
+
+    /// Returns an immutable, name-sorted snapshot of the supported regular files directly inside
+    /// a folder. This is the non-recursive boundary for workflows that need URLs rather than
+    /// `ImageFile` metadata; synchronous Foundation enumeration stays on this serialized actor.
+    func supportedFilesSnapshot(at url: URL) throws -> [URL] {
+        try Task.checkCancellation()
+        let contents = try supportedFilesContents(url)
+
+        var supportedFiles: [URL] = []
+        supportedFiles.reserveCapacity(contents.count)
+        for item in contents {
+            try Task.checkCancellation()
+            guard SupportedImageFormats.isSupported(url: item) else { continue }
+            let values = try item.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else { continue }
+            supportedFiles.append(item)
+        }
+        try Task.checkCancellation()
+        return supportedFiles.sorted { lhs, rhs in
+            let order = lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent)
+            if order != .orderedSame { return order == .orderedAscending }
+            return lhs.path < rhs.path
+        }
     }
 
     func listSubfolders(at url: URL) throws -> [URL] {

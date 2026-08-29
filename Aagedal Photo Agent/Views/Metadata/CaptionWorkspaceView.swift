@@ -228,6 +228,9 @@ struct CaptionWorkspaceView: View {
                 navigate(previous: true)
             case .selectNextImage:
                 navigate(previous: false)
+            case .restoreCaptionEditorFocus:
+                isAwaitingTemplatePalette = false
+                restoreLastEditorFocus()
             case .openFolder, .openRecentFolder, .setRating, .setLabel,
                  .renderSelected, .advancedExportSelected, .renderAll,
                  .saveAsJPEG, .saveAsPNG, .archiveRAW,
@@ -244,13 +247,10 @@ struct CaptionWorkspaceView: View {
                  .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                  .writeAllPendingMetadata, .openCaptionWorkspace,
                  .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
-                 .showVariableReference, .showRawMetadata, .showStructuredKeywords:
+                 .showVariableReference, .showRawMetadata, .showStructuredKeywords,
+                 .showKnownPeopleDatabase, .registerOpenFolderForSidebar:
                 break
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .restoreCaptionEditorFocus)) { _ in
-            isAwaitingTemplatePalette = false
-            restoreLastEditorFocus()
         }
         .sheet(
             isPresented: $showingCodeReplacementSettings,

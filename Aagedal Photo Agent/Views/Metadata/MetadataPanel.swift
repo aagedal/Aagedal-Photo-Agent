@@ -1079,6 +1079,10 @@ struct MetadataPanel: View {
                 showingRawMetadata = true
             case .showVariableReference:
                 openVariableReferenceFromShortcut()
+            case .restoreCaptionEditorFocus:
+                guard captionFlushCoordinator != nil,
+                      let key = lastCaptionEditorFocusKey else { return }
+                DispatchQueue.main.async { focusedField = key }
             default:
                 break
             }
@@ -1118,11 +1122,6 @@ struct MetadataPanel: View {
         .onDisappear {
             StructuredKeywordsCoordinator.shared.unregister(owner: viewModel)
             captionFlushCoordinator?.unregister(owner: captionFlushOwner)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .restoreCaptionEditorFocus)) { _ in
-            guard captionFlushCoordinator != nil,
-                  let key = lastCaptionEditorFocusKey else { return }
-            DispatchQueue.main.async { focusedField = key }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in
             guard !isShowingVariableReference,
@@ -2501,10 +2500,6 @@ struct MetadataPanel: View {
             }
         }
     }
-}
-
-extension Notification.Name {
-    static let restoreCaptionEditorFocus = Notification.Name("restoreCaptionEditorFocus")
 }
 
 // MARK: - Keywords Editor With Diff

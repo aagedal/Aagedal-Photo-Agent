@@ -51,6 +51,9 @@ enum AppCommand: Equatable, Sendable {
     case showVariableReference
     case showRawMetadata
     case showStructuredKeywords
+    case showKnownPeopleDatabase
+    case registerOpenFolderForSidebar(URL)
+    case restoreCaptionEditorFocus
 }
 
 struct AppCommandDelivery: Equatable, Sendable {

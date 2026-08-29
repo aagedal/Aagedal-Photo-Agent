@@ -281,3 +281,87 @@ and isolation of the remaining brush/watermark GPU lifecycle and owner state. Ma
 unchanged: slow-volume/Thread Performance Checker and Instruments evidence, menu/focus/multi-window and
 accessibility passes, protected-branch configuration, privacy/legal review, real delivery-server drills,
 and production AuraFace publishing and platform validation.
+
+## Scene UI handoff router completion
+
+The last three application/UI handoffs on the process-wide notification bus now use the scene-owned
+`AppCommandRouter`:
+
+- Settings sends `showKnownPeopleDatabase` through the shared scene router before the main window presents
+  the Known People database.
+- Every browser pane hands a newly opened root URL to its scene, which delivers the typed
+  `registerOpenFolderForSidebar(URL)` payload to the primary pane's stable sidebar owner.
+- Metadata template-palette dismissal sends `restoreCaptionEditorFocus`; both Caption surfaces retain their
+  existing focus-key and palette-state behavior.
+
+The obsolete notification declarations, posts, and publishers were removed. A current-source search now
+finds only system notifications and passive process/state broadcasts such as import lifecycle, library
+changes, scope render state, slider dragging, and preference changes. The router characterization preserves
+all three command identities, monotonic delivery order, and the exact folder URL payload. This completes the
+Phase 4.1 command-bus checklist substep, raising the audit to **61 of 75**; the coordinator extractions and
+manual menu/focus/multi-window release gate remain open.
+
+## Additional filesystem boundaries
+
+The UI-smoke import-preflight setup no longer performs synchronous source enumeration from its inherited
+main-actor task. `FileSystemService.supportedFilesSnapshot(at:)` owns the non-recursive Foundation read and
+returns a stable, filename-sorted `[URL]` containing only supported regular files. It checks cancellation
+before enumeration, between entries, and before publication; injected enumeration proves the work executes
+off the main thread on the same serialized actor as the browser's other filesystem work.
+
+The four batch output workflows—render/sign, Save As, RAW archive, and standard/secondary render—now create
+their destination directories through `ExportDirectoryService`. The actor checks cancellation before the
+synchronous operation and returns immutable `ExportDirectoryCommit` evidence that distinguishes a normal
+commit from cancellation observed after the directory is already durable. Focused coverage proves off-main
+execution, pre-cancellation with zero writer calls, serialized queued cancellation, and durable commit
+reporting after in-flight cancellation.
+
+These slices remove five more direct filesystem operations from main-actor workflows, but do not close the
+broader Phase 3.1 inventory or slow-volume/signpost/benchmark exit gate.
+
+## Metal live-state isolation
+
+Four mutable `MetalEditPipeline` fields—gamut clipping mode, selected mask overlay identity, selected matte
+preview identity, and the parameter-change callback—now live in one `ExecutorOwnedLiveState` value. Public
+getters and setters cross executor-checked snapshot/update accessors. `updateParams` captures one snapshot at
+entry and uses that coherent generation through parameter upload and callback delivery. Gamut state still
+propagates to the Clean Feed mirror; overlay and matte state remain intentionally local; callback ordering is
+unchanged.
+
+The explicit `nonisolated(unsafe)` count in `MetalEditPipeline.swift` is reduced from **18 to 14**, and the
+source-contract ceiling was lowered accordingly. Remaining escapes cover texture/cache lifecycle, image
+memory registration, brush/watermark GPU state, and render timing; the compile-time live-preview facade is
+also still open.
+
+## Integrated validation for this session
+
+A fresh isolated `build-for-testing` compiled the complete application and unit-test targets with
+`** TEST BUILD SUCCEEDED **`. After correcting the cancellation-after-commit test so cancellation remained
+inside a child task rather than cancelling the test itself, an incremental rebuild also succeeded. The final
+combined `test-without-building` run passed all **47 tests in 5 suites**:
+
+- `AppCommandRouterTests`;
+- `SerializedFileSystemServiceTests`;
+- `BrushRasterizationTests`;
+- `AnalysisExportFileServiceTests`; and
+- `ExportDirectoryServiceTests`.
+
+The preserved result bundle is:
+
+```text
+/private/tmp/aagedal-v3-session-final-20260829.xcresult
+```
+
+The host emitted the previously documented LMDB map-size, App Intents metadata, detached-signature logging,
+and background-publication diagnostics. They did not produce a build failure, test issue, cancelled test, or
+failure in any of the 47 selected tests.
+
+## Remaining boundary after this session
+
+The audit is now **61 of 75 checklist substeps complete**. Automated implementation still includes the
+remaining lower-priority direct filesystem paths, broader state-owning coordinator extraction, the
+compile-time live-preview facade, and isolation of Metal brush/watermark GPU lifecycle, memory-registration,
+and timing state. Manual/external work still includes slow-volume and Thread Performance Checker evidence,
+Instruments memory benchmarks, menu/shortcut/focus/multi-window and accessibility passes, protected release
+branch configuration, focused privacy/legal review, real FTP/FTPS/SFTP drills, and publishing/testing the
+production AuraFace component on every supported macOS tier.

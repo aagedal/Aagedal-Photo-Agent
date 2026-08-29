@@ -86,7 +86,9 @@ private struct SafetyAndCullingHandlers: ViewModifier {
                      .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
-                     .showVariableReference, .showRawMetadata, .showStructuredKeywords:
+                     .showVariableReference, .showRawMetadata, .showStructuredKeywords,
+                     .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
+                     .restoreCaptionEditorFocus:
                     break
                 }
             }
@@ -109,8 +111,7 @@ struct ContentView: View {
     private var sidebarViewModel: BrowserViewModel { panes.panes[0] }
 
     /// Open a folder into the active pane. The shared sidebar (primary pane) picks it up
-    /// via the `.browserDidOpenRootFolder` notification, so it shows even when a
-    /// non-primary pane opened it.
+    /// through the scene command router, so it shows even when a non-primary pane opened it.
     private func openFolderInActivePane(_ url: URL, addToOpenFolders: Bool) {
         panes.active.loadFolder(url: url, addToOpenFolders: addToOpenFolders)
     }
@@ -218,6 +219,9 @@ struct ContentView: View {
         // Wire face deletion onto every pane (primary now, the split pane when created).
         let configurePane: (BrowserViewModel) -> Void = { [weak faceRecognition] vm in
             vm.onImagesDeleted = { urls in faceRecognition?.deleteFaces(forImageURLs: urls) }
+            vm.onDidOpenRootFolder = { [weak commandRouter] url in
+                commandRouter?.send(.registerOpenFolderForSidebar(url))
+            }
         }
         configurePane(browser)
         let panesModel = BrowserPanesModel(
@@ -776,7 +780,9 @@ struct ContentView: View {
                      .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
-                     .showVariableReference, .showRawMetadata, .showStructuredKeywords:
+                     .showVariableReference, .showRawMetadata, .showStructuredKeywords,
+                     .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
+                     .restoreCaptionEditorFocus:
                     break
                 }
             }
@@ -794,9 +800,6 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .importCompleted)) { notification in
                 handleImportCompleted(notification)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .showKnownPeopleDatabase)) { _ in
-                openPeopleDatabase()
             }
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
                 guard let delivery else { return }
@@ -856,6 +859,10 @@ struct ContentView: View {
                     pasteIPTCMetadata()
                 case .showStructuredKeywords:
                     openWindow(id: "structuredKeywords")
+                case .showKnownPeopleDatabase:
+                    openPeopleDatabase()
+                case .registerOpenFolderForSidebar(let url):
+                    panes.panes[0].registerOpenFolderForSidebar(url)
                 default:
                     break
                 }
@@ -1267,13 +1274,14 @@ struct ContentView: View {
             importViewModel.configuration.verificationMode = .off
             importViewModel.configuration.skipPreviouslyImported = false
             importViewModel.sortByDate = false
-            importViewModel.sourceFiles = ((try? FileManager.default.contentsOfDirectory(
-                at: sourceURL,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )) ?? [])
-                .filter { SupportedImageFormats.isSupported(url: $0) }
-                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            do {
+                importViewModel.sourceFiles = try await browserViewModel.fileSystemService
+                    .supportedFilesSnapshot(at: sourceURL)
+            } catch is CancellationError {
+                return
+            } catch {
+                importViewModel.sourceFiles = []
+            }
             isShowingImport = true
             return
         }
@@ -2345,7 +2353,9 @@ struct ContentView: View {
                          .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                          .writeAllPendingMetadata, .openCaptionWorkspace,
                          .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
-                         .showVariableReference, .showRawMetadata, .showStructuredKeywords:
+                         .showVariableReference, .showRawMetadata, .showStructuredKeywords,
+                         .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
+                         .restoreCaptionEditorFocus:
                         break
                     }
                 }
@@ -2685,7 +2695,7 @@ struct ContentView: View {
                 // Create folder on first encounter
                 if !createdFolders.contains(outputFolder.path) {
                     do {
-                        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+                        _ = try await ExportDirectoryService.shared.ensureDirectory(at: outputFolder)
                         createdFolders.insert(outputFolder.path)
                         lastOutputFolder = outputFolder
                     } catch {
@@ -2885,7 +2895,7 @@ struct ContentView: View {
             restoreRequested: restoringGridFocus
         ) {
         case .captionEditor:
-            NotificationCenter.default.post(name: .restoreCaptionEditorFocus, object: nil)
+            commandRouter.send(.restoreCaptionEditorFocus)
         case .browserGrid:
             restoreGridFocus()
         case .unchanged:
@@ -3221,7 +3231,7 @@ struct ContentView: View {
                         sourceURL: url, rootFolder: rootFolder,
                         isHDR: false, formatPrefix: "Edited", askedFolder: askedFolder)
                     if !createdFolders.contains(destinationFolder.path) {
-                        try FileManager.default.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+                        _ = try await ExportDirectoryService.shared.ensureDirectory(at: destinationFolder)
                         createdFolders.insert(destinationFolder.path)
                     }
 
@@ -3384,10 +3394,7 @@ struct ContentView: View {
                         archiveRoot: configuredArchiveRoot
                     )
                     if !createdFolders.contains(destinationFolder.path) {
-                        try FileManager.default.createDirectory(
-                            at: destinationFolder,
-                            withIntermediateDirectories: true
-                        )
+                        _ = try await ExportDirectoryService.shared.ensureDirectory(at: destinationFolder)
                         createdFolders.insert(destinationFolder.path)
                     }
 
@@ -3623,10 +3630,7 @@ struct ContentView: View {
 
                     if !createdFolders.contains(outputFolder.path) {
                         do {
-                            try FileManager.default.createDirectory(
-                                at: outputFolder,
-                                withIntermediateDirectories: true
-                            )
+                            _ = try await ExportDirectoryService.shared.ensureDirectory(at: outputFolder)
                             createdFolders.insert(outputFolder.path)
                             lastOutputFolder = outputFolder
                         } catch {
@@ -3816,7 +3820,9 @@ struct ContentViewModifiers: ViewModifier {
                      .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
-                     .showVariableReference, .showRawMetadata, .showStructuredKeywords:
+                     .showVariableReference, .showRawMetadata, .showStructuredKeywords,
+                     .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
+                     .restoreCaptionEditorFocus:
                     break
                 }
             }
@@ -3855,12 +3861,6 @@ struct ContentViewModifiers: ViewModifier {
                 for folder in ftpViewModel.renderedUploadedFolders {
                     browserViewModel.revealExportedSubfolder(folder)
                 }
-            }
-            // Lives outside `base`: that modifier chain is at the
-            // type-checker's expression-complexity limit already.
-            .onReceive(NotificationCenter.default.publisher(for: .browserDidOpenRootFolder)) { notification in
-                guard let url = notification.object as? URL else { return }
-                panes.panes[0].registerOpenFolderForSidebar(url)
             }
     }
 

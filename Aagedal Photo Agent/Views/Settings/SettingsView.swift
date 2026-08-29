@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    @Environment(AppCommandRouter.self) private var commandRouter
     @State private var settingsViewModel: SettingsViewModel
     @AppStorage(UserDefaultsKeys.creatorInitials) private var creatorInitials = ""
     @State private var ftpViewModel = FTPViewModel()
@@ -684,7 +685,7 @@ struct SettingsView: View {
 
                             Button("Browse...") {
                                 NSApp.activate(ignoringOtherApps: true)
-                                NotificationCenter.default.post(name: .showKnownPeopleDatabase, object: nil)
+                                commandRouter.send(.showKnownPeopleDatabase)
                             }
                             .disabled(knownPeopleStats.peopleCount == 0)
                         }

@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 60 of 75 checklist substeps complete
+**Status:** implementation in progress — 61 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -66,6 +66,15 @@ result rejection. Twelve more metadata, template, Caption, and C2PA user command
 scoped. Five separately unsafe viewport fields are now one executor-owned atomic snapshot, reducing
 `MetalEditPipeline`'s explicit `nonisolated(unsafe)` declarations from 29 to 24. The combined application
 and test targets compiled and all 30 focused tests passed.
+
+**Scene-boundary completion follow-up (2026-08-29):** 61 of 75 substeps are now checked and 14 remain open.
+Known People browsing, split-pane sidebar root registration, and Caption focus restoration were the final
+application/UI handoffs still using the process-wide notification bus. They now cross the scene-owned typed
+router, while the remaining notifications are system events or passive process/state broadcasts. UI-test
+source enumeration and all four export-output directory creation paths also cross serialized filesystem
+actors with cancellation/commit evidence, and four mutable Metal live-state fields are now one
+executor-owned snapshot, reducing explicit unsafe declarations from 18 to 14. The full app/test targets
+compiled and all 47 integrated focused tests passed.
 
 ## Phase 0 — Stop silent data loss and destructive surprises
 
@@ -404,6 +413,14 @@ newly loaded folder's state. Individual trash failures retain the existing group
 remaining explicit in the result. The broader lower-priority filesystem audit and measurement exit gate
 remain open. ([validation](plan-status-follow-up-validation-2026-08-29.md#face-group-photo-deletion-async-boundary))
 
+**Export/source-discovery follow-up (2026-08-29):** the UI-smoke import fixture no longer enumerates its
+source directory on the main actor; `FileSystemService` returns a filtered, stable, immutable supported-URL
+snapshot with cancellation checks before, during, and after enumeration. The four batch render/save/archive
+workflows now create output directories through a serialized `ExportDirectoryService`, which distinguishes
+pre-cancellation from cancellation arriving after the synchronous durable commit. The broader filesystem
+inventory, slow-volume drills, and signpost/benchmark gate remain open.
+([validation](plan-status-follow-up-validation-2026-08-29.md#additional-filesystem-boundaries))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -463,8 +480,9 @@ longer restart Deadline capture; slow high-resolution loads offer actionable rec
 - [ ] Extract state-owning coordinators such as Develop session, versions, masks, and rendering; do not merely
   move extensions between files.
 - [ ] Define lifecycle, cancellation, persistence, and test seams for each coordinator.
-- [ ] Replace the global command notification bus incrementally with a typed, scene-scoped `AppCommand`
+- [x] Replace the global command notification bus incrementally with a typed, scene-scoped `AppCommand`
   router; retain NotificationCenter for genuine system/process broadcasts.
+  ([validation](plan-status-follow-up-validation-2026-08-29.md#scene-ui-handoff-router-completion), 2026-08-29)
 - [ ] Add a characterization test before each extraction and keep UI behavior unchanged.
 
 **Command-router follow-ups (2026-08-27 through 2026-08-29):** Open Folder/Open Recent, rating/label, core
@@ -500,6 +518,13 @@ publisher, and modifier have been removed. Genuine process/state notifications a
 UI handoffs remain subject to separate ownership review; the broad router item and manual multi-window gate
 remain open.
 ([validation](plan-status-follow-up-validation-2026-08-29.md#develop-template-command-payload))
+
+**Final UI-handoff follow-up (2026-08-29):** Known People browsing from Settings, split-pane root-folder
+registration, and Caption editor focus restoration now use typed scene delivery, including the exact folder
+URL payload. A current-source audit finds only system notifications and passive process/state broadcasts
+remaining, so the command-bus checklist item is complete. Menu/focus/multi-window behavior still requires
+the existing manual release-candidate procedure, and the other Phase 4.1 coordinator/extraction items remain
+open. ([validation](plan-status-follow-up-validation-2026-08-29.md#scene-ui-handoff-router-completion))
 
 **State-owner follow-up (2026-08-27):** `DevelopVersionSessionCoordinator` now owns named-version catalog,
 revision, storage, cancellation, debounce/flush persistence, and stale-result gating. A separate
@@ -551,6 +576,14 @@ from escaping the checked scope. Six former unsafe fields are gone and the expli
 `nonisolated(unsafe)` count is reduced from 24 to 18. Brush/watermark GPU lifecycle state, owner callbacks,
 memory registration, and the live-preview facade remain open.
 ([validation](plan-status-follow-up-validation-2026-08-29.md#metal-cpu-cache-and-scratch-isolation))
+
+**Live-state follow-up (2026-08-29):** gamut clipping, selected-mask overlay/matte identity, and the redraw
+callback now share one `ExecutorOwnedLiveState` snapshot. Checked accessors enforce the selected state
+executor for reads and writes, and parameter upload consumes one coherent snapshot for each generation while
+preserving gamut mirroring and callback order. Four more unsafe stored properties are gone, reducing the
+explicit count from 18 to 14; GPU brush/watermark lifecycle storage, memory registration, render timing, and
+the compile-time live-preview facade remain open.
+([validation](plan-status-follow-up-validation-2026-08-29.md#metal-live-state-isolation))
 
 **Exit gate:** every remaining unsafe isolation escape has a written invariant and enforcement; the stress
 scenario is repeatable and clean.

@@ -188,6 +188,24 @@ struct AppCommandRouterTests {
             #expect(delivery.sequence == UInt64(index + 1))
         }
     }
+
+    @Test("scene UI handoff commands preserve identity and folder payload")
+    func sceneUIHandoffCommandIdentity() throws {
+        let router = AppCommandRouter()
+        let folder = URL(fileURLWithPath: "/tmp/secondary-pane-folder", isDirectory: true)
+        let commands: [AppCommand] = [
+            .showKnownPeopleDatabase,
+            .registerOpenFolderForSidebar(folder),
+            .restoreCaptionEditorFocus,
+        ]
+
+        for (index, command) in commands.enumerated() {
+            router.send(command)
+            let delivery = try #require(router.latestDelivery)
+            #expect(delivery.command == command)
+            #expect(delivery.sequence == UInt64(index + 1))
+        }
+    }
 }
 
 @Suite("App startup signpost lifecycle")

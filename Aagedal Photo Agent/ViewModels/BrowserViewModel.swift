@@ -236,6 +236,9 @@ final class BrowserViewModel {
     }
 
     @ObservationIgnored private(set) var selectedImagesCache: [ImageFile] = []
+    /// Scene-owned handoff used when this pane adds a root that the primary pane's
+    /// shared sidebar must also register.
+    @ObservationIgnored var onDidOpenRootFolder: ((URL) -> Void)?
 
     init(thumbnailService: ThumbnailService = ThumbnailService(),
          fullScreenImageCache: FullScreenImageCache = FullScreenImageCache(),
@@ -679,9 +682,9 @@ final class BrowserViewModel {
             if !openFolders.contains(url) {
                 openFolders.append(url)
             }
-            // Announce so the shared sidebar (primary pane) lists this root even when a
-            // non-primary split-view pane opened it. Idempotent on the primary.
-            NotificationCenter.default.post(name: .browserDidOpenRootFolder, object: url)
+            // Hand off to the owning scene so the shared sidebar (primary pane) lists
+            // this root even when a non-primary split-view pane opened it.
+            onDidOpenRootFolder?(url)
         }
 
         loadFolderTask = Task {
