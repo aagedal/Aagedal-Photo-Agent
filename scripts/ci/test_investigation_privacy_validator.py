@@ -50,6 +50,12 @@ def main() -> int:
                 "interactive OpenStreetMap tiles use an ephemeral session",
             ),
             (
+                Path("Aagedal Photo Agent/Services/AnalysisExportFileService.swift"),
+                "options: .atomic",
+                "options: []",
+                "serialized atomic export boundary",
+            ),
+            (
                 Path("Aagedal Photo Agent/Services/FTPService.swift"),
                 "mode_t(0o600)",
                 "mode_t(0o644)",
@@ -65,7 +71,7 @@ def main() -> int:
             assert any(expected_label in failure for failure in failures), failures
             target.write_text(original, encoding="utf-8")
 
-    print("investigation privacy validator self-test passed (positive plus 4 regressions)")
+    print("investigation privacy validator self-test passed (positive plus 5 regressions)")
     return 0
 
 

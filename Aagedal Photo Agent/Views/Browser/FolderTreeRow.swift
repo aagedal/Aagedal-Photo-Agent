@@ -312,27 +312,21 @@ struct FolderDropDelegate: DropDelegate {
             let sourceURLs = await Self.loadFileURLs(from: providers)
             guard !sourceURLs.isEmpty else { return }
 
-            var photoURLs: [URL] = []
-            let fileManager = FileManager.default
+            guard let snapshot = try? await viewModel.fileSystemService.dropSourceSnapshot(for: sourceURLs)
+            else { return }
 
-            for sourceURL in sourceURLs {
-                var isDirectory: ObjCBool = false
-                let exists = fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory)
-                if exists && isDirectory.boolValue {
-                    let sourceIsFavoriteRoot = viewModel.favoriteFolders.contains { $0.url == sourceURL }
-                    let targetIsFavoriteRoot = dropSection == .favoriteRoot
-                    if sourceIsFavoriteRoot && targetIsFavoriteRoot {
-                        viewModel.reorderFavorite(from: sourceURL, relativeTo: target)
-                    } else {
-                        viewModel.moveFolder(sourceURL, into: target)
-                    }
-                } else if exists {
-                    photoURLs.append(sourceURL)
+            for sourceURL in snapshot.directories {
+                let sourceIsFavoriteRoot = viewModel.favoriteFolders.contains { $0.url == sourceURL }
+                let targetIsFavoriteRoot = dropSection == .favoriteRoot
+                if sourceIsFavoriteRoot && targetIsFavoriteRoot {
+                    viewModel.reorderFavorite(from: sourceURL, relativeTo: target)
+                } else {
+                    viewModel.moveFolder(sourceURL, into: target)
                 }
             }
 
-            if !photoURLs.isEmpty {
-                viewModel.moveImages(photoURLs, into: target)
+            if !snapshot.regularFiles.isEmpty {
+                viewModel.moveImages(snapshot.regularFiles, into: target)
             }
         }
         return true

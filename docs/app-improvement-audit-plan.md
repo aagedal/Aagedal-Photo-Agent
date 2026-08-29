@@ -438,6 +438,13 @@ environment. A blocked-reader characterization proves the main actor remains res
 filesystem inventory and slow-volume/signpost/benchmark exit gate remain open.
 ([validation](plan-status-follow-up-validation-2026-08-29.md#batch-rename-planning-filesystem-boundary))
 
+**Sidebar-drop and receipt-export follow-up (2026-08-30):** dropped sidebar URLs are now classified on the
+serialized filesystem actor instead of probing slow paths on the main actor, with immutable directory/file/
+missing evidence and pre-cancellation before any probe. Delivery Receipt summary commits use an injected,
+serialized exclusive-create writer with off-main execution, queued-cancellation, durable-after-cancel, and
+stale-result coverage. Lower-priority direct paths and the slow-volume/signpost/benchmark gate remain open.
+([validation](plan-status-follow-up-validation-2026-08-30.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -556,6 +563,13 @@ and keeps view-to-Metal synchronization at the existing UI boundary. Three focus
 the extracted lifecycle; broader gesture, render, and persistence ownership remain open.
 ([validation](plan-status-follow-up-validation-2026-08-29.md#develop-mask-interaction-state-owner))
 
+**Preview-session state-owner follow-up (2026-08-30):** `DevelopPreviewSessionCoordinator` now owns decoded
+source identity/orientation, preview/full-resolution progress, and four image-scoped producer task lifecycles.
+Navigation and workspace teardown cancel the complete producer set through one boundary, while retained-source
+rotation is identity-gated and stale A→B→A completions are rejected by session generation. Decode/Metal
+publication and broader render ownership remain in the view.
+([validation](plan-status-follow-up-validation-2026-08-30.md#develop-preview-session-state-owner))
+
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.
 
@@ -616,6 +630,12 @@ executor contract. Six more unsafe stored properties are gone, reducing the expl
 texture-cache payload, image-memory registration, brush GPU state, render timing, and the compile-time
 live-preview facade remain open.
 ([validation](plan-status-follow-up-validation-2026-08-29.md#metal-watermark-state-isolation))
+
+**Brush-raster-state follow-up (2026-08-30):** brush alpha/envelope textures and their source/size cache key
+now share `ExecutorOwnedBrushRasterState`, accessed only through executor-checked snapshot/update wrappers.
+Four more unsafe stored properties are gone, reducing the explicit count from 8 to 4. Texture-cache payload,
+image-memory registration, render timing, and the compile-time live-preview facade remain open.
+([validation](plan-status-follow-up-validation-2026-08-30.md#metal-brush-raster-state-isolation))
 
 **Exit gate:** every remaining unsafe isolation escape has a written invariant and enforcement; the stress
 scenario is repeatable and clean.

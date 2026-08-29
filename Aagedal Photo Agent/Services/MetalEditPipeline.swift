@@ -674,6 +674,29 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
+    /// Brush raster textures and the cache key describing their contents form one render
+    /// generation. This holder is intentionally unsynchronized: all access goes through the
+    /// executor-checked synchronous wrappers below, keeping preview state on the main thread and
+    /// export state on the dedicated offscreen render queue.
+    nonisolated private final class ExecutorOwnedBrushRasterState: @unchecked Sendable {
+        struct Storage {
+            var envelopeScratch: MTLTexture?
+            var alphaTexture: MTLTexture?
+            var lastBuiltSources: [MaskAlphaSource] = []
+            var lastBuiltSize = MTLSize(width: 0, height: 0, depth: 0)
+        }
+
+        private var storage = Storage()
+
+        func snapshot() -> Storage {
+            storage
+        }
+
+        func update(_ body: (inout Storage) -> Void) {
+            body(&storage)
+        }
+    }
+
     /// Owns mutable render-state buffers and caches. Live preview / Clean Feed instances are
     /// main-thread-owned; the singleton export instance is owned by `offscreenRenderQueue`.
     /// Source upload and adjacent-image precaching are deliberate worker-safe exceptions: they
@@ -804,6 +827,20 @@ final class MetalEditPipeline: @unchecked Sendable {
         executorOwnedWatermarkState.update(body)
     }
 
+    private let executorOwnedBrushRasterState = ExecutorOwnedBrushRasterState()
+
+    nonisolated private func brushRasterStateSnapshot() -> ExecutorOwnedBrushRasterState.Storage {
+        preconditionOnStateExecutor()
+        return executorOwnedBrushRasterState.snapshot()
+    }
+
+    nonisolated private func updateBrushRasterState(
+        _ body: (inout ExecutorOwnedBrushRasterState.Storage) -> Void
+    ) {
+        preconditionOnStateExecutor()
+        executorOwnedBrushRasterState.update(body)
+    }
+
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
     nonisolated var gamutClipMode: UInt32 {
         get { liveStateSnapshot().gamutClipMode }
@@ -915,12 +952,18 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Single-slice scratch texture holding one stroke's coverage envelope during a rebuild:
     /// dabs are max-stamped here, then source-over composited into `brushAlphaTexture` so
     /// separate strokes accumulate. Lazily sized to match the alpha array.
-    nonisolated(unsafe) private var brushEnvScratch: MTLTexture?
+    nonisolated private var brushEnvScratch: MTLTexture? {
+        get { brushRasterStateSnapshot().envelopeScratch }
+        set { updateBrushRasterState { $0.envelopeScratch = newValue } }
+    }
     /// Shared raster-mask alpha coverage: one `texture2d_array` R16Float slice per brush or AI
     /// mask, lazily (re)built by `rebuildMaskAlpha`. Nil when there are no raster masks, so other
     /// edits pay zero GPU memory (an unconditional 8-slice array at export resolution would be
     /// ~1-1.5GB). Sized to the render source and sampled by `editAdjustments` in source UV space.
-    nonisolated(unsafe) private(set) var brushAlphaTexture: MTLTexture?
+    nonisolated private(set) var brushAlphaTexture: MTLTexture? {
+        get { brushRasterStateSnapshot().alphaTexture }
+        set { updateBrushRasterState { $0.alphaTexture = newValue } }
+    }
     /// A 1×1×1 zeroed R16Float array bound to `editAdjustments`' brush-alpha slot whenever there
     /// are no raster masks, so the kernel's `texture2d_array` argument is always satisfied (Metal
     /// requires every declared texture bound) — it's never sampled in that case (no mask sets
@@ -930,8 +973,14 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// `brushAlphaTexture` was rasterized from. `updateParams` runs per slider drag, but raster
     /// sources change only on paint/mask refinement/undo/image-load — comparing against this skips
     /// the full-res rebuild (a synchronous GPU rasterization) on every unrelated tonal edit.
-    nonisolated(unsafe) private var lastBuiltMaskAlphaSources: [MaskAlphaSource] = []
-    nonisolated(unsafe) private var lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
+    nonisolated private var lastBuiltMaskAlphaSources: [MaskAlphaSource] {
+        get { brushRasterStateSnapshot().lastBuiltSources }
+        set { updateBrushRasterState { $0.lastBuiltSources = newValue } }
+    }
+    nonisolated private var lastBuiltBrushSize: MTLSize {
+        get { brushRasterStateSnapshot().lastBuiltSize }
+        set { updateBrushRasterState { $0.lastBuiltSize = newValue } }
+    }
 
     // MARK: - Watermark layers
 
@@ -2109,11 +2158,12 @@ final class MetalEditPipeline: @unchecked Sendable {
             return nil
         }
         let layers = min(sources.count, Self.maxMasks)
+        let rasterState = brushRasterStateSnapshot()
 
         // Lazily (re)allocate only when the slice count or resolution changes; otherwise reuse
         // the existing texture and just re-clear + re-stamp into it.
         let tex: MTLTexture
-        if let existing = brushAlphaTexture,
+        if let existing = rasterState.alphaTexture,
            existing.width == size.width, existing.height == size.height,
            existing.arrayLength == layers {
             tex = existing
@@ -2135,7 +2185,8 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         // Single-slice envelope scratch, reused across strokes; (re)allocated to match `size`.
         let scratch: MTLTexture
-        if let existing = brushEnvScratch, existing.width == size.width, existing.height == size.height {
+        if let existing = rasterState.envelopeScratch,
+           existing.width == size.width, existing.height == size.height {
             scratch = existing
         } else {
             let desc = MTLTextureDescriptor()
@@ -2238,8 +2289,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        brushAlphaTexture = tex
-        brushEnvScratch = scratch
+        updateBrushRasterState {
+            $0.alphaTexture = tex
+            $0.envelopeScratch = scratch
+        }
         return tex
     }
 
@@ -2323,29 +2376,34 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Frees the brush alpha texture (e.g. when the last brush mask is removed).
     nonisolated func clearBrushAlpha() {
         preconditionOnStateExecutor()
-        brushAlphaTexture = nil
-        brushEnvScratch = nil
-        lastBuiltMaskAlphaSources = []
-        lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
+        updateBrushRasterState {
+            $0.alphaTexture = nil
+            $0.envelopeScratch = nil
+            $0.lastBuiltSources = []
+            $0.lastBuiltSize = MTLSize(width: 0, height: 0, depth: 0)
+        }
     }
 
     /// Cached wrapper around `rebuildMaskAlpha` for the live path: a full-resolution rebuild is
     /// skipped on unrelated tonal slider changes.
     nonisolated func refreshMaskAlpha(_ sources: [MaskAlphaSource], size: MTLSize) {
         preconditionOnStateExecutor()
+        let rasterState = brushRasterStateSnapshot()
         guard !sources.isEmpty else {
-            if brushAlphaTexture != nil { clearBrushAlpha() }
+            if rasterState.alphaTexture != nil { clearBrushAlpha() }
             return
         }
-        if brushAlphaTexture != nil,
-           sources == lastBuiltMaskAlphaSources,
-           size.width == lastBuiltBrushSize.width,
-           size.height == lastBuiltBrushSize.height {
+        if rasterState.alphaTexture != nil,
+           sources == rasterState.lastBuiltSources,
+           size.width == rasterState.lastBuiltSize.width,
+           size.height == rasterState.lastBuiltSize.height {
             return
         }
         rebuildMaskAlpha(sources, size: size)
-        lastBuiltMaskAlphaSources = sources
-        lastBuiltBrushSize = size
+        updateBrushRasterState {
+            $0.lastBuiltSources = sources
+            $0.lastBuiltSize = size
+        }
     }
 
     /// Brush-only compatibility wrapper retained for focused rasterization tests and live-paint

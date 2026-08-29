@@ -272,6 +272,54 @@ struct SerializedFileSystemServiceTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("drop source snapshot freezes directories, files, and missing URLs in input order")
+    func dropSourceSnapshot() async throws {
+        let directory = URL(fileURLWithPath: "/virtual/folder", isDirectory: true)
+        let file = URL(fileURLWithPath: "/virtual/photo.jpg")
+        let missing = URL(fileURLWithPath: "/virtual/missing.jpg")
+        let kinds: [URL: FileSystemService.DropSourceKind] = [
+            directory: .directory,
+            file: .regularFile,
+            missing: .missing,
+        ]
+        let service = FileSystemService(classifyDropSource: { kinds[$0] ?? .missing })
+
+        let snapshot = try await service.dropSourceSnapshot(for: [file, missing, directory])
+
+        #expect(snapshot.directories == [directory])
+        #expect(snapshot.regularFiles == [file])
+        #expect(snapshot.missingURLs == [missing])
+    }
+
+    @Test("drop source probes cross off the main actor")
+    @MainActor
+    func dropSourceSnapshotRunsOffMain() async throws {
+        let url = URL(fileURLWithPath: "/virtual/photo.jpg")
+        let probe = DropSourceThreadProbe()
+        let service = FileSystemService(classifyDropSource: probe.classify)
+
+        let snapshot = try await service.dropSourceSnapshot(for: [url])
+
+        #expect(snapshot.regularFiles == [url])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("pre-cancelled drop source snapshot performs no probes")
+    func dropSourceSnapshotHonorsPreCancellation() async throws {
+        let probe = DropSourceThreadProbe()
+        let service = FileSystemService(classifyDropSource: probe.classify)
+        let task = Task {
+            await Task.yield()
+            return try await service.dropSourceSnapshot(for: [URL(fileURLWithPath: "/virtual/photo.jpg")])
+        }
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+        #expect(probe.callCount == 0)
+    }
+
     @Test("pre-cancelled mutation makes no filesystem change")
     func mutationHonorsPreCancellation() async throws {
         let fixture = try OfflineFileFixture()
@@ -464,6 +512,28 @@ nonisolated private final class DirectoryEnumerationThreadProbe: @unchecked Send
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
         )
+    }
+}
+
+nonisolated private final class DropSourceThreadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observedMainThread = false
+    private var recordedCallCount = 0
+
+    var ranOnMainThread: Bool {
+        lock.withLock { observedMainThread }
+    }
+
+    var callCount: Int {
+        lock.withLock { recordedCallCount }
+    }
+
+    func classify(_ url: URL) -> FileSystemService.DropSourceKind {
+        lock.withLock {
+            observedMainThread = observedMainThread || Thread.isMainThread
+            recordedCallCount += 1
+        }
+        return .regularFile
     }
 }
 

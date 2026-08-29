@@ -230,19 +230,9 @@ struct EditWorkspaceView: View {
 
     @State private var sourceImage: NSImage?
     @State private var sourceCIImage: CIImage?
-    /// URL and orientation the retained `sourceCIImage`/`sourceImage` were decoded for.
-    /// Lets an in-app rotation of the *same* image rotate the known-good source in place
-    /// (see the `exifOrientation` onChange) instead of re-decoding from a file whose EXIF
-    /// tag was just rewritten — a re-decode double-applies the rotation (preview shows 180°
-    /// while the file rotated 90°) because ImageIO can serve new pixels with a stale
-    /// reported orientation.
-    @State private var sourceLoadedURL: URL?
-    @State private var sourceLoadedOrientation: Int?
     @State private var isDraggingEditSlider = false
     @State private var previewCIImage: CIImage?
     @State private var previewImage: NSImage?
-    @State private var previewTask: Task<Void, Never>?
-    @State private var previewRenderTask: Task<Void, Never>?
     @State private var developComparisonRenderTask: Task<Void, Never>?
     @State private var developComparisonTarget: ImageFile?
     @State private var developVersionComparisonTarget: DevelopVersionComparisonTarget?
@@ -255,12 +245,10 @@ struct EditWorkspaceView: View {
     @State private var developVersionNameDraft = ""
     @State private var developVersionPendingDeleteID: UUID?
     @State private var developVersionPendingPromotionID: UUID?
-    /// Speculative adjacent-RAW decoding must have a single owner. Without retaining this task,
-    /// rapid navigation left every previous pair decoding and uploading concurrently even after
-    /// its preview was cancelled, causing extreme Core Image/IOSurface memory growth.
-    @State private var adjacentRAWPrecacheTask: Task<Void, Never>?
-    @State private var isLoadingPreview = false
-    @State private var isDecodingFullResolution = false
+    /// Owns source URL/orientation, loading progress, and the tasks for preview decode/render,
+    /// adjacent-RAW precaching, and lazy full-resolution zoom upgrades. One image-session boundary
+    /// prevents previous-image work from publishing stale pixels or retaining decode graphs.
+    @State private var previewSession = DevelopPreviewSessionCoordinator()
     @State private var isSavingRenderedJPEG = false
     @State private var saveError: String?
     @State private var copyPasteFeedback: String?
@@ -330,10 +318,6 @@ struct EditWorkspaceView: View {
     @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
     @State private var editZoomScale: CGFloat = 1.0
     @State private var lastEditZoomScale: CGFloat = 1.0
-    /// True once the Metal source texture has been upgraded from the screen-resolution
-    /// Phase 2 decode to a full-sensor-resolution decode for pixel-peeping at high zoom.
-    @State private var isEditFullResLoaded = false
-    @State private var editFullResTask: Task<Void, Never>?
     @State private var editOffset: CGSize = .zero
     @State private var lastEditOffset: CGSize = .zero
     @State private var previewPaneFrame: CGRect = .zero
@@ -388,6 +372,44 @@ struct EditWorkspaceView: View {
 
     private var selectedImageURL: URL? {
         selectedImage?.url
+    }
+
+    // Transitional aliases keep the decode/render implementation compact while
+    // `DevelopPreviewSessionCoordinator` remains the sole owner of image-scoped progress,
+    // source identity, and cancellable preview work.
+    private var isLoadingPreview: Bool {
+        get { previewSession.isLoadingPreview }
+        nonmutating set { previewSession.isLoadingPreview = newValue }
+    }
+
+    private var isDecodingFullResolution: Bool {
+        get { previewSession.isDecodingFullResolution }
+        nonmutating set { previewSession.isDecodingFullResolution = newValue }
+    }
+
+    private var isEditFullResLoaded: Bool {
+        get { previewSession.isEditFullResLoaded }
+        nonmutating set { previewSession.isEditFullResLoaded = newValue }
+    }
+
+    private var previewTask: Task<Void, Never>? {
+        get { previewSession.sourceLoadTask }
+        nonmutating set { previewSession.replaceSourceLoadTask(with: newValue) }
+    }
+
+    private var previewRenderTask: Task<Void, Never>? {
+        get { previewSession.previewRenderTask }
+        nonmutating set { previewSession.replacePreviewRenderTask(with: newValue) }
+    }
+
+    private var adjacentRAWPrecacheTask: Task<Void, Never>? {
+        get { previewSession.adjacentPrecacheTask }
+        nonmutating set { previewSession.replaceAdjacentPrecacheTask(with: newValue) }
+    }
+
+    private var editFullResTask: Task<Void, Never>? {
+        get { previewSession.fullResolutionUpgradeTask }
+        nonmutating set { previewSession.replaceFullResolutionUpgradeTask(with: newValue) }
     }
 
     private var canEditSingleImage: Bool {
@@ -809,8 +831,8 @@ struct EditWorkspaceView: View {
             // orientation) so the corrective rotation double-applies — the preview shows
             // 180° while the file only rotated 90°. Rotating the already-correct source
             // avoids the file round-trip entirely and is always a single, exact step.
-            if let url = selectedImageURL, url == sourceLoadedURL, sourceCIImage != nil,
-               let from = sourceLoadedOrientation, let newVal, from != newVal,
+            if let url = selectedImageURL, sourceCIImage != nil,
+               let from = previewSession.loadedOrientation(for: url), let newVal, from != newVal,
                ImageFile.orientationCorrection(from: from, to: newVal) != .up {
                 editLog.info("[\(url.lastPathComponent)] in-place rotate source \(from) → \(newVal)")
                 rotateSourceInPlace(from: from, to: newVal)
@@ -2615,6 +2637,7 @@ struct EditWorkspaceView: View {
         }
         developVersionSession.reset()
         aiMaskSelection.endImageSession()
+        previewSession.endImageSession()
 
         // Tear down the clean-feed mirror; browse mode resumes driving the feed.
         metalPipeline?.mirror = nil
@@ -2629,12 +2652,6 @@ struct EditWorkspaceView: View {
         metalCoordinator.stopContinuousRendering()
         scopeViewModel.metalScopeCoordinator?.stopContinuousRendering()
         scopeViewModel.clearMetal()
-        previewTask?.cancel()
-        previewTask = nil
-        adjacentRAWPrecacheTask?.cancel()
-        adjacentRAWPrecacheTask = nil
-        previewRenderTask?.cancel()
-        previewRenderTask = nil
         scopeThrottleTask?.cancel()
         scopeThrottleTask = nil
         if let monitor = keyEventMonitor {
@@ -2813,16 +2830,12 @@ struct EditWorkspaceView: View {
     private func loadSelectedImagePreview() {
         let filename = selectedImageURL?.lastPathComponent ?? "nil"
         editLog.info("[\(filename)] loadSelectedImagePreview: resetting state, cancelling previous tasks")
-        previewTask?.cancel()
-        previewTask = nil
-        adjacentRAWPrecacheTask?.cancel()
-        adjacentRAWPrecacheTask = nil
-        previewRenderTask?.cancel()
-        previewRenderTask = nil
+        previewSession.beginImageSession(
+            selectedImageURL,
+            orientation: selectedImageURL == nil ? nil : selectedImageOrientation
+        )
         sourceImage = nil
         sourceCIImage = nil
-        sourceLoadedURL = nil
-        sourceLoadedOrientation = nil
         asShotWhiteBalance = nil
         isPickingWhiteBalance = false
         aiMaskSelection.beginImageSession(selectedImageURL)
@@ -2833,11 +2846,6 @@ struct EditWorkspaceView: View {
         metalPipeline?.asShotTint = 0
         previewCIImage = nil
         previewImage = nil
-        isLoadingPreview = false
-        isDecodingFullResolution = false
-        isEditFullResLoaded = false
-        editFullResTask?.cancel()
-        editFullResTask = nil
         metalPipeline?.clearSourceTexture()
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         resetCropZoom()
@@ -2864,10 +2872,8 @@ struct EditWorkspaceView: View {
         // the orientation of the bytes it actually decoded — a single upfront read can
         // race the pending write (Phase 2 decodes seconds later) and over-rotate.
         let targetOrientation = selectedImageOrientation
-        // Record what the source is being decoded for, so a later in-app rotation of this
-        // same image can rotate the retained source in place instead of re-decoding.
-        sourceLoadedURL = selectedImageURL
-        sourceLoadedOrientation = targetOrientation
+        // The preview-session owner recorded this image/orientation before reset so a later
+        // in-app rotation can rotate the retained source in place instead of re-decoding.
 
         editLog.info("[\(filename)] loadSelectedImagePreview: starting previewTask (isRaw=\(isRaw), maxPx=\(Int(previewMaxPixelSize)), targetOrientation=\(targetOrientation))")
 
@@ -3292,7 +3298,7 @@ struct EditWorkspaceView: View {
         )
         sourceCIImage = rotatedCI
         sourceImage = rotatedNS
-        sourceLoadedOrientation = to
+        previewSession.recordLoadedOrientation(to)
         // Aspect ratio swapped (landscape ↔ portrait) — re-fit and re-fetch full-res on zoom.
         isEditFullResLoaded = false
         editFullResTask?.cancel()
@@ -3342,6 +3348,7 @@ struct EditWorkspaceView: View {
         let targetOrientation = selectedImageOrientation
         let isRaw = SupportedImageFormats.isRaw(url: url)
         let filename = url.lastPathComponent
+        let previewSessionGeneration = previewSession.sessionGeneration
         editLog.info("[\(filename)] zoom upgrade: decoding full-res (native \(Int(nativeMax))px, tex \(Int(texMax))px)")
 
         editFullResTask = Task {
@@ -3367,18 +3374,24 @@ struct EditWorkspaceView: View {
             }.value
 
             guard !Task.isCancelled, selectedImageURL == url, let fullRes else {
-                editFullResTask = nil
+                previewSession.finishFullResolutionUpgrade(
+                    sessionGeneration: previewSessionGeneration
+                )
                 return
             }
             await Task.detached(priority: .medium) {
                 pipeline.uploadSourceImage(fullRes, exifOrientation: targetOrientation)
             }.value
             guard !Task.isCancelled, selectedImageURL == url else {
-                editFullResTask = nil
+                previewSession.finishFullResolutionUpgrade(
+                    sessionGeneration: previewSessionGeneration
+                )
                 return
             }
             isEditFullResLoaded = true
-            editFullResTask = nil
+            previewSession.finishFullResolutionUpgrade(
+                sessionGeneration: previewSessionGeneration
+            )
             syncViewportToMetal()
             renderPreview()
             editLog.info("[\(filename)] zoom upgrade: full-res texture uploaded in \(ContinuousClock.now - start)")

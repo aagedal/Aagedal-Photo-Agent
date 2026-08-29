@@ -112,18 +112,42 @@ nonisolated enum DeliveryReceiptSummaryExportResult: Equatable, Sendable {
     case cancelledBeforeWrite
 }
 
+nonisolated protocol DeliveryReceiptSummaryExporting: Sendable {
+    func write(
+        _ text: String,
+        to destination: URL
+    ) async throws -> DeliveryReceiptSummaryExportResult
+}
+
+nonisolated struct DeliveryReceiptSummaryFileWriter: Sendable {
+    let write: @Sendable (Data, URL) throws -> Void
+
+    static let system = DeliveryReceiptSummaryFileWriter { data, destination in
+        try data.write(to: destination, options: .withoutOverwriting)
+    }
+}
+
 /// Shared exclusive-create boundary for receipt summaries. All potentially blocking writes are
 /// serialized off the MainActor, while callers receive immutable evidence of whether bytes were
 /// committed or cancellation prevented the write from starting.
-actor DeliveryReceiptSummaryExportBoundary {
+actor DeliveryReceiptSummaryExportBoundary: DeliveryReceiptSummaryExporting {
     static let shared = DeliveryReceiptSummaryExportBoundary()
 
-    func write(_ text: String, to destination: URL) throws -> DeliveryReceiptSummaryExportResult {
+    private let writer: DeliveryReceiptSummaryFileWriter
+
+    init(writer: DeliveryReceiptSummaryFileWriter = .system) {
+        self.writer = writer
+    }
+
+    func write(
+        _ text: String,
+        to destination: URL
+    ) throws -> DeliveryReceiptSummaryExportResult {
         guard !Task.isCancelled else { return .cancelledBeforeWrite }
         let data = Data((text + "\n").utf8)
         // Foundation does not support combining `.atomic` and `.withoutOverwriting`.
         // Exclusive create is the important transaction boundary: export never replaces bytes.
-        try data.write(to: destination, options: .withoutOverwriting)
+        try writer.write(data, destination)
         return .committed(DeliveryReceiptSummaryExportCommit(
             destinationURL: destination,
             byteCount: data.count,
@@ -145,12 +169,13 @@ final class DeliveryReceiptLibraryModel {
 
     @ObservationIgnored private let repository: any DeliveryReceiptLibraryRepository
     @ObservationIgnored private let summaryGenerator: DeliveryReceiptSummaryGenerator
-    @ObservationIgnored private let summaryExporter: DeliveryReceiptSummaryExportBoundary
+    @ObservationIgnored private let summaryExporter: any DeliveryReceiptSummaryExporting
+    @ObservationIgnored private var summaryExportGeneration: UInt64 = 0
 
     init(
         repository: (any DeliveryReceiptLibraryRepository)? = nil,
         summaryGenerator: DeliveryReceiptSummaryGenerator = DeliveryReceiptSummaryGenerator(),
-        summaryExporter: DeliveryReceiptSummaryExportBoundary = .shared
+        summaryExporter: any DeliveryReceiptSummaryExporting = DeliveryReceiptSummaryExportBoundary.shared
     ) {
         self.repository = repository ?? DeliveryReceiptRepository(
             documentURL: AppPaths.applicationSupport
@@ -221,6 +246,8 @@ final class DeliveryReceiptLibraryModel {
 
     /// Writes only the repository's human-readable aggregate summary and refuses replacement.
     func exportSummary(id: UUID, to destination: URL) async -> Bool {
+        summaryExportGeneration &+= 1
+        let generation = summaryExportGeneration
         do {
             let text: String
             if let detail = details[id] {
@@ -231,14 +258,20 @@ final class DeliveryReceiptLibraryModel {
             }
             switch try await summaryExporter.write(text, to: destination) {
             case .committed:
-                error = nil
+                if generation == summaryExportGeneration {
+                    error = nil
+                }
                 return true
             case .cancelledBeforeWrite:
-                error = .summaryExportCancelled(receiptID: id)
+                if generation == summaryExportGeneration {
+                    error = .summaryExportCancelled(receiptID: id)
+                }
                 return false
             }
         } catch {
-            self.error = .summaryExportFailed(receiptID: id, reason: Self.reason(for: error))
+            if generation == summaryExportGeneration {
+                self.error = .summaryExportFailed(receiptID: id, reason: Self.reason(for: error))
+            }
             return false
         }
     }

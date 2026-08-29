@@ -471,3 +471,68 @@ struct DevelopMaskInteractionCoordinatorTests {
         #expect(coordinator.mattePreviewMaskID == nil)
     }
 }
+
+@Suite("Develop preview session coordinator")
+@MainActor
+struct DevelopPreviewSessionCoordinatorTests {
+    @Test("an image change cancels every image-scoped preview task and resets progress")
+    func imageChangeCancelsTasksAndResetsProgress() {
+        let coordinator = DevelopPreviewSessionCoordinator()
+        let firstURL = URL(fileURLWithPath: "/tmp/preview-session-first.raw")
+        let secondURL = URL(fileURLWithPath: "/tmp/preview-session-second.raw")
+        let sourceLoad = Task<Void, Never> { try? await Task.sleep(for: .seconds(10)) }
+        let previewRender = Task<Void, Never> { try? await Task.sleep(for: .seconds(10)) }
+        let adjacentPrecache = Task<Void, Never> { try? await Task.sleep(for: .seconds(10)) }
+        let fullResolutionUpgrade = Task<Void, Never> { try? await Task.sleep(for: .seconds(10)) }
+
+        coordinator.beginImageSession(firstURL, orientation: 6)
+        coordinator.isLoadingPreview = true
+        coordinator.isDecodingFullResolution = true
+        coordinator.isEditFullResLoaded = true
+        coordinator.replaceSourceLoadTask(with: sourceLoad)
+        coordinator.replacePreviewRenderTask(with: previewRender)
+        coordinator.replaceAdjacentPrecacheTask(with: adjacentPrecache)
+        coordinator.replaceFullResolutionUpgradeTask(with: fullResolutionUpgrade)
+        let firstGeneration = coordinator.sessionGeneration
+
+        coordinator.beginImageSession(secondURL, orientation: 1)
+        let replacementUpgrade = Task<Void, Never> { try? await Task.sleep(for: .seconds(10)) }
+        defer { replacementUpgrade.cancel() }
+        coordinator.replaceFullResolutionUpgradeTask(with: replacementUpgrade)
+        coordinator.finishFullResolutionUpgrade(sessionGeneration: firstGeneration)
+
+        #expect(sourceLoad.isCancelled)
+        #expect(previewRender.isCancelled)
+        #expect(adjacentPrecache.isCancelled)
+        #expect(fullResolutionUpgrade.isCancelled)
+        #expect(coordinator.sourceLoadTask == nil)
+        #expect(coordinator.previewRenderTask == nil)
+        #expect(coordinator.adjacentPrecacheTask == nil)
+        #expect(coordinator.fullResolutionUpgradeTask != nil)
+        #expect(coordinator.activeImageURL == secondURL)
+        #expect(coordinator.sourceLoadedURL == secondURL)
+        #expect(coordinator.sourceLoadedOrientation == 1)
+        #expect(!coordinator.isLoadingPreview)
+        #expect(!coordinator.isDecodingFullResolution)
+        #expect(!coordinator.isEditFullResLoaded)
+    }
+
+    @Test("source identity permits in-place rotation only for the active decoded image")
+    func sourceIdentityGatesInPlaceRotation() {
+        let coordinator = DevelopPreviewSessionCoordinator()
+        let loadedURL = URL(fileURLWithPath: "/tmp/preview-session-loaded.jpg")
+        let otherURL = URL(fileURLWithPath: "/tmp/preview-session-other.jpg")
+
+        coordinator.beginImageSession(loadedURL, orientation: 6)
+
+        #expect(coordinator.loadedOrientation(for: loadedURL) == 6)
+        #expect(coordinator.loadedOrientation(for: otherURL) == nil)
+        coordinator.recordLoadedOrientation(8)
+        #expect(coordinator.loadedOrientation(for: loadedURL) == 8)
+
+        coordinator.endImageSession()
+        #expect(coordinator.activeImageURL == nil)
+        #expect(coordinator.sourceLoadedURL == nil)
+        #expect(coordinator.sourceLoadedOrientation == nil)
+    }
+}

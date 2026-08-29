@@ -151,6 +151,17 @@ cover blocked-reader UI responsiveness, cancellation suppressing partial evidenc
 root/companion snapshots. The complete 15-test `BatchRenameSheetStateTests` suite passed in isolation and in
 the integrated 34-test result bundle at `/private/tmp/aagedal-v3-continue-20260829-002.xcresult`.
 
+The 2026-08-30 sidebar follow-up moved dropped-URL existence/type probes from `FolderDropDelegate`'s
+main-actor task into `FileSystemService`. The actor returns one immutable directory/file/missing snapshot and
+checks cancellation before every injected probe. Three new tests cover exact classification, off-main
+execution, and pre-cancellation with zero probes.
+
+The same continuation hardened `DeliveryReceiptSummaryExportBoundary` with an injected writer, verified
+serialized off-main execution, queued cancellation with no second write, and durable commit evidence when
+cancellation arrives during the synchronous write. A model generation guard suppresses failures from
+superseded exports. The integrated 43-test result bundle is recorded in
+[`plan-status-follow-up-validation-2026-08-30.md`](plan-status-follow-up-validation-2026-08-30.md).
+
 ## Remaining exit-gate work
 
 Phase 3.1 is not complete. Signposts and repeatable benchmarks still need to cover local SSD, network,

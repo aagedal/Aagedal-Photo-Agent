@@ -68,9 +68,10 @@ REQUIREMENTS = (
         r"sends the visible map region as tile coordinates to OpenStreetMap",
     ),
     required(
-        "report destination uses an atomic write",
-        "Aagedal Photo Agent/Views/Analysis/AnalysisWorkspaceView.swift",
-        r"data\.write\(to:\s*outputURL,\s*options:\s*\.atomic\)",
+        "report and evidence destinations use the serialized atomic export boundary",
+        "Aagedal Photo Agent/Services/AnalysisExportFileService.swift",
+        r"AnalysisExportFileWriter\s*\{\s*data,\s*destination\s+in\s*"
+        r"try\s+data\.write\(to:\s*destination,\s*options:\s*\.atomic\)",
     ),
     required(
         "OpenStreetMap requests use an ephemeral session",

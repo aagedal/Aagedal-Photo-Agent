@@ -220,19 +220,238 @@ struct DeliveryReceiptLibraryModelTests {
         )))
         #expect(try String(contentsOf: destination, encoding: .utf8) == "Summary\n")
     }
+
+    @Test("overlapping summary writes serialize off-main and cancellation stops queued work")
+    func summaryWriterSerializationAndQueuedCancellation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "receipt-summary-serialized-writer-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let probe = BlockingReceiptSummaryWriter()
+        let boundary = DeliveryReceiptSummaryExportBoundary(writer: DeliveryReceiptSummaryFileWriter(
+            write: { data, destination in
+                try probe.write(data, to: destination)
+            }
+        ))
+        let firstDestination = directory.appendingPathComponent("first.txt")
+        let secondDestination = directory.appendingPathComponent("second.txt")
+        let first = Task {
+            try await boundary.write("First", to: firstDestination)
+        }
+        try await probe.waitUntilFirstWriteStarts()
+        let second = Task {
+            try await boundary.write("Second", to: secondDestination)
+        }
+        second.cancel()
+        probe.releaseFirstWrite()
+
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+
+        guard case .committed(let commit) = firstResult else {
+            Issue.record("Expected the first summary to commit")
+            return
+        }
+        #expect(commit.destinationURL == firstDestination)
+        #expect(secondResult == .cancelledBeforeWrite)
+        #expect(probe.invocationCount == 1)
+        #expect(probe.maximumConcurrentWrites == 1)
+        #expect(!probe.ranOnMainThread)
+        #expect(try String(contentsOf: firstDestination, encoding: .utf8) == "First\n")
+        #expect(!FileManager.default.fileExists(atPath: secondDestination.path))
+    }
+
+    @Test("cancellation during the synchronous summary commit reports durable success")
+    func summaryWriterCancellationAfterCommit() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "receipt-summary-durable-writer-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("summary.txt")
+        let boundary = DeliveryReceiptSummaryExportBoundary(writer: DeliveryReceiptSummaryFileWriter(
+            write: { data, destination in
+                try data.write(to: destination, options: .withoutOverwriting)
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        ))
+        let task = Task {
+            try await boundary.write("Durable", to: destination)
+        }
+
+        let result = try await task.value
+
+        #expect(result == .committed(DeliveryReceiptSummaryExportCommit(
+            destinationURL: destination,
+            byteCount: 8,
+            cancellationRequestedAfterCommit: true
+        )))
+        #expect(try String(contentsOf: destination, encoding: .utf8) == "Durable\n")
+    }
+
+    @Test("a superseded export failure cannot replace the latest result")
+    func staleSummaryExportFailureIsIgnored() async throws {
+        let receipt = makeActivityReceipt(filename: "stale-export.jpg")
+        let repository = ReceiptLibraryStub(receipts: [receipt.id: receipt])
+        let exporter = ControllableReceiptSummaryExporter()
+        let model = DeliveryReceiptLibraryModel(
+            repository: repository,
+            summaryExporter: exporter
+        )
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "receipt-summary-stale-result-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let staleDestination = directory.appendingPathComponent("stale.txt")
+        let latestDestination = directory.appendingPathComponent("latest.txt")
+
+        let stale = Task { @MainActor in
+            await model.exportSummary(id: receipt.id, to: staleDestination)
+        }
+        try await exporter.waitForInvocationCount(1)
+        let latest = Task { @MainActor in
+            await model.exportSummary(id: receipt.id, to: latestDestination)
+        }
+        try await exporter.waitForInvocationCount(2)
+        await exporter.complete(
+            destination: latestDestination,
+            with: .success(.committed(DeliveryReceiptSummaryExportCommit(
+                destinationURL: latestDestination,
+                byteCount: 7,
+                cancellationRequestedAfterCommit: false
+            )))
+        )
+        #expect(await latest.value)
+        await exporter.complete(
+            destination: staleDestination,
+            with: .failure(ReceiptLibraryStubError.exportDenied)
+        )
+
+        #expect(!(await stale.value))
+        #expect(model.error == nil)
+    }
 }
 
 private enum ReceiptLibraryStubError: Error, LocalizedError, Sendable {
     case catalogUnavailable
     case receiptUnavailable
     case deleteDenied
+    case exportDenied
 
     var errorDescription: String? {
         switch self {
         case .catalogUnavailable: "catalog unavailable"
         case .receiptUnavailable: "receipt unavailable"
         case .deleteDenied: "delete denied"
+        case .exportDenied: "export denied"
         }
+    }
+}
+
+private enum ReceiptSummaryWriterProbeError: Error {
+    case timedOut
+}
+
+private nonisolated final class BlockingReceiptSummaryWriter: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var writeCount = 0
+    private var activeWrites = 0
+    private var maximumActiveWrites = 0
+    private var firstWriteReleased = false
+    private var observedMainThread = false
+
+    func write(_ data: Data, to destination: URL) throws {
+        condition.lock()
+        writeCount += 1
+        activeWrites += 1
+        maximumActiveWrites = max(maximumActiveWrites, activeWrites)
+        observedMainThread = observedMainThread || Thread.isMainThread
+        condition.broadcast()
+        if writeCount == 1 {
+            while !firstWriteReleased {
+                condition.wait()
+            }
+        }
+        activeWrites -= 1
+        condition.unlock()
+        try data.write(to: destination, options: .withoutOverwriting)
+    }
+
+    func waitUntilFirstWriteStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while invocationCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw ReceiptSummaryWriterProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstWrite() {
+        condition.lock()
+        firstWriteReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var invocationCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return writeCount
+    }
+
+    var maximumConcurrentWrites: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumActiveWrites
+    }
+
+    var ranOnMainThread: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return observedMainThread
+    }
+}
+
+private actor ControllableReceiptSummaryExporter: DeliveryReceiptSummaryExporting {
+    private var continuations: [URL: CheckedContinuation<DeliveryReceiptSummaryExportResult, any Error>] = [:]
+    private var invocationCount = 0
+
+    func write(
+        _ text: String,
+        to destination: URL
+    ) async throws -> DeliveryReceiptSummaryExportResult {
+        _ = text
+        invocationCount += 1
+        return try await withCheckedThrowingContinuation { continuation in
+            continuations[destination] = continuation
+        }
+    }
+
+    func waitForInvocationCount(_ expectedCount: Int) async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while invocationCount < expectedCount {
+            guard ContinuousClock.now < deadline else {
+                throw ReceiptSummaryWriterProbeError.timedOut
+            }
+            await Task.yield()
+        }
+    }
+
+    func complete(
+        destination: URL,
+        with result: Result<DeliveryReceiptSummaryExportResult, any Error>
+    ) {
+        guard let continuation = continuations.removeValue(forKey: destination) else {
+            Issue.record("No suspended receipt export for \(destination.lastPathComponent)")
+            return
+        }
+        continuation.resume(with: result)
     }
 }
 

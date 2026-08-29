@@ -83,10 +83,26 @@ actor FileSystemService {
         let cancellationStoppedRemainingItems: Bool
     }
 
+    enum DropSourceKind: Sendable, Equatable {
+        case directory
+        case regularFile
+        case missing
+    }
+
+    /// One immutable classification of URLs received from a sidebar drop. A dropped URL can
+    /// point at a slow external, network, or iCloud volume, so the existence/type probes belong
+    /// on the same serialized filesystem executor as the mutations they precede.
+    struct DropSourceSnapshot: Sendable, Equatable {
+        let directories: [URL]
+        let regularFiles: [URL]
+        let missingURLs: [URL]
+    }
+
     private let isLocallyAvailable: @Sendable (URL) -> Bool
     private let requestDownload: @Sendable (URL) -> Void
     private let rejectMove: @Sendable ([URL], URL) -> RejectMoveService.MoveResult
     private let supportedFilesContents: @Sendable (URL) throws -> [URL]
+    private let classifyDropSource: @Sendable (URL) -> DropSourceKind
 
     init(
         isLocallyAvailable: @escaping @Sendable (URL) -> Bool = {
@@ -104,12 +120,20 @@ actor FileSystemService {
                 includingPropertiesForKeys: [.isRegularFileKey],
                 options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
             )
+        },
+        classifyDropSource: @escaping @Sendable (URL) -> DropSourceKind = { url in
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+                return .missing
+            }
+            return isDirectory.boolValue ? .directory : .regularFile
         }
     ) {
         self.isLocallyAvailable = isLocallyAvailable
         self.requestDownload = requestDownload
         self.rejectMove = rejectMove
         self.supportedFilesContents = supportedFilesContents
+        self.classifyDropSource = classifyDropSource
     }
 
     /// Scans a folder for image files on this service's serialized actor executor. Directory
@@ -185,6 +209,33 @@ actor FileSystemService {
             if order != .orderedSame { return order == .orderedAscending }
             return lhs.path < rhs.path
         }
+    }
+
+    func dropSourceSnapshot(for urls: [URL]) throws -> DropSourceSnapshot {
+        try Task.checkCancellation()
+        var directories: [URL] = []
+        var regularFiles: [URL] = []
+        var missingURLs: [URL] = []
+        directories.reserveCapacity(urls.count)
+        regularFiles.reserveCapacity(urls.count)
+
+        for url in urls {
+            try Task.checkCancellation()
+            switch classifyDropSource(url) {
+            case .directory:
+                directories.append(url)
+            case .regularFile:
+                regularFiles.append(url)
+            case .missing:
+                missingURLs.append(url)
+            }
+        }
+        try Task.checkCancellation()
+        return DropSourceSnapshot(
+            directories: directories,
+            regularFiles: regularFiles,
+            missingURLs: missingURLs
+        )
     }
 
     func listSubfolders(at url: URL) throws -> [URL] {

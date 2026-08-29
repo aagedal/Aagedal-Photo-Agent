@@ -107,3 +107,14 @@ The source contract rejects the six former unsafe declarations, requires the new
 accessors, and lowers the explicit `nonisolated(unsafe)` ceiling from 14 to 8. A fresh application/test-target
 build succeeded, and all 16 `BrushRasterizationTests` passed both independently and in the combined 34-test
 result bundle at `/private/tmp/aagedal-v3-continue-20260829-002.xcresult`.
+
+## Brush raster state follow-up — 2026-08-30
+
+Brush alpha texture, stroke-envelope scratch texture, last-built sources, and last-built size now form one
+`ExecutorOwnedBrushRasterState`. Executor-checked snapshot/update wrappers are the only storage access. A
+rebuild publishes both textures together; clear and refresh update texture and cache-key state coherently.
+
+The source contract requires the holder and wrappers, rejects the four former unsafe declarations, and
+lowers the explicit `nonisolated(unsafe)` ceiling from 8 to 4. The complete `BrushRasterizationTests` suite
+passed all 16 tests inside the integrated 43-test result bundle documented in
+[`plan-status-follow-up-validation-2026-08-30.md`](plan-status-follow-up-validation-2026-08-30.md).

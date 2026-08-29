@@ -5120,6 +5120,8 @@ struct BrushRasterizationTests {
             "nonisolated private func updateLiveState",
             "nonisolated private func watermarkStateSnapshot",
             "nonisolated private func updateWatermarkState",
+            "nonisolated private func brushRasterStateSnapshot",
+            "nonisolated private func updateBrushRasterState",
         ] {
             let start = try #require(source.range(of: signature))
             let suffix = source[start.lowerBound...]
@@ -5200,6 +5202,31 @@ struct BrushRasterizationTests {
         #expect(source.contains("get { watermarkStateSnapshot().texture }"))
         #expect(source.contains("set { updateWatermarkState { $0.texture = newValue } }"))
 
+        // Brush raster textures and the cache key describing their current generation share one
+        // executor-owned lifetime. Keeping them behind one checked synchronous access boundary
+        // prevents a render from observing a rebuilt alpha array with stale source/size metadata.
+        #expect(source.contains("private final class ExecutorOwnedBrushRasterState"))
+        #expect(source.contains("private func brushRasterStateSnapshot"))
+        #expect(source.contains("private func updateBrushRasterState"))
+        for removedDeclaration in [
+            "nonisolated(unsafe) private var brushEnvScratch",
+            "nonisolated(unsafe) private(set) var brushAlphaTexture",
+            "nonisolated(unsafe) private var lastBuiltMaskAlphaSources",
+            "nonisolated(unsafe) private var lastBuiltBrushSize",
+        ] {
+            #expect(!source.contains(removedDeclaration), Comment(rawValue: removedDeclaration))
+        }
+        for declaration in [
+            "nonisolated private var brushEnvScratch: MTLTexture?",
+            "nonisolated private(set) var brushAlphaTexture: MTLTexture?",
+            "nonisolated private var lastBuiltMaskAlphaSources: [MaskAlphaSource]",
+            "nonisolated private var lastBuiltBrushSize: MTLSize",
+        ] {
+            #expect(source.contains(declaration), Comment(rawValue: declaration))
+        }
+        #expect(source.contains("get { brushRasterStateSnapshot().alphaTexture }"))
+        #expect(source.contains("set { updateBrushRasterState { $0.alphaTexture = newValue } }"))
+
         // Metal resource references allocated during initialization are immutable Sendable
         // wrappers. Their buffer/texture contents are still mutated only through the
         // executor-checked methods below; only MTLTextureWrapper's cache payload retains an
@@ -5221,7 +5248,7 @@ struct BrushRasterizationTests {
             #expect(source.contains(declaration), Comment(rawValue: declaration))
         }
         let unsafeEscapeCount = source.components(separatedBy: "nonisolated(unsafe)").count - 1
-        #expect(unsafeEscapeCount <= 8)
+        #expect(unsafeEscapeCount <= 4)
 
         for signature in [
             "nonisolated func updateParams",
