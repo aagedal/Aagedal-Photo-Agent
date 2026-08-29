@@ -3,8 +3,25 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
+private actor ImportSourceDiscoveryProgressRecorder {
+    private var snapshots: [ImportSourceDiscoveryProgress] = []
+
+    func append(_ snapshot: ImportSourceDiscoveryProgress) {
+        snapshots.append(snapshot)
+    }
+
+    func recordedSnapshots() -> [ImportSourceDiscoveryProgress] {
+        snapshots
+    }
+}
+
 @Suite("Import source discovery")
 struct ImportSourceDiscoveryServiceTests {
+    @Test("Discovery progress uses a five-second production cadence")
+    func progressCadence() {
+        #expect(ImportSourceDiscoveryService.defaultProgressUpdateInterval == .seconds(5))
+    }
+
     @Test("Discovery recursively returns regular files while skipping hidden and package contents")
     func discoversRegularFilesOnly() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -46,6 +63,34 @@ struct ImportSourceDiscoveryServiceTests {
         } catch {
             Issue.record("Expected CancellationError, received \(error)")
         }
+    }
+
+    @Test("Discovery progress reports files, supported images, and WAV files")
+    func reportsDiscoveryProgress() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportSourceProgressTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("photo.jpg"))
+        try Data().write(to: root.appendingPathComponent("notes.txt"))
+        try Data().write(to: root.appendingPathComponent("memo.wav"))
+
+        let recorder = ImportSourceDiscoveryProgressRecorder()
+        let files = try await ImportSourceDiscoveryService().discoverFiles(
+            at: root,
+            progressUpdateInterval: .zero
+        ) { snapshot in
+            await recorder.append(snapshot)
+        }
+        let snapshots = await recorder.recordedSnapshots()
+
+        #expect(files.count == 3)
+        #expect(snapshots.last == ImportSourceDiscoveryProgress(
+            discoveredFileCount: 3,
+            supportedImageCount: 1,
+            wavFileCount: 1
+        ))
     }
 }
 
@@ -296,6 +341,69 @@ struct ImportViewModelTests {
 
         #expect(viewModel.folderPathPreview(for: viewModel.dateGroups[0]) == "Photos / 2026 / 2026-07-08 \u{2013} Cup Final \u{2013} Shoot 1")
         #expect(viewModel.folderPathPreview(for: viewModel.dateGroups[1]) == "Photos / 2026 / 2026-07-08 \u{2013} Cup Final \u{2013} Shoot 2")
+    }
+
+    @Test("Split-shoot subfolder layout preserves a manually edited parent folder name")
+    func splitShootSubfolderLayoutPreservesManualParentName() {
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        viewModel.configuration.importTitle = "Cup Final"
+        viewModel.sortByDate = true
+        viewModel.splitShootsIntoSubfolders = true
+        viewModel.dateGroups = [
+            ImportDateGroup(
+                dateString: "2026:07:08",
+                folderName: "My written folder title",
+                shootFolderName: "Shoot 1",
+                yearFolder: "2026",
+                files: [URL(fileURLWithPath: "/card/one.jpg")]
+            ),
+            ImportDateGroup(
+                dateString: "2026:07:08",
+                folderName: "My written folder title",
+                shootFolderName: "Shoot 2",
+                yearFolder: "2026",
+                files: [URL(fileURLWithPath: "/card/two.jpg")]
+            ),
+        ]
+
+        viewModel.splitShootsIntoSubfolders = false
+        #expect(viewModel.dateGroups[0].folderName == "My written folder title \u{2013} Shoot 1")
+        #expect(viewModel.dateGroups[1].folderName == "My written folder title \u{2013} Shoot 2")
+
+        viewModel.splitShootsIntoSubfolders = true
+        #expect(viewModel.dateGroups[0].folderName == "My written folder title")
+        #expect(viewModel.dateGroups[1].folderName == "My written folder title")
+    }
+
+    @Test("Capture-date scan uses an import title entered while the scan is running")
+    func captureDateScanUsesLatestImportTitle() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportDateTitleTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let image = root.appendingPathComponent("photo.jpg")
+        try Data().write(to: image)
+
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        viewModel.sourceFiles = [image]
+        viewModel.configuration.importTitle = ""
+
+        viewModel.scanCaptureDates()
+        viewModel.configuration.importTitle = "Title entered during scan"
+
+        for _ in 0..<500 where viewModel.isScanningDates {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(!viewModel.isScanningDates)
+        #expect(viewModel.dateGroups.count == 1)
+        #expect(viewModel.dateGroups[0].folderName.hasSuffix(" \u{2013} Title entered during scan"))
     }
 
     @Test("Month date grouping previews use the month folder")

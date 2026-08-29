@@ -1,5 +1,21 @@
 # Scene app-command router validation — 2026-08-27
 
+## Workspace and safety command slice — 2026-08-29
+
+Import Photos, Back Up Edited Files, Open in Editor, Move to Trash, and Move Rejected to Folder now send
+typed scene commands. Back Up Edited Files preserves the exact folder URL when invoked from a folder row.
+The internal/external editor choice remains resolved from the same saved preference, but the chosen operation
+is delivered only to the owning scene. The scene's existing content, browser, and safety handlers still
+invoke the same actions as before.
+
+Seven obsolete process-wide notification names, their application-menu/folder-row posts, and their matching
+subscriptions were removed. State-change broadcasts remain on `NotificationCenter`.
+
+Characterization coverage was added before the production cases and asserts typed identity, the folder URL
+payload, and monotonic ordering for all seven cases. A fresh arm64 test build compiled the complete
+application and test targets, then the focused `AppCommandRouterTests` selector passed all **8 tests** with
+`** TEST SUCCEEDED **`.
+
 ## Selection operation command slice
 
 Rename Selected, Duplicate Selected, Reset All Edits, and Remove All IPTC Metadata now send typed

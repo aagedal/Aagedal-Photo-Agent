@@ -360,8 +360,9 @@ operations, the audited Metadata JSON-history/XMP save, FTP upload inventory/sta
 summary export now cross serialized actor boundaries and return immutable results with explicit cancellation
 and durable-partial-success semantics. Primary and secondary-card import discovery also crosses a serialized
 actor boundary with cooperative cancellation, stale-result rejection, explicit enumeration errors, and
-privacy-safe scan signposts. Lower-priority direct filesystem paths, volume benchmarks, and Thread Performance
-Checker evidence remain open.
+privacy-safe scan signposts. The Import window now exposes that discovery state immediately and receives
+immutable file/image/WAV count snapshots every five seconds for both source selectors. Lower-priority direct
+filesystem paths, volume benchmarks, and Thread Performance Checker evidence remain open.
 ([validation](filesystem-async-boundary-validation-2026-08-27.md))
 
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
@@ -427,12 +428,13 @@ longer restart Deadline capture; slow high-resolution loads offer actionable rec
   router; retain NotificationCenter for genuine system/process broadcasts.
 - [ ] Add a characterization test before each extraction and keep UI behavior unchanged.
 
-**Command-router follow-up (2026-08-27):** Open Folder/Open Recent, rating/label, core export, previous/
-next-image, clockwise/counterclockwise rotation, Rename, Duplicate, Reset All Edits, and Remove All IPTC
-commands now use a typed, scene-owned `AppCommandRouter`, including explicit AppKit bridging and typed
-payload/sequence contract coverage. The migrated slices removed their process-wide notification names while
-preserving existing menu, context-menu, shortcut, and browser behavior. Other command families and
-state-owning coordinator extractions remain incremental work.
+**Command-router follow-ups (2026-08-27 through 2026-08-29):** Open Folder/Open Recent, rating/label, core
+export, previous/next-image, clockwise/counterclockwise rotation, Rename, Duplicate, Reset All Edits, Remove
+All IPTC, Import Photos, Back Up Edited Files, internal/external editor opening, Move to Trash, and Move
+Rejected to Folder commands now use a typed, scene-owned `AppCommandRouter`, including explicit AppKit
+bridging and typed payload/sequence contract coverage. The migrated slices removed their process-wide
+notification names while preserving existing menu, context-menu, shortcut, preference, and browser behavior.
+Other command families and state-owning coordinator extractions remain incremental work.
 ([validation](app-command-router-validation-2026-08-27.md))
 
 **State-owner follow-up (2026-08-27):** `DevelopVersionSessionCoordinator` now owns named-version catalog,

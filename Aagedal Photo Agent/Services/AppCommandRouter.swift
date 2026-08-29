@@ -24,6 +24,13 @@ enum AppCommand: Equatable, Sendable {
     case duplicateSelected
     case resetAllEdits
     case removeAllIPTC
+    case showImport
+    case backupEditedFiles
+    case backupEditedFilesForFolder(URL)
+    case openInInternalEditor
+    case openInExternalEditor
+    case deleteSelected
+    case moveRejectedToFolder
 }
 
 struct AppCommandDelivery: Equatable, Sendable {

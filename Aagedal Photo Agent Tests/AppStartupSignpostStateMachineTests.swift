@@ -107,6 +107,28 @@ struct AppCommandRouterTests {
             #expect(delivery.sequence == UInt64(index + 1))
         }
     }
+
+    @Test("workspace and safety commands preserve operation identity")
+    func workspaceAndSafetyCommandIdentity() throws {
+        let router = AppCommandRouter()
+        let folder = URL(fileURLWithPath: "/tmp/backup-folder", isDirectory: true)
+        let commands: [AppCommand] = [
+            .showImport,
+            .backupEditedFiles,
+            .backupEditedFilesForFolder(folder),
+            .openInInternalEditor,
+            .openInExternalEditor,
+            .deleteSelected,
+            .moveRejectedToFolder,
+        ]
+
+        for (index, command) in commands.enumerated() {
+            router.send(command)
+            let delivery = try #require(router.latestDelivery)
+            #expect(delivery.command == command)
+            #expect(delivery.sequence == UInt64(index + 1))
+        }
+    }
 }
 
 @Suite("App startup signpost lifecycle")

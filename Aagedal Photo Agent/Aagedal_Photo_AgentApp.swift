@@ -79,12 +79,12 @@ struct Aagedal_Photo_AgentApp: App {
                 }
 
                 Button("Import Photos...") {
-                    NotificationCenter.default.post(name: .showImport, object: nil)
+                    commandRouter.send(.showImport)
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
 
                 Button("Back Up Edited Files...") {
-                    NotificationCenter.default.post(name: .backupEditedFiles, object: nil)
+                    commandRouter.send(.backupEditedFiles)
                 }
 
                 Divider()
@@ -167,9 +167,9 @@ struct Aagedal_Photo_AgentApp: App {
                         ?? DefaultEditDestination.internalEditor.rawValue
                     let destination = DefaultEditDestination(rawValue: raw) ?? .internalEditor
                     if destination == .internalEditor {
-                        NotificationCenter.default.post(name: .openInInternalEditor, object: nil)
+                        commandRouter.send(.openInInternalEditor)
                     } else {
-                        NotificationCenter.default.post(name: .openInExternalEditor, object: nil)
+                        commandRouter.send(.openInExternalEditor)
                     }
                 }
                 .keyboardShortcut("e", modifiers: .command)
@@ -178,12 +178,12 @@ struct Aagedal_Photo_AgentApp: App {
             CommandGroup(after: .pasteboard) {
                 Divider()
                 Button("Move to Trash") {
-                    NotificationCenter.default.post(name: .deleteSelected, object: nil)
+                    commandRouter.send(.deleteSelected)
                 }
                 .keyboardShortcut(.delete, modifiers: .command)
 
                 Button("Move Rejected to Folder…") {
-                    NotificationCenter.default.post(name: .moveRejectedToFolder, object: nil)
+                    commandRouter.send(.moveRejectedToFolder)
                 }
 
                 Divider()
@@ -529,11 +529,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension Notification.Name {
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")
-    static let openInExternalEditor = Notification.Name("openInExternalEditor")
-    static let openInInternalEditor = Notification.Name("openInInternalEditor")
     static let openCaptionWorkspace = Notification.Name("openCaptionWorkspace")
-    static let deleteSelected = Notification.Name("deleteSelected")
-    static let showImport = Notification.Name("showImport")
     static let importStarted = Notification.Name("importStarted")
     static let importCompleted = Notification.Name("importCompleted")
     static let processVariablesSelected = Notification.Name("processVariablesSelected")
@@ -562,8 +558,5 @@ extension Notification.Name {
     static let showVariableReference = Notification.Name("showVariableReference")
     static let copyIPTCMetadata = Notification.Name("copyIPTCMetadata")
     static let pasteIPTCMetadata = Notification.Name("pasteIPTCMetadata")
-    static let backupEditedFiles = Notification.Name("backupEditedFiles")
-    static let backupEditedFilesForFolder = Notification.Name("backupEditedFilesForFolder")
-    static let moveRejectedToFolder = Notification.Name("moveRejectedToFolder")
     static let showStructuredKeywords = Notification.Name("showStructuredKeywords")
 }

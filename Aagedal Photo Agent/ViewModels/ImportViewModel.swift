@@ -81,6 +81,9 @@ final class ImportViewModel {
     var sourceVoiceMemoFiles: [URL] = []
     var voiceMemoSourceFiles: [URL] = []
     var voiceMemoAssociationReport: VoiceMemoAssociationReport?
+    var sourceScanProgress = ImportSourceDiscoveryProgress()
+    var voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
+    var isDiscoveringVoiceMemoSource: Bool = false
     var isScanningVoiceMemoSource: Bool = false
     var importPhase: ImportPhase = .idle
     var copiedFiles: Int = 0
@@ -325,10 +328,17 @@ final class ImportViewModel {
         sourceFiles = []
         sourceVoiceMemoFiles = []
         dateGroups = []
+        sourceScanProgress = ImportSourceDiscoveryProgress()
 
         scanTask = Task(priority: .userInitiated) { [sourceDiscoveryService] in
             do {
-                let allURLs = try await sourceDiscoveryService.discoverFiles(at: url)
+                let allURLs = try await sourceDiscoveryService.discoverFiles(at: url) { progress in
+                    await MainActor.run {
+                        guard self.configuration.sourceURL == url,
+                              self.importPhase == .scanning else { return }
+                        self.sourceScanProgress = progress
+                    }
+                }
                 try Task.checkCancellation()
                 guard self.configuration.sourceURL == url else { return }
                 self.sourceFiles = allURLs
@@ -376,6 +386,8 @@ final class ImportViewModel {
         voiceMemoAssociationTask?.cancel()
         configuration.voiceMemoSourceURL = nil
         voiceMemoSourceFiles = []
+        voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
+        isDiscoveringVoiceMemoSource = false
         refreshVoiceMemoAssociations()
         if sortByDate {
             scanCaptureDates()
@@ -387,6 +399,8 @@ final class ImportViewModel {
         voiceMemoAssociationTask?.cancel()
         voiceMemoSourceFiles = []
         voiceMemoAssociationReport = nil
+        voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
+        isDiscoveringVoiceMemoSource = true
         isScanningVoiceMemoSource = true
 
         voiceMemoScanTask = Task(priority: .userInitiated) { [sourceDiscoveryService] in
@@ -395,12 +409,19 @@ final class ImportViewModel {
                 if didStartAccessing { url.stopAccessingSecurityScopedResource() }
             }
             do {
-                let files = try await sourceDiscoveryService.discoverFiles(at: url).filter {
+                let files = try await sourceDiscoveryService.discoverFiles(at: url) { progress in
+                    await MainActor.run {
+                        guard self.configuration.voiceMemoSourceURL == url,
+                              self.isDiscoveringVoiceMemoSource else { return }
+                        self.voiceMemoSourceScanProgress = progress
+                    }
+                }.filter {
                     SupportedImageFormats.isSupported(url: $0)
                         || $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame
                 }
                 try Task.checkCancellation()
                 guard self.configuration.voiceMemoSourceURL == url else { return }
+                self.isDiscoveringVoiceMemoSource = false
                 self.voiceMemoSourceFiles = files.sorted {
                     $0.path.localizedStandardCompare($1.path) == .orderedAscending
                 }
@@ -412,6 +433,7 @@ final class ImportViewModel {
                 return
             } catch {
                 guard self.configuration.voiceMemoSourceURL == url else { return }
+                self.isDiscoveringVoiceMemoSource = false
                 self.isScanningVoiceMemoSource = false
                 self.errorMessage = error.localizedDescription
             }
@@ -1606,11 +1628,6 @@ final class ImportViewModel {
         dateScanTask?.cancel()
         isScanningDates = true
 
-        // Snapshot the trimmed Import Title so the per-date leaf folder name can
-        // include it (e.g. "2026-05-12 – Vacation"). Title changes after scanning
-        // are not propagated to existing groups — the user can re-scan or edit.
-        let trimmedTitle = configuration.importTitle.trimmingCharacters(in: .whitespaces)
-
         dateScanTask = Task.detached(priority: .userInitiated) {
             // Read DateTimeOriginal for all files via SwiftExif. SwiftExif reads
             // are in-process and fast; a serial scan is simpler and avoids
@@ -1683,9 +1700,6 @@ final class ImportViewModel {
                     yearFolder = nil
                     monthFolder = nil
                 }
-                let leaf = trimmedTitle.isEmpty
-                    ? folderDate
-                    : "\(folderDate) \u{2013} \(trimmedTitle)"
                 let groupFiles = grouped[dateKey] ?? []
                 var groupTimes: [URL: Date] = [:]
                 for file in groupFiles {
@@ -1693,7 +1707,10 @@ final class ImportViewModel {
                 }
                 return ImportDateGroup(
                     dateString: dateKey,
-                    folderName: leaf,
+                    // The current import title is applied on the main actor when the
+                    // scan finishes. This placeholder prevents a title typed during
+                    // a long-running scan from being replaced by the stale start value.
+                    folderName: folderDate,
                     shootFolderName: nil,
                     isIncluded: true,
                     yearFolder: yearFolder,
@@ -1704,7 +1721,14 @@ final class ImportViewModel {
             }
 
             await MainActor.run {
-                self.dateGroups = groups
+                var currentGroups = groups
+                for index in currentGroups.indices {
+                    currentGroups[index].folderName = self.autoLeafName(
+                        for: currentGroups[index],
+                        title: self.configuration.importTitle
+                    )
+                }
+                self.dateGroups = currentGroups
                 self.isScanningDates = false
                 self.refreshPreviousImportFolderSuggestions()
             }
@@ -2054,7 +2078,7 @@ final class ImportViewModel {
 
     private func baseDateFolderName(for group: ImportDateGroup) -> String {
         let base = autoLeafName(for: group, title: configuration.importTitle)
-        if group.folderName == base || group.shootFolderName != nil {
+        if group.folderName == base {
             return base
         }
         if let range = group.folderName.range(of: " \u{2013} Shoot ", options: [.backwards]) {
@@ -2120,6 +2144,9 @@ final class ImportViewModel {
         sourceVoiceMemoFiles = []
         voiceMemoSourceFiles = []
         voiceMemoAssociationReport = nil
+        sourceScanProgress = ImportSourceDiscoveryProgress()
+        voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
+        isDiscoveringVoiceMemoSource = false
         isScanningVoiceMemoSource = false
         importPhase = .idle
         copiedFiles = 0
@@ -2144,6 +2171,7 @@ final class ImportViewModel {
         dateGroups = []
         sortByDate = preservedSortByDate
         isScanningDates = false
+        scanTask?.cancel()
         dateScanTask?.cancel()
         voiceMemoScanTask?.cancel()
         voiceMemoAssociationTask?.cancel()

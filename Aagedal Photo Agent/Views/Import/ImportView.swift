@@ -177,7 +177,13 @@ struct ImportView: View {
                     }
                 }
 
-                if !viewModel.allSourceImages.isEmpty {
+                if viewModel.importPhase == .scanning {
+                    sourceScanStatus(
+                        title: "Scanning source folder…",
+                        progress: viewModel.sourceScanProgress,
+                        includesWAVCount: false
+                    )
+                } else if !viewModel.allSourceImages.isEmpty {
                     Text("\(viewModel.allSourceImages.count) supported images found across selected sources")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -232,10 +238,16 @@ struct ImportView: View {
                         }
                     }
 
-                    if viewModel.isScanningVoiceMemoSource {
+                    if viewModel.isDiscoveringVoiceMemoSource {
+                        sourceScanStatus(
+                            title: "Scanning second source…",
+                            progress: viewModel.voiceMemoSourceScanProgress,
+                            includesWAVCount: true
+                        )
+                    } else if viewModel.isScanningVoiceMemoSource {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.mini)
-                            Text("Scanning images and WAV files…")
+                            Text("Analyzing image and voice-memo matches…")
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -261,6 +273,46 @@ struct ImportView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func sourceScanStatus(
+        title: String,
+        progress: ImportSourceDiscoveryProgress,
+        includesWAVCount: Bool
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                Text(sourceScanProgressText(progress, includesWAVCount: includesWAVCount))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor.opacity(0.25), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func sourceScanProgressText(
+        _ progress: ImportSourceDiscoveryProgress,
+        includesWAVCount: Bool
+    ) -> String {
+        let files = "\(progress.discoveredFileCount) file\(progress.discoveredFileCount == 1 ? "" : "s") found so far"
+        let images = "\(progress.supportedImageCount) supported image\(progress.supportedImageCount == 1 ? "" : "s")"
+        guard includesWAVCount else { return "\(files) · \(images)" }
+        let wavs = "\(progress.wavFileCount) WAV file\(progress.wavFileCount == 1 ? "" : "s")"
+        return "\(files) · \(images) · \(wavs)"
     }
 
     // MARK: - Destination Section

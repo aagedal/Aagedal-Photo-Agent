@@ -49,27 +49,38 @@ private struct C2PADetailPresentation: Identifiable {
     let imageURL: URL
 }
 
-/// Pulls the new safety and culling notification handlers out of the main
-/// `contentWithNotificationHandlers` chain so the type-checker can finish
+/// Pulls the safety and culling command handlers out of the main content chain
+/// so the type-checker can finish
 /// inside its time budget.
 private struct SafetyAndCullingHandlers: ViewModifier {
     let browserViewModel: BrowserViewModel
+    let commandRouter: AppCommandRouter
     @Binding var backupEditedFolderItem: BackupEditedItem?
 
     func body(content: Content) -> some View {
         content
-            .onReceive(NotificationCenter.default.publisher(for: .backupEditedFiles)) { _ in
-                if let folder = browserViewModel.currentFolderURL {
-                    backupEditedFolderItem = BackupEditedItem(url: folder)
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .backupEditedFilesForFolder)) { notification in
-                if let url = notification.object as? URL {
+            .onChange(of: commandRouter.latestDelivery) { _, delivery in
+                guard let delivery else { return }
+                switch delivery.command {
+                case .backupEditedFiles:
+                    if let folder = browserViewModel.currentFolderURL {
+                        backupEditedFolderItem = BackupEditedItem(url: folder)
+                    }
+                case .backupEditedFilesForFolder(let url):
                     backupEditedFolderItem = BackupEditedItem(url: url)
+                case .moveRejectedToFolder:
+                    browserViewModel.moveRejectedToFolder()
+                case .openFolder, .openRecentFolder, .setRating, .setLabel,
+                     .renderSelected, .advancedExportSelected, .renderAll,
+                     .saveAsJPEG, .saveAsPNG, .archiveRAW,
+                     .selectPreviousImage, .selectNextImage,
+                     .rotateClockwise, .rotateCounterclockwise,
+                     .renameSelected, .duplicateSelected,
+                     .resetAllEdits, .removeAllIPTC,
+                     .showImport, .openInInternalEditor, .openInExternalEditor,
+                     .deleteSelected:
+                    break
                 }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .moveRejectedToFolder)) { _ in
-                browserViewModel.moveRejectedToFolder()
             }
     }
 }
@@ -733,9 +744,17 @@ struct ContentView: View {
                     browserViewModel.confirmResetAllEdits()
                 case .removeAllIPTC:
                     browserViewModel.confirmRemoveAllIPTC()
+                case .showImport:
+                    importViewModel.prepareForNewSession()
+                    isShowingImport = true
+                case .openInInternalEditor:
+                    openEditWorkspace()
                 case .openFolder, .openRecentFolder, .setRating, .setLabel,
                      .selectPreviousImage, .selectNextImage,
-                     .rotateClockwise, .rotateCounterclockwise:
+                     .rotateClockwise, .rotateCounterclockwise,
+                     .backupEditedFiles, .backupEditedFilesForFolder,
+                     .openInExternalEditor,
+                     .deleteSelected, .moveRejectedToFolder:
                     break
                 }
             }
@@ -745,12 +764,9 @@ struct ContentView: View {
         contentWithFileOperationHandlers
             .modifier(SafetyAndCullingHandlers(
                 browserViewModel: browserViewModel,
+                commandRouter: commandRouter,
                 backupEditedFolderItem: $backupEditedFolderItem
             ))
-            .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
-                importViewModel.prepareForNewSession()
-                isShowingImport = true
-            }
             .onReceive(NotificationCenter.default.publisher(for: .importStarted)) { notification in
                 handleImportStarted(notification)
             }
@@ -808,9 +824,6 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .showKnownPeopleDatabase)) { _ in
                 openPeopleDatabase()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .openInInternalEditor)) { _ in
-                openEditWorkspace()
             }
             .onReceive(NotificationCenter.default.publisher(for: .openCaptionWorkspace)) { _ in
                 openCaptionWorkspace()
@@ -3757,18 +3770,19 @@ struct ContentViewModifiers: ViewModifier {
                     browserViewModel.rotateClockwise()
                 case .rotateCounterclockwise:
                     browserViewModel.rotateCounterclockwise()
+                case .openInExternalEditor:
+                    openSelectedInExternalEditor()
+                case .deleteSelected:
+                    browserViewModel.confirmDeleteSelectedImages()
                 case .renderSelected, .advancedExportSelected, .renderAll,
                      .saveAsJPEG, .saveAsPNG, .archiveRAW,
                      .renameSelected, .duplicateSelected,
-                     .resetAllEdits, .removeAllIPTC:
+                     .resetAllEdits, .removeAllIPTC,
+                     .showImport, .backupEditedFiles, .backupEditedFilesForFolder,
+                     .openInInternalEditor,
+                     .moveRejectedToFolder:
                     break
                 }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .openInExternalEditor)) { _ in
-                openSelectedInExternalEditor()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .deleteSelected)) { _ in
-                browserViewModel.confirmDeleteSelectedImages()
             }
             .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
                 guard !metadataViewModel.hasChanges else { return }

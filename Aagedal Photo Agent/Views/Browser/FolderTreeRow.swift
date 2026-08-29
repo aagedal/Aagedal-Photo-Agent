@@ -17,6 +17,7 @@ struct SidebarFolderRowIdentity: Hashable {
 }
 
 struct FolderTreeRow: View {
+    @Environment(AppCommandRouter.self) private var commandRouter
     let url: URL
     let depth: Int
     let section: SidebarFolderSection
@@ -194,7 +195,7 @@ struct FolderTreeRow: View {
             }
             Divider()
             Button("Back Up Edited Files...") {
-                NotificationCenter.default.post(name: .backupEditedFilesForFolder, object: url)
+                commandRouter.send(.backupEditedFilesForFolder(url))
             }
             Divider()
             Button("Remove from Favorites", role: .destructive) {
@@ -236,7 +237,7 @@ struct FolderTreeRow: View {
             }
             Divider()
             Button("Back Up Edited Files...") {
-                NotificationCenter.default.post(name: .backupEditedFilesForFolder, object: url)
+                commandRouter.send(.backupEditedFilesForFolder(url))
             }
             Divider()
             Button {

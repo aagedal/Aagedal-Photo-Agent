@@ -11,7 +11,9 @@ audited single-image Metadata persistence, FTP upload staging, and Delivery Rece
   `ImportSourceDiscoveryService` actor boundary. Recursive enumeration filters to regular files, skips
   hidden/package descendants, checks cancellation for each item, emits privacy-safe ready/cancelled/failed
   signposts, and returns explicit enumeration failures instead of silently treating an unreadable source as
-  empty. Main-actor consumers reject stale results when the selected source changes.
+  empty. Main-actor consumers reject stale results when the selected source changes. Discovery also publishes
+  immutable progress snapshots at a five-second production cadence so the Import window can show an active
+  scan and live regular-file, supported-image, and WAV counts without enumerating on the main actor.
 - The actor serializes these potentially blocking operations, while the observable browser model only
   consumes immutable `Sendable` scan/mutation results on the main actor.
 - Cancellation is checked before enumeration and mutation, and periodically during large enumerations.
@@ -61,7 +63,9 @@ audited single-image Metadata persistence, FTP upload staging, and Delivery Rece
 `ImportSourceDiscoveryServiceTests` additionally covers:
 
 - recursive regular-file discovery while skipping hidden files and package descendants; and
-- pre-I/O cancellation surfacing `CancellationError` without touching the source.
+- pre-I/O cancellation surfacing `CancellationError` without touching the source;
+- the five-second production progress cadence; and
+- exact final progress counts for regular files, supported images, and WAV files.
 
 `FTPUploadFileSystemBoundaryTests` additionally covers:
 
@@ -84,9 +88,8 @@ their two focused suites then passed all six tests against the same build.
 Focused Delivery Receipt verification on 2026-08-27 passed all eight Activity-library tests, including the
 pre-cancellation/no-mutation and immutable commit-evidence cases, with `** TEST SUCCEEDED **`.
 
-Focused import-source discovery verification on 2026-08-27 passed both tests in an isolated DerivedData
-directory with `** TEST SUCCEEDED **`. The initial shared DerivedData attempt encountered an unrelated build
-database lock; the isolated rerun compiled cleanly and passed.
+Focused import-source discovery verification on 2026-08-29 passed all four tests after the progress follow-up,
+including a complete application/test-target compile, with `** TEST SUCCEEDED **`.
 
 The existing `FileSystemOfflineAvailabilityTests` continue to cover deferred iCloud items and download
 requests at the same boundary.

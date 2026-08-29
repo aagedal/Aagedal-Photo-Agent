@@ -233,7 +233,10 @@ struct CaptionWorkspaceView: View {
                  .saveAsJPEG, .saveAsPNG, .archiveRAW,
                  .rotateClockwise, .rotateCounterclockwise,
                  .renameSelected, .duplicateSelected,
-                 .resetAllEdits, .removeAllIPTC:
+                 .resetAllEdits, .removeAllIPTC,
+                 .showImport, .backupEditedFiles, .backupEditedFilesForFolder,
+                 .openInInternalEditor, .openInExternalEditor,
+                 .deleteSelected, .moveRejectedToFolder:
                 break
             }
         }
