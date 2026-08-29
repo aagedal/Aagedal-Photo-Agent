@@ -177,7 +177,7 @@ struct ImageMemoryCoordinatorTests {
             availableMemory: { 8 * 1_024 * 1_024 * 1_024 },
             observesSystemPressure: false
         )
-        guard let pipeline = MetalEditPipeline(
+        guard let pipeline = MetalLivePreviewPipeline(
             device: device,
             commandQueue: commandQueue,
             imageMemoryCoordinator: coordinator

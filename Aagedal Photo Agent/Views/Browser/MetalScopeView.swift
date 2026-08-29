@@ -11,7 +11,7 @@ nonisolated private let metalScopeLog = Logger(
 /// for real-time feedback without CPU-based scope rendering.
 struct MetalScopeView: NSViewRepresentable {
     let scopePipeline: MetalScopePipeline
-    let editPipeline: MetalEditPipeline
+    let editPipeline: MetalLivePreviewPipeline
     let mode: ScopeViewModel.ScopeMode
     let waveformScale: WaveformScale
     var showClippedGamut: Bool = false
@@ -73,7 +73,7 @@ struct MetalScopeView: NSViewRepresentable {
 
     class Coordinator: NSObject, MTKViewDelegate {
         let scopePipeline: MetalScopePipeline
-        var editPipeline: MetalEditPipeline?
+        var editPipeline: MetalLivePreviewPipeline?
         var mode: ScopeViewModel.ScopeMode = .waveform
         var waveformScale: WaveformScale = .percentage
         var clipMode: Bool = false

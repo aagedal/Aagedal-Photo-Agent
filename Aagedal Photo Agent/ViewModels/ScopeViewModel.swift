@@ -83,7 +83,7 @@ final class ScopeViewModel {
 
     /// Set by EditWorkspaceView when entering edit mode.
     @ObservationIgnored var metalScopePipeline: MetalScopePipeline?
-    @ObservationIgnored var metalEditPipeline: MetalEditPipeline?
+    @ObservationIgnored var metalEditPipeline: MetalLivePreviewPipeline?
     @ObservationIgnored var metalScopeCoordinator: MetalScopeView.Coordinator?
 
     /// Keep the live Metal renderer as the scope presentation throughout edit mode.

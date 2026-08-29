@@ -837,8 +837,8 @@ struct MetalPipelineTSANStressTests {
         guard let device = MTLCreateSystemDefaultDevice(),
               let previewQueue = device.makeCommandQueue(),
               let cleanFeedQueue = device.makeCommandQueue(),
-              let preview = MetalEditPipeline(device: device, commandQueue: previewQueue),
-              let cleanFeed = MetalEditPipeline(device: device, commandQueue: cleanFeedQueue) else {
+              let preview = MetalLivePreviewPipeline(device: device, commandQueue: previewQueue),
+              let cleanFeed = MetalLivePreviewPipeline(device: device, commandQueue: cleanFeedQueue) else {
             Issue.record("The Metal TSAN stress scenario requires a system Metal device and edit shader")
             return
         }
@@ -847,6 +847,7 @@ struct MetalPipelineTSANStressTests {
         let cleanFeedUpdates = MetalStressCounter()
         cleanFeed.onParamsChanged = { cleanFeedUpdates.increment() }
         preview.mirror = cleanFeed
+        #expect(preview.mirror === cleanFeed)
         defer {
             preview.mirror = nil
             cleanFeed.onParamsChanged = nil

@@ -201,6 +201,10 @@ above. The audit baseline is reconciled to the latest recorded integrated run of
 tests in 161 suites; manual, external-service, hardware, legal, and credential-dependent actions
 remain explicitly gated in that document.
 
+The latest [code-boundary continuation](plan-status-continuation-validation-2026-08-30.md) records the
+main-actor Metal live-preview facade, FTP Recent Uploads filesystem snapshot, and Develop comparison-render
+coordinator, including the current 63-of-75 audit status and integrated focused test evidence.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

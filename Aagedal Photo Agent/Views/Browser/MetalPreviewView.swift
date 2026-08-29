@@ -19,7 +19,7 @@ nonisolated private let metalPreviewLog = Logger(
 struct MetalPreviewView: NSViewRepresentable {
     let ciImage: CIImage?
     let isHDR: Bool
-    var metalPipeline: MetalEditPipeline?
+    var metalPipeline: MetalLivePreviewPipeline?
     var useComputeShader: Bool = false
     /// Shared display scaling preference used by both the full-screen viewer and editor.
     var useNearestNeighbor: Bool = false
@@ -121,7 +121,7 @@ struct MetalPreviewView: NSViewRepresentable {
         ])
 
         var ciImage: CIImage?
-        var metalPipeline: MetalEditPipeline?
+        var metalPipeline: MetalLivePreviewPipeline?
         var useComputeShader: Bool = false
         var useNearestNeighbor: Bool = false
         weak var mtkView: MTKView?

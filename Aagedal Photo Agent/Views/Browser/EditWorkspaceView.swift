@@ -233,12 +233,7 @@ struct EditWorkspaceView: View {
     @State private var isDraggingEditSlider = false
     @State private var previewCIImage: CIImage?
     @State private var previewImage: NSImage?
-    @State private var developComparisonRenderTask: Task<Void, Never>?
-    @State private var developComparisonTarget: ImageFile?
-    @State private var developVersionComparisonTarget: DevelopVersionComparisonTarget?
-    @State private var developComparisonLiveSource: ComparisonRenderedSource?
-    @State private var developVersionComparisonRightSource: ComparisonRenderedSource?
-    @State private var developComparisonError: String?
+    @State private var developComparison = DevelopComparisonRenderCoordinator()
     @State private var developVersionSession = DevelopVersionSessionCoordinator()
     @State private var developVersionFlushRegistrationID: UUID?
     @State private var developVersionNameAction: DevelopVersionNameAction?
@@ -289,7 +284,7 @@ struct EditWorkspaceView: View {
     /// instant and correct, rather than catching up reactively a beat later. Populated wherever
     /// edits are written back to `images[].cameraRawSettings`; consumed in `handleEditWorkspaceDisappear`.
     @State private var editedURLsThisSession: Set<URL> = []
-    @State private var metalPipeline: MetalEditPipeline?
+    @State private var metalPipeline: MetalLivePreviewPipeline?
     @State private var metalCoordinator = MetalPreviewView.Coordinator()
     /// The selected node in the layer chain. `.global` shows the global adjustment sliders;
     /// `.mask(id)` shows that mask's sliders and overlay. Identity-based so it survives reorder.
@@ -443,6 +438,20 @@ struct EditWorkspaceView: View {
         )
     }
 
+    // Read aliases keep presentation code compact while the coordinator owns comparison mode,
+    // render output, error state, cancellation, and stale-result rejection.
+    private var developComparisonTarget: ImageFile? { developComparison.imageTarget }
+    private var developVersionComparisonTarget: DevelopVersionComparisonTarget? {
+        developComparison.versionTarget
+    }
+    private var developComparisonLiveSource: ComparisonRenderedSource? {
+        developComparison.liveSource
+    }
+    private var developVersionComparisonRightSource: ComparisonRenderedSource? {
+        developComparison.versionTargetSource
+    }
+    private var developComparisonError: String? { developComparison.errorMessage }
+
     // Transitional view aliases keep presentation code readable while the coordinator remains
     // the sole owner of named-version session state and asynchronous persistence.
     private var developVersionCatalog: DevelopVersionCatalog? {
@@ -524,7 +533,7 @@ struct EditWorkspaceView: View {
     }
 
     private var isDevelopComparisonActive: Bool {
-        developComparisonTarget != nil || developVersionComparisonTarget != nil
+        developComparison.isActive
     }
 
     private var hasDevelopVersionComparisonTargets: Bool {
@@ -2619,7 +2628,7 @@ struct EditWorkspaceView: View {
         isSpaceHandToolActive = false
         maskInteraction.endImageSession()
         metalPipeline?.maskMattePreviewMaskID = nil
-        developComparisonRenderTask?.cancel()
+        developComparison.close()
         NSCursor.arrow.set()
 
         // Primary has already followed the XMP commit path during editing. A named version reaches
@@ -2724,7 +2733,7 @@ struct EditWorkspaceView: View {
         if metalPipeline == nil {
             let device = MetalPreviewView.Coordinator.device
             let queue = MetalPreviewView.Coordinator.commandQueue
-            metalPipeline = MetalEditPipeline(device: device, commandQueue: queue)
+            metalPipeline = MetalLivePreviewPipeline(device: device, commandQueue: queue)
             if let pipeline = metalPipeline {
                 Task.detached(priority: .low) {
                     pipeline.warmupCIContext()
@@ -3220,7 +3229,7 @@ struct EditWorkspaceView: View {
     /// Runs at low priority so it doesn't compete with the current image's decode.
     private func precacheAdjacentRAWTextures(
         currentURL: URL,
-        pipeline: MetalEditPipeline
+        pipeline: MetalLivePreviewPipeline
     ) {
         let images = browserViewModel.visibleImages
         guard let currentIndex = browserViewModel.urlToVisibleIndex[currentURL] else { return }
@@ -3661,11 +3670,7 @@ struct EditWorkspaceView: View {
         if showCropControls {
             toggleCropControls()
         }
-        developVersionComparisonTarget = nil
-        developVersionComparisonRightSource = nil
-        developComparisonTarget = target
-        developComparisonLiveSource = nil
-        developComparisonError = nil
+        developComparison.openImageComparison(target: target)
         scheduleDevelopComparisonRender()
     }
 
@@ -3674,26 +3679,16 @@ struct EditWorkspaceView: View {
         if showCropControls {
             toggleCropControls()
         }
-        developComparisonTarget = nil
-        developVersionComparisonTarget = target
-        developComparisonLiveSource = nil
-        developVersionComparisonRightSource = nil
-        developComparisonError = nil
+        developComparison.openVersionComparison(target: target)
         scheduleDevelopComparisonRender()
     }
 
     private func closeDevelopComparison() {
-        developComparisonRenderTask?.cancel()
-        developComparisonRenderTask = nil
-        developComparisonTarget = nil
-        developVersionComparisonTarget = nil
-        developComparisonLiveSource = nil
-        developVersionComparisonRightSource = nil
-        developComparisonError = nil
+        developComparison.close()
     }
 
     private func scheduleDevelopComparisonRender() {
-        developComparisonRenderTask?.cancel()
+        developComparison.cancelRender()
         guard isDevelopComparisonActive,
               let current = selectedImage,
               let sourceCIImage else { return }
@@ -3720,25 +3715,15 @@ struct EditWorkspaceView: View {
         let existingRevision = developComparisonLiveSource?.source.revision
         let maxPixelSize = min(max(previewWorkingMaxPixelSize, 2_048), 4_096)
 
-        developComparisonError = nil
-        developComparisonRenderTask = Task {
-            do {
-                try await Task.sleep(for: .milliseconds(120))
-                let result = try await ComparisonRenderService().renderLiveEdit(
-                    imageFile: current,
-                    sourceImage: sourceCIImage,
-                    settings: liveSettings,
-                    renderToken: renderToken,
-                    revision: existingRevision,
-                    maxPixelSize: maxPixelSize
-                )
-                try Task.checkCancellation()
-                developComparisonLiveSource = result
-            } catch is CancellationError {
-                return
-            } catch {
-                developComparisonError = error.localizedDescription
-            }
+        developComparison.renderImage {
+            try await ComparisonRenderService().renderLiveEdit(
+                imageFile: current,
+                sourceImage: sourceCIImage,
+                settings: liveSettings,
+                renderToken: renderToken,
+                revision: existingRevision,
+                maxPixelSize: maxPixelSize
+            )
         }
     }
 
@@ -3792,43 +3777,32 @@ struct EditWorkspaceView: View {
             source.source.representation == targetRepresentation ? source : nil
         }
         let maxPixelSize = min(max(previewWorkingMaxPixelSize, 2_048), 4_096)
-        developComparisonError = nil
-        developComparisonRenderTask = Task {
-            do {
-                try await Task.sleep(for: .milliseconds(120))
-                let service = ComparisonRenderService()
-                let left = try await service.renderLiveEdit(
+        developComparison.renderVersion(target: target) {
+            let service = ComparisonRenderService()
+            let left = try await service.renderLiveEdit(
+                imageFile: current,
+                sourceImage: sourceImage,
+                settings: currentSettings,
+                renderToken: currentToken,
+                representation: currentRepresentation,
+                revision: existingRevision,
+                maxPixelSize: maxPixelSize
+            )
+            let right: ComparisonRenderedSource
+            if let existingRightSource {
+                right = existingRightSource
+            } else {
+                right = try await service.renderLiveEdit(
                     imageFile: current,
                     sourceImage: sourceImage,
-                    settings: currentSettings,
-                    renderToken: currentToken,
-                    representation: currentRepresentation,
-                    revision: existingRevision,
+                    settings: targetSettings,
+                    renderToken: targetToken,
+                    representation: targetRepresentation,
+                    revision: left.source.revision,
                     maxPixelSize: maxPixelSize
                 )
-                let right: ComparisonRenderedSource
-                if let existingRightSource {
-                    right = existingRightSource
-                } else {
-                    right = try await service.renderLiveEdit(
-                        imageFile: current,
-                        sourceImage: sourceImage,
-                        settings: targetSettings,
-                        renderToken: targetToken,
-                        representation: targetRepresentation,
-                        revision: left.source.revision,
-                        maxPixelSize: maxPixelSize
-                    )
-                }
-                try Task.checkCancellation()
-                guard developVersionComparisonTarget == target else { return }
-                developComparisonLiveSource = left
-                developVersionComparisonRightSource = right
-            } catch is CancellationError {
-                return
-            } catch {
-                developComparisonError = error.localizedDescription
             }
+            return .init(live: left, target: right)
         }
     }
 

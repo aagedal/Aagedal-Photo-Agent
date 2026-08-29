@@ -57,6 +57,7 @@ struct FTPUploadView: View {
     @State private var variablesProcessProgress = ""
     @State private var c2paSignProgress = ""
     @State private var expandedHistoryID: UUID?
+    @State private var historyAvailabilityByEntryID: [UUID: FTPUploadHistoryAvailabilitySnapshot] = [:]
     @State private var preprocessErrors: [String] = []
     /// Files that will upload as-is and whose `.xmp` sidecar holds non-optional metadata the
     /// embedded file is missing — the row offers a one-click sync from sidecar into the file.
@@ -64,7 +65,15 @@ struct FTPUploadView: View {
     @State private var pendingInsecureUploadConnectionID: UUID?
     @State private var pendingInsecureUploadRenderURLs: Set<URL> = []
 
-    init(viewModel: FTPViewModel, files: [URL], readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?, thumbnailService: ThumbnailService, onStartUpload: (() -> Void)? = nil) {
+    init(
+        viewModel: FTPViewModel,
+        files: [URL],
+        readService: SwiftExifReadService,
+        writeEngine: any MetadataWriteEngine,
+        inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?,
+        thumbnailService: ThumbnailService,
+        onStartUpload: (() -> Void)? = nil
+    ) {
         self.viewModel = viewModel
         self.files = files
         self.readService = readService
@@ -138,6 +147,9 @@ struct FTPUploadView: View {
         }
         .task(id: activeFiles) {
             await detectFileInfo()
+        }
+        .task(id: expandedHistoryID) {
+            await refreshExpandedHistoryAvailability()
         }
         .onChange(of: files) { _, newFiles in
             activeFiles = newFiles
@@ -541,7 +553,14 @@ struct FTPUploadView: View {
     private func historyEntryView(_ entry: FTPUploadHistoryEntry) -> some View {
         DisclosureGroup(isExpanded: Binding(
             get: { expandedHistoryID == entry.id },
-            set: { expandedHistoryID = $0 ? entry.id : nil }
+            set: {
+                if $0 {
+                    historyAvailabilityByEntryID[entry.id] = nil
+                    expandedHistoryID = entry.id
+                } else if expandedHistoryID == entry.id {
+                    expandedHistoryID = nil
+                }
+            }
         )) {
             historyDetailView(entry)
         } label: {
@@ -574,58 +593,89 @@ struct FTPUploadView: View {
 
     @ViewBuilder
     private func historyDetailView(_ entry: FTPUploadHistoryEntry) -> some View {
-        let missingFiles = entry.files.filter { !FileManager.default.fileExists(atPath: $0.filePath) }
-        let availableURLs = entry.files
-            .filter { FileManager.default.fileExists(atPath: $0.filePath) }
-            .map { URL(fileURLWithPath: $0.filePath) }
+        if let snapshot = historyAvailabilityByEntryID[entry.id] {
+            let availabilityByPath = snapshot.files.reduce(into: [String: Bool]()) { result, item in
+                result[item.filePath] = item.isAvailable
+            }
+            let missingFiles = entry.files.filter { availabilityByPath[$0.filePath] != true }
+            let availableURLs = entry.files
+                .filter { availabilityByPath[$0.filePath] == true }
+                .map { URL(fileURLWithPath: $0.filePath) }
 
-        VStack(alignment: .leading, spacing: 8) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(entry.files) { file in
-                        let isMissing = !FileManager.default.fileExists(atPath: file.filePath)
-                        HStack {
-                            Text(file.fileName)
-                                .strikethrough(isMissing)
-                                .foregroundStyle(isMissing ? .secondary : .primary)
-                            Spacer()
-                            if isMissing {
-                                Text("missing")
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text(ByteCountFormatter.string(fromByteCount: file.fileSize, countStyle: .file))
-                                    .foregroundStyle(.secondary)
-                                Text(file.modifiedDate.formatted(date: .abbreviated, time: .omitted))
-                                    .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 8) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(entry.files) { file in
+                            let isMissing = availabilityByPath[file.filePath] != true
+                            HStack {
+                                Text(file.fileName)
+                                    .strikethrough(isMissing)
+                                    .foregroundStyle(isMissing ? .secondary : .primary)
+                                Spacer()
+                                if isMissing {
+                                    Text("missing")
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text(ByteCountFormatter.string(fromByteCount: file.fileSize, countStyle: .file))
+                                        .foregroundStyle(.secondary)
+                                    Text(file.modifiedDate.formatted(date: .abbreviated, time: .omitted))
+                                        .foregroundStyle(.tertiary)
+                                }
                             }
+                            .font(.caption)
                         }
-                        .font(.caption)
                     }
                 }
-            }
-            .frame(maxHeight: 150)
+                .frame(maxHeight: 150)
 
-            if !missingFiles.isEmpty {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.yellow)
-                        .font(.caption)
-                    Text("\(missingFiles.count) file\(missingFiles.count == 1 ? "" : "s") no longer available")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if !missingFiles.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                            .font(.caption)
+                        Text("\(missingFiles.count) file\(missingFiles.count == 1 ? "" : "s") no longer available")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !availableURLs.isEmpty {
+                    Button("Upload these files again") {
+                        activeFiles = availableURLs
+                    }
+                    .font(.caption)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
             }
-
-            if !availableURLs.isEmpty {
-                Button("Upload these files again") {
-                    activeFiles = availableURLs
-                }
-                .font(.caption)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+            .padding(.top, 4)
+        } else {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Checking local files…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 8)
         }
-        .padding(.top, 4)
+    }
+
+    private func refreshExpandedHistoryAvailability() async {
+        guard let entryID = expandedHistoryID,
+              let entry = viewModel.uploadHistory.entries.first(where: { $0.id == entryID }) else {
+            return
+        }
+
+        let snapshot = await viewModel.historyAvailability(for: entry)
+
+        guard !Task.isCancelled,
+              expandedHistoryID == entryID,
+              snapshot.completion == .complete else {
+            return
+        }
+        historyAvailabilityByEntryID[entryID] = snapshot
     }
 
     // MARK: - Upload Logic

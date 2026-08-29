@@ -137,6 +137,138 @@ struct FTPUploadFileSystemBoundaryTests {
         #expect(inventory.records[1].modifiedDate == fallback)
     }
 
+    @Test("history availability returns complete ordered immutable evidence")
+    func historyAvailability() async throws {
+        let fixture = try FTPFileSystemFixture()
+        defer { fixture.remove() }
+        let availableURL = try fixture.write("available.jpg", bytes: [1])
+        let missingURL = fixture.root.appendingPathComponent("missing.jpg")
+        let entryID = UUID()
+        let boundary = FTPUploadFileSystemBoundary(temporaryRoot: fixture.root)
+
+        let snapshot = await boundary.historyAvailability(
+            for: entryID,
+            files: [historyRecord(availableURL), historyRecord(missingURL)]
+        )
+
+        #expect(snapshot.entryID == entryID)
+        #expect(snapshot.files == [
+            FTPUploadHistoryFileAvailability(filePath: availableURL.path, isAvailable: true),
+            FTPUploadHistoryFileAvailability(filePath: missingURL.path, isAvailable: false)
+        ])
+        #expect(snapshot.completion == .complete)
+    }
+
+    @Test("pre-cancelled history scan returns explicit empty partial evidence")
+    func preCancelledHistoryAvailability() async {
+        let probe = CancellingHistoryAvailabilityProbe()
+        let boundary = FTPUploadFileSystemBoundary(fileExists: probe.fileExists)
+        let entryID = UUID()
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await boundary.historyAvailability(
+                for: entryID,
+                files: [historyRecord(URL(fileURLWithPath: "/never-probed.jpg"))]
+            )
+        }
+
+        let snapshot = await task.value
+
+        #expect(snapshot.entryID == entryID)
+        #expect(snapshot.files.isEmpty)
+        #expect(snapshot.completion == .cancelled(checkedFileCount: 0))
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("cancellation after a synchronous probe returns only the checked prefix")
+    func cancellationAfterHistoryProbe() async {
+        let probe = CancellingHistoryAvailabilityProbe()
+        let boundary = FTPUploadFileSystemBoundary(fileExists: probe.fileExists)
+        let first = URL(fileURLWithPath: "/first.jpg")
+        let second = URL(fileURLWithPath: "/second.jpg")
+        let task = Task {
+            await boundary.historyAvailability(
+                for: UUID(),
+                files: [historyRecord(first), historyRecord(second)]
+            )
+        }
+
+        let snapshot = await task.value
+
+        #expect(snapshot.files == [
+            FTPUploadHistoryFileAvailability(filePath: first.path, isAvailable: true)
+        ])
+        #expect(snapshot.completion == .cancelled(checkedFileCount: 1))
+        #expect(probe.invocationCount == 1)
+    }
+
+    @MainActor
+    @Test("blocked history probe stays off the main actor and queued cancellation is serialized")
+    func blockedHistoryProbeDoesNotBlockMainActor() async throws {
+        let probe = BlockingHistoryAvailabilityProbe()
+        defer { probe.releaseFirstProbe() }
+        let boundary = FTPUploadFileSystemBoundary(fileExists: probe.fileExists)
+        let firstID = UUID()
+        let secondID = UUID()
+        let first = Task {
+            await boundary.historyAvailability(
+                for: firstID,
+                files: [historyRecord(URL(fileURLWithPath: "/first.jpg"))]
+            )
+        }
+        try await probe.waitUntilFirstProbeStarts()
+
+        // This main-actor assertion executes while the injected synchronous filesystem call is
+        // blocked on the boundary actor, characterizing the UI-responsiveness guarantee.
+        #expect(probe.invocationCount == 1)
+        let second = Task {
+            await boundary.historyAvailability(
+                for: secondID,
+                files: [historyRecord(URL(fileURLWithPath: "/second.jpg"))]
+            )
+        }
+        second.cancel()
+        probe.releaseFirstProbe()
+
+        let firstSnapshot = await first.value
+        let secondSnapshot = await second.value
+
+        #expect(firstSnapshot.completion == .complete)
+        #expect(secondSnapshot.files.isEmpty)
+        #expect(secondSnapshot.completion == .cancelled(checkedFileCount: 0))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Recent Uploads publishes only complete snapshots for the still-expanded entry")
+    func historyAvailabilityViewSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/FTP/FTPUploadView.swift"
+            ),
+            encoding: .utf8
+        )
+        let detailStart = try #require(source.range(of: "private func historyDetailView("))
+        let refreshStart = try #require(source.range(of: "private func refreshExpandedHistoryAvailability()"))
+        let uploadLogicStart = try #require(source.range(
+            of: "// MARK: - Upload Logic",
+            range: refreshStart.lowerBound..<source.endIndex
+        ))
+        let detailSource = source[detailStart.lowerBound..<refreshStart.lowerBound]
+        let refreshSource = source[refreshStart.lowerBound..<uploadLogicStart.lowerBound]
+
+        #expect(source.contains(".task(id: expandedHistoryID)"))
+        #expect(detailSource.contains("historyAvailabilityByEntryID[entry.id]"))
+        #expect(!detailSource.contains("FileManager"))
+        #expect(refreshSource.contains("guard !Task.isCancelled"))
+        #expect(refreshSource.contains("expandedHistoryID == entryID"))
+        #expect(refreshSource.contains("snapshot.completion == .complete"))
+        #expect(refreshSource.contains("historyAvailabilityByEntryID[entryID] = snapshot"))
+    }
+
     @Test("staging preserves the source and returns committed immutable evidence")
     func stageOriginal() async throws {
         let fixture = try FTPFileSystemFixture()
@@ -194,6 +326,90 @@ struct FTPUploadFileSystemBoundaryTests {
         #expect(!FileManager.default.fileExists(
             atPath: fixture.root.appendingPathComponent("render_1.jpg").path
         ))
+    }
+
+    private func historyRecord(_ url: URL) -> FTPUploadFileRecord {
+        FTPUploadFileRecord(
+            filePath: url.path,
+            fileName: url.lastPathComponent,
+            fileSize: 0,
+            modifiedDate: .distantPast
+        )
+    }
+}
+
+private nonisolated final class CancellingHistoryAvailabilityProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func fileExists(_ path: String) -> Bool {
+        _ = path
+        lock.lock()
+        count += 1
+        lock.unlock()
+        withUnsafeCurrentTask { $0?.cancel() }
+        return true
+    }
+
+    var invocationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
+private enum HistoryAvailabilityProbeError: Error {
+    case timedOut
+}
+
+private nonisolated final class BlockingHistoryAvailabilityProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var count = 0
+    private var firstProbeReleased = false
+    private var observedMainThread = false
+
+    func fileExists(_ path: String) -> Bool {
+        _ = path
+        condition.lock()
+        count += 1
+        observedMainThread = observedMainThread || Thread.isMainThread
+        condition.broadcast()
+        if count == 1 {
+            while !firstProbeReleased {
+                condition.wait()
+            }
+        }
+        condition.unlock()
+        return true
+    }
+
+    func waitUntilFirstProbeStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while invocationCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw HistoryAvailabilityProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstProbe() {
+        condition.lock()
+        firstProbeReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var invocationCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return count
+    }
+
+    var ranOnMainThread: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return observedMainThread
     }
 }
 

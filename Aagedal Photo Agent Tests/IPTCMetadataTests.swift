@@ -5073,7 +5073,43 @@ struct BrushRasterizationTests {
         #expect(source.contains("private enum StateExecutor"))
         #expect(source.contains("case mainThread"))
         #expect(source.contains("case offscreenRenderQueue(DispatchQueue)"))
+        #expect(source.contains("@MainActor\nfinal class MetalLivePreviewPipeline"))
+        #expect(source.contains("nonisolated fileprivate convenience init?"))
+        #expect(source.contains("nonisolated private let engine: MetalEditPipeline"))
+        #expect(source.contains("private weak var mirrorFacade: MetalLivePreviewPipeline?"))
+        #expect(source.contains("set {\n            mirrorFacade = newValue"))
+        #expect(source.contains("nonisolated func uploadSourceImage"))
+        #expect(source.contains("nonisolated func precacheTexture"))
+        #expect(source.contains("nonisolated func solveWhiteBalance"))
         #expect(source.contains("precondition(Thread.isMainThread, \"Live MetalEditPipeline instances"))
+
+        // Every production owner/consumer is typed as the actor facade. Static offscreen calls
+        // intentionally remain on MetalEditPipeline, but no UI surface can retain a raw live
+        // engine and bypass compile-time isolation.
+        for (relativePath, facadeDeclaration) in [
+            ("Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift",
+             "@State private var metalPipeline: MetalLivePreviewPipeline?"),
+            ("Aagedal Photo Agent/Views/Browser/MetalPreviewView.swift",
+             "var metalPipeline: MetalLivePreviewPipeline?"),
+            ("Aagedal Photo Agent/Views/Browser/MetalScopeView.swift",
+             "let editPipeline: MetalLivePreviewPipeline"),
+            ("Aagedal Photo Agent/ViewModels/ScopeViewModel.swift",
+             "var metalEditPipeline: MetalLivePreviewPipeline?"),
+            ("Aagedal Photo Agent/Views/CleanFeed/CleanFeedController.swift",
+             "let feedPipeline: MetalLivePreviewPipeline?"),
+            ("Aagedal Photo Agent/Views/CleanFeed/CleanFeedView.swift",
+             "let feedPipeline: MetalLivePreviewPipeline?"),
+        ] {
+            let liveSource = try String(
+                contentsOf: workspace.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            #expect(liveSource.contains(facadeDeclaration), Comment(rawValue: relativePath))
+            #expect(
+                !liveSource.contains("MetalEditPipeline?"),
+                Comment(rawValue: "raw live engine in \(relativePath)")
+            )
+        }
         #expect(source.contains("private final class OffscreenRendererExecutor"))
         #expect(source.contains("dispatchPrecondition(condition: .notOnQueue(queue))"))
         #expect(source.contains("dispatchPrecondition(condition: .onQueue(self.queue))"))
@@ -5290,10 +5326,10 @@ struct BrushRasterizationTests {
     }
 
     /// Builds a pipeline over the system default Metal device, or nil if none is available.
-    private func makePipeline() -> MetalEditPipeline? {
+    private func makePipeline() -> MetalLivePreviewPipeline? {
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue() else { return nil }
-        return MetalEditPipeline(device: device, commandQueue: queue)
+        return MetalLivePreviewPipeline(device: device, commandQueue: queue)
     }
 
     /// IEEE 754 half → Float (values produced here are all normal, in [0,1]).

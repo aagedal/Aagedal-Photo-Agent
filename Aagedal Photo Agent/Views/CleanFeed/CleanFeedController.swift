@@ -155,9 +155,9 @@ final class CleanFeedController {
     var editModeActive = false
 
     /// Dedicated compute pipeline for the feed. Shares the edit pipeline's source
-    /// texture by reference (wired via `MetalEditPipeline.mirror`) but keeps its own
+    /// texture by reference (wired via `MetalLivePreviewPipeline.mirror`) but keeps its own
     /// viewport so it can letterbox for the secondary display's aspect ratio.
-    let feedPipeline: MetalEditPipeline?
+    let feedPipeline: MetalLivePreviewPipeline?
 
     /// Redraw / continuous-render hooks, registered by the render view's coordinator.
     let hooks = CleanFeedHooks()
@@ -165,7 +165,7 @@ final class CleanFeedController {
     private init() {
         let device = MetalPreviewView.Coordinator.device
         let queue = MetalPreviewView.Coordinator.commandQueue
-        self.feedPipeline = MetalEditPipeline(device: device, commandQueue: queue)
+        self.feedPipeline = MetalLivePreviewPipeline(device: device, commandQueue: queue)
         loadTargetDisplay()
         loadComparisonLayout()
         refreshDisplays()

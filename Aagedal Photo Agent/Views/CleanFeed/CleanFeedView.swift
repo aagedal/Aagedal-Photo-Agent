@@ -218,7 +218,7 @@ struct CleanFeedRenderView: NSViewRepresentable {
     /// drawing happens inside `MainActor.assumeIsolated`.
     final class Coordinator: NSObject, MTKViewDelegate {
         weak var mtkView: MTKView?
-        let feedPipeline: MetalEditPipeline?
+        let feedPipeline: MetalLivePreviewPipeline?
 
         // Plain (non-isolated) copies set from `updateNSView` on the main thread.
         var feedImage: CIImage?
@@ -227,7 +227,7 @@ struct CleanFeedRenderView: NSViewRepresentable {
         var comparisonPresentation: CleanFeedComparisonPresentation?
         var comparisonLayout: ComparisonLayout = .sideBySide
 
-        init(feedPipeline: MetalEditPipeline?) {
+        init(feedPipeline: MetalLivePreviewPipeline?) {
             self.feedPipeline = feedPipeline
         }
 

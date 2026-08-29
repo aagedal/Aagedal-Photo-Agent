@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 62 of 75 checklist substeps complete
+**Status:** implementation in progress — 63 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -91,6 +91,15 @@ cross existing serialized filesystem actors. The final four explicit `MetalEditP
 `nonisolated(unsafe)` declarations were replaced by executor-owned or lock-backed state, with a documented
 immutable cached-texture boundary; the separate compile-time live-preview facade remains open. All 44 focused
 tests across the touched filesystem, export, Metal, memory, and stress suites passed.
+
+**Live-preview facade continuation (2026-08-30):** 63 of 75 substeps are now checked and 12 remain open.
+Interactive Develop, scope, and Clean Feed owners now retain a main-actor `MetalLivePreviewPipeline` facade;
+the raw live-engine initializer is file-private, while the existing serialized offscreen executor remains
+separate. FTP Recent Uploads availability checks also moved from SwiftUI body evaluation to an immutable,
+cancellable actor snapshot, and a new Develop comparison coordinator owns render request identity,
+cancellation, output, and stale-result rejection. The broader filesystem inventory/measurement gate and
+the remaining Develop render-publication ownership work stay open. All 36 integrated focused tests passed.
+([validation](plan-status-continuation-validation-2026-08-30.md))
 
 ## Phase 0 — Stop silent data loss and destructive surprises
 
@@ -466,6 +475,13 @@ removed from the provider callback. Other direct filesystem paths and the slow-v
 gate remain open.
 ([validation](plan-status-follow-up-validation-2026-08-30.md#content-area-folder-drop-boundary))
 
+**FTP Recent Uploads follow-up (2026-08-30):** expanding upload history no longer evaluates repeated
+`FileManager.fileExists` probes in the SwiftUI body. The existing FTP filesystem actor returns ordered,
+immutable availability evidence with explicit complete or cancelled-prefix status; the view installs only a
+complete snapshot for the entry that remains expanded. Other lower-priority direct paths and the slow-volume/
+signpost/benchmark exit gate remain open.
+([validation](plan-status-continuation-validation-2026-08-30.md#ftp-recent-uploads-filesystem-boundary))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -591,6 +607,13 @@ rotation is identity-gated and stale A→B→A completions are rejected by sessi
 publication and broader render ownership remain in the view.
 ([validation](plan-status-follow-up-validation-2026-08-30.md#develop-preview-session-state-owner))
 
+**Comparison-render state-owner follow-up (2026-08-30):** `DevelopComparisonRenderCoordinator` now owns
+image/version comparison mode, both rendered outputs, errors, debounce/cancellation lifetime, and monotonic
+request identity. Replaced or closed comparisons reject late pixels and errors even when injected work ignores
+cooperative cancellation, and a version comparison publishes its two rendered sources as one coordinator
+result. Broader Develop source decode, Metal publication, and interactive render ownership remain open.
+([validation](plan-status-continuation-validation-2026-08-30.md#develop-comparison-render-coordinator))
+
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.
 
@@ -602,7 +625,8 @@ the intended window/pane; extracted units are independently testable.
 
 **Plan:**
 
-- [ ] Split a main-actor live-preview facade from a serialized offscreen renderer actor/executor.
+- [x] Split a main-actor live-preview facade from a serialized offscreen renderer actor/executor.
+  ([validation](plan-status-continuation-validation-2026-08-30.md#compile-time-metal-live-preview-facade), 2026-08-30)
 - [x] Reduce unsafe nonisolated state to audited immutable Metal resources.
   ([validation](plan-status-follow-up-validation-2026-08-30.md#final-metal-unsafe-escape-isolation), 2026-08-30)
 - [x] Add owner/executor preconditions for remaining call-site contracts.
@@ -668,6 +692,14 @@ The fully populated cached `MTLTexture` crosses one precisely documented `@unche
 is immutable while cached. Explicit `nonisolated(unsafe)` declarations are reduced from 4 to 0, completing
 the unsafe-state reduction substep. The separate compile-time live-preview facade remains open.
 ([validation](plan-status-follow-up-validation-2026-08-30.md#final-metal-unsafe-escape-isolation))
+
+**Compile-time live-preview facade follow-up (2026-08-30):** interactive owners now use
+`@MainActor MetalLivePreviewPipeline`, while raw live `MetalEditPipeline` construction is file-private and
+the dedicated serialized offscreen executor retains the reusable export engine. Only the audited worker-safe
+source upload, adjacent precache, CI-context warmup, and white-balance solver cross the facade as explicit
+`nonisolated` operations. Develop, preview, scope, Clean Feed, memory, and stress call sites are facade-typed;
+source contracts reject a raw optional live engine in those production owners.
+([validation](plan-status-continuation-validation-2026-08-30.md#compile-time-metal-live-preview-facade))
 
 **Exit gate:** every remaining unsafe isolation escape has a written invariant and enforcement; the stress
 scenario is repeatable and clean.

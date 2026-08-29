@@ -18,15 +18,43 @@ nonisolated struct FTPPreparedUploadFile: Sendable, Equatable {
     let cancellationRequestedAfterCommit: Bool
 }
 
+/// One immutable local-availability fact collected for the Recent Uploads disclosure.
+nonisolated struct FTPUploadHistoryFileAvailability: Sendable, Equatable {
+    let filePath: String
+    let isAvailable: Bool
+}
+
+/// Whether a history scan observed every requested path or stopped cooperatively. A cancelled
+/// scan deliberately retains its checked prefix so diagnostics and tests can distinguish
+/// pre-scan cancellation from cancellation after one or more non-preemptible filesystem probes.
+nonisolated enum FTPUploadHistoryAvailabilityCompletion: Sendable, Equatable {
+    case complete
+    case cancelled(checkedFileCount: Int)
+}
+
+/// Immutable availability evidence returned across the filesystem actor boundary.
+nonisolated struct FTPUploadHistoryAvailabilitySnapshot: Sendable, Equatable {
+    let entryID: UUID
+    let files: [FTPUploadHistoryFileAvailability]
+    let completion: FTPUploadHistoryAvailabilityCompletion
+}
+
 /// Serializes potentially blocking upload-history scans and local staging mutations away from
 /// the app's default MainActor. Foundation mutations are allowed to finish once started; their
 /// immutable result records cancellation that arrived after commit so callers can reconcile with
 /// disk rather than pretending the mutation did not happen.
 actor FTPUploadFileSystemBoundary {
     private let temporaryRoot: URL
+    private let fileExists: @Sendable (String) -> Bool
 
-    init(temporaryRoot: URL = FileManager.default.temporaryDirectory) {
+    init(
+        temporaryRoot: URL = FileManager.default.temporaryDirectory,
+        fileExists: @escaping @Sendable (String) -> Bool = {
+            FileManager.default.fileExists(atPath: $0)
+        }
+    ) {
         self.temporaryRoot = temporaryRoot
+        self.fileExists = fileExists
     }
 
     func inventory(for urls: [URL], fallbackDate: Date) throws -> FTPUploadFileInventory {
@@ -49,6 +77,48 @@ actor FTPUploadFileSystemBoundary {
         }
 
         return FTPUploadFileInventory(records: records, totalBytes: totalBytes)
+    }
+
+    /// Serially resolves local-file availability without making SwiftUI's main-actor body touch
+    /// the filesystem. `fileExists` is synchronous and cannot be interrupted once entered, so
+    /// cancellation is checked both before and after every probe. Partial evidence is returned
+    /// explicitly and must not be presented as a complete snapshot by the caller.
+    func historyAvailability(
+        for entryID: UUID,
+        files: [FTPUploadFileRecord]
+    ) -> FTPUploadHistoryAvailabilitySnapshot {
+        var availability: [FTPUploadHistoryFileAvailability] = []
+        availability.reserveCapacity(files.count)
+
+        for file in files {
+            guard !Task.isCancelled else {
+                return FTPUploadHistoryAvailabilitySnapshot(
+                    entryID: entryID,
+                    files: availability,
+                    completion: .cancelled(checkedFileCount: availability.count)
+                )
+            }
+
+            let isAvailable = fileExists(file.filePath)
+            availability.append(FTPUploadHistoryFileAvailability(
+                filePath: file.filePath,
+                isAvailable: isAvailable
+            ))
+
+            guard !Task.isCancelled else {
+                return FTPUploadHistoryAvailabilitySnapshot(
+                    entryID: entryID,
+                    files: availability,
+                    completion: .cancelled(checkedFileCount: availability.count)
+                )
+            }
+        }
+
+        return FTPUploadHistoryAvailabilitySnapshot(
+            entryID: entryID,
+            files: availability,
+            completion: .complete
+        )
     }
 
     func createTemporaryDirectory() throws -> URL {
@@ -352,6 +422,12 @@ final class FTPViewModel {
         if let data = try? JSONEncoder().encode(uploadHistory) {
             UserDefaults.standard.set(data, forKey: UserDefaultsKeys.ftpUploadHistory)
         }
+    }
+
+    func historyAvailability(
+        for entry: FTPUploadHistoryEntry
+    ) async -> FTPUploadHistoryAvailabilitySnapshot {
+        await fileSystem.historyAvailability(for: entry.id, files: entry.files)
     }
 
     func recordUploadStart(

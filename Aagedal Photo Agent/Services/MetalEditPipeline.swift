@@ -1240,7 +1240,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Creates a live-preview pipeline. Its mutable render state belongs to the main thread;
     /// expensive source uploads and adjacent-image precaching remain explicitly worker-safe.
-    nonisolated convenience init?(
+    nonisolated fileprivate convenience init?(
         device: MTLDevice,
         commandQueue: MTLCommandQueue,
         imageMemoryCoordinator: ImageMemoryCoordinator = .shared
@@ -3640,5 +3640,193 @@ final class MetalEditPipeline: @unchecked Sendable {
         return noTonal && noOutputToneMap && noVibrance && noSaturation && noDensity
             && noSharpness && noClarity && noDehaze && noWB && noMasks
             && noWatermarks && noHSL && noAnonymizer && noFilmEmulation
+    }
+}
+
+/// Main-actor ownership boundary for interactive Develop and Clean Feed rendering.
+///
+/// `MetalEditPipeline` remains the reusable render engine because its offscreen instance belongs
+/// to a dedicated serial queue. Live instances, however, can only be constructed through this
+/// facade: the engine's live initializer is file-private, and every render-state operation exposed
+/// here is main-actor isolated by the type. The operations documented as worker-safe by the engine
+/// (source upload, adjacent-source precache, context warmup, and white-balance solving) are
+/// deliberately nonisolated so decode and sampling work do not move back onto the UI executor.
+@MainActor
+final class MetalLivePreviewPipeline {
+    /// The immutable engine reference is safe to read from the explicitly nonisolated forwarding
+    /// methods because `MetalEditPipeline` is Sendable and those entry points use lock-backed or
+    /// call-local state. Mutable render state remains inaccessible outside the main actor.
+    nonisolated private let engine: MetalEditPipeline
+    private weak var mirrorFacade: MetalLivePreviewPipeline?
+
+    init?(
+        device: MTLDevice,
+        commandQueue: MTLCommandQueue,
+        imageMemoryCoordinator: ImageMemoryCoordinator = .shared
+    ) {
+        guard let engine = MetalEditPipeline(
+            device: device,
+            commandQueue: commandQueue,
+            imageMemoryCoordinator: imageMemoryCoordinator
+        ) else { return nil }
+        self.engine = engine
+    }
+
+    var sourceTexture: MTLTexture? { engine.sourceTexture }
+    var sourceTextureSize: CGSize? { engine.sourceTextureSize }
+    var hasSourceTexture: Bool { engine.hasSourceTexture }
+    var paramsBuffer: MTLBuffer? { engine.paramsBuffer }
+    var lutTexture: MTLTexture { engine.lutTexture }
+    var colorLUTTexture: MTLTexture { engine.colorLUTTexture }
+    var maskBuffer: MTLBuffer? { engine.maskBuffer }
+    var hslBuffer: MTLBuffer? { engine.hslBuffer }
+    var orderBuffer: MTLBuffer? { engine.orderBuffer }
+    var hasOverlayPipeline: Bool { engine.hasOverlayPipeline }
+    var hasBrushPipeline: Bool { engine.hasBrushPipeline }
+    var brushAlphaTexture: MTLTexture? { engine.brushAlphaTexture }
+
+    var gamutClipMode: UInt32 {
+        get { engine.gamutClipMode }
+        set { engine.gamutClipMode = newValue }
+    }
+
+    var maskOverlayMaskID: UUID? {
+        get { engine.maskOverlayMaskID }
+        set { engine.maskOverlayMaskID = newValue }
+    }
+
+    var maskMattePreviewMaskID: UUID? {
+        get { engine.maskMattePreviewMaskID }
+        set { engine.maskMattePreviewMaskID = newValue }
+    }
+
+    var asShotTemperature: Double {
+        get { engine.asShotTemperature }
+        set { engine.asShotTemperature = newValue }
+    }
+
+    var asShotTint: Double {
+        get { engine.asShotTint }
+        set { engine.asShotTint = newValue }
+    }
+
+    var mirror: MetalLivePreviewPipeline? {
+        get { mirrorFacade }
+        set {
+            mirrorFacade = newValue
+            engine.mirror = newValue?.engine
+        }
+    }
+
+    var onParamsChanged: (() -> Void)? {
+        get { engine.onParamsChanged }
+        set { engine.onParamsChanged = newValue }
+    }
+
+    func updateParams(_ settings: CameraRawSettings?) { engine.updateParams(settings) }
+    func updateOverlayParams(geometry: EllipseMaskGeometry?, visible: Bool) {
+        engine.updateOverlayParams(geometry: geometry, visible: visible)
+    }
+    func rebuildMaskAlpha(_ sources: [MaskAlphaSource], size: MTLSize) -> MTLTexture? {
+        engine.rebuildMaskAlpha(sources, size: size)
+    }
+    func rebuildBrushAlpha(_ masks: [BrushMaskGeometry], size: MTLSize) -> MTLTexture? {
+        engine.rebuildBrushAlpha(masks, size: size)
+    }
+    @discardableResult
+    func stampBrushStroke(_ stroke: BrushStroke, layer: Int) -> Bool {
+        engine.stampBrushStroke(stroke, layer: layer)
+    }
+    func clearBrushAlpha() { engine.clearBrushAlpha() }
+    func refreshMaskAlpha(_ sources: [MaskAlphaSource], size: MTLSize) {
+        engine.refreshMaskAlpha(sources, size: size)
+    }
+    func refreshBrushAlpha(_ masks: [BrushMaskGeometry], size: MTLSize) {
+        engine.refreshBrushAlpha(masks, size: size)
+    }
+    func refreshWatermarkParams(_ layers: [WatermarkLayer], imageSize: MTLSize) -> [UUID: Int] {
+        engine.refreshWatermarkParams(layers, imageSize: imageSize)
+    }
+    func render(
+        to drawable: CAMetalDrawable,
+        drawableSize: CGSize,
+        useNearestNeighbor: Bool = false
+    ) -> Bool {
+        engine.render(
+            to: drawable,
+            drawableSize: drawableSize,
+            useNearestNeighbor: useNearestNeighbor
+        )
+    }
+    func clearSourceTexture() { engine.clearSourceTexture() }
+    func shareSourceTexture(with other: MetalLivePreviewPipeline) {
+        engine.shareSourceTexture(with: other.engine)
+    }
+    func updateViewport(
+        zoomScale: CGFloat,
+        offset: CGSize,
+        containerSize: CGSize,
+        imageSize: CGSize
+    ) {
+        engine.updateViewport(
+            zoomScale: zoomScale,
+            offset: offset,
+            containerSize: containerSize,
+            imageSize: imageSize
+        )
+    }
+    func updateCropViewport(
+        containerSize: CGSize,
+        imageSize: CGSize,
+        cropLeft: Double,
+        cropTop: Double,
+        cropRight: Double,
+        cropBottom: Double,
+        angleDegrees: Double,
+        zoomScale: CGFloat = 1.0,
+        offset: CGSize = .zero,
+        handlePadding: CGFloat = 0
+    ) {
+        engine.updateCropViewport(
+            containerSize: containerSize,
+            imageSize: imageSize,
+            cropLeft: cropLeft,
+            cropTop: cropTop,
+            cropRight: cropRight,
+            cropBottom: cropBottom,
+            angleDegrees: angleDegrees,
+            zoomScale: zoomScale,
+            offset: offset,
+            handlePadding: handlePadding
+        )
+    }
+    func applyCachedTexture(
+        for url: URL,
+        exifOrientation: Int = 1
+    ) -> (neutralTemperature: Float, neutralTint: Float)? {
+        engine.applyCachedTexture(for: url, exifOrientation: exifOrientation)
+    }
+
+    nonisolated func uploadSourceImage(_ image: CIImage, exifOrientation: Int = 1) {
+        engine.uploadSourceImage(image, exifOrientation: exifOrientation)
+    }
+    nonisolated func precacheTexture(
+        for url: URL,
+        ciImage: CIImage,
+        neutralTemperature: Float = 6500,
+        neutralTint: Float = 0
+    ) {
+        engine.precacheTexture(
+            for: url,
+            ciImage: ciImage,
+            neutralTemperature: neutralTemperature,
+            neutralTint: neutralTint
+        )
+    }
+    nonisolated func warmupCIContext() { engine.warmupCIContext() }
+    nonisolated func solveWhiteBalance(
+        forNeutralLinearRGB rgb: SIMD3<Float>
+    ) -> (temperature: Double, tint: Double)? {
+        engine.solveWhiteBalance(forNeutralLinearRGB: rgb)
     }
 }
