@@ -90,6 +90,82 @@ struct BatchRenameSheetStateTests {
     }
 
     @MainActor
+    @Test("A blocked filesystem snapshot leaves the main actor responsive")
+    func blockedSnapshotDoesNotBlockMainActor() async {
+        let gate = BlockingBatchRenameSnapshotIO(root: root)
+        defer { gate.release() }
+        let session = BatchRenameSheetSession(
+            request: BatchRenameSheetRequest(
+                folderURL: root,
+                items: [RenamePlanningItem(sourceImageURL: root.appendingPathComponent("old.jpg"))]
+            ),
+            snapshotService: gate.service,
+            planningDebounce: .zero
+        )
+
+        let preparation = Task { await session.prepareSnapshot() }
+        await gate.waitUntilBlocked()
+
+        // This assertion executes while synchronous directory enumeration is blocked inside the
+        // snapshot actor, proving the filesystem read no longer occupies the UI executor.
+        #expect(session.isPreparing)
+        #expect(session.environment == nil)
+
+        gate.release()
+        await preparation.value
+        await session.waitForPlanning()
+
+        #expect(!session.isPreparing)
+        #expect(session.environment?.existingURLs == [root.appendingPathComponent("old.jpg")])
+        #expect(session.plan != nil)
+    }
+
+    @Test("Cancelled filesystem snapshots cannot publish partially collected paths")
+    func cancelledSnapshotPublishesNoPartialEvidence() async {
+        let gate = BlockingBatchRenameSnapshotIO(root: root)
+        let service = gate.service
+        let snapshotTask = Task {
+            try await service.snapshot(folderURL: root)
+        }
+
+        await gate.waitUntilBlocked()
+        snapshotTask.cancel()
+        gate.release()
+
+        do {
+            _ = try await snapshotTask.value
+            Issue.record("Expected the cancelled snapshot to throw")
+        } catch is CancellationError {
+            // Expected: cancellation is checked after the non-suspending filesystem read and
+            // before its partial result can cross back to the caller.
+        } catch {
+            Issue.record("Expected CancellationError, received \(error)")
+        }
+    }
+
+    @Test("Filesystem snapshot includes root and registered companion directories")
+    func snapshotIncludesRegisteredCompanionDirectories() async throws {
+        let localRoot = root
+        let rootImage = localRoot.appendingPathComponent("old.NEF")
+        let sidecarDirectory = localRoot.appendingPathComponent(".photo_metadata", isDirectory: true)
+        let sidecar = sidecarDirectory.appendingPathComponent("old.json")
+        let service = BatchRenamePlanningSnapshotService(
+            directoryExists: { url in url == localRoot || url == sidecarDirectory },
+            directoryContents: { url in
+                if url == localRoot { return [rootImage] }
+                if url == sidecarDirectory { return [sidecar] }
+                return []
+            },
+            volumeIsCaseSensitive: { _ in true }
+        )
+
+        let snapshot = try await service.snapshot(folderURL: localRoot)
+
+        #expect(snapshot.caseSensitivity == .caseSensitive)
+        #expect(snapshot.existingURLs == [rootImage, sidecar])
+    }
+
+    @MainActor
     @Test("A superseded planner cannot publish stale output")
     func supersededPlannerCannotPublish() async {
         let gate = BlockingBatchRenamePlanBuilder()
@@ -537,5 +613,53 @@ private nonisolated final class BlockingBatchRenamePlanBuilder: @unchecked Senda
         condition.lock()
         defer { condition.unlock() }
         return invocationCount
+    }
+}
+
+private nonisolated final class BlockingBatchRenameSnapshotIO: @unchecked Sendable {
+    let root: URL
+    private let condition = NSCondition()
+    private var isBlocked = false
+    private var isReleased = false
+
+    init(root: URL) {
+        self.root = root
+    }
+
+    var service: BatchRenamePlanningSnapshotService {
+        BatchRenamePlanningSnapshotService(
+            directoryExists: { [root] url in url == root },
+            directoryContents: { [weak self] url in
+                guard let self else { return [] }
+                condition.lock()
+                isBlocked = true
+                condition.broadcast()
+                while !isReleased {
+                    condition.wait()
+                }
+                condition.unlock()
+                return [url.appendingPathComponent("old.jpg")]
+            },
+            volumeIsCaseSensitive: { _ in true }
+        )
+    }
+
+    func waitUntilBlocked() async {
+        while !blocked {
+            await Task.yield()
+        }
+    }
+
+    func release() {
+        condition.lock()
+        isReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private var blocked: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return isBlocked
     }
 }

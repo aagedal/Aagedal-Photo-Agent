@@ -649,6 +649,31 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
+    /// Watermark texture identity, its decode cache, and the frame geometry used to size active
+    /// layers form one render generation. The holder is intentionally unsynchronized: every
+    /// access passes through the executor-checked pipeline accessors below, keeping live preview
+    /// on the main thread and export state on the dedicated offscreen render queue.
+    nonisolated private final class ExecutorOwnedWatermarkState: @unchecked Sendable {
+        struct Storage {
+            var texture: MTLTexture?
+            var lastBuiltAssetIDs: [UUID] = []
+            var lastBuiltAspects: [UUID: (slice: Int, aspect: Double)] = [:]
+            var activeDisplayLayers: [WatermarkLayer] = []
+            var frame: UInt32 = 0
+            var imageSize = MTLSize(width: 0, height: 0, depth: 0)
+        }
+
+        private var storage = Storage()
+
+        func snapshot() -> Storage {
+            storage
+        }
+
+        func update(_ body: (inout Storage) -> Void) {
+            body(&storage)
+        }
+    }
+
     /// Owns mutable render-state buffers and caches. Live preview / Clean Feed instances are
     /// main-thread-owned; the singleton export instance is owned by `offscreenRenderQueue`.
     /// Source upload and adjacent-image precaching are deliberate worker-safe exceptions: they
@@ -763,6 +788,20 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated private func updateLiveState(_ body: (inout LiveStateSnapshot) -> Void) {
         preconditionOnStateExecutor()
         executorOwnedLiveState.update(body)
+    }
+
+    private let executorOwnedWatermarkState = ExecutorOwnedWatermarkState()
+
+    nonisolated private func watermarkStateSnapshot() -> ExecutorOwnedWatermarkState.Storage {
+        preconditionOnStateExecutor()
+        return executorOwnedWatermarkState.snapshot()
+    }
+
+    nonisolated private func updateWatermarkState(
+        _ body: (inout ExecutorOwnedWatermarkState.Storage) -> Void
+    ) {
+        preconditionOnStateExecutor()
+        executorOwnedWatermarkState.update(body)
     }
 
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
@@ -904,24 +943,42 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Deduped-by-asset watermark texture array (texture index 4), one RGBA8 premultiplied
     /// slice per distinct library asset referenced by the active watermark layers. Nil when
     /// there are none, so non-watermark edits pay zero extra GPU memory.
-    nonisolated(unsafe) private(set) var watermarkTexture: MTLTexture?
+    nonisolated private var watermarkTexture: MTLTexture? {
+        get { watermarkStateSnapshot().texture }
+        set { updateWatermarkState { $0.texture = newValue } }
+    }
     /// A 1×1×1 fully-transparent placeholder bound to `editAdjustments`' watermark-texture slot
     /// whenever there are no active watermark layers, so the kernel's texture argument is
     /// always satisfied (mirrors `emptyBrushAlpha`).
     nonisolated private let emptyWatermarkTextureHandle: StableMetalHandle<MTLTexture>
     /// Cache guarding the texture (re)decode in `loadWatermarkTextures`: the distinct asset IDs
     /// the current `watermarkTexture` was built from.
-    nonisolated(unsafe) private var lastBuiltWatermarkAssetIDs: [UUID] = []
+    nonisolated private var lastBuiltWatermarkAssetIDs: [UUID] {
+        get { watermarkStateSnapshot().lastBuiltAssetIDs }
+        set { updateWatermarkState { $0.lastBuiltAssetIDs = newValue } }
+    }
     /// Per-asset (slice index, decoded aspect ratio) from the last texture build — reused by
     /// `refreshWatermarkParams` when the asset-ID cache above hits, so a position/size/opacity-only
     /// change doesn't force a redecode.
-    nonisolated(unsafe) private var lastBuiltWatermarkAspects: [UUID: (slice: Int, aspect: Double)] = [:]
+    nonisolated private var lastBuiltWatermarkAspects: [UUID: (slice: Int, aspect: Double)] {
+        get { watermarkStateSnapshot().lastBuiltAspects }
+        set { updateWatermarkState { $0.lastBuiltAspects = newValue } }
+    }
     /// Active display-frame watermark layers from the most recent params upload. Viewport-only
     /// changes do not call `updateParams`, so crop/uncrop viewport updates reuse these layers to
     /// recompute watermark sizes against the frame currently being displayed.
-    nonisolated(unsafe) private var activeDisplayWatermarkLayers: [WatermarkLayer] = []
-    nonisolated(unsafe) private var cachedWatermarkFrame: UInt32 = 0
-    nonisolated(unsafe) private var cachedWatermarkImageSize = MTLSize(width: 0, height: 0, depth: 0)
+    nonisolated private var activeDisplayWatermarkLayers: [WatermarkLayer] {
+        get { watermarkStateSnapshot().activeDisplayLayers }
+        set { updateWatermarkState { $0.activeDisplayLayers = newValue } }
+    }
+    nonisolated private var cachedWatermarkFrame: UInt32 {
+        get { watermarkStateSnapshot().frame }
+        set { updateWatermarkState { $0.frame = newValue } }
+    }
+    nonisolated private var cachedWatermarkImageSize: MTLSize {
+        get { watermarkStateSnapshot().imageSize }
+        set { updateWatermarkState { $0.imageSize = newValue } }
+    }
 
     // MARK: - Color Transform layers
 

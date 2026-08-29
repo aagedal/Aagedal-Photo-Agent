@@ -438,43 +438,74 @@ nonisolated enum BatchRenameSnapshotError: LocalizedError {
     }
 }
 
-/// Captures every path the standard artifact registry can consult. Planning receives only this
-/// immutable snapshot and therefore cannot race ad-hoc filesystem reads while the recipe changes.
-nonisolated struct BatchRenamePlanningSnapshotService: Sendable {
+/// Captures every path the standard artifact registry can consult on a serialized executor.
+/// Planning receives only this immutable snapshot and therefore cannot race ad-hoc filesystem
+/// reads while the recipe changes or block a caller isolated to the main actor.
+actor BatchRenamePlanningSnapshotService {
+    typealias DirectoryExists = @Sendable (URL) -> Bool
+    typealias DirectoryContents = @Sendable (URL) throws -> [URL]
+    typealias VolumeIsCaseSensitive = @Sendable (URL) -> Bool
+
+    private let directoryExists: DirectoryExists
+    private let directoryContents: DirectoryContents
+    private let volumeIsCaseSensitive: VolumeIsCaseSensitive
+
+    init(
+        directoryExists: @escaping DirectoryExists = { url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        },
+        directoryContents: @escaping DirectoryContents = { url in
+            try FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: nil,
+                options: []
+            )
+        },
+        volumeIsCaseSensitive: @escaping VolumeIsCaseSensitive = { url in
+            (try? url.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?
+                .volumeSupportsCaseSensitiveNames == true
+        }
+    ) {
+        self.directoryExists = directoryExists
+        self.directoryContents = directoryContents
+        self.volumeIsCaseSensitive = volumeIsCaseSensitive
+    }
+
     func snapshot(
         folderURL: URL,
         artifactRegistry: RenameArtifactRegistry = .standard
     ) throws -> RenamePlanningEnvironment {
-        let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: folderURL.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
+        try Task.checkCancellation()
+        let folderExists = directoryExists(folderURL)
+        try Task.checkCancellation()
+        guard folderExists else {
             throw BatchRenameSnapshotError.folderUnavailable(folderURL)
         }
 
-        var existingURLs = Set(try fileManager.contentsOfDirectory(
-            at: folderURL,
-            includingPropertiesForKeys: nil,
-            options: []
-        ).map(\.standardizedFileURL))
+        var existingURLs = Set(try directoryContents(folderURL).map(\.standardizedFileURL))
+        try Task.checkCancellation()
 
         let relativeDirectories = Set(artifactRegistry.rules.compactMap { rule -> String? in
             guard !rule.relativeDirectoryComponents.isEmpty else { return nil }
             return rule.relativeDirectoryComponents.joined(separator: "/")
         })
-        for relativeDirectory in relativeDirectories {
+        for relativeDirectory in relativeDirectories.sorted() {
+            try Task.checkCancellation()
             let directoryURL = folderURL.appendingPathComponent(relativeDirectory, isDirectory: true)
-            guard fileManager.fileExists(atPath: directoryURL.path) else { continue }
-            let children = try fileManager.contentsOfDirectory(
-                at: directoryURL,
-                includingPropertiesForKeys: nil,
-                options: []
-            )
+            let companionDirectoryExists = directoryExists(directoryURL)
+            try Task.checkCancellation()
+            guard companionDirectoryExists else { continue }
+            let children = try directoryContents(directoryURL)
+            try Task.checkCancellation()
             existingURLs.formUnion(children.map(\.standardizedFileURL))
         }
 
-        let values = try? folderURL.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
-        let caseSensitivity: RenamePathCaseSensitivity = values?.volumeSupportsCaseSensitiveNames == true
+        try Task.checkCancellation()
+        let isCaseSensitive = volumeIsCaseSensitive(folderURL)
+        try Task.checkCancellation()
+        let caseSensitivity: RenamePathCaseSensitivity = isCaseSensitive
             ? .caseSensitive
             : .caseInsensitive
         return RenamePlanningEnvironment(

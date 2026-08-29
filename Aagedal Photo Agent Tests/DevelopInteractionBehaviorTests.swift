@@ -415,3 +415,59 @@ struct DevelopInteractionBehaviorTests {
         #expect(settings.layerOrder == order)
     }
 }
+
+@Suite("Develop mask interaction coordinator")
+@MainActor
+struct DevelopMaskInteractionCoordinatorTests {
+    @Test("an image change clears its matte preview but preserves brush tool state")
+    func imageChangePreservesBrushToolState() {
+        let coordinator = DevelopMaskInteractionCoordinator()
+        let firstURL = URL(fileURLWithPath: "/tmp/mask-session-first.raw")
+        let secondURL = URL(fileURLWithPath: "/tmp/mask-session-second.raw")
+        let maskID = UUID()
+
+        coordinator.beginImageSession(firstURL)
+        coordinator.brushRadius = 0.12
+        coordinator.brushHardness = 0.8
+        coordinator.brushFlow = 0.35
+        coordinator.brushErase = true
+        coordinator.beginBrushPainting()
+        #expect(coordinator.setMattePreview(maskID: maskID, visible: true))
+
+        coordinator.beginImageSession(secondURL)
+
+        #expect(coordinator.activeImageURL == secondURL)
+        #expect(coordinator.isBrushPainting)
+        #expect(coordinator.mattePreviewMaskID == nil)
+        #expect(coordinator.brushRadius == 0.12)
+        #expect(coordinator.brushHardness == 0.8)
+        #expect(coordinator.brushFlow == 0.35)
+        #expect(coordinator.brushErase)
+    }
+
+    @Test("layer selection retains painting only for brush masks")
+    func layerSelectionOwnsBrushPaintingLifecycle() {
+        let coordinator = DevelopMaskInteractionCoordinator()
+        coordinator.beginBrushPainting()
+
+        coordinator.selectedLayerDidChange(isBrush: true)
+        #expect(coordinator.isBrushPainting)
+
+        coordinator.selectedLayerDidChange(isBrush: false)
+        #expect(!coordinator.isBrushPainting)
+    }
+
+    @Test("a stale hover exit cannot clear a newer matte preview")
+    func staleHoverExitCannotClearNewPreview() {
+        let coordinator = DevelopMaskInteractionCoordinator()
+        let firstMaskID = UUID()
+        let secondMaskID = UUID()
+
+        #expect(coordinator.setMattePreview(maskID: firstMaskID, visible: true))
+        #expect(coordinator.setMattePreview(maskID: secondMaskID, visible: true))
+        #expect(!coordinator.setMattePreview(maskID: firstMaskID, visible: false))
+        #expect(coordinator.mattePreviewMaskID == secondMaskID)
+        #expect(coordinator.setMattePreview(maskID: secondMaskID, visible: false))
+        #expect(coordinator.mattePreviewMaskID == nil)
+    }
+}

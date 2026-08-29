@@ -320,9 +320,6 @@ struct EditWorkspaceView: View {
     /// Global visibility for interactive ellipse outlines/handles. Kept separate from the
     /// selected mask's enabled state so users can inspect the adjusted image without deselecting.
     @State private var showsMaskOutlines = true
-    /// The selected mask whose black/white matte is temporarily replacing the image while the
-    /// pointer hovers its type icon. Nil restores the normal edited preview.
-    @State private var maskMattePreviewMaskID: UUID?
     /// Shown when "Add Watermark" is tapped but the Watermark library (Settings ▸ Watermarks)
     /// has no PNGs imported yet.
     @State private var showWatermarkLibraryEmptyAlert = false
@@ -348,13 +345,9 @@ struct EditWorkspaceView: View {
     /// Live marquee rectangle (preview-pane coordinates) drawn while dragging a WB sample.
     @State private var wbPickDragRect: CGRect?
 
-    // Freeform brush-paint tool (bare "B"). Settings are transient UI state describing what's
-    // about to be painted — already-painted strokes keep whatever they were painted with.
-    @State private var isBrushPainting = false
-    @State private var brushRadius: Double = 0.04     // fraction of the long edge (BrushStroke.radius)
-    @State private var brushHardness: Double = 0.5    // 0-1 dab CenterWeight
-    @State private var brushFlow: Double = 1.0        // 0-1 dab flow
-    @State private var brushErase = false             // subtract from the mask instead of adding
+    // Image-scoped brush and matte-hover gesture state. Brush preferences survive navigation;
+    // active pointer interactions do not.
+    @State private var maskInteraction = DevelopMaskInteractionCoordinator()
     // AI subject/object selection owns one click over the preview. No layer is added until Vision
     // returns a real foreground instance, so cancelling or clicking the letterbox leaves no junk.
     @State private var aiMaskSelection = AIMaskSelectionCoordinator()
@@ -463,6 +456,15 @@ struct EditWorkspaceView: View {
     private var isSelectingAIMask: Bool { aiMaskSelection.isSelecting }
     private var isGeneratingAIMask: Bool { aiMaskSelection.isGenerating }
     private var replacingAIMaskID: UUID? { aiMaskSelection.replacingMaskID }
+
+    // Transitional read aliases keep the existing presentation code compact while the
+    // coordinator is the sole owner of mask-interaction state.
+    private var isBrushPainting: Bool { maskInteraction.isBrushPainting }
+    private var brushRadius: Double { maskInteraction.brushRadius }
+    private var brushHardness: Double { maskInteraction.brushHardness }
+    private var brushFlow: Double { maskInteraction.brushFlow }
+    private var brushErase: Bool { maskInteraction.brushErase }
+    private var maskMattePreviewMaskID: UUID? { maskInteraction.mattePreviewMaskID }
 
     private var aiMaskTarget: AIMaskTarget {
         get { aiMaskSelection.target }
@@ -835,7 +837,7 @@ struct EditWorkspaceView: View {
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
             // Leaving a brush layer (e.g. after deleting one) exits paint mode, so the brush
             // controls don't linger on Global or radial layers. Selecting a brush layer keeps it.
-            if !selectedMaskIsBrush { isBrushPainting = false }
+            maskInteraction.selectedLayerDidChange(isBrush: selectedMaskIsBrush)
             aiMaskSelection.cancelSelectionIfIdle()
             if let id = selectedMaskID,
                let target = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
@@ -2267,7 +2269,7 @@ struct EditWorkspaceView: View {
         metadataViewModel.hasChanges = false
         editUndoManager.removeAllActions()
         selectedLayer = .global
-        isBrushPainting = false
+        maskInteraction.stopBrushPainting()
         resetCropZoom()
         syncCameraRawToImageFile()
         renderPreview()
@@ -2593,7 +2595,7 @@ struct EditWorkspaceView: View {
 
     private func handleEditWorkspaceDisappear() {
         isSpaceHandToolActive = false
-        maskMattePreviewMaskID = nil
+        maskInteraction.endImageSession()
         metalPipeline?.maskMattePreviewMaskID = nil
         developComparisonRenderTask?.cancel()
         NSCursor.arrow.set()
@@ -2824,8 +2826,8 @@ struct EditWorkspaceView: View {
         asShotWhiteBalance = nil
         isPickingWhiteBalance = false
         aiMaskSelection.beginImageSession(selectedImageURL)
+        maskInteraction.beginImageSession(selectedImageURL)
         wbPickDragRect = nil
-        maskMattePreviewMaskID = nil
         metalPipeline?.maskMattePreviewMaskID = nil
         metalPipeline?.asShotTemperature = 6500
         metalPipeline?.asShotTint = 0
@@ -5504,7 +5506,9 @@ struct EditWorkspaceView: View {
     /// The "Paint" toggle mirrors the bare-`B` shortcut so the tool is discoverable without it;
     /// the sliders describe what's about to be painted (already-painted strokes keep their own).
     private var brushToolbar: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        @Bindable var maskInteraction = maskInteraction
+
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 if selectedMaskIsBrush, let id = selectedMaskID {
                     maskMattePreviewIcon(systemName: "paintbrush.pointed", maskID: id)
@@ -5515,7 +5519,7 @@ struct EditWorkspaceView: View {
                 Text("Brush").font(.system(size: 11, weight: .semibold))
                 Spacer()
                 Button {
-                    isBrushPainting.toggle()
+                    maskInteraction.toggleBrushPainting()
                     if isBrushPainting { isPickingWhiteBalance = false }
                     syncMaskOverlayTarget()
                 } label: {
@@ -5527,15 +5531,15 @@ struct EditWorkspaceView: View {
                 .controlSize(.small)
                 .help("Toggle the paint tool (shortcut: B)")
             }
-            Picker("", selection: $brushErase) {
+            Picker("", selection: $maskInteraction.brushErase) {
                 Text("Add").tag(false)
                 Text("Erase").tag(true)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            brushSlider("Size", value: $brushRadius, range: 0.005...0.20)
-            brushSlider("Hardness", value: $brushHardness, range: 0...1)
-            brushSlider("Flow", value: $brushFlow, range: 0.05...1)
+            brushSlider("Size", value: $maskInteraction.brushRadius, range: 0.005...0.20)
+            brushSlider("Hardness", value: $maskInteraction.brushHardness, range: 0...1)
+            brushSlider("Flow", value: $maskInteraction.brushFlow, range: 0.05...1)
             Text(isBrushPainting ? "Drag on the image to paint. Press B to exit."
                                  : "Turn on Paint (or press B), then drag on the image.")
                 .font(.system(size: 9))
@@ -5669,7 +5673,7 @@ struct EditWorkspaceView: View {
                 }
                 addLayerTile(kind: .brushMask, tint: .blue, help: "Add brush mask") {
                     _ = addNewBrushMask()
-                    isBrushPainting = true
+                    maskInteraction.beginBrushPainting()
                     isPickingWhiteBalance = false
                     syncMaskOverlayTarget()
                 }
@@ -6829,7 +6833,7 @@ struct EditWorkspaceView: View {
                 if clamped > 0,
                    let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                    maskIndex < masks.count, masks[maskIndex].brush != nil {
-                    brushFlow = 1.0
+                    maskInteraction.brushFlow = 1.0
                 }
             }
         )
@@ -6852,7 +6856,7 @@ struct EditWorkspaceView: View {
                 if newValue,
                    let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                    maskIndex < masks.count, masks[maskIndex].brush != nil {
-                    brushFlow = 1.0
+                    maskInteraction.brushFlow = 1.0
                 }
                 commitEditAdjustments()
             }
@@ -7010,7 +7014,7 @@ struct EditWorkspaceView: View {
     private func startAIMaskSelection(replacing maskID: UUID? = nil) {
         guard canEditSingleImage, sourceCIImage != nil, !isGeneratingAIMask else { return }
         clearMaskMattePreview()
-        isBrushPainting = false
+        maskInteraction.beginExclusiveSelection()
         isPickingWhiteBalance = false
         wbPickDragRect = nil
         guard aiMaskSelection.beginSelection(
@@ -7283,16 +7287,8 @@ struct EditWorkspaceView: View {
     /// icon is hovered. The pipeline keeps this preview editor-local; its clean-feed mirror still
     /// receives the ordinary settings and therefore never shows the temporary matte.
     private func setMaskMattePreview(maskID: UUID, visible: Bool) {
-        let nextID: UUID?
-        if visible {
-            nextID = maskID
-        } else {
-            guard maskMattePreviewMaskID == maskID else { return }
-            nextID = nil
-        }
-        guard nextID != maskMattePreviewMaskID else { return }
-
-        maskMattePreviewMaskID = nextID
+        guard maskInteraction.setMattePreview(maskID: maskID, visible: visible) else { return }
+        let nextID = maskInteraction.mattePreviewMaskID
         guard let pipeline = metalPipeline else { return }
         pipeline.maskMattePreviewMaskID = nextID
         if pipeline.hasSourceTexture {
@@ -7302,8 +7298,8 @@ struct EditWorkspaceView: View {
     }
 
     private func clearMaskMattePreview() {
-        guard maskMattePreviewMaskID != nil || metalPipeline?.maskMattePreviewMaskID != nil else { return }
-        maskMattePreviewMaskID = nil
+        let clearedCoordinatorPreview = maskInteraction.clearMattePreview()
+        guard clearedCoordinatorPreview || metalPipeline?.maskMattePreviewMaskID != nil else { return }
         guard let pipeline = metalPipeline else { return }
         pipeline.maskMattePreviewMaskID = nil
         if pipeline.hasSourceTexture {
@@ -7358,8 +7354,8 @@ struct EditWorkspaceView: View {
                 onStrokeChanged: { stroke, layer in liveBrushStamp(stroke, layer: layer) },
                 onStrokeEnded: { stroke in commitBrushStroke(stroke) },
                 onBrushSettingsChanged: { radius, hardness in
-                    brushRadius = radius
-                    brushHardness = hardness
+                    maskInteraction.brushRadius = radius
+                    maskInteraction.brushHardness = hardness
                 }
             )
             .frame(width: viewSize.width, height: viewSize.height)
@@ -7771,7 +7767,7 @@ struct EditWorkspaceView: View {
 
         resetCropZoom()
         selectedLayer = .global
-        isBrushPainting = false
+        maskInteraction.stopBrushPainting()
         updateCameraRaw { cameraRaw in
             cameraRaw = applied
         }
@@ -8575,7 +8571,7 @@ struct EditWorkspaceView: View {
         // deselects the WB eyedropper so the two drag-driven tools don't fight over the mouse.
         if chars == "b" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
-            isBrushPainting.toggle()
+            maskInteraction.toggleBrushPainting()
             if isBrushPainting { isPickingWhiteBalance = false }
             syncMaskOverlayTarget()
             return nil
@@ -8585,7 +8581,7 @@ struct EditWorkspaceView: View {
         // in a brush context, so pass the event through otherwise.
         if chars == "x" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage, isBrushPainting || selectedMaskIsBrush else { return event }
-            brushErase.toggle()
+            maskInteraction.brushErase.toggle()
             return nil
         }
 

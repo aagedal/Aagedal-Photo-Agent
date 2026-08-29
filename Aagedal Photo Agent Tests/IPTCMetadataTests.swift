@@ -5095,6 +5095,9 @@ struct BrushRasterizationTests {
         #expect(source.contains("private final class ExecutorOwnedLiveState"))
         #expect(source.contains("private func liveStateSnapshot"))
         #expect(source.contains("private func updateLiveState"))
+        #expect(source.contains("private final class ExecutorOwnedWatermarkState"))
+        #expect(source.contains("private func watermarkStateSnapshot"))
+        #expect(source.contains("private func updateWatermarkState"))
         #expect(source.contains("this holder can escape that closure"))
         #expect(!source.contains("private var _sourceTexture"))
         #expect(!source.contains("private var _sourceOrientation"))
@@ -5115,6 +5118,8 @@ struct BrushRasterizationTests {
             "nonisolated private func withExecutorOwnedCacheState",
             "nonisolated private func liveStateSnapshot",
             "nonisolated private func updateLiveState",
+            "nonisolated private func watermarkStateSnapshot",
+            "nonisolated private func updateWatermarkState",
         ] {
             let start = try #require(source.range(of: signature))
             let suffix = source[start.lowerBound...]
@@ -5169,6 +5174,32 @@ struct BrushRasterizationTests {
         #expect(source.contains("ptr.pointee.gamutClipMode = liveState.gamutClipMode"))
         #expect(source.contains("liveState.onParamsChanged?()"))
 
+        // Watermark texture identity, decode metadata, active layers, and display/export frame
+        // geometry share one executor-owned generation. The six former unsafe declarations are
+        // retained as checked computed accessors so render behavior and call sites stay stable.
+        for removedDeclaration in [
+            "nonisolated(unsafe) private(set) var watermarkTexture",
+            "nonisolated(unsafe) private var lastBuiltWatermarkAssetIDs",
+            "nonisolated(unsafe) private var lastBuiltWatermarkAspects",
+            "nonisolated(unsafe) private var activeDisplayWatermarkLayers",
+            "nonisolated(unsafe) private var cachedWatermarkFrame",
+            "nonisolated(unsafe) private var cachedWatermarkImageSize",
+        ] {
+            #expect(!source.contains(removedDeclaration), Comment(rawValue: removedDeclaration))
+        }
+        for declaration in [
+            "nonisolated private var watermarkTexture: MTLTexture?",
+            "nonisolated private var lastBuiltWatermarkAssetIDs: [UUID]",
+            "nonisolated private var lastBuiltWatermarkAspects: [UUID:",
+            "nonisolated private var activeDisplayWatermarkLayers: [WatermarkLayer]",
+            "nonisolated private var cachedWatermarkFrame: UInt32",
+            "nonisolated private var cachedWatermarkImageSize: MTLSize",
+        ] {
+            #expect(source.contains(declaration), Comment(rawValue: declaration))
+        }
+        #expect(source.contains("get { watermarkStateSnapshot().texture }"))
+        #expect(source.contains("set { updateWatermarkState { $0.texture = newValue } }"))
+
         // Metal resource references allocated during initialization are immutable Sendable
         // wrappers. Their buffer/texture contents are still mutated only through the
         // executor-checked methods below; only MTLTextureWrapper's cache payload retains an
@@ -5190,7 +5221,7 @@ struct BrushRasterizationTests {
             #expect(source.contains(declaration), Comment(rawValue: declaration))
         }
         let unsafeEscapeCount = source.components(separatedBy: "nonisolated(unsafe)").count - 1
-        #expect(unsafeEscapeCount <= 14)
+        #expect(unsafeEscapeCount <= 8)
 
         for signature in [
             "nonisolated func updateParams",

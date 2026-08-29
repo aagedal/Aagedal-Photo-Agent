@@ -143,6 +143,14 @@ stale. Three focused characterizations cover partial failure off the main actor,
 replacement state, and pre-cancellation with zero mutation. All three passed both in isolation and in the
 combined 30-test run at `/private/tmp/aagedal-v3-plan-20260829.xcresult`.
 
+The later 2026-08-29 Batch Rename follow-up converted `BatchRenamePlanningSnapshotService` from a value
+called inside an ad-hoc detached task into an injected actor. Root and registered companion-directory
+enumeration plus volume case-sensitivity lookup are serialized, with cancellation checks on both sides of
+each synchronous call so no partial environment crosses back to the main actor. Three new characterizations
+cover blocked-reader UI responsiveness, cancellation suppressing partial evidence, and complete immutable
+root/companion snapshots. The complete 15-test `BatchRenameSheetStateTests` suite passed in isolation and in
+the integrated 34-test result bundle at `/private/tmp/aagedal-v3-continue-20260829-002.xcresult`.
+
 ## Remaining exit-gate work
 
 Phase 3.1 is not complete. Signposts and repeatable benchmarks still need to cover local SSD, network,

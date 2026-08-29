@@ -95,6 +95,7 @@ final class BatchRenameSheetSession {
     private var presetBaselines: [UUID: BatchRenameRecipePreset] = [:]
     private var isSwitchingRecipe = false
     private let executionQuiescence: BatchRenameExecutionQuiescence
+    @ObservationIgnored private let snapshotService: BatchRenamePlanningSnapshotService
     @ObservationIgnored private let planningWorker: BatchRenamePlanningWorker
     @ObservationIgnored private let planningDebounce: Duration
     @ObservationIgnored private var planningGeneration: UInt64 = 0
@@ -105,6 +106,7 @@ final class BatchRenameSheetSession {
         artifactRegistry: RenameArtifactRegistry = .standard,
         environment: RenamePlanningEnvironment? = nil,
         executionQuiescence: BatchRenameExecutionQuiescence = .noOp,
+        snapshotService: BatchRenamePlanningSnapshotService = BatchRenamePlanningSnapshotService(),
         planningDebounce: Duration = .milliseconds(120),
         planBuilder: @escaping PlanBuilder = { snapshot in
             RenamePlanningService().makePlan(
@@ -119,6 +121,7 @@ final class BatchRenameSheetSession {
         self.request = request
         self.artifactRegistry = artifactRegistry
         self.executionQuiescence = executionQuiescence
+        self.snapshotService = snapshotService
         self.planningDebounce = planningDebounce
         planningWorker = BatchRenamePlanningWorker(planBuilder: planBuilder)
         let initialEditor = BatchRenameEditorState(
@@ -214,12 +217,10 @@ final class BatchRenameSheetSession {
         let folderURL = request.folderURL
         let registry = artifactRegistry
         do {
-            let snapshot = try await Task.detached(priority: .userInitiated) {
-                try BatchRenamePlanningSnapshotService().snapshot(
-                    folderURL: folderURL,
-                    artifactRegistry: registry
-                )
-            }.value
+            let snapshot = try await snapshotService.snapshot(
+                folderURL: folderURL,
+                artifactRegistry: registry
+            )
             environment = snapshot
             requiresFreshSnapshotAfterFailure = false
             rebuildPlan()

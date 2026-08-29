@@ -94,3 +94,16 @@ The contract test requires the new storage and wrappers, checks both accessors r
 precondition, rejects all five old field names, and caps unsafe escapes at 24. The integrated build passed
 all 16 `BrushRasterizationTests` as part of the 30-test result bundle at
 `/private/tmp/aagedal-v3-plan-20260829.xcresult`.
+
+## Watermark state follow-up — 2026-08-29
+
+Watermark texture identity, decoded asset/aspect caches, active display layers, display/export frame, and
+image size now live in `ExecutorOwnedWatermarkState`. The six existing property interfaces are computed
+accessors over that storage, and both snapshot and update paths require `preconditionOnStateExecutor()`.
+Live preview and Clean Feed remain main-thread owned; the shared offscreen pipeline remains owned by its
+dedicated serial render queue.
+
+The source contract rejects the six former unsafe declarations, requires the new holder and checked
+accessors, and lowers the explicit `nonisolated(unsafe)` ceiling from 14 to 8. A fresh application/test-target
+build succeeded, and all 16 `BrushRasterizationTests` passed both independently and in the combined 34-test
+result bundle at `/private/tmp/aagedal-v3-continue-20260829-002.xcresult`.

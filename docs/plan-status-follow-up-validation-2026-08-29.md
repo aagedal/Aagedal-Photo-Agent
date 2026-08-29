@@ -365,3 +365,71 @@ and timing state. Manual/external work still includes slow-volume and Thread Per
 Instruments memory benchmarks, menu/shortcut/focus/multi-window and accessibility passes, protected release
 branch configuration, focused privacy/legal review, real FTP/FTPS/SFTP drills, and publishing/testing the
 production AuraFace component on every supported macOS tier.
+
+## Batch Rename planning filesystem boundary
+
+Batch Rename planning now obtains its filesystem evidence from an injected
+`BatchRenamePlanningSnapshotService` actor. The actor serializes root and registered companion-directory
+enumeration and the volume case-sensitivity lookup, with cancellation checks before and after every
+non-preemptible Foundation call. It returns only a complete immutable `RenamePlanningEnvironment`; a
+cancelled request cannot publish paths collected before cancellation. `BatchRenameSheetSession` awaits the
+actor directly instead of creating an ad-hoc detached task.
+
+Three new tests prove a deliberately blocked directory read leaves the main actor responsive, cancellation
+after a blocked read suppresses the partial snapshot, and root plus `.photo_metadata` companion paths and
+case sensitivity are frozen together. Individual synchronous Foundation calls remain non-preemptible, and a
+companion-directory read error still fails the whole snapshot as it did before.
+
+## Develop mask-interaction state owner
+
+`DevelopMaskInteractionCoordinator` is now the named owner for transient Develop brush preferences,
+paint-tool mode, image-session identity, and matte-hover identity. The extraction preserves the prior brush
+mode and slider behavior across navigation, clears only image-specific matte previews, stops exclusive
+brush/matte input when AI selection starts, and rejects a stale hover-exit event that targets an older mask.
+`EditWorkspaceView` remains responsible for mirroring coordinator changes into the live Metal pipeline.
+
+Three characterization tests cover navigation behavior, selected-layer paint lifecycle, and stale matte
+hover exits. Broader brush gesture/render ownership and the Phase 4.1 extraction exit gate remain open.
+
+## Metal watermark state isolation
+
+Six mutable `MetalEditPipeline` fields—watermark texture, built asset IDs, built asset aspects, active display
+layers, watermark frame, and image size—now live in `ExecutorOwnedWatermarkState`. Existing call sites use
+computed properties backed by snapshot/update accessors, and both paths enforce the pipeline's selected
+state executor. Live and Clean Feed instances remain main-thread owned; the export pipeline remains bound to
+its dedicated serial offscreen queue.
+
+The static source contract requires the holder and checked accessors, rejects all six former unsafe
+declarations, and lowers the explicit `nonisolated(unsafe)` ceiling from **14 to 8**. Remaining escapes cover
+the immutable Metal cache payload, texture cache, image-memory registration, brush raster state, and render
+logging width; the compile-time live-preview facade remains open.
+
+## Integrated validation for the further continuation
+
+A fresh isolated `build-for-testing` compiled the complete application and unit-test targets with
+`** TEST BUILD SUCCEEDED **`. The combined `test-without-building` run then passed all **34 tests in 3
+suites**:
+
+- `BatchRenameSheetStateTests` (15);
+- `BrushRasterizationTests` (16); and
+- `DevelopMaskInteractionCoordinatorTests` (3).
+
+The preserved result bundle is:
+
+```text
+/private/tmp/aagedal-v3-continue-20260829-002.xcresult
+```
+
+The host emitted the previously documented LMDB map-size, App Intents metadata, detached-signature logging,
+and background-publication diagnostics. They did not produce a build failure, test issue, cancelled test, or
+failure in any of the 34 selected tests.
+
+## Remaining boundary after the further continuation
+
+The audit remains **61 of 75 checklist substeps complete**. Automated implementation still includes other
+lower-priority direct filesystem paths, larger state-owning coordinator extractions, the compile-time
+live-preview facade, and isolation of the remaining Metal texture/cache, memory-registration, brush, and
+render-timing state. Manual/external work is unchanged: slow-volume and Thread Performance Checker evidence,
+Instruments memory benchmarks, menu/shortcut/focus/multi-window and accessibility passes, protected release
+branch configuration, focused privacy/legal review, real FTP/FTPS/SFTP drills, and production AuraFace
+publishing and supported-macOS validation.

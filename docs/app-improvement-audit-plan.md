@@ -76,6 +76,15 @@ actors with cancellation/commit evidence, and four mutable Metal live-state fiel
 executor-owned snapshot, reducing explicit unsafe declarations from 18 to 14. The full app/test targets
 compiled and all 47 integrated focused tests passed.
 
+**Further parallel continuation (2026-08-29):** the checklist remains 61 of 75 because these slices advance
+three broad open gates without satisfying their manual or architectural exit conditions. Batch Rename
+planning now captures its root, companion-directory, and volume-case-sensitivity evidence on an injected
+serialized actor with cancellation checks around each synchronous read. `DevelopMaskInteractionCoordinator`
+now owns brush preferences/tool mode, image-session binding, and matte-hover identity. Six watermark GPU
+and cache fields now share executor-checked storage, reducing `MetalEditPipeline`'s explicit
+`nonisolated(unsafe)` declarations from 14 to 8. A fresh application/test build and all 34 integrated focused
+tests passed.
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -421,6 +430,14 @@ pre-cancellation from cancellation arriving after the synchronous durable commit
 inventory, slow-volume drills, and signpost/benchmark gate remain open.
 ([validation](plan-status-follow-up-validation-2026-08-29.md#additional-filesystem-boundaries))
 
+**Batch-rename planning follow-up (2026-08-29):** rename planning no longer relies on an ad-hoc detached
+task for its directory snapshot. An injected `BatchRenamePlanningSnapshotService` actor serializes the root
+and registered companion-directory reads plus volume case-sensitivity lookup, checks cancellation before
+and after each non-preemptible Foundation call, and publishes only the complete immutable planning
+environment. A blocked-reader characterization proves the main actor remains responsive. The broader
+filesystem inventory and slow-volume/signpost/benchmark exit gate remain open.
+([validation](plan-status-follow-up-validation-2026-08-29.md#batch-rename-planning-filesystem-boundary))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -529,8 +546,15 @@ open. ([validation](plan-status-follow-up-validation-2026-08-29.md#scene-ui-hand
 **State-owner follow-up (2026-08-27):** `DevelopVersionSessionCoordinator` now owns named-version catalog,
 revision, storage, cancellation, debounce/flush persistence, and stale-result gating. A separate
 `AIMaskSelectionCoordinator` owns AI-mask selection/generation request identity, cancellation, image-session
-binding, and late-result rejection. Characterization tests cover both extractions; brush/matte/gesture and
-render ownership remain in `EditWorkspaceView` and keep the broader extraction items open.
+binding, and late-result rejection. Characterization tests cover both extractions; at that point
+brush/matte/gesture and render ownership still remained in `EditWorkspaceView`.
+
+**Mask-interaction state-owner follow-up (2026-08-29):** `DevelopMaskInteractionCoordinator` now owns brush
+preferences, paint-tool lifecycle, image-session binding, and matte-hover identity. The extraction preserves
+brush tool state across navigation while clearing image-specific matte previews, rejects stale hover exits,
+and keeps view-to-Metal synchronization at the existing UI boundary. Three focused characterizations cover
+the extracted lifecycle; broader gesture, render, and persistence ownership remain open.
+([validation](plan-status-follow-up-validation-2026-08-29.md#develop-mask-interaction-state-owner))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.
@@ -584,6 +608,14 @@ preserving gamut mirroring and callback order. Four more unsafe stored propertie
 explicit count from 18 to 14; GPU brush/watermark lifecycle storage, memory registration, render timing, and
 the compile-time live-preview facade remain open.
 ([validation](plan-status-follow-up-validation-2026-08-29.md#metal-live-state-isolation))
+
+**Watermark-state follow-up (2026-08-29):** watermark texture identity, decoded asset/aspect caches, active
+display layers, frame selection, and image size now share one `ExecutorOwnedWatermarkState`. Existing
+property call sites cross snapshot/update accessors that enforce the live-main-thread or offscreen-render
+executor contract. Six more unsafe stored properties are gone, reducing the explicit count from 14 to 8;
+texture-cache payload, image-memory registration, brush GPU state, render timing, and the compile-time
+live-preview facade remain open.
+([validation](plan-status-follow-up-validation-2026-08-29.md#metal-watermark-state-isolation))
 
 **Exit gate:** every remaining unsafe isolation escape has a written invariant and enforcement; the stress
 scenario is repeatable and clean.
