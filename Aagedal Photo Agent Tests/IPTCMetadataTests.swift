@@ -5087,15 +5087,24 @@ struct BrushRasterizationTests {
         #expect(source.contains("private final class MirrorState"))
         #expect(source.contains("private final class WhiteBalanceReference"))
         #expect(source.contains("private final class ExecutorOwnedRenderPassState"))
+        #expect(source.contains("private struct ViewportStateSnapshot: Sendable"))
+        #expect(source.contains("private final class ExecutorOwnedViewportState"))
         #expect(!source.contains("private var _sourceTexture"))
         #expect(!source.contains("private var _sourceOrientation"))
         #expect(!source.contains("private var _asShotTemperature"))
         #expect(!source.contains("private var _asShotTint"))
         #expect(source.contains("other.preconditionOnStateExecutor()"))
         #expect(!source.contains("nonisolated(unsafe) private var renderPassPlan"))
+        #expect(!source.contains("cachedViewportOrigin"))
+        #expect(!source.contains("cachedViewportSize"))
+        #expect(!source.contains("cachedViewportCenter"))
+        #expect(!source.contains("cachedViewportRotation"))
+        #expect(!source.contains("cachedCropHalfExtent"))
         for signature in [
             "nonisolated private func replaceRenderPassPlan",
             "nonisolated private func renderPassPlanSnapshot",
+            "nonisolated private func replaceViewportState",
+            "nonisolated private func viewportStateSnapshot",
         ] {
             let start = try #require(source.range(of: signature))
             let suffix = source[start.lowerBound...]
@@ -5128,7 +5137,7 @@ struct BrushRasterizationTests {
             #expect(source.contains(declaration), Comment(rawValue: declaration))
         }
         let unsafeEscapeCount = source.components(separatedBy: "nonisolated(unsafe)").count - 1
-        #expect(unsafeEscapeCount <= 29)
+        #expect(unsafeEscapeCount <= 24)
 
         for signature in [
             "nonisolated func updateParams",

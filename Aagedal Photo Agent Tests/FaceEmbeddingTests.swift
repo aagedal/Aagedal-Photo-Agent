@@ -653,3 +653,195 @@ struct FaceEmbeddingTests {
         return ctx.makeImage()!
     }
 }
+
+@Suite("Face group deletion filesystem boundary")
+@MainActor
+struct FaceGroupDeletionTests {
+    @Test("photo trash runs off MainActor and committed partial success still deletes the group")
+    func partialTrashPreservesExistingDeletionSemantics() async throws {
+        let folder = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let firstURL = folder.appendingPathComponent("first.jpg")
+        let secondURL = folder.appendingPathComponent("second.jpg")
+        let fixture = makeFaceGroup(folder: folder, imageURLs: [firstURL, secondURL])
+        let trashProbe = FaceGroupTrashProbe(failingURLs: [secondURL])
+        let viewModel = makeViewModel(trashHandler: trashProbe)
+        viewModel.faceData = fixture.data
+
+        let result = await viewModel.deleteGroup(fixture.groupID, includePhotos: true)
+
+        #expect(result.trashedPhotoURLs == [firstURL])
+        #expect(result.failures.map(\.sourceURL) == [secondURL])
+        #expect(!result.cancellationStoppedRemainingPhotos)
+        #expect(result.faceDataDisposition == .applied)
+        #expect(viewModel.faceData?.faces.isEmpty == true)
+        #expect(viewModel.faceData?.groups.isEmpty == true)
+        #expect(!trashProbe.ranOnMainThread)
+
+        let persisted = try #require(FaceDataStorageService().loadFaceData(for: folder))
+        #expect(persisted.faces.isEmpty)
+        #expect(persisted.groups.isEmpty)
+    }
+
+    @Test("a stale trash completion reports commits without overwriting newer face data")
+    func staleCompletionPreservesReplacementState() async throws {
+        let folder = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let originalURL = folder.appendingPathComponent("original.jpg")
+        let original = makeFaceGroup(folder: folder, imageURLs: [originalURL])
+        let trashProbe = FaceGroupTrashProbe(blocksUntilReleased: true)
+        let viewModel = makeViewModel(trashHandler: trashProbe)
+        viewModel.faceData = original.data
+
+        let deletion = Task {
+            await viewModel.deleteGroup(original.groupID, includePhotos: true)
+        }
+        while !trashProbe.hasStarted {
+            await Task.yield()
+        }
+
+        let replacementURL = folder.appendingPathComponent("replacement.jpg")
+        let replacement = makeFaceGroup(folder: folder, imageURLs: [replacementURL])
+        viewModel.faceData = replacement.data
+        trashProbe.release()
+
+        let result = await deletion.value
+        #expect(result.trashedPhotoURLs == [originalURL])
+        #expect(result.faceDataDisposition == .staleStatePreserved)
+        #expect(viewModel.faceData?.groups.map(\.id) == [replacement.groupID])
+        #expect(viewModel.faceData?.faces.map(\.imageURL) == [replacementURL])
+        #expect(!trashProbe.ranOnMainThread)
+    }
+
+    @Test("pre-cancelled deletion leaves face data untouched")
+    func preCancelledDeletionDoesNotMutate() async throws {
+        let folder = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fixture = makeFaceGroup(
+            folder: folder,
+            imageURLs: [folder.appendingPathComponent("cancelled.jpg")]
+        )
+        let trashProbe = FaceGroupTrashProbe()
+        let viewModel = makeViewModel(trashHandler: trashProbe)
+        viewModel.faceData = fixture.data
+
+        let deletion = Task {
+            await Task.yield()
+            return await viewModel.deleteGroup(fixture.groupID, includePhotos: true)
+        }
+        deletion.cancel()
+
+        let result = await deletion.value
+        #expect(result.trashedPhotoURLs.isEmpty)
+        #expect(result.failures.isEmpty)
+        #expect(result.cancellationStoppedRemainingPhotos)
+        #expect(result.faceDataDisposition == .cancelledBeforeMutation)
+        #expect(viewModel.faceData?.groups.map(\.id) == [fixture.groupID])
+        #expect(viewModel.faceData?.faces.count == 1)
+        #expect(trashProbe.attemptedURLs.isEmpty)
+    }
+
+    private func makeViewModel(
+        trashHandler: any ImageTrashHandling
+    ) -> FaceRecognitionViewModel {
+        FaceRecognitionViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            fileSystemService: FileSystemService(),
+            imageTrashHandler: trashHandler
+        )
+    }
+
+    private func makeTemporaryFolder() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "FaceGroupDeletion-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        return folder
+    }
+
+    private func makeFaceGroup(
+        folder: URL,
+        imageURLs: [URL]
+    ) -> (data: FolderFaceData, groupID: UUID) {
+        let groupID = UUID()
+        let faces = imageURLs.map { imageURL in
+            DetectedFace(
+                id: UUID(),
+                imageURL: imageURL,
+                faceRect: .zero,
+                featurePrintData: Data([1]),
+                groupID: groupID,
+                detectedAt: Date()
+            )
+        }
+        let group = FaceGroup(
+            id: groupID,
+            name: "Test Group",
+            representativeFaceID: faces[0].id,
+            faceIDs: faces.map(\.id),
+            userCreated: true,
+            manualNumber: nil
+        )
+        return (
+            FolderFaceData(
+                folderURL: folder,
+                faces: faces,
+                groups: [group],
+                lastScanDate: Date(),
+                scanComplete: true
+            ),
+            groupID
+        )
+    }
+}
+
+nonisolated private final class FaceGroupTrashProbe: ImageTrashHandling, @unchecked Sendable {
+    private enum Failure: Error {
+        case injected
+    }
+
+    private let lock = NSLock()
+    private let releaseSemaphore = DispatchSemaphore(value: 0)
+    private let failingURLs: Set<URL>
+    private let blocksUntilReleased: Bool
+    private var started = false
+    private var mainThreadObserved = false
+    private var attempted: [URL] = []
+
+    init(failingURLs: Set<URL> = [], blocksUntilReleased: Bool = false) {
+        self.failingURLs = failingURLs
+        self.blocksUntilReleased = blocksUntilReleased
+    }
+
+    var hasStarted: Bool {
+        lock.withLock { started }
+    }
+
+    var ranOnMainThread: Bool {
+        lock.withLock { mainThreadObserved }
+    }
+
+    var attemptedURLs: [URL] {
+        lock.withLock { attempted }
+    }
+
+    func trashItem(at url: URL) throws {
+        lock.withLock {
+            started = true
+            mainThreadObserved = mainThreadObserved || Thread.isMainThread
+            attempted.append(url)
+        }
+        if blocksUntilReleased {
+            releaseSemaphore.wait()
+        }
+        if failingURLs.contains(url) {
+            throw Failure.injected
+        }
+    }
+
+    func release() {
+        releaseSemaphore.signal()
+    }
+}

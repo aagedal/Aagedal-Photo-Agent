@@ -147,3 +147,80 @@ A complete arm64 `build-for-testing` succeeded. The focused `test-without-buildi
 The Phase 3.1 and Phase 4.1 checklist boxes remain open: lower-priority filesystem paths, slow-volume and
 Thread Performance Checker measurements, manual menu/focus/multi-window validation, and remaining user
 command families have not been completed by this bounded continuation.
+
+## Face-group photo deletion async boundary
+
+Deleting a face group with **Move Photos to Trash** no longer loops over synchronous
+`FileManager.trashItem` calls on the main actor. The operation now snapshots the group and face-data revision,
+sends the photo batch through the existing serialized `FileSystemService` actor, and returns one immutable
+`FaceGroupDeletionResult`. That result records committed photo URLs, per-item failures, whether cancellation
+stopped unstarted work, and whether the corresponding face-data mutation was applied, skipped before any
+mutation, or rejected as stale.
+
+The boundary preserves the existing partial-success semantics: once a trash item has been attempted, the
+requested face group is deleted even if an individual photo could not be moved to Trash. A pre-cancelled
+request performs neither filesystem nor face-data mutation. If the user loads replacement face data while a
+slow trash batch is running, the completion still reports its durable disk commits but cannot overwrite the
+newer model or persist its stale snapshot.
+
+Three `FaceGroupDeletionTests` characterize partial failure and off-main execution, stale completion, and
+pre-cancellation with zero trash attempts. All three passed in isolation and in the combined run below.
+
+## Metadata, template, Caption, and C2PA command-router continuation
+
+Twelve more user-command names have been removed from the process-wide notification bus:
+
+- Process Variables for selected images and for all images;
+- Write All Pending Metadata;
+- show the metadata/Develop template palette and apply template slots 1–9;
+- open Caption Workspace;
+- Render and Sign Selected;
+- Copy and Paste IPTC Metadata; and
+- show Variable Reference, Raw Metadata, and Structured Keywords.
+
+The replacement cases are compiler-checked `AppCommand` values owned by the active scene. The numbered
+template command carries its `Int` slot directly. Both the SwiftUI application menus and the AppKit
+thumbnail Control-digit handler use the router; the C2PA detail sheet also sends its re-render request
+through the same scene. `ContentView` and `MetadataPanel` preserve the previous availability checks,
+selection scopes, Caption flush, template-target decision, C2PA warning, and focus behavior. The internal
+`applyDevelopTemplate` notification remains because it is a pane state handoff rather than an application
+menu command.
+
+The router contract suite now covers every new identity and the template-slot payload. Searches confirm
+that no sender, receiver, or declaration remains for the twelve removed notification names.
+
+## Metal viewport-state isolation
+
+Five mutable `nonisolated(unsafe)` viewport fields in `MetalEditPipeline` were replaced by one coherent
+`ViewportStateSnapshot` stored in `ExecutorOwnedViewportState`. Pipeline wrappers assert the selected state
+executor before replacing or reading the snapshot. Zoom/pan publishes an axis-aligned snapshot, crop
+publishes its rotation and crop extent in the same generation, and parameter upload reads exactly one
+snapshot for the full buffer update.
+
+The source contract now requires both state types and both executor-checked accessors, rejects the old field
+names, and lowers the allowed explicit unsafe-isolation count from 29 to 24. The remaining unsafe mutable
+caches, scratch buffers, and lazy textures still require incremental extraction, and the compile-time
+live-preview facade remains open.
+
+## Combined validation for this continuation
+
+A fresh isolated `xcodebuild test` compiled the complete application and test targets, then passed all
+**30 tests in 3 suites**: 11 `AppCommandRouterTests`, 3 `FaceGroupDeletionTests`, and 16
+`BrushRasterizationTests`. The result was `** TEST SUCCEEDED **`; the preserved result bundle is:
+
+```text
+/private/tmp/aagedal-v3-plan-20260829.xcresult
+```
+
+The test host emitted the previously documented LMDB map-size and background-publication diagnostics. They
+did not produce build warnings tied to these changes or any test failure.
+
+## Remaining boundary after this continuation
+
+The audit remains at **60 of 75 checklist substeps complete**. These changes advance, but do not close, the
+broad Phase 3.1, Phase 4.1, or Phase 4.2 items. Remaining automated implementation includes lower-priority
+direct filesystem paths, other user-command families, the live-preview facade, and extraction of remaining
+mutable Metal cache/scratch state. Manual/release work still includes slow-volume and Thread Performance
+Checker evidence, menu/shortcut/focus/multi-window checks, accessibility and Instruments passes, protected
+branch configuration, external privacy/legal review, real FTP/FTPS/SFTP drills, and publishing/drilling the
+production AuraFace component.

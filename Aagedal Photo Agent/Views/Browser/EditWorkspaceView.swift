@@ -897,7 +897,12 @@ struct EditWorkspaceView: View {
                  .openInInternalEditor, .openInExternalEditor,
                  .deleteSelected, .moveRejectedToFolder,
                  .setScopeMode, .toggleGamutClipping,
-                 .uploadSelected, .uploadAll:
+                 .uploadSelected, .uploadAll,
+                 .processVariablesSelected, .processVariablesAll,
+                 .showTemplatePalette, .applyTemplateShortcut,
+                 .writeAllPendingMetadata, .openCaptionWorkspace,
+                 .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
+                 .showVariableReference, .showRawMetadata, .showStructuredKeywords:
                 break
             }
         }

@@ -239,7 +239,12 @@ struct CaptionWorkspaceView: View {
                  .deleteSelected, .moveRejectedToFolder,
                  .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                  .setScopeMode, .toggleGamutClipping,
-                 .uploadSelected, .uploadAll:
+                 .uploadSelected, .uploadAll,
+                 .processVariablesSelected, .processVariablesAll,
+                 .showTemplatePalette, .applyTemplateShortcut,
+                 .writeAllPendingMetadata, .openCaptionWorkspace,
+                 .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
+                 .showVariableReference, .showRawMetadata, .showStructuredKeywords:
                 break
             }
         }

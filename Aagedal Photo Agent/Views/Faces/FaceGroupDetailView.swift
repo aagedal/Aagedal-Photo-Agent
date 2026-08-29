@@ -226,9 +226,11 @@ struct FaceGroupDetailView: View {
                 dismiss()
             }
             Button("Move Photos to Trash", role: .destructive) {
-                let trashed = viewModel.deleteGroup(group.id, includePhotos: true)
-                onPhotosDeleted?(trashed)
-                dismiss()
+                Task {
+                    let result = await viewModel.deleteGroup(group.id, includePhotos: true)
+                    onPhotosDeleted?(result.trashedPhotoURLs)
+                    dismiss()
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {

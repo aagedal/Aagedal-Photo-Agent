@@ -82,3 +82,15 @@ and caps the remaining unsafe-escape count at 29.
 The test host emitted pre-existing environment noise (`MDB_MAP_FULL` from its persistence store and a
 SwiftUI background-publication warning); neither command reported a test failure or build warning tied
 to MetalEditPipeline.
+
+## Viewport snapshot follow-up — 2026-08-29
+
+Origin, size, center, rotation, and crop half-extent now form one `ViewportStateSnapshot` behind
+executor-checked replace/snapshot wrappers. Zoom/pan and crop publish complete generations, and
+`updateParams` reads one snapshot for its entire buffer upload. This removes five more direct unsafe
+isolation escapes, reducing the exact `MetalEditPipeline.swift` count from 29 to 24.
+
+The contract test requires the new storage and wrappers, checks both accessors retain their executor
+precondition, rejects all five old field names, and caps unsafe escapes at 24. The integrated build passed
+all 16 `BrushRasterizationTests` as part of the 30-test result bundle at
+`/private/tmp/aagedal-v3-plan-20260829.xcresult`.

@@ -224,26 +224,26 @@ struct Aagedal_Photo_AgentApp: App {
 
             CommandMenu("Metadata") {
                 Button("Process Variables") {
-                    NotificationCenter.default.post(name: .processVariablesSelected, object: nil)
+                    commandRouter.send(.processVariablesSelected)
                 }
                 .keyboardShortcut("p", modifiers: .command)
 
                 Button("Process Variables in All Images") {
-                    NotificationCenter.default.post(name: .processVariablesAll, object: nil)
+                    commandRouter.send(.processVariablesAll)
                 }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
 
                 Divider()
 
                 Button("Write All Pending Metadata") {
-                    NotificationCenter.default.post(name: .writeAllPendingMetadata, object: nil)
+                    commandRouter.send(.writeAllPendingMetadata)
                 }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
 
                 Divider()
 
                 Button("Apply Template...") {
-                    NotificationCenter.default.post(name: .showTemplatePalette, object: nil)
+                    commandRouter.send(.showTemplatePalette)
                 }
                 .keyboardShortcut("t", modifiers: .command)
 
@@ -251,7 +251,7 @@ struct Aagedal_Photo_AgentApp: App {
 
                 ForEach(1...9, id: \.self) { slot in
                     Button("Apply Template \(slot)") {
-                        NotificationCenter.default.post(name: .applyTemplateShortcut, object: slot)
+                        commandRouter.send(.applyTemplateShortcut(slot))
                     }
                     .keyboardShortcut(KeyEquivalent(Character(String(slot))), modifiers: .control)
                 }
@@ -259,36 +259,36 @@ struct Aagedal_Photo_AgentApp: App {
                 Divider()
 
                 Button("Variable Reference") {
-                    NotificationCenter.default.post(name: .showVariableReference, object: nil)
+                    commandRouter.send(.showVariableReference)
                 }
                 .keyboardShortcut("v", modifiers: .option)
 
                 Button("Show Raw Metadata") {
-                    NotificationCenter.default.post(name: .showRawMetadata, object: nil)
+                    commandRouter.send(.showRawMetadata)
                 }
                 .keyboardShortcut("i", modifiers: .command)
 
                 Button("Structured Keywords") {
-                    NotificationCenter.default.post(name: .showStructuredKeywords, object: nil)
+                    commandRouter.send(.showStructuredKeywords)
                 }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
 
                 Divider()
 
                 Button("Render and Sign Selected") {
-                    NotificationCenter.default.post(name: .renderAndSignSelected, object: nil)
+                    commandRouter.send(.renderAndSignSelected)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
 
                 Divider()
 
                 Button("Copy IPTC Metadata") {
-                    NotificationCenter.default.post(name: .copyIPTCMetadata, object: nil)
+                    commandRouter.send(.copyIPTCMetadata)
                 }
                 .keyboardShortcut("c", modifiers: [.command, .option])
 
                 Button("Paste IPTC Metadata") {
-                    NotificationCenter.default.post(name: .pasteIPTCMetadata, object: nil)
+                    commandRouter.send(.pasteIPTCMetadata)
                 }
                 .keyboardShortcut("v", modifiers: [.command, .option])
             }
@@ -303,7 +303,7 @@ struct Aagedal_Photo_AgentApp: App {
                     Divider()
 
                     Button("Caption Workspace") {
-                        NotificationCenter.default.post(name: .openCaptionWorkspace, object: nil)
+                        commandRouter.send(.openCaptionWorkspace)
                     }
                     .keyboardShortcut("m", modifiers: [.command, .shift])
 
@@ -529,27 +529,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension Notification.Name {
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")
-    static let openCaptionWorkspace = Notification.Name("openCaptionWorkspace")
     static let importStarted = Notification.Name("importStarted")
     static let importCompleted = Notification.Name("importCompleted")
-    static let processVariablesSelected = Notification.Name("processVariablesSelected")
-    static let processVariablesAll = Notification.Name("processVariablesAll")
-    static let showTemplatePalette = Notification.Name("showTemplatePalette")
     static let showKnownPeopleDatabase = Notification.Name("showKnownPeopleDatabase")
     static let knownPeopleDatabaseDidChange = Notification.Name("knownPeopleDatabaseDidChange")
-    static let writeAllPendingMetadata = Notification.Name("writeAllPendingMetadata")
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
     static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
     /// Posted (object: URL) when a pane opens a root folder, so the shared sidebar —
     /// always backed by the primary pane — lists it even if a non-primary split pane opened it.
     static let browserDidOpenRootFolder = Notification.Name("browserDidOpenRootFolder")
-    static let showRawMetadata = Notification.Name("showRawMetadata")
-    static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
     static let applyDevelopTemplate = Notification.Name("applyDevelopTemplate")
-    static let renderAndSignSelected = Notification.Name("renderAndSignSelected")
-    static let showVariableReference = Notification.Name("showVariableReference")
-    static let copyIPTCMetadata = Notification.Name("copyIPTCMetadata")
-    static let pasteIPTCMetadata = Notification.Name("pasteIPTCMetadata")
-    static let showStructuredKeywords = Notification.Name("showStructuredKeywords")
 }

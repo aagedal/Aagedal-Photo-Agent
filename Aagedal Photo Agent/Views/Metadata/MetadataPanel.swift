@@ -27,6 +27,7 @@ extension View {
 }
 
 struct MetadataPanel: View {
+    @Environment(AppCommandRouter.self) private var commandRouter
     @Bindable var viewModel: MetadataViewModel
     let browserViewModel: BrowserViewModel
     let settingsViewModel: SettingsViewModel
@@ -1070,9 +1071,17 @@ struct MetadataPanel: View {
             guard NSEvent.modifierFlags.contains(.option) else { return .ignored }
             return openCaptionAutocomplete() ? .handled : .ignored
         }
-        .onReceive(NotificationCenter.default.publisher(for: .showRawMetadata)) { _ in
-            guard !viewModel.isBatchEdit, viewModel.selectedCount == 1 else { return }
-            showingRawMetadata = true
+        .onChange(of: commandRouter.latestDelivery) { _, delivery in
+            guard let delivery else { return }
+            switch delivery.command {
+            case .showRawMetadata:
+                guard !viewModel.isBatchEdit, viewModel.selectedCount == 1 else { return }
+                showingRawMetadata = true
+            case .showVariableReference:
+                openVariableReferenceFromShortcut()
+            default:
+                break
+            }
         }
         .onAppear {
             StructuredKeywordsCoordinator.shared.register(owner: viewModel) { expanded in
@@ -1109,9 +1118,6 @@ struct MetadataPanel: View {
         .onDisappear {
             StructuredKeywordsCoordinator.shared.unregister(owner: viewModel)
             captionFlushCoordinator?.unregister(owner: captionFlushOwner)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .showVariableReference)) { _ in
-            openVariableReferenceFromShortcut()
         }
         .onReceive(NotificationCenter.default.publisher(for: .restoreCaptionEditorFocus)) { _ in
             guard captionFlushCoordinator != nil,

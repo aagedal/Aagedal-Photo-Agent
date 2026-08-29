@@ -160,6 +160,32 @@ struct AppCommandRouterTests {
         #expect(try #require(router.latestDelivery).command == .uploadAll)
         #expect(try #require(router.latestDelivery).sequence == 2)
     }
+
+    @Test("metadata and caption commands preserve operation identity and template slot")
+    func metadataAndCaptionCommandIdentity() throws {
+        let router = AppCommandRouter()
+        let commands: [AppCommand] = [
+            .processVariablesSelected,
+            .processVariablesAll,
+            .showTemplatePalette,
+            .applyTemplateShortcut(7),
+            .writeAllPendingMetadata,
+            .openCaptionWorkspace,
+            .renderAndSignSelected,
+            .copyIPTCMetadata,
+            .pasteIPTCMetadata,
+            .showVariableReference,
+            .showRawMetadata,
+            .showStructuredKeywords,
+        ]
+
+        for (index, command) in commands.enumerated() {
+            router.send(command)
+            let delivery = try #require(router.latestDelivery)
+            #expect(delivery.command == command)
+            #expect(delivery.sequence == UInt64(index + 1))
+        }
+    }
 }
 
 @Suite("App startup signpost lifecycle")

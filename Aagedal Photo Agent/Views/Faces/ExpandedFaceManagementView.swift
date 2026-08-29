@@ -190,9 +190,11 @@ struct ExpandedFaceManagementView: View {
                 groupToDelete = nil
             }
             Button("Move Photos to Trash", role: .destructive) {
-                let trashed = viewModel.deleteGroup(group.id, includePhotos: true)
-                onPhotosDeleted?(trashed)
-                groupToDelete = nil
+                Task {
+                    let result = await viewModel.deleteGroup(group.id, includePhotos: true)
+                    onPhotosDeleted?(result.trashedPhotoURLs)
+                    groupToDelete = nil
+                }
             }
             Button("Cancel", role: .cancel) {
                 groupToDelete = nil

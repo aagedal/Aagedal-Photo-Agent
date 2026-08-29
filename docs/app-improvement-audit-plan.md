@@ -59,6 +59,14 @@ The existing executor-isolation validation proves owner/executor preconditions a
 offscreen-renderer, and cross-pipeline boundaries. The compile-time live-preview facade and remaining
 mutable Metal storage extraction are still open.
 
+**Parallel implementation continuation (2026-08-29):** the checklist remains 60 of 75 because the three
+completed slices advance broader open gates rather than satisfying them in full. Face-group photo deletion
+now crosses the serialized filesystem actor with immutable commit/failure/cancellation evidence and stale
+result rejection. Twelve more metadata, template, Caption, and C2PA user commands are typed and scene
+scoped. Five separately unsafe viewport fields are now one executor-owned atomic snapshot, reducing
+`MetalEditPipeline`'s explicit `nonisolated(unsafe)` declarations from 29 to 24. The combined application
+and test targets compiled and all 30 focused tests passed.
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -380,6 +388,14 @@ explicit, reset invalidates late results, and the execution boundary still reval
 collision signature before writing. Other direct filesystem paths and the broader measurement exit gate
 remain open. ([validation](plan-status-follow-up-validation-2026-08-29.md#import-preflight-async-boundary))
 
+**Face-group deletion follow-up (2026-08-29):** deleting a face group with its source photos now sends the
+photo-trash batch through the serialized `FileSystemService` actor. The main actor receives immutable
+committed URLs, item failures, cancellation status, and face-data disposition. Pre-cancellation performs no
+filesystem or model mutation, and a face-data revision guard prevents a slow completion from overwriting a
+newly loaded folder's state. Individual trash failures retain the existing group-deletion semantics while
+remaining explicit in the result. The broader lower-priority filesystem audit and measurement exit gate
+remain open. ([validation](plan-status-follow-up-validation-2026-08-29.md#face-group-photo-deletion-async-boundary))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -460,6 +476,15 @@ process-local state broadcasts. Menu, shortcut, focus, unavailable-workspace, an
 be checked manually before release-candidate integration using the
 [dated procedure](plan-status-follow-up-validation-2026-08-29.md#manual-validation-still-required).
 
+**Metadata/Caption command follow-up (2026-08-29):** Process Variables (selected/all), Write All Pending
+Metadata, template palette and numbered-template application, Caption Workspace, Render and Sign, Copy/Paste
+IPTC, Variable Reference, Raw Metadata, and Structured Keywords now cross the same scene-owned router.
+Numbered templates retain a typed `Int` slot payload, the AppKit thumbnail key handler and C2PA detail sheet
+send through their owning scene, and twelve obsolete notification names were removed. The internal Develop
+template handoff and genuine state broadcasts remain notifications. Other user-command families and manual
+multi-window/menu/focus verification keep the broad router item open.
+([validation](plan-status-follow-up-validation-2026-08-29.md#metadata-template-caption-and-c2pa-command-router-continuation))
+
 **State-owner follow-up (2026-08-27):** `DevelopVersionSessionCoordinator` now owns named-version catalog,
 revision, storage, cancellation, debounce/flush persistence, and stale-result gating. A separate
 `AIMaskSelectionCoordinator` owns AI-mask selection/generation request identity, cancellation, image-session
@@ -495,6 +520,13 @@ cross-pipeline owner preconditions are enforced; and immutable Metal handles red
 plan behind executor-checked replace/snapshot accessors, reducing the count again to 29. A compile-time
 live-preview facade and extraction of the remaining mutable caches/scratch state remain open.
 ([validation](metal-edit-pipeline-executor-validation.md))
+
+**Viewport-state follow-up (2026-08-29):** five separately unsafe viewport fields (origin, size, center,
+rotation, and crop extent) now publish as one `ViewportStateSnapshot` through executor-checked replace and
+snapshot accessors. Parameter upload takes one coherent snapshot, so a render cannot combine fields from
+different zoom/pan or crop generations. This reduces explicit unsafe isolation escapes from 29 to 24; the
+live-preview facade and remaining mutable cache/scratch extraction are still open.
+([validation](plan-status-follow-up-validation-2026-08-29.md#metal-viewport-state-isolation))
 
 **Exit gate:** every remaining unsafe isolation escape has a written invariant and enforcement; the stress
 scenario is repeatable and clean.

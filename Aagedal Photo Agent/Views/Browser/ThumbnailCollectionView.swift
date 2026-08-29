@@ -315,7 +315,7 @@ final class ThumbnailCollectionView: NSCollectionView {
                let digit = chars.first,
                let slot = Int(String(digit)),
                (1...9).contains(slot) {
-                NotificationCenter.default.post(name: .applyTemplateShortcut, object: slot)
+                commandRouter?.send(.applyTemplateShortcut(slot))
                 return
             }
 

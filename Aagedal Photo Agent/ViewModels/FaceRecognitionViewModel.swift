@@ -56,13 +56,33 @@ enum FaceScanQuiescenceError: LocalizedError, Equatable {
     }
 }
 
+/// Immutable outcome of deleting a face group, including the filesystem commit evidence needed
+/// by browser state and the reason a post-I/O face-data mutation may not have been applied.
+nonisolated struct FaceGroupDeletionResult: Sendable, Equatable {
+    enum FaceDataDisposition: Sendable, Equatable {
+        case applied
+        case groupNotFound
+        case cancelledBeforeMutation
+        case staleStatePreserved
+    }
+
+    let trashedPhotoURLs: Set<URL>
+    let failures: [FileSystemService.ItemFailure]
+    let cancellationStoppedRemainingPhotos: Bool
+    let faceDataDisposition: FaceDataDisposition
+}
+
 @Observable
 final class FaceRecognitionViewModel {
     /// Stable ID for the synthetic "Unmatched Faces" group (singletons with no match)
     static let unmatchedGroupID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     var faceData: FolderFaceData? {
-        didSet { invalidateCaches() }
+        didSet {
+            faceDataRevision &+= 1
+            invalidateCaches()
+        }
     }
+    @ObservationIgnored private var faceDataRevision: UInt64 = 0
 
     /// Live "minimum sharpness" filter (0...1 face capture-quality). Faces below this are hidden
     /// from the displayed face set without re-scanning. Bound to the slider in the expanded face
@@ -574,17 +594,23 @@ final class FaceRecognitionViewModel {
     private let xmpSidecarService = XMPSidecarService()
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "FaceRecognitionViewModel")
     @ObservationIgnored private let activityHistory: ActivityHistoryStore?
+    @ObservationIgnored private let fileSystemService: FileSystemService
+    @ObservationIgnored private let imageTrashHandler: any ImageTrashHandling
 
     init(
         readService: SwiftExifReadService,
         writeEngine: any MetadataWriteEngine,
         activityHistory: ActivityHistoryStore? = nil,
-        faceModelAvailability: FaceRecognitionModelAvailability? = nil
+        faceModelAvailability: FaceRecognitionModelAvailability? = nil,
+        fileSystemService: FileSystemService = FileSystemService(),
+        imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler()
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
         self.activityHistory = activityHistory
         self.faceModelAvailabilityOverride = faceModelAvailability
+        self.fileSystemService = fileSystemService
+        self.imageTrashHandler = imageTrashHandler
     }
 
     deinit {
@@ -3095,28 +3121,65 @@ final class FaceRecognitionViewModel {
     }
 
     /// Delete an entire group: removes all face data and optionally trashes the source photos.
-    /// Returns the set of photo URLs that were trashed (empty if `includePhotos` is false).
+    ///
+    /// Photo trashing runs on the serialized filesystem actor. If cancellation reaches that actor
+    /// before any item is attempted, face data is left untouched. If visible face data changes
+    /// while the actor is working, committed trash results are returned to the caller but the
+    /// newer model is preserved instead of being overwritten with this operation's stale snapshot.
     @discardableResult
-    func deleteGroup(_ groupID: UUID, includePhotos: Bool) -> Set<URL> {
+    func deleteGroup(_ groupID: UUID, includePhotos: Bool) async -> FaceGroupDeletionResult {
         guard var data = faceData,
-              let group = groupLookup[groupID] else { return [] }
+              let group = groupLookup[groupID] else {
+            return FaceGroupDeletionResult(
+                trashedPhotoURLs: [],
+                failures: [],
+                cancellationStoppedRemainingPhotos: false,
+                faceDataDisposition: .groupNotFound
+            )
+        }
 
         let faceIDs = Set(group.faceIDs)
+        let capturedRevision = faceDataRevision
 
         // Collect photo URLs before removing face data
-        var trashedURLs: Set<URL> = []
+        let trashResult: FileSystemService.BatchMutationResult
         if includePhotos {
             let urls = Set(group.faceIDs.compactMap { faceID in
                 faceLookup[faceID]?.imageURL
             })
-            for url in urls {
-                do {
-                    try FileManager.default.trashItem(at: url, resultingItemURL: nil)
-                    trashedURLs.insert(url)
-                } catch {
-                    // Skip files that can't be trashed
-                }
-            }
+            trashResult = await fileSystemService.trashItems(
+                Array(urls),
+                using: imageTrashHandler
+            )
+        } else {
+            trashResult = FileSystemService.BatchMutationResult(
+                completedSourceURLs: [],
+                failures: [],
+                cancellationStoppedRemainingItems: false
+            )
+        }
+
+        // A pre-commit cancellation should have no model-side effect. Once at least one item was
+        // attempted, preserve the historical behavior of deleting the requested face group even
+        // if an individual photo failed to move to Trash.
+        if trashResult.cancellationStoppedRemainingItems,
+           trashResult.completedSourceURLs.isEmpty,
+           trashResult.failures.isEmpty {
+            return FaceGroupDeletionResult(
+                trashedPhotoURLs: [],
+                failures: [],
+                cancellationStoppedRemainingPhotos: true,
+                faceDataDisposition: .cancelledBeforeMutation
+            )
+        }
+
+        guard faceDataRevision == capturedRevision else {
+            return FaceGroupDeletionResult(
+                trashedPhotoURLs: trashResult.completedSourceURLs,
+                failures: trashResult.failures,
+                cancellationStoppedRemainingPhotos: trashResult.cancellationStoppedRemainingItems,
+                faceDataDisposition: .staleStatePreserved
+            )
         }
 
         // Remove from groups
@@ -3137,7 +3200,12 @@ final class FaceRecognitionViewModel {
         } catch {
             errorMessage = "Failed to save face data: \(error.localizedDescription)"
         }
-        return trashedURLs
+        return FaceGroupDeletionResult(
+            trashedPhotoURLs: trashResult.completedSourceURLs,
+            failures: trashResult.failures,
+            cancellationStoppedRemainingPhotos: trashResult.cancellationStoppedRemainingItems,
+            faceDataDisposition: .applied
+        )
     }
 
     // MARK: - Delete Face Data

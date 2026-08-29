@@ -136,6 +136,13 @@ in 4 focused suites**: `AppCommandRouterTests`, `RejectMoveServiceTests`, `Impor
 The existing `FileSystemOfflineAvailabilityTests` continue to cover deferred iCloud items and download
 requests at the same boundary.
 
+The 2026-08-29 face-group follow-up moved optional source-photo trash out of
+`FaceRecognitionViewModel.deleteGroup` and through the same serialized actor. Its immutable result records
+committed URLs, per-item failures, cancellation, and whether face-data mutation was applied or rejected as
+stale. Three focused characterizations cover partial failure off the main actor, stale completion preserving
+replacement state, and pre-cancellation with zero mutation. All three passed both in isolation and in the
+combined 30-test run at `/private/tmp/aagedal-v3-plan-20260829.xcresult`.
+
 ## Remaining exit-gate work
 
 Phase 3.1 is not complete. Signposts and repeatable benchmarks still need to cover local SSD, network,

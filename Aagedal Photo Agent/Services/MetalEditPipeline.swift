@@ -565,6 +565,31 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
+    /// One coherent viewport snapshot. The five values are consumed together by the edit and
+    /// overlay shaders, so publishing them as a single value prevents a render from combining
+    /// fields from different zoom/pan or crop updates.
+    nonisolated private struct ViewportStateSnapshot: Sendable {
+        var origin: SIMD2<Float> = .zero
+        var size = SIMD2<Float>(1, 1)
+        var center = SIMD2<Float>(0.5, 0.5)
+        var rotation: Float = 0
+        var cropHalfExtent = SIMD2<Float>(0.5, 0.5)
+    }
+
+    /// Mutable viewport storage owned by the pipeline's selected state executor. Like the
+    /// compiled render plan above, synchronization is enforced by the checked wrappers below.
+    nonisolated private final class ExecutorOwnedViewportState: @unchecked Sendable {
+        private var value = ViewportStateSnapshot()
+
+        func replace(with value: ViewportStateSnapshot) {
+            self.value = value
+        }
+
+        func snapshot() -> ViewportStateSnapshot {
+            value
+        }
+    }
+
     /// Owns mutable render-state buffers and caches. Live preview / Clean Feed instances are
     /// main-thread-owned; the singleton export instance is owned by `offscreenRenderQueue`.
     /// Source upload and adjacent-image precaching are deliberate worker-safe exceptions: they
@@ -641,6 +666,18 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated private func renderPassPlanSnapshot() -> [EditRenderPass] {
         preconditionOnStateExecutor()
         return renderPassState.snapshot()
+    }
+
+    private let viewportState = ExecutorOwnedViewportState()
+
+    nonisolated private func replaceViewportState(with value: ViewportStateSnapshot) {
+        preconditionOnStateExecutor()
+        viewportState.replace(with: value)
+    }
+
+    nonisolated private func viewportStateSnapshot() -> ViewportStateSnapshot {
+        preconditionOnStateExecutor()
+        return viewportState.snapshot()
     }
 
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
@@ -926,15 +963,6 @@ final class MetalEditPipeline: @unchecked Sendable {
     // Cached WB matrix — only recompute when temperature/tint or as-shot reference change
     nonisolated(unsafe) private var cachedWBKey: (Double, Double, Double, Double)?
     nonisolated(unsafe) private var cachedWBMatrix: simd_float3x3?
-
-    // Cached viewport — preserved across updateParams() calls
-    nonisolated(unsafe) private var cachedViewportOrigin: SIMD2<Float> = .zero
-    nonisolated(unsafe) private var cachedViewportSize: SIMD2<Float> = SIMD2<Float>(1, 1)
-    // Crop straighten rotation for the clean feed (0 = no rotation). Cached so it
-    // survives the full-struct rewrite in updateParams().
-    nonisolated(unsafe) private var cachedViewportCenter: SIMD2<Float> = SIMD2<Float>(0.5, 0.5)
-    nonisolated(unsafe) private var cachedViewportRotation: Float = 0
-    nonisolated(unsafe) private var cachedCropHalfExtent: SIMD2<Float> = SIMD2<Float>(0.5, 0.5)
 
     nonisolated var hasSourceTexture: Bool { sourceTexture != nil }
 
@@ -1366,6 +1394,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         preconditionOnStateExecutor()
         let start = ContinuousClock.now
         guard let buffer = paramsBufferHandle.resource else { return }
+        let viewport = viewportStateSnapshot()
         var params = EditParams()
         var flags: UInt32 = 0
 
@@ -1387,11 +1416,11 @@ final class MetalEditPipeline: @unchecked Sendable {
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
             ptr.pointee.gamutClipMode = gamutClipMode
-            ptr.pointee.viewportOrigin = cachedViewportOrigin
-            ptr.pointee.viewportSize = cachedViewportSize
-            ptr.pointee.viewportCenter = cachedViewportCenter
-            ptr.pointee.viewportRotation = cachedViewportRotation
-            ptr.pointee.cropHalfExtent = cachedCropHalfExtent
+            ptr.pointee.viewportOrigin = viewport.origin
+            ptr.pointee.viewportSize = viewport.size
+            ptr.pointee.viewportCenter = viewport.center
+            ptr.pointee.viewportRotation = viewport.rotation
+            ptr.pointee.cropHalfExtent = viewport.cropHalfExtent
             // Mirror to the clean-feed pipeline (its own viewport is preserved).
             mirror?.updateParams(nil)
             onParamsChanged?()
@@ -1742,11 +1771,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee = params
         ptr.pointee.gamutClipMode = gamutClipMode
-        ptr.pointee.viewportOrigin = cachedViewportOrigin
-        ptr.pointee.viewportSize = cachedViewportSize
-        ptr.pointee.viewportCenter = cachedViewportCenter
-        ptr.pointee.viewportRotation = cachedViewportRotation
-        ptr.pointee.cropHalfExtent = cachedCropHalfExtent
+        ptr.pointee.viewportOrigin = viewport.origin
+        ptr.pointee.viewportSize = viewport.size
+        ptr.pointee.viewportCenter = viewport.center
+        ptr.pointee.viewportRotation = viewport.rotation
+        ptr.pointee.cropHalfExtent = viewport.cropHalfExtent
         ptr.pointee.watermarkFrame = cachedWatermarkFrame
 
         // Mirror params to the clean-feed pipeline so the second display tracks the
@@ -2808,12 +2837,15 @@ final class MetalEditPipeline: @unchecked Sendable {
         let originX = 0.5 - offsetNormX - vpW / 2
         let originY = 0.5 - offsetNormY - vpH / 2
 
-        cachedViewportOrigin = SIMD2<Float>(Float(originX), Float(originY))
-        cachedViewportSize = SIMD2<Float>(Float(vpW), Float(vpH))
         // Zoom/pan viewport is axis-aligned — clear any crop straighten rotation + mask.
-        cachedViewportCenter = SIMD2<Float>(Float(originX + vpW / 2), Float(originY + vpH / 2))
-        cachedViewportRotation = 0
-        cachedCropHalfExtent = SIMD2<Float>(0.5, 0.5)
+        let viewport = ViewportStateSnapshot(
+            origin: SIMD2<Float>(Float(originX), Float(originY)),
+            size: SIMD2<Float>(Float(vpW), Float(vpH)),
+            center: SIMD2<Float>(Float(originX + vpW / 2), Float(originY + vpH / 2)),
+            rotation: 0,
+            cropHalfExtent: SIMD2<Float>(0.5, 0.5)
+        )
+        replaceViewportState(with: viewport)
         cachedWatermarkFrame = 0
         let watermarkReferenceSize = sourceTextureSize ?? imageSize
         cachedWatermarkImageSize = MTLSize(
@@ -2823,11 +2855,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         )
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
-        ptr.pointee.viewportOrigin = cachedViewportOrigin
-        ptr.pointee.viewportSize = cachedViewportSize
-        ptr.pointee.viewportCenter = cachedViewportCenter
-        ptr.pointee.viewportRotation = cachedViewportRotation
-        ptr.pointee.cropHalfExtent = cachedCropHalfExtent
+        ptr.pointee.viewportOrigin = viewport.origin
+        ptr.pointee.viewportSize = viewport.size
+        ptr.pointee.viewportCenter = viewport.center
+        ptr.pointee.viewportRotation = viewport.rotation
+        ptr.pointee.cropHalfExtent = viewport.cropHalfExtent
         ptr.pointee.watermarkFrame = cachedWatermarkFrame
         if !activeDisplayWatermarkLayers.isEmpty {
             refreshWatermarkParams(activeDisplayWatermarkLayers, imageSize: cachedWatermarkImageSize)
@@ -2836,8 +2868,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         // Also update overlay params
         if let overlayBuf = overlayParamsBufferHandle.resource {
             let overlayPtr = overlayBuf.contents().bindMemory(to: MaskOverlayParams.self, capacity: 1)
-            overlayPtr.pointee.viewportOrigin = cachedViewportOrigin
-            overlayPtr.pointee.viewportSize = cachedViewportSize
+            overlayPtr.pointee.viewportOrigin = viewport.origin
+            overlayPtr.pointee.viewportSize = viewport.size
         }
     }
 
@@ -2891,8 +2923,6 @@ final class MetalEditPipeline: @unchecked Sendable {
         let vpW = visiblePxW / imgW
         let vpH = visiblePxH / imgH
 
-        cachedViewportSize = SIMD2<Float>(Float(vpW), Float(vpH))
-
         let offsetPxX = Double(offset.width) / fitScale
         let offsetPxY = Double(offset.height) / fitScale
         let cosA = cos(radians)
@@ -2902,15 +2932,18 @@ final class MetalEditPipeline: @unchecked Sendable {
         let viewportCenterX = centerX - rotatedOffsetX / imgW
         let viewportCenterY = centerY - rotatedOffsetY / imgH
 
-        cachedViewportCenter = SIMD2<Float>(Float(viewportCenterX), Float(viewportCenterY))
-        cachedViewportOrigin = SIMD2<Float>(Float(viewportCenterX - vpW / 2), Float(viewportCenterY - vpH / 2))
-        cachedViewportRotation = Float(radians)
-
         // The crop occupies the central (actual·fitScale / container) fraction of the
         // drawable; the rest is letterbox margin that must be masked to the background.
         let cropHalfX = (actualW * fitScale) / (2 * Double(containerSize.width))
         let cropHalfY = (actualH * fitScale) / (2 * Double(containerSize.height))
-        cachedCropHalfExtent = SIMD2<Float>(Float(cropHalfX), Float(cropHalfY))
+        let viewport = ViewportStateSnapshot(
+            origin: SIMD2<Float>(Float(viewportCenterX - vpW / 2), Float(viewportCenterY - vpH / 2)),
+            size: SIMD2<Float>(Float(vpW), Float(vpH)),
+            center: SIMD2<Float>(Float(viewportCenterX), Float(viewportCenterY)),
+            rotation: Float(radians),
+            cropHalfExtent: SIMD2<Float>(Float(cropHalfX), Float(cropHalfY))
+        )
+        replaceViewportState(with: viewport)
         cachedWatermarkFrame = 1
         cachedWatermarkImageSize = MTLSize(
             width: max(1, Int(actualW.rounded())),
@@ -2919,11 +2952,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         )
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
-        ptr.pointee.viewportOrigin = cachedViewportOrigin
-        ptr.pointee.viewportSize = cachedViewportSize
-        ptr.pointee.viewportCenter = cachedViewportCenter
-        ptr.pointee.viewportRotation = cachedViewportRotation
-        ptr.pointee.cropHalfExtent = cachedCropHalfExtent
+        ptr.pointee.viewportOrigin = viewport.origin
+        ptr.pointee.viewportSize = viewport.size
+        ptr.pointee.viewportCenter = viewport.center
+        ptr.pointee.viewportRotation = viewport.rotation
+        ptr.pointee.cropHalfExtent = viewport.cropHalfExtent
         ptr.pointee.watermarkFrame = cachedWatermarkFrame
         if !activeDisplayWatermarkLayers.isEmpty {
             refreshWatermarkParams(activeDisplayWatermarkLayers, imageSize: cachedWatermarkImageSize)

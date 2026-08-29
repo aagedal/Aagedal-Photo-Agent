@@ -38,6 +38,18 @@ enum AppCommand: Equatable, Sendable {
     case toggleGamutClipping
     case uploadSelected
     case uploadAll
+    case processVariablesSelected
+    case processVariablesAll
+    case showTemplatePalette
+    case applyTemplateShortcut(Int)
+    case writeAllPendingMetadata
+    case openCaptionWorkspace
+    case renderAndSignSelected
+    case copyIPTCMetadata
+    case pasteIPTCMetadata
+    case showVariableReference
+    case showRawMetadata
+    case showStructuredKeywords
 }
 
 struct AppCommandDelivery: Equatable, Sendable {

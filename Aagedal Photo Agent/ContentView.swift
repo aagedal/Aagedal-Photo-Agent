@@ -81,7 +81,12 @@ private struct SafetyAndCullingHandlers: ViewModifier {
                      .deleteSelected,
                      .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                      .setScopeMode, .toggleGamutClipping,
-                     .uploadSelected, .uploadAll:
+                     .uploadSelected, .uploadAll,
+                     .processVariablesSelected, .processVariablesAll,
+                     .showTemplatePalette, .applyTemplateShortcut,
+                     .writeAllPendingMetadata, .openCaptionWorkspace,
+                     .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
+                     .showVariableReference, .showRawMetadata, .showStructuredKeywords:
                     break
                 }
             }
@@ -276,9 +281,6 @@ struct ContentView: View {
                 // meaningful for the image that opened it.
                 c2paDetailPresentation = nil
                 c2paValidation = nil
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .showStructuredKeywords)) { _ in
-                openWindow(id: "structuredKeywords")
             }
             .onChange(of: KeywordListsBackupService.shared.recoverableKeys.map(\.relativePath)) { _, keys in
                 // A keyword list read empty at launch while a backup exists.
@@ -769,7 +771,12 @@ struct ContentView: View {
                      .openInExternalEditor,
                      .deleteSelected, .moveRejectedToFolder,
                      .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
-                     .setScopeMode, .toggleGamutClipping:
+                     .setScopeMode, .toggleGamutClipping,
+                     .processVariablesSelected, .processVariablesAll,
+                     .showTemplatePalette, .applyTemplateShortcut,
+                     .writeAllPendingMetadata, .openCaptionWorkspace,
+                     .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
+                     .showVariableReference, .showRawMetadata, .showStructuredKeywords:
                     break
                 }
             }
@@ -788,70 +795,69 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .importCompleted)) { notification in
                 handleImportCompleted(notification)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .processVariablesSelected)) { _ in
-                let selected = browserViewModel.selectedImages
-                if !selected.isEmpty {
-                    metadataViewModel.processVariablesForImages(selected)
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .processVariablesAll)) { _ in
-                metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .showTemplatePalette)) { _ in
-                switch mainViewMode.templateCommandTarget {
-                case .metadata:
-                    performAfterCaptionFlush {
-                        isShowingTemplatePalette = true
-                    }
-                case .develop:
-                    isShowingDevelopTemplatePalette = true
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .applyTemplateShortcut)) { notification in
-                guard let slot = notification.object as? Int else { return }
-                switch mainViewMode.templateCommandTarget {
-                case .metadata:
-                    performAfterCaptionFlush {
-                        templateViewModel.loadTemplates()
-                        if let template = templateViewModel.template(forSlot: slot) {
-                            applyTemplate(template)
-                            restoreGridFocus()
-                        }
-                    }
-                case .develop:
-                    developTemplateViewModel.loadTemplates()
-                    if let template = developTemplateViewModel.template(forSlot: slot) {
-                        NotificationCenter.default.post(name: .applyDevelopTemplate, object: template)
-                    }
-                }
-            }
             .onReceive(NotificationCenter.default.publisher(for: .showKnownPeopleDatabase)) { _ in
                 openPeopleDatabase()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .openCaptionWorkspace)) { _ in
-                openCaptionWorkspace()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .renderAndSignSelected)) { _ in
-                renderAndSignSelected()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .copyIPTCMetadata)) { _ in
-                copyIPTCMetadata()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .pasteIPTCMetadata)) { _ in
-                pasteIPTCMetadata()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .writeAllPendingMetadata)) { _ in
-                let c2paPending = browserViewModel.images.filter { image in
-                    image.hasPendingMetadataChanges && image.hasC2PA
-                }
-                if !c2paPending.isEmpty {
-                    pendingWriteAllC2PACount = c2paPending.count
-                    isShowingWriteAllC2PAWarning = true
-                } else {
-                    metadataViewModel.writeAllPendingChanges(
-                        in: browserViewModel.currentFolderURL,
-                        images: browserViewModel.images
-                    )
+            .onChange(of: commandRouter.latestDelivery) { _, delivery in
+                guard let delivery else { return }
+                switch delivery.command {
+                case .processVariablesSelected:
+                    let selected = browserViewModel.selectedImages
+                    if !selected.isEmpty {
+                        metadataViewModel.processVariablesForImages(selected)
+                    }
+                case .processVariablesAll:
+                    metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
+                case .showTemplatePalette:
+                    switch mainViewMode.templateCommandTarget {
+                    case .metadata:
+                        performAfterCaptionFlush {
+                            isShowingTemplatePalette = true
+                        }
+                    case .develop:
+                        isShowingDevelopTemplatePalette = true
+                    }
+                case .applyTemplateShortcut(let slot):
+                    switch mainViewMode.templateCommandTarget {
+                    case .metadata:
+                        performAfterCaptionFlush {
+                            templateViewModel.loadTemplates()
+                            if let template = templateViewModel.template(forSlot: slot) {
+                                applyTemplate(template)
+                                restoreGridFocus()
+                            }
+                        }
+                    case .develop:
+                        developTemplateViewModel.loadTemplates()
+                        if let template = developTemplateViewModel.template(forSlot: slot) {
+                            NotificationCenter.default.post(name: .applyDevelopTemplate, object: template)
+                        }
+                    }
+                case .writeAllPendingMetadata:
+                    let c2paPending = browserViewModel.images.filter { image in
+                        image.hasPendingMetadataChanges && image.hasC2PA
+                    }
+                    if !c2paPending.isEmpty {
+                        pendingWriteAllC2PACount = c2paPending.count
+                        isShowingWriteAllC2PAWarning = true
+                    } else {
+                        metadataViewModel.writeAllPendingChanges(
+                            in: browserViewModel.currentFolderURL,
+                            images: browserViewModel.images
+                        )
+                    }
+                case .openCaptionWorkspace:
+                    openCaptionWorkspace()
+                case .renderAndSignSelected:
+                    renderAndSignSelected()
+                case .copyIPTCMetadata:
+                    copyIPTCMetadata()
+                case .pasteIPTCMetadata:
+                    pasteIPTCMetadata()
+                case .showStructuredKeywords:
+                    openWindow(id: "structuredKeywords")
+                default:
+                    break
                 }
             }
     }
@@ -2334,7 +2340,12 @@ struct ContentView: View {
                          .openInInternalEditor, .openInExternalEditor,
                          .deleteSelected, .moveRejectedToFolder,
                          .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
-                         .uploadSelected, .uploadAll:
+                         .uploadSelected, .uploadAll,
+                         .processVariablesSelected, .processVariablesAll,
+                         .showTemplatePalette, .applyTemplateShortcut,
+                         .writeAllPendingMetadata, .openCaptionWorkspace,
+                         .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
+                         .showVariableReference, .showRawMetadata, .showStructuredKeywords:
                         break
                     }
                 }
@@ -3800,7 +3811,12 @@ struct ContentViewModifiers: ViewModifier {
                      .moveRejectedToFolder,
                      .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                      .setScopeMode, .toggleGamutClipping,
-                     .uploadSelected, .uploadAll:
+                     .uploadSelected, .uploadAll,
+                     .processVariablesSelected, .processVariablesAll,
+                     .showTemplatePalette, .applyTemplateShortcut,
+                     .writeAllPendingMetadata, .openCaptionWorkspace,
+                     .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
+                     .showVariableReference, .showRawMetadata, .showStructuredKeywords:
                     break
                 }
             }

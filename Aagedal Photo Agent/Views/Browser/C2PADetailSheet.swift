@@ -14,6 +14,7 @@ private enum C2PAValidationLoadState {
 }
 
 struct C2PADetailSheet: View {
+    @Environment(AppCommandRouter.self) private var commandRouter
     let imageURL: URL
     let readService: SwiftExifReadService
     let onValidationChanged: (C2PAValidationResult) -> Void
@@ -45,7 +46,7 @@ struct C2PADetailSheet: View {
                 Spacer()
                 Button("Re-render and Sign") {
                     announceCancellationIfNeeded()
-                    NotificationCenter.default.post(name: .renderAndSignSelected, object: nil)
+                    commandRouter.send(.renderAndSignSelected)
                     dismiss()
                 }
                 Button("Done") {

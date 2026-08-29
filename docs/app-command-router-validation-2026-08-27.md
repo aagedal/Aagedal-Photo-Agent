@@ -100,3 +100,15 @@ remains open for the metadata, template, workspace, and other user-command famil
 /private/tmp/aagedal-focused-20260829-172219.xcresult
 34 tests passed in 4 suites; action status: succeeded
 ```
+
+## Metadata, template, Caption, and C2PA command slice — 2026-08-29
+
+Process Variables (selected/all), Write All Pending Metadata, template-palette and numbered-template
+commands, Caption Workspace, Render and Sign, Copy/Paste IPTC, Variable Reference, Raw Metadata, and
+Structured Keywords now use twelve typed scene commands. The template shortcut preserves its `Int` slot
+through both SwiftUI menus and the AppKit thumbnail key handler. The C2PA detail sheet uses the same scene
+router for re-rendering. Twelve obsolete notification declarations and their matching send/receive paths
+were removed; the internal Develop-template state handoff remains a notification.
+
+The integrated run compiled the application and test targets and passed all 11 router tests as part of the
+30-test result at `/private/tmp/aagedal-v3-plan-20260829.xcresult`.
