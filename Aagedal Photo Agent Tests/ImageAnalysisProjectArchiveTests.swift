@@ -165,10 +165,225 @@ struct ImageAnalysisProjectArchiveTests {
             encoding: .utf8
         ) == "source-image")
     }
+
+    @MainActor
+    @Test("archive filesystem work leaves MainActor and complete workflows are serialized")
+    func archiveIOIsOffMainAndSerialized() async throws {
+        let probe = BlockingProjectArchiveIOProbe(blockFirstExport: true)
+        let service = ImageAnalysisProjectArchiveService(io: probe.io)
+        let firstRequest = projectArchiveExportRequest(destinationName: "First.pint")
+        let secondRequest = projectArchiveExportRequest(destinationName: "Second.pint")
+
+        let first = Task { @MainActor in try await service.export(firstRequest) }
+        try await probe.waitUntilFirstExportStarts()
+        let second = Task { @MainActor in try await service.export(secondRequest) }
+        await Task.yield()
+
+        #expect(probe.exportInvocationCount == 1)
+        probe.releaseFirstExport()
+        _ = try await first.value
+        _ = try await second.value
+
+        #expect(probe.exportInvocationCount == 2)
+        #expect(probe.maximumConcurrentExports == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("a queued cancelled archive operation never starts filesystem work")
+    func queuedCancellationIsExplicit() async throws {
+        let probe = BlockingProjectArchiveIOProbe(blockFirstExport: true)
+        let service = ImageAnalysisProjectArchiveService(io: probe.io)
+        let first = Task {
+            try await service.export(projectArchiveExportRequest(destinationName: "First.pint"))
+        }
+        try await probe.waitUntilFirstExportStarts()
+        let second = Task {
+            try await service.export(projectArchiveExportRequest(destinationName: "Second.pint"))
+        }
+        second.cancel()
+        probe.releaseFirstExport()
+
+        _ = try await first.value
+        await #expect(throws: CancellationError.self) {
+            try await second.value
+        }
+        #expect(probe.exportInvocationCount == 1)
+    }
+
+    @Test("cancellation during a non-preemptible commit returns durable commit evidence")
+    func cancellationAfterCommitIsExplicit() async throws {
+        let probe = BlockingProjectArchiveIOProbe(cancelDuringExport: true)
+        let service = ImageAnalysisProjectArchiveService(io: probe.io)
+        let request = projectArchiveExportRequest(destinationName: "Committed.pint")
+
+        let commit = try await Task {
+            try await service.export(request)
+        }.value
+
+        #expect(commit.requestID == request.requestID)
+        #expect(commit.destinationURL == request.destinationURL)
+        #expect(commit.cancellationObservedAfterCommit)
+        #expect(probe.exportInvocationCount == 1)
+    }
+
+    @Test("source contract routes UI archive calls through the serialized service")
+    func sourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let archiveSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/ImageAnalysisProjectArchive.swift"
+            ),
+            encoding: .utf8
+        )
+        let workspaceSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Analysis/AnalysisWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(archiveSource.contains("actor ImageAnalysisProjectArchiveService"))
+        #expect(archiveSource.contains("try await service.export("))
+        #expect(archiveSource.contains("try await service.inspect("))
+        #expect(archiveSource.contains("try await service.importProject("))
+        #expect(archiveSource.contains("try Task.checkCancellation()\n        if let installStaging"))
+        #expect(archiveSource.contains("cancellationObservedAfterCommit: Task.isCancelled"))
+        #expect(workspaceSource.contains("try await ImageAnalysisProjectArchive.export("))
+        #expect(workspaceSource.contains("try await ImageAnalysisProjectArchive.inspect("))
+        #expect(workspaceSource.contains("try await ImageAnalysisProjectArchive.importProject("))
+        #expect(workspaceSource.contains("Process()") == false)
+        #expect(workspaceSource.contains("Data(contentsOf:") == false)
+    }
+
+    private nonisolated func projectArchiveExportRequest(
+        destinationName: String
+    ) -> ImageAnalysisProjectArchiveExportRequest {
+        ImageAnalysisProjectArchiveExportRequest(
+            requestID: UUID(),
+            sourceFolderURL: URL(fileURLWithPath: "/virtual/source", isDirectory: true),
+            imageURLs: [URL(fileURLWithPath: "/virtual/source/evidence.jpg")],
+            title: "Project",
+            destinationURL: URL(fileURLWithPath: "/virtual/\(destinationName)"),
+            appVersion: "3.0",
+            appBuild: "test"
+        )
+    }
 }
 
 private enum InjectedArchiveInterruption: Error {
     case beforeCommit
+}
+
+private nonisolated final class BlockingProjectArchiveIOProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let blockFirstExport: Bool
+    private let cancelDuringExport: Bool
+    private var exportCount = 0
+    private var activeExports = 0
+    private var maximumActiveExports = 0
+    private var firstExportReleased = false
+    private var observedMainThread = false
+
+    init(blockFirstExport: Bool = false, cancelDuringExport: Bool = false) {
+        self.blockFirstExport = blockFirstExport
+        self.cancelDuringExport = cancelDuringExport
+    }
+
+    var io: ImageAnalysisProjectArchiveIO {
+        ImageAnalysisProjectArchiveIO(
+            export: { [self] request in
+                condition.lock()
+                exportCount += 1
+                activeExports += 1
+                maximumActiveExports = max(maximumActiveExports, activeExports)
+                observedMainThread = observedMainThread || Thread.isMainThread
+                condition.broadcast()
+                if blockFirstExport && exportCount == 1 {
+                    while !firstExportReleased { condition.wait() }
+                }
+                activeExports -= 1
+                condition.unlock()
+
+                if cancelDuringExport {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                return ImageAnalysisProjectArchiveExportCommit(
+                    requestID: request.requestID,
+                    manifest: Self.manifest,
+                    destinationURL: request.destinationURL,
+                    cancellationObservedAfterCommit: false
+                )
+            },
+            inspect: { _ in
+                ImageAnalysisProjectArchive.Preview(
+                    title: "Project",
+                    exportedAt: .distantPast,
+                    imageCount: 1,
+                    fileCount: 1
+                )
+            },
+            importProject: { request in
+                ImageAnalysisProjectArchiveImportCommit(
+                    requestID: request.requestID,
+                    manifest: Self.manifest,
+                    destinationURL: request.destinationURL,
+                    replacedEmptyDestination: false,
+                    cancellationObservedAfterCommit: false
+                )
+            }
+        )
+    }
+
+    func waitUntilFirstExportStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while exportInvocationCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw ProjectArchiveProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstExport() {
+        condition.lock()
+        firstExportReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var exportInvocationCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return exportCount
+    }
+
+    var maximumConcurrentExports: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumActiveExports
+    }
+
+    var ranOnMainThread: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return observedMainThread
+    }
+
+    private static let manifest = ImageAnalysisProjectArchive.Manifest(
+        schemaVersion: ImageAnalysisProjectArchive.currentSchemaVersion,
+        projectID: UUID(),
+        title: "Project",
+        exportedAt: .distantPast,
+        exportedByAppVersion: "3.0",
+        exportedByAppBuild: "test",
+        files: []
+    )
+}
+
+private enum ProjectArchiveProbeError: Error {
+    case timedOut
 }
 
 private struct ProjectArchiveFixture {

@@ -2104,13 +2104,19 @@ final class MetadataViewModel {
         }
     }
 
-    private func sportsCaptionNumber(for imageURL: URL?) -> String {
+    private func sportsCaptionNumber(for imageURL: URL?) async -> String {
         guard let imageURL else { return "" }
         let folderURL = imageURL.deletingLastPathComponent()
+        let rosterResult = await MatchRosterService.shared.load(
+            for: folderURL,
+            requestID: UUID()
+        )
+        guard !Task.isCancelled,
+              case .loaded(let rosterSnapshot) = rosterResult else { return "" }
         return SportsCaptionNumberResolver.value(
             for: imageURL,
             faceData: FaceDataStorageService().loadFaceData(for: folderURL),
-            match: MatchRosterService().load(for: folderURL)
+            match: rosterSnapshot.roster
         )
     }
 
@@ -2120,7 +2126,7 @@ final class MetadataViewModel {
         editingMetadata = await interpolator.resolvingGPSPlaceVariables(in: editingMetadata)
         editingMetadata = interpolator.resolvingSportsNumberVariables(
             in: editingMetadata,
-            number: sportsCaptionNumber(for: selectedURLs.first)
+            number: await sportsCaptionNumber(for: selectedURLs.first)
         )
         // Use a snapshot of current editing state for field references
         let snapshot = editingMetadata
@@ -2472,7 +2478,7 @@ final class MetadataViewModel {
                 let gpsResolved = await interpolator.resolvingGPSPlaceVariables(in: unresolvedMeta)
                 let meta = interpolator.resolvingSportsNumberVariables(
                     in: gpsResolved,
-                    number: self.sportsCaptionNumber(for: url)
+                    number: await self.sportsCaptionNumber(for: url)
                 )
                 let snapshot = meta
 

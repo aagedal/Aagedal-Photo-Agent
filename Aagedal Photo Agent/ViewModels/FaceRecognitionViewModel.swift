@@ -525,7 +525,9 @@ final class FaceRecognitionViewModel {
     /// both teams with unknown side, etc.) — surfaced for manual assignment.
     var ambiguousNumberDetections: [NumberDetection] = []
 
-    @ObservationIgnored private let matchRosterService = MatchRosterService()
+    @ObservationIgnored private let matchRosterService = MatchRosterService.shared
+    @ObservationIgnored private var matchRosterLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var matchRosterLoadRequestID = UUID()
     @ObservationIgnored private let colorClusterer = TeamColorClusterer()
     @ObservationIgnored private let playerResolver = PlayerResolver()
     /// Minimum colour-cluster confidence to treat the split as trustworthy.
@@ -618,6 +620,7 @@ final class FaceRecognitionViewModel {
         activeScanWorkerTask?.cancel()
         metadataWriteTask?.cancel()
         lensPrewarmTask?.cancel()
+        matchRosterLoadTask?.cancel()
     }
 
     // MARK: - Cache Management
@@ -713,6 +716,11 @@ final class FaceRecognitionViewModel {
     // MARK: - Load Existing Data
 
     func loadFaceData(for folderURL: URL, cleanupPolicy: FaceCleanupPolicy) {
+        if displayedFolderURL != folderURL.standardizedFileURL {
+            matchRosterLoadTask?.cancel()
+            matchRosterLoadRequestID = UUID()
+            matchRoster = nil
+        }
         displayedFolderURL = folderURL.standardizedFileURL
 
         // Apply cleanup policy first
@@ -726,8 +734,7 @@ final class FaceRecognitionViewModel {
             loadThumbnails(for: data)
             if deferredPostprocessingFolders.remove(folderURL.standardizedFileURL) != nil {
                 if UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled) {
-                    loadMatchRoster(for: folderURL)
-                    runSportsResolution()
+                    scheduleMatchRosterLoad(for: folderURL, resolveAfterLoad: true)
                 }
                 applyKnownPeopleMatches()
             }
@@ -1104,8 +1111,7 @@ final class FaceRecognitionViewModel {
                     // Sports mode: resolve detected numbers → player names (or surface
                     // the colour-mapping confirmation if not yet confirmed).
                     if config.sportsModeEnabled {
-                        self.loadMatchRoster(for: folderURL)
-                        self.runSportsResolution()
+                        self.scheduleMatchRosterLoad(for: folderURL, resolveAfterLoad: true)
                     }
                 } else {
                     self.deferredPostprocessingFolders.insert(folderURL.standardizedFileURL)
@@ -1842,14 +1848,34 @@ final class FaceRecognitionViewModel {
 
     // MARK: - Sports tagging: match setup & resolution
 
-    /// Load the per-folder match roster, if one was saved.
-    func loadMatchRoster(for folderURL: URL) {
-        matchRoster = matchRosterService.load(for: folderURL)
+    /// Load the per-folder match roster, if one was saved. A request token prevents a slow read
+    /// from an old folder from replacing the roster selected by a newer navigation.
+    @discardableResult
+    func loadMatchRoster(for folderURL: URL) async -> MatchRoster? {
+        let requestID = UUID()
+        matchRosterLoadRequestID = requestID
+        let result = await matchRosterService.load(for: folderURL, requestID: requestID)
+        guard !Task.isCancelled, matchRosterLoadRequestID == requestID else { return nil }
+        guard case .loaded(let snapshot) = result else { return nil }
+        matchRoster = snapshot.roster
+        return snapshot.roster
+    }
+
+    private func scheduleMatchRosterLoad(for folderURL: URL, resolveAfterLoad: Bool) {
+        matchRosterLoadTask?.cancel()
+        matchRosterLoadTask = Task { [weak self] in
+            guard let self else { return }
+            _ = await self.loadMatchRoster(for: folderURL)
+            guard !Task.isCancelled,
+                  self.displayedFolderURL == folderURL.standardizedFileURL else { return }
+            if resolveAfterLoad { self.runSportsResolution() }
+            self.matchRosterLoadTask = nil
+        }
     }
 
     /// Set the two teams for this folder, embedding current library snapshots.
     /// Changing teams invalidates any previous colour-mapping confirmation.
-    func setMatchTeams(homeTeamID: UUID?, awayTeamID: UUID?, folderURL: URL) {
+    func setMatchTeams(homeTeamID: UUID?, awayTeamID: UUID?, folderURL: URL) async {
         var roster = matchRoster ?? MatchRoster(folderURL: folderURL)
         roster.folderURL = folderURL
         roster.mode = .team
@@ -1859,13 +1885,13 @@ final class FaceRecognitionViewModel {
         roster.awayTeamSnapshot = awayTeamID.flatMap { RosterStore.shared.team(byID: $0) }
         roster.clusterMappingConfirmed = false
         matchRoster = roster
-        try? matchRosterService.save(roster)
+        _ = try? await matchRosterService.save(roster, requestID: UUID())
     }
 
     /// Set a single startlist for an individual-sport event (bib mode). Bib numbers resolve
     /// directly to athletes — no team colour, no home/away confirm step. The startlist is held
     /// in the home slot; away stays empty.
-    func setEventStartlist(teamID: UUID?, folderURL: URL) {
+    func setEventStartlist(teamID: UUID?, folderURL: URL) async {
         var roster = matchRoster ?? MatchRoster(folderURL: folderURL)
         roster.folderURL = folderURL
         roster.mode = .event
@@ -1877,7 +1903,7 @@ final class FaceRecognitionViewModel {
         roster.clusterMappingConfirmed = true
         roster.clusterFlipped = false
         matchRoster = roster
-        try? matchRosterService.save(roster)
+        _ = try? await matchRosterService.save(roster, requestID: UUID())
     }
 
     /// Cluster sampled jersey colours into the two teams. If the mapping is
@@ -1921,12 +1947,12 @@ final class FaceRecognitionViewModel {
     }
 
     /// Apply the photographer's confirm/flip choice, persist it, and resolve.
-    func confirmClusterMapping(flip: Bool) {
+    func confirmClusterMapping(flip: Bool) async {
         guard var roster = matchRoster else { return }
         roster.clusterMappingConfirmed = true
         roster.clusterFlipped = flip
         matchRoster = roster
-        try? matchRosterService.save(roster)
+        _ = try? await matchRosterService.save(roster, requestID: UUID())
 
         let cluster = pendingColorClusterConfirmation
         pendingColorClusterConfirmation = nil
@@ -2278,7 +2304,7 @@ final class FaceRecognitionViewModel {
     /// faces into Known People and stamping the new person's id onto the roster
     /// entry so future games recognise the player by face.
     @discardableResult
-    func linkPlayerToKnownPeople(groupID: UUID, playerNumber: Int, teamID: UUID) -> Bool {
+    func linkPlayerToKnownPeople(groupID: UUID, playerNumber: Int, teamID: UUID) async -> Bool {
         guard let team = RosterStore.shared.team(byID: teamID),
               let player = team.roster.first(where: { $0.number == playerNumber }) else { return false }
         do {
@@ -2290,7 +2316,7 @@ final class FaceRecognitionViewModel {
                 if match.homeTeamID == teamID { match.homeTeamSnapshot = updatedTeam }
                 if match.awayTeamID == teamID { match.awayTeamSnapshot = updatedTeam }
                 matchRoster = match
-                try matchRosterService.save(match)
+                _ = try await matchRosterService.save(match, requestID: UUID())
             }
             return true
         } catch {

@@ -82,13 +82,20 @@ struct MatchSetupView: View {
                 Spacer()
                 Button("Save & Resolve") {
                     guard let folderURL else { return }
-                    switch mode {
-                    case .team:
-                        viewModel.setMatchTeams(homeTeamID: homeID, awayTeamID: awayID, folderURL: folderURL)
-                    case .event:
-                        viewModel.setEventStartlist(teamID: eventID, folderURL: folderURL)
+                    Task {
+                        switch mode {
+                        case .team:
+                            await viewModel.setMatchTeams(
+                                homeTeamID: homeID,
+                                awayTeamID: awayID,
+                                folderURL: folderURL
+                            )
+                        case .event:
+                            await viewModel.setEventStartlist(teamID: eventID, folderURL: folderURL)
+                        }
+                        guard !Task.isCancelled else { return }
+                        viewModel.runSportsResolution()
                     }
-                    viewModel.runSportsResolution()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canSave)
@@ -96,12 +103,14 @@ struct MatchSetupView: View {
             .padding()
         }
         .frame(width: 460, height: 520)
-        .onAppear {
-            if let folderURL { viewModel.loadMatchRoster(for: folderURL) }
-            mode = viewModel.matchRoster?.effectiveMode ?? .team
-            homeID = viewModel.matchRoster?.homeTeamID
-            awayID = viewModel.matchRoster?.awayTeamID
-            if mode == .event { eventID = viewModel.matchRoster?.homeTeamID }
+        .task(id: folderURL) {
+            guard let folderURL else { return }
+            let roster = await viewModel.loadMatchRoster(for: folderURL)
+            guard !Task.isCancelled else { return }
+            mode = roster?.effectiveMode ?? .team
+            homeID = roster?.homeTeamID
+            awayID = roster?.awayTeamID
+            eventID = roster?.effectiveMode == .event ? roster?.homeTeamID : nil
         }
         .sheet(isPresented: $showTeamsLibrary) {
             TeamsLibraryView()
@@ -133,9 +142,13 @@ struct MatchSetupView: View {
                     .foregroundStyle(.orange)
             }
             HStack {
-                Button("Looks right") { viewModel.confirmClusterMapping(flip: false) }
+                Button("Looks right") {
+                    Task { await viewModel.confirmClusterMapping(flip: false) }
+                }
                     .buttonStyle(.borderedProminent)
-                Button("Flip teams") { viewModel.confirmClusterMapping(flip: true) }
+                Button("Flip teams") {
+                    Task { await viewModel.confirmClusterMapping(flip: true) }
+                }
             }
         }
     }

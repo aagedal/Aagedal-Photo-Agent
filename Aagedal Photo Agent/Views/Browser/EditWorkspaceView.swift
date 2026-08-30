@@ -233,9 +233,9 @@ struct EditWorkspaceView: View {
     @State private var isSavingRenderedJPEG = false
     @State private var saveError: String?
     @State private var copyPasteFeedback: String?
-    @State private var cropZoomScale: CGFloat = 1.0
-    @State private var lastCropZoomScale: CGFloat = 1.0
-    @State private var cropAspectRatio: CropAspectRatio = .original
+    /// Owns crop-tool presentation, image-scoped pointer state, preview zoom, aspect selection,
+    /// and the value-mutation seam used before the view commits XMP or a named Develop version.
+    @State private var cropSession = DevelopCropSessionCoordinator()
     @State private var isCursorOverPreview = false
     @State private var scrollEventMonitor: Any?
     @State private var keyEventMonitor: Any?
@@ -254,10 +254,6 @@ struct EditWorkspaceView: View {
     /// Owns sticky render-only section eye toggles for this workspace lifetime. Unlike held-key
     /// comparisons, these deliberately survive image navigation.
     @State private var sectionMutes = DevelopSectionMuteCoordinator()
-    @State private var showCropControls = false
-    @State private var lockedCropImageRect: CGRect?
-    @State private var dragCropAngle: Double?
-    @State private var dragCropRegion: NormalizedCropRegion?
     @State private var editUndoManager = UndoManager()
     @State private var watermarkStore = WatermarkStore.shared
     /// URLs whose develop settings actually changed during this edit session. On exit these are
@@ -476,6 +472,36 @@ struct EditWorkspaceView: View {
 
     private var editZoomScale: CGFloat { previewNavigation.zoomScale }
     private var editOffset: CGSize { previewNavigation.offset }
+
+    // Transitional aliases keep the existing layout and input paths readable while the crop
+    // coordinator remains the sole owner of this state.
+    private var cropZoomScale: CGFloat {
+        get { cropSession.zoomScale }
+        nonmutating set { cropSession.zoomScale = newValue }
+    }
+
+    private var lastCropZoomScale: CGFloat {
+        get { cropSession.lastZoomScale }
+        nonmutating set { cropSession.lastZoomScale = newValue }
+    }
+
+    private var cropAspectRatio: CropAspectRatio {
+        get { cropSession.aspectRatio }
+        nonmutating set { cropSession.aspectRatio = newValue }
+    }
+
+    private var showCropControls: Bool {
+        get { cropSession.isToolActive }
+        nonmutating set { cropSession.isToolActive = newValue }
+    }
+
+    private var lockedCropImageRect: CGRect? {
+        get { cropSession.lockedImageRect }
+        nonmutating set { cropSession.lockedImageRect = newValue }
+    }
+
+    private var dragCropAngle: Double? { cropSession.dragAngle }
+    private var dragCropRegion: NormalizedCropRegion? { cropSession.dragRegion }
 
     private var isShowingBefore: Bool { transientPreview.isShowingBefore }
     private var isMutingDevelop: Bool { transientPreview.isMutingDevelop }
@@ -807,11 +833,10 @@ struct EditWorkspaceView: View {
             }
             if wasDragging, !isDragging {
                 // Commit crop drag to ViewModel before clearing overlay state
-                if let angle = dragCropAngle {
+                let cropDrag = cropSession.finishInteraction()
+                if let angle = cropDrag.angle {
                     updateCropAngle(angle, commit: false)
                 }
-                dragCropAngle = nil
-                dragCropRegion = nil
                 metalCoordinator.stopContinuousRendering()
                 cleanFeedController.setFeedContinuousRendering(false)
                 scopeThrottleTask?.cancel()
@@ -1074,9 +1099,9 @@ struct EditWorkspaceView: View {
                                         if lockedCropImageRect == nil {
                                             lockedCropImageRect = computedImageRect
                                         }
-                                        // Local @State only — bypass ViewModel during drag
-                                        // to avoid expensive body re-evaluation cascade
-                                        dragCropRegion = newCrop
+                                        // Coordinator-local state only — bypass metadata during
+                                        // drag to avoid an expensive observation cascade.
+                                        cropSession.updateCropDrag(newCrop)
                                     },
                                     onAngleChange: { newAngle in
                                         if lockedCropImageRect == nil {
@@ -1090,20 +1115,17 @@ struct EditWorkspaceView: View {
                                         let fitted = currentRegion
                                             .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
                                             .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
-                                        dragCropAngle = clampedAngle
-                                        dragCropRegion = fitted
+                                        cropSession.updateAngleDrag(clampedAngle, region: fitted)
                                     },
                                     onCommit: {
                                         // Commit accumulated drag state to ViewModel
-                                        if let region = dragCropRegion {
+                                        let cropDrag = cropSession.finishInteraction()
+                                        if let region = cropDrag.region {
                                             updateCrop(region, commit: false)
                                         }
-                                        if let angle = dragCropAngle {
+                                        if let angle = cropDrag.angle {
                                             updateCropAngle(angle, commit: false)
                                         }
-                                        dragCropRegion = nil
-                                        dragCropAngle = nil
-                                        lockedCropImageRect = nil
                                         commitEditAdjustments()
                                     },
                                     onAspectRatioOverride: { newRatio in
@@ -2136,7 +2158,10 @@ struct EditWorkspaceView: View {
     }
 
     private var cropAspectRatioPicker: some View {
-        Picker("Aspect Ratio", selection: $cropAspectRatio) {
+        Picker("Aspect Ratio", selection: Binding(
+            get: { cropAspectRatio },
+            set: { cropAspectRatio = $0 }
+        )) {
             ForEach(CropAspectRatio.menuOrder) { ratio in
                 Text(ratio.label).tag(ratio)
             }
@@ -2612,6 +2637,7 @@ struct EditWorkspaceView: View {
         importingLUTForLayerID = nil
         isSpaceHandToolActive = false
         transientPreview.endImageSession()
+        cropSession.endImageSession()
         maskInteraction.endImageSession()
         metalPipeline?.maskMattePreviewMaskID = nil
         developComparison.close()
@@ -2845,12 +2871,9 @@ struct EditWorkspaceView: View {
         previewCIImage = nil
         metalPipeline?.clearSourceTexture()
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
-        resetCropZoom()
+        cropSession.beginImageSession(selectedImageURL, isCropEnabled: isCropEnabled)
         resetEditZoom()
         selectedLayer = .global
-        if !isCropEnabled {
-            showCropControls = false
-        }
 
         guard let selectedImageURL else {
             editLog.info("[nil] loadSelectedImagePreview: no selectedImageURL, returning")
@@ -4431,56 +4454,39 @@ struct EditWorkspaceView: View {
     /// Keep the transient angle and fitted crop local while dragging so both crop control
     /// surfaces remain responsive without writing metadata at pointer-event frequency.
     private func updateCropAngleDragPreview(_ value: Double) {
-        let clampedAngle = min(max(value, -45), 45)
-        let region = activeCrop
-            .centerClampedForRotation(
-                angleDegrees: clampedAngle,
-                aspectRatio: sourceAspectRatio
-            )
-            .fittingRotated(
-                angleDegrees: clampedAngle,
-                aspectRatio: sourceAspectRatio
-            )
-        dragCropAngle = clampedAngle
-        dragCropRegion = region
+        cropSession.updateAngleDragPreview(
+            value,
+            activeCrop: activeCrop,
+            sourceAspectRatio: sourceAspectRatio
+        )
     }
 
     private func resetCropAngle() {
-        dragCropAngle = nil
-        dragCropRegion = nil
+        cropSession.cancelInteraction()
         cropAngleBinding.wrappedValue = 0
     }
 
     private func toggleCropControls() {
-        showCropControls.toggle()
-        if showCropControls {
+        let isActive = cropSession.toggleTool()
+        if isActive {
             // Deselect mask and reset edit zoom when entering crop mode
             selectedLayer = .global
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
             resetEditZoom()
         }
-        if showCropControls && !isCropEnabled {
+        if isActive && !isCropEnabled {
             // Showing controls — enable crop if not already active
             resetCropZoom()
             updateCameraRaw { cameraRaw in
-                var crop = cameraRaw.crop ?? CameraRawCrop()
-                crop.hasCrop = true
-                if crop.top == nil { crop.top = 0 }
-                if crop.left == nil { crop.left = 0 }
-                if crop.bottom == nil { crop.bottom = 1 }
-                if crop.right == nil { crop.right = 1 }
-                if crop.angle == nil { crop.angle = 0 }
-                cameraRaw.crop = crop
+                _ = cropSession.enableCropIfNeeded(in: &cameraRaw)
             }
             if cropAspectRatio != .free {
                 applyAspectRatioToCrop(cropAspectRatio)
             }
             commitEditAdjustments()
         }
-        if !showCropControls {
+        if !isActive {
             // Reset zoom and unlock image rect when hiding controls
-            resetCropZoom()
-            lockedCropImageRect = nil
             // The crop editor renders with an identity viewport because its MTKView
             // is framed to the image. The confirmed-crop preview is pane-sized and
             // needs the Metal crop viewport immediately when the tool closes.
@@ -4491,21 +4497,8 @@ struct EditWorkspaceView: View {
     }
 
     private func resetCrop() {
-        resetCropZoom()
-        cropAspectRatio = .original
-        showCropControls = false
-        dragCropAngle = nil
-        dragCropRegion = nil
-        lockedCropImageRect = nil
         updateCameraRaw { cameraRaw in
-            cameraRaw.crop = CameraRawCrop(
-                top: 0,
-                left: 0,
-                bottom: 1,
-                right: 1,
-                angle: 0,
-                hasCrop: false
-            )
+            _ = cropSession.resetCrop(in: &cameraRaw)
         }
         commitEditAdjustments()
         // Reset can be invoked from either crop control surface. Restore the normal
@@ -4533,16 +4526,14 @@ struct EditWorkspaceView: View {
     }
 
     private func updateCrop(_ crop: NormalizedCropRegion, commit: Bool) {
-        let angle = metadataViewModel.editingMetadata.cameraRaw?.crop?.angle ?? 0
-        let normalized = crop.fittingRotated(angleDegrees: angle, aspectRatio: sourceAspectRatio)
-        let displayCrop = CameraRawCrop(
-            top: normalized.top, left: normalized.left,
-            bottom: normalized.bottom, right: normalized.right,
-            angle: angle, hasCrop: true
-        )
-        let sensorCrop = displayCrop.transformedForSensor(orientation: selectedImageOrientation)
         updateCameraRaw { cameraRaw in
-            cameraRaw.crop = sensorCrop
+            _ = cropSession.updateCrop(
+                crop,
+                sourceAspectRatio: sourceAspectRatio,
+                orientation: selectedImageOrientation,
+                commit: commit,
+                in: &cameraRaw
+            )
         }
         if commit {
             commitEditAdjustments()
@@ -4550,29 +4541,14 @@ struct EditWorkspaceView: View {
     }
 
     private func updateCropAngle(_ angle: Double, commit: Bool) {
-        let clampedAngle = min(max(angle, -45), 45)
-        let ar = sourceAspectRatio
-        let orientation = selectedImageOrientation
         updateCameraRaw { cameraRaw in
-            // Read the current sensor crop and transform to display space for angle calculations
-            let sensorCrop = cameraRaw.crop ?? CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true)
-            let displayCrop = sensorCrop.transformedForDisplay(orientation: orientation)
-            let region = NormalizedCropRegion(
-                top: displayCrop.top ?? 0,
-                left: displayCrop.left ?? 0,
-                bottom: displayCrop.bottom ?? 1,
-                right: displayCrop.right ?? 1
+            _ = cropSession.updateCropAngle(
+                angle,
+                sourceAspectRatio: sourceAspectRatio,
+                orientation: selectedImageOrientation,
+                commit: commit,
+                in: &cameraRaw
             )
-            .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
-            .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
-
-            let updatedDisplay = CameraRawCrop(
-                top: region.top, left: region.left,
-                bottom: region.bottom, right: region.right,
-                angle: (clampedAngle * 1000000).rounded() / 1000000,
-                hasCrop: true
-            )
-            cameraRaw.crop = updatedDisplay.transformedForSensor(orientation: orientation)
         }
         if commit {
             commitEditAdjustments()
@@ -7899,8 +7875,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetCropZoom() {
-        cropZoomScale = 1.0
-        lastCropZoomScale = 1.0
+        cropSession.resetPreviewZoom()
     }
 
     // MARK: - Edit Zoom / Pan

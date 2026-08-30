@@ -1008,11 +1008,13 @@ final class FaceGroupCardView: NSView {
         guard let groupID,
               let viewModel,
               let target = viewModel.rosterLinkTarget(forGroup: groupID) else { return }
-        _ = viewModel.linkPlayerToKnownPeople(
-            groupID: groupID,
-            playerNumber: target.number,
-            teamID: target.teamID
-        )
+        Task {
+            _ = await viewModel.linkPlayerToKnownPeople(
+                groupID: groupID,
+                playerNumber: target.number,
+                teamID: target.teamID
+            )
+        }
     }
 
     @objc private func menuSplitAllUnmatched() {

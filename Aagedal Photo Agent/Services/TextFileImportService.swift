@@ -84,6 +84,112 @@ actor TextFileImportService {
     }
 }
 
+nonisolated struct BundleTextResourceSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let resourceName: String
+    let fileExtension: String
+    let text: String
+    let byteCount: Int
+}
+
+nonisolated enum BundleTextResourceLoadResult: Equatable, Sendable {
+    case loaded(BundleTextResourceSnapshot)
+    case notFound(requestID: UUID, resourceName: String)
+    case cancelled(requestID: UUID, completedAccessCount: Int)
+}
+
+nonisolated enum BundleTextResourceError: LocalizedError, Equatable {
+    case unsupportedEncoding(URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedEncoding:
+            return "Could not decode bundled text resource."
+        }
+    }
+}
+
+nonisolated struct BundleTextResourceAccess: Sendable {
+    let resourceURL: @Sendable (String, String) -> URL?
+    let read: @Sendable (URL) throws -> Data
+
+    static let system = BundleTextResourceAccess(
+        resourceURL: { name, fileExtension in
+            Bundle.main.url(forResource: name, withExtension: fileExtension)
+        },
+        read: { try Data(contentsOf: $0, options: .mappedIfSafe) }
+    )
+}
+
+/// Serializes bundle resource lookup and reading away from MainActor. Although these files ship in
+/// the app bundle, the bundle can still reside on a slow or externally backed volume. Foundation's
+/// synchronous lookup/read calls are non-preemptible, so cancellation is reported only at stable
+/// boundaries and no partial bytes are published to the settings view.
+actor BundleTextResourceService {
+    static let shared = BundleTextResourceService()
+
+    private let access: BundleTextResourceAccess
+
+    init(access: BundleTextResourceAccess = .system) {
+        self.access = access
+    }
+
+    func loadText(
+        resourceName: String,
+        fileExtensions: [String],
+        requestID: UUID
+    ) throws -> BundleTextResourceLoadResult {
+        var completedAccessCount = 0
+
+        guard !Task.isCancelled else {
+            return .cancelled(requestID: requestID, completedAccessCount: 0)
+        }
+
+        for fileExtension in fileExtensions {
+            guard !Task.isCancelled else {
+                return .cancelled(
+                    requestID: requestID,
+                    completedAccessCount: completedAccessCount
+                )
+            }
+
+            guard let url = access.resourceURL(resourceName, fileExtension) else {
+                completedAccessCount += 1
+                continue
+            }
+            completedAccessCount += 1
+
+            guard !Task.isCancelled else {
+                return .cancelled(
+                    requestID: requestID,
+                    completedAccessCount: completedAccessCount
+                )
+            }
+
+            let data = try access.read(url)
+            completedAccessCount += 1
+            guard !Task.isCancelled else {
+                return .cancelled(
+                    requestID: requestID,
+                    completedAccessCount: completedAccessCount
+                )
+            }
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw BundleTextResourceError.unsupportedEncoding(url)
+            }
+            return .loaded(BundleTextResourceSnapshot(
+                requestID: requestID,
+                resourceName: resourceName,
+                fileExtension: fileExtension,
+                text: text,
+                byteCount: data.count
+            ))
+        }
+
+        return .notFound(requestID: requestID, resourceName: resourceName)
+    }
+}
+
 nonisolated struct TextFileExportCommit: Equatable, Sendable {
     let requestID: UUID
     let destinationURL: URL

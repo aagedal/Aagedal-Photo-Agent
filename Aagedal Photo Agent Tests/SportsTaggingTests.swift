@@ -576,3 +576,177 @@ struct SportsTaggingTests {
         return context.makeImage()!
     }
 }
+
+@Suite("Match roster filesystem boundary")
+struct MatchRosterServiceTests {
+    @Test("load returns an immutable snapshot away from the main actor")
+    @MainActor
+    func loadRunsOffMainActor() async throws {
+        let folderURL = URL(fileURLWithPath: "/virtual/match")
+        let teamID = UUID()
+        let roster = MatchRoster(folderURL: folderURL, homeTeamID: teamID)
+        let encoded = try JSONEncoder().encode(roster)
+        let probe = MatchRosterFileIOProbe(readData: encoded)
+        let service = MatchRosterService(fileIO: probe.fileIO)
+        let requestID = UUID()
+
+        let result = await Task {
+            await service.load(for: folderURL, requestID: requestID)
+        }.value
+
+        guard case .loaded(let snapshot) = result else {
+            Issue.record("Expected a loaded roster snapshot")
+            return
+        }
+        #expect(snapshot.requestID == requestID)
+        #expect(snapshot.folderURL == folderURL)
+        #expect(snapshot.roster?.homeTeamID == teamID)
+        #expect(snapshot.sourceByteCount == encoded.count)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("pre-cancellation avoids every filesystem mutation")
+    func preCancelledSave() async throws {
+        let folderURL = URL(fileURLWithPath: "/virtual/match")
+        let roster = MatchRoster(folderURL: folderURL)
+        let probe = MatchRosterFileIOProbe()
+        let service = MatchRosterService(fileIO: probe.fileIO)
+        let requestID = UUID()
+        let task = Task {
+            await Task.yield()
+            return try await service.save(roster, requestID: requestID)
+        }
+        task.cancel()
+
+        let result = try await task.value
+
+        #expect(result == .cancelledBeforeCommit(requestID: requestID, folderURL: folderURL))
+        #expect(probe.directoryCreationCount == 0)
+        #expect(probe.writeCount == 0)
+    }
+
+    @Test("overlapping roster reads are serialized")
+    func overlappingReadsSerialize() async throws {
+        let folderURL = URL(fileURLWithPath: "/virtual/match")
+        let encoded = try JSONEncoder().encode(MatchRoster(folderURL: folderURL))
+        let probe = MatchRosterFileIOProbe(readData: encoded, readDelay: 0.03)
+        let service = MatchRosterService(fileIO: probe.fileIO)
+
+        async let first = service.load(for: folderURL, requestID: UUID())
+        async let second = service.load(for: folderURL, requestID: UUID())
+        _ = await (first, second)
+
+        #expect(probe.maximumConcurrentReads == 1)
+    }
+
+    @Test("cancellation during a synchronous write preserves commit evidence")
+    func cancellationAfterCommit() async throws {
+        let folderURL = URL(fileURLWithPath: "/virtual/match")
+        let roster = MatchRoster(folderURL: folderURL)
+        let probe = MatchRosterFileIOProbe(cancelDuringWrite: true)
+        let service = MatchRosterService(fileIO: probe.fileIO)
+        let requestID = UUID()
+
+        let result = try await Task {
+            try await service.save(roster, requestID: requestID)
+        }.value
+
+        guard case .committed(let commit) = result else {
+            Issue.record("Expected an immutable save commit")
+            return
+        }
+        #expect(commit.requestID == requestID)
+        #expect(commit.folderURL == folderURL)
+        #expect(commit.byteCount > 0)
+        #expect(commit.cancellationRequestedAfterCommit)
+        #expect(probe.directoryCreationCount == 1)
+        #expect(probe.writeCount == 1)
+    }
+
+    @Test("callers await roster IO and reject stale UI loads")
+    func callerSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let faceViewModel = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/FaceRecognitionViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let metadataViewModel = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/MetadataViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(faceViewModel.contains("await matchRosterService.load(for: folderURL, requestID: requestID)"))
+        #expect(faceViewModel.contains("matchRosterLoadRequestID == requestID"))
+        #expect(faceViewModel.contains("await matchRosterService.save(roster, requestID: UUID())"))
+        #expect(metadataViewModel.contains("await MatchRosterService.shared.load("))
+        #expect(!metadataViewModel.contains("MatchRosterService().load(for:"))
+    }
+}
+
+private nonisolated final class MatchRosterFileIOProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let suppliedReadData: Data
+    private let cancelDuringWrite: Bool
+    private let readDelay: TimeInterval
+    private var observedMainThread = false
+    private var createdDirectories = 0
+    private var writes = 0
+    private var activeReads = 0
+    private var maximumActiveReads = 0
+
+    init(
+        readData: Data = Data(),
+        cancelDuringWrite: Bool = false,
+        readDelay: TimeInterval = 0
+    ) {
+        self.suppliedReadData = readData
+        self.cancelDuringWrite = cancelDuringWrite
+        self.readDelay = readDelay
+    }
+
+    var fileIO: MatchRosterFileIO {
+        MatchRosterFileIO(
+            fileExists: { [self] _ in
+                lock.withLock {
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                }
+                return !suppliedReadData.isEmpty
+            },
+            readData: { [self] _ in
+                lock.withLock {
+                    activeReads += 1
+                    maximumActiveReads = max(maximumActiveReads, activeReads)
+                }
+                if readDelay > 0 { Thread.sleep(forTimeInterval: readDelay) }
+                lock.withLock { activeReads -= 1 }
+                return suppliedReadData
+            },
+            createDirectory: { [self] _ in
+                lock.withLock {
+                    createdDirectories += 1
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                }
+            },
+            writeData: { [self] _, _, _ in
+                lock.withLock {
+                    writes += 1
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                }
+                if cancelDuringWrite {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }
+        )
+    }
+
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+    var directoryCreationCount: Int { lock.withLock { createdDirectories } }
+    var writeCount: Int { lock.withLock { writes } }
+    var maximumConcurrentReads: Int { lock.withLock { maximumActiveReads } }
+}

@@ -144,6 +144,16 @@ passed 1,672 tests in 193 suites. Remaining direct paths and the real-volume/Thr
 keep the broad Phase 3.1 items open.
 ([validation](plan-status-source-file-import-continuation-2026-08-30.md))
 
+**Archive, roster, license, and crop continuation (2026-08-30):** the checklist remains 63 of 75. Image
+Analysis archive export/inspect/import, match-roster load/save, and bundled license-text reads now cross
+serialized asynchronous boundaries with immutable cancellation/commit evidence and stale-result protection.
+`DevelopCropSessionCoordinator` owns crop tool, preview zoom, aspect, transient gesture geometry, lifecycle,
+display/sensor transforms, and explicit preview-versus-commit intent. The roster selection passed five tests;
+after disabling the stalled parallel test worker, the combined four-suite selection passed 21 tests and the
+serial unfiltered result recorded 1,817 expanded cases across 196 named suites. The broader filesystem
+inventory/measurement and Develop ownership gates remain open.
+([validation](plan-status-archive-roster-crop-continuation-2026-08-30.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -715,6 +725,13 @@ Color, Exposure, Detail, Tone Curve, HSL, and Film mute values as one workspace-
 bindings and toggles route through that owner while remaining render-only and surviving image navigation.
 Crop, layer, white-balance, broader render-policy/publication, export, and persistence ownership remain open.
 ([validation](plan-status-certificate-export-mutes-continuation-2026-08-30.md))
+
+**Crop-session state-owner follow-up (2026-08-30):** `DevelopCropSessionCoordinator` now owns crop-tool
+visibility, preview zoom/aspect, locked and transient gesture geometry, image/workspace cleanup, and the
+display-to-sensor crop transformation boundary. Its mutation operations return explicit preview-only versus
+durable-commit intent. Layer, white-balance, broader render-policy/publication, export, and persistence
+ownership remain open.
+([validation](plan-status-archive-roster-crop-continuation-2026-08-30.md#develop-crop-state-owner))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

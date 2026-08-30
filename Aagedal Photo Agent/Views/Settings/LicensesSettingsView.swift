@@ -59,6 +59,9 @@ struct LicensesSettingsView: View {
     ]
 
     @State private var licenseTexts: [String: String] = [:]
+    @State private var unavailableLicenseResources: Set<String> = []
+    @State private var licenseLoadTasks: [String: Task<Void, Never>] = [:]
+    @State private var licenseLoadRequestIDs: [String: UUID] = [:]
     @State private var expanded: Set<String> = []
 
     var body: some View {
@@ -71,7 +74,7 @@ struct LicensesSettingsView: View {
             Section {
                 ForEach(Self.components) { component in
                     DisclosureGroup(isExpanded: binding(for: component)) {
-                        Text(licenseTexts[component.licenseResource] ?? "License text not found.")
+                        Text(licenseText(for: component.licenseResource))
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -105,6 +108,9 @@ struct LicensesSettingsView: View {
             }
         }
         .listStyle(.inset)
+        .onDisappear {
+            cancelLicenseLoads()
+        }
     }
 
     private func binding(for component: Component) -> Binding<Bool> {
@@ -121,14 +127,50 @@ struct LicensesSettingsView: View {
     }
 
     private func loadLicenseText(_ resource: String) {
-        guard licenseTexts[resource] == nil else { return }
-        // Bundle resources are flattened, so the name alone is enough; extension varies (.txt / .md).
-        for ext in ["txt", "md"] {
-            if let url = Bundle.main.url(forResource: resource, withExtension: ext),
-               let text = try? String(contentsOf: url, encoding: .utf8) {
-                licenseTexts[resource] = text
-                return
+        guard licenseTexts[resource] == nil,
+              !unavailableLicenseResources.contains(resource),
+              licenseLoadTasks[resource] == nil else { return }
+
+        let requestID = UUID()
+        licenseLoadRequestIDs[resource] = requestID
+        licenseLoadTasks[resource] = Task {
+            do {
+                let result = try await BundleTextResourceService.shared.loadText(
+                    resourceName: resource,
+                    fileExtensions: ["txt", "md"],
+                    requestID: requestID
+                )
+                guard licenseLoadRequestIDs[resource] == requestID else { return }
+                licenseLoadTasks[resource] = nil
+                licenseLoadRequestIDs[resource] = nil
+                switch result {
+                case .loaded(let snapshot):
+                    licenseTexts[resource] = snapshot.text
+                case .notFound:
+                    unavailableLicenseResources.insert(resource)
+                case .cancelled:
+                    break
+                }
+            } catch {
+                guard licenseLoadRequestIDs[resource] == requestID else { return }
+                licenseLoadTasks[resource] = nil
+                licenseLoadRequestIDs[resource] = nil
+                unavailableLicenseResources.insert(resource)
             }
         }
+    }
+
+    private func licenseText(for resource: String) -> String {
+        if let text = licenseTexts[resource] { return text }
+        if unavailableLicenseResources.contains(resource) { return "License text not found." }
+        return licenseLoadTasks[resource] == nil ? "License text not found." : "Loading license text…"
+    }
+
+    private func cancelLicenseLoads() {
+        for task in licenseLoadTasks.values {
+            task.cancel()
+        }
+        licenseLoadTasks.removeAll()
+        licenseLoadRequestIDs.removeAll()
     }
 }

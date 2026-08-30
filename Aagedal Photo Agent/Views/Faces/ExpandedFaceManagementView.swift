@@ -467,9 +467,9 @@ struct SportsAssistStrip: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .onAppear {
+        .task(id: folderURL) {
             if let folderURL, viewModel.matchRoster == nil {
-                viewModel.loadMatchRoster(for: folderURL)
+                await viewModel.loadMatchRoster(for: folderURL)
             }
         }
         .sheet(isPresented: $showMatchSetup) {

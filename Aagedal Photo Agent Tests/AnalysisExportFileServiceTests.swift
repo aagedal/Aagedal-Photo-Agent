@@ -145,6 +145,153 @@ struct TextFileImportServiceTests {
     }
 }
 
+@Suite("Bundled license text filesystem boundary")
+struct BundleTextResourceServiceTests {
+    @Test("bundle lookup and reading run away from the main actor")
+    @MainActor
+    func completeSnapshotRunsOffMainActor() async throws {
+        let requestID = UUID()
+        let resourceURL = URL(fileURLWithPath: "/virtual/License-Sample.md")
+        let text = "Sample license\n"
+        let probe = BundleTextResourceAccessProbe(
+            urls: ["License-Sample.md": resourceURL],
+            data: Data(text.utf8)
+        )
+        let service = BundleTextResourceService(access: BundleTextResourceAccess(
+            resourceURL: probe.resourceURL,
+            read: probe.read
+        ))
+
+        let result = try await Task {
+            try await service.loadText(
+                resourceName: "License-Sample",
+                fileExtensions: ["txt", "md"],
+                requestID: requestID
+            )
+        }.value
+
+        #expect(result == .loaded(BundleTextResourceSnapshot(
+            requestID: requestID,
+            resourceName: "License-Sample",
+            fileExtension: "md",
+            text: text,
+            byteCount: Data(text.utf8).count
+        )))
+        #expect(probe.lookupCount == 2)
+        #expect(probe.readCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("a pre-cancelled request performs no bundle access")
+    func preCancellation() async throws {
+        let requestID = UUID()
+        let probe = BundleTextResourceAccessProbe(urls: [:], data: Data())
+        let service = BundleTextResourceService(access: BundleTextResourceAccess(
+            resourceURL: probe.resourceURL,
+            read: probe.read
+        ))
+        let task = Task {
+            await Task.yield()
+            return try await service.loadText(
+                resourceName: "Unused",
+                fileExtensions: ["txt", "md"],
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        let result = try await task.value
+
+        #expect(result == .cancelled(requestID: requestID, completedAccessCount: 0))
+        #expect(probe.lookupCount == 0)
+        #expect(probe.readCount == 0)
+    }
+
+    @Test("cancellation during a non-preemptible read publishes no text")
+    func cancellationAfterRead() async throws {
+        let requestID = UUID()
+        let resourceURL = URL(fileURLWithPath: "/virtual/slow.txt")
+        let service = BundleTextResourceService(access: BundleTextResourceAccess(
+            resourceURL: { _, _ in resourceURL },
+            read: { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return Data("complete bytes".utf8)
+            }
+        ))
+
+        let result = try await Task {
+            try await service.loadText(
+                resourceName: "Slow",
+                fileExtensions: ["txt"],
+                requestID: requestID
+            )
+        }.value
+
+        #expect(result == .cancelled(requestID: requestID, completedAccessCount: 2))
+    }
+
+    @Test("Licenses settings owns request lifetime and performs no direct file read")
+    func licensesSettingsSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/LicensesSettingsView.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func loadLicenseText("))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n    private func licenseText("))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+
+        #expect(source.contains("@State private var licenseLoadTasks: [String: Task<Void, Never>]"))
+        #expect(source.contains("@State private var licenseLoadRequestIDs: [String: UUID]"))
+        #expect(functionSource.contains("try await BundleTextResourceService.shared.loadText("))
+        #expect(functionSource.contains("guard licenseLoadRequestIDs[resource] == requestID else { return }"))
+        #expect(source.contains(".onDisappear {\n            cancelLicenseLoads()"))
+        #expect(source.contains("task.cancel()"))
+        #expect(!functionSource.contains("String(contentsOf:"))
+        #expect(!functionSource.contains("Data(contentsOf:"))
+    }
+}
+
+private nonisolated final class BundleTextResourceAccessProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let urls: [String: URL]
+    private let data: Data
+    private var lookups = 0
+    private var reads = 0
+    private var observedMainThread = false
+
+    init(urls: [String: URL], data: Data) {
+        self.urls = urls
+        self.data = data
+    }
+
+    func resourceURL(name: String, fileExtension: String) -> URL? {
+        lock.withLock {
+            lookups += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return urls["\(name).\(fileExtension)"]
+    }
+
+    func read(url: URL) throws -> Data {
+        _ = url
+        lock.withLock {
+            reads += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return data
+    }
+
+    var lookupCount: Int { lock.withLock { lookups } }
+    var readCount: Int { lock.withLock { reads } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
 @Suite("User-selected text export filesystem boundary")
 struct TextFileExportServiceTests {
     @Test("atomic UTF-8 export commits away from the main actor with immutable evidence")

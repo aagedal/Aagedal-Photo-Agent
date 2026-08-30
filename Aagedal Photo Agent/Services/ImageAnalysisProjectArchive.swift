@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import UniformTypeIdentifiers
 
 extension UTType {
@@ -15,7 +16,7 @@ extension UTType {
 /// folder-local Photo Agent documents needed to continue an investigation. A manifest
 /// records every payload file and its SHA-256 so import can validate the complete archive
 /// before writing anything into the chosen destination.
-enum ImageAnalysisProjectArchive {
+nonisolated enum ImageAnalysisProjectArchive {
     static let currentSchemaVersion = 1
 
     nonisolated enum FileKind: String, Codable, Sendable {
@@ -105,6 +106,8 @@ enum ImageAnalysisProjectArchive {
         (".photo_versions", .developVersionMetadata),
     ]
 
+    private static let service = ImageAnalysisProjectArchiveService.shared
+
     @discardableResult
     static func export(
         sourceFolderURL: URL,
@@ -114,6 +117,28 @@ enum ImageAnalysisProjectArchive {
         appVersion: String,
         appBuild: String
     ) async throws -> Manifest {
+        let commit = try await service.export(ImageAnalysisProjectArchiveExportRequest(
+            requestID: UUID(),
+            sourceFolderURL: sourceFolderURL,
+            imageURLs: imageURLs,
+            title: title,
+            destinationURL: destinationURL,
+            appVersion: appVersion,
+            appBuild: appBuild
+        ))
+        return commit.manifest
+    }
+
+    static func performExport(
+        _ request: ImageAnalysisProjectArchiveExportRequest
+    ) throws -> ImageAnalysisProjectArchiveExportCommit {
+        try Task.checkCancellation()
+        let sourceFolderURL = request.sourceFolderURL
+        let imageURLs = request.imageURLs
+        let title = request.title
+        let destinationURL = request.destinationURL
+        let appVersion = request.appVersion
+        let appBuild = request.appBuild
         let sourceRoot = sourceFolderURL.resolvingSymlinksInPath().standardizedFileURL
         let images = try normalizedImageURLs(imageURLs, inside: sourceRoot)
         guard !images.isEmpty else { throw ArchiveError.noImages }
@@ -127,7 +152,7 @@ enum ImageAnalysisProjectArchive {
         var entries: [Manifest.File] = []
         for imageURL in images {
             try Task.checkCancellation()
-            try await stageFile(
+            try stageFile(
                 at: imageURL,
                 relativePath: imageURL.lastPathComponent,
                 kind: .image,
@@ -137,7 +162,7 @@ enum ImageAnalysisProjectArchive {
 
             let xmpURL = imageURL.deletingPathExtension().appendingPathExtension("xmp")
             if FileManager.default.fileExists(atPath: xmpURL.path) {
-                try await stageFile(
+                try stageFile(
                     at: xmpURL,
                     relativePath: xmpURL.lastPathComponent,
                     kind: .xmpSidecar,
@@ -158,7 +183,7 @@ enum ImageAnalysisProjectArchive {
                 guard let suffix = relativePath(of: fileURL, inside: directoryURL) else {
                     throw ArchiveError.invalidSource(fileURL.lastPathComponent)
                 }
-                try await stageFile(
+                try stageFile(
                     at: fileURL,
                     relativePath: "\(metadataDirectory.name)/\(suffix)",
                     kind: metadataDirectory.kind,
@@ -191,15 +216,29 @@ enum ImageAnalysisProjectArchive {
         decoder.dateDecodingStrategy = .iso8601
         let persistedManifest = try decoder.decode(Manifest.self, from: encodedManifest)
 
-        try createZipAtomically(from: stagingRoot, at: destinationURL)
-        return persistedManifest
+        let cancellationObservedAfterCommit = try createZipAtomically(
+            from: stagingRoot,
+            at: destinationURL
+        )
+        return ImageAnalysisProjectArchiveExportCommit(
+            requestID: request.requestID,
+            manifest: persistedManifest,
+            destinationURL: destinationURL.standardizedFileURL,
+            cancellationObservedAfterCommit: cancellationObservedAfterCommit
+        )
     }
 
     static func inspect(_ archiveURL: URL) async throws -> Preview {
+        try await service.inspect(archiveURL)
+    }
+
+    static func performInspection(_ archiveURL: URL) throws -> Preview {
+        try Task.checkCancellation()
         let extracted = try extractArchive(archiveURL)
         defer { try? FileManager.default.removeItem(at: extracted.stagingRoot) }
         let manifest = try readManifest(in: extracted.archiveRoot)
-        try await validatePayload(manifest: manifest, archiveRoot: extracted.archiveRoot)
+        try validatePayload(manifest: manifest, archiveRoot: extracted.archiveRoot)
+        try Task.checkCancellation()
         return Preview(
             title: manifest.title,
             exportedAt: manifest.exportedAt,
@@ -215,10 +254,26 @@ enum ImageAnalysisProjectArchive {
         to destinationURL: URL,
         installStaging: (@Sendable (URL, URL, Bool) throws -> Void)? = nil
     ) async throws -> Manifest {
+        let commit = try await service.importProject(ImageAnalysisProjectArchiveImportRequest(
+            requestID: UUID(),
+            archiveURL: archiveURL,
+            destinationURL: destinationURL,
+            installStaging: installStaging
+        ))
+        return commit.manifest
+    }
+
+    static func performImport(
+        _ request: ImageAnalysisProjectArchiveImportRequest
+    ) throws -> ImageAnalysisProjectArchiveImportCommit {
+        try Task.checkCancellation()
+        let archiveURL = request.archiveURL
+        let destinationURL = request.destinationURL
+        let installStaging = request.installStaging
         let extracted = try extractArchive(archiveURL)
         defer { try? FileManager.default.removeItem(at: extracted.stagingRoot) }
         let manifest = try readManifest(in: extracted.archiveRoot)
-        try await validatePayload(manifest: manifest, archiveRoot: extracted.archiveRoot)
+        try validatePayload(manifest: manifest, archiveRoot: extracted.archiveRoot)
 
         let destination = destinationURL.standardizedFileURL
         let destinationExisted = FileManager.default.fileExists(atPath: destination.path)
@@ -252,6 +307,7 @@ enum ImageAnalysisProjectArchive {
             finalDestination: destination,
             manifest: manifest
         )
+        try Task.checkCancellation()
         if let installStaging {
             try installStaging(importStaging, destination, destinationExisted)
         } else {
@@ -261,7 +317,13 @@ enum ImageAnalysisProjectArchive {
                 replacingEmptyDestination: destinationExisted
             )
         }
-        return manifest
+        return ImageAnalysisProjectArchiveImportCommit(
+            requestID: request.requestID,
+            manifest: manifest,
+            destinationURL: destination,
+            replacedEmptyDestination: destinationExisted,
+            cancellationObservedAfterCommit: Task.isCancelled
+        )
     }
 
     /// Commits the fully validated import in one filesystem operation. In particular, an empty
@@ -300,6 +362,7 @@ enum ImageAnalysisProjectArchive {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
         for entry in caseEntries {
+            try Task.checkCancellation()
             guard let caseURL = safeURL(for: entry.path, inside: importedRoot) else {
                 throw ArchiveError.unsafePath(entry.path)
             }
@@ -333,6 +396,7 @@ enum ImageAnalysisProjectArchive {
         var seen: Set<URL> = []
         var result: [URL] = []
         for url in urls {
+            try Task.checkCancellation()
             let resolved = url.resolvingSymlinksInPath().standardizedFileURL
             guard resolved.deletingLastPathComponent() == root else {
                 throw ArchiveError.sourceOutsideWorkingFolder(url.lastPathComponent)
@@ -355,6 +419,7 @@ enum ImageAnalysisProjectArchive {
         ) else { return [] }
         var files: [URL] = []
         for case let url as URL in enumerator {
+            try Task.checkCancellation()
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             if values.isSymbolicLink == true {
                 enumerator.skipDescendants()
@@ -381,7 +446,7 @@ enum ImageAnalysisProjectArchive {
         kind: FileKind,
         payloadRoot: URL,
         entries: inout [Manifest.File]
-    ) async throws {
+    ) throws {
         if entries.contains(where: { $0.path == relativePath }) { return }
         guard let target = safeURL(for: relativePath, inside: payloadRoot) else {
             throw ArchiveError.unsafePath(relativePath)
@@ -396,7 +461,7 @@ enum ImageAnalysisProjectArchive {
             withIntermediateDirectories: true
         )
         try FileManager.default.copyItem(at: source, to: target)
-        let digest = try await HashStream.hashFile(at: target).lowercaseHexString
+        let digest = try hashFile(at: target).lowercaseHexString
         entries.append(Manifest.File(
             path: relativePath,
             kind: kind,
@@ -405,7 +470,8 @@ enum ImageAnalysisProjectArchive {
         ))
     }
 
-    private static func validatePayload(manifest: Manifest, archiveRoot: URL) async throws {
+    private static func validatePayload(manifest: Manifest, archiveRoot: URL) throws {
+        try Task.checkCancellation()
         let payloadRoot = archiveRoot.appendingPathComponent(payloadDirectoryName, isDirectory: true)
         let declaredPaths = Set(manifest.files.map(\.path))
         guard declaredPaths.count == manifest.files.count else {
@@ -434,7 +500,7 @@ enum ImageAnalysisProjectArchive {
             guard values.fileSize.map(Int64.init) == entry.byteCount else {
                 throw ArchiveError.fileSizeMismatch(entry.path)
             }
-            let digest = try await HashStream.hashFile(at: fileURL).lowercaseHexString
+            let digest = try hashFile(at: fileURL).lowercaseHexString
             guard digest == entry.sha256.lowercased() else {
                 throw ArchiveError.checksumMismatch(entry.path)
             }
@@ -447,6 +513,7 @@ enum ImageAnalysisProjectArchive {
                 throw ArchiveError.unexpectedPayloadFile(suffix)
             }
         }
+        try Task.checkCancellation()
     }
 
     private static func safeURL(for relativePath: String, inside root: URL) -> URL? {
@@ -484,17 +551,37 @@ enum ImageAnalysisProjectArchive {
         }
     }
 
-    private static func createZipAtomically(from source: URL, at destination: URL) throws {
+    private static func hashFile(at url: URL, chunkSize: Int = 1 << 20) throws -> Data {
+        precondition(chunkSize > 0)
+        try Task.checkCancellation()
+
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while true {
+            try Task.checkCancellation()
+            guard let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty else { break }
+            hasher.update(data: chunk)
+        }
+        return Data(hasher.finalize())
+    }
+
+    /// Builds into a sibling temporary file and checks cancellation before the single durable
+    /// replace/move. Cancellation observed after that operation is returned as commit evidence.
+    private static func createZipAtomically(from source: URL, at destination: URL) throws -> Bool {
         let parent = destination.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         let temporary = parent.appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).partial")
         defer { try? FileManager.default.removeItem(at: temporary) }
         try runDitto(["-c", "-k", "--keepParent", source.path, temporary.path])
+        try Task.checkCancellation()
         if FileManager.default.fileExists(atPath: destination.path) {
             _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
         } else {
             try FileManager.default.moveItem(at: temporary, to: destination)
         }
+        return Task.isCancelled
     }
 
     private static func extractArchive(_ source: URL) throws -> (stagingRoot: URL, archiveRoot: URL) {
@@ -533,6 +620,7 @@ enum ImageAnalysisProjectArchive {
     }
 
     private static func runDitto(_ arguments: [String]) throws {
+        try Task.checkCancellation()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = arguments
@@ -541,5 +629,108 @@ enum ImageAnalysisProjectArchive {
         guard process.terminationStatus == 0 else {
             throw ArchiveError.archiveCommandFailed(process.terminationStatus)
         }
+    }
+}
+
+nonisolated struct ImageAnalysisProjectArchiveExportRequest: Sendable {
+    let requestID: UUID
+    let sourceFolderURL: URL
+    let imageURLs: [URL]
+    let title: String
+    let destinationURL: URL
+    let appVersion: String
+    let appBuild: String
+}
+
+nonisolated struct ImageAnalysisProjectArchiveImportRequest: Sendable {
+    let requestID: UUID
+    let archiveURL: URL
+    let destinationURL: URL
+    let installStaging: (@Sendable (URL, URL, Bool) throws -> Void)?
+}
+
+/// Immutable evidence that the archive's sibling temporary file was durably installed. A task
+/// cancelled during the non-preemptible final move still receives a committed result.
+nonisolated struct ImageAnalysisProjectArchiveExportCommit: Equatable, Sendable {
+    let requestID: UUID
+    let manifest: ImageAnalysisProjectArchive.Manifest
+    let destinationURL: URL
+    let cancellationObservedAfterCommit: Bool
+}
+
+/// Immutable evidence that a fully validated import staging directory was installed. Cancellation
+/// is checked immediately before the install; after that point the commit is reported truthfully.
+nonisolated struct ImageAnalysisProjectArchiveImportCommit: Equatable, Sendable {
+    let requestID: UUID
+    let manifest: ImageAnalysisProjectArchive.Manifest
+    let destinationURL: URL
+    let replacedEmptyDestination: Bool
+    let cancellationObservedAfterCommit: Bool
+}
+
+/// Injectable whole-operation boundary used to verify executor and serialization behavior without
+/// depending on real volume speed. Production closures own every synchronous Foundation/Process call.
+nonisolated struct ImageAnalysisProjectArchiveIO: Sendable {
+    let export: @Sendable (
+        ImageAnalysisProjectArchiveExportRequest
+    ) throws -> ImageAnalysisProjectArchiveExportCommit
+    let inspect: @Sendable (URL) throws -> ImageAnalysisProjectArchive.Preview
+    let importProject: @Sendable (
+        ImageAnalysisProjectArchiveImportRequest
+    ) throws -> ImageAnalysisProjectArchiveImportCommit
+
+    static let system = ImageAnalysisProjectArchiveIO(
+        export: { try ImageAnalysisProjectArchive.performExport($0) },
+        inspect: { try ImageAnalysisProjectArchive.performInspection($0) },
+        importProject: { try ImageAnalysisProjectArchive.performImport($0) }
+    )
+}
+
+/// Serializes complete project archive reads, enumerations, staging writes, subprocess waits, and
+/// final commits away from MainActor. Methods intentionally contain no suspension point once their
+/// synchronous operation begins, so a second archive workflow cannot interleave at a hash boundary.
+actor ImageAnalysisProjectArchiveService {
+    static let shared = ImageAnalysisProjectArchiveService()
+
+    private let io: ImageAnalysisProjectArchiveIO
+
+    init(io: ImageAnalysisProjectArchiveIO = .system) {
+        self.io = io
+    }
+
+    func export(
+        _ request: ImageAnalysisProjectArchiveExportRequest
+    ) throws -> ImageAnalysisProjectArchiveExportCommit {
+        try Task.checkCancellation()
+        let commit = try io.export(request)
+        guard Task.isCancelled, !commit.cancellationObservedAfterCommit else { return commit }
+        return ImageAnalysisProjectArchiveExportCommit(
+            requestID: commit.requestID,
+            manifest: commit.manifest,
+            destinationURL: commit.destinationURL,
+            cancellationObservedAfterCommit: true
+        )
+    }
+
+    func inspect(_ archiveURL: URL) throws -> ImageAnalysisProjectArchive.Preview {
+        try Task.checkCancellation()
+        let preview = try io.inspect(archiveURL)
+        try Task.checkCancellation()
+        return preview
+    }
+
+    func importProject(
+        _ request: ImageAnalysisProjectArchiveImportRequest
+    ) throws -> ImageAnalysisProjectArchiveImportCommit {
+        try Task.checkCancellation()
+        let commit = try io.importProject(request)
+        guard Task.isCancelled, !commit.cancellationObservedAfterCommit else { return commit }
+        return ImageAnalysisProjectArchiveImportCommit(
+            requestID: commit.requestID,
+            manifest: commit.manifest,
+            destinationURL: commit.destinationURL,
+            replacedEmptyDestination: commit.replacedEmptyDestination,
+            cancellationObservedAfterCommit: true
+        )
     }
 }

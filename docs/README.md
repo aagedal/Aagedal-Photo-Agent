@@ -231,6 +231,12 @@ color-LUT import with explicit cancellation and stale-result rejection. The curr
 tests in 193 suites; remaining filesystem inventory, real-volume/Thread Performance Checker evidence, broader
 Develop ownership, and manual/external gates keep the audit at 63 of 75.
 
+The latest [archive, roster, license, and crop continuation](plan-status-archive-roster-crop-continuation-2026-08-30.md)
+records serialized Image Analysis project archives, match-roster persistence, bundled license-text loading,
+and the Develop crop-session state owner. After disabling a stalled parallel Xcode test worker, the combined
+four-suite selection passed 21 focused tests and the serial unfiltered result recorded 1,817 expanded cases
+across 196 named suites. The broad audit remains 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.
