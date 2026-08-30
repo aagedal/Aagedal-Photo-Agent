@@ -161,18 +161,21 @@ final class ImportViewModel {
     @ObservationIgnored private let copyService = ImportCopyService()
     @ObservationIgnored private let sourceDiscoveryService = ImportSourceDiscoveryService()
     @ObservationIgnored private let preflightService: ImportPreflightService
+    @ObservationIgnored private let directoryService: ExportDirectoryService
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
     init(
         readService: SwiftExifReadService,
         writeEngine: any MetadataWriteEngine,
         activityHistory: ActivityHistoryStore? = nil,
-        preflightService: ImportPreflightService = ImportPreflightService()
+        preflightService: ImportPreflightService = ImportPreflightService(),
+        directoryService: ExportDirectoryService = .shared
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
         self.activityHistory = activityHistory
         self.preflightService = preflightService
+        self.directoryService = directoryService
 
         // Restore last-used verification mode (default = .on).
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importVerificationMode),
@@ -941,6 +944,7 @@ final class ImportViewModel {
         let skipPreviouslyImported = configuration.skipPreviouslyImported
         let copyService = self.copyService
         let preflightService = self.preflightService
+        let directoryService = self.directoryService
         let imageSources = Set(filesToCopy)
         let voiceMemoAssociationsToPersist = selectedVoiceMemoAssociations
         let primarySourceURL = configuration.sourceURL
@@ -966,7 +970,6 @@ final class ImportViewModel {
             }
 
             do {
-                let fm = FileManager.default
                 let bundlePlanning = await preflightService.resolveBundleDestinations(
                     bundleRequests,
                     policy: conflictPolicy
@@ -1088,16 +1091,28 @@ final class ImportViewModel {
                     try ImportCopyService.validateOverwritePreflight(jobs: jobsToRun)
                 }
 
-                for folder in allFolders {
-                    try Task.checkCancellation()
-                    try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-                }
-
                 // The browser must never receive a folder URL before that folder exists.
-                // Publish only after the frozen collision set has been validated and the
-                // exact reveal target exists.
+                // Freeze a deterministic directory batch and publish only after its
+                // serialized commit reports complete evidence. Cancellation or failure
+                // retains the exact durable prefix instead of implying a rollback.
+                var directoriesToPrepare = allFolders.sorted { $0.path < $1.path }
+                if !directoriesToPrepare.contains(folderToOpen) {
+                    directoriesToPrepare.append(folderToOpen)
+                }
+                let directoryResult = await directoryService.ensureDirectories(
+                    at: directoriesToPrepare
+                )
+                switch directoryResult {
+                case .complete(let committedDirectoryURLs):
+                    guard committedDirectoryURLs.count == directoriesToPrepare.count else {
+                        throw ImportDirectoryPreparationError.incompleteEvidence
+                    }
+                case .cancelled:
+                    throw CancellationError()
+                case .failed(_, let message):
+                    throw ImportDirectoryPreparationError.failed(message)
+                }
                 try Task.checkCancellation()
-                try fm.createDirectory(at: folderToOpen, withIntermediateDirectories: true)
                 await MainActor.run {
                     guard self.importRequestID == requestID else { return }
                     NotificationCenter.default.post(name: .importStarted, object: folderToOpen)
@@ -1388,6 +1403,20 @@ final class ImportViewModel {
                 return "Voice memo destination planning did not complete. No files were imported."
             case .voiceMemoDestinationEscaped:
                 return "A voice memo destination resolves outside the selected destination."
+            }
+        }
+    }
+
+    private enum ImportDirectoryPreparationError: LocalizedError {
+        case incompleteEvidence
+        case failed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .incompleteEvidence:
+                return "Destination-folder preparation returned incomplete evidence. No files were imported."
+            case .failed(let message):
+                return "Could not prepare the import destination: \(message)"
             }
         }
     }

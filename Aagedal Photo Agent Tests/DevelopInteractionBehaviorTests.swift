@@ -621,7 +621,7 @@ struct ColorLUTImportServiceTests {
         ))
     }
 
-    @Test("the edit workspace owns LUT request lifetime and rejects stale completion")
+    @Test("the edit workspace delegates LUT request lifetime and persistence intent")
     func editWorkspaceSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -637,16 +637,152 @@ struct ColorLUTImportServiceTests {
         let functionEnd = try #require(suffix.range(of: "\n    // MARK: - AI subject/object mask"))
         let functionSource = String(suffix[..<functionEnd.lowerBound])
 
-        #expect(source.contains("@State private var colorLUTImportTask: Task<Void, Never>?"))
-        #expect(source.contains("@State private var colorLUTImportRequestID: UUID?"))
+        #expect(source.contains(
+            "@State private var colorLUTImport = DevelopColorLUTImportCoordinator()"
+        ))
+        #expect(source.contains("colorLUTImport.beginImageSession(selectedImageURL)"))
+        #expect(source.contains("colorLUTImport.endImageSession()"))
+        #expect(source.contains("colorLUTImport.requestImport(for: layerID)"))
+        #expect(functionSource.contains("colorLUTImport.acceptSelection("))
         #expect(functionSource.contains("try await ColorLUTImportService.shared.loadLUT("))
-        #expect(functionSource.contains("guard colorLUTImportRequestID == requestID else { return }"))
-        #expect(functionSource.contains("case .cancelledBeforeRead, .cancelledAfterRead:"))
+        #expect(functionSource.contains("intent.layerID"))
+        #expect(functionSource.contains("intent.displayName"))
+        #expect(functionSource.contains("commitEditAdjustments()"))
         #expect(!functionSource.contains("Data(contentsOf:"))
-        #expect(source.contains("private func beginColorLUTImport(for layerID: UUID) {\n        cancelColorLUTImport()"))
-        #expect(source.contains("if oldURL != newURL {\n                cancelColorLUTImport()"))
-        #expect(source.contains("private func handleEditWorkspaceDisappear() {"))
-        #expect(source.contains("exportSession.endWorkspaceSession()\n        cancelColorLUTImport()"))
+        #expect(!source.contains("@State private var colorLUTImportTask"))
+        #expect(!source.contains("@State private var colorLUTImportRequestID"))
+        #expect(!source.contains("@State private var importingLUTForLayerID"))
+    }
+
+    @Test("coordinator publishes parsed LUT persistence intent and balances URL access")
+    @MainActor
+    func coordinatorPublishesPersistenceIntent() async throws {
+        let source = URL(fileURLWithPath: "/virtual/editorial.cube")
+        let image = URL(fileURLWithPath: "/virtual/image.nef")
+        let layerID = UUID()
+        let data = Self.validCube(title: "  Editorial  ")
+        var starts: [URL] = []
+        var stops: [URL] = []
+        var intents: [DevelopColorLUTPersistenceIntent] = []
+        let coordinator = DevelopColorLUTImportCoordinator(
+            securityScope: DevelopColorLUTSecurityScope(
+                start: { starts.append($0); return true },
+                stop: { stops.append($0) }
+            )
+        )
+
+        coordinator.beginImageSession(image)
+        #expect(coordinator.requestImport(for: layerID))
+        // Mirrors SwiftUI dismissing the panel immediately before delivering its callback.
+        coordinator.setImporterPresented(false)
+        coordinator.acceptSelection(
+            .success([source]),
+            load: { url, requestID in
+                .loaded(ColorLUTImportSnapshot(
+                    requestID: requestID,
+                    sourceURL: url,
+                    data: data,
+                    byteCount: data.count
+                ))
+            },
+            parse: CubeLUTParser.parse,
+            publisher: { intents.append($0) }
+        )
+
+        try await eventually { !coordinator.isImporting }
+        #expect(starts == [source])
+        #expect(stops == [source])
+        #expect(intents == [DevelopColorLUTPersistenceIntent(
+            layerID: layerID,
+            displayName: "Editorial",
+            data: data
+        )])
+        #expect(coordinator.errorMessage == nil)
+        #expect(coordinator.targetLayerID == nil)
+    }
+
+    @Test("image replacement rejects a non-cooperative LUT completion")
+    @MainActor
+    func coordinatorRejectsPreviousImageCompletion() async throws {
+        let firstImage = URL(fileURLWithPath: "/virtual/first.nef")
+        let secondImage = URL(fileURLWithPath: "/virtual/second.nef")
+        let source = URL(fileURLWithPath: "/virtual/slow.cube")
+        let data = Self.validCube(title: nil)
+        var intents: [DevelopColorLUTPersistenceIntent] = []
+        let coordinator = DevelopColorLUTImportCoordinator()
+
+        coordinator.beginImageSession(firstImage)
+        #expect(coordinator.requestImport(for: UUID()))
+        coordinator.acceptSelection(
+            .success([source]),
+            load: { url, requestID in
+                // Deliberately ignore cooperative cancellation to exercise request identity.
+                try? await Task.sleep(for: .milliseconds(60))
+                return .loaded(ColorLUTImportSnapshot(
+                    requestID: requestID,
+                    sourceURL: url,
+                    data: data,
+                    byteCount: data.count
+                ))
+            },
+            parse: CubeLUTParser.parse,
+            publisher: { intents.append($0) }
+        )
+        await Task.yield()
+        coordinator.beginImageSession(secondImage)
+
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(intents.isEmpty)
+        #expect(coordinator.imageURL == secondImage)
+        #expect(!coordinator.isImporting)
+        #expect(coordinator.errorMessage == nil)
+    }
+
+    @Test("cancelled service evidence requests no persistence")
+    @MainActor
+    func coordinatorHonorsCancellationEvidence() async throws {
+        let image = URL(fileURLWithPath: "/virtual/image.nef")
+        let source = URL(fileURLWithPath: "/virtual/cancelled.cube")
+        var intents: [DevelopColorLUTPersistenceIntent] = []
+        let coordinator = DevelopColorLUTImportCoordinator()
+
+        coordinator.beginImageSession(image)
+        #expect(coordinator.requestImport(for: UUID()))
+        coordinator.acceptSelection(
+            .success([source]),
+            load: { _, requestID in .cancelledBeforeRead(requestID: requestID) },
+            parse: { _ in Issue.record("Cancelled input must not be parsed"); throw ColorLUTImportProbeError.timedOut },
+            publisher: { intents.append($0) }
+        )
+
+        try await eventually { !coordinator.isImporting }
+        #expect(intents.isEmpty)
+        #expect(coordinator.errorMessage == nil)
+    }
+
+    private static func validCube(title: String?) -> Data {
+        let titleLine = title.map { "TITLE \"\($0)\"\n" } ?? ""
+        let rows = [
+            "0 0 0", "1 0 0", "0 1 0", "1 1 0",
+            "0 0 1", "1 0 1", "0 1 1", "1 1 1",
+        ].joined(separator: "\n")
+        return Data("\(titleLine)LUT_3D_SIZE 2\n\(rows)\n".utf8)
+    }
+
+    @MainActor
+    private func eventually(
+        timeout: Duration = .seconds(5),
+        condition: @escaping @MainActor () -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition() {
+            guard clock.now < deadline else {
+                Issue.record("Timed out waiting for Color LUT import state")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 }
 

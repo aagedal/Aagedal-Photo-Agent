@@ -743,6 +743,29 @@ private nonisolated struct AnalysisExportFixture {
 
 @Suite("Export directory filesystem boundary")
 struct ExportDirectoryServiceTests {
+    @Test("Import destination folders use one serialized batch boundary")
+    func importDestinationSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/ImportViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "func startImport()"))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n    // MARK: - Capture Date Scanning"))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains("directoryService.ensureDirectories("))
+        #expect(functionSource.contains("case .cancelled:"))
+        #expect(functionSource.contains("case .failed(_, let message):"))
+        #expect(functionSource.contains("committedDirectoryURLs.count == directoriesToPrepare.count"))
+        #expect(!functionSource.contains("FileManager.default.createDirectory"))
+    }
+
     @Test("edited-folder backup prepares destinations through the serialized directory boundary")
     func editedFolderBackupSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -898,6 +921,69 @@ struct ExportDirectoryServiceTests {
         ))
         #expect(FileManager.default.fileExists(atPath: destination.path))
     }
+
+    @Test("batch creation returns the ordered durable directory set")
+    func batchComplete() async throws {
+        let fixture = try ExportDirectoryFixture()
+        defer { fixture.remove() }
+        let destinations = ["one", "two", "three"].map {
+            fixture.root.appendingPathComponent($0, isDirectory: true)
+        }
+        let service = ExportDirectoryService()
+
+        let result = await service.ensureDirectories(at: destinations)
+
+        #expect(result == .complete(committedDirectoryURLs: destinations))
+        #expect(destinations.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    @Test("batch cancellation retains the exact durable prefix")
+    func batchCancellationAfterCommit() async throws {
+        let fixture = try ExportDirectoryFixture()
+        defer { fixture.remove() }
+        let destinations = ["one", "two"].map {
+            fixture.root.appendingPathComponent($0, isDirectory: true)
+        }
+        let probe = BlockingExportDirectoryWriterProbe()
+        let service = ExportDirectoryService(writer: ExportDirectoryWriter(
+            ensureDirectory: probe.ensureDirectory
+        ))
+        let task = Task { await service.ensureDirectories(at: destinations) }
+        try await probe.waitUntilFirstCreationStarts()
+        task.cancel()
+        probe.releaseFirstCreation()
+
+        let result = await task.value
+
+        #expect(result == .cancelled(committedDirectoryURLs: [destinations[0]]))
+        #expect(FileManager.default.fileExists(atPath: destinations[0].path))
+        #expect(!FileManager.default.fileExists(atPath: destinations[1].path))
+    }
+
+    @Test("batch failure retains the exact durable prefix")
+    func batchFailureAfterCommit() async throws {
+        let fixture = try ExportDirectoryFixture()
+        defer { fixture.remove() }
+        let destinations = ["one", "two", "three"].map {
+            fixture.root.appendingPathComponent($0, isDirectory: true)
+        }
+        let probe = FailingExportDirectoryWriterProbe(failingInvocation: 2)
+        let service = ExportDirectoryService(writer: ExportDirectoryWriter(
+            ensureDirectory: probe.ensureDirectory
+        ))
+
+        let result = await service.ensureDirectories(at: destinations)
+
+        guard case .failed(let committed, let message) = result else {
+            Issue.record("Expected a failed batch result")
+            return
+        }
+        #expect(committed == [destinations[0]])
+        #expect(message.contains("deliberate"))
+        #expect(FileManager.default.fileExists(atPath: destinations[0].path))
+        #expect(!FileManager.default.fileExists(atPath: destinations[1].path))
+        #expect(!FileManager.default.fileExists(atPath: destinations[2].path))
+    }
 }
 
 private nonisolated final class ExportDirectoryWriterProbe: @unchecked Sendable {
@@ -919,6 +1005,32 @@ private nonisolated final class ExportDirectoryWriterProbe: @unchecked Sendable 
 
 private enum ExportDirectoryProbeError: Error {
     case timedOut
+    case deliberateFailure
+}
+
+private nonisolated final class FailingExportDirectoryWriterProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var invocationCount = 0
+    private let failingInvocation: Int
+
+    init(failingInvocation: Int) {
+        self.failingInvocation = failingInvocation
+    }
+
+    func ensureDirectory(at url: URL) throws {
+        let shouldFail = lock.withLock {
+            invocationCount += 1
+            return invocationCount == failingInvocation
+        }
+        if shouldFail {
+            throw NSError(
+                domain: "ExportDirectoryServiceTests.deliberate",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "deliberate directory failure"]
+            )
+        }
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    }
 }
 
 private nonisolated final class BlockingExportDirectoryWriterProbe: @unchecked Sendable {

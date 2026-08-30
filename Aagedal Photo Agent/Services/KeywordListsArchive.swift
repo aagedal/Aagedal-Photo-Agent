@@ -86,6 +86,102 @@ actor KeywordListsArchivePreviewService {
     }
 }
 
+// MARK: - Export commit boundary
+
+/// An immutable snapshot of one managed keyword-list file selected for export. Store lookup stays
+/// on MainActor; the archive actor receives only stable paths and manifest facts.
+nonisolated struct KeywordListsArchiveExportItem: Equatable, Sendable {
+    let sourceURL: URL
+    let relativePath: String
+    let kind: String
+    let entryCount: Int
+}
+
+nonisolated struct KeywordListsArchiveExportRequest: Equatable, Sendable {
+    let requestID: UUID
+    let destinationURL: URL
+    let items: [KeywordListsArchiveExportItem]
+}
+
+nonisolated struct KeywordListsArchiveExportCommit: Equatable, Sendable {
+    let requestID: UUID
+    let destinationURL: URL
+    let exportedFileCount: Int
+    /// Archive creation cannot be preempted once `ditto` or the final replacement has started.
+    /// A late cancellation therefore accompanies durable-success evidence instead of hiding it.
+    let cancellationObservedAfterCommit: Bool
+}
+
+/// Export is a single atomic destination transaction, so cancellation before commit leaves the
+/// previous destination untouched. There is no partial-destination state to publish.
+nonisolated enum KeywordListsArchiveExportResult: Equatable, Sendable {
+    case exported(KeywordListsArchiveExportCommit)
+    case cancelledBeforeCommit(
+        requestID: UUID,
+        destinationURL: URL,
+        preparedFileCount: Int
+    )
+}
+
+nonisolated struct KeywordListsArchiveExporter: Sendable {
+    let perform: @Sendable (KeywordListsArchiveExportRequest) throws -> KeywordListsArchiveExportResult
+
+    static let system = KeywordListsArchiveExporter { request in
+        try KeywordListsArchive.performExport(request)
+    }
+}
+
+/// Serializes staging, manifest I/O, `ditto`, and the atomic destination replacement away from
+/// MainActor. Immutable result evidence lets the sheet reject stale feedback without confusing a
+/// late cancellation with a destination that was never written.
+actor KeywordListsArchiveExportService {
+    static let shared = KeywordListsArchiveExportService()
+
+    private let exporter: KeywordListsArchiveExporter
+
+    init(exporter: KeywordListsArchiveExporter = .system) {
+        self.exporter = exporter
+    }
+
+    func export(
+        _ request: KeywordListsArchiveExportRequest
+    ) throws -> KeywordListsArchiveExportResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: request.requestID,
+                destinationURL: request.destinationURL,
+                preparedFileCount: 0
+            )
+        }
+
+        let didStartAccessing = request.destinationURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                request.destinationURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: request.requestID,
+                destinationURL: request.destinationURL,
+                preparedFileCount: 0
+            )
+        }
+
+        let result = try exporter.perform(request)
+        guard Task.isCancelled, case .exported(let commit) = result else {
+            return result
+        }
+        return .exported(KeywordListsArchiveExportCommit(
+            requestID: commit.requestID,
+            destinationURL: commit.destinationURL,
+            exportedFileCount: commit.exportedFileCount,
+            cancellationObservedAfterCommit: true
+        ))
+    }
+}
+
 // MARK: - Import commit boundary
 
 nonisolated enum KeywordListsArchiveImportMode: Equatable, Sendable {
@@ -304,29 +400,74 @@ enum KeywordListsArchive {
     /// actually written.
     @discardableResult
     static func exportSelected(_ keys: Set<KeywordListKey>, to destination: URL) throws -> Int {
+        let request = exportRequest(
+            for: keys,
+            destinationURL: destination,
+            requestID: UUID()
+        )
+        switch try performExport(request) {
+        case .exported(let commit):
+            return commit.exportedFileCount
+        case .cancelledBeforeCommit:
+            throw CancellationError()
+        }
+    }
+
+    /// Captures MainActor-owned store routing and entry counts before filesystem work crosses the
+    /// export actor. The canonical key ordering keeps manifests stable across runs.
+    static func exportRequest(
+        for keys: Set<KeywordListKey>,
+        destinationURL: URL,
+        requestID: UUID
+    ) -> KeywordListsArchiveExportRequest {
+        let store = KeywordListsStore.shared
+        let items = enumerateKeys().compactMap { key -> KeywordListsArchiveExportItem? in
+            guard keys.contains(key), store.exists(key) else { return nil }
+            return KeywordListsArchiveExportItem(
+                sourceURL: store.url(for: key),
+                relativePath: key.relativePath,
+                kind: kindString(for: key),
+                entryCount: entryCount(for: key, in: store)
+            )
+        }
+        return KeywordListsArchiveExportRequest(
+            requestID: requestID,
+            destinationURL: destinationURL,
+            items: items
+        )
+    }
+
+    /// Blocking transport-only export implementation used by the serialized actor. The zip is
+    /// built beside the requested destination and installed only after staging succeeds, so an
+    /// error or cancellation before replacement cannot expose a partial archive.
+    nonisolated static func performExport(
+        _ request: KeywordListsArchiveExportRequest
+    ) throws -> KeywordListsArchiveExportResult {
         let stagingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("klists-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: stagingRoot) }
         try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
 
         var files: [Manifest.File] = []
-        let store = KeywordListsStore.shared
-
-        // Iterate the canonical ordering so the archive is stable across runs
-        // (helps with diffs and snapshot-testing of export bundles).
-        for key in enumerateKeys() {
-            guard keys.contains(key), store.exists(key) else { continue }
-            let source = store.url(for: key)
-            let relPath = key.relativePath
-            let stagedURL = stagingRoot.appendingPathComponent(relPath)
+        for item in request.items {
+            guard !Task.isCancelled else {
+                return .cancelledBeforeCommit(
+                    requestID: request.requestID,
+                    destinationURL: request.destinationURL,
+                    preparedFileCount: files.count
+                )
+            }
+            let stagedURL = stagingRoot.appendingPathComponent(item.relativePath)
             try FileManager.default.createDirectory(
                 at: stagedURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try FileManager.default.copyItem(at: source, to: stagedURL)
-
-            let entryCount = entryCount(for: key, in: store)
-            files.append(Manifest.File(path: relPath, kind: kindString(for: key), entryCount: entryCount))
+            try FileManager.default.copyItem(at: item.sourceURL, to: stagedURL)
+            files.append(Manifest.File(
+                path: item.relativePath,
+                kind: item.kind,
+                entryCount: item.entryCount
+            ))
         }
 
         let manifest = Manifest(
@@ -340,8 +481,41 @@ enum KeywordListsArchive {
         let manifestData = try encoder.encode(manifest)
         try manifestData.write(to: stagingRoot.appendingPathComponent("manifest.json"))
 
-        try ditto(zip: stagingRoot, into: destination)
-        return files.count
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: request.requestID,
+                destinationURL: request.destinationURL,
+                preparedFileCount: files.count
+            )
+        }
+
+        let stagedArchive = request.destinationURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(request.destinationURL.lastPathComponent).\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: stagedArchive) }
+        try ditto(zip: stagingRoot, into: stagedArchive)
+
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: request.requestID,
+                destinationURL: request.destinationURL,
+                preparedFileCount: files.count
+            )
+        }
+
+        if FileManager.default.fileExists(atPath: request.destinationURL.path) {
+            _ = try FileManager.default.replaceItemAt(
+                request.destinationURL,
+                withItemAt: stagedArchive
+            )
+        } else {
+            try FileManager.default.moveItem(at: stagedArchive, to: request.destinationURL)
+        }
+        return .exported(KeywordListsArchiveExportCommit(
+            requestID: request.requestID,
+            destinationURL: request.destinationURL,
+            exportedFileCount: files.count,
+            cancellationObservedAfterCommit: Task.isCancelled
+        ))
     }
 
     /// Reads `source`'s manifest without importing anything, so the UI can
@@ -758,7 +932,7 @@ enum KeywordListsArchive {
         return stagingRoot
     }
 
-    private static func ditto(zip source: URL, into destination: URL) throws {
+    nonisolated private static func ditto(zip source: URL, into destination: URL) throws {
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }

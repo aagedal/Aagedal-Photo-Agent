@@ -6,6 +6,131 @@ import ImageIO
 import UniformTypeIdentifiers
 @testable import Aagedal_Photo_Agent
 
+@Suite("Full-screen image presentation filesystem boundary")
+struct FullScreenImagePresentationFactsServiceTests {
+    @Test("a complete immutable presentation snapshot is read away from MainActor")
+    @MainActor
+    func completeSnapshotRunsOffMainActor() async {
+        let imageURL = URL(fileURLWithPath: "/virtual/presentation.raw")
+        let requestID = UUID()
+        var cameraRaw = CameraRawSettings()
+        cameraRaw.exposure2012 = 1.25
+        let expected = FullScreenImagePresentationFactsAccess.Snapshot(
+            sidecarCameraRaw: cameraRaw,
+            sidecarOrientation: 8,
+            fileOrientation: 6,
+            pixelWidth: 6_000,
+            pixelHeight: 4_000
+        )
+        let probe = FullScreenImagePresentationFactsAccessProbe(snapshot: expected)
+        let service = FullScreenImagePresentationFactsService(access: .init(read: probe.read))
+
+        let result = await Task {
+            await service.load(imageURL: imageURL, requestID: requestID)
+        }.value
+
+        #expect(result == .loaded(FullScreenImagePresentationFacts(
+            requestID: requestID,
+            imageURL: imageURL,
+            sidecarCameraRaw: cameraRaw,
+            sidecarOrientation: 8,
+            fileOrientation: 6,
+            pixelWidth: 6_000,
+            pixelHeight: 4_000
+        )))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("pre-cancellation performs no synchronous presentation read")
+    func preCancellation() async {
+        let requestID = UUID()
+        let probe = FullScreenImagePresentationFactsAccessProbe(snapshot: .empty)
+        let service = FullScreenImagePresentationFactsService(access: .init(read: probe.read))
+        let task = Task {
+            await Task.yield()
+            return await service.load(
+                imageURL: URL(fileURLWithPath: "/virtual/cancelled.raw"),
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        #expect(await task.value == .cancelledBeforeRead(requestID: requestID))
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("cancellation during a non-preemptible presentation read is explicit")
+    func cancellationAfterRead() async {
+        let imageURL = URL(fileURLWithPath: "/virtual/slow.raw")
+        let requestID = UUID()
+        let service = FullScreenImagePresentationFactsService(access: .init { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return .empty
+        })
+
+        let result = await Task {
+            await service.load(imageURL: imageURL, requestID: requestID)
+        }.value
+
+        #expect(result == .cancelledAfterRead(requestID: requestID, imageURL: imageURL))
+    }
+
+    @Test("full-screen view awaits the service and rejects stale publication")
+    func fullScreenViewSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/FullScreenImageView.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func loadImage() async"))
+        let functionSource = String(source[functionStart.lowerBound...])
+
+        #expect(functionSource.contains("await FullScreenImagePresentationFactsService.shared.load("))
+        #expect(functionSource.contains("self.presentationFactsRequestID == presentationFactsRequestID"))
+        #expect(functionSource.contains("renderGeneration == expectedGeneration"))
+        #expect(!functionSource.contains("XMPSidecarService().loadSidecar(for: url)"))
+        #expect(!functionSource.contains("CGImageSourceCreateWithURL(url as CFURL, nil)"))
+    }
+}
+
+private extension FullScreenImagePresentationFactsAccess.Snapshot {
+    nonisolated static let empty = Self(
+        sidecarCameraRaw: nil,
+        sidecarOrientation: nil,
+        fileOrientation: nil,
+        pixelWidth: nil,
+        pixelHeight: nil
+    )
+}
+
+private nonisolated final class FullScreenImagePresentationFactsAccessProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let snapshot: FullScreenImagePresentationFactsAccess.Snapshot
+    private var count = 0
+    private var observedMainThread = false
+
+    init(snapshot: FullScreenImagePresentationFactsAccess.Snapshot) {
+        self.snapshot = snapshot
+    }
+
+    func read(imageURL: URL) -> FullScreenImagePresentationFactsAccess.Snapshot {
+        _ = imageURL
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return snapshot
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
 @Suite("FullScreenImageCache")
 struct FullScreenImageCacheTests {
 

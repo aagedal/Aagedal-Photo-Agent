@@ -4,6 +4,99 @@ import os.log
 
 nonisolated private let cacheLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FullScreenCache")
 
+/// Immutable filesystem evidence needed before the full-screen viewer starts a decode. Reading
+/// the sidecar and image header together keeps the edit settings, display orientation, file
+/// orientation, and dimensions on one serialized boundary instead of interleaving UI-owned reads.
+nonisolated struct FullScreenImagePresentationFacts: Equatable, Sendable {
+    let requestID: UUID
+    let imageURL: URL
+    let sidecarCameraRaw: CameraRawSettings?
+    let sidecarOrientation: Int?
+    let fileOrientation: Int?
+    let pixelWidth: Int?
+    let pixelHeight: Int?
+}
+
+nonisolated enum FullScreenImagePresentationFactsResult: Equatable, Sendable {
+    case loaded(FullScreenImagePresentationFacts)
+    case cancelledBeforeRead(requestID: UUID)
+    case cancelledAfterRead(requestID: UUID, imageURL: URL)
+}
+
+nonisolated struct FullScreenImagePresentationFactsAccess: Sendable {
+    struct Snapshot: Equatable, Sendable {
+        let sidecarCameraRaw: CameraRawSettings?
+        let sidecarOrientation: Int?
+        let fileOrientation: Int?
+        let pixelWidth: Int?
+        let pixelHeight: Int?
+    }
+
+    let read: @Sendable (URL) -> Snapshot
+
+    static let system = FullScreenImagePresentationFactsAccess { imageURL in
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        let properties: [CFString: Any]? = {
+            guard let source = CGImageSourceCreateWithURL(imageURL as CFURL, options) else {
+                return nil
+            }
+            return CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any]
+        }()
+        let pixelWidth = (properties?[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue
+        let pixelHeight = (properties?[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue
+        let fileOrientation = (properties?[kCGImagePropertyOrientation] as? NSNumber)?.intValue
+
+        let sidecarService = XMPSidecarService()
+        let sidecarMetadata = sidecarService.sidecarDataIfExists(for: imageURL).flatMap { data in
+            sidecarService.loadSidecar(fromData: data) {
+                guard let pixelWidth, let pixelHeight, pixelHeight > 0 else { return nil }
+                return Double(pixelWidth) / Double(pixelHeight)
+            }
+        }
+        return Snapshot(
+            sidecarCameraRaw: sidecarMetadata?.cameraRaw,
+            sidecarOrientation: sidecarMetadata?.exifOrientation,
+            fileOrientation: fileOrientation,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight
+        )
+    }
+}
+
+/// Serializes the synchronous XMP and ImageIO header reads used to start full-screen presentation.
+/// Those APIs cannot be preempted once entered, so cancellation on each side of the read is
+/// returned explicitly and callers never publish a partial or superseded snapshot.
+actor FullScreenImagePresentationFactsService {
+    static let shared = FullScreenImagePresentationFactsService()
+
+    private let access: FullScreenImagePresentationFactsAccess
+
+    init(access: FullScreenImagePresentationFactsAccess = .system) {
+        self.access = access
+    }
+
+    func load(imageURL: URL, requestID: UUID) -> FullScreenImagePresentationFactsResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID)
+        }
+
+        let snapshot = access.read(imageURL)
+        guard !Task.isCancelled else {
+            return .cancelledAfterRead(requestID: requestID, imageURL: imageURL)
+        }
+
+        return .loaded(FullScreenImagePresentationFacts(
+            requestID: requestID,
+            imageURL: imageURL,
+            sidecarCameraRaw: snapshot.sidecarCameraRaw,
+            sidecarOrientation: snapshot.sidecarOrientation,
+            fileOrientation: snapshot.fileOrientation,
+            pixelWidth: snapshot.pixelWidth,
+            pixelHeight: snapshot.pixelHeight
+        ))
+    }
+}
+
 /// LRU image cache with directional prefetching for full-screen image navigation.
 /// Maintains separate caches for unedited and edited (CameraRaw) versions so toggling
 /// edit rendering doesn't require re-decoding previously viewed images.

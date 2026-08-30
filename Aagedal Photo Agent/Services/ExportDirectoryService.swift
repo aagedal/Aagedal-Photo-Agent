@@ -5,6 +5,15 @@ nonisolated struct ExportDirectoryCommit: Sendable, Equatable {
     let cancellationRequestedAfterCommit: Bool
 }
 
+/// Immutable evidence for a batch of serialized directory commits. A failed or
+/// cancelled batch retains the exact durable prefix so callers never infer that
+/// already-created folders disappeared.
+nonisolated enum ExportDirectoryBatchResult: Sendable, Equatable {
+    case complete(committedDirectoryURLs: [URL])
+    case cancelled(committedDirectoryURLs: [URL])
+    case failed(committedDirectoryURLs: [URL], message: String)
+}
+
 nonisolated struct ExportDirectoryWriter: Sendable {
     let ensureDirectory: @Sendable (URL) throws -> Void
 
@@ -35,5 +44,36 @@ actor ExportDirectoryService {
             directoryURL: url,
             cancellationRequestedAfterCommit: Task.isCancelled
         )
+    }
+
+    /// Commits directories in caller order on the same serialized executor used
+    /// by one-off export preparation. Foundation directory creation is
+    /// non-preemptible, so cancellation after a commit is represented by the
+    /// returned durable prefix rather than by a thrown error that loses it.
+    func ensureDirectories(at urls: [URL]) -> ExportDirectoryBatchResult {
+        var committedDirectoryURLs: [URL] = []
+        committedDirectoryURLs.reserveCapacity(urls.count)
+
+        for url in urls {
+            guard !Task.isCancelled else {
+                return .cancelled(committedDirectoryURLs: committedDirectoryURLs)
+            }
+
+            do {
+                try writer.ensureDirectory(url)
+                committedDirectoryURLs.append(url)
+            } catch {
+                return .failed(
+                    committedDirectoryURLs: committedDirectoryURLs,
+                    message: error.localizedDescription
+                )
+            }
+
+            guard !Task.isCancelled else {
+                return .cancelled(committedDirectoryURLs: committedDirectoryURLs)
+            }
+        }
+
+        return .complete(committedDirectoryURLs: committedDirectoryURLs)
     }
 }

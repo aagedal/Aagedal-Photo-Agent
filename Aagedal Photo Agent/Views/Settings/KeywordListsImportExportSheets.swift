@@ -80,6 +80,8 @@ struct KeywordListsExportSheet: View {
 
     @State private var selection: Set<KeywordListKey> = []
     @State private var feedback: String?
+    @State private var exportTask: Task<Void, Never>?
+    @State private var exportRequestID: UUID?
 
     /// Lists that actually have content in the store today and fall within
     /// `scope`. We never offer empty lists for export — the bundle should
@@ -120,6 +122,11 @@ struct KeywordListsExportSheet: View {
         .onAppear {
             // Default to all available lists selected.
             selection = Set(availableEntries.map { $0.key })
+        }
+        .onDisappear {
+            exportRequestID = nil
+            exportTask?.cancel()
+            exportTask = nil
         }
     }
 
@@ -206,7 +213,7 @@ struct KeywordListsExportSheet: View {
             }
             .keyboardShortcut(.defaultAction)
             .buttonStyle(.borderedProminent)
-            .disabled(selection.isEmpty)
+            .disabled(selection.isEmpty || exportRequestID != nil)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -218,13 +225,36 @@ struct KeywordListsExportSheet: View {
         panel.nameFieldStringValue = scope.exportFileName
         panel.message = "Export the selected lists as a single bundle"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let exported = try KeywordListsArchive.exportSelected(selection, to: url)
-            onCompletion(.success(exported))
-            dismiss()
-        } catch {
-            feedback = "Export failed: \(error.localizedDescription)"
-            onCompletion(.failure(error))
+
+        exportTask?.cancel()
+        let requestID = UUID()
+        exportRequestID = requestID
+        let request = KeywordListsArchive.exportRequest(
+            for: selection,
+            destinationURL: url,
+            requestID: requestID
+        )
+        feedback = "Exporting \(url.lastPathComponent)…"
+        exportTask = Task {
+            do {
+                let result = try await KeywordListsArchiveExportService.shared.export(request)
+                guard exportRequestID == requestID else { return }
+                exportTask = nil
+                exportRequestID = nil
+                switch result {
+                case .exported(let commit):
+                    onCompletion(.success(commit.exportedFileCount))
+                    dismiss()
+                case .cancelledBeforeCommit:
+                    feedback = "Export cancelled"
+                }
+            } catch {
+                guard exportRequestID == requestID else { return }
+                exportTask = nil
+                exportRequestID = nil
+                feedback = "Export failed: \(error.localizedDescription)"
+                onCompletion(.failure(error))
+            }
         }
     }
 

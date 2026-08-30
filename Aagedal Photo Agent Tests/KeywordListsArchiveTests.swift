@@ -154,6 +154,144 @@ struct KeywordListsArchiveTests {
     }
 }
 
+@Suite("Keyword-list archive export filesystem boundary")
+struct KeywordListsArchiveExportServiceTests {
+    @Test("a complete immutable export commit is performed away from the main actor")
+    @MainActor
+    func completeExportRunsOffMainActor() async throws {
+        let request = sampleRequest(destination: URL(fileURLWithPath: "/virtual/lists.zip"))
+        let commit = sampleCommit(for: request)
+        let probe = KeywordListsArchiveExporterProbe(result: .exported(commit))
+        let service = KeywordListsArchiveExportService(
+            exporter: KeywordListsArchiveExporter(perform: probe.perform)
+        )
+
+        let result = try await Task { try await service.export(request) }.value
+
+        #expect(result == .exported(commit))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("a pre-cancelled export never enters archive staging")
+    func preCancellation() async throws {
+        let request = sampleRequest(destination: URL(fileURLWithPath: "/virtual/cancelled.zip"))
+        let probe = KeywordListsArchiveExporterProbe(result: .exported(sampleCommit(for: request)))
+        let service = KeywordListsArchiveExportService(
+            exporter: KeywordListsArchiveExporter(perform: probe.perform)
+        )
+        let task = Task {
+            await Task.yield()
+            return try await service.export(request)
+        }
+        task.cancel()
+
+        let result = try await task.value
+
+        #expect(result == .cancelledBeforeCommit(
+            requestID: request.requestID,
+            destinationURL: request.destinationURL,
+            preparedFileCount: 0
+        ))
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("cancellation during non-preemptible export preserves durable commit evidence")
+    func cancellationAfterCommit() async throws {
+        let request = sampleRequest(destination: URL(fileURLWithPath: "/virtual/slow.zip"))
+        let commit = sampleCommit(for: request)
+        let service = KeywordListsArchiveExportService(
+            exporter: KeywordListsArchiveExporter { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return .exported(commit)
+            }
+        )
+
+        let result = try await Task { try await service.export(request) }.value
+
+        #expect(result == .exported(KeywordListsArchiveExportCommit(
+            requestID: request.requestID,
+            destinationURL: request.destinationURL,
+            exportedFileCount: 1,
+            cancellationObservedAfterCommit: true
+        )))
+    }
+
+    @Test("a staging failure preserves the previous destination bytes")
+    func failedStagingPreservesDestination() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kl-export-atomic-\(UUID().uuidString)", isDirectory: true)
+        let destination = directory.appendingPathComponent("Keywords.zip")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = Data("existing archive".utf8)
+        try original.write(to: destination)
+        let request = KeywordListsArchiveExportRequest(
+            requestID: UUID(),
+            destinationURL: destination,
+            items: [KeywordListsArchiveExportItem(
+                sourceURL: directory.appendingPathComponent("missing.txt"),
+                relativePath: "quick/keywords.txt",
+                kind: "quick.keywords",
+                entryCount: 1
+            )]
+        )
+
+        #expect(throws: (any Error).self) {
+            try KeywordListsArchive.performExport(request)
+        }
+        #expect(try Data(contentsOf: destination) == original)
+    }
+
+    @Test("the export sheet awaits the actor and rejects stale publication")
+    func exportSheetSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/KeywordListsImportExportSheets.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func runExport()"))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n    private func countKeywords"))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains(
+            "try await KeywordListsArchiveExportService.shared.export(request)"
+        ))
+        #expect(functionSource.contains("guard exportRequestID == requestID else { return }"))
+        #expect(!functionSource.contains("KeywordListsArchive.exportSelected("))
+        #expect(source.contains("exportRequestID = nil\n            exportTask?.cancel()"))
+    }
+
+    private func sampleRequest(destination: URL) -> KeywordListsArchiveExportRequest {
+        KeywordListsArchiveExportRequest(
+            requestID: UUID(),
+            destinationURL: destination,
+            items: [KeywordListsArchiveExportItem(
+                sourceURL: URL(fileURLWithPath: "/virtual/store/quick/keywords.txt"),
+                relativePath: "quick/keywords.txt",
+                kind: "quick.keywords",
+                entryCount: 3
+            )]
+        )
+    }
+
+    private func sampleCommit(
+        for request: KeywordListsArchiveExportRequest
+    ) -> KeywordListsArchiveExportCommit {
+        KeywordListsArchiveExportCommit(
+            requestID: request.requestID,
+            destinationURL: request.destinationURL,
+            exportedFileCount: request.items.count,
+            cancellationObservedAfterCommit: false
+        )
+    }
+}
+
 @Suite("Keyword-list archive preview filesystem boundary")
 struct KeywordListsArchivePreviewServiceTests {
     @Test("a complete immutable archive preview is inspected away from the main actor")
@@ -489,6 +627,31 @@ struct KeywordListsArchiveImportServiceTests {
             )]
         )
     }
+}
+
+private nonisolated final class KeywordListsArchiveExporterProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let result: KeywordListsArchiveExportResult
+    private var count = 0
+    private var observedMainThread = false
+
+    init(result: KeywordListsArchiveExportResult) {
+        self.result = result
+    }
+
+    func perform(
+        _ request: KeywordListsArchiveExportRequest
+    ) throws -> KeywordListsArchiveExportResult {
+        _ = request
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return result
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
 }
 
 private nonisolated final class KeywordListsArchivePreviewReaderProbe: @unchecked Sendable {

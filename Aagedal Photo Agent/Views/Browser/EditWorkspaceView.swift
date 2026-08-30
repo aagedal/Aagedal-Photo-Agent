@@ -277,11 +277,9 @@ struct EditWorkspaceView: View {
     /// Shown when "Add Watermark" is tapped but the Watermark library (Settings ▸ Watermarks)
     /// has no PNGs imported yet.
     @State private var showWatermarkLibraryEmptyAlert = false
-    @State private var isShowingLUTImporter = false
-    @State private var importingLUTForLayerID: UUID?
-    @State private var colorLUTImportTask: Task<Void, Never>?
-    @State private var colorLUTImportRequestID: UUID?
-    @State private var colorTransformError: String?
+    /// Owns image-scoped LUT importer presentation, security-scope lifetime, async request
+    /// cancellation, error publication, and the parsed persistence intent returned to this view.
+    @State private var colorLUTImport = DevelopColorLUTImportCoordinator()
     /// Owns the paired live/committed zoom and pan values used by scroll, magnify, keyboard,
     /// and drag input. Preview geometry and Metal publication remain at this view boundary.
     @State private var previewNavigation = DevelopPreviewNavigationCoordinator()
@@ -537,6 +535,13 @@ struct EditWorkspaceView: View {
     private var aiMaskError: String? {
         get { aiMaskSelection.errorMessage }
         nonmutating set { aiMaskSelection.errorMessage = newValue }
+    }
+
+    private var colorLUTImporterPresented: Binding<Bool> {
+        Binding(
+            get: { colorLUTImport.isImporterPresented },
+            set: { colorLUTImport.setImporterPresented($0) }
+        )
     }
 
     private var activeNamedDevelopVersion: DevelopNamedVersion? {
@@ -820,8 +825,6 @@ struct EditWorkspaceView: View {
         }
         .onChange(of: selectedImageURL) { oldURL, newURL in
             if oldURL != newURL {
-                cancelColorLUTImport()
-                importingLUTForLayerID = nil
                 closeDevelopComparison()
                 handleDevelopVersionImageChange(from: oldURL, to: newURL)
             }
@@ -2658,8 +2661,7 @@ struct EditWorkspaceView: View {
 
     private func handleEditWorkspaceDisappear() {
         exportSession.endWorkspaceSession()
-        cancelColorLUTImport()
-        importingLUTForLayerID = nil
+        colorLUTImport.endImageSession()
         isSpaceHandToolActive = false
         layerSession.endImageSession()
         transientPreview.endImageSession()
@@ -2878,6 +2880,7 @@ struct EditWorkspaceView: View {
     private func loadSelectedImagePreview() {
         let filename = selectedImageURL?.lastPathComponent ?? "nil"
         editLog.info("[\(filename)] loadSelectedImagePreview: resetting state, cancelling previous tasks")
+        colorLUTImport.beginImageSession(selectedImageURL)
         layerSession.beginImageSession(selectedImageURL)
         transientPreview.beginImageSession(selectedImageURL)
         previewSession.beginImageSession(
@@ -5633,13 +5636,13 @@ struct EditWorkspaceView: View {
         .alert(
             "Color Transform",
             isPresented: Binding(
-                get: { colorTransformError != nil },
-                set: { if !$0 { colorTransformError = nil } }
+                get: { colorLUTImport.errorMessage != nil },
+                set: { if !$0 { colorLUTImport.dismissError() } }
             )
         ) {
-            Button("OK") { colorTransformError = nil }
+            Button("OK") { colorLUTImport.dismissError() }
         } message: {
-            Text(colorTransformError ?? "The color transform could not be loaded.")
+            Text(colorLUTImport.errorMessage ?? "The color transform could not be loaded.")
         }
         .alert("Rename Layer", isPresented: layerRenamePresented) {
             TextField("Layer name", text: layerNameDraftBinding)
@@ -5655,7 +5658,7 @@ struct EditWorkspaceView: View {
             Text("Enter a name for this develop layer.")
         }
         .fileImporter(
-            isPresented: $isShowingLUTImporter,
+            isPresented: colorLUTImporterPresented,
             allowedContentTypes: [UTType(filenameExtension: "cube") ?? .data],
             allowsMultipleSelection: false
         ) { result in
@@ -6871,71 +6874,31 @@ struct EditWorkspaceView: View {
     }
 
     private func beginColorLUTImport(for layerID: UUID) {
-        cancelColorLUTImport()
-        importingLUTForLayerID = layerID
-        isShowingLUTImporter = true
-    }
-
-    private func cancelColorLUTImport() {
-        colorLUTImportTask?.cancel()
-        colorLUTImportTask = nil
-        colorLUTImportRequestID = nil
+        colorLUTImport.requestImport(for: layerID)
     }
 
     private func importColorLUT(_ result: Result<[URL], any Error>) {
-        guard let layerID = importingLUTForLayerID else { return }
-        importingLUTForLayerID = nil
-        cancelColorLUTImport()
-
-        do {
-            let url = try result.get().first
-            guard let url else { return }
-            let accessed = url.startAccessingSecurityScopedResource()
-            let requestID = UUID()
-            colorLUTImportRequestID = requestID
-            colorLUTImportTask = Task { @MainActor in
-                defer {
-                    if accessed { url.stopAccessingSecurityScopedResource() }
-                    if colorLUTImportRequestID == requestID {
-                        colorLUTImportRequestID = nil
-                        colorLUTImportTask = nil
-                    }
-                }
-                do {
-                    let importResult = try await ColorLUTImportService.shared.loadLUT(
-                        from: url,
-                        requestID: requestID
-                    )
-                    guard colorLUTImportRequestID == requestID else { return }
-                    switch importResult {
-                    case .loaded(let snapshot):
-                        let parsed = try CubeLUTParser.parse(snapshot.data)
-                        guard colorLUTImportRequestID == requestID, !Task.isCancelled else { return }
-                        let displayName = parsed.title?
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                        let name = displayName.flatMap { $0.isEmpty ? nil : $0 }
-                            ?? snapshot.sourceURL.deletingPathExtension().lastPathComponent
-                        updateCameraRaw { cameraRaw in
-                            guard let index = cameraRaw.localAdjustments?
-                                .firstIndex(where: { $0.id == layerID }),
-                                  var transform = cameraRaw.localAdjustments?[index].colorTransform
-                            else { return }
-                            transform.mode = .lut
-                            transform.lutName = name
-                            transform.lutData = snapshot.data
-                            cameraRaw.localAdjustments?[index].colorTransform = transform
-                        }
-                        commitEditAdjustments()
-                    case .cancelledBeforeRead, .cancelledAfterRead:
-                        return
-                    }
-                } catch {
-                    guard colorLUTImportRequestID == requestID, !Task.isCancelled else { return }
-                    colorTransformError = error.localizedDescription
-                }
+        colorLUTImport.acceptSelection(
+            result,
+            load: { url, requestID in
+                try await ColorLUTImportService.shared.loadLUT(
+                    from: url,
+                    requestID: requestID
+                )
+            },
+            parse: CubeLUTParser.parse
+        ) { intent in
+            updateCameraRaw { cameraRaw in
+                guard let index = cameraRaw.localAdjustments?
+                    .firstIndex(where: { $0.id == intent.layerID }),
+                      var transform = cameraRaw.localAdjustments?[index].colorTransform
+                else { return }
+                transform.mode = .lut
+                transform.lutName = intent.displayName
+                transform.lutData = intent.data
+                cameraRaw.localAdjustments?[index].colorTransform = transform
             }
-        } catch {
-            colorTransformError = error.localizedDescription
+            commitEditAdjustments()
         }
     }
 

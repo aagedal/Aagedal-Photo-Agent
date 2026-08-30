@@ -197,8 +197,8 @@ The [app improvement audit plan](app-improvement-audit-plan.md) is a proposed, r
 covering data-loss prevention, release reproducibility, security/privacy, accessibility,
 responsiveness, and maintainability. It is not a fourth 3.0 portfolio initiative, and its unchecked
 items do not claim implementation or replace the release gates in the three authoritative plans
-above. The audit baseline is reconciled to the latest recorded integrated run of 1,859 passing
-expanded test cases; manual, external-service, hardware, legal, and credential-dependent actions
+above. The audit baseline is reconciled to the latest recorded current-source run of 1,779 passing
+tests across 207 suites; manual, external-service, hardware, legal, and credential-dependent actions
 remain explicitly gated in that document.
 
 The latest [code-boundary continuation](plan-status-continuation-validation-2026-08-30.md) records the
@@ -261,6 +261,12 @@ records serialized metadata/Develop template CRUD, partial-durable keyword-list 
 Develop interactive-render state owner. The combined selection passed 71 tests in seven suites, and the serial
 unfiltered gate passed 1,763 tests in 205 suites. Remaining filesystem inventory/measurement, broader Develop
 persistence ownership, manual, and external gates keep the audit at 63 of 75.
+
+The subsequent [import, image, keyword-export, and LUT continuation](plan-status-import-image-keyword-lut-continuation-2026-08-30.md)
+records serialized import-directory batch commits, full-screen XMP/ImageIO presentation snapshots, atomic
+keyword-list archive export, and the Develop Color LUT import state owner. All 26 focused tests and the serial
+unfiltered 1,779-test current-source gate passed. Remaining filesystem inventory and real-volume measurements,
+direct Develop undo/persistence ownership, and manual/external gates keep the audit at 63 of 75.
 
 ## File organization convention
 

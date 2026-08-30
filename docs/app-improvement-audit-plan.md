@@ -192,6 +192,17 @@ tests in 203 suites. Remaining direct paths, real-volume measurements, and broad
 ownership keep the Phase 3.1 and 4.1 substeps open.
 ([validation](plan-status-archive-preview-raw-metadata-clean-feed-continuation-2026-08-30.md))
 
+**Import, image, keyword-export, and LUT continuation (2026-08-30):** the checklist remains 63 of 75. Import
+destination-directory batches now cross the serialized export-directory actor with exact durable-prefix
+evidence. Full-screen XMP/ImageIO presentation reads and keyword-list archive export now cross dedicated
+serialized actors with immutable cancellation or commit evidence and stale-publication protection. A new
+`DevelopColorLUTImportCoordinator` owns importer presentation, image lifetime, security scope, request identity,
+cancellation, and typed persistence intent while the existing undo/XMP/version commit stays injected. These
+slices passed 26 focused tests, the repository gate, and the serial unfiltered current-source gate of 1,779
+tests in 207 suites. They advance the broad Phase 3.1 and 4.1 gates without completing their remaining
+inventory, real-volume, manual, or architectural exit conditions.
+([validation](plan-status-import-image-keyword-lut-continuation-2026-08-30.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data

@@ -341,6 +341,7 @@ struct FullScreenImageView: View {
     // Edit rendering state (E key toggle)
     @State private var renderEdits: Bool = false
     @State private var renderGeneration: Int = 0
+    @State private var presentationFactsRequestID: UUID?
     @State private var settingsReloadTask: Task<Void, Never>?
 
     // Face overlay state
@@ -1222,6 +1223,7 @@ struct FullScreenImageView: View {
         phase05Task = nil
 
         guard let url = currentImageFile?.url else {
+            presentationFactsRequestID = nil
             currentImage = nil
             sourcePixelSize = nil
             isLoading = false
@@ -1248,8 +1250,20 @@ struct FullScreenImageView: View {
         let isEdited = renderEdits
         let isNativeHDR = currentImageFile?.isNativeHDR == true
         let modelCameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
+        let presentationFactsRequestID = UUID()
+        self.presentationFactsRequestID = presentationFactsRequestID
+        let presentationFactsResult = await FullScreenImagePresentationFactsService.shared.load(
+            imageURL: url,
+            requestID: presentationFactsRequestID
+        )
+        guard self.presentationFactsRequestID == presentationFactsRequestID,
+              renderGeneration == expectedGeneration,
+              currentImageFile?.url == url,
+              !Task.isCancelled else { return }
+        guard case .loaded(let presentationFacts) = presentationFactsResult else { return }
+
         let sidecarCameraRaw = renderEdits && modelCameraRaw == nil
-            ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw
+            ? presentationFacts.sidecarCameraRaw
             : nil
         let cameraRaw = Self.hdrNormalized(modelCameraRaw ?? sidecarCameraRaw, isNativeHDR: isNativeHDR)
         let renderToken = FullScreenImageCache.renderToken(settings: cameraRaw, isEdited: isEdited)
@@ -1257,19 +1271,16 @@ struct FullScreenImageView: View {
         let maskCount = cameraRaw?.localAdjustments?.count ?? 0
         let enabledMaskCount = cameraRaw?.localAdjustments?.filter(\.enabled).count ?? 0
         imageLogger.info("\(filename): renderEdits=\(renderEdits), cameraRaw=\(cameraRaw != nil), nativeHDR=\(isNativeHDR), masks=\(maskCount) (enabled=\(enabledMaskCount)), exp=\(cameraRaw?.exposure2012 ?? 0)")
-        let imageOrientation = FullScreenImageCache.displayOrientation(
-            for: url,
-            fallback: currentImageFile?.exifOrientation ?? 1
-        )
+        let imageOrientation = presentationFacts.sidecarOrientation
+            ?? currentImageFile?.exifOrientation
+            ?? 1
 
         // Read source pixel dimensions (cheap metadata-only, no pixel decode)
         let fileOrientation: Int
         // EXIF orientations 5-8 swap width/height after transform
-        if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let pw = props[kCGImagePropertyPixelWidth] as? Int,
-           let ph = props[kCGImagePropertyPixelHeight] as? Int {
-            let orientation = props[kCGImagePropertyOrientation] as? Int ?? 1
+        if let pw = presentationFacts.pixelWidth,
+           let ph = presentationFacts.pixelHeight {
+            let orientation = presentationFacts.fileOrientation ?? 1
             fileOrientation = orientation
             let swapped = orientation >= 5 && orientation <= 8
             var rawSize = swapped
@@ -1597,22 +1608,37 @@ struct FullScreenImageView: View {
         let filename = url.lastPathComponent
         let isNativeHDR = currentImageFile?.isNativeHDR == true
         let modelCameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
-        let sidecarCameraRaw = renderEdits && modelCameraRaw == nil
-            ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw
-            : nil
-        let cameraRaw = Self.hdrNormalized(modelCameraRaw ?? sidecarCameraRaw, isNativeHDR: isNativeHDR)
-        let needsHDRFullRes = cameraRaw != nil || isNativeHDR
+        let fallbackOrientation = currentImageFile?.exifOrientation ?? 1
+        let readsSidecarCameraRaw = renderEdits && modelCameraRaw == nil
         let isRAWFile = SupportedImageFormats.isRaw(url: url)
-        let orientation = FullScreenImageCache.displayOrientation(
-            for: url,
-            fallback: currentImageFile?.exifOrientation ?? 1
-        )
         let expectedGeneration = renderGeneration
+        let requestID = UUID()
         imageLogger.info("\(filename): Loading full resolution for zoom")
         // Hi-res overlay (not the cold-load overlay): the fit-view image is
         // already on screen and sharp enough; this only signals the zoom upgrade.
         isLoadingHires = true
         fullResTask = Task.detached(priority: .medium) {
+            let factsResult = await FullScreenImagePresentationFactsService.shared.load(
+                imageURL: url,
+                requestID: requestID
+            )
+            guard case .loaded(let facts) = factsResult,
+                  facts.requestID == requestID,
+                  !Task.isCancelled else {
+                await MainActor.run {
+                    guard expectedGeneration == renderGeneration,
+                          currentImageFile?.url == url else { return }
+                    isLoadingHires = false
+                }
+                return
+            }
+            let sidecarCameraRaw = readsSidecarCameraRaw ? facts.sidecarCameraRaw : nil
+            let cameraRaw = Self.hdrNormalized(
+                modelCameraRaw ?? sidecarCameraRaw,
+                isNativeHDR: isNativeHDR
+            )
+            let needsHDRFullRes = cameraRaw != nil || isNativeHDR
+            let orientation = facts.sidecarOrientation ?? fallbackOrientation
             let fullStart = CFAbsoluteTimeGetCurrent()
             var image: CGImage?
             if !Task.isCancelled, needsHDRFullRes {
