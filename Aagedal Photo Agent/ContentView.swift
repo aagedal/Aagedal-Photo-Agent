@@ -258,6 +258,7 @@ struct ContentView: View {
     var body: some View {
         contentWithStateHandlers
             .task {
+                _ = await settingsViewModel.refreshC2PACertificateStatus(requestID: UUID())
                 await deadlineProfileLibrary.loadIfNeeded()
                 await deadlineRenameRecipeLibrary.loadIfNeeded()
                 await deliveryReceiptLibrary.reload()
@@ -392,6 +393,8 @@ struct ContentView: View {
                 FTPUploadView(
                     viewModel: ftpViewModel,
                     files: item.urls,
+                    hasC2PASigningCertificate: settingsViewModel.c2paHasCertificate
+                        && C2PASigningService.isAvailable,
                     readService: browserViewModel.metadataReadService,
                     writeEngine: browserViewModel.writeEngine,
                     inMemoryCameraRaw: browserViewModel.currentCameraRawSettings,

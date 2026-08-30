@@ -251,12 +251,9 @@ struct EditWorkspaceView: View {
     /// Owns press-and-hold before/Develop/current-layer comparisons and projects them onto
     /// render-only settings copies so transient keyboard state never mutates editable metadata.
     @State private var transientPreview = DevelopTransientPreviewCoordinator()
-    @State private var isMutingColor = false
-    @State private var isMutingExposure = false
-    @State private var isMutingDetail = false
-    @State private var isMutingToneCurve = false
-    @State private var isMutingHSL = false
-    @State private var isMutingFilm = false
+    /// Owns sticky render-only section eye toggles for this workspace lifetime. Unlike held-key
+    /// comparisons, these deliberately survive image navigation.
+    @State private var sectionMutes = DevelopSectionMuteCoordinator()
     @State private var showCropControls = false
     @State private var lockedCropImageRect: CGRect?
     @State private var dragCropAngle: Double?
@@ -3415,21 +3412,14 @@ struct EditWorkspaceView: View {
         metalCoordinator.requestRedraw()
     }
 
-    /// Returns the coordinator's render-only projection of the editable settings. Sticky section
-    /// eye toggles stay view-owned; press-and-hold comparison state is coordinator-owned.
+    /// Returns the transient coordinator's render-only projection of the editable settings. The
+    /// sticky section owner supplies a value snapshot so neither owner can mutate the other's state.
     private func settingsForPipeline(_ settings: CameraRawSettings?) -> CameraRawSettings? {
         let isRawSource = selectedImageURL.map { SupportedImageFormats.isRaw(url: $0) } ?? false
         return transientPreview.settingsForPipeline(
             settings,
             isRawSource: isRawSource,
-            sectionMutes: DevelopSectionMuteState(
-                color: isMutingColor,
-                exposure: isMutingExposure,
-                detail: isMutingDetail,
-                toneCurve: isMutingToneCurve,
-                hsl: isMutingHSL,
-                film: isMutingFilm
-            )
+            sectionMutes: sectionMutes.snapshot
         )
     }
 
@@ -4767,7 +4757,7 @@ struct EditWorkspaceView: View {
     private var detailDevelopSection: some View {
         if settingsViewModel.isDevelopSliderGroupVisible(.detail) {
             // ── Detail ──
-            sectionHeader("Detail", isMuted: $isMutingDetail, hasAdjustments: hasDetailAdjustments, onReset: resetDetailAdjustments)
+            sectionHeader("Detail", isMuted: sectionMuteBinding(.detail), hasAdjustments: hasDetailAdjustments, onReset: resetDetailAdjustments)
                 .padding(.top, 2)
             Divider()
 
@@ -4789,7 +4779,7 @@ struct EditWorkspaceView: View {
             // ── Tone Curve ──
             CurveEditorView(
                 toneCurve: toneCurveBinding,
-                isMuted: $isMutingToneCurve,
+                isMuted: sectionMuteBinding(.toneCurve),
                 onDragCurveChanged: { dragCurve in
                     if let pipeline = metalPipeline, pipeline.hasSourceTexture {
                         var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
@@ -4816,7 +4806,7 @@ struct EditWorkspaceView: View {
     private var hslDevelopSection: some View {
         if settingsViewModel.isDevelopSliderVisible(.hsl) {
             // ── Hue / Saturation / Density ──
-            sectionHeader("Hue / Saturation / Density", isMuted: $isMutingHSL, hasAdjustments: hasHSLAdjustments, onReset: resetHSLAdjustments)
+            sectionHeader("Hue / Saturation / Density", isMuted: sectionMuteBinding(.hsl), hasAdjustments: hasHSLAdjustments, onReset: resetHSLAdjustments)
                 .padding(.top, 2)
             Divider()
 
@@ -4846,7 +4836,7 @@ struct EditWorkspaceView: View {
             // ── Film Emulation ──
             sectionHeader(
                 "Film Emulation",
-                isMuted: $isMutingFilm,
+                isMuted: sectionMuteBinding(.film),
                 hasAdjustments: hasFilmAdjustments,
                 onReset: resetFilmAdjustments
             )
@@ -4980,6 +4970,13 @@ struct EditWorkspaceView: View {
 
     // MARK: - Section Headers
 
+    private func sectionMuteBinding(_ section: DevelopSectionMute) -> Binding<Bool> {
+        Binding(
+            get: { sectionMutes.isMuted(section) },
+            set: { sectionMutes.setMuted($0, for: section) }
+        )
+    }
+
     private func sectionHeader(
         _ title: String,
         isMuted: Binding<Bool>,
@@ -5041,15 +5038,15 @@ struct EditWorkspaceView: View {
             .help("Set white balance from the image — click a neutral grey, or drag to average an area")
             Spacer()
             Button {
-                isMutingColor.toggle()
+                sectionMutes.toggle(.color)
                 renderPreview()
             } label: {
-                Image(systemName: isMutingColor ? "eye.slash" : "eye")
+                Image(systemName: sectionMutes.isMuted(.color) ? "eye.slash" : "eye")
                     .font(.system(size: 11))
-                    .foregroundStyle(isMutingColor ? .orange : .secondary)
+                    .foregroundStyle(sectionMutes.isMuted(.color) ? .orange : .secondary)
             }
             .buttonStyle(.plain)
-            .help(isMutingColor ? "Show color" : "Hide color")
+            .help(sectionMutes.isMuted(.color) ? "Show color" : "Hide color")
             Button {
                 resetColorAdjustments()
             } label: {
@@ -5177,15 +5174,15 @@ struct EditWorkspaceView: View {
                 }
             Spacer()
             Button {
-                isMutingExposure.toggle()
+                sectionMutes.toggle(.exposure)
                 renderPreview()
             } label: {
-                Image(systemName: isMutingExposure ? "eye.slash" : "eye")
+                Image(systemName: sectionMutes.isMuted(.exposure) ? "eye.slash" : "eye")
                     .font(.system(size: 11))
-                    .foregroundStyle(isMutingExposure ? .orange : .secondary)
+                    .foregroundStyle(sectionMutes.isMuted(.exposure) ? .orange : .secondary)
             }
             .buttonStyle(.plain)
-            .help(isMutingExposure ? "Show exposure adjustments" : "Hide exposure adjustments")
+            .help(sectionMutes.isMuted(.exposure) ? "Show exposure adjustments" : "Hide exposure adjustments")
             Button {
                 resetExposureAdjustments()
             } label: {

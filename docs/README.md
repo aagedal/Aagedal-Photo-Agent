@@ -197,8 +197,8 @@ The [app improvement audit plan](app-improvement-audit-plan.md) is a proposed, r
 covering data-loss prevention, release reproducibility, security/privacy, accessibility,
 responsiveness, and maintainability. It is not a fourth 3.0 portfolio initiative, and its unchecked
 items do not claim implementation or replace the release gates in the three authoritative plans
-above. The audit baseline is reconciled to the latest recorded integrated run of 1,613 passing
-tests in 182 suites; manual, external-service, hardware, legal, and credential-dependent actions
+above. The audit baseline is reconciled to the latest recorded integrated run of 1,658 passing
+tests in 190 suites; manual, external-service, hardware, legal, and credential-dependent actions
 remain explicitly gated in that document.
 
 The latest [code-boundary continuation](plan-status-continuation-validation-2026-08-30.md) records the
@@ -214,6 +214,16 @@ The latest [responsiveness and navigation continuation](plan-status-responsivene
 records serialized roster import and keyword-backup preview reads, stable filesystem measurement signposts and
 a repeatable blocked-volume gate, plus the Develop preview-navigation state owner. Real-volume, Instruments,
 Thread Performance Checker, manual, and external release gates remain open, so the audit stays 63 of 75.
+
+The [filesystem and transient-preview continuation](plan-status-filesystem-transient-preview-continuation-2026-08-30.md)
+records actor-owned keyword backup inventory/restore, roster export and Remove All IPTC preflight work, plus
+the Develop transient-preview state owner and its clean 1,646-test integrated run.
+
+The latest [certificate, export, and section-mute continuation](plan-status-certificate-export-mutes-continuation-2026-08-30.md)
+records transactional C2PA certificate/Keychain I/O, serialized atomic keyword exports, app-scoped fail-closed
+certificate availability, and the Develop section-mute owner. The current-source gate passes 1,658 tests in
+190 suites; the remaining filesystem inventory, real-volume, broader state-owner, manual, and external gates
+keep the audit at 63 of 75.
 
 ## File organization convention
 

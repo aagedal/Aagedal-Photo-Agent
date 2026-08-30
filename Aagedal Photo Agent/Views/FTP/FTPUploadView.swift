@@ -34,6 +34,7 @@ struct FTPUploadView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var viewModel: FTPViewModel
     let files: [URL]
+    let hasC2PASigningCertificate: Bool
     let readService: SwiftExifReadService
     let writeEngine: any MetadataWriteEngine
     let inMemoryCameraRaw: @MainActor (URL) -> CameraRawSettings?
@@ -68,6 +69,7 @@ struct FTPUploadView: View {
     init(
         viewModel: FTPViewModel,
         files: [URL],
+        hasC2PASigningCertificate: Bool,
         readService: SwiftExifReadService,
         writeEngine: any MetadataWriteEngine,
         inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?,
@@ -76,6 +78,7 @@ struct FTPUploadView: View {
     ) {
         self.viewModel = viewModel
         self.files = files
+        self.hasC2PASigningCertificate = hasC2PASigningCertificate
         self.readService = readService
         self.writeEngine = writeEngine
         self.inMemoryCameraRaw = inMemoryCameraRaw
@@ -274,7 +277,7 @@ struct FTPUploadView: View {
         }
 
         // C2PA signing option (hidden if no certificate)
-        if SettingsViewModel.hasC2PASigningCertificate {
+        if hasC2PASigningCertificate {
             Toggle("Sign with C2PA before upload", isOn: $signWithC2PABeforeUpload)
                 .font(.subheadline)
             if isSigningC2PA {

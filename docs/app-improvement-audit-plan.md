@@ -127,6 +127,15 @@ projection, so selected-mask comparison no longer mutates editable metadata. The
 Phase 3.1 filesystem and Phase 4.1 state-owner items without satisfying their remaining inventory, real-volume,
 manual, or architectural exit conditions. ([validation](plan-status-filesystem-transient-preview-continuation-2026-08-30.md))
 
+**Certificate, export, and section-mute continuation (2026-08-30):** the checklist remains 63 of 75. C2PA
+certificate import, status, removal, transaction rollback, and Keychain coordination now cross a serialized
+actor with immutable cancellation and durable-commit evidence; app-scoped availability fails closed and is
+injected into FTP presentation. Keyword and Structured Keyword exports now use a serialized atomic UTF-8
+writer with request-identity gating. `DevelopSectionMuteCoordinator` owns all six sticky render-only section
+mutes as one workspace-lifetime snapshot. These slices advance the broad Phase 3.1 filesystem and Phase 4.1
+state-owner items without satisfying their remaining inventory, real-volume, manual, or architectural exit
+conditions. ([validation](plan-status-certificate-export-mutes-continuation-2026-08-30.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -530,6 +539,14 @@ measurement repeatable; it does not replace captures on local SSD, network, iClo
 large-folder fixtures or Thread Performance Checker evidence.
 ([validation](slow-volume-measurement-gate-2026-08-30.md))
 
+**C2PA certificate and keyword-export follow-up (2026-08-30):** PEM/PKCS#12 reads, parsing, transactional
+certificate/Keychain replacement with rollback, status, and removal now cross the serialized
+`C2PASigningConfigurationService`. App and Settings owners use request identities and immutable evidence;
+certificate availability fails closed until verified. Keyword-list and Structured Keyword writes now cross
+the serialized `TextFileExportService` with atomic UTF-8 commits, queued cancellation, durable-after-cancel
+evidence, and stale-result rejection. Lower-priority direct filesystem paths and the real-volume measurement
+gate remain open. ([validation](plan-status-certificate-export-mutes-continuation-2026-08-30.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -675,6 +692,12 @@ recenter, and image-reset transitions cross that owner, while the view retains c
 and Metal viewport publication. Five characterizations cover bounds, gesture anchoring, recentering, clamping,
 and teardown. Other Develop interaction, layer, render-policy, and persistence owners remain open.
 ([validation](develop-preview-navigation-validation-2026-08-30.md))
+
+**Section-mute state-owner follow-up (2026-08-30):** `DevelopSectionMuteCoordinator` now owns the sticky
+Color, Exposure, Detail, Tone Curve, HSL, and Film mute values as one workspace-lifetime snapshot. All section
+bindings and toggles route through that owner while remaining render-only and surviving image navigation.
+Crop, layer, white-balance, broader render-policy/publication, export, and persistence ownership remain open.
+([validation](plan-status-certificate-export-mutes-continuation-2026-08-30.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

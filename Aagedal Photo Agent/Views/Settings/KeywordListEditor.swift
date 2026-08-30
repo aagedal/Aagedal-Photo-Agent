@@ -18,6 +18,8 @@ struct KeywordListEditor: View {
     @State private var searchText: String = ""
     @State private var selection: Set<String> = []
     @State private var feedback: String?
+    @State private var exportTask: Task<Void, Never>?
+    @State private var exportRequestID: UUID?
 
     /// Indices to highlight from the filtered view back to `entries`. Computed
     /// lazily — recomputed when search text changes.
@@ -42,6 +44,11 @@ struct KeywordListEditor: View {
         .frame(minWidth: 460, idealWidth: 520, minHeight: 460, idealHeight: 560)
         .onAppear {
             entries = KeywordListsStore.shared.readEntries(storeKey)
+        }
+        .onDisappear {
+            exportRequestID = nil
+            exportTask?.cancel()
+            exportTask = nil
         }
     }
 
@@ -206,11 +213,33 @@ struct KeywordListEditor: View {
         panel.message = "Export this list as a text file"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let text = entries.joined(separator: "\n") + (entries.isEmpty ? "" : "\n")
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            feedback = "Exported \(entries.count) entries"
-        } catch {
-            feedback = "Export failed: \(error.localizedDescription)"
+        let entryCount = entries.count
+        exportTask?.cancel()
+        let requestID = UUID()
+        exportRequestID = requestID
+        feedback = "Exporting \(url.lastPathComponent)…"
+        exportTask = Task {
+            do {
+                let result = try await TextFileExportService.shared.writeText(
+                    text,
+                    to: url,
+                    requestID: requestID
+                )
+                guard exportRequestID == requestID else { return }
+                exportTask = nil
+                exportRequestID = nil
+                switch result {
+                case .committed:
+                    feedback = "Exported \(entryCount) entries"
+                case .cancelledBeforeWrite:
+                    feedback = "Export cancelled"
+                }
+            } catch {
+                guard exportRequestID == requestID else { return }
+                exportTask = nil
+                exportRequestID = nil
+                feedback = "Export failed: \(error.localizedDescription)"
+            }
         }
     }
 

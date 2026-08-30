@@ -42,6 +42,8 @@ struct StructuredKeywordEditor: View {
     @State private var feedback: String?
     @State private var importTask: Task<Void, Never>?
     @State private var importRequestID: UUID?
+    @State private var exportTask: Task<Void, Never>?
+    @State private var exportRequestID: UUID?
     @FocusState private var renameFieldFocused: Bool
 
     var body: some View {
@@ -62,6 +64,9 @@ struct StructuredKeywordEditor: View {
             importRequestID = nil
             importTask?.cancel()
             importTask = nil
+            exportRequestID = nil
+            exportTask?.cancel()
+            exportTask = nil
         }
     }
 
@@ -650,11 +655,32 @@ struct StructuredKeywordEditor: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let snapshot = root.snapshotChildren().compactMap { strip($0) }
         let text = StructuredKeywordSerializer.serialize(snapshot)
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            feedback = "Exported to \(url.lastPathComponent)"
-        } catch {
-            feedback = "Export failed: \(error.localizedDescription)"
+        exportTask?.cancel()
+        let requestID = UUID()
+        exportRequestID = requestID
+        feedback = "Exporting \(url.lastPathComponent)…"
+        exportTask = Task {
+            do {
+                let result = try await TextFileExportService.shared.writeText(
+                    text,
+                    to: url,
+                    requestID: requestID
+                )
+                guard exportRequestID == requestID else { return }
+                exportTask = nil
+                exportRequestID = nil
+                switch result {
+                case .committed:
+                    feedback = "Exported to \(url.lastPathComponent)"
+                case .cancelledBeforeWrite:
+                    feedback = "Export cancelled"
+                }
+            } catch {
+                guard exportRequestID == requestID else { return }
+                exportTask = nil
+                exportRequestID = nil
+                feedback = "Export failed: \(error.localizedDescription)"
+            }
         }
     }
 }

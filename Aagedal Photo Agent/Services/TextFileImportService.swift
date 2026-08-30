@@ -83,3 +83,55 @@ actor TextFileImportService {
         ))
     }
 }
+
+nonisolated struct TextFileExportCommit: Equatable, Sendable {
+    let requestID: UUID
+    let destinationURL: URL
+    let byteCount: Int
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum TextFileExportResult: Equatable, Sendable {
+    case committed(TextFileExportCommit)
+    case cancelledBeforeWrite(requestID: UUID)
+}
+
+nonisolated struct TextFileExportWriter: Sendable {
+    let write: @Sendable (Data, URL) throws -> Void
+
+    static let system = TextFileExportWriter { data, destination in
+        try data.write(to: destination, options: .atomic)
+    }
+}
+
+/// Serializes user-selected UTF-8 text exports away from MainActor. The atomic Foundation write
+/// cannot be preempted once entered, so a cancellation observed after it returns is reported as a
+/// durable commit instead of being mistaken for a write that never happened.
+actor TextFileExportService {
+    static let shared = TextFileExportService()
+
+    private let writer: TextFileExportWriter
+
+    init(writer: TextFileExportWriter = .system) {
+        self.writer = writer
+    }
+
+    func writeText(
+        _ text: String,
+        to destinationURL: URL,
+        requestID: UUID
+    ) throws -> TextFileExportResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeWrite(requestID: requestID)
+        }
+
+        let data = Data(text.utf8)
+        try writer.write(data, destinationURL)
+        return .committed(TextFileExportCommit(
+            requestID: requestID,
+            destinationURL: destinationURL,
+            byteCount: data.count,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        ))
+    }
+}

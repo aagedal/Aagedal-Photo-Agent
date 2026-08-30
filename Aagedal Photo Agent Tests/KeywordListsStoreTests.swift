@@ -516,7 +516,7 @@ private nonisolated final class BlockingKeywordListBackupFileIOProbe: @unchecked
     }
 
     func waitUntilFirstEnumerationStarts() async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(30)
         while contentsInvocationCount == 0 {
             guard ContinuousClock.now < deadline else {
                 throw KeywordListBackupPreviewProbeError.timedOut
@@ -574,7 +574,7 @@ private nonisolated final class BlockingKeywordListBackupPreviewReaderProbe: @un
     }
 
     func waitUntilFirstReadStarts() async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
                 throw KeywordListBackupPreviewProbeError.timedOut

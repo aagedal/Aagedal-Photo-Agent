@@ -1875,6 +1875,8 @@ struct SettingsView: View {
     @State private var signingMessage: String?
     @State private var c2paTrustListStatus: C2PATrustListStatus?
     @State private var isRefreshingC2PATrustList = false
+    @State private var c2paOperationRequestID: UUID?
+    @State private var c2paOperationTask: Task<Void, Never>?
 
     @ViewBuilder
     private var signingTab: some View {
@@ -1931,9 +1933,9 @@ struct SettingsView: View {
                         }
                         Spacer()
                         Button("Remove", role: .destructive) {
-                            settingsViewModel.removeC2PACertificate()
-                            signingMessage = "Certificate removed"
+                            removeC2PACertificate()
                         }
+                        .disabled(c2paOperationTask != nil)
                     }
                 } else {
                     Text("No signing certificate configured")
@@ -2022,7 +2024,11 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .task { await loadC2PATrustListStatus() }
+        .task {
+            await refreshC2PACertificateStatus()
+            await loadC2PATrustListStatus()
+        }
+        .onDisappear { cancelC2PACertificateOperation() }
         .fileImporter(
             isPresented: $isImportingCertificate,
             allowedContentTypes: [.x509Certificate, .pkcs12, .data],
@@ -2034,12 +2040,7 @@ struct SettingsView: View {
             SecureField("Password", text: $p12Password)
             Button("Import") {
                 guard let url = pendingP12URL else { return }
-                do {
-                    try settingsViewModel.importC2PACertificate(from: url, password: p12Password)
-                    signingMessage = "Certificate imported successfully"
-                } catch {
-                    signingMessage = "Import failed: \(error.localizedDescription)"
-                }
+                importC2PACertificate(from: url, password: p12Password)
                 p12Password = ""
                 pendingP12URL = nil
             }
@@ -2061,16 +2062,93 @@ struct SettingsView: View {
                 pendingP12URL = url
                 showP12PasswordPrompt = true
             } else {
-                do {
-                    try settingsViewModel.importC2PACertificate(from: url)
-                    signingMessage = "Certificate imported successfully"
-                } catch {
-                    signingMessage = "Import failed: \(error.localizedDescription)"
-                }
+                importC2PACertificate(from: url)
             }
         case .failure(let error):
             signingMessage = "File selection failed: \(error.localizedDescription)"
         }
+    }
+
+    private func importC2PACertificate(from url: URL, password: String? = nil) {
+        cancelC2PACertificateOperation()
+        let requestID = UUID()
+        c2paOperationRequestID = requestID
+        signingMessage = nil
+        c2paOperationTask = Task {
+            do {
+                let result = try await settingsViewModel.importC2PACertificate(
+                    from: url,
+                    password: password,
+                    requestID: requestID
+                )
+                guard c2paOperationRequestID == requestID else { return }
+                c2paOperationTask = nil
+                c2paOperationRequestID = nil
+                switch result {
+                case .committed:
+                    signingMessage = "Certificate imported successfully"
+                case .cancelledBeforeRead, .cancelledAfterRead:
+                    signingMessage = "Certificate import cancelled"
+                }
+            } catch is CancellationError {
+                guard c2paOperationRequestID == requestID else { return }
+                c2paOperationTask = nil
+                c2paOperationRequestID = nil
+                signingMessage = "Certificate import cancelled"
+            } catch {
+                guard c2paOperationRequestID == requestID else { return }
+                c2paOperationTask = nil
+                c2paOperationRequestID = nil
+                signingMessage = "Import failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func removeC2PACertificate() {
+        cancelC2PACertificateOperation()
+        let requestID = UUID()
+        c2paOperationRequestID = requestID
+        signingMessage = nil
+        c2paOperationTask = Task {
+            do {
+                let result = try await settingsViewModel.removeC2PACertificate(
+                    requestID: requestID
+                )
+                guard c2paOperationRequestID == requestID else { return }
+                c2paOperationTask = nil
+                c2paOperationRequestID = nil
+                switch result {
+                case .committed:
+                    signingMessage = "Certificate removed"
+                case .cancelledBeforeCommit:
+                    signingMessage = "Certificate removal cancelled"
+                }
+            } catch is CancellationError {
+                guard c2paOperationRequestID == requestID else { return }
+                c2paOperationTask = nil
+                c2paOperationRequestID = nil
+                signingMessage = "Certificate removal cancelled"
+            } catch {
+                guard c2paOperationRequestID == requestID else { return }
+                c2paOperationTask = nil
+                c2paOperationRequestID = nil
+                signingMessage = "Remove failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func refreshC2PACertificateStatus() async {
+        let requestID = UUID()
+        c2paOperationRequestID = requestID
+        _ = await settingsViewModel.refreshC2PACertificateStatus(requestID: requestID)
+        guard c2paOperationRequestID == requestID else { return }
+        c2paOperationRequestID = nil
+    }
+
+    private func cancelC2PACertificateOperation() {
+        c2paOperationTask?.cancel()
+        c2paOperationTask = nil
+        c2paOperationRequestID = nil
     }
 
     private func loadC2PATrustListStatus() async {

@@ -145,6 +145,171 @@ struct TextFileImportServiceTests {
     }
 }
 
+@Suite("User-selected text export filesystem boundary")
+struct TextFileExportServiceTests {
+    @Test("atomic UTF-8 export commits away from the main actor with immutable evidence")
+    @MainActor
+    func commitEvidenceRunsOffMainActor() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "text-export-commit-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("keywords.txt")
+        let text = "People\n\tAlice\n"
+        let requestID = UUID()
+        let probe = TextFileExportWriterProbe()
+        let service = TextFileExportService(writer: TextFileExportWriter(write: probe.write))
+
+        let result = try await Task {
+            try await service.writeText(text, to: destination, requestID: requestID)
+        }.value
+
+        #expect(result == .committed(TextFileExportCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            byteCount: Data(text.utf8).count,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+        #expect(try String(contentsOf: destination, encoding: .utf8) == text)
+    }
+
+    @Test("a pre-cancelled export never enters the synchronous writer")
+    func preCancellation() async throws {
+        let requestID = UUID()
+        let probe = TextFileExportWriterProbe()
+        let service = TextFileExportService(writer: TextFileExportWriter(write: probe.write))
+        let task = Task {
+            await Task.yield()
+            return try await service.writeText(
+                "unused",
+                to: URL(fileURLWithPath: "/virtual/cancelled.txt"),
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        let result = try await task.value
+
+        #expect(result == .cancelledBeforeWrite(requestID: requestID))
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("overlapping exports serialize and cancellation stops a queued write")
+    func serializedQueuedCancellation() async throws {
+        let probe = BlockingAnalysisExportWriter()
+        let service = TextFileExportService(writer: TextFileExportWriter(write: probe.write))
+        let firstID = UUID()
+        let secondID = UUID()
+        let first = Task {
+            try await service.writeText(
+                "first",
+                to: URL(fileURLWithPath: "/virtual/first.txt"),
+                requestID: firstID
+            )
+        }
+        try await probe.waitUntilFirstWriteStarts()
+        let second = Task {
+            try await service.writeText(
+                "second",
+                to: URL(fileURLWithPath: "/virtual/second.txt"),
+                requestID: secondID
+            )
+        }
+        second.cancel()
+        probe.releaseFirstWrite()
+
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+
+        guard case .committed(let commit) = firstResult else {
+            Issue.record("Expected the first text export to commit")
+            return
+        }
+        #expect(commit.requestID == firstID)
+        #expect(secondResult == .cancelledBeforeWrite(requestID: secondID))
+        #expect(probe.invocationCount == 1)
+        #expect(probe.maximumConcurrentWrites == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("cancellation during the synchronous write reports durable committed bytes")
+    func cancellationAfterCommit() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "text-export-cancelled-after-commit-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("structured.txt")
+        let text = "Places\n\tOslo\n"
+        let requestID = UUID()
+        let service = TextFileExportService(writer: TextFileExportWriter { data, destination in
+            try data.write(to: destination, options: .atomic)
+            withUnsafeCurrentTask { $0?.cancel() }
+        })
+
+        let result = try await Task {
+            try await service.writeText(text, to: destination, requestID: requestID)
+        }.value
+
+        #expect(result == .committed(TextFileExportCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            byteCount: Data(text.utf8).count,
+            cancellationRequestedAfterCommit: true
+        )))
+        #expect(try String(contentsOf: destination, encoding: .utf8) == text)
+    }
+
+    @Test("keyword editors await text export and reject stale completion")
+    func editorSourceContracts() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let editorPaths = [
+            "Aagedal Photo Agent/Views/Settings/KeywordListEditor.swift",
+            "Aagedal Photo Agent/Views/Settings/StructuredKeywordEditor.swift"
+        ]
+
+        for path in editorPaths {
+            let source = try String(
+                contentsOf: workspace.appendingPathComponent(path),
+                encoding: .utf8
+            )
+            let functionStart = try #require(source.range(of: "private func exportToFile()"))
+            let suffix = source[functionStart.lowerBound...]
+            let functionEnd = try #require(suffix.range(of: "\n    }\n"))
+            let functionSource = String(suffix[...functionEnd.upperBound])
+
+            #expect(functionSource.contains("try await TextFileExportService.shared.writeText("))
+            #expect(functionSource.contains("guard exportRequestID == requestID else { return }"))
+            #expect(functionSource.contains("case .cancelledBeforeWrite:"))
+            #expect(!functionSource.contains("text.write(to:"))
+        }
+    }
+}
+
+private nonisolated final class TextFileExportWriterProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var observedMainThread = false
+
+    func write(_ data: Data, to destination: URL) throws {
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        try data.write(to: destination, options: .atomic)
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
 private nonisolated final class TextFileImportReaderProbe: @unchecked Sendable {
     private let lock = NSLock()
     private let data: Data

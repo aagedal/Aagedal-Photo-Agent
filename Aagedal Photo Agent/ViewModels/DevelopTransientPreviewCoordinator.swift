@@ -1,9 +1,20 @@
 import Foundation
 import Observation
 
+/// The independently muted Global Develop sections. Anonymizer remains outside this family because
+/// it has an enable/disable edit rather than a render-only eye toggle.
+nonisolated enum DevelopSectionMute: CaseIterable, Sendable {
+    case color
+    case exposure
+    case detail
+    case toneCurve
+    case hsl
+    case film
+}
+
 /// Section visibility toggles are sticky workspace preferences, while the keyboard-driven
 /// comparison modes are press-and-hold interactions. This value lets the transient owner apply
-/// both policies to a render copy without taking ownership of the section controls themselves.
+/// both policies to a render copy without sharing mutable state between the two owners.
 nonisolated struct DevelopSectionMuteState: Equatable, Sendable {
     var color = false
     var exposure = false
@@ -11,6 +22,60 @@ nonisolated struct DevelopSectionMuteState: Equatable, Sendable {
     var toneCurve = false
     var hsl = false
     var film = false
+
+    subscript(section: DevelopSectionMute) -> Bool {
+        get {
+            switch section {
+            case .color: color
+            case .exposure: exposure
+            case .detail: detail
+            case .toneCurve: toneCurve
+            case .hsl: hsl
+            case .film: film
+            }
+        }
+        set {
+            switch section {
+            case .color: color = newValue
+            case .exposure: exposure = newValue
+            case .detail: detail = newValue
+            case .toneCurve: toneCurve = newValue
+            case .hsl: hsl = newValue
+            case .film: film = newValue
+            }
+        }
+    }
+}
+
+/// Owns the six sticky, render-only section mutes for one Develop-workspace lifetime.
+///
+/// The view owns this coordinator through SwiftUI state, so navigation between images preserves the
+/// toggles and destroying the workspace releases them. There is no task or persisted-storage lifetime:
+/// `initialState` and the value-type `snapshot` are the explicit restoration and test seams.
+@MainActor
+@Observable
+final class DevelopSectionMuteCoordinator {
+    private var state: DevelopSectionMuteState
+
+    init(initialState: DevelopSectionMuteState = DevelopSectionMuteState()) {
+        state = initialState
+    }
+
+    var snapshot: DevelopSectionMuteState { state }
+
+    func isMuted(_ section: DevelopSectionMute) -> Bool {
+        state[section]
+    }
+
+    func setMuted(_ muted: Bool, for section: DevelopSectionMute) {
+        state[section] = muted
+    }
+
+    @discardableResult
+    func toggle(_ section: DevelopSectionMute) -> Bool {
+        state[section].toggle()
+        return state[section]
+    }
 }
 
 /// Owns press-and-hold comparison state for the Develop preview.

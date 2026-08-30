@@ -687,6 +687,53 @@ struct DevelopTransientPreviewCoordinatorTests {
     }
 }
 
+@Suite("Develop section mute coordinator")
+@MainActor
+struct DevelopSectionMuteCoordinatorTests {
+    @Test("section toggles remain independent and produce an exact render snapshot")
+    func independentSectionToggles() {
+        let coordinator = DevelopSectionMuteCoordinator()
+
+        #expect(DevelopSectionMute.allCases.allSatisfy { !coordinator.isMuted($0) })
+        #expect(coordinator.toggle(.color))
+        #expect(coordinator.toggle(.toneCurve))
+        #expect(coordinator.toggle(.film))
+
+        #expect(coordinator.snapshot == DevelopSectionMuteState(
+            color: true,
+            toneCurve: true,
+            film: true
+        ))
+        #expect(!coordinator.isMuted(.exposure))
+        #expect(!coordinator.isMuted(.detail))
+        #expect(!coordinator.isMuted(.hsl))
+
+        coordinator.setMuted(false, for: .toneCurve)
+        #expect(!coordinator.isMuted(.toneCurve))
+        #expect(coordinator.isMuted(.color))
+        #expect(coordinator.isMuted(.film))
+    }
+
+    @Test("workspace state survives repeated render snapshots and can be restored explicitly")
+    func workspaceLifetimeAndRestorationSeams() {
+        let initial = DevelopSectionMuteState(exposure: true, detail: true)
+        let coordinator = DevelopSectionMuteCoordinator(initialState: initial)
+
+        let firstImageSnapshot = coordinator.snapshot
+        let secondImageSnapshot = coordinator.snapshot
+
+        #expect(firstImageSnapshot == initial)
+        #expect(secondImageSnapshot == initial)
+
+        coordinator.toggle(.detail)
+        #expect(firstImageSnapshot.detail)
+        #expect(!coordinator.snapshot.detail)
+
+        let newWorkspace = DevelopSectionMuteCoordinator()
+        #expect(DevelopSectionMute.allCases.allSatisfy { !newWorkspace.isMuted($0) })
+    }
+}
+
 @Suite("Develop preview session coordinator")
 @MainActor
 struct DevelopPreviewSessionCoordinatorTests {

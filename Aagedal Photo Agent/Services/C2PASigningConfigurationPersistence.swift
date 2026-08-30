@@ -2,18 +2,18 @@ import Foundation
 import Security
 
 /// The complete signing material extracted from an import source before anything is persisted.
-struct C2PAImportedIdentity {
+nonisolated struct C2PAImportedIdentity: Sendable {
     let certificatePEM: String
     let privateKeyPEM: String
     let subject: String
     let expiry: String
 }
 
-protocol C2PAIdentityImporting {
+nonisolated protocol C2PAIdentityImporting: Sendable {
     func importIdentity(from url: URL, password: String) throws -> C2PAImportedIdentity
 }
 
-struct SecurityPKCS12IdentityImporter: C2PAIdentityImporting {
+nonisolated struct SecurityPKCS12IdentityImporter: C2PAIdentityImporting {
     func importIdentity(from url: URL, password: String) throws -> C2PAImportedIdentity {
         let data = try Data(contentsOf: url)
         var items: CFArray?
@@ -65,17 +65,18 @@ struct SecurityPKCS12IdentityImporter: C2PAIdentityImporting {
 
 /// Persistence boundary for a signing pair. Keeping this injectable lets failures be tested
 /// without touching the user's Keychain or Application Support directory.
-protocol C2PASigningConfigurationPersisting {
+nonisolated protocol C2PASigningConfigurationPersisting: Sendable {
     var certificateURL: URL { get }
     func stageCertificate(_ pem: String) throws -> URL
     func replaceCertificate(with stagedURL: URL) throws
+    func discardStagedCertificate(at stagedURL: URL)
     func restoreCertificate(_ data: Data?) throws
     func currentCertificateData() throws -> Data?
     func loadPrivateKey() -> String?
     func replacePrivateKey(with value: String?) throws
 }
 
-struct AppC2PASigningConfigurationPersistence: C2PASigningConfigurationPersisting {
+nonisolated struct AppC2PASigningConfigurationPersistence: C2PASigningConfigurationPersisting {
     let certificateURL: URL
 
     init(certificateURL: URL = AppPaths.certificatesDirectory.appendingPathComponent("signing_cert.pem")) {
@@ -92,6 +93,10 @@ struct AppC2PASigningConfigurationPersistence: C2PASigningConfigurationPersistin
     func replaceCertificate(with stagedURL: URL) throws {
         let data = try Data(contentsOf: stagedURL)
         try data.write(to: certificateURL, options: .atomic)
+        try? FileManager.default.removeItem(at: stagedURL)
+    }
+
+    func discardStagedCertificate(at stagedURL: URL) {
         try? FileManager.default.removeItem(at: stagedURL)
     }
 
@@ -116,5 +121,281 @@ struct AppC2PASigningConfigurationPersistence: C2PASigningConfigurationPersistin
         } else {
             try KeychainService.deleteThrowing(forKey: "c2pa_private_key")
         }
+    }
+}
+
+nonisolated struct C2PACertificateFileIO: Sendable {
+    let readData: @Sendable (URL) throws -> Data
+    let fileExists: @Sendable (URL) -> Bool
+
+    static let system = C2PACertificateFileIO(
+        readData: { try Data(contentsOf: $0) },
+        fileExists: { FileManager.default.fileExists(atPath: $0.path) }
+    )
+}
+
+nonisolated struct C2PACertificateImportCommit: Equatable, Sendable {
+    let requestID: UUID
+    let certificateURL: URL?
+    let subject: String
+    let expiry: String
+    let configurationChanged: Bool
+    let cancellationObservedAfterCommit: Bool
+}
+
+nonisolated enum C2PACertificateImportResult: Equatable, Sendable {
+    case cancelledBeforeRead(requestID: UUID)
+    case cancelledAfterRead(requestID: UUID, sourceURL: URL, byteCount: Int?)
+    case committed(C2PACertificateImportCommit)
+}
+
+nonisolated struct C2PACertificateRemovalCommit: Equatable, Sendable {
+    let requestID: UUID
+    let certificateURL: URL
+    let certificateExisted: Bool
+    let privateKeyExisted: Bool
+    let cancellationObservedAfterCommit: Bool
+}
+
+nonisolated enum C2PACertificateRemovalResult: Equatable, Sendable {
+    case cancelledBeforeCommit(requestID: UUID)
+    case committed(C2PACertificateRemovalCommit)
+}
+
+nonisolated struct C2PACertificateStatusSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let configuredPath: String
+    let certificateExists: Bool
+}
+
+nonisolated enum C2PACertificateStatusResult: Equatable, Sendable {
+    case cancelled(requestID: UUID)
+    case loaded(C2PACertificateStatusSnapshot)
+}
+
+/// Owns Settings certificate reads, parsing, Keychain access, and durable replacement/removal.
+/// Foundation and Security calls are synchronous and non-preemptible once entered, so callers get
+/// explicit cancellation evidence at the safe boundaries around them. Actor isolation also keeps
+/// overlapping certificate mutations serialized.
+actor C2PASigningConfigurationService {
+    private let persistence: any C2PASigningConfigurationPersisting
+    private let pkcs12Importer: any C2PAIdentityImporting
+    private let fileIO: C2PACertificateFileIO
+
+    init(
+        persistence: any C2PASigningConfigurationPersisting = AppC2PASigningConfigurationPersistence(),
+        pkcs12Importer: any C2PAIdentityImporting = SecurityPKCS12IdentityImporter(),
+        fileIO: C2PACertificateFileIO = .system
+    ) {
+        self.persistence = persistence
+        self.pkcs12Importer = pkcs12Importer
+        self.fileIO = fileIO
+    }
+
+    func status(configuredPath: String, requestID: UUID) -> C2PACertificateStatusResult {
+        guard !Task.isCancelled else { return .cancelled(requestID: requestID) }
+        let exists = !configuredPath.isEmpty
+            && fileIO.fileExists(URL(fileURLWithPath: configuredPath))
+        guard !Task.isCancelled else { return .cancelled(requestID: requestID) }
+        return .loaded(C2PACertificateStatusSnapshot(
+            requestID: requestID,
+            configuredPath: configuredPath,
+            certificateExists: exists
+        ))
+    }
+
+    func importCertificate(
+        from sourceURL: URL,
+        password: String,
+        requestID: UUID
+    ) throws -> C2PACertificateImportResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID)
+        }
+
+        let ext = sourceURL.pathExtension.lowercased()
+        if ext == "p12" || ext == "pfx" {
+            let identity = try pkcs12Importer.importIdentity(from: sourceURL, password: password)
+            guard !Task.isCancelled else {
+                return .cancelledAfterRead(
+                    requestID: requestID,
+                    sourceURL: sourceURL,
+                    byteCount: nil
+                )
+            }
+            return try commitCertificate(
+                pem: identity.certificatePEM,
+                privateKey: identity.privateKeyPEM,
+                subject: identity.subject,
+                expiry: identity.expiry,
+                sourceURL: sourceURL,
+                sourceByteCount: nil,
+                requestID: requestID
+            )
+        }
+
+        let data = try fileIO.readData(sourceURL)
+        guard !Task.isCancelled else {
+            return .cancelledAfterRead(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                byteCount: data.count
+            )
+        }
+        guard let content = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+
+        let privateKey = Self.privateKeyPEM(in: content)
+        guard content.contains("-----BEGIN CERTIFICATE-----") else {
+            if let privateKey {
+                try persistence.replacePrivateKey(with: privateKey)
+                return .committed(C2PACertificateImportCommit(
+                    requestID: requestID,
+                    certificateURL: nil,
+                    subject: "",
+                    expiry: "",
+                    configurationChanged: true,
+                    cancellationObservedAfterCommit: Task.isCancelled
+                ))
+            }
+            return .committed(C2PACertificateImportCommit(
+                requestID: requestID,
+                certificateURL: nil,
+                subject: "",
+                expiry: "",
+                configurationChanged: false,
+                cancellationObservedAfterCommit: Task.isCancelled
+            ))
+        }
+
+        let certificatePEM = privateKey == nil
+            ? content
+            : Self.pemBlock(in: content, header: "CERTIFICATE") ?? content
+        let info = Self.certificateInfo(from: certificatePEM)
+        return try commitCertificate(
+            pem: certificatePEM,
+            privateKey: privateKey,
+            subject: info.subject,
+            expiry: info.expiry,
+            sourceURL: sourceURL,
+            sourceByteCount: data.count,
+            requestID: requestID
+        )
+    }
+
+    func removeCertificate(requestID: UUID) throws -> C2PACertificateRemovalResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(requestID: requestID)
+        }
+
+        let previousCertificate = try persistence.currentCertificateData()
+        let previousKey = persistence.loadPrivateKey()
+        do {
+            try persistence.replacePrivateKey(with: nil)
+            do {
+                try persistence.restoreCertificate(nil)
+            } catch {
+                try? persistence.replacePrivateKey(with: previousKey)
+                throw error
+            }
+        } catch {
+            try? persistence.restoreCertificate(previousCertificate)
+            throw error
+        }
+
+        return .committed(C2PACertificateRemovalCommit(
+            requestID: requestID,
+            certificateURL: persistence.certificateURL,
+            certificateExisted: previousCertificate != nil,
+            privateKeyExisted: previousKey != nil,
+            cancellationObservedAfterCommit: Task.isCancelled
+        ))
+    }
+
+    private func commitCertificate(
+        pem: String,
+        privateKey: String?,
+        subject: String,
+        expiry: String,
+        sourceURL: URL,
+        sourceByteCount: Int?,
+        requestID: UUID
+    ) throws -> C2PACertificateImportResult {
+        let previousCertificate = try persistence.currentCertificateData()
+        let previousKey = persistence.loadPrivateKey()
+        let stagedCertificate = try persistence.stageCertificate(pem)
+
+        guard !Task.isCancelled else {
+            persistence.discardStagedCertificate(at: stagedCertificate)
+            return .cancelledAfterRead(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                byteCount: sourceByteCount
+            )
+        }
+
+        do {
+            if let privateKey {
+                try persistence.replacePrivateKey(with: privateKey)
+            }
+            do {
+                try persistence.replaceCertificate(with: stagedCertificate)
+            } catch {
+                if privateKey != nil {
+                    try? persistence.replacePrivateKey(with: previousKey)
+                }
+                try? persistence.restoreCertificate(previousCertificate)
+                throw error
+            }
+        } catch {
+            persistence.discardStagedCertificate(at: stagedCertificate)
+            throw error
+        }
+
+        return .committed(C2PACertificateImportCommit(
+            requestID: requestID,
+            certificateURL: persistence.certificateURL,
+            subject: subject,
+            expiry: expiry,
+            configurationChanged: true,
+            cancellationObservedAfterCommit: Task.isCancelled
+        ))
+    }
+
+    private static func privateKeyPEM(in content: String) -> String? {
+        pemBlock(in: content, header: "PRIVATE KEY")
+            ?? pemBlock(in: content, header: "RSA PRIVATE KEY")
+            ?? pemBlock(in: content, header: "EC PRIVATE KEY")
+    }
+
+    private static func pemBlock(in content: String, header: String) -> String? {
+        let beginMarker = "-----BEGIN \(header)-----"
+        let endMarker = "-----END \(header)-----"
+        guard let beginRange = content.range(of: beginMarker),
+              let endRange = content.range(of: endMarker) else {
+            return nil
+        }
+        return String(content[beginRange.lowerBound...endRange.upperBound])
+    }
+
+    private static func certificateInfo(from pem: String) -> (subject: String, expiry: String) {
+        let base64 = pem.components(separatedBy: .newlines)
+            .filter { !$0.hasPrefix("-----") && !$0.isEmpty }
+            .joined()
+        guard let derData = Data(base64Encoded: base64),
+              let certificate = SecCertificateCreateWithData(nil, derData as CFData) else {
+            return ("", "")
+        }
+
+        let subject = SecCertificateCopySubjectSummary(certificate) as String? ?? "Unknown"
+        guard let values = SecCertificateCopyValues(certificate, nil, nil) as? [String: Any],
+              let validity = values["2.5.4.24"] as? [String: Any],
+              let date = validity[kSecPropertyKeyValue as String] as? Date else {
+            return (subject, "")
+        }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        return (subject, formatter.string(from: date))
     }
 }
