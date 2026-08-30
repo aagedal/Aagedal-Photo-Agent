@@ -18,6 +18,10 @@ struct KeywordListEditor: View {
     @State private var searchText: String = ""
     @State private var selection: Set<String> = []
     @State private var feedback: String?
+    @State private var loadTask: Task<Void, Never>?
+    @State private var loadRequestID: UUID?
+    @State private var persistenceTask: Task<Void, Never>?
+    @State private var persistenceRequestID: UUID?
     @State private var exportTask: Task<Void, Never>?
     @State private var exportRequestID: UUID?
 
@@ -43,9 +47,16 @@ struct KeywordListEditor: View {
         }
         .frame(minWidth: 460, idealWidth: 520, minHeight: 460, idealHeight: 560)
         .onAppear {
-            entries = KeywordListsStore.shared.readEntries(storeKey)
+            loadEntries()
         }
         .onDisappear {
+            loadRequestID = nil
+            loadTask?.cancel()
+            loadTask = nil
+            // Do not cancel the latest instant-save when the editor closes. It still owns the
+            // user's final mutation, but invalidating its request prevents stale UI publication.
+            persistenceRequestID = nil
+            persistenceTask = nil
             exportRequestID = nil
             exportTask?.cancel()
             exportTask = nil
@@ -133,6 +144,37 @@ struct KeywordListEditor: View {
 
     // MARK: - Actions
 
+    private func loadEntries() {
+        loadTask?.cancel()
+        let requestID = UUID()
+        let sourceURL = KeywordListsStore.shared.url(for: storeKey)
+        loadRequestID = requestID
+        loadTask = Task {
+            do {
+                let result = try await KeywordListEditorPersistenceService.shared.loadEntries(
+                    from: sourceURL,
+                    requestID: requestID
+                )
+                guard loadRequestID == requestID, !Task.isCancelled else { return }
+                loadTask = nil
+                loadRequestID = nil
+                switch result {
+                case .loaded(let snapshot):
+                    entries = snapshot.entries
+                case .missing:
+                    entries = []
+                case .cancelledBeforeAccess, .cancelledBeforeRead, .cancelledAfterRead:
+                    break
+                }
+            } catch {
+                guard loadRequestID == requestID, !Task.isCancelled else { return }
+                loadTask = nil
+                loadRequestID = nil
+                feedback = "Load failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func addEntry() {
         let trimmed = newEntry.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -164,22 +206,50 @@ struct KeywordListEditor: View {
         persist()
     }
 
-    /// Persists the current entries to the store. Called after every mutation so
-    /// the editor saves instantly — there is no explicit Save step.
+    /// Persists the current entries through the serialized filesystem owner. Called after every
+    /// mutation so the editor saves instantly — there is no explicit Save step.
     private func persist() {
-        do {
-            switch storeKey {
-            case .approved(let field):
-                try ApprovedListService.shared.saveEntries(entries, for: field)
-            case .quick, .structured, .structuredPersonShown:
-                // Writing directly through the store posts `.keywordListChanged`
-                // so observers (SettingsViewModel quick-list cache, services)
-                // refresh automatically.
-                try KeywordListsStore.shared.writeEntries(entries, to: storeKey)
+        loadRequestID = nil
+        loadTask?.cancel()
+        loadTask = nil
+        persistenceTask?.cancel()
+
+        let requestID = UUID()
+        let snapshot = entries
+        let destinationURL = KeywordListsStore.shared.url(for: storeKey)
+        persistenceRequestID = requestID
+        persistenceTask = Task {
+            do {
+                let result = try await KeywordListEditorPersistenceService.shared.saveEntries(
+                    snapshot,
+                    to: destinationURL,
+                    requestID: requestID
+                )
+                switch result {
+                case .committed(let commit):
+                    // Durable effects are published even after dismissal invalidates this view's
+                    // request. The approved-list cache can install the exact committed payload
+                    // without reading the file again; only UI callbacks remain request-gated.
+                    KeywordListsStore.shared.recordExternalWrite(
+                        to: storeKey,
+                        entries: commit.entries
+                    )
+                    guard persistenceRequestID == requestID else { return }
+                    persistenceTask = nil
+                    persistenceRequestID = nil
+                    onSaved?(commit.entries.count)
+                case .cancelledBeforeCommit:
+                    guard persistenceRequestID == requestID else { return }
+                    persistenceTask = nil
+                    persistenceRequestID = nil
+                    feedback = "Save cancelled"
+                }
+            } catch {
+                guard persistenceRequestID == requestID else { return }
+                persistenceTask = nil
+                persistenceRequestID = nil
+                feedback = "Save failed: \(error.localizedDescription)"
             }
-            onSaved?(entries.count)
-        } catch {
-            feedback = "Save failed: \(error.localizedDescription)"
         }
     }
 

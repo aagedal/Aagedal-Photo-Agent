@@ -197,8 +197,8 @@ The [app improvement audit plan](app-improvement-audit-plan.md) is a proposed, r
 covering data-loss prevention, release reproducibility, security/privacy, accessibility,
 responsiveness, and maintainability. It is not a fourth 3.0 portfolio initiative, and its unchecked
 items do not claim implementation or replace the release gates in the three authoritative plans
-above. The audit baseline is reconciled to the latest recorded current-source run of 1,779 passing
-tests across 207 suites; manual, external-service, hardware, legal, and credential-dependent actions
+above. The audit baseline is reconciled to the latest recorded current-source run of 1,923 passing
+tests; manual, external-service, hardware, legal, and credential-dependent actions
 remain explicitly gated in that document.
 
 The latest [code-boundary continuation](plan-status-continuation-validation-2026-08-30.md) records the
@@ -267,6 +267,13 @@ records serialized import-directory batch commits, full-screen XMP/ImageIO prese
 keyword-list archive export, and the Develop Color LUT import state owner. All 26 focused tests and the serial
 unfiltered 1,779-test current-source gate passed. Remaining filesystem inventory and real-volume measurements,
 direct Develop undo/persistence ownership, and manual/external gates keep the audit at 63 of 75.
+
+The latest [Browser sidecar, keyword editor, and Develop persistence continuation](plan-status-browser-keyword-develop-persistence-continuation-2026-08-31.md)
+records serialized Browser XMP batch reads, actor-owned flat keyword-list load/save commits, and the Develop
+persistence-session owner for undo, lifecycle, edited-preview inventory, and Primary-versus-named-version intent.
+The combined selection passed 52 tests, the repository gate passed, and the serial unfiltered current-source gate
+passed 1,923 tests. Lower-priority filesystem inventory, real-volume evidence, broader Develop ownership, and
+manual/external gates keep the audit at 63 of 75.
 
 ## File organization convention
 

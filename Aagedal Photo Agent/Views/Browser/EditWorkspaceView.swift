@@ -259,13 +259,10 @@ struct EditWorkspaceView: View {
     /// Owns sticky render-only section eye toggles for this workspace lifetime. Unlike held-key
     /// comparisons, these deliberately survive image navigation.
     @State private var sectionMutes = DevelopSectionMuteCoordinator()
-    @State private var editUndoManager = UndoManager()
+    /// Owns image-scoped undo plus the workspace-wide inventory of edited previews that must be
+    /// refreshed on exit. Durable XMP/version writes remain at this view boundary.
+    @State private var persistenceSession = DevelopPersistenceSessionCoordinator()
     @State private var watermarkStore = WatermarkStore.shared
-    /// URLs whose develop settings actually changed during this edit session. On exit these are
-    /// proactively re-rendered into the full-screen + thumbnail caches so the return to culling is
-    /// instant and correct, rather than catching up reactively a beat later. Populated wherever
-    /// edits are written back to `images[].cameraRawSettings`; consumed in `handleEditWorkspaceDisappear`.
-    @State private var editedURLsThisSession: Set<URL> = []
     @State private var metalPipeline: MetalLivePreviewPipeline?
     @State private var metalCoordinator = MetalPreviewView.Coordinator()
     /// Owns image-scoped layer selection plus rename/reorder/delete policy. The coordinator
@@ -1661,25 +1658,25 @@ struct EditWorkspaceView: View {
                         .accessibilityLabel(showCropControls ? "Finish Crop" : "Crop")
 
                         Button {
-                            editUndoManager.undo()
+                            persistenceSession.undo()
                         } label: {
                             Image(systemName: "arrow.uturn.backward")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .disabled(!editUndoManager.canUndo)
+                        .disabled(!persistenceSession.canUndo)
                         .help("Undo (⌘Z)")
 
                         Button {
-                            editUndoManager.redo()
+                            persistenceSession.redo()
                         } label: {
                             Image(systemName: "arrow.uturn.forward")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .disabled(!editUndoManager.canRedo)
+                        .disabled(!persistenceSession.canRedo)
                         .help("Redo (⇧⌘Z)")
                     }
                     if canEditSingleImage, hasDevelopAdjustments {
@@ -2333,7 +2330,7 @@ struct EditWorkspaceView: View {
         metadataViewModel.editingMetadata.cameraRaw = settings
         // Named-version changes belong to the JSON catalog, not the XMP-backed Primary record.
         metadataViewModel.hasChanges = false
-        editUndoManager.removeAllActions()
+        persistenceSession.removeAllUndoActions()
         selectedLayer = .global
         maskInteraction.stopBrushPainting()
         resetCropZoom()
@@ -2716,7 +2713,7 @@ struct EditWorkspaceView: View {
         // so the return to the grid/loupe is instant and correct instead of catching up reactively
         // a beat later (which flashes a stale preview). `commitEditAdjustments` above already flushed
         // the current image's edit through `syncCameraRawToImageFile`, so it's in the set too.
-        let editedURLs = editedURLsThisSession
+        let editedURLs = persistenceSession.endWorkspace()
         guard !editedURLs.isEmpty else { return }
 
         // Snapshot settings + orientation off the MainActor model into plain values so the warm
@@ -2768,6 +2765,7 @@ struct EditWorkspaceView: View {
     }
 
     private func handleEditWorkspaceAppear() {
+        persistenceSession.beginWorkspace()
         interactiveRender.beginWorkspace()
         exportSession.beginWorkspaceSession()
         ensureSingleSelection()
@@ -2880,6 +2878,7 @@ struct EditWorkspaceView: View {
     private func loadSelectedImagePreview() {
         let filename = selectedImageURL?.lastPathComponent ?? "nil"
         editLog.info("[\(filename)] loadSelectedImagePreview: resetting state, cancelling previous tasks")
+        persistenceSession.beginImageSession(selectedImageURL)
         colorLUTImport.beginImageSession(selectedImageURL)
         layerSession.beginImageSession(selectedImageURL)
         transientPreview.beginImageSession(selectedImageURL)
@@ -3901,13 +3900,16 @@ struct EditWorkspaceView: View {
     }
 
     private func commitEditAdjustments() {
-        if developVersionCatalog?.activeVersionID != nil {
+        let intent = persistenceSession.persistenceIntent(
+            hasChanges: metadataViewModel.hasChanges,
+            editsNamedVersion: developVersionCatalog?.activeVersionID != nil
+        )
+        if intent == .commitNamedVersion {
             syncCameraRawToImageFile()
             scheduleActiveDevelopVersionSave()
             return
         }
-
-        guard metadataViewModel.hasChanges else { return }
+        guard intent == .commitPrimary else { return }
 
         // Develop edits persist to the .xmp sidecar during editing — the source file is NEVER
         // rewritten in place by the editor. Embedding XMP into the source on every tweak races
@@ -3932,13 +3934,16 @@ struct EditWorkspaceView: View {
     /// user-initiated, so this one-off file write carries negligible decode-race risk. RAW is
     /// never written to the file.
     private func commitDevelopReset() {
-        if developVersionCatalog?.activeVersionID != nil {
+        let intent = persistenceSession.persistenceIntent(
+            hasChanges: metadataViewModel.hasChanges,
+            editsNamedVersion: developVersionCatalog?.activeVersionID != nil
+        )
+        if intent == .commitNamedVersion {
             syncCameraRawToImageFile()
             scheduleActiveDevelopVersionSave()
             return
         }
-
-        guard metadataViewModel.hasChanges else { return }
+        guard intent == .commitPrimary else { return }
         syncCameraRawToImageFile()
 
         let sourceHasEmbeddedCRS: Bool = {
@@ -3971,7 +3976,7 @@ struct EditWorkspaceView: View {
         // The full-screen cache's edited render was baked under the old settings.
         browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
         // Remember this image so its edited previews get pre-warmed on exit (see disappear handler).
-        editedURLsThisSession.insert(url)
+        persistenceSession.recordPublishedSettingsChange(for: url)
     }
 
     private func fittedImageRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
@@ -4138,12 +4143,16 @@ struct EditWorkspaceView: View {
             metadataViewModel.markChanged()
         }
 
-        editUndoManager.registerUndo(withTarget: metadataViewModel) { vm in
-            vm.editingMetadata.cameraRaw = oldSettings
-            if editsNamedVersion {
-                vm.hasChanges = false
+        persistenceSession.recordMutation(
+            before: oldSettings,
+            after: newSettings,
+            editsNamedVersion: editsNamedVersion
+        ) { settings, restoresNamedVersion in
+            metadataViewModel.editingMetadata.cameraRaw = settings
+            if restoresNamedVersion {
+                metadataViewModel.hasChanges = false
             } else {
-                vm.markChanged()
+                metadataViewModel.markChanged()
             }
         }
     }
@@ -7668,7 +7677,7 @@ struct EditWorkspaceView: View {
                 }
                 browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
                 browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
-                editedURLsThisSession.insert(url)
+                persistenceSession.recordPublishedSettingsChanges(for: [url])
             }
         }
 
@@ -8447,9 +8456,9 @@ struct EditWorkspaceView: View {
         // Cmd+Z / Cmd+Shift+Z — undo/redo
         if chars == "z" && modifiers.contains(.command) {
             if modifiers.contains(.shift) {
-                editUndoManager.redo()
+                persistenceSession.redo()
             } else {
-                editUndoManager.undo()
+                persistenceSession.undo()
             }
             return nil
         }

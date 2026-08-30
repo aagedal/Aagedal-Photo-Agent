@@ -167,6 +167,7 @@ final class BrowserViewModel {
     /// each pane spinning up its own (which would double concurrent decodes and thrash).
     let thumbnailService: ThumbnailService
     let metadataReadService = SwiftExifReadService()
+    private let xmpSidecarLoadService: BrowserXMPSidecarLoadService
     @ObservationIgnored private(set) var writeEngine: any MetadataWriteEngine = SwiftExifWriteEngine()
     /// Injected for the same reason as `thumbnailService` — sharing one IOSurface pool across
     /// panes avoids doubling full-screen-preview memory pressure.
@@ -207,6 +208,7 @@ final class BrowserViewModel {
     }
     @ObservationIgnored private var isAutoRefreshing = false
     @ObservationIgnored private var isMetadataLoading = false
+    @ObservationIgnored private var metadataLoadRequestID: UUID?
     @ObservationIgnored private var metadataProgressID: UUID?
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
     @ObservationIgnored private var retinaPreCacheTask: Task<Void, Never>?
@@ -245,11 +247,13 @@ final class BrowserViewModel {
     init(thumbnailService: ThumbnailService = ThumbnailService(),
          fullScreenImageCache: FullScreenImageCache = FullScreenImageCache(),
          imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler(),
-         fileSystemService: FileSystemService = FileSystemService()) {
+         fileSystemService: FileSystemService = FileSystemService(),
+         xmpSidecarLoadService: BrowserXMPSidecarLoadService = BrowserXMPSidecarLoadService()) {
         self.thumbnailService = thumbnailService
         self.fullScreenImageCache = fullScreenImageCache
         self.imageTrashHandler = imageTrashHandler
         self.fileSystemService = fileSystemService
+        self.xmpSidecarLoadService = xmpSidecarLoadService
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
@@ -667,6 +671,9 @@ final class BrowserViewModel {
         iCloudDownloadNotice = nil
         metadataLoadingProgress = nil
         metadataProgressID = nil
+        metadataLoadRequestID = nil
+        isMetadataLoading = false
+        pendingMetadataURLs.removeAll()
         images = []
         selectedImageIDs.removeAll()
         lastClickedImageURL = nil
@@ -1058,6 +1065,8 @@ final class BrowserViewModel {
             pendingMetadataURLs.formUnion(urls)
             return
         }
+        let requestID = UUID()
+        metadataLoadRequestID = requestID
         isMetadataLoading = true
         let folderURL = currentFolderURL
         let progressID: UUID? = showsProgress ? UUID() : nil
@@ -1066,12 +1075,15 @@ final class BrowserViewModel {
             metadataLoadingProgress = MetadataLoadingProgress(completed: 0, total: urls.count)
         }
         defer {
-            isMetadataLoading = false
-            if let progressID, metadataProgressID == progressID {
-                metadataLoadingProgress = nil
-                metadataProgressID = nil
+            if metadataLoadRequestID == requestID {
+                metadataLoadRequestID = nil
+                isMetadataLoading = false
+                if let progressID, metadataProgressID == progressID {
+                    metadataLoadingProgress = nil
+                    metadataProgressID = nil
+                }
+                drainPendingMetadataIfNeeded()
             }
-            drainPendingMetadataIfNeeded()
         }
 
         do {
@@ -1090,7 +1102,13 @@ final class BrowserViewModel {
         perfLog.info("[BrowserVM] loadBasicMetadata START — \(urls.count) images, \(totalBatches) batches")
 
         suppressImagesCascade = true
-        defer { suppressImagesCascade = false }
+        defer {
+            // A folder switch resets this flag for its replacement request. Do not let the
+            // superseded task's deferred cleanup disable batching in that newer request.
+            if metadataLoadRequestID == requestID {
+                suppressImagesCascade = false
+            }
+        }
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
             guard !Task.isCancelled, currentFolderURL == folderURL else { return }
             let batchEnd = min(batchStart + batchSize, urls.count)
@@ -1099,18 +1117,31 @@ final class BrowserViewModel {
             let batchTimer = ContinuousClock.now
 
             do {
-                async let xmpDataLoad = loadXMPSidecarDataBatch(for: batchURLs)
+                async let xmpDataLoad = xmpSidecarLoadService.load(
+                    imageURLs: batchURLs,
+                    requestID: requestID
+                )
                 let results = try await metadataReadService.readBatchBasicMetadata(urls: batchURLs)
-                let xmpDataMap = await xmpDataLoad
+                let xmpLoadResult = await xmpDataLoad
+                guard !Task.isCancelled,
+                      currentFolderURL == folderURL,
+                      metadataLoadRequestID == requestID,
+                      case .complete(let xmpSnapshot) = xmpLoadResult,
+                      xmpSnapshot.requestID == requestID
+                else { return }
                 let imageAspects = Dictionary(uniqueKeysWithValues: results.compactMap { dict -> (URL, Double)? in
                     guard let sourcePath = dict[MetadataDictKey.sourceFile] as? String,
                           let aspect = metadataDictPixelAspect(dict) else { return nil }
                     return (URL(fileURLWithPath: sourcePath), aspect)
                 })
                 let xmpMetadataMap = await Self.parseXMPSidecarMetadataBatch(
-                    xmpDataMap,
+                    xmpSnapshot.dataByImageURL,
                     imageAspects: imageAspects
                 )
+                guard !Task.isCancelled,
+                      currentFolderURL == folderURL,
+                      metadataLoadRequestID == requestID
+                else { return }
                 let batchMs = batchTimer.elapsedMilliseconds()
                 perfLog.info("[BrowserVM] batch \(batchIndex)/\(totalBatches) DONE — \(batchURLs.count) files in \(batchMs)ms")
                 applyBatchMetadataResults(
@@ -1130,30 +1161,13 @@ final class BrowserViewModel {
                 )
             }
         }
+        guard !Task.isCancelled,
+              currentFolderURL == folderURL,
+              metadataLoadRequestID == requestID
+        else { return }
         let totalMs = totalBatchStart.elapsedMilliseconds()
         perfLog.info("[BrowserVM] loadBasicMetadata DONE — \(urls.count) images in \(totalMs)ms")
         rebuildSortedCache()
-    }
-
-    /// Reads each batch's XMP sidecar bytes off the main actor in parallel.
-    /// `Data(contentsOf:)` can stall on iCloud-not-downloaded sidecars; serializing
-    /// these reads on MainActor inside `applyBatchMetadataResults` was producing
-    /// 30+s freezes on first folder open. Parallelize the I/O so the slowest
-    /// single sidecar bounds the batch instead of the sum.
-    private func loadXMPSidecarDataBatch(for urls: [URL]) async -> [URL: Data] {
-        let svc = xmpSidecarService
-        return await withTaskGroup(of: (URL, Data?).self) { group in
-            for url in urls {
-                group.addTask {
-                    (url, svc.sidecarDataIfExists(for: url))
-                }
-            }
-            var map: [URL: Data] = [:]
-            for await (url, data) in group {
-                if let data { map[url] = data }
-            }
-            return map
-        }
     }
 
     /// Parses already-read sidecars outside the main actor. The embedded metadata aspect

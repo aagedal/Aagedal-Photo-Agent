@@ -7,19 +7,19 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		AE3A10000000000000000002 /* AnalysisExportFileServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */; };
-		7EA0E1000000000000000002 /* TeamRosterExportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
-		A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */; };
-		F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */; };
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
+		7EA0E1000000000000000002 /* TeamRosterExportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */; };
+		B0A0E1000000000000000002 /* BrowserXMPSidecarLoadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */; };
+		B0A0E2000000000000000002 /* KeywordListEditorPersistenceServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftExif */; };
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
+		A02608260000000000000002 /* VoiceMemoCompanionRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */; };
+		A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */; };
 		A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */; };
 		A770F2000000000000000002 /* CaptionWorkspaceSpeedToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */; };
 		A770F3000000000000000002 /* AccessibilityKeyboardAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */; };
 		A770F4000000000000000002 /* ImageAnalysisProjectArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F4000000000000000001 /* ImageAnalysisProjectArchiveTests.swift */; };
-		EDDA71000000000000000002 /* EditorialDateCreatedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */; };
 		A8F5A4000000000000000002 /* DeliveryStagingProductionFactoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F5A4000000000000000001 /* DeliveryStagingProductionFactoryTests.swift */; };
 		A95300000000000000000002 /* MetadataHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95300000000000000000001 /* MetadataHistoryTests.swift */; };
 		AB0100000000000000000002 /* ApprovedListBypassTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0100000000000000000001 /* ApprovedListBypassTests.swift */; };
@@ -44,8 +44,6 @@
 		AB2000000000000000000002 /* NormalizedCropRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2000000000000000000001 /* NormalizedCropRegionTests.swift */; };
 		AB2100000000000000000002 /* TechnicalMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2100000000000000000001 /* TechnicalMetadataTests.swift */; };
 		AB2200000000000000000002 /* WatermarkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2200000000000000000001 /* WatermarkStoreTests.swift */; };
-		DD0100000000000000000002 /* DurableDeletionTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */; };
-		DD0200000000000000000002 /* RosterStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0200000000000000000001 /* RosterStoreTests.swift */; };
 		AB2300000000000000000002 /* WatermarkRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2300000000000000000001 /* WatermarkRenderingTests.swift */; };
 		AB2400000000000000000002 /* DevelopInteractionBehaviorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */; };
 		AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2500000000000000000001 /* DevelopTemplateTests.swift */; };
@@ -63,7 +61,6 @@
 		AB3700000000000000000002 /* SourceImageRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000001 /* SourceImageRevisionTests.swift */; };
 		AB3800000000000000000002 /* AtomicJSONDocumentStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */; };
 		AB3900000000000000000002 /* SourceImageDiscoveryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */; };
-		A02608260000000000000002 /* VoiceMemoCompanionRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */; };
 		AB4000000000000000000002 /* DisplayImageTransformTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4000000000000000000001 /* DisplayImageTransformTests.swift */; };
 		AB4100000000000000000002 /* ViewportStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4100000000000000000001 /* ViewportStateTests.swift */; };
 		AB4200000000000000000002 /* AnalysisCaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4200000000000000000001 /* AnalysisCaseTests.swift */; };
@@ -74,16 +71,10 @@
 		AB4700000000000000000002 /* AnalysisEvidenceJPEGRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4700000000000000000001 /* AnalysisEvidenceJPEGRendererTests.swift */; };
 		AB4800000000000000000002 /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */; };
 		AB4900000000000000000002 /* DevelopVersionCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */; };
-		D3C001000000000000000002 /* DevelopVersionSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C001000000000000000001 /* DevelopVersionSessionCoordinatorTests.swift */; };
-		D3C002000000000000000002 /* AIMaskSelectionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C002000000000000000001 /* AIMaskSelectionCoordinatorTests.swift */; };
-		D3C003000000000000000002 /* DevelopComparisonRenderCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C003000000000000000001 /* DevelopComparisonRenderCoordinatorTests.swift */; };
-		D3C004000000000000000002 /* DevelopCropSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C004000000000000000001 /* DevelopCropSessionCoordinatorTests.swift */; };
-		D3C005000000000000000002 /* DevelopWhiteBalanceSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C005000000000000000001 /* DevelopWhiteBalanceSessionCoordinatorTests.swift */; };
-		D3C006000000000000000002 /* DevelopInteractiveRenderCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */; };
 		AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */; };
 		AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */; };
 		AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5200000000000000000001 /* MetadataValidationTests.swift */; };
-		D4A700000000000000000002 /* MetadataReviewValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A700000000000000000001 /* MetadataReviewValidationTests.swift */; };
+		AE3A10000000000000000002 /* AnalysisExportFileServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		BA7C03000000000000000002 /* BatchRenameRecipeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */; };
 		BA7C03010000000000000002 /* RenamePlanningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA7C03010000000000000001 /* RenamePlanningServiceTests.swift */; };
@@ -110,6 +101,16 @@
 		D34DF1000000000000000002 /* DeadlinePreflightServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34DF1000000000000000001 /* DeadlinePreflightServiceTests.swift */; };
 		D34DF2000000000000000002 /* DeadlinePreflightCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34DF2000000000000000001 /* DeadlinePreflightCoordinatorTests.swift */; };
 		D34DF3000000000000000002 /* DeadlinePreflightLiveSnapshotAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34DF3000000000000000001 /* DeadlinePreflightLiveSnapshotAdapterTests.swift */; };
+		D3C001000000000000000002 /* DevelopVersionSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C001000000000000000001 /* DevelopVersionSessionCoordinatorTests.swift */; };
+		D3C002000000000000000002 /* AIMaskSelectionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C002000000000000000001 /* AIMaskSelectionCoordinatorTests.swift */; };
+		D3C003000000000000000002 /* DevelopComparisonRenderCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C003000000000000000001 /* DevelopComparisonRenderCoordinatorTests.swift */; };
+		D3C004000000000000000002 /* DevelopCropSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C004000000000000000001 /* DevelopCropSessionCoordinatorTests.swift */; };
+		D3C005000000000000000002 /* DevelopWhiteBalanceSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C005000000000000000001 /* DevelopWhiteBalanceSessionCoordinatorTests.swift */; };
+		D3C006000000000000000002 /* DevelopInteractiveRenderCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */; };
+		D3C007000000000000000002 /* DevelopPersistenceSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */; };
+		D4A700000000000000000002 /* MetadataReviewValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A700000000000000000001 /* MetadataReviewValidationTests.swift */; };
+		DD0100000000000000000002 /* DurableDeletionTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */; };
+		DD0200000000000000000002 /* RosterStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0200000000000000000001 /* RosterStoreTests.swift */; };
 		DE1A01000000000000000002 /* DeliveryReceiptRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE1A01000000000000000001 /* DeliveryReceiptRepositoryTests.swift */; };
 		DE1A02000000000000000002 /* DeliveryReceiptLibraryModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE1A02000000000000000001 /* DeliveryReceiptLibraryModelTests.swift */; };
 		DE1A03000000000000000002 /* DeliveryReceiptAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE1A03000000000000000001 /* DeliveryReceiptAssemblerTests.swift */; };
@@ -119,18 +120,20 @@
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
 		EC0F10000000000000000002 /* EditorialContainerFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0F10000000000000000001 /* EditorialContainerFixtureTests.swift */; };
 		ED1700000000000000000002 /* EditorialImageSupplierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED1700000000000000000001 /* EditorialImageSupplierTests.swift */; };
+		EDDA71000000000000000002 /* EditorialDateCreatedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */; };
+		F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */; };
 		F2BA71000000000000000002 /* MetadataBatchSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		F00D0000000000000000000A /* PBXContainerItemProxy */ = {
+		88530002139060FF0EA7D219 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 8E0556AB2F28C3F600BCFB49 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 8E0556B22F28C3F600BCFB49;
 			remoteInfo = "Aagedal Photo Agent";
 		};
-		88530002139060FF0EA7D219 /* PBXContainerItemProxy */ = {
+		F00D0000000000000000000A /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 8E0556AB2F28C3F600BCFB49 /* Project object */;
 			proxyType = 1;
@@ -140,27 +143,23 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisExportFileServiceTests.swift; sourceTree = "<group>"; };
-		7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TeamRosterExportServiceTests.swift; sourceTree = "<group>"; };
-		1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageMemoryCoordinatorTests.swift; sourceTree = "<group>"; };
-		A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppStartupSignpostStateMachineTests.swift; sourceTree = "<group>"; };
-		F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoreWorkflowSmokeTests.swift; sourceTree = "<group>"; };
-		F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent UI Smoke Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageMemoryCoordinatorTests.swift; sourceTree = "<group>"; };
 		38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataTests.swift; sourceTree = "<group>"; };
+		7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TeamRosterExportServiceTests.swift; sourceTree = "<group>"; };
+		B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserXMPSidecarLoadServiceTests.swift; sourceTree = "<group>"; };
+		B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListEditorPersistenceServiceTests.swift; sourceTree = "<group>"; };
 		8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Aagedal Photo Agent.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		8E0557412F29098D00BCFB49 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		8E05576D2F2A149800BCFB49 /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TODO.md; sourceTree = "<group>"; };
 		9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataSidecarServiceTests.swift; sourceTree = "<group>"; };
+		A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceMemoCompanionRepositoryTests.swift; sourceTree = "<group>"; };
+		A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppStartupSignpostStateMachineTests.swift; sourceTree = "<group>"; };
 		A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListServiceTests.swift; sourceTree = "<group>"; };
 		A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApplicationTerminationFlushCoordinatorTests.swift; sourceTree = "<group>"; };
 		A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionWorkspaceSpeedToolsTests.swift; sourceTree = "<group>"; };
 		A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AccessibilityKeyboardAuditTests.swift; sourceTree = "<group>"; };
 		A770F4000000000000000001 /* ImageAnalysisProjectArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageAnalysisProjectArchiveTests.swift; sourceTree = "<group>"; };
-		D3C004000000000000000001 /* DevelopCropSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopCropSessionCoordinatorTests.swift; sourceTree = "<group>"; };
-		D3C005000000000000000001 /* DevelopWhiteBalanceSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopWhiteBalanceSessionCoordinatorTests.swift; sourceTree = "<group>"; };
-		D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopInteractiveRenderCoordinatorTests.swift; sourceTree = "<group>"; };
-		EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialDateCreatedTests.swift; sourceTree = "<group>"; };
 		A8F5A4000000000000000001 /* DeliveryStagingProductionFactoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryStagingProductionFactoryTests.swift; sourceTree = "<group>"; };
 		A95300000000000000000001 /* MetadataHistoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataHistoryTests.swift; sourceTree = "<group>"; };
 		AB0100000000000000000001 /* ApprovedListBypassTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListBypassTests.swift; sourceTree = "<group>"; };
@@ -185,8 +184,6 @@
 		AB2000000000000000000001 /* NormalizedCropRegionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NormalizedCropRegionTests.swift; sourceTree = "<group>"; };
 		AB2100000000000000000001 /* TechnicalMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TechnicalMetadataTests.swift; sourceTree = "<group>"; };
 		AB2200000000000000000001 /* WatermarkStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatermarkStoreTests.swift; sourceTree = "<group>"; };
-		DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DurableDeletionTransactionTests.swift; sourceTree = "<group>"; };
-		DD0200000000000000000001 /* RosterStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RosterStoreTests.swift; sourceTree = "<group>"; };
 		AB2300000000000000000001 /* WatermarkRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatermarkRenderingTests.swift; sourceTree = "<group>"; };
 		AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopInteractionBehaviorTests.swift; sourceTree = "<group>"; };
 		AB2500000000000000000001 /* DevelopTemplateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateTests.swift; sourceTree = "<group>"; };
@@ -204,7 +201,6 @@
 		AB3700000000000000000001 /* SourceImageRevisionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SourceImageRevisionTests.swift; sourceTree = "<group>"; };
 		AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AtomicJSONDocumentStoreTests.swift; sourceTree = "<group>"; };
 		AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SourceImageDiscoveryServiceTests.swift; sourceTree = "<group>"; };
-		A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceMemoCompanionRepositoryTests.swift; sourceTree = "<group>"; };
 		AB4000000000000000000001 /* DisplayImageTransformTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DisplayImageTransformTests.swift; sourceTree = "<group>"; };
 		AB4100000000000000000001 /* ViewportStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ViewportStateTests.swift; sourceTree = "<group>"; };
 		AB4200000000000000000001 /* AnalysisCaseTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisCaseTests.swift; sourceTree = "<group>"; };
@@ -215,13 +211,10 @@
 		AB4700000000000000000001 /* AnalysisEvidenceJPEGRendererTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisEvidenceJPEGRendererTests.swift; sourceTree = "<group>"; };
 		AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ComparisonCoordinatorTests.swift; sourceTree = "<group>"; };
 		AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopVersionCatalogTests.swift; sourceTree = "<group>"; };
-		D3C001000000000000000001 /* DevelopVersionSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopVersionSessionCoordinatorTests.swift; sourceTree = "<group>"; };
-		D3C002000000000000000001 /* AIMaskSelectionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AIMaskSelectionCoordinatorTests.swift; sourceTree = "<group>"; };
-		D3C003000000000000000001 /* DevelopComparisonRenderCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopComparisonRenderCoordinatorTests.swift; sourceTree = "<group>"; };
 		AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataTemplatePersistenceTests.swift; sourceTree = "<group>"; };
 		AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisSolarPositionCalculatorTests.swift; sourceTree = "<group>"; };
 		AB5200000000000000000001 /* MetadataValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataValidationTests.swift; sourceTree = "<group>"; };
-		D4A700000000000000000001 /* MetadataReviewValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataReviewValidationTests.swift; sourceTree = "<group>"; };
+		AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisExportFileServiceTests.swift; sourceTree = "<group>"; };
 		BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameRecipeTests.swift; sourceTree = "<group>"; };
 		BA7C03010000000000000001 /* RenamePlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenamePlanningServiceTests.swift; sourceTree = "<group>"; };
 		BA7C03020000000000000001 /* BatchRenameSheetStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameSheetStateTests.swift; sourceTree = "<group>"; };
@@ -247,6 +240,16 @@
 		D34DF1000000000000000001 /* DeadlinePreflightServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeadlinePreflightServiceTests.swift; sourceTree = "<group>"; };
 		D34DF2000000000000000001 /* DeadlinePreflightCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeadlinePreflightCoordinatorTests.swift; sourceTree = "<group>"; };
 		D34DF3000000000000000001 /* DeadlinePreflightLiveSnapshotAdapterTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeadlinePreflightLiveSnapshotAdapterTests.swift; sourceTree = "<group>"; };
+		D3C001000000000000000001 /* DevelopVersionSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopVersionSessionCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C002000000000000000001 /* AIMaskSelectionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AIMaskSelectionCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C003000000000000000001 /* DevelopComparisonRenderCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopComparisonRenderCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C004000000000000000001 /* DevelopCropSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopCropSessionCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C005000000000000000001 /* DevelopWhiteBalanceSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopWhiteBalanceSessionCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopInteractiveRenderCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopPersistenceSessionCoordinatorTests.swift; sourceTree = "<group>"; };
+		D4A700000000000000000001 /* MetadataReviewValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataReviewValidationTests.swift; sourceTree = "<group>"; };
+		DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DurableDeletionTransactionTests.swift; sourceTree = "<group>"; };
+		DD0200000000000000000001 /* RosterStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RosterStoreTests.swift; sourceTree = "<group>"; };
 		DE1A01000000000000000001 /* DeliveryReceiptRepositoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryReceiptRepositoryTests.swift; sourceTree = "<group>"; };
 		DE1A02000000000000000001 /* DeliveryReceiptLibraryModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryReceiptLibraryModelTests.swift; sourceTree = "<group>"; };
 		DE1A03000000000000000001 /* DeliveryReceiptAssemblerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryReceiptAssemblerTests.swift; sourceTree = "<group>"; };
@@ -255,6 +258,9 @@
 		E7EC01020000000000000001 /* RenameOriginalFilenameTransactionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenameOriginalFilenameTransactionTests.swift; sourceTree = "<group>"; };
 		EC0F10000000000000000001 /* EditorialContainerFixtureTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialContainerFixtureTests.swift; sourceTree = "<group>"; };
 		ED1700000000000000000001 /* EditorialImageSupplierTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialImageSupplierTests.swift; sourceTree = "<group>"; };
+		EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialDateCreatedTests.swift; sourceTree = "<group>"; };
+		F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoreWorkflowSmokeTests.swift; sourceTree = "<group>"; };
+		F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent UI Smoke Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataBatchSelectionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -281,13 +287,6 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		F00D00000000000000000005 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		8E0556B02F28C3F600BCFB49 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -304,22 +303,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F00D00000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		F00D00000000000000000004 /* Aagedal Photo Agent UI Smoke Tests */ = {
-			isa = PBXGroup;
-			children = (
-				F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */,
-			);
-			path = "Aagedal Photo Agent UI Smoke Tests";
-			sourceTree = "<group>";
-		};
 		025F811ED39BE1D910E68E81 /* Aagedal Photo Agent Tests */ = {
 			isa = PBXGroup;
 			children = (
 				AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */,
 				7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */,
+				B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */,
+				B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */,
 				1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */,
 				A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */,
 				38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */,
@@ -384,6 +384,7 @@
 				D3C004000000000000000001 /* DevelopCropSessionCoordinatorTests.swift */,
 				D3C005000000000000000001 /* DevelopWhiteBalanceSessionCoordinatorTests.swift */,
 				D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */,
+				D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */,
 				AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */,
 				AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */,
 				AB5200000000000000000001 /* MetadataValidationTests.swift */,
@@ -454,27 +455,17 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		F00D00000000000000000004 /* Aagedal Photo Agent UI Smoke Tests */ = {
+			isa = PBXGroup;
+			children = (
+				F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */,
+			);
+			path = "Aagedal Photo Agent UI Smoke Tests";
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		F00D00000000000000000008 /* Aagedal Photo Agent UI Smoke Tests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = F00D0000000000000000000D /* Build configuration list for PBXNativeTarget "Aagedal Photo Agent UI Smoke Tests" */;
-			buildPhases = (
-				F00D00000000000000000006 /* Sources */,
-				F00D00000000000000000005 /* Frameworks */,
-				F00D00000000000000000007 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				F00D00000000000000000009 /* PBXTargetDependency */,
-			);
-			name = "Aagedal Photo Agent UI Smoke Tests";
-			productName = "Aagedal Photo Agent UI Smoke Tests";
-			productReference = F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
-		};
 		8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 8E0556BE2F28C3F900BCFB49 /* Build configuration list for PBXNativeTarget "Aagedal Photo Agent" */;
@@ -513,6 +504,24 @@
 			productName = "Aagedal Photo Agent Tests";
 			productReference = 0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		F00D00000000000000000008 /* Aagedal Photo Agent UI Smoke Tests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F00D0000000000000000000D /* Build configuration list for PBXNativeTarget "Aagedal Photo Agent UI Smoke Tests" */;
+			buildPhases = (
+				F00D00000000000000000006 /* Sources */,
+				F00D00000000000000000005 /* Frameworks */,
+				F00D00000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F00D00000000000000000009 /* PBXTargetDependency */,
+			);
+			name = "Aagedal Photo Agent UI Smoke Tests";
+			productName = "Aagedal Photo Agent UI Smoke Tests";
+			productReference = F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
@@ -559,13 +568,6 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		F00D00000000000000000007 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		8E0556B12F28C3F600BCFB49 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -574,6 +576,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		8E1E7BF9FD66DC94F2E60821 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F00D00000000000000000007 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -604,20 +613,14 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		F00D00000000000000000006 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		32D292541781394DC612E9B2 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				AE3A10000000000000000002 /* AnalysisExportFileServiceTests.swift in Sources */,
 				7EA0E1000000000000000002 /* TeamRosterExportServiceTests.swift in Sources */,
+				B0A0E1000000000000000002 /* BrowserXMPSidecarLoadServiceTests.swift in Sources */,
+				B0A0E2000000000000000002 /* KeywordListEditorPersistenceServiceTests.swift in Sources */,
 				1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */,
 				A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */,
 				1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */,
@@ -682,6 +685,7 @@
 				D3C004000000000000000002 /* DevelopCropSessionCoordinatorTests.swift in Sources */,
 				D3C005000000000000000002 /* DevelopWhiteBalanceSessionCoordinatorTests.swift in Sources */,
 				D3C006000000000000000002 /* DevelopInteractiveRenderCoordinatorTests.swift in Sources */,
+				D3C007000000000000000002 /* DevelopPersistenceSessionCoordinatorTests.swift in Sources */,
 				AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */,
 				AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */,
 				AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */,
@@ -736,62 +740,32 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F00D00000000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		F00D00000000000000000009 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			name = "Aagedal Photo Agent";
-			target = 8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */;
-			targetProxy = F00D0000000000000000000A /* PBXContainerItemProxy */;
-		};
 		2974ADFA266F2A27871845CC /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = "Aagedal Photo Agent";
 			target = 8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */;
 			targetProxy = 88530002139060FF0EA7D219 /* PBXContainerItemProxy */;
 		};
+		F00D00000000000000000009 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = "Aagedal Photo Agent";
+			target = 8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */;
+			targetProxy = F00D0000000000000000000A /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		F00D0000000000000000000B /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = arm64;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 3R5QGG9DW6;
-				EXCLUDED_ARCHS = x86_64;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent.UI-Smoke-Tests";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 6.0;
-				TEST_TARGET_NAME = "Aagedal Photo Agent";
-			};
-			name = Debug;
-		};
-		F00D0000000000000000000C /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = arm64;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 3R5QGG9DW6;
-				EXCLUDED_ARCHS = x86_64;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent.UI-Smoke-Tests";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 6.0;
-				TEST_TARGET_NAME = "Aagedal Photo Agent";
-			};
-			name = Release;
-		};
 		56C3E2B22B2BF8584C9A038F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1043,18 +1017,47 @@
 			};
 			name = Debug;
 		};
+		F00D0000000000000000000B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
+				EXCLUDED_ARCHS = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent.UI-Smoke-Tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = "Aagedal Photo Agent";
+			};
+			name = Debug;
+		};
+		F00D0000000000000000000C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
+				EXCLUDED_ARCHS = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent.UI-Smoke-Tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = "Aagedal Photo Agent";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		F00D0000000000000000000D /* Build configuration list for PBXNativeTarget "Aagedal Photo Agent UI Smoke Tests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				F00D0000000000000000000B /* Debug */,
-				F00D0000000000000000000C /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		8E0556AE2F28C3F600BCFB49 /* Build configuration list for PBXProject "Aagedal Photo Agent" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1078,6 +1081,15 @@
 			buildConfigurations = (
 				56C3E2B22B2BF8584C9A038F /* Release */,
 				A0AC567F342F22C5A248C160 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F00D0000000000000000000D /* Build configuration list for PBXNativeTarget "Aagedal Photo Agent UI Smoke Tests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F00D0000000000000000000B /* Debug */,
+				F00D0000000000000000000C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

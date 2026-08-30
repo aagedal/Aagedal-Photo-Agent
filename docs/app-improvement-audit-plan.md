@@ -203,6 +203,17 @@ tests in 207 suites. They advance the broad Phase 3.1 and 4.1 gates without comp
 inventory, real-volume, manual, or architectural exit conditions.
 ([validation](plan-status-import-image-keyword-lut-continuation-2026-08-30.md))
 
+**Browser sidecar, keyword editor, and Develop persistence continuation (2026-08-31):** the checklist remains
+63 of 75. Browser XMP batch reads and flat keyword-list editor load/save operations now cross serialized actors
+with immutable complete, cancellation, partial-prefix, and durable-commit evidence; their MainActor owners reject
+stale publication while still broadcasting every durable keyword commit after dismissal. A new
+`DevelopPersistenceSessionCoordinator` owns workspace/image lifecycle, image-scoped undo/redo, stale-restoration
+rejection, edited-preview URL inventory, and explicit Primary-versus-named-version persistence intent. Existing
+XMP and version file commits remain at the injected view boundary. The combined selection passed 52 tests, the
+repository gate passed, and the serial unfiltered current-source gate passed 1,923 tests. Lower-priority direct
+paths, real-volume measurements, broader Develop persistence/modal/geometry ownership, and manual or external
+exit gates remain incomplete. ([validation](plan-status-browser-keyword-develop-persistence-continuation-2026-08-31.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
