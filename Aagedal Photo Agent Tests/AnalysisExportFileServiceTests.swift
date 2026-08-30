@@ -743,6 +743,32 @@ private nonisolated struct AnalysisExportFixture {
 
 @Suite("Export directory filesystem boundary")
 struct ExportDirectoryServiceTests {
+    @Test("edited-folder backup prepares destinations through the serialized directory boundary")
+    func editedFolderBackupSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/BackupEditedFilesSheet.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func startBackup()"))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n    @MainActor"))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains(
+            "try await ExportDirectoryService.shared.ensureDirectory("
+        ))
+        #expect(functionSource.contains(
+            "guard !commit.cancellationRequestedAfterCommit else"
+        ))
+        #expect(functionSource.contains("try Task.checkCancellation()"))
+        #expect(!functionSource.contains("FileManager.default.createDirectory"))
+    }
+
     @Test("Develop single-image save uses the serialized directory boundary")
     func developSingleImageSaveSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)

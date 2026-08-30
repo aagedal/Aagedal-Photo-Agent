@@ -259,15 +259,21 @@ struct BackupEditedFilesSheet: View {
 
         runningTask = Task.detached(priority: .userInitiated) {
             do {
-                let fm = FileManager.default
-                // Pre-create destination directories.
-                var dirs: Set<URL> = []
-                for job in jobs {
-                    dirs.insert(job.desiredPrimaryDest.deletingLastPathComponent())
+                // Destination creation shares the serialized export boundary. A directory
+                // creation cannot be interrupted once Foundation starts it, so stop before
+                // copying when cancellation is observed immediately after a durable commit.
+                let directories = Set(jobs.map {
+                    $0.desiredPrimaryDest.deletingLastPathComponent()
+                }).sorted { $0.path < $1.path }
+                for directory in directories {
+                    let commit = try await ExportDirectoryService.shared.ensureDirectory(
+                        at: directory
+                    )
+                    guard !commit.cancellationRequestedAfterCommit else {
+                        throw CancellationError()
+                    }
                 }
-                for dir in dirs {
-                    try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-                }
+                try Task.checkCancellation()
 
                 _ = try await copyService.run(
                     jobs: jobs,

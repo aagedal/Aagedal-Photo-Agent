@@ -295,12 +295,9 @@ struct EditWorkspaceView: View {
     @State private var previewNavigation = DevelopPreviewNavigationCoordinator()
     @State private var previewPaneFrame: CGRect = .zero
     @State private var isHoveringHDR = false
-    @State private var asShotWhiteBalance: (temperature: Float, tint: Float)?
-    /// White-balance eyedropper mode: when on, the preview shows a crosshair and a
-    /// click (or drag-rectangle) sets the WB from the sampled area.
-    @State private var isPickingWhiteBalance = false
-    /// Live marquee rectangle (preview-pane coordinates) drawn while dragging a WB sample.
-    @State private var wbPickDragRect: CGRect?
+    /// Owns image-scoped as-shot neutral data and the white-balance eyedropper lifecycle.
+    /// Sampling and Metal publication remain at this view boundary.
+    @State private var whiteBalanceSession = DevelopWhiteBalanceSessionCoordinator()
 
     // Image-scoped brush and matte-hover gesture state. Brush preferences survive navigation;
     // active pointer interactions do not.
@@ -317,13 +314,7 @@ struct EditWorkspaceView: View {
     // limit — it silently returns an identity (no-op) transform below 2000 K. Adobe Camera RAW
     // goes down to 1500 K; we can't represent that, so colder imported values are clamped at
     // render time and flagged via hasUnrepresentableWhiteBalance.
-    // Non-RAW: relative WB slider (see nonRawIncrementalTempRange).
-    private static let minKelvin = 2000.0
-    private static let maxKelvin = 50000.0
-    // -135 maps to the 2000 K floor (6500 - 135*33.33 ≈ 2000); going colder would hit
-    // CITemperatureAndTint's identity floor, so the slider stops there.
-    private static let nonRawIncrementalTempRange: ClosedRange<Double> = -135...100
-
+    // Non-RAW: relative WB slider; the coordinator owns its representable range.
     private var previewWorkingMaxPixelSize: CGFloat {
         let screenSize = NSScreen.main?.frame.size ?? CGSize(width: 1920, height: 1080)
         let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
@@ -1236,9 +1227,9 @@ struct EditWorkspaceView: View {
                                 }
 
                                 // White-balance eyedropper over the crop-framed preview.
-                                if isPickingWhiteBalance, !isShowingBefore {
+                                if whiteBalanceSession.isPickerActive, !isShowingBefore {
                                     WhiteBalancePickOverlay(
-                                        marquee: $wbPickDragRect,
+                                        marquee: whiteBalanceDragRectangleBinding,
                                         probe: { rect in
                                             probeLinearRGB(
                                                 forPaneRect: rect, paneSize: geometry.size,
@@ -1378,9 +1369,9 @@ struct EditWorkspaceView: View {
 
                             // White-balance eyedropper: click a neutral grey or drag a
                             // rectangle to average an area, then solve for temperature/tint.
-                            if isPickingWhiteBalance, !isShowingBefore {
+                            if whiteBalanceSession.isPickerActive, !isShowingBefore {
                                 WhiteBalancePickOverlay(
-                                    marquee: $wbPickDragRect,
+                                    marquee: whiteBalanceDragRectangleBinding,
                                     probe: { rect in
                                         probeLinearRGB(
                                             forPaneRect: rect, paneSize: geometry.size,
@@ -2638,6 +2629,7 @@ struct EditWorkspaceView: View {
         isSpaceHandToolActive = false
         transientPreview.endImageSession()
         cropSession.endImageSession()
+        whiteBalanceSession.endImageSession()
         maskInteraction.endImageSession()
         metalPipeline?.maskMattePreviewMaskID = nil
         developComparison.close()
@@ -2858,13 +2850,11 @@ struct EditWorkspaceView: View {
             orientation: selectedImageURL == nil ? nil : selectedImageOrientation
         )
         previewRender.beginImageSession()
+        whiteBalanceSession.beginImageSession(selectedImageURL)
         sourceImage = nil
         sourceCIImage = nil
-        asShotWhiteBalance = nil
-        isPickingWhiteBalance = false
         aiMaskSelection.beginImageSession(selectedImageURL)
         maskInteraction.beginImageSession(selectedImageURL)
-        wbPickDragRect = nil
         metalPipeline?.maskMattePreviewMaskID = nil
         metalPipeline?.asShotTemperature = 6500
         metalPipeline?.asShotTint = 0
@@ -2982,11 +2972,16 @@ struct EditWorkspaceView: View {
                     if let cachedWB {
                         // Apply cached as-shot WB from the flat RAW pre-decode so the
                         // precached texture renders with correct white balance and tone.
-                        asShotWhiteBalance = (temperature: cachedWB.neutralTemperature, tint: cachedWB.neutralTint)
-                        pipeline.asShotTemperature = Double(cachedWB.neutralTemperature)
-                        pipeline.asShotTint = Double(cachedWB.neutralTint)
-                        syncViewportToMetal()
-                        renderPreview()
+                        if whiteBalanceSession.publishAsShotNeutral(
+                            temperature: cachedWB.neutralTemperature,
+                            tint: cachedWB.neutralTint,
+                            for: selectedImageURL
+                        ) {
+                            pipeline.asShotTemperature = Double(cachedWB.neutralTemperature)
+                            pipeline.asShotTint = Double(cachedWB.neutralTint)
+                            syncViewportToMetal()
+                            renderPreview()
+                        }
                     }
                     editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
 
@@ -3013,8 +3008,12 @@ struct EditWorkspaceView: View {
                     let rawCIImage = rawResult?.image
                     let decodeElapsed = ContinuousClock.now - phase2Start
 
-                    if let rawResult {
-                        asShotWhiteBalance = (temperature: rawResult.neutralTemperature, tint: rawResult.neutralTint)
+                    if let rawResult,
+                       whiteBalanceSession.publishAsShotNeutral(
+                           temperature: rawResult.neutralTemperature,
+                           tint: rawResult.neutralTint,
+                           for: selectedImageURL
+                       ) {
                         // Propagate to Metal pipeline so WB adjustments are relative to as-shot
                         if let pipeline = metalPipeline {
                             pipeline.asShotTemperature = Double(rawResult.neutralTemperature)
@@ -3517,7 +3516,7 @@ struct EditWorkspaceView: View {
             // unedited baseline matches the previous SDR decode appearance.
             if isShowingBefore { return settingsForPipeline(nil) }
             var s = metadataViewModel.editingMetadata.cameraRaw
-            if let asShot = asShotWhiteBalance {
+            if let asShot = whiteBalanceSession.asShotNeutral {
                 s?.asShotNeutralTemperature = Double(asShot.temperature)
                 s?.asShotNeutralTint = Double(asShot.tint)
             }
@@ -3678,9 +3677,9 @@ struct EditWorkspaceView: View {
         }
 
         var settings = metadataViewModel.editingMetadata.cameraRaw
-        if let asShotWhiteBalance {
-            settings?.asShotNeutralTemperature = Double(asShotWhiteBalance.temperature)
-            settings?.asShotNeutralTint = Double(asShotWhiteBalance.tint)
+        if let asShot = whiteBalanceSession.asShotNeutral {
+            settings?.asShotNeutralTemperature = Double(asShot.temperature)
+            settings?.asShotNeutralTint = Double(asShot.tint)
         }
         let liveSettings = settingsForPipeline(settings)
         let renderToken = FullScreenImageCache.renderToken(
@@ -3807,9 +3806,9 @@ struct EditWorkspaceView: View {
             tonemapOnly.sourceHasHDRHeadroom = true
             return tonemapOnly
         }
-        if let asShotWhiteBalance {
-            result.asShotNeutralTemperature = Double(asShotWhiteBalance.temperature)
-            result.asShotNeutralTint = Double(asShotWhiteBalance.tint)
+        if let asShot = whiteBalanceSession.asShotNeutral {
+            result.asShotNeutralTemperature = Double(asShot.temperature)
+            result.asShotNeutralTint = Double(asShot.tint)
         }
         result.sourceHasHDRHeadroom = isRawSource ? true : nil
         return result
@@ -3837,7 +3836,7 @@ struct EditWorkspaceView: View {
         guard let sourceCIImage else { return }
         let settings: CameraRawSettings? = {
             var s = metadataViewModel.editingMetadata.cameraRaw
-            if let asShot = asShotWhiteBalance {
+            if let asShot = whiteBalanceSession.asShotNeutral {
                 s?.asShotNeutralTemperature = Double(asShot.temperature)
                 s?.asShotNeutralTint = Double(asShot.tint)
             }
@@ -3933,7 +3932,7 @@ struct EditWorkspaceView: View {
               let index = browserViewModel.urlToImageIndex[url] else { return }
         var newSettings = metadataViewModel.editingMetadata.cameraRaw
         // Propagate as-shot WB reference so thumbnail rendering computes the correct WB matrix
-        if let asShot = asShotWhiteBalance {
+        if let asShot = whiteBalanceSession.asShotNeutral {
             newSettings?.asShotNeutralTemperature = Double(asShot.temperature)
             newSettings?.asShotNeutralTint = Double(asShot.tint)
         }
@@ -4073,30 +4072,18 @@ struct EditWorkspaceView: View {
     /// allows down to 1500 K. Such values render clamped to 2000 K; this drives a notice so
     /// the user knows the result differs from ACR.
     private var hasUnrepresentableWhiteBalance: Bool {
-        guard let cameraRaw = metadataViewModel.editingMetadata.cameraRaw,
-              cameraRaw.whiteBalance != "As Shot" else { return false }
-        if usesIncrementalWhiteBalance {
-            if let incremental = cameraRaw.incrementalTemperature {
-                return Double(incremental) < Self.nonRawIncrementalTempRange.lowerBound
-            }
-        } else if let temperature = cameraRaw.temperature {
-            return Double(temperature) < Self.minKelvin
-        }
-        return false
+        whiteBalanceSession.hasUnrepresentableTemperature(
+            in: metadataViewModel.editingMetadata.cameraRaw,
+            usesIncrementalWhiteBalance: usesIncrementalWhiteBalance
+        )
     }
 
     private var asShotTemperatureKelvin: Double {
-        if let asShot = asShotWhiteBalance {
-            return Double(asShot.temperature)
-        }
-        return 6500
+        whiteBalanceSession.asShotTemperatureKelvin
     }
 
     private var asShotTintValue: Double {
-        if let asShot = asShotWhiteBalance {
-            return Double(asShot.tint)
-        }
-        return 0
+        whiteBalanceSession.asShotTint
     }
 
     private func updateCameraRaw(_ update: (inout CameraRawSettings) -> Void) {
@@ -4331,21 +4318,18 @@ struct EditWorkspaceView: View {
     private var whiteBalanceTemperatureBinding: Binding<Double> {
         Binding(
             get: {
-                if usesIncrementalWhiteBalance {
-                    return Double(metadataViewModel.editingMetadata.cameraRaw?.incrementalTemperature ?? 0)
-                }
-                let value = Double(metadataViewModel.editingMetadata.cameraRaw?.temperature ?? Int(asShotTemperatureKelvin.rounded()))
-                return min(max(value, Self.minKelvin), Self.maxKelvin)
+                whiteBalanceSession.displayedTemperature(
+                    in: metadataViewModel.editingMetadata.cameraRaw,
+                    usesIncrementalWhiteBalance: usesIncrementalWhiteBalance
+                )
             },
             set: { newValue in
                 updateCameraRaw { cameraRaw in
-                    cameraRaw.whiteBalance = "Custom"
-                    if usesIncrementalWhiteBalance {
-                        cameraRaw.incrementalTemperature = Int(newValue.rounded())
-                    } else {
-                        let clamped = min(max(newValue, Self.minKelvin), Self.maxKelvin)
-                        cameraRaw.temperature = Int(clamped.rounded())
-                    }
+                    _ = whiteBalanceSession.setDisplayedTemperature(
+                        newValue,
+                        usesIncrementalWhiteBalance: usesIncrementalWhiteBalance,
+                        in: &cameraRaw
+                    )
                 }
             }
         )
@@ -4354,7 +4338,7 @@ struct EditWorkspaceView: View {
     private var whiteBalanceTemperatureLogBinding: Binding<Double> {
         Binding(
             get: {
-                let kelvin = min(max(whiteBalanceTemperatureBinding.wrappedValue, Self.minKelvin), Self.maxKelvin)
+                let kelvin = whiteBalanceTemperatureBinding.wrappedValue
                 return normalizedLogScaleValue(forKelvin: kelvin)
             },
             set: { normalized in
@@ -4400,35 +4384,28 @@ struct EditWorkspaceView: View {
     }
 
     private func normalizedLogScaleValue(forKelvin kelvin: Double) -> Double {
-        let clamped = min(max(kelvin, Self.minKelvin), Self.maxKelvin)
-        let minLog = log(Self.minKelvin)
-        let maxLog = log(Self.maxKelvin)
-        return (log(clamped) - minLog) / (maxLog - minLog)
+        whiteBalanceSession.normalizedLogScaleValue(forKelvin: kelvin)
     }
 
     private func kelvinValue(forNormalizedLogScale normalized: Double) -> Double {
-        let t = min(max(normalized, 0), 1)
-        let minLog = log(Self.minKelvin)
-        let maxLog = log(Self.maxKelvin)
-        return exp(minLog + (maxLog - minLog) * t)
+        whiteBalanceSession.kelvinValue(forNormalizedLogScale: normalized)
     }
 
     private var whiteBalanceTintBinding: Binding<Double> {
         Binding(
             get: {
-                if usesIncrementalWhiteBalance {
-                    return Double(metadataViewModel.editingMetadata.cameraRaw?.incrementalTint ?? 0)
-                }
-                return Double(metadataViewModel.editingMetadata.cameraRaw?.tint ?? Int(asShotTintValue.rounded()))
+                whiteBalanceSession.displayedTint(
+                    in: metadataViewModel.editingMetadata.cameraRaw,
+                    usesIncrementalWhiteBalance: usesIncrementalWhiteBalance
+                )
             },
             set: { newValue in
                 updateCameraRaw { cameraRaw in
-                    cameraRaw.whiteBalance = "Custom"
-                    if usesIncrementalWhiteBalance {
-                        cameraRaw.incrementalTint = Int(newValue.rounded())
-                    } else {
-                        cameraRaw.tint = Int(newValue.rounded())
-                    }
+                    _ = whiteBalanceSession.setDisplayedTint(
+                        newValue,
+                        usesIncrementalWhiteBalance: usesIncrementalWhiteBalance,
+                        in: &cameraRaw
+                    )
                 }
             }
         )
@@ -4647,7 +4624,7 @@ struct EditWorkspaceView: View {
             sliderRow(
                 "WB Temp",
                 value: whiteBalanceTemperatureBinding,
-                range: Self.nonRawIncrementalTempRange,
+                range: DevelopWhiteBalanceSessionCoordinator.incrementalTemperatureRange,
                 step: 1,
                 gradientColors: [.blue, .yellow],
                 formatter: signedIntString,
@@ -5013,7 +4990,7 @@ struct EditWorkspaceView: View {
             } label: {
                 Image(systemName: "eyedropper.halffull")
                     .font(.system(size: 11))
-                    .foregroundStyle(isPickingWhiteBalance ? Color.accentColor : .secondary)
+                    .foregroundStyle(whiteBalanceSession.isPickerActive ? Color.accentColor : .secondary)
             }
             .buttonStyle(.plain)
             .disabled(!canEditSingleImage || metalPipeline?.hasSourceTexture != true)
@@ -5043,13 +5020,19 @@ struct EditWorkspaceView: View {
     }
 
     private func toggleWhiteBalancePicker() {
-        isPickingWhiteBalance.toggle()
-        wbPickDragRect = nil
+        let isActive = whiteBalanceSession.togglePicker()
         // Picking samples the full-frame preview; the crop tool reframes the layout, so
         // close it first to keep the screen→image mapping the simple fitted viewport.
-        if isPickingWhiteBalance, showCropControls {
+        if isActive, showCropControls {
             toggleCropControls()
         }
+    }
+
+    private var whiteBalanceDragRectangleBinding: Binding<CGRect?> {
+        Binding(
+            get: { whiteBalanceSession.dragRectangle },
+            set: { whiteBalanceSession.dragRectangle = $0 }
+        )
     }
 
     /// Map a preview-pane rectangle to source pixels, average it, and solve for the WB
@@ -5062,20 +5045,13 @@ struct EditWorkspaceView: View {
         forPaneRect rect: CGRect, paneSize: CGSize,
         viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>
     ) -> CGRect? {
-        guard let source = sourceCIImage, paneSize.width > 0, paneSize.height > 0 else { return nil }
-        func uvX(_ x: CGFloat) -> Double { Double(vpOrigin.x) + Double(x / paneSize.width) * Double(vpSize.x) }
-        func uvY(_ y: CGFloat) -> Double { Double(vpOrigin.y) + Double(y / paneSize.height) * Double(vpSize.y) }
-        let uvMinX = min(max(uvX(rect.minX), 0), 1)
-        let uvMaxX = min(max(uvX(rect.maxX), 0), 1)
-        let uvMinY = min(max(uvY(rect.minY), 0), 1)   // top
-        let uvMaxY = min(max(uvY(rect.maxY), 0), 1)   // bottom
-        guard uvMaxX > uvMinX, uvMaxY > uvMinY else { return nil }
-        let extent = source.extent
-        return CGRect(
-            x: extent.minX + uvMinX * extent.width,
-            y: extent.minY + (1 - uvMaxY) * extent.height,
-            width: (uvMaxX - uvMinX) * extent.width,
-            height: (uvMaxY - uvMinY) * extent.height
+        guard let source = sourceCIImage else { return nil }
+        return whiteBalanceSession.sourceRegion(
+            forPaneRect: rect,
+            paneSize: paneSize,
+            viewportOrigin: vpOrigin,
+            viewportSize: vpSize,
+            sourceExtent: source.extent
         )
     }
 
@@ -5097,35 +5073,36 @@ struct EditWorkspaceView: View {
     ) {
         guard let source = sourceCIImage, let pipeline = metalPipeline, pipeline.hasSourceTexture,
               let region = sourceRegion(forPaneRect: rect, paneSize: paneSize,
-                                        viewportOrigin: vpOrigin, viewportSize: vpSize) else { return }
+                                        viewportOrigin: vpOrigin, viewportSize: vpSize),
+              let request = whiteBalanceSession.beginPickRequest() else { return }
 
         Task {
             let solved = await Task.detached(priority: .userInitiated) { () -> (temperature: Double, tint: Double)? in
                 guard let rgb = Self.averageLinearRGB(of: source, in: region) else { return nil }
                 return pipeline.solveWhiteBalance(forNeutralLinearRGB: rgb)
             }.value
-            guard let solved else { return }
+            guard let solved,
+                  whiteBalanceSession.consumePickResult(
+                    requestID: request.id,
+                    imageURL: request.imageURL
+                  ) else { return }
             applyPickedWhiteBalance(temperatureKelvin: solved.temperature, tint: solved.tint)
         }
     }
 
     private func applyPickedWhiteBalance(temperatureKelvin: Double, tint: Double) {
-        let clampedTint = min(max(tint, -150), 150)
+        var persistenceIntent = DevelopWhiteBalancePersistenceIntent.previewOnly
         updateCameraRaw { cameraRaw in
-            cameraRaw.whiteBalance = "Custom"
-            if usesIncrementalWhiteBalance {
-                // Invert the non-RAW slope: temp = 6500 + incr * (5000 / 150).
-                let incremental = (temperatureKelvin - 6500) * (150.0 / 5000.0)
-                let range = Self.nonRawIncrementalTempRange
-                cameraRaw.incrementalTemperature = Int(min(max(incremental, range.lowerBound), range.upperBound).rounded())
-                cameraRaw.incrementalTint = Int(clampedTint.rounded())
-            } else {
-                let clampedTemp = min(max(temperatureKelvin, Self.minKelvin), Self.maxKelvin)
-                cameraRaw.temperature = Int(clampedTemp.rounded())
-                cameraRaw.tint = Int(clampedTint.rounded())
-            }
+            persistenceIntent = whiteBalanceSession.applyPickedWhiteBalance(
+                temperatureKelvin: temperatureKelvin,
+                tint: tint,
+                usesIncrementalWhiteBalance: usesIncrementalWhiteBalance,
+                in: &cameraRaw
+            )
         }
-        commitEditAdjustments()
+        if persistenceIntent == .commit {
+            commitEditAdjustments()
+        }
     }
 
     /// Average a region of a linear extended-sRGB CIImage to a single colour, returned in
@@ -5442,7 +5419,7 @@ struct EditWorkspaceView: View {
                 Spacer()
                 Button {
                     maskInteraction.toggleBrushPainting()
-                    if isBrushPainting { isPickingWhiteBalance = false }
+                    if isBrushPainting { whiteBalanceSession.deactivatePicker() }
                     syncMaskOverlayTarget()
                 } label: {
                     Text(isBrushPainting ? "Painting" : "Paint")
@@ -5596,7 +5573,7 @@ struct EditWorkspaceView: View {
                 addLayerTile(kind: .brushMask, tint: .blue, help: "Add brush mask") {
                     _ = addNewBrushMask()
                     maskInteraction.beginBrushPainting()
-                    isPickingWhiteBalance = false
+                    whiteBalanceSession.deactivatePicker()
                     syncMaskOverlayTarget()
                 }
                 addLayerTile(kind: .aiMask, tint: .blue, help: "Select a person or object with AI") {
@@ -6976,8 +6953,7 @@ struct EditWorkspaceView: View {
         guard canEditSingleImage, sourceCIImage != nil, !isGeneratingAIMask else { return }
         clearMaskMattePreview()
         maskInteraction.beginExclusiveSelection()
-        isPickingWhiteBalance = false
-        wbPickDragRect = nil
+        whiteBalanceSession.deactivatePicker()
         guard aiMaskSelection.beginSelection(
             replacing: maskID,
             resetsTarget: maskID == nil
@@ -8498,7 +8474,7 @@ struct EditWorkspaceView: View {
         if chars == "b" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
             maskInteraction.toggleBrushPainting()
-            if isBrushPainting { isPickingWhiteBalance = false }
+            if isBrushPainting { whiteBalanceSession.deactivatePicker() }
             syncMaskOverlayTarget()
             return nil
         }

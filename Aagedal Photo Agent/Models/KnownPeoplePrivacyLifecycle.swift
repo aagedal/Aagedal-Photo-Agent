@@ -44,37 +44,4 @@ nonisolated struct KnownPeopleDataSummary: Equatable, Sendable {
         }
         return "This Mac › Application Support › Aagedal Photo Agent › KnownPeople"
     }
-
-    static func make(
-        peopleCount: Int,
-        sampleCount: Int,
-        storageURL: URL,
-        syncEnabled: Bool
-    ) -> KnownPeopleDataSummary {
-        KnownPeopleDataSummary(
-            peopleCount: peopleCount,
-            sampleCount: sampleCount,
-            storedBytes: directorySize(at: storageURL),
-            syncEnabled: syncEnabled
-        )
-    }
-
-    /// Counts regular files only and never follows package descendants or symbolic links.
-    static func directorySize(at root: URL) -> Int64 {
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
-        guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: keys,
-            options: [.skipsPackageDescendants]
-        ) else { return 0 }
-
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            guard let values = try? fileURL.resourceValues(forKeys: Set(keys)),
-                  values.isRegularFile == true,
-                  values.isSymbolicLink != true else { continue }
-            total += Int64(values.fileSize ?? 0)
-        }
-        return total
-    }
 }

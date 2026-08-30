@@ -19,6 +19,127 @@ nonisolated enum RAWArchiveLocationError: LocalizedError {
     }
 }
 
+/// Immutable cleanup input captured before leaving the UI actor. Sidecar identities are resolved
+/// once so the serialized filesystem operation cannot accidentally re-evaluate which source file
+/// must be preserved after it starts.
+nonisolated struct RAWArchiveSigningFailureCleanupRequest: Equatable, Sendable {
+    let requestID: UUID
+    let archiveURL: URL
+    let archiveSidecarURL: URL
+    let sourceSidecarURL: URL
+
+    init(
+        requestID: UUID = UUID(),
+        archiveURL: URL,
+        sourceURL: URL
+    ) {
+        let sidecars = XMPSidecarService()
+        self.requestID = requestID
+        self.archiveURL = archiveURL
+        self.archiveSidecarURL = sidecars.sidecarURL(for: archiveURL)
+        self.sourceSidecarURL = sidecars.sidecarURL(for: sourceURL)
+    }
+}
+
+/// Durable per-item evidence from compensating cleanup. The two removals are deliberately
+/// independent: a failure removing one artifact must not prevent removal of the other.
+nonisolated enum RAWArchiveSigningFailureCleanupOutcome: Equatable, Sendable {
+    case removed
+    case alreadyAbsent
+    case preservedSourceSidecar
+    case removalFailed(String)
+}
+
+nonisolated struct RAWArchiveSigningFailureCleanupItemEvidence: Equatable, Sendable {
+    let url: URL
+    let outcome: RAWArchiveSigningFailureCleanupOutcome
+}
+
+/// Immutable evidence describing all durable state after a signing-failure cleanup attempt.
+/// Cleanup is non-preemptible once submitted because leaving an unsigned archive behind is less
+/// safe than honoring cancellation between the two compensating removals.
+nonisolated struct RAWArchiveSigningFailureCleanupEvidence: Equatable, Sendable {
+    let requestID: UUID
+    let archive: RAWArchiveSigningFailureCleanupItemEvidence
+    let archiveSidecar: RAWArchiveSigningFailureCleanupItemEvidence
+    let sourceSidecarURL: URL
+    let cancellationObservedBeforeCleanup: Bool
+    let cancellationObservedAfterCleanup: Bool
+}
+
+nonisolated struct RAWArchiveSigningFailureCleanupIO: Sendable {
+    let fileExists: @Sendable (URL) -> Bool
+    let removeItem: @Sendable (URL) throws -> Void
+
+    static let system = RAWArchiveSigningFailureCleanupIO(
+        fileExists: { FileManager.default.fileExists(atPath: $0.path) },
+        removeItem: { try FileManager.default.removeItem(at: $0) }
+    )
+}
+
+/// Serializes signing-failure compensation away from MainActor. This actor intentionally has no
+/// suspension point inside `cleanup`: once a request begins, both artifacts receive a removal
+/// attempt and the caller gets truthful partial-cleanup evidence even if cancellation arrives.
+actor RAWArchiveSigningFailureCleanupService {
+    static let shared = RAWArchiveSigningFailureCleanupService()
+
+    private let io: RAWArchiveSigningFailureCleanupIO
+
+    init(io: RAWArchiveSigningFailureCleanupIO = .system) {
+        self.io = io
+    }
+
+    func cleanup(
+        _ request: RAWArchiveSigningFailureCleanupRequest
+    ) async -> RAWArchiveSigningFailureCleanupEvidence {
+        let cancellationObservedBeforeCleanup = Task.isCancelled
+        let archive = removeEvidence(for: request.archiveURL)
+
+        let archiveSidecar: RAWArchiveSigningFailureCleanupItemEvidence
+        if request.archiveSidecarURL.standardizedFileURL
+            == request.sourceSidecarURL.standardizedFileURL {
+            archiveSidecar = RAWArchiveSigningFailureCleanupItemEvidence(
+                url: request.archiveSidecarURL,
+                outcome: .preservedSourceSidecar
+            )
+        } else {
+            archiveSidecar = removeEvidence(for: request.archiveSidecarURL)
+        }
+
+        return RAWArchiveSigningFailureCleanupEvidence(
+            requestID: request.requestID,
+            archive: archive,
+            archiveSidecar: archiveSidecar,
+            sourceSidecarURL: request.sourceSidecarURL,
+            cancellationObservedBeforeCleanup: cancellationObservedBeforeCleanup,
+            cancellationObservedAfterCleanup: Task.isCancelled
+        )
+    }
+
+    private func removeEvidence(
+        for url: URL
+    ) -> RAWArchiveSigningFailureCleanupItemEvidence {
+        guard io.fileExists(url) else {
+            return RAWArchiveSigningFailureCleanupItemEvidence(
+                url: url,
+                outcome: .alreadyAbsent
+            )
+        }
+        do {
+            try io.removeItem(url)
+            return RAWArchiveSigningFailureCleanupItemEvidence(
+                url: url,
+                outcome: .removed
+            )
+        } catch {
+            return RAWArchiveSigningFailureCleanupItemEvidence(
+                url: url,
+                outcome: .removalFailed(error.localizedDescription)
+            )
+        }
+    }
+}
+
 nonisolated enum RAWArchiveService {
     static var currentLocationMode: RAWArchiveLocationMode {
         let raw = UserDefaults.standard.string(

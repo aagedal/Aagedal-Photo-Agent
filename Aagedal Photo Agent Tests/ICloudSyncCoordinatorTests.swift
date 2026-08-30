@@ -53,7 +53,7 @@ struct ICloudSyncCoordinatorTests {
     }
 
     @Test("Known People Data Management summary counts nested storage and reports its destination")
-    func knownPeopleDataSummary() throws {
+    func knownPeopleDataSummary() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("KnownPeopleDataSummaryTests-\(UUID().uuidString)", isDirectory: true)
         let people = root.appendingPathComponent("people", isDirectory: true)
@@ -65,25 +65,118 @@ struct ICloudSyncCoordinatorTests {
         try Data(repeating: 1, count: 7).write(to: people.appendingPathComponent("person.json"))
         try Data(repeating: 2, count: 11).write(to: thumbnails.appendingPathComponent("sample.jpg"))
 
-        let local = KnownPeopleDataSummary.make(
+        let localEvidence = await KnownPeopleDataSummaryService().summarize(
             peopleCount: 3,
             sampleCount: 8,
             storageURL: root,
             syncEnabled: false
         )
+        let local = try #require(completeSummary(from: localEvidence))
         #expect(local.peopleCount == 3)
         #expect(local.sampleCount == 8)
         #expect(local.storedBytes == 18)
         #expect(local.storageDestination.contains("This Mac"))
 
-        let cloud = KnownPeopleDataSummary.make(
+        let cloudEvidence = await KnownPeopleDataSummaryService().summarize(
             peopleCount: 3,
             sampleCount: 8,
             storageURL: root,
             syncEnabled: true
         )
+        let cloud = try #require(completeSummary(from: cloudEvidence))
         #expect(cloud.storedBytes == 18)
         #expect(cloud.storageDestination.contains("iCloud Drive"))
+    }
+
+    @Test("Known People storage measurement executes away from the main thread")
+    @MainActor
+    func knownPeopleDataSummaryRunsOffMainThread() async throws {
+        let probe = KnownPeopleDataSummaryThreadProbe()
+        let service = KnownPeopleDataSummaryService(measureDirectory: probe.measure)
+
+        let evidence = await service.summarize(
+            peopleCount: 1,
+            sampleCount: 2,
+            storageURL: URL(fileURLWithPath: "/simulated-known-people"),
+            syncEnabled: false
+        )
+
+        let summary = try #require(completeSummary(from: evidence))
+        #expect(summary.storedBytes == 23)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Known People storage scans serialize and a cancelled queued request performs no read")
+    @MainActor
+    func knownPeopleDataSummarySerializesAndCancels() async throws {
+        let probe = BlockingKnownPeopleDataSummaryProbe()
+        defer { probe.release() }
+        let service = KnownPeopleDataSummaryService(measureDirectory: probe.measure)
+        let firstURL = URL(fileURLWithPath: "/simulated-known-people/first")
+        let cancelledURL = URL(fileURLWithPath: "/simulated-known-people/cancelled")
+
+        let first = Task {
+            await service.summarize(
+                peopleCount: 1,
+                sampleCount: 1,
+                storageURL: firstURL,
+                syncEnabled: false
+            )
+        }
+        let didBlock = await probe.waitUntilBlocked()
+        #expect(didBlock, "The simulated storage measurement did not start within 30 seconds")
+        guard didBlock else { return }
+
+        let queued = Task {
+            await service.summarize(
+                peopleCount: 2,
+                sampleCount: 2,
+                storageURL: cancelledURL,
+                syncEnabled: false
+            )
+        }
+        first.cancel()
+        queued.cancel()
+        probe.release()
+
+        let firstEvidence = await first.value
+        let queuedEvidence = await queued.value
+        #expect(firstEvidence == .cancelled)
+        #expect(queuedEvidence == .cancelled)
+        #expect(probe.urls == [firstURL])
+    }
+
+    @Test("Known People settings publishes only the latest complete async summary")
+    func knownPeopleDataSummarySourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let settingsSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/SettingsView.swift"
+            ),
+            encoding: .utf8
+        )
+        let summarySource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Models/KnownPeoplePrivacyLifecycle.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(settingsSource.contains("knownPeopleDataSummaryTask?.cancel()"))
+        #expect(settingsSource.contains("await KnownPeopleDataSummaryService.shared.summarize("))
+        #expect(settingsSource.contains("knownPeopleDataSummaryRequestID == requestID"))
+        #expect(settingsSource.contains("if case .complete(let summary) = evidence"))
+        #expect(!summarySource.contains("FileManager.default.enumerator"))
+        #expect(!summarySource.contains("static func make("))
+    }
+
+    private func completeSummary(
+        from evidence: KnownPeopleDataSummaryEvidence
+    ) -> KnownPeopleDataSummary? {
+        guard case .complete(let summary) = evidence else { return nil }
+        return summary
     }
 
 
@@ -112,5 +205,68 @@ struct ICloudSyncCoordinatorTests {
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(60)], ofItemAtPath: sourceFile.path)
         try CloudCoordinatedIO.mergeCopyPreservingNewer(from: source, to: destination)
         #expect(try Data(contentsOf: destinationFile) == Data("newest-local".utf8))
+    }
+}
+
+nonisolated private final class KnownPeopleDataSummaryThreadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observedMainThread = false
+
+    var ranOnMainThread: Bool {
+        lock.withLock { observedMainThread }
+    }
+
+    func measure(_ url: URL) -> KnownPeopleDataSummaryService.DirectorySizeEvidence {
+        lock.withLock {
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return .complete(23)
+    }
+}
+
+nonisolated private final class BlockingKnownPeopleDataSummaryProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var isBlocked = false
+    private var isReleased = false
+    private var measuredURLs: [URL] = []
+
+    var urls: [URL] {
+        condition.withLock { measuredURLs }
+    }
+
+    func measure(_ url: URL) -> KnownPeopleDataSummaryService.DirectorySizeEvidence {
+        condition.lock()
+        measuredURLs.append(url)
+        isBlocked = true
+        condition.broadcast()
+        while !isReleased {
+            condition.wait()
+        }
+        condition.unlock()
+        return .complete(31)
+    }
+
+    func waitUntilBlocked(timeout: TimeInterval = 30) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                let deadline = Date().addingTimeInterval(timeout)
+                condition.lock()
+                defer { condition.unlock() }
+                while !isBlocked {
+                    guard condition.wait(until: deadline) else {
+                        continuation.resume(returning: false)
+                        return
+                    }
+                }
+                continuation.resume(returning: true)
+            }
+        }
+    }
+
+    func release() {
+        condition.withLock {
+            isReleased = true
+            condition.broadcast()
+        }
     }
 }

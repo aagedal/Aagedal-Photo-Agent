@@ -3451,14 +3451,13 @@ struct ContentView: View {
                             // A configured signing workflow must never leave an unsigned
                             // archive that looks successful. Both files were created by
                             // this batch and the unique-name preflight protected prior data.
-                            try? FileManager.default.removeItem(at: convertedURL)
-                            let sidecars = XMPSidecarService()
-                            let sourceSidecar = sidecars.sidecarURL(for: url)
-                            let archiveSidecar = sidecars.sidecarURL(for: convertedURL)
-                            if archiveSidecar.standardizedFileURL
-                                != sourceSidecar.standardizedFileURL {
-                                try? FileManager.default.removeItem(at: archiveSidecar)
-                            }
+                            let cleanupRequest = RAWArchiveSigningFailureCleanupRequest(
+                                archiveURL: convertedURL,
+                                sourceURL: url
+                            )
+                            _ = await RAWArchiveSigningFailureCleanupService.shared.cleanup(
+                                cleanupRequest
+                            )
                             throw error
                         }
                     }

@@ -78,6 +78,7 @@
 		D3C002000000000000000002 /* AIMaskSelectionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C002000000000000000001 /* AIMaskSelectionCoordinatorTests.swift */; };
 		D3C003000000000000000002 /* DevelopComparisonRenderCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C003000000000000000001 /* DevelopComparisonRenderCoordinatorTests.swift */; };
 		D3C004000000000000000002 /* DevelopCropSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C004000000000000000001 /* DevelopCropSessionCoordinatorTests.swift */; };
+		D3C005000000000000000002 /* DevelopWhiteBalanceSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C005000000000000000001 /* DevelopWhiteBalanceSessionCoordinatorTests.swift */; };
 		AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */; };
 		AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */; };
 		AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5200000000000000000001 /* MetadataValidationTests.swift */; };
@@ -156,6 +157,7 @@
 		A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AccessibilityKeyboardAuditTests.swift; sourceTree = "<group>"; };
 		A770F4000000000000000001 /* ImageAnalysisProjectArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageAnalysisProjectArchiveTests.swift; sourceTree = "<group>"; };
 		D3C004000000000000000001 /* DevelopCropSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopCropSessionCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C005000000000000000001 /* DevelopWhiteBalanceSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopWhiteBalanceSessionCoordinatorTests.swift; sourceTree = "<group>"; };
 		EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialDateCreatedTests.swift; sourceTree = "<group>"; };
 		A8F5A4000000000000000001 /* DeliveryStagingProductionFactoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryStagingProductionFactoryTests.swift; sourceTree = "<group>"; };
 		A95300000000000000000001 /* MetadataHistoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataHistoryTests.swift; sourceTree = "<group>"; };
@@ -378,6 +380,7 @@
 				D3C002000000000000000001 /* AIMaskSelectionCoordinatorTests.swift */,
 				D3C003000000000000000001 /* DevelopComparisonRenderCoordinatorTests.swift */,
 				D3C004000000000000000001 /* DevelopCropSessionCoordinatorTests.swift */,
+				D3C005000000000000000001 /* DevelopWhiteBalanceSessionCoordinatorTests.swift */,
 				AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */,
 				AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */,
 				AB5200000000000000000001 /* MetadataValidationTests.swift */,
@@ -674,6 +677,7 @@
 				D3C002000000000000000002 /* AIMaskSelectionCoordinatorTests.swift in Sources */,
 				D3C003000000000000000002 /* DevelopComparisonRenderCoordinatorTests.swift in Sources */,
 				D3C004000000000000000002 /* DevelopCropSessionCoordinatorTests.swift in Sources */,
+				D3C005000000000000000002 /* DevelopWhiteBalanceSessionCoordinatorTests.swift in Sources */,
 				AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */,
 				AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */,
 				AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */,

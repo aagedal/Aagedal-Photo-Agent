@@ -154,6 +154,16 @@ serial unfiltered result recorded 1,817 expanded cases across 196 named suites. 
 inventory/measurement and Develop ownership gates remain open.
 ([validation](plan-status-archive-roster-crop-continuation-2026-08-30.md))
 
+**Cleanup, storage, and white-balance continuation (2026-08-30):** the checklist remains 63 of 75. RAW archive
+signing-failure compensation, Known People recursive storage measurement, and edited-folder backup destination
+preparation now cross serialized asynchronous boundaries with immutable cancellation/durability evidence and
+stale-result protection. `DevelopWhiteBalanceSessionCoordinator` owns as-shot neutral, picker/marquee lifecycle,
+sample request identity, geometry/value projection, and preview-versus-commit intent. The combined selection
+passed 39 tests in four suites, the strengthened white-balance suite passed all seven tests after final late-result
+hardening, and the final serial unfiltered gate passed 1,707 tests in 197 suites. The broader filesystem
+inventory/measurement and Develop ownership gates remain open.
+([validation](plan-status-cleanup-storage-white-balance-continuation-2026-08-30.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -574,6 +584,15 @@ best-effort Quick List, security-scope, parser, and edit-commit behavior. The co
 the unfiltered 1,672-test gate passed. Lower-priority direct paths and real-volume/Thread Performance Checker
 evidence remain open. ([validation](plan-status-source-file-import-continuation-2026-08-30.md))
 
+**Cleanup and storage-summary follow-up (2026-08-30):** failed RAW archive signing now submits both newly
+created output removals to a serialized compensation actor, which protects the source sidecar and reports
+per-artifact durable evidence even under cancellation or partial failure. Known People recursive byte counting
+runs on a cancellable serialized actor with request-identity publication in Settings. Back Up Edited Files now
+prepares its deterministic destination-directory set through `ExportDirectoryService` and suppresses copy work
+when cancellation is observed after a durable directory commit. Remaining direct paths and the real-volume/
+Thread Performance Checker gate stay open.
+([validation](plan-status-cleanup-storage-white-balance-continuation-2026-08-30.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -732,6 +751,14 @@ display-to-sensor crop transformation boundary. Its mutation operations return e
 durable-commit intent. Layer, white-balance, broader render-policy/publication, export, and persistence
 ownership remain open.
 ([validation](plan-status-archive-roster-crop-continuation-2026-08-30.md#develop-crop-state-owner))
+
+**White-balance state-owner follow-up (2026-08-30):** `DevelopWhiteBalanceSessionCoordinator` now owns
+image-scoped as-shot neutral values, eyedropper/marquee lifecycle, sample request replacement, RAW/non-RAW
+display and clamping projections, logarithmic Kelvin mapping, pane-to-source geometry, and preview-only versus
+durable-commit intent. Navigation, deactivation, replacement, and teardown reject late neutral/sample results.
+Pixel averaging, Metal solving, render publication, and metadata persistence remain at their existing injected
+boundaries. Layer, broader render-policy/publication, export, and persistence ownership remain open.
+([validation](plan-status-cleanup-storage-white-balance-continuation-2026-08-30.md#develop-white-balance-state-owner))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

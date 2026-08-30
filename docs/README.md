@@ -237,6 +237,13 @@ and the Develop crop-session state owner. After disabling a stalled parallel Xco
 four-suite selection passed 21 focused tests and the serial unfiltered result recorded 1,817 expanded cases
 across 196 named suites. The broad audit remains 63 of 75.
 
+The subsequent [cleanup, storage, and white-balance continuation](plan-status-cleanup-storage-white-balance-continuation-2026-08-30.md)
+records serialized RAW signing-failure compensation, Known People storage measurement, edited-folder backup
+directory preparation, and the Develop white-balance session owner. The combined selection passed 39 tests,
+final picker late-result hardening passed all seven focused white-balance tests, and the final serial unfiltered
+gate passed 1,707 tests in 197 suites. Remaining inventory, real-volume, broader state-owner, manual, and external
+gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

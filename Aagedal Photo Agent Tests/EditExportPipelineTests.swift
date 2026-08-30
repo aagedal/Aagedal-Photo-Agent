@@ -1056,6 +1056,234 @@ struct RAWArchiveTests {
         )
         #expect(copied == xmp)
     }
+
+    @Test("signing failure cleanup removes archive bundle and preserves source sidecar")
+    func signingFailureCleanupRemovesOnlyArchiveBundle() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-archive-signing-cleanup-\(UUID().uuidString)", isDirectory: true)
+        let sourceFolder = directory.appendingPathComponent("Source", isDirectory: true)
+        let archiveFolder = directory.appendingPathComponent("Archive", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archiveFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = sourceFolder.appendingPathComponent("photo.cr3")
+        let sourceSidecar = sourceFolder.appendingPathComponent("photo.xmp")
+        let archive = archiveFolder.appendingPathComponent("photo.jxl")
+        let archiveSidecar = archiveFolder.appendingPathComponent("photo.xmp")
+        try Data("source".utf8).write(to: source)
+        try Data("source-sidecar".utf8).write(to: sourceSidecar)
+        try Data("unsigned-archive".utf8).write(to: archive)
+        try Data("archive-sidecar".utf8).write(to: archiveSidecar)
+
+        let request = RAWArchiveSigningFailureCleanupRequest(
+            archiveURL: archive,
+            sourceURL: source
+        )
+        let evidence = await RAWArchiveSigningFailureCleanupService().cleanup(request)
+
+        #expect(evidence.requestID == request.requestID)
+        #expect(evidence.archive.outcome == .removed)
+        #expect(evidence.archiveSidecar.outcome == .removed)
+        #expect(!FileManager.default.fileExists(atPath: archive.path))
+        #expect(!FileManager.default.fileExists(atPath: archiveSidecar.path))
+        #expect(FileManager.default.fileExists(atPath: sourceSidecar.path))
+    }
+
+    @Test("a shared source sidecar is explicitly preserved")
+    func signingFailureCleanupPreservesSharedSidecar() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-archive-shared-sidecar-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = directory.appendingPathComponent("photo.cr3")
+        let archive = directory.appendingPathComponent("photo.jxl")
+        let sharedSidecar = directory.appendingPathComponent("photo.xmp")
+        try Data("source-sidecar".utf8).write(to: sharedSidecar)
+        try Data("unsigned-archive".utf8).write(to: archive)
+
+        let evidence = await RAWArchiveSigningFailureCleanupService().cleanup(
+            RAWArchiveSigningFailureCleanupRequest(
+                archiveURL: archive,
+                sourceURL: source
+            )
+        )
+
+        #expect(evidence.archive.outcome == .removed)
+        #expect(evidence.archiveSidecar.outcome == .preservedSourceSidecar)
+        #expect(FileManager.default.fileExists(atPath: sharedSidecar.path))
+    }
+
+    @Test("cleanup reports partial durability and still attempts the sidecar")
+    func signingFailureCleanupReportsPartialDurability() async {
+        let archive = URL(fileURLWithPath: "/virtual/archive/photo.jxl")
+        let source = URL(fileURLWithPath: "/virtual/source/photo.cr3")
+        let request = RAWArchiveSigningFailureCleanupRequest(
+            archiveURL: archive,
+            sourceURL: source
+        )
+        let probe = RAWArchiveCleanupProbe(failingURL: archive)
+        let service = RAWArchiveSigningFailureCleanupService(io: probe.io)
+
+        let evidence = await service.cleanup(request)
+
+        if case .removalFailed = evidence.archive.outcome {
+            // Expected explicit evidence for the artifact that could not be removed.
+        } else {
+            Issue.record("Expected archive removal failure evidence")
+        }
+        #expect(evidence.archiveSidecar.outcome == .removed)
+        #expect(probe.removedURLs == [request.archiveSidecarURL])
+    }
+
+    @Test("cancelled cleanup still removes both unsafe artifacts and reports cancellation")
+    func signingFailureCleanupIsDurableUnderCancellation() async {
+        let archive = URL(fileURLWithPath: "/virtual/archive/photo.jxl")
+        let source = URL(fileURLWithPath: "/virtual/source/photo.cr3")
+        let request = RAWArchiveSigningFailureCleanupRequest(
+            archiveURL: archive,
+            sourceURL: source
+        )
+        let probe = RAWArchiveCleanupProbe()
+        let service = RAWArchiveSigningFailureCleanupService(io: probe.io)
+
+        let evidence = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.cleanup(request)
+        }.value
+
+        #expect(evidence.cancellationObservedBeforeCleanup)
+        #expect(evidence.cancellationObservedAfterCleanup)
+        #expect(evidence.archive.outcome == .removed)
+        #expect(evidence.archiveSidecar.outcome == .removed)
+        #expect(probe.removedURLs == [request.archiveURL, request.archiveSidecarURL])
+    }
+
+    @MainActor
+    @Test("cleanup filesystem work leaves MainActor and requests are serialized")
+    func signingFailureCleanupIsOffMainAndSerialized() async {
+        let probe = RAWArchiveCleanupProbe(blockFirstRemoval: true)
+        let service = RAWArchiveSigningFailureCleanupService(io: probe.io)
+        let firstRequest = RAWArchiveSigningFailureCleanupRequest(
+            archiveURL: URL(fileURLWithPath: "/virtual/archive/first.jxl"),
+            sourceURL: URL(fileURLWithPath: "/virtual/source/first.cr3")
+        )
+        let secondRequest = RAWArchiveSigningFailureCleanupRequest(
+            archiveURL: URL(fileURLWithPath: "/virtual/archive/second.jxl"),
+            sourceURL: URL(fileURLWithPath: "/virtual/source/second.cr3")
+        )
+
+        let first = Task { @MainActor in await service.cleanup(firstRequest) }
+        await probe.waitUntilFirstRemovalStarts()
+        let second = Task { @MainActor in await service.cleanup(secondRequest) }
+        await Task.yield()
+
+        #expect(probe.removalInvocationCount == 1)
+        probe.releaseFirstRemoval()
+        _ = await first.value
+        _ = await second.value
+
+        #expect(probe.maximumConcurrentRemovals == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("ContentView routes signing failure cleanup through the service boundary")
+    func signingFailureCleanupSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent("Aagedal Photo Agent/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("RAWArchiveSigningFailureCleanupRequest("))
+        #expect(source.contains("await RAWArchiveSigningFailureCleanupService.shared.cleanup("))
+        #expect(!source.contains("try? FileManager.default.removeItem(at: convertedURL)"))
+    }
+}
+
+nonisolated private final class RAWArchiveCleanupProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let failingURL: URL?
+    private let blockFirstRemoval: Bool
+    private var didReleaseFirstRemoval = false
+    private var activeRemovals = 0
+    private var _maximumConcurrentRemovals = 0
+    private var _removalInvocationCount = 0
+    private var _ranOnMainThread = false
+    private var _removedURLs: [URL] = []
+
+    init(failingURL: URL? = nil, blockFirstRemoval: Bool = false) {
+        self.failingURL = failingURL
+        self.blockFirstRemoval = blockFirstRemoval
+    }
+
+    var io: RAWArchiveSigningFailureCleanupIO {
+        RAWArchiveSigningFailureCleanupIO(
+            fileExists: { _ in true },
+            removeItem: { [self] url in
+                condition.lock()
+                _removalInvocationCount += 1
+                activeRemovals += 1
+                _maximumConcurrentRemovals = max(_maximumConcurrentRemovals, activeRemovals)
+                _ranOnMainThread = _ranOnMainThread || Thread.isMainThread
+                condition.broadcast()
+                while blockFirstRemoval,
+                      _removalInvocationCount == 1,
+                      !didReleaseFirstRemoval {
+                    condition.wait()
+                }
+
+                defer {
+                    activeRemovals -= 1
+                    condition.broadcast()
+                    condition.unlock()
+                }
+                if url == failingURL {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                _removedURLs.append(url)
+            }
+        )
+    }
+
+    var removedURLs: [URL] {
+        condition.withLock { _removedURLs }
+    }
+
+    var removalInvocationCount: Int {
+        condition.withLock { _removalInvocationCount }
+    }
+
+    var maximumConcurrentRemovals: Int {
+        condition.withLock { _maximumConcurrentRemovals }
+    }
+
+    var ranOnMainThread: Bool {
+        condition.withLock { _ranOnMainThread }
+    }
+
+    func waitUntilFirstRemovalStarts() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                condition.lock()
+                while _removalInvocationCount == 0 {
+                    condition.wait()
+                }
+                condition.unlock()
+                continuation.resume()
+            }
+        }
+    }
+
+    func releaseFirstRemoval() {
+        condition.withLock {
+            didReleaseFirstRemoval = true
+            condition.broadcast()
+        }
+    }
 }
 
 @Suite("FFmpeg AVIF encoding")

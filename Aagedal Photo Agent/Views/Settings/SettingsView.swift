@@ -28,6 +28,8 @@ struct SettingsView: View {
         storedBytes: 0,
         syncEnabled: false
     )
+    @State private var knownPeopleDataSummaryTask: Task<Void, Never>?
+    @State private var knownPeopleDataSummaryRequestID: UUID?
     @State private var showKnownPeopleDisclosure = false
     @State private var pendingKnownPeopleSyncRequest: KnownPeopleSyncRequest?
 
@@ -742,6 +744,9 @@ struct SettingsView: View {
             if !KnownPeoplePrivacyLifecycle.hasAcknowledgedDisclosure() {
                 showKnownPeopleDisclosure = true
             }
+        }
+        .onDisappear {
+            cancelKnownPeopleDataSummaryRefresh()
         }
         .alert("Clear Known People Database?", isPresented: $showClearConfirmation) {
             Button("Cancel", role: .cancel) { }
@@ -1741,17 +1746,41 @@ struct SettingsView: View {
     // MARK: - Known People Actions
 
     private func refreshKnownPeopleStats() {
-        knownPeopleStats = KnownPeopleService.shared.getStatistics()
+        let statistics = KnownPeopleService.shared.getStatistics()
+        knownPeopleStats = statistics
         let syncEnabled = ICloudSyncCoordinator.shared.knownPeopleEnabled
         let storageURL = syncEnabled
             ? (AppPaths.iCloudKnownPeopleURL ?? KnownPeopleService.localKnownPeopleDirectory)
             : KnownPeopleService.localKnownPeopleDirectory
-        knownPeopleDataSummary = KnownPeopleDataSummary.make(
-            peopleCount: knownPeopleStats.peopleCount,
-            sampleCount: knownPeopleStats.embeddingCount,
-            storageURL: storageURL,
+        knownPeopleDataSummary = KnownPeopleDataSummary(
+            peopleCount: statistics.peopleCount,
+            sampleCount: statistics.embeddingCount,
+            storedBytes: knownPeopleDataSummary.storedBytes,
             syncEnabled: syncEnabled
         )
+
+        knownPeopleDataSummaryTask?.cancel()
+        let requestID = UUID()
+        knownPeopleDataSummaryRequestID = requestID
+        knownPeopleDataSummaryTask = Task {
+            let evidence = await KnownPeopleDataSummaryService.shared.summarize(
+                peopleCount: statistics.peopleCount,
+                sampleCount: statistics.embeddingCount,
+                storageURL: storageURL,
+                syncEnabled: syncEnabled
+            )
+            guard knownPeopleDataSummaryRequestID == requestID, !Task.isCancelled else { return }
+            knownPeopleDataSummaryTask = nil
+            if case .complete(let summary) = evidence {
+                knownPeopleDataSummary = summary
+            }
+        }
+    }
+
+    private func cancelKnownPeopleDataSummaryRefresh() {
+        knownPeopleDataSummaryRequestID = nil
+        knownPeopleDataSummaryTask?.cancel()
+        knownPeopleDataSummaryTask = nil
     }
 
     private func requestKnownPeopleSync(_ on: Bool, coordinator: ICloudSyncCoordinator) {
