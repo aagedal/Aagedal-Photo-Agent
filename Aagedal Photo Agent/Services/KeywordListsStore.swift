@@ -235,6 +235,13 @@ final class KeywordListsStore {
         notifyChanged(key)
     }
 
+    /// Publishes a write already committed by a serialized filesystem service.
+    /// The service owns the blocking coordinated write; the main actor only updates
+    /// observable state and delivers the same notification as `writeText`.
+    func recordExternalWrite(to key: KeywordListKey) {
+        notifyChanged(key)
+    }
+
     /// Writes a list of entries one-per-line. Sanitizes whitespace and dedupes
     /// case-sensitively (callers can lowercase if they want a stricter rule).
     func writeEntries(_ entries: [String], to key: KeywordListKey) throws {

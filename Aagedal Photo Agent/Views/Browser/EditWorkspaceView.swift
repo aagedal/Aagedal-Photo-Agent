@@ -248,17 +248,15 @@ struct EditWorkspaceView: View {
     /// Set only by left/right keyboard navigation so the filmstrip follows keyboard selection
     /// without recentering itself when the user clicks or extends a selection with the mouse.
     @State private var filmstripKeyboardScrollTarget: URL?
-    @State private var isShowingBefore = false
-    @State private var isMutingDevelop = false
-    @State private var isMutingSelectedMask = false
-    @State private var isMutingGlobal = false
+    /// Owns press-and-hold before/Develop/current-layer comparisons and projects them onto
+    /// render-only settings copies so transient keyboard state never mutates editable metadata.
+    @State private var transientPreview = DevelopTransientPreviewCoordinator()
     @State private var isMutingColor = false
     @State private var isMutingExposure = false
     @State private var isMutingDetail = false
     @State private var isMutingToneCurve = false
     @State private var isMutingHSL = false
     @State private var isMutingFilm = false
-    @State private var mutedMaskIndex: Int?
     @State private var showCropControls = false
     @State private var lockedCropImageRect: CGRect?
     @State private var dragCropAngle: Double?
@@ -479,6 +477,10 @@ struct EditWorkspaceView: View {
 
     private var editZoomScale: CGFloat { previewNavigation.zoomScale }
     private var editOffset: CGSize { previewNavigation.offset }
+
+    private var isShowingBefore: Bool { transientPreview.isShowingBefore }
+    private var isMutingDevelop: Bool { transientPreview.isMutingDevelop }
+    private var isMutingGlobal: Bool { transientPreview.isMutingGlobal }
 
     private var aiMaskTarget: AIMaskTarget {
         get { aiMaskSelection.target }
@@ -2606,6 +2608,7 @@ struct EditWorkspaceView: View {
 
     private func handleEditWorkspaceDisappear() {
         isSpaceHandToolActive = false
+        transientPreview.endImageSession()
         maskInteraction.endImageSession()
         metalPipeline?.maskMattePreviewMaskID = nil
         developComparison.close()
@@ -2820,6 +2823,7 @@ struct EditWorkspaceView: View {
     private func loadSelectedImagePreview() {
         let filename = selectedImageURL?.lastPathComponent ?? "nil"
         editLog.info("[\(filename)] loadSelectedImagePreview: resetting state, cancelling previous tasks")
+        transientPreview.beginImageSession(selectedImageURL)
         previewSession.beginImageSession(
             selectedImageURL,
             orientation: selectedImageURL == nil ? nil : selectedImageOrientation
@@ -3411,60 +3415,22 @@ struct EditWorkspaceView: View {
         metalCoordinator.requestRedraw()
     }
 
-    /// Returns a copy of the given settings with any per-section muted adjustments stripped,
-    /// so the pipeline preview reflects the toggled eye-icon state without altering the ViewModel.
-    /// `isMutingDevelop` (D key) acts as a universal mute for all adjustment sections.
+    /// Returns the coordinator's render-only projection of the editable settings. Sticky section
+    /// eye toggles stay view-owned; press-and-hold comparison state is coordinator-owned.
     private func settingsForPipeline(_ settings: CameraRawSettings?) -> CameraRawSettings? {
-        // RAW sources always decode with full EDR headroom; mark the settings so the
-        // tone pipeline applies the SDR output tonemap when HDR edit mode is off.
-        // With no settings at all (unedited image, "before" view) a RAW source still
-        // needs the tonemap-only render to match the SDR baseline appearance.
         let isRawSource = selectedImageURL.map { SupportedImageFormats.isRaw(url: $0) } ?? false
-        guard var s = settings else {
-            guard isRawSource else { return nil }
-            var tonemapOnly = CameraRawSettings()
-            tonemapOnly.sourceHasHDRHeadroom = true
-            return tonemapOnly
-        }
-        s.sourceHasHDRHeadroom = isRawSource ? true : nil
-        if isMutingDevelop || isMutingColor {
-            s.whiteBalance = nil
-            s.temperature = nil
-            s.tint = nil
-            s.incrementalTemperature = nil
-            s.incrementalTint = nil
-            s.asShotNeutralTemperature = nil
-            s.asShotNeutralTint = nil
-            s.saturation = nil
-            s.vibrance = nil
-            s.globalDensity = nil
-        }
-        if isMutingDevelop || isMutingExposure {
-            s.exposure2012 = nil
-            s.contrast2012 = nil
-            s.highlights2012 = nil
-            s.shadows2012 = nil
-            s.whites2012 = nil
-            s.blacks2012 = nil
-        }
-        if isMutingDevelop || isMutingDetail {
-            s.sharpness = nil
-            s.clarity2012 = nil
-            s.dehaze = nil
-        }
-        if isMutingDevelop || isMutingToneCurve {
-            s.toneCurve = nil
-        }
-        if isMutingDevelop || isMutingHSL {
-            s.hslAdjustments = nil
-        }
-        if isMutingDevelop || isMutingFilm {
-            s.filmEmulation = nil
-        }
-        if isMutingDevelop {
-            s.localAdjustments = nil
-        }
-        return s
+        return transientPreview.settingsForPipeline(
+            settings,
+            isRawSource: isRawSource,
+            sectionMutes: DevelopSectionMuteState(
+                color: isMutingColor,
+                exposure: isMutingExposure,
+                detail: isMutingDetail,
+                toneCurve: isMutingToneCurve,
+                hsl: isMutingHSL,
+                film: isMutingFilm
+            )
+        )
     }
 
     /// Connect (or disconnect) the clean-feed mirror to this editor's Metal pipeline.
@@ -3531,15 +3497,6 @@ struct EditWorkspaceView: View {
             // "Before" still needs the SDR output tonemap for RAW sources so the
             // unedited baseline matches the previous SDR decode appearance.
             if isShowingBefore { return settingsForPipeline(nil) }
-            if isMutingGlobal {
-                var masksOnly = CameraRawSettings()
-                masksOnly.localAdjustments = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments
-                masksOnly.hdrEditMode = metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode
-                if let url = selectedImageURL, SupportedImageFormats.isRaw(url: url) {
-                    masksOnly.sourceHasHDRHeadroom = true
-                }
-                return masksOnly
-            }
             var s = metadataViewModel.editingMetadata.cameraRaw
             if let asShot = asShotWhiteBalance {
                 s?.asShotNeutralTemperature = Double(asShot.temperature)
@@ -8394,61 +8351,51 @@ struct EditWorkspaceView: View {
         // M key — hold to show before, release to hide
         if chars == "m" {
             if isKeyUp {
-                isShowingBefore = false
+                transientPreview.endBeforeComparison()
                 return nil
             }
             guard !isTextFieldActive(), canEditSingleImage else { return event }
-            isShowingBefore = true
+            transientPreview.beginBeforeComparison()
             return nil
+        }
+
+        // Release whichever D comparison began even if Command was released before D. The
+        // coordinator retains the active mode, so key-up does not depend on modifier ordering.
+        if chars == "d", isKeyUp {
+            if transientPreview.endLayerMute() {
+                renderPreview()
+                return nil
+            }
+            if isMutingDevelop {
+                transientPreview.endDevelopMute()
+                return nil
+            }
+            return event
         }
 
         // Cmd+D — hold to mute only the current layer (global or selected mask)
         if chars == "d" && modifiers.contains(.command) {
-            if isKeyUp {
-                if isMutingSelectedMask {
-                    if let idx = mutedMaskIndex {
-                        metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[idx].enabled = true
-                        mutedMaskIndex = nil
-                    }
-                    isMutingSelectedMask = false
-                } else if isMutingGlobal {
-                    isMutingGlobal = false
-                    renderPreview()
-                }
-                return nil
-            }
             guard !isTextFieldActive(), canEditSingleImage else { return nil }
             if let idx = selectedMaskIndex {
                 // Mute selected mask
                 guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                       idx < masks.count, masks[idx].enabled else { return nil }
-                isMutingSelectedMask = true
-                mutedMaskIndex = idx
-                metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[idx].enabled = false
+                if transientPreview.beginLayerMute(maskIndex: idx) {
+                    renderPreview()
+                }
             } else {
                 // Mute global adjustments — send masks-only settings to pipeline
-                isMutingGlobal = true
-                var masksOnly = CameraRawSettings()
-                masksOnly.localAdjustments = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments
-                masksOnly.hdrEditMode = metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode
-                if let url = selectedImageURL, SupportedImageFormats.isRaw(url: url) {
-                    masksOnly.sourceHasHDRHeadroom = true
+                if transientPreview.beginLayerMute(maskIndex: nil) {
+                    renderPreview()
                 }
-                metalPipeline?.updateParams(masksOnly)
-                metalCoordinator.requestRedraw()
-                renderPreview()
             }
             return nil
         }
 
         // D key — hold to disable develop adjustments (keep crop visible)
         if chars == "d" && modifiers.isDisjoint(with: [.command, .option, .control]) {
-            if isKeyUp {
-                isMutingDevelop = false
-                return nil
-            }
             guard !isTextFieldActive(), canEditSingleImage else { return event }
-            isMutingDevelop = true
+            transientPreview.beginDevelopMute()
             return nil
         }
 

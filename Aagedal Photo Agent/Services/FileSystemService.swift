@@ -99,11 +99,28 @@ actor FileSystemService {
         let missingURLs: [URL]
     }
 
+    /// Immutable evidence from probing a frozen set of XMP sidecar destinations. The probe can
+    /// block on an external, network, or cloud volume, so cancellation is observed before and
+    /// after every non-preemptible `fileExists` call. Cancelled prefixes are never used to choose
+    /// a destructive confirmation path.
+    struct SidecarPresenceSnapshot: Sendable, Equatable {
+        enum Completion: Sendable, Equatable {
+            case complete
+            case cancelled
+        }
+
+        let hasAnySidecar: Bool
+        let checkedCount: Int
+        let requestedCount: Int
+        let completion: Completion
+    }
+
     private let isLocallyAvailable: @Sendable (URL) -> Bool
     private let requestDownload: @Sendable (URL) -> Void
     private let rejectMove: @Sendable ([URL], URL) -> RejectMoveService.MoveResult
     private let supportedFilesContents: @Sendable (URL) throws -> [URL]
     private let classifyDropSource: @Sendable (URL) -> DropSourceKind
+    private let sidecarExists: @Sendable (URL) -> Bool
     /// Measures volume-facing reads without recording paths or filenames. The interval names and
     /// aggregate counts are intentionally stable so the same Instruments template can compare
     /// local, network, cloud-placeholder, and large-folder runs.
@@ -135,6 +152,9 @@ actor FileSystemService {
                 return .missing
             }
             return isDirectory.boolValue ? .directory : .regularFile
+        },
+        sidecarExists: @escaping @Sendable (URL) -> Bool = { url in
+            FileManager.default.fileExists(atPath: url.path)
         }
     ) {
         self.isLocallyAvailable = isLocallyAvailable
@@ -142,6 +162,7 @@ actor FileSystemService {
         self.rejectMove = rejectMove
         self.supportedFilesContents = supportedFilesContents
         self.classifyDropSource = classifyDropSource
+        self.sidecarExists = sidecarExists
     }
 
     /// Scans a folder for image files on this service's serialized actor executor. Directory
@@ -301,6 +322,54 @@ actor FileSystemService {
             signposter.endInterval("DropSourceClassification", interval, "result=failed")
             throw error
         }
+    }
+
+    func sidecarPresenceSnapshot(for sidecarURLs: [URL]) -> SidecarPresenceSnapshot {
+        guard !Task.isCancelled else {
+            return SidecarPresenceSnapshot(
+                hasAnySidecar: false,
+                checkedCount: 0,
+                requestedCount: sidecarURLs.count,
+                completion: .cancelled
+            )
+        }
+
+        var checkedCount = 0
+        for url in sidecarURLs {
+            guard !Task.isCancelled else {
+                return SidecarPresenceSnapshot(
+                    hasAnySidecar: false,
+                    checkedCount: checkedCount,
+                    requestedCount: sidecarURLs.count,
+                    completion: .cancelled
+                )
+            }
+            let exists = sidecarExists(url)
+            checkedCount += 1
+            guard !Task.isCancelled else {
+                return SidecarPresenceSnapshot(
+                    hasAnySidecar: false,
+                    checkedCount: checkedCount,
+                    requestedCount: sidecarURLs.count,
+                    completion: .cancelled
+                )
+            }
+            if exists {
+                return SidecarPresenceSnapshot(
+                    hasAnySidecar: true,
+                    checkedCount: checkedCount,
+                    requestedCount: sidecarURLs.count,
+                    completion: .complete
+                )
+            }
+        }
+
+        return SidecarPresenceSnapshot(
+            hasAnySidecar: false,
+            checkedCount: checkedCount,
+            requestedCount: sidecarURLs.count,
+            completion: .complete
+        )
     }
 
     func listSubfolders(at url: URL) throws -> [URL] {

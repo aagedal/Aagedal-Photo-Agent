@@ -549,6 +549,144 @@ struct DevelopPreviewNavigationCoordinatorTests {
     }
 }
 
+@Suite("Develop transient preview coordinator")
+@MainActor
+struct DevelopTransientPreviewCoordinatorTests {
+    @Test("image-session changes release every held comparison")
+    func imageChangeReleasesHeldComparisons() {
+        let coordinator = DevelopTransientPreviewCoordinator()
+        let firstURL = URL(fileURLWithPath: "/tmp/transient-preview-first.raw")
+        let secondURL = URL(fileURLWithPath: "/tmp/transient-preview-second.raw")
+
+        coordinator.beginImageSession(firstURL)
+        coordinator.beginBeforeComparison()
+        coordinator.beginDevelopMute()
+        #expect(coordinator.beginLayerMute(maskIndex: 2))
+
+        coordinator.beginImageSession(secondURL)
+
+        #expect(coordinator.activeImageURL == secondURL)
+        #expect(!coordinator.isShowingBefore)
+        #expect(!coordinator.isMutingDevelop)
+        #expect(!coordinator.isMutingGlobal)
+        #expect(!coordinator.isMutingSelectedMask)
+        #expect(coordinator.mutedMaskIndex == nil)
+    }
+
+    @Test("selected-mask mute changes only the render projection")
+    func selectedMaskMuteDoesNotMutateEditableSettings() {
+        let coordinator = DevelopTransientPreviewCoordinator()
+        let masks = [
+            MaskAdjustment(name: "First", enabled: true, exposure: 0.5),
+            MaskAdjustment(name: "Second", enabled: true, exposure: 1.0),
+        ]
+        var editable = CameraRawSettings()
+        editable.exposure2012 = 1.25
+        editable.localAdjustments = masks
+
+        #expect(coordinator.beginLayerMute(maskIndex: 1))
+        #expect(!coordinator.beginLayerMute(maskIndex: 0))
+        let projected = coordinator.settingsForPipeline(
+            editable,
+            isRawSource: false,
+            sectionMutes: DevelopSectionMuteState()
+        )
+
+        #expect(editable.localAdjustments?[0].enabled == true)
+        #expect(editable.localAdjustments?[1].enabled == true)
+        #expect(projected?.localAdjustments?[0].enabled == true)
+        #expect(projected?.localAdjustments?[1].enabled == false)
+        #expect(projected?.exposure2012 == 1.25)
+
+        #expect(coordinator.endLayerMute())
+        let released = coordinator.settingsForPipeline(
+            editable,
+            isRawSource: false,
+            sectionMutes: DevelopSectionMuteState()
+        )
+        #expect(released?.localAdjustments?[1].enabled == true)
+    }
+
+    @Test("global mute preserves masks and HDR mode but strips global adjustments")
+    func globalMuteProjectsMasksOnly() {
+        let coordinator = DevelopTransientPreviewCoordinator()
+        let mask = MaskAdjustment(name: "Local", exposure: 0.75)
+        var editable = CameraRawSettings()
+        editable.whiteBalance = "Custom"
+        editable.exposure2012 = 2
+        editable.sharpness = 40
+        editable.hdrEditMode = 1
+        editable.localAdjustments = [mask]
+
+        #expect(coordinator.beginLayerMute(maskIndex: nil))
+        let projected = coordinator.settingsForPipeline(
+            editable,
+            isRawSource: true,
+            sectionMutes: DevelopSectionMuteState()
+        )
+
+        #expect(projected?.whiteBalance == nil)
+        #expect(projected?.exposure2012 == nil)
+        #expect(projected?.sharpness == nil)
+        #expect(projected?.localAdjustments == [mask])
+        #expect(projected?.hdrEditMode == 1)
+        #expect(projected?.sourceHasHDRHeadroom == true)
+    }
+
+    @Test("section and whole-Develop mutes retain their established boundaries")
+    func sectionAndDevelopMuteProjection() {
+        let coordinator = DevelopTransientPreviewCoordinator()
+        let mask = MaskAdjustment(name: "Local", exposure: 0.5)
+        var editable = CameraRawSettings()
+        editable.whiteBalance = "Custom"
+        editable.temperature = 7000
+        editable.exposure2012 = 1
+        editable.sharpness = 25
+        editable.localAdjustments = [mask]
+
+        let detailOnly = coordinator.settingsForPipeline(
+            editable,
+            isRawSource: false,
+            sectionMutes: DevelopSectionMuteState(detail: true)
+        )
+        #expect(detailOnly?.sharpness == nil)
+        #expect(detailOnly?.temperature == 7000)
+        #expect(detailOnly?.exposure2012 == 1)
+        #expect(detailOnly?.localAdjustments == [mask])
+
+        coordinator.beginDevelopMute()
+        let allDevelop = coordinator.settingsForPipeline(
+            editable,
+            isRawSource: false,
+            sectionMutes: DevelopSectionMuteState()
+        )
+        #expect(allDevelop?.whiteBalance == nil)
+        #expect(allDevelop?.temperature == nil)
+        #expect(allDevelop?.exposure2012 == nil)
+        #expect(allDevelop?.sharpness == nil)
+        #expect(allDevelop?.localAdjustments == nil)
+    }
+
+    @Test("RAW sources without edits retain their tonemap-only payload")
+    func rawTonemapOnlyProjection() {
+        let coordinator = DevelopTransientPreviewCoordinator()
+
+        let raw = coordinator.settingsForPipeline(
+            nil,
+            isRawSource: true,
+            sectionMutes: DevelopSectionMuteState()
+        )
+        let nonRaw = coordinator.settingsForPipeline(
+            nil,
+            isRawSource: false,
+            sectionMutes: DevelopSectionMuteState()
+        )
+
+        #expect(raw?.sourceHasHDRHeadroom == true)
+        #expect(nonRaw == nil)
+    }
+}
+
 @Suite("Develop preview session coordinator")
 @MainActor
 struct DevelopPreviewSessionCoordinatorTests {

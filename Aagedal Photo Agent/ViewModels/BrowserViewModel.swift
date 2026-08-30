@@ -215,6 +215,8 @@ final class BrowserViewModel {
     @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var batchReadTask: Task<Void, Never>?
+    @ObservationIgnored private var removeIPTCPreflightTask: Task<Void, Never>?
+    @ObservationIgnored private var removeIPTCPreflightRequestID: UUID?
     @ObservationIgnored private var pendingStatusRefreshTask: Task<Void, Never>?
 
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
@@ -268,6 +270,7 @@ final class BrowserViewModel {
         retinaPreCacheTask?.cancel()
         loadFolderTask?.cancel()
         pendingMetadataDrainTask?.cancel()
+        removeIPTCPreflightTask?.cancel()
         autoRefreshTask?.cancel()
         metadataWriteTask?.cancel()
         batchReadTask?.cancel()
@@ -3532,16 +3535,23 @@ final class BrowserViewModel {
         guard !selectedImageIDs.isEmpty else { return }
         let urls = Array(selectedImageIDs)
         removeIPTCSelectedURLs = urls
-
-        let hasAnySidecar = urls.contains { url in
-            let sidecarURL = xmpSidecarService.sidecarURL(for: url)
-            return FileManager.default.fileExists(atPath: sidecarURL.path)
-        }
-
-        if hasAnySidecar {
-            showRemoveIPTCSidecarChoice = true
-        } else {
-            showRemoveIPTCConfirmation = true
+        let sidecarURLs = urls.map { xmpSidecarService.sidecarURL(for: $0) }
+        let requestID = UUID()
+        removeIPTCPreflightRequestID = requestID
+        removeIPTCPreflightTask?.cancel()
+        removeIPTCPreflightTask = Task { [weak self, fileSystemService] in
+            let snapshot = await fileSystemService.sidecarPresenceSnapshot(for: sidecarURLs)
+            guard let self, self.removeIPTCPreflightRequestID == requestID else { return }
+            self.removeIPTCPreflightRequestID = nil
+            guard self.selectedImageIDs == Set(urls),
+                  self.removeIPTCSelectedURLs == urls,
+                  snapshot.completion == .complete
+            else { return }
+            if snapshot.hasAnySidecar {
+                self.showRemoveIPTCSidecarChoice = true
+            } else {
+                self.showRemoveIPTCConfirmation = true
+            }
         }
     }
 

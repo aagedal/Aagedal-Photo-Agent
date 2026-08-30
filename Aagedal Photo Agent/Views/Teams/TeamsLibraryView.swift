@@ -212,6 +212,8 @@ private struct TeamEditorView: View {
     @State private var showPaste = false
     @State private var knownPeople: [KnownPerson] = []
     @State private var saveTask: Task<Void, Never>?
+    @State private var exportTask: Task<Void, Never>?
+    @State private var exportRequestID: UUID?
     @State private var textImportTask: Task<Void, Never>?
     @State private var textImportRequestID: UUID?
     @State private var textImportErrorMessage: String?
@@ -326,6 +328,8 @@ private struct TeamEditorView: View {
         .onChange(of: roster) { scheduleSave() }
         .onDisappear {
             saveTask?.cancel()
+            exportTask?.cancel()
+            exportRequestID = nil
             textImportTask?.cancel()
             textImportRequestID = nil
             save()
@@ -493,11 +497,7 @@ private struct TeamEditorView: View {
         let pdf = RosterPDFExporter.makePDF(for: team, exportedOn: Date()) { id in
             KnownPeopleService.shared.loadThumbnail(for: id)
         }
-        do {
-            try pdf.write(to: url)
-        } catch {
-            NSAlert(error: error).runModal()
-        }
+        startExport(data: pdf, to: url)
     }
 
     /// Export the roster as a plain-text list, one "<number> <name>" per line —
@@ -515,10 +515,32 @@ private struct TeamEditorView: View {
         panel.title = "Export Roster Text"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-        } catch {
-            NSAlert(error: error).runModal()
+        startExport(data: Data(text.utf8), to: url, writingOptions: .atomic)
+    }
+
+    private func startExport(
+        data: Data,
+        to destinationURL: URL,
+        writingOptions: Data.WritingOptions = []
+    ) {
+        exportTask?.cancel()
+        let requestID = UUID()
+        exportRequestID = requestID
+        let artifact = TeamRosterExportArtifact(
+            data: data,
+            destinationURL: destinationURL,
+            writingOptions: writingOptions
+        )
+        exportTask = Task { @MainActor in
+            let evidence = await TeamRosterExportService.shared.export(
+                [artifact],
+                requestID: requestID
+            )
+            guard exportRequestID == requestID else { return }
+            exportRequestID = nil
+            exportTask = nil
+            guard case .failed(let failure) = evidence.results.first else { return }
+            NSAlert(error: failure.nsError).runModal()
         }
     }
 

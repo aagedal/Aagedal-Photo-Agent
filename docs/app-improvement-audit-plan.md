@@ -118,6 +118,15 @@ the normal Develop preview. These slices advance the open Phase 3.1 measurement/
 state-owner items without claiming real-volume, Thread Performance Checker, Instruments, or broader extraction
 exit gates. ([validation](plan-status-responsiveness-navigation-continuation-2026-08-30.md))
 
+**Filesystem and transient-preview continuation (2026-08-30):** the checklist remains 63 of 75. Keyword-list
+backup inventory, snapshot/prune enumeration, and restore commits; team roster PDF/text writes; and Remove All
+IPTC sidecar preflight probes now cross serialized actor boundaries with immutable cancellation, partial-success,
+and durable-commit evidence plus stale-result rejection. `DevelopTransientPreviewCoordinator` now owns the
+press-and-hold Before, whole-Develop, Global, and selected-mask comparison lifetime and render-only settings
+projection, so selected-mask comparison no longer mutates editable metadata. These slices advance the broad open
+Phase 3.1 filesystem and Phase 4.1 state-owner items without satisfying their remaining inventory, real-volume,
+manual, or architectural exit conditions. ([validation](plan-status-filesystem-transient-preview-continuation-2026-08-30.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data

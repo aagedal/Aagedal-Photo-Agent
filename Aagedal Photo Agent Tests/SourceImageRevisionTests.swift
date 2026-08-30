@@ -320,6 +320,84 @@ struct SerializedFileSystemServiceTests {
         #expect(probe.callCount == 0)
     }
 
+    @Test("sidecar presence snapshot stops at the first match and freezes counts")
+    func sidecarPresenceSnapshot() async {
+        let first = URL(fileURLWithPath: "/virtual/first.xmp")
+        let second = URL(fileURLWithPath: "/virtual/second.xmp")
+        let third = URL(fileURLWithPath: "/virtual/third.xmp")
+        let probe = SidecarPresenceProbe(existingURLs: [second])
+        let service = FileSystemService(sidecarExists: probe.exists)
+
+        let snapshot = await service.sidecarPresenceSnapshot(for: [first, second, third])
+
+        #expect(snapshot.completion == .complete)
+        #expect(snapshot.hasAnySidecar)
+        #expect(snapshot.checkedCount == 2)
+        #expect(snapshot.requestedCount == 3)
+        #expect(probe.urls == [first, second])
+    }
+
+    @Test("sidecar probes cross off the main actor")
+    @MainActor
+    func sidecarPresenceSnapshotRunsOffMain() async {
+        let url = URL(fileURLWithPath: "/virtual/photo.xmp")
+        let probe = SidecarPresenceProbe(existingURLs: [url])
+        let service = FileSystemService(sidecarExists: probe.exists)
+
+        let snapshot = await service.sidecarPresenceSnapshot(for: [url])
+
+        #expect(snapshot.completion == .complete)
+        #expect(snapshot.hasAnySidecar)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("sidecar presence reports cancellation arriving during a blocking probe")
+    func sidecarPresenceSnapshotReportsPostProbeCancellation() async {
+        let probe = BlockingSidecarPresenceProbe()
+        defer { probe.release() }
+        let service = FileSystemService(sidecarExists: probe.exists)
+        let task = Task {
+            await service.sidecarPresenceSnapshot(
+                for: [URL(fileURLWithPath: "/simulated-slow-volume/photo.xmp")]
+            )
+        }
+
+        let didBlock = await probe.waitUntilBlocked()
+        #expect(didBlock, "The simulated slow-volume probe did not start within 30 seconds")
+        guard didBlock else { return }
+        task.cancel()
+        probe.release()
+
+        let snapshot = await task.value
+        #expect(snapshot.completion == .cancelled)
+        #expect(!snapshot.hasAnySidecar)
+        #expect(snapshot.checkedCount == 1)
+        #expect(snapshot.requestedCount == 1)
+    }
+
+    @Test("Remove All IPTC preflight uses serialized sidecar evidence and rejects stale results")
+    func removeIPTCPreflightSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/BrowserViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let start = try #require(source.range(of: "func confirmRemoveAllIPTC()"))
+        let suffix = source[start.lowerBound...]
+        let end = try #require(suffix.range(of: "func removeIPTCFromImageFiles"))
+        let implementation = suffix[..<end.lowerBound]
+
+        #expect(implementation.contains("sidecarPresenceSnapshot(for: sidecarURLs)"))
+        #expect(implementation.contains("removeIPTCPreflightRequestID == requestID"))
+        #expect(implementation.contains("selectedImageIDs == Set(urls)"))
+        #expect(implementation.contains("snapshot.completion == .complete"))
+        #expect(!implementation.contains("FileManager.default.fileExists"))
+    }
+
     @Test("content-area folder drops use the serialized classification boundary")
     func contentAreaDropSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -617,6 +695,73 @@ nonisolated private final class DropSourceThreadProbe: @unchecked Sendable {
             recordedCallCount += 1
         }
         return .regularFile
+    }
+}
+
+nonisolated private final class SidecarPresenceProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let existingURLs: Set<URL>
+    private var recordedURLs: [URL] = []
+    private var observedMainThread = false
+
+    init(existingURLs: Set<URL>) {
+        self.existingURLs = existingURLs
+    }
+
+    var urls: [URL] {
+        lock.withLock { recordedURLs }
+    }
+
+    var ranOnMainThread: Bool {
+        lock.withLock { observedMainThread }
+    }
+
+    func exists(_ url: URL) -> Bool {
+        lock.withLock {
+            recordedURLs.append(url)
+            observedMainThread = observedMainThread || Thread.isMainThread
+            return existingURLs.contains(url)
+        }
+    }
+}
+
+nonisolated private final class BlockingSidecarPresenceProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var isBlocked = false
+    private var isReleased = false
+
+    func exists(_ url: URL) -> Bool {
+        condition.lock()
+        isBlocked = true
+        condition.broadcast()
+        while !isReleased {
+            condition.wait()
+        }
+        condition.unlock()
+        return true
+    }
+
+    func waitUntilBlocked(timeout: TimeInterval = 30) async -> Bool {
+        await Task.detached { [self] in
+            waitUntilBlockedSynchronously(timeout: timeout)
+        }.value
+    }
+
+    private func waitUntilBlockedSynchronously(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !isBlocked {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    func release() {
+        condition.withLock {
+            isReleased = true
+            condition.broadcast()
+        }
     }
 }
 

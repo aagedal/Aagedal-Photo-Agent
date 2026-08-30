@@ -232,8 +232,161 @@ struct KeywordListBackupPreviewServiceTests {
         #expect(functionSource.contains("guard previewRequestID == requestID,"))
         #expect(functionSource.contains("previewedVersion?.id == version.id"))
         #expect(functionSource.contains("case .cancelledBeforeRead, .cancelledAfterRead:"))
-        #expect(source.contains(".onDisappear { cancelPreview() }"))
+        #expect(source.contains(".onDisappear {\n            cancelPreview()"))
         #expect(!source.contains("String(contentsOf: version.url"))
+    }
+}
+
+@Suite("Keyword-list backup inventory and restore filesystem boundary")
+struct KeywordListBackupFileServiceTests {
+    @Test("inventory returns an immutable sorted snapshot away from the main actor")
+    @MainActor
+    func inventoryRunsOffMainActor() async {
+        let directory = URL(fileURLWithPath: "/virtual/backups")
+        let older = directory.appendingPathComponent("older.txt")
+        let newer = directory.appendingPathComponent("newer.txt")
+        let requestID = UUID()
+        let probe = KeywordListBackupFileIOProbe(files: [older, newer])
+        probe.snapshots = [
+            older: KeywordListBackupFileSnapshot(
+                url: older,
+                date: Date(timeIntervalSince1970: 10),
+                text: "older",
+                byteCount: 5
+            ),
+            newer: KeywordListBackupFileSnapshot(
+                url: newer,
+                date: Date(timeIntervalSince1970: 20),
+                text: "newer",
+                byteCount: 5
+            )
+        ]
+        let service = KeywordListBackupFileService(io: probe.fileIO)
+
+        let result = await Task {
+            await service.inventory(
+                directories: [KeywordListBackupDirectoryRequest(
+                    identifier: "structured/keywords.txt",
+                    directoryURL: directory
+                )],
+                requestID: requestID
+            )
+        }.value
+
+        #expect(result == .loaded(KeywordListBackupInventorySnapshot(
+            requestID: requestID,
+            directories: [KeywordListBackupDirectorySnapshot(
+                identifier: "structured/keywords.txt",
+                versions: [probe.snapshots[newer]!, probe.snapshots[older]!]
+            )]
+        )))
+        #expect(probe.contentsInvocationCount == 1)
+        #expect(probe.inspectInvocationCount == 2)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("a cancelled queued inventory does not enter filesystem enumeration")
+    func queuedInventoryCancellation() async throws {
+        let probe = BlockingKeywordListBackupFileIOProbe()
+        let service = KeywordListBackupFileService(io: probe.fileIO)
+        let firstID = UUID()
+        let secondID = UUID()
+        let request = [KeywordListBackupDirectoryRequest(
+            identifier: "quick/keywords.txt",
+            directoryURL: URL(fileURLWithPath: "/virtual/backups")
+        )]
+        let first = Task { await service.inventory(directories: request, requestID: firstID) }
+        try await probe.waitUntilFirstEnumerationStarts()
+        let second = Task { await service.inventory(directories: request, requestID: secondID) }
+        second.cancel()
+        probe.releaseFirstEnumeration()
+
+        _ = await first.value
+        let secondResult = await second.value
+
+        #expect(secondResult == .cancelled(
+            requestID: secondID,
+            completedDirectoryCount: 0,
+            discoveredVersionCount: 0
+        ))
+        #expect(probe.contentsInvocationCount == 1)
+        #expect(probe.maximumConcurrentEnumerations == 1)
+    }
+
+    @Test("restore reports cancellation after read and does not commit")
+    func restoreCancellationAfterRead() async throws {
+        let source = URL(fileURLWithPath: "/virtual/source.txt")
+        let destination = URL(fileURLWithPath: "/virtual/destination.txt")
+        let bytes = Data("restored".utf8)
+        let probe = KeywordListBackupFileIOProbe(files: [])
+        probe.readDataResult = bytes
+        probe.cancelDuringRead = true
+        let service = KeywordListBackupFileService(io: probe.fileIO)
+        let requestID = UUID()
+
+        let result = try await Task {
+            try await service.restore(
+                from: source,
+                to: destination,
+                requestID: requestID
+            )
+        }.value
+
+        #expect(result == .cancelledAfterRead(
+            requestID: requestID,
+            sourceURL: source,
+            byteCount: bytes.count
+        ))
+        #expect(probe.writeInvocationCount == 0)
+    }
+
+    @Test("restore exposes cancellation observed after its durable commit")
+    func restoreDurableAfterCancellation() async throws {
+        let source = URL(fileURLWithPath: "/virtual/source.txt")
+        let destination = URL(fileURLWithPath: "/virtual/destination.txt")
+        let bytes = Data("restored".utf8)
+        let probe = KeywordListBackupFileIOProbe(files: [])
+        probe.readDataResult = bytes
+        probe.cancelDuringWrite = true
+        let service = KeywordListBackupFileService(io: probe.fileIO)
+        let requestID = UUID()
+
+        let result = try await Task {
+            try await service.restore(
+                from: source,
+                to: destination,
+                requestID: requestID
+            )
+        }.value
+
+        #expect(result == .restored(KeywordListBackupRestoreCommit(
+            requestID: requestID,
+            sourceURL: source,
+            destinationURL: destination,
+            byteCount: bytes.count,
+            cancellationObservedAfterCommit: true
+        )))
+        #expect(probe.writtenData == bytes)
+        #expect(probe.writtenURL == destination)
+    }
+
+    @Test("the backup sheet awaits inventory and restore with stale-result guards")
+    func backupSheetAsyncSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/KeywordListBackupsSheet.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("await KeywordListsBackupService.shared.allVersionsByKey("))
+        #expect(source.contains("guard inventoryRequestID == requestID else { return }"))
+        #expect(source.contains("try await KeywordListsBackupService.shared.restore("))
+        #expect(source.contains("guard restoreRequestID == requestID else { return }"))
+        #expect(!source.contains("KeywordListsBackupService.shared.restore(version)"))
     }
 }
 
@@ -258,6 +411,138 @@ private nonisolated final class KeywordListBackupPreviewReaderProbe: @unchecked 
 
     var invocationCount: Int { lock.withLock { count } }
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private nonisolated final class KeywordListBackupFileIOProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let files: [URL]
+    var snapshots: [URL: KeywordListBackupFileSnapshot] = [:]
+    var readDataResult = Data()
+    var cancelDuringRead = false
+    var cancelDuringWrite = false
+    private var contentsCount = 0
+    private var inspectCount = 0
+    private var writeCount = 0
+    private var observedMainThread = false
+    private var committedData: Data?
+    private var committedURL: URL?
+
+    init(files: [URL]) {
+        self.files = files
+    }
+
+    var fileIO: KeywordListBackupFileIO {
+        KeywordListBackupFileIO(
+            contentsOfDirectory: { [self] _ in
+                lock.withLock {
+                    contentsCount += 1
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                }
+                return files
+            },
+            inspectTextFile: { [self] url in
+                lock.withLock {
+                    inspectCount += 1
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                    return snapshots[url]!
+                }
+            },
+            createDirectory: { _ in },
+            readData: { [self] _ in
+                let (data, shouldCancel) = lock.withLock {
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                    return (readDataResult, cancelDuringRead)
+                }
+                if shouldCancel { withUnsafeCurrentTask { $0?.cancel() } }
+                return data
+            },
+            writeData: { [self] data, url in
+                let shouldCancel = lock.withLock {
+                    writeCount += 1
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                    committedData = data
+                    committedURL = url
+                    return cancelDuringWrite
+                }
+                if shouldCancel { withUnsafeCurrentTask { $0?.cancel() } }
+            },
+            removeItem: { _ in }
+        )
+    }
+
+    var contentsInvocationCount: Int { lock.withLock { contentsCount } }
+    var inspectInvocationCount: Int { lock.withLock { inspectCount } }
+    var writeInvocationCount: Int { lock.withLock { writeCount } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+    var writtenData: Data? { lock.withLock { committedData } }
+    var writtenURL: URL? { lock.withLock { committedURL } }
+}
+
+private nonisolated final class BlockingKeywordListBackupFileIOProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var contentsCount = 0
+    private var activeEnumerations = 0
+    private var maximumActiveEnumerations = 0
+    private var firstEnumerationReleased = false
+
+    var fileIO: KeywordListBackupFileIO {
+        KeywordListBackupFileIO(
+            contentsOfDirectory: { [self] _ in
+                condition.lock()
+                contentsCount += 1
+                activeEnumerations += 1
+                maximumActiveEnumerations = max(maximumActiveEnumerations, activeEnumerations)
+                condition.broadcast()
+                if contentsCount == 1 {
+                    while !firstEnumerationReleased { condition.wait() }
+                }
+                activeEnumerations -= 1
+                condition.unlock()
+                return []
+            },
+            inspectTextFile: { url in
+                KeywordListBackupFileSnapshot(
+                    url: url,
+                    date: .distantPast,
+                    text: "",
+                    byteCount: 0
+                )
+            },
+            createDirectory: { _ in },
+            readData: { _ in Data() },
+            writeData: { _, _ in },
+            removeItem: { _ in }
+        )
+    }
+
+    func waitUntilFirstEnumerationStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while contentsInvocationCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw KeywordListBackupPreviewProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstEnumeration() {
+        condition.lock()
+        firstEnumerationReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var contentsInvocationCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return contentsCount
+    }
+
+    var maximumConcurrentEnumerations: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumActiveEnumerations
+    }
 }
 
 private enum KeywordListBackupPreviewProbeError: Error {

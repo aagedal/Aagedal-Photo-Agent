@@ -15,7 +15,10 @@ struct KeywordListBackupsSheet: View {
     /// which lists need restoring.
     var recoverableKeys: [KeywordListKey] = []
 
-    @State private var groups: [(key: KeywordListKey, versions: [KeywordListsBackupService.Version])] = []
+    @State private var groups: [KeywordListsBackupService.VersionGroup] = []
+    @State private var groupsAreLoading = false
+    @State private var inventoryRequestID: UUID?
+    @State private var inventoryTask: Task<Void, Never>?
     @State private var selectedKey: KeywordListKey?
     @State private var previewedVersion: KeywordListsBackupService.Version?
     @State private var previewText: String?
@@ -24,6 +27,8 @@ struct KeywordListBackupsSheet: View {
     @State private var previewRequestID: UUID?
     @State private var previewTask: Task<Void, Never>?
     @State private var pendingRestore: KeywordListsBackupService.Version?
+    @State private var restoreRequestID: UUID?
+    @State private var restoreTask: Task<Void, Never>?
     @State private var feedback: String?
 
     private static let dateFormatter: DateFormatter = {
@@ -50,7 +55,15 @@ struct KeywordListBackupsSheet: View {
         .frame(minWidth: 640, idealWidth: 740, minHeight: 440, idealHeight: 540)
         .onAppear { reload() }
         .onChange(of: selectedKey) { _, _ in cancelPreview() }
-        .onDisappear { cancelPreview() }
+        .onDisappear {
+            cancelPreview()
+            inventoryTask?.cancel()
+            inventoryTask = nil
+            inventoryRequestID = nil
+            restoreTask?.cancel()
+            restoreTask = nil
+            restoreRequestID = nil
+        }
         .alert(
             "Restore this version?",
             isPresented: Binding(
@@ -85,7 +98,11 @@ struct KeywordListBackupsSheet: View {
 
     @ViewBuilder
     private var content: some View {
-        if groups.isEmpty {
+        if groupsAreLoading && groups.isEmpty {
+            ProgressView("Loading backups…")
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if groups.isEmpty {
             VStack(spacing: 8) {
                 Spacer()
                 Image(systemName: "clock.arrow.circlepath")
@@ -186,6 +203,7 @@ struct KeywordListBackupsSheet: View {
                 .buttonStyle(.borderless)
             Button("Restore") { pendingRestore = version }
                 .buttonStyle(.bordered)
+                .disabled(restoreTask != nil)
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
@@ -243,12 +261,31 @@ struct KeywordListBackupsSheet: View {
 
     private func reload() {
         cancelPreview()
-        groups = KeywordListsBackupService.shared.allVersionsByKey()
-        // Keep/establish a sensible selection.
-        if let initialKey, groups.contains(where: { $0.key == initialKey }) {
-            selectedKey = initialKey
-        } else if selectedKey == nil || !groups.contains(where: { $0.key == selectedKey }) {
-            selectedKey = groups.first?.key
+        inventoryTask?.cancel()
+        let requestID = UUID()
+        inventoryRequestID = requestID
+        groupsAreLoading = true
+        inventoryTask = Task {
+            let result = await KeywordListsBackupService.shared.allVersionsByKey(
+                requestID: requestID
+            )
+            guard inventoryRequestID == requestID else { return }
+            inventoryTask = nil
+            inventoryRequestID = nil
+            groupsAreLoading = false
+
+            switch result {
+            case .loaded(_, let loadedGroups):
+                groups = loadedGroups
+                // Keep/establish a sensible selection.
+                if let initialKey, groups.contains(where: { $0.key == initialKey }) {
+                    selectedKey = initialKey
+                } else if selectedKey == nil || !groups.contains(where: { $0.key == selectedKey }) {
+                    selectedKey = groups.first?.key
+                }
+            case .cancelled:
+                break
+            }
         }
     }
 
@@ -306,11 +343,36 @@ struct KeywordListBackupsSheet: View {
     private func performRestore() {
         guard let version = pendingRestore else { return }
         pendingRestore = nil
-        if KeywordListsBackupService.shared.restore(version) {
-            feedback = "Restored “\(version.key.displayName)” from \(Self.dateFormatter.string(from: version.date))"
-            reload()
-        } else {
-            feedback = "Restore failed."
+        restoreTask?.cancel()
+        let requestID = UUID()
+        restoreRequestID = requestID
+        restoreTask = Task {
+            do {
+                let result = try await KeywordListsBackupService.shared.restore(
+                    version,
+                    requestID: requestID
+                )
+                guard restoreRequestID == requestID else { return }
+                restoreTask = nil
+                restoreRequestID = nil
+                switch result {
+                case .restored:
+                    feedback = "Restored “\(version.key.displayName)” from \(Self.dateFormatter.string(from: version.date))"
+                    reload()
+                case .cancelledBeforeRead, .cancelledAfterRead:
+                    feedback = "Restore cancelled."
+                }
+            } catch is CancellationError {
+                guard restoreRequestID == requestID else { return }
+                restoreTask = nil
+                restoreRequestID = nil
+                feedback = "Restore cancelled."
+            } catch {
+                guard restoreRequestID == requestID else { return }
+                restoreTask = nil
+                restoreRequestID = nil
+                feedback = "Restore failed."
+            }
         }
     }
 
