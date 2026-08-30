@@ -197,13 +197,18 @@ The [app improvement audit plan](app-improvement-audit-plan.md) is a proposed, r
 covering data-loss prevention, release reproducibility, security/privacy, accessibility,
 responsiveness, and maintainability. It is not a fourth 3.0 portfolio initiative, and its unchecked
 items do not claim implementation or replace the release gates in the three authoritative plans
-above. The audit baseline is reconciled to the latest recorded integrated run of 1,452 passing
-tests in 161 suites; manual, external-service, hardware, legal, and credential-dependent actions
+above. The audit baseline is reconciled to the latest recorded integrated run of 1,613 passing
+tests in 182 suites; manual, external-service, hardware, legal, and credential-dependent actions
 remain explicitly gated in that document.
 
 The latest [code-boundary continuation](plan-status-continuation-validation-2026-08-30.md) records the
 main-actor Metal live-preview facade, FTP Recent Uploads filesystem snapshot, and Develop comparison-render
 coordinator, including the current 63-of-75 audit status and integrated focused test evidence.
+
+The subsequent [implementation continuation](plan-status-implementation-continuation-2026-08-30.md) records
+the serialized Structured Keyword import boundary, the Develop preview-render publication owner, and the
+clean 1,613-test unfiltered run after full-load timing stabilization. These slices advance broad open gates;
+the audit remains 63 of 75.
 
 ## File organization convention
 

@@ -209,7 +209,7 @@ private nonisolated final class BundleCommitGate: @unchecked Sendable {
     }
 
     func waitUntilFirstCommit() async throws {
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + .seconds(30)
         while !hasCommittedBundle {
             guard ContinuousClock.now < deadline else { throw RejectMoveProbeError.timedOut }
             try await Task.sleep(for: .milliseconds(10))
@@ -254,7 +254,7 @@ private nonisolated final class BlockingRejectMoveProbe: @unchecked Sendable {
     }
 
     func waitUntilStarted() async throws {
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + .seconds(30)
         while !hasStarted {
             guard ContinuousClock.now < deadline else { throw RejectMoveProbeError.timedOut }
             try await Task.sleep(for: .milliseconds(10))

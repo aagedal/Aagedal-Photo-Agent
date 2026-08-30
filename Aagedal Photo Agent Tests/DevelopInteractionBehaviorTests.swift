@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import Testing
@@ -475,13 +476,12 @@ struct DevelopMaskInteractionCoordinatorTests {
 @Suite("Develop preview session coordinator")
 @MainActor
 struct DevelopPreviewSessionCoordinatorTests {
-    @Test("an image change cancels every image-scoped preview task and resets progress")
+    @Test("an image change cancels every source-lifecycle task and resets progress")
     func imageChangeCancelsTasksAndResetsProgress() {
         let coordinator = DevelopPreviewSessionCoordinator()
         let firstURL = URL(fileURLWithPath: "/tmp/preview-session-first.raw")
         let secondURL = URL(fileURLWithPath: "/tmp/preview-session-second.raw")
         let sourceLoad = Task<Void, Never> { try? await Task.sleep(for: .seconds(10)) }
-        let previewRender = Task<Void, Never> { try? await Task.sleep(for: .seconds(10)) }
         let adjacentPrecache = Task<Void, Never> { try? await Task.sleep(for: .seconds(10)) }
         let fullResolutionUpgrade = Task<Void, Never> { try? await Task.sleep(for: .seconds(10)) }
 
@@ -490,7 +490,6 @@ struct DevelopPreviewSessionCoordinatorTests {
         coordinator.isDecodingFullResolution = true
         coordinator.isEditFullResLoaded = true
         coordinator.replaceSourceLoadTask(with: sourceLoad)
-        coordinator.replacePreviewRenderTask(with: previewRender)
         coordinator.replaceAdjacentPrecacheTask(with: adjacentPrecache)
         coordinator.replaceFullResolutionUpgradeTask(with: fullResolutionUpgrade)
         let firstGeneration = coordinator.sessionGeneration
@@ -502,11 +501,9 @@ struct DevelopPreviewSessionCoordinatorTests {
         coordinator.finishFullResolutionUpgrade(sessionGeneration: firstGeneration)
 
         #expect(sourceLoad.isCancelled)
-        #expect(previewRender.isCancelled)
         #expect(adjacentPrecache.isCancelled)
         #expect(fullResolutionUpgrade.isCancelled)
         #expect(coordinator.sourceLoadTask == nil)
-        #expect(coordinator.previewRenderTask == nil)
         #expect(coordinator.adjacentPrecacheTask == nil)
         #expect(coordinator.fullResolutionUpgradeTask != nil)
         #expect(coordinator.activeImageURL == secondURL)
@@ -534,5 +531,146 @@ struct DevelopPreviewSessionCoordinatorTests {
         #expect(coordinator.activeImageURL == nil)
         #expect(coordinator.sourceLoadedURL == nil)
         #expect(coordinator.sourceLoadedOrientation == nil)
+    }
+}
+
+@Suite("Develop preview render coordinator")
+@MainActor
+struct DevelopPreviewRenderCoordinatorTests {
+    @Test("a replacement request rejects a cancelled renderer's late publication")
+    func replacementRejectsLatePublication() async throws {
+        let coordinator = DevelopPreviewRenderCoordinator()
+        let staleImage = NSImage(size: NSSize(width: 10, height: 10))
+        let currentImage = NSImage(size: NSSize(width: 20, height: 20))
+        var publishedWidths: [Int] = []
+
+        coordinator.beginImageSession()
+        coordinator.requestRender(
+            fallback: nil,
+            isHDR: false,
+            operation: {
+                try? await Task.sleep(for: .milliseconds(80))
+                return Self.output(image: staleImage, width: 10)
+            },
+            scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
+        )
+        await Task.yield()
+        coordinator.requestRender(
+            fallback: nil,
+            isHDR: false,
+            operation: { Self.output(image: currentImage, width: 20) },
+            scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
+        )
+
+        try await eventually { coordinator.previewImage === currentImage }
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(coordinator.previewImage === currentImage)
+        #expect(publishedWidths == [20])
+        #expect(!coordinator.isRendering)
+    }
+
+    @Test("ending an image session clears output and rejects an uncooperative late render")
+    func endingSessionRejectsLateRender() async throws {
+        let coordinator = DevelopPreviewRenderCoordinator()
+        let image = NSImage(size: NSSize(width: 10, height: 10))
+        var publicationCount = 0
+
+        coordinator.requestRender(
+            fallback: nil,
+            isHDR: true,
+            operation: {
+                try? await Task.sleep(for: .milliseconds(50))
+                return Self.output(image: image, width: 10)
+            },
+            scopePublisher: { _, _ in publicationCount += 1 }
+        )
+        coordinator.endImageSession()
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(coordinator.previewImage == nil)
+        #expect(publicationCount == 0)
+        #expect(!coordinator.isRendering)
+    }
+
+    @Test("a failed materialization preserves the source fallback and scope HDR state")
+    func failedMaterializationUsesFallback() async throws {
+        let coordinator = DevelopPreviewRenderCoordinator()
+        let fallback = NSImage(size: NSSize(width: 30, height: 30))
+        var published: (hasImage: Bool, isHDR: Bool)?
+
+        coordinator.requestRender(
+            fallback: fallback,
+            isHDR: true,
+            operation: { nil },
+            scopePublisher: { image, isHDR in
+                published = (image != nil, isHDR)
+            }
+        )
+        try await eventually { !coordinator.isRendering }
+
+        #expect(coordinator.previewImage === fallback)
+        #expect(published?.hasImage == false)
+        #expect(published?.isHDR == true)
+    }
+
+    @Test("explicit cancellation retains the last preview and rejects late publication")
+    func cancellationRetainsLastPreview() async throws {
+        let coordinator = DevelopPreviewRenderCoordinator()
+        let retained = NSImage(size: NSSize(width: 15, height: 15))
+        let late = NSImage(size: NSSize(width: 40, height: 40))
+        var publishedWidths: [Int] = []
+
+        coordinator.publishFallback(
+            retained,
+            isHDR: false,
+            scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
+        )
+        coordinator.requestRender(
+            fallback: retained,
+            isHDR: false,
+            operation: {
+                try? await Task.sleep(for: .milliseconds(50))
+                return Self.output(image: late, width: 40)
+            },
+            scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
+        )
+        coordinator.cancelRender()
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(coordinator.previewImage === retained)
+        #expect(publishedWidths == [0])
+        #expect(!coordinator.isRendering)
+    }
+
+    private static func output(image: NSImage, width: Int) -> DevelopPreviewRenderCoordinator.Output {
+        let context = CGContext(
+            data: nil,
+            width: width,
+            height: 1,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        return DevelopPreviewRenderCoordinator.Output(
+            previewImage: image,
+            scopeImage: context.makeImage()!
+        )
+    }
+
+    private func eventually(
+        timeout: Duration = .seconds(5),
+        condition: @escaping @MainActor () -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition() {
+            guard clock.now < deadline else {
+                Issue.record("Timed out waiting for preview render state")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 }

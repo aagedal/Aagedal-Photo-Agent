@@ -232,7 +232,7 @@ struct EditWorkspaceView: View {
     @State private var sourceCIImage: CIImage?
     @State private var isDraggingEditSlider = false
     @State private var previewCIImage: CIImage?
-    @State private var previewImage: NSImage?
+    @State private var previewRender = DevelopPreviewRenderCoordinator()
     @State private var developComparison = DevelopComparisonRenderCoordinator()
     @State private var developVersionSession = DevelopVersionSessionCoordinator()
     @State private var developVersionFlushRegistrationID: UUID?
@@ -392,11 +392,6 @@ struct EditWorkspaceView: View {
         nonmutating set { previewSession.replaceSourceLoadTask(with: newValue) }
     }
 
-    private var previewRenderTask: Task<Void, Never>? {
-        get { previewSession.previewRenderTask }
-        nonmutating set { previewSession.replacePreviewRenderTask(with: newValue) }
-    }
-
     private var adjacentRAWPrecacheTask: Task<Void, Never>? {
         get { previewSession.adjacentPrecacheTask }
         nonmutating set { previewSession.replaceAdjacentPrecacheTask(with: newValue) }
@@ -412,7 +407,7 @@ struct EditWorkspaceView: View {
     }
 
     private var displayImage: NSImage? {
-        isShowingBefore ? sourceImage : previewImage
+        isShowingBefore ? sourceImage : previewRender.previewImage
     }
 
     /// CIImage for MetalPreviewView — shows unedited source during "before" toggle,
@@ -2647,6 +2642,7 @@ struct EditWorkspaceView: View {
         developVersionSession.reset()
         aiMaskSelection.endImageSession()
         previewSession.endImageSession()
+        previewRender.endImageSession()
 
         // Tear down the clean-feed mirror; browse mode resumes driving the feed.
         metalPipeline?.mirror = nil
@@ -2843,6 +2839,7 @@ struct EditWorkspaceView: View {
             selectedImageURL,
             orientation: selectedImageURL == nil ? nil : selectedImageOrientation
         )
+        previewRender.beginImageSession()
         sourceImage = nil
         sourceCIImage = nil
         asShotWhiteBalance = nil
@@ -2854,7 +2851,6 @@ struct EditWorkspaceView: View {
         metalPipeline?.asShotTemperature = 6500
         metalPipeline?.asShotTint = 0
         previewCIImage = nil
-        previewImage = nil
         metalPipeline?.clearSourceTexture()
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         resetCropZoom()
@@ -3538,8 +3534,11 @@ struct EditWorkspaceView: View {
         let renderStart = ContinuousClock.now
         guard let sourceCIImage else {
             previewCIImage = nil
-            previewImage = sourceImage
-            NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["isHDR": isHDREnabled])
+            previewRender.publishFallback(
+                sourceImage,
+                isHDR: isHDREnabled,
+                scopePublisher: publishDevelopPreviewToScope
+            )
             return
         }
 
@@ -3606,54 +3605,69 @@ struct EditWorkspaceView: View {
         editLog.debug("renderPreview: full path (CGImage generation)")
 
         // On release / initial load: produce CGImage for scope display and export
-        previewRenderTask?.cancel()
         let fullSource = sourceCIImage
         let fallback = sourceImage
         let orientation = selectedImageOrientation
 
         let hdr = isHDREnabled
-        previewRenderTask = Task {
-            let result = await Task.detached(priority: .userInitiated) { () -> (NSImage, CGImage, CGImage?)? in
-                let output = CameraRawApproximation.apply(to: fullSource, settings: settings, exifOrientation: orientation)
-                let ctx = CameraRawApproximation.ciContext
-                guard let cgImage = ctx.createCGImage(
-                    output,
-                    from: output.extent,
-                    format: .RGBAh,
-                    colorSpace: CameraRawApproximation.workingColorSpace
-                ) else {
-                    return nil
-                }
-                let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-
-                // Generate cropped CGImage for scope display
-                let cropped = CameraRawApproximation.applyCrop(
-                    to: output, originalExtent: fullSource.extent,
-                    settings: settings, exifOrientation: orientation
-                )
-                let scopeCGImage: CGImage?
-                if cropped !== output {
-                    scopeCGImage = ctx.createCGImage(
-                        cropped, from: cropped.extent,
+        previewRender.requestRender(
+            fallback: fallback,
+            isHDR: hdr,
+            operation: {
+                await Task.detached(priority: .userInitiated) { () -> DevelopPreviewRenderCoordinator.Output? in
+                    let output = CameraRawApproximation.apply(
+                        to: fullSource,
+                        settings: settings,
+                        exifOrientation: orientation
+                    )
+                    let ctx = CameraRawApproximation.ciContext
+                    guard let cgImage = ctx.createCGImage(
+                        output,
+                        from: output.extent,
                         format: .RGBAh,
                         colorSpace: CameraRawApproximation.workingColorSpace
+                    ) else {
+                        return nil
+                    }
+                    let nsImage = NSImage(
+                        cgImage: cgImage,
+                        size: NSSize(width: cgImage.width, height: cgImage.height)
                     )
-                } else {
-                    scopeCGImage = nil
-                }
 
-                return (nsImage, cgImage, scopeCGImage)
-            }.value
+                    // Generate cropped CGImage for scope display
+                    let cropped = CameraRawApproximation.applyCrop(
+                        to: output, originalExtent: fullSource.extent,
+                        settings: settings, exifOrientation: orientation
+                    )
+                    let scopeCGImage: CGImage?
+                    if cropped !== output {
+                        scopeCGImage = ctx.createCGImage(
+                            cropped, from: cropped.extent,
+                            format: .RGBAh,
+                            colorSpace: CameraRawApproximation.workingColorSpace
+                        )
+                    } else {
+                        scopeCGImage = nil
+                    }
 
-            guard !Task.isCancelled else { return }
-            if let result {
-                previewImage = result.0
-                NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["cgImage": result.2 ?? result.1, "isHDR": hdr])
-            } else {
-                previewImage = fallback
-                NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["isHDR": hdr])
-            }
-        }
+                    return DevelopPreviewRenderCoordinator.Output(
+                        previewImage: nsImage,
+                        scopeImage: scopeCGImage ?? cgImage
+                    )
+                }.value
+            },
+            scopePublisher: publishDevelopPreviewToScope
+        )
+    }
+
+    private func publishDevelopPreviewToScope(_ image: CGImage?, isHDR: Bool) {
+        var userInfo: [String: Any] = ["isHDR": isHDR]
+        userInfo["cgImage"] = image
+        NotificationCenter.default.post(
+            name: .scopeSourceImageDidChange,
+            object: nil,
+            userInfo: userInfo
+        )
     }
 
     private var defaultDevelopComparisonTarget: ImageFile? {

@@ -110,7 +110,7 @@ struct DevelopComparisonRenderCoordinatorTests {
     }
 
     private func eventually(
-        timeout: Duration = .seconds(1),
+        timeout: Duration = .seconds(30),
         condition: @escaping @MainActor () -> Bool
     ) async throws {
         let clock = ContinuousClock()

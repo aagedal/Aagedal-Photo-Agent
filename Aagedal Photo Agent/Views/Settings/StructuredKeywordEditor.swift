@@ -40,6 +40,8 @@ struct StructuredKeywordEditor: View {
     @State private var synonymPopoverFor: UUID?
     @State private var relatedKeywordsPopoverFor: UUID?
     @State private var feedback: String?
+    @State private var importTask: Task<Void, Never>?
+    @State private var importRequestID: UUID?
     @FocusState private var renameFieldFocused: Bool
 
     var body: some View {
@@ -55,6 +57,11 @@ struct StructuredKeywordEditor: View {
         .frame(minWidth: 540, idealWidth: 680, minHeight: 520, idealHeight: 620)
         .onAppear {
             load()
+        }
+        .onDisappear {
+            importRequestID = nil
+            importTask?.cancel()
+            importTask = nil
         }
     }
 
@@ -601,23 +608,37 @@ struct StructuredKeywordEditor: View {
         panel.allowedContentTypes = [.plainText]
         panel.message = "Choose a PhotoMechanic structured keywords file (.txt)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let data = try Data(contentsOf: url)
-            guard let text = String(data: data, encoding: .utf8)
-                ?? String(data: data, encoding: .utf16)
-                ?? String(data: data, encoding: .isoLatin1) else {
-                feedback = "Could not decode file contents."
-                return
+
+        importTask?.cancel()
+        let requestID = UUID()
+        importRequestID = requestID
+        feedback = "Importing \(url.lastPathComponent)…"
+        importTask = Task {
+            do {
+                let result = try await TextFileImportService.shared.loadText(
+                    from: url,
+                    requestID: requestID
+                )
+                guard importRequestID == requestID else { return }
+                importTask = nil
+                importRequestID = nil
+
+                switch result {
+                case .loaded(let snapshot):
+                    let parsed = StructuredKeywordParser.parseString(snapshot.text)
+                    root = EditableStructuredKeyword.root(from: parsed)
+                    expandedIDs = Set(root.children.filter(\.hasChildren).map(\.id))
+                    focusedID = root.children.first?.id
+                    feedback = "Imported \(parsed.count) top-level entries — review and Save to commit."
+                case .cancelledBeforeRead, .cancelledAfterRead:
+                    break
+                }
+            } catch {
+                guard importRequestID == requestID else { return }
+                importTask = nil
+                importRequestID = nil
+                feedback = "Import failed: \(error.localizedDescription)"
             }
-            let parsed = StructuredKeywordParser.parseString(text)
-            root = EditableStructuredKeyword.root(from: parsed)
-            for child in root.children where child.hasChildren {
-                expandedIDs.insert(child.id)
-            }
-            focusedID = root.children.first?.id
-            feedback = "Imported \(parsed.count) top-level entries — review and Save to commit."
-        } catch {
-            feedback = "Import failed: \(error.localizedDescription)"
         }
     }
 

@@ -3,11 +3,12 @@ import Observation
 
 /// Owns the image-scoped preview lifecycle for the Develop workspace.
 ///
-/// Source/load identity, visible progress, and every task that can publish preview pixels share
+/// Source/load identity, visible progress, and every task that can replace the source texture share
 /// one cancellation boundary. Starting another image session therefore invalidates the quick
-/// preview, final decode, scope render, adjacent RAW precache, and zoom upgrade together. The
-/// actual decode and Metal work remain at the view/pipeline boundary; this owner only coordinates
-/// their lifetime and independently testable state.
+/// decode, final decode, adjacent RAW precache, and zoom upgrade together. Materialized-preview
+/// publication has its own `DevelopPreviewRenderCoordinator`, which the same image-session events
+/// begin and end alongside this owner. The actual decode and Metal work remain at the view/pipeline
+/// boundary; this owner only coordinates their lifetime and independently testable state.
 @MainActor
 @Observable
 final class DevelopPreviewSessionCoordinator {
@@ -21,7 +22,6 @@ final class DevelopPreviewSessionCoordinator {
     var isEditFullResLoaded = false
 
     @ObservationIgnored private(set) var sourceLoadTask: Task<Void, Never>?
-    @ObservationIgnored private(set) var previewRenderTask: Task<Void, Never>?
     @ObservationIgnored private(set) var adjacentPrecacheTask: Task<Void, Never>?
     @ObservationIgnored private(set) var fullResolutionUpgradeTask: Task<Void, Never>?
 
@@ -59,11 +59,6 @@ final class DevelopPreviewSessionCoordinator {
         sourceLoadTask = task
     }
 
-    func replacePreviewRenderTask(with task: Task<Void, Never>?) {
-        if task != nil { previewRenderTask?.cancel() }
-        previewRenderTask = task
-    }
-
     func replaceAdjacentPrecacheTask(with task: Task<Void, Never>?) {
         if task != nil { adjacentPrecacheTask?.cancel() }
         adjacentPrecacheTask = task
@@ -83,11 +78,9 @@ final class DevelopPreviewSessionCoordinator {
 
     func cancelAllTasks() {
         sourceLoadTask?.cancel()
-        previewRenderTask?.cancel()
         adjacentPrecacheTask?.cancel()
         fullResolutionUpgradeTask?.cancel()
         sourceLoadTask = nil
-        previewRenderTask = nil
         adjacentPrecacheTask = nil
         fullResolutionUpgradeTask = nil
     }

@@ -2,6 +2,208 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
+@Suite("User-selected text import filesystem boundary")
+struct TextFileImportServiceTests {
+    @Test("a complete immutable snapshot is read away from the main actor")
+    @MainActor
+    func completeSnapshotRunsOffMainActor() async throws {
+        let source = URL(fileURLWithPath: "/virtual/structured-keywords.txt")
+        let bytes = Data("People\n\tAlice\n".utf8)
+        let requestID = UUID()
+        let probe = TextFileImportReaderProbe(data: bytes)
+        let service = TextFileImportService(reader: TextFileImportReader(read: probe.read))
+
+        let result = try await Task {
+            try await service.loadText(from: source, requestID: requestID)
+        }.value
+
+        #expect(result == .loaded(TextFileImportSnapshot(
+            requestID: requestID,
+            sourceURL: source,
+            text: "People\n\tAlice\n",
+            byteCount: bytes.count
+        )))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("a pre-cancelled request never enters the synchronous reader")
+    func preCancellation() async throws {
+        let requestID = UUID()
+        let probe = TextFileImportReaderProbe(data: Data("unused".utf8))
+        let service = TextFileImportService(reader: TextFileImportReader(read: probe.read))
+        let task = Task {
+            await Task.yield()
+            return try await service.loadText(
+                from: URL(fileURLWithPath: "/virtual/cancelled.txt"),
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        let result = try await task.value
+
+        #expect(result == .cancelledBeforeRead(requestID: requestID))
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("overlapping imports serialize and cancellation stops a queued read")
+    func serializedQueuedCancellation() async throws {
+        let firstURL = URL(fileURLWithPath: "/virtual/first.txt")
+        let secondURL = URL(fileURLWithPath: "/virtual/second.txt")
+        let firstID = UUID()
+        let secondID = UUID()
+        let probe = BlockingTextFileImportReaderProbe()
+        let service = TextFileImportService(reader: TextFileImportReader(read: probe.read))
+        let first = Task {
+            try await service.loadText(from: firstURL, requestID: firstID)
+        }
+        try await probe.waitUntilFirstReadStarts()
+        let second = Task {
+            try await service.loadText(from: secondURL, requestID: secondID)
+        }
+        second.cancel()
+        probe.releaseFirstRead()
+
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+
+        #expect(firstResult == .loaded(TextFileImportSnapshot(
+            requestID: firstID,
+            sourceURL: firstURL,
+            text: "first",
+            byteCount: Data("first".utf8).count
+        )))
+        #expect(secondResult == .cancelledBeforeRead(requestID: secondID))
+        #expect(probe.invocationCount == 1)
+        #expect(probe.maximumConcurrentReads == 1)
+    }
+
+    @Test("cancellation during a non-preemptible read is explicit and publishes no text")
+    func cancellationAfterRead() async throws {
+        let source = URL(fileURLWithPath: "/virtual/slow.txt")
+        let bytes = Data("complete bytes".utf8)
+        let requestID = UUID()
+        let service = TextFileImportService(reader: TextFileImportReader { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return bytes
+        })
+
+        let result = try await Task {
+            try await service.loadText(from: source, requestID: requestID)
+        }.value
+
+        #expect(result == .cancelledAfterRead(
+            requestID: requestID,
+            sourceURL: source,
+            byteCount: bytes.count
+        ))
+    }
+
+    @Test("Structured Keyword import awaits the service and rejects stale completion")
+    func structuredKeywordEditorSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/StructuredKeywordEditor.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func importFromFile()"))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n    private func exportToFile()"))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains("try await TextFileImportService.shared.loadText("))
+        #expect(functionSource.contains("guard importRequestID == requestID else { return }"))
+        #expect(functionSource.contains("case .cancelledBeforeRead, .cancelledAfterRead:"))
+        #expect(!functionSource.contains("Data(contentsOf:"))
+    }
+}
+
+private nonisolated final class TextFileImportReaderProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let data: Data
+    private var count = 0
+    private var observedMainThread = false
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func read(_ url: URL) throws -> Data {
+        _ = url
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return data
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private enum TextFileImportProbeError: Error {
+    case timedOut
+}
+
+private nonisolated final class BlockingTextFileImportReaderProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var readCount = 0
+    private var activeReads = 0
+    private var maximumActiveReads = 0
+    private var firstReadReleased = false
+
+    func read(_ url: URL) throws -> Data {
+        _ = url
+        condition.lock()
+        readCount += 1
+        activeReads += 1
+        maximumActiveReads = max(maximumActiveReads, activeReads)
+        condition.broadcast()
+        if readCount == 1 {
+            while !firstReadReleased {
+                condition.wait()
+            }
+        }
+        activeReads -= 1
+        condition.unlock()
+        return Data("first".utf8)
+    }
+
+    func waitUntilFirstReadStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while invocationCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw TextFileImportProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstRead() {
+        condition.lock()
+        firstReadReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var invocationCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return readCount
+    }
+
+    var maximumConcurrentReads: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumActiveReads
+    }
+}
+
 @Suite("Analysis export filesystem boundary")
 struct AnalysisExportFileServiceTests {
     @Test("atomic commit preserves overwrite behavior and returns immutable evidence")

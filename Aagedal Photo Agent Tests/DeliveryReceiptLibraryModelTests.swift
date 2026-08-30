@@ -383,7 +383,7 @@ private nonisolated final class BlockingReceiptSummaryWriter: @unchecked Sendabl
     }
 
     func waitUntilFirstWriteStarts() async throws {
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
                 throw ReceiptSummaryWriterProbeError.timedOut
@@ -434,7 +434,7 @@ private actor ControllableReceiptSummaryExporter: DeliveryReceiptSummaryExportin
     }
 
     func waitForInvocationCount(_ expectedCount: Int) async throws {
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount < expectedCount {
             guard ContinuousClock.now < deadline else {
                 throw ReceiptSummaryWriterProbeError.timedOut

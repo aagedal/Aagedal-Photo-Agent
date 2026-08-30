@@ -101,6 +101,15 @@ cancellation, output, and stale-result rejection. The broader filesystem invento
 the remaining Develop render-publication ownership work stay open. All 36 integrated focused tests passed.
 ([validation](plan-status-continuation-validation-2026-08-30.md))
 
+**Further implementation continuation (2026-08-30):** the checklist remains 63 of 75 because the two code
+slices advance broad open gates rather than completing them. Structured Keyword import now reads through a
+serialized, cancellable actor and rejects stale UI publication. A new Develop preview-render coordinator owns
+materialized-preview publication, request identity, fallback/scope output, cancellation, and image-session
+teardown. Seven test-only polling ceilings were reconciled with the suite's documented full-load budget; the
+unfiltered gate then passed 1,613 tests in 182 suites. Lower-priority filesystem paths, broader Develop
+gesture/render/persistence ownership, and the manual/external gates remain open.
+([validation](plan-status-implementation-continuation-2026-08-30.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -482,6 +491,13 @@ complete snapshot for the entry that remains expanded. Other lower-priority dire
 signpost/benchmark exit gate remain open.
 ([validation](plan-status-continuation-validation-2026-08-30.md#ftp-recent-uploads-filesystem-boundary))
 
+**Structured Keyword import follow-up (2026-08-30):** the user-selected keyword-file read now crosses a
+serialized `TextFileImportService` actor instead of calling `Data(contentsOf:)` from the MainActor editor
+action. Immutable results distinguish complete load, cancellation before the reader, and cancellation after
+the non-preemptible read; the view cancels superseded work and rejects stale completion by request identity.
+Other direct filesystem paths and the slow-volume/signpost/benchmark gate remain open.
+([validation](structured-keyword-import-filesystem-validation-2026-08-30.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -613,6 +629,13 @@ request identity. Replaced or closed comparisons reject late pixels and errors e
 cooperative cancellation, and a version comparison publishes its two rendered sources as one coordinator
 result. Broader Develop source decode, Metal publication, and interactive render ownership remain open.
 ([validation](plan-status-continuation-validation-2026-08-30.md#develop-comparison-render-coordinator))
+
+**Preview-render state-owner follow-up (2026-08-30):** `DevelopPreviewRenderCoordinator` now owns the
+materialized Develop preview, render-task replacement, request identity, fallback publication, scope output,
+and image-session teardown. Replacement, cancellation, and teardown reject late pixels even from injected
+work that ignores cooperative cancellation. Core Image/Metal render policy remains in the view, and broader
+gesture, interactive-render, and persistence ownership remains open.
+([validation](plan-status-implementation-continuation-2026-08-30.md#develop-preview-render-publication-owner))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.
