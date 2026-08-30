@@ -3,7 +3,7 @@ import os
 
 nonisolated private let templateStorageLog = Logger(subsystem: "com.aagedal.photo-agent", category: "TemplateStorageService")
 
-struct TemplateStorageService: Sendable {
+nonisolated struct TemplateStorageService: Sendable {
     private let directoryOverride: URL?
 
     init(directoryURL: URL? = nil) {
@@ -118,5 +118,75 @@ struct TemplateStorageService: Sendable {
             return (directoryOverride, {})
         }
         return AppPaths.templatesDirectory()
+    }
+}
+
+nonisolated struct TemplateImportPreviewCompletion: Sendable {
+    let requestID: UUID
+    let sourceURL: URL
+    let preview: TemplateImportPreview
+    let inspectedBundleTemplateCount: Int
+}
+
+nonisolated enum TemplateImportPreviewOperationResult: Sendable {
+    case prepared(TemplateImportPreviewCompletion)
+    case cancelledBeforeRead(requestID: UUID, sourceURL: URL)
+    case cancelledAfterRead(
+        requestID: UUID,
+        sourceURL: URL,
+        inspectedBundleTemplateCount: Int,
+        newCount: Int,
+        overwriteCount: Int
+    )
+}
+
+nonisolated struct TemplateImportPreviewAccess: Sendable {
+    let readPreview: @Sendable (URL) throws -> TemplateImportPreview
+
+    static func storage(_ storage: TemplateStorageService) -> Self {
+        Self(readPreview: { try storage.previewImport(from: $0) })
+    }
+}
+
+/// Serializes template-bundle reads and the current-template inventory away from MainActor.
+/// Foundation and coordinated filesystem calls cannot be preempted once entered, so cancellation
+/// before and after the synchronous operation is returned as distinct immutable evidence.
+actor TemplateImportPreviewService {
+    private let access: TemplateImportPreviewAccess
+
+    init(access: TemplateImportPreviewAccess) {
+        self.access = access
+    }
+
+    init(storage: TemplateStorageService) {
+        self.access = .storage(storage)
+    }
+
+    func preparePreview(
+        from sourceURL: URL,
+        requestID: UUID
+    ) throws -> TemplateImportPreviewOperationResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID, sourceURL: sourceURL)
+        }
+
+        let preview = try access.readPreview(sourceURL)
+        let inspectedCount = preview.bundle.templates.count
+        guard !Task.isCancelled else {
+            return .cancelledAfterRead(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                inspectedBundleTemplateCount: inspectedCount,
+                newCount: preview.newCount,
+                overwriteCount: preview.overwriteCount
+            )
+        }
+
+        return .prepared(TemplateImportPreviewCompletion(
+            requestID: requestID,
+            sourceURL: sourceURL,
+            preview: preview,
+            inspectedBundleTemplateCount: inspectedCount
+        ))
     }
 }

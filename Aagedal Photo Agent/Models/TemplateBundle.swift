@@ -1,6 +1,6 @@
 import Foundation
 
-struct TemplateBundle: Codable, Sendable {
+nonisolated struct TemplateBundle: Codable, Sendable {
     static let currentSchemaVersion = 1
 
     var schemaVersion: Int
@@ -46,7 +46,7 @@ struct TemplateBundle: Codable, Sendable {
     }
 }
 
-struct TemplateImportPreview: Sendable, Identifiable {
+nonisolated struct TemplateImportPreview: Sendable, Identifiable {
     let id = UUID()
     let source: URL
     let bundle: TemplateBundle
@@ -54,7 +54,7 @@ struct TemplateImportPreview: Sendable, Identifiable {
     let overwriteCount: Int
 }
 
-struct TemplateImportResult: Sendable {
+nonisolated struct TemplateImportResult: Sendable {
     var added: Int
     var overwritten: Int
 }

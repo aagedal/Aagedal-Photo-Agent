@@ -845,12 +845,11 @@ final class ImportViewModel {
         // Pre-compute file→target folder on main actor (SupportedImageFormats is MainActor).
         // Returns: (primaryFolder, backupFolder?). Backup mirrors the primary folder structure
         // under the chosen backup root.
-        var jobs: [ImportCopyService.CopyJob] = []
+        var jobDrafts: [ImportJobDraft] = []
+        var bundleRequests: [ImportPreflightService.BundleDestinationRequest] = []
         var previousImportCandidates: [PreviousImportDetector.Candidate] = []
         var allDestFolders: Set<URL> = []
         var allRevealFolders: Set<URL> = []
-        var companionParentBySource: [URL: URL] = [:]
-        var plannedMemoDestinations = Set<URL>()
         let flatImportDate = String(destURL.lastPathComponent.prefix(10))
         for file in filesToCopy {
             let baseFolder: URL
@@ -881,7 +880,7 @@ final class ImportViewModel {
             allRevealFolders.insert(shootBaseFolder)
             allDestFolders.insert(primaryFolder)
 
-            var primaryURL = primaryFolder.appendingPathComponent(file.lastPathComponent)
+            let primaryURL = primaryFolder.appendingPathComponent(file.lastPathComponent)
             guard SafePathComponent.isContained(primaryURL, in: baseURL) else {
                 importPhase = .failed("An import destination escaped the selected folder.")
                 errorMessage = "An import folder name resolves outside the selected destination."
@@ -900,9 +899,7 @@ final class ImportViewModel {
 
             let canonicalImage = VoiceMemoAssociationService.canonicalURL(file)
             let memoSource = voiceMemoByImage[canonicalImage]
-            var memoPrimaryURL: URL?
-            var memoBackupURL: URL?
-            var bundleSkipReason: ImportCopyService.SkipReason?
+            var bundleRequestID: UUID?
             if let memoSource {
                 let memoExtension = memoSource.pathExtension.isEmpty ? "wav" : memoSource.pathExtension
                 let desiredMemo = primaryFolder
@@ -915,63 +912,30 @@ final class ImportViewModel {
                 } else {
                     desiredMemoBackup = nil
                 }
-                let bundle = Self.resolveImportBundleDestinations(
+                let bundleRequest = ImportPreflightService.BundleDestinationRequest(
                     image: primaryURL,
                     memo: desiredMemo,
                     imageBackup: backupURL,
-                    memoBackup: desiredMemoBackup,
-                    policy: conflictPolicy
+                    memoBackup: desiredMemoBackup
                 )
-                primaryURL = bundle.image
-                backupURL = bundle.imageBackup
-                memoPrimaryURL = bundle.memo
-                memoBackupURL = bundle.memoBackup
-                bundleSkipReason = bundle.skipReason
-                let canonicalMemoDestination = VoiceMemoAssociationService.canonicalURL(bundle.memo)
-                if plannedMemoDestinations.contains(canonicalMemoDestination) {
-                    // RAW and JPEG can share a destination folder when format subfolders are off.
-                    // In that layout one WAV represents the exposure; do not schedule the same
-                    // source bytes twice at the same destination.
-                    memoPrimaryURL = nil
-                    memoBackupURL = nil
-                } else {
-                    plannedMemoDestinations.insert(canonicalMemoDestination)
-                }
+                bundleRequestID = bundleRequest.id
+                bundleRequests.append(bundleRequest)
             }
 
-            let imageJob = ImportCopyService.CopyJob(
+            jobDrafts.append(ImportJobDraft(
                 source: file,
-                desiredPrimaryDest: primaryURL,
-                desiredBackupDest: backupURL,
-                preflightSkipReason: bundleSkipReason
-            )
-            jobs.append(imageJob)
-            if let memoSource, let memoPrimaryURL {
-                guard SafePathComponent.isContained(memoPrimaryURL, in: baseURL) else {
-                    importPhase = .failed("A voice memo destination escaped the selected folder.")
-                    errorMessage = "A voice memo destination resolves outside the selected destination."
-                    return
-                }
-                jobs.append(ImportCopyService.CopyJob(
-                    source: memoSource,
-                    desiredPrimaryDest: memoPrimaryURL,
-                    desiredBackupDest: memoBackupURL,
-                    preflightSkipReason: bundleSkipReason,
-                    prerequisiteJobID: imageJob.id
-                ))
-                companionParentBySource[memoSource] = file
-                allDestFolders.insert(memoPrimaryURL.deletingLastPathComponent())
-                if let memoBackupURL {
-                    allDestFolders.insert(memoBackupURL.deletingLastPathComponent())
-                }
-            }
+                imageDestination: primaryURL,
+                imageBackupDestination: backupURL,
+                memoSource: memoSource,
+                bundleRequestID: bundleRequestID
+            ))
             previousImportCandidates.append(PreviousImportDetector.Candidate(
                 source: file,
                 dateFolderName: fileImportDate[file] ?? flatImportDate
             ))
         }
 
-        let allFolders = allDestFolders
+        let initialFolders = allDestFolders
         let folderToOpen = Self.commonAncestor(of: Array(allRevealFolders)) ?? destURL
         let verifyBackup = backupDestination?.verifyAfterWrite ?? true
         let skipPreviouslyImported = configuration.skipPreviouslyImported
@@ -981,14 +945,6 @@ final class ImportViewModel {
         let voiceMemoAssociationsToPersist = selectedVoiceMemoAssociations
         let primarySourceURL = configuration.sourceURL
         let voiceMemoSourceURL = configuration.voiceMemoSourceURL
-        let preflightRequest = ImportPreflightService.Request(
-            jobs: jobs,
-            previousImportCandidates: previousImportCandidates,
-            companionParentBySource: companionParentBySource,
-            destinationBaseURL: baseURL,
-            skipPreviouslyImported: skipPreviouslyImported,
-            freezeOverwriteCollisions: conflictPolicy == .overwrite
-        )
         let requestID = UUID()
         importRequestID = requestID
 
@@ -1011,6 +967,79 @@ final class ImportViewModel {
 
             do {
                 let fm = FileManager.default
+                let bundlePlanning = await preflightService.resolveBundleDestinations(
+                    bundleRequests,
+                    policy: conflictPolicy
+                )
+                let bundleEvidence: ImportPreflightService.BundlePlanningEvidence
+                switch bundlePlanning {
+                case .complete(let evidence):
+                    bundleEvidence = evidence
+                case .cancelled:
+                    throw CancellationError()
+                }
+                try Task.checkCancellation()
+                let isCurrentPlanningOperation = await MainActor.run {
+                    self.importRequestID == requestID
+                }
+                guard isCurrentPlanningOperation else { return }
+                guard bundleEvidence.requestedBundleCount == bundleRequests.count,
+                      bundleEvidence.completedBundleCount == bundleRequests.count else {
+                    throw ImportPlanningError.incompleteBundleEvidence
+                }
+
+                let bundleDestinations = Dictionary(
+                    uniqueKeysWithValues: bundleEvidence.destinations.map { ($0.id, $0) }
+                )
+                var jobs: [ImportCopyService.CopyJob] = []
+                var companionParentBySource: [URL: URL] = [:]
+                var allFolders = initialFolders
+                var plannedMemoDestinations = Set<URL>()
+                for draft in jobDrafts {
+                    try Task.checkCancellation()
+                    let bundle = draft.bundleRequestID.flatMap { bundleDestinations[$0] }
+                    if draft.bundleRequestID != nil, bundle == nil {
+                        throw ImportPlanningError.incompleteBundleEvidence
+                    }
+                    let imageJob = ImportCopyService.CopyJob(
+                        source: draft.source,
+                        desiredPrimaryDest: bundle?.image ?? draft.imageDestination,
+                        desiredBackupDest: bundle?.imageBackup ?? draft.imageBackupDestination,
+                        preflightSkipReason: bundle?.skipReason
+                    )
+                    jobs.append(imageJob)
+
+                    if let memoSource = draft.memoSource, let bundle {
+                        guard SafePathComponent.isContained(bundle.memo, in: baseURL) else {
+                            throw ImportPlanningError.voiceMemoDestinationEscaped
+                        }
+                        let canonicalMemoDestination = VoiceMemoAssociationService.canonicalURL(bundle.memo)
+                        // RAW and JPEG can share a destination folder when format subfolders are off.
+                        // In that layout one WAV represents the exposure; schedule its bytes once.
+                        if plannedMemoDestinations.insert(canonicalMemoDestination).inserted {
+                            jobs.append(ImportCopyService.CopyJob(
+                                source: memoSource,
+                                desiredPrimaryDest: bundle.memo,
+                                desiredBackupDest: bundle.memoBackup,
+                                preflightSkipReason: bundle.skipReason,
+                                prerequisiteJobID: imageJob.id
+                            ))
+                            companionParentBySource[memoSource] = draft.source
+                            allFolders.insert(bundle.memo.deletingLastPathComponent())
+                            if let memoBackup = bundle.memoBackup {
+                                allFolders.insert(memoBackup.deletingLastPathComponent())
+                            }
+                        }
+                    }
+                }
+                let preflightRequest = ImportPreflightService.Request(
+                    jobs: jobs,
+                    previousImportCandidates: previousImportCandidates,
+                    companionParentBySource: companionParentBySource,
+                    destinationBaseURL: baseURL,
+                    skipPreviouslyImported: skipPreviouslyImported,
+                    freezeOverwriteCollisions: conflictPolicy == .overwrite
+                )
                 if skipPreviouslyImported {
                     await MainActor.run {
                         guard self.importRequestID == requestID else { return }
@@ -1341,80 +1370,26 @@ final class ImportViewModel {
         return urlComponents[rootComponents.count..<urlComponents.count].joined(separator: "/")
     }
 
-    private struct ImportBundleDestinations {
-        let image: URL
-        let memo: URL
-        let imageBackup: URL?
-        let memoBackup: URL?
-        let skipReason: ImportCopyService.SkipReason?
+    private struct ImportJobDraft: Sendable {
+        let source: URL
+        let imageDestination: URL
+        let imageBackupDestination: URL?
+        let memoSource: URL?
+        let bundleRequestID: UUID?
     }
 
-    /// Chooses one suffix for the complete image/WAV bundle. This prevents independent conflict
-    /// resolution from producing (for example) `TRA00001-1.ARW` beside `TRA00001.WAV`.
-    private static func resolveImportBundleDestinations(
-        image: URL,
-        memo: URL,
-        imageBackup: URL?,
-        memoBackup: URL?,
-        policy: ImportConflictPolicy
-    ) -> ImportBundleDestinations {
-        let direct = ImportBundleDestinations(
-            image: image,
-            memo: memo,
-            imageBackup: imageBackup,
-            memoBackup: memoBackup,
-            skipReason: nil
-        )
-        switch policy {
-        case .overwrite:
-            return direct
-        case .skipExisting:
-            let primaryExists = FileManager.default.fileExists(atPath: image.path)
-                || FileManager.default.fileExists(atPath: memo.path)
-            return ImportBundleDestinations(
-                image: image,
-                memo: memo,
-                imageBackup: imageBackup,
-                memoBackup: memoBackup,
-                skipReason: primaryExists ? .destinationExists : nil
-            )
-        case .renameWithSuffix:
-            for suffix in 0...10_000 {
-                let candidateImage = suffixedURL(image, suffix: suffix)
-                let candidateMemo = suffixedURL(memo, suffix: suffix)
-                let candidateImageBackup = imageBackup.map { suffixedURL($0, suffix: suffix) }
-                let candidateMemoBackup = memoBackup.map { suffixedURL($0, suffix: suffix) }
-                let candidates = [candidateImage, candidateMemo, candidateImageBackup, candidateMemoBackup]
-                    .compactMap { $0 }
-                if candidates.allSatisfy({ !FileManager.default.fileExists(atPath: $0.path) }) {
-                    return ImportBundleDestinations(
-                        image: candidateImage,
-                        memo: candidateMemo,
-                        imageBackup: candidateImageBackup,
-                        memoBackup: candidateMemoBackup,
-                        skipReason: nil
-                    )
-                }
+    private enum ImportPlanningError: LocalizedError {
+        case incompleteBundleEvidence
+        case voiceMemoDestinationEscaped
+
+        var errorDescription: String? {
+            switch self {
+            case .incompleteBundleEvidence:
+                return "Voice memo destination planning did not complete. No files were imported."
+            case .voiceMemoDestinationEscaped:
+                return "A voice memo destination resolves outside the selected destination."
             }
-            // Never let the copy service resolve the two files independently after the shared
-            // suffix space is exhausted; skipping the complete bundle preserves association.
-            return ImportBundleDestinations(
-                image: image,
-                memo: memo,
-                imageBackup: imageBackup,
-                memoBackup: memoBackup,
-                skipReason: .destinationExists
-            )
         }
-    }
-
-    private static func suffixedURL(_ url: URL, suffix: Int) -> URL {
-        guard suffix > 0 else { return url }
-        let directory = url.deletingLastPathComponent()
-        let stem = url.deletingPathExtension().lastPathComponent
-        let ext = url.pathExtension
-        let filename = ext.isEmpty ? "\(stem)-\(suffix)" : "\(stem)-\(suffix).\(ext)"
-        return directory.appendingPathComponent(filename)
     }
 
     nonisolated static func commonAncestor(of urls: [URL]) -> URL? {

@@ -259,6 +259,72 @@ struct ImportPreflightServiceTests {
         _ = try await secondTask.value
         #expect(gate.maximumConcurrentProbeCount == 1)
     }
+
+    @Test("Voice-memo bundle planning freezes one suffix across primary and backup destinations")
+    func bundlePlanningUsesOneSharedSuffix() async throws {
+        let request = ImportPreflightService.BundleDestinationRequest(
+            image: URL(fileURLWithPath: "/photos/TRA00001.ARW"),
+            memo: URL(fileURLWithPath: "/photos/TRA00001.WAV"),
+            imageBackup: URL(fileURLWithPath: "/backup/TRA00001.ARW"),
+            memoBackup: URL(fileURLWithPath: "/backup/TRA00001.WAV")
+        )
+        let service = ImportPreflightService(fileExists: { path in
+            path == request.image.path
+        })
+
+        let result = await service.resolveBundleDestinations(
+            [request],
+            policy: .renameWithSuffix
+        )
+        let evidence: ImportPreflightService.BundlePlanningEvidence
+        switch result {
+        case .complete(let completed):
+            evidence = completed
+        case .cancelled:
+            Issue.record("An uncancelled bundle plan must complete")
+            return
+        }
+
+        #expect(evidence.requestedBundleCount == 1)
+        #expect(evidence.completedBundleCount == 1)
+        let destination = try #require(evidence.destinations.first)
+        #expect(destination.id == request.id)
+        #expect(destination.image.path == "/photos/TRA00001-1.ARW")
+        #expect(destination.memo.path == "/photos/TRA00001-1.WAV")
+        #expect(destination.imageBackup?.path == "/backup/TRA00001-1.ARW")
+        #expect(destination.memoBackup?.path == "/backup/TRA00001-1.WAV")
+        #expect(destination.skipReason == nil)
+    }
+
+    @Test("Pre-cancelled voice-memo planning returns explicit immutable partial evidence")
+    func preCancelledBundlePlanningReturnsEvidence() async {
+        let probes = ImportPreflightProbeRecorder()
+        let service = ImportPreflightService(fileExists: { _ in
+            probes.record()
+            return false
+        })
+        let request = ImportPreflightService.BundleDestinationRequest(
+            image: URL(fileURLWithPath: "/photos/TRA00002.ARW"),
+            memo: URL(fileURLWithPath: "/photos/TRA00002.WAV"),
+            imageBackup: nil,
+            memoBackup: nil
+        )
+        let task = Task {
+            await service.resolveBundleDestinations([request], policy: .renameWithSuffix)
+        }
+        task.cancel()
+
+        let result = await task.value
+        switch result {
+        case .complete:
+            Issue.record("A pre-cancelled bundle plan must not publish complete evidence")
+        case .cancelled(let evidence):
+            #expect(evidence.requestedBundleCount == 1)
+            #expect(evidence.completedBundleCount == 0)
+            #expect(evidence.destinations.isEmpty)
+        }
+        #expect(probes.recordedCount == 0)
+    }
 }
 
 @Suite("Import source discovery")
@@ -1238,6 +1304,68 @@ struct ImportViewModelTests {
         #expect(viewModel.overwritePreflight == nil)
         #expect(viewModel.sourceFiles.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: photos.appendingPathComponent("Stale Preflight").path))
+    }
+
+    @Test("Reset rejects late voice-memo bundle planning evidence")
+    func resetRejectsStaleBundlePlanningEvidence() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StaleImportBundlePlanningTests-\(UUID().uuidString)", isDirectory: true)
+        let card = root.appendingPathComponent("card", isDirectory: true)
+        let photos = root.appendingPathComponent("photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let image = card.appendingPathComponent("TRA00003.JPG")
+        let memo = card.appendingPathComponent("TRA00003.WAV")
+        try Data("image".utf8).write(to: image)
+        try Data("memo".utf8).write(to: memo)
+
+        let gate = ImportPreflightTestGate()
+        defer { gate.release() }
+        let service = ImportPreflightService(fileExists: { _ in
+            gate.suspend()
+            return false
+        })
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            preflightService: service
+        )
+        viewModel.configuration.sourceURL = card
+        viewModel.configuration.destinationBaseURL = photos
+        viewModel.configuration.importTitle = "Stale Bundle Planning"
+        viewModel.configuration.fileTypeFilter = .jpegOnly
+        viewModel.configuration.conflictPolicy = .renameWithSuffix
+        viewModel.configuration.createSubFolders = false
+        viewModel.configuration.skipPreviouslyImported = false
+        viewModel.configuration.applyMetadata = false
+        viewModel.sourceFiles = [image]
+        viewModel.sourceVoiceMemoFiles = [memo]
+        viewModel.voiceMemoAssociationReport = VoiceMemoAssociationReport(
+            profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+            associations: [VoiceMemoAssociation(
+                profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+                imageURL: image,
+                memoURL: memo
+            )],
+            imagesWithoutMemo: [],
+            ambiguous: [],
+            orphanMemoURLs: []
+        )
+
+        viewModel.startImport()
+        let planningDidStart = await gate.waitUntilStarted()
+        #expect(planningDidStart)
+        viewModel.reset()
+        gate.release()
+        for _ in 0..<20 { await Task.yield() }
+
+        #expect(viewModel.importPhase == .idle)
+        #expect(viewModel.sourceFiles.isEmpty)
+        #expect(!FileManager.default.fileExists(
+            atPath: photos.appendingPathComponent("Stale Bundle Planning").path
+        ))
     }
 }
 

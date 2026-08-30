@@ -1,6 +1,6 @@
 import Foundation
 
-struct MetadataTemplate: Codable, Identifiable, Sendable {
+nonisolated struct MetadataTemplate: Codable, Identifiable, Sendable {
     static let currentSchemaVersion = 1
 
     var schemaVersion: Int
@@ -72,7 +72,7 @@ struct MetadataTemplate: Codable, Identifiable, Sendable {
     }
 }
 
-struct TemplateField: Codable, Identifiable, Sendable, Hashable {
+nonisolated struct TemplateField: Codable, Identifiable, Sendable, Hashable {
     var id: UUID
     var fieldKey: String
     var templateValue: String

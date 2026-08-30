@@ -164,6 +164,15 @@ hardening, and the final serial unfiltered gate passed 1,707 tests in 197 suites
 inventory/measurement and Develop ownership gates remain open.
 ([validation](plan-status-cleanup-storage-white-balance-continuation-2026-08-30.md))
 
+**Template, import-planning, and Develop-export continuation (2026-08-30):** the checklist remains 63 of 75.
+Metadata-template import preview and image/WAV bundle collision planning now cross serialized actors with immutable
+complete/cancelled evidence and stale-result protection. `DevelopExportSessionCoordinator` owns the export task,
+workspace lifetime, request identity, busy/error state, and durable output evidence while render policy remains
+injected. The combined selection passed 36 tests in four suites; after reconciling two superseded source contracts
+and parallel-load polling ceilings, the final unfiltered gate passed 1,844 expanded test-case runs across 198 suites.
+The remaining filesystem inventory/measurement and broader Develop ownership gates stay open.
+([validation](plan-status-template-bundle-export-continuation-2026-08-30.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -538,6 +547,13 @@ removed from the provider callback. Other direct filesystem paths and the slow-v
 gate remain open.
 ([validation](plan-status-follow-up-validation-2026-08-30.md#content-area-folder-drop-boundary))
 
+**Template-preview and import-bundle follow-up (2026-08-30):** metadata-template bundle preview now serializes
+the selected-bundle read and current-template inventory on `TemplateImportPreviewService`, and voice-memo bundle
+collision planning resolves image, memo, and backup suffixes on `ImportPreflightService`. Both return immutable
+complete/cancelled evidence and their MainActor owners reject stale publication before mutation. Template
+load/save/delete/export/import-commit and other direct paths plus the real-volume measurement gate remain open.
+([validation](plan-status-template-bundle-export-continuation-2026-08-30.md))
+
 **FTP Recent Uploads follow-up (2026-08-30):** expanding upload history no longer evaluates repeated
 `FileManager.fileExists` probes in the SwiftUI body. The existing FTP filesystem actor returns ordered,
 immutable availability evidence with explicit complete or cancelled-prefix status; the view installs only a
@@ -759,6 +775,13 @@ durable-commit intent. Navigation, deactivation, replacement, and teardown rejec
 Pixel averaging, Metal solving, render publication, and metadata persistence remain at their existing injected
 boundaries. Layer, broader render-policy/publication, export, and persistence ownership remain open.
 ([validation](plan-status-cleanup-storage-white-balance-continuation-2026-08-30.md#develop-white-balance-state-owner))
+
+**Export state-owner follow-up (2026-08-30):** `DevelopExportSessionCoordinator` now owns workspace lifetime,
+single-flight export task and request identity, cancellation, busy/error presentation, and durable output evidence.
+Rendering, destination preparation, metadata copying, and thumbnail invalidation remain injected at their existing
+boundaries, and late work cannot publish into a closed or replacement workspace. Layer, broader render-policy, and
+metadata/sidecar persistence ownership remain open.
+([validation](plan-status-template-bundle-export-continuation-2026-08-30.md#develop-export-state-owner))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

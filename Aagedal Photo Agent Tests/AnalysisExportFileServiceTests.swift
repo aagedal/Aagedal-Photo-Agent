@@ -789,10 +789,11 @@ struct ExportDirectoryServiceTests {
             "try await ExportDirectoryService.shared.ensureDirectory("
         ))
         #expect(functionSource.contains(
-            "guard !directoryCommit.cancellationRequestedAfterCommit else { return }"
+            "guard !directoryCommit.cancellationRequestedAfterCommit else {"
         ))
+        #expect(functionSource.contains("throw CancellationError()"))
         #expect(functionSource.contains("try Task.checkCancellation()"))
-        #expect(functionSource.contains("catch is CancellationError"))
+        #expect(functionSource.contains("exportSession.requestExport {"))
         #expect(!functionSource.contains("FileManager.default.createDirectory"))
     }
 

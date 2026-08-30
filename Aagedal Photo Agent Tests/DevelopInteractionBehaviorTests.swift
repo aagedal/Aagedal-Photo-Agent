@@ -417,6 +417,126 @@ struct DevelopInteractionBehaviorTests {
     }
 }
 
+@Suite("Develop export session coordinator")
+@MainActor
+struct DevelopExportSessionCoordinatorTests {
+    @Test("one persistence request owns busy state and publishes its durable output")
+    func successfulPersistenceLifecycle() async throws {
+        let coordinator = DevelopExportSessionCoordinator()
+        let output = URL(fileURLWithPath: "/tmp/develop-export-success.jpg")
+        var operationCount = 0
+
+        coordinator.beginWorkspaceSession()
+        #expect(coordinator.requestExport {
+            operationCount += 1
+            try await Task.sleep(for: .milliseconds(40))
+            return DevelopExportPersistenceResult(
+                outputURL: output,
+                metadataWasCopied: true
+            )
+        })
+        #expect(coordinator.isExporting)
+        #expect(!coordinator.requestExport {
+            operationCount += 1
+            return DevelopExportPersistenceResult(
+                outputURL: URL(fileURLWithPath: "/tmp/duplicate.jpg"),
+                metadataWasCopied: true
+            )
+        })
+
+        try await eventually { !coordinator.isExporting }
+
+        #expect(operationCount == 1)
+        #expect(coordinator.lastPersistedOutputURL == output)
+        #expect(coordinator.errorMessage == nil)
+    }
+
+    @Test("a durable image with failed metadata copy is surfaced as a warning")
+    func metadataFailurePreservesDurableOutputEvidence() async throws {
+        let coordinator = DevelopExportSessionCoordinator()
+        let output = URL(fileURLWithPath: "/tmp/develop-export-metadata-warning.jpg")
+
+        coordinator.beginWorkspaceSession()
+        coordinator.requestExport {
+            DevelopExportPersistenceResult(
+                outputURL: output,
+                metadataWasCopied: false
+            )
+        }
+        try await eventually { !coordinator.isExporting }
+
+        #expect(coordinator.lastPersistedOutputURL == output)
+        #expect(
+            coordinator.errorMessage
+                == "Image saved but metadata copy failed — IPTC data may be missing"
+        )
+        coordinator.dismissError()
+        #expect(coordinator.errorMessage == nil)
+    }
+
+    @Test("workspace teardown cancels ownership and rejects an uncooperative late failure")
+    func workspaceTeardownRejectsLatePublication() async throws {
+        let coordinator = DevelopExportSessionCoordinator()
+
+        coordinator.beginWorkspaceSession()
+        coordinator.requestExport {
+            try? await Task.sleep(for: .milliseconds(50))
+            throw TestError.lateFailure
+        }
+        await Task.yield()
+        coordinator.endWorkspaceSession()
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(!coordinator.isExporting)
+        #expect(!coordinator.isWorkspaceActive)
+        #expect(coordinator.errorMessage == nil)
+        #expect(coordinator.lastPersistedOutputURL == nil)
+    }
+
+    @Test("edit workspace delegates export ownership and persistence to the coordinator")
+    func editWorkspaceSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("@State private var exportSession = DevelopExportSessionCoordinator()"))
+        #expect(source.contains("exportSession.beginWorkspaceSession()"))
+        #expect(source.contains("exportSession.requestExport {"))
+        #expect(source.contains("exportSession.endWorkspaceSession()"))
+        #expect(source.contains("DevelopExportPersistenceResult("))
+        #expect(!source.contains("@State private var isSavingRenderedJPEG"))
+        #expect(!source.contains("@State private var saveError"))
+    }
+
+    private enum TestError: Error {
+        case lateFailure
+    }
+
+    private func eventually(
+        // The unfiltered suite can fully occupy the cooperative executor while the app test host
+        // starts. Keep the success path polling-only, but use the repository's documented
+        // long-load ceiling so scheduler starvation is not mistaken for an export-state failure.
+        timeout: Duration = .seconds(30),
+        condition: @escaping @MainActor () -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition() {
+            guard clock.now < deadline else {
+                Issue.record("Timed out waiting for Develop export state")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
 @Suite("Color LUT import filesystem boundary")
 struct ColorLUTImportServiceTests {
     @Test("a complete immutable LUT snapshot is read away from the main actor")
@@ -525,7 +645,8 @@ struct ColorLUTImportServiceTests {
         #expect(!functionSource.contains("Data(contentsOf:"))
         #expect(source.contains("private func beginColorLUTImport(for layerID: UUID) {\n        cancelColorLUTImport()"))
         #expect(source.contains("if oldURL != newURL {\n                cancelColorLUTImport()"))
-        #expect(source.contains("private func handleEditWorkspaceDisappear() {\n        cancelColorLUTImport()"))
+        #expect(source.contains("private func handleEditWorkspaceDisappear() {"))
+        #expect(source.contains("exportSession.endWorkspaceSession()\n        cancelColorLUTImport()"))
     }
 }
 

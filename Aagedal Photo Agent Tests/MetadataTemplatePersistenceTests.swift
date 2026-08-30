@@ -237,4 +237,227 @@ struct MetadataTemplatePersistenceTests {
         #expect(viewModel.saveError == nil)
         #expect(try TemplateStorageService(directoryURL: storageLocation).loadAll().first?.name == "Edited name")
     }
+
+    @Test("template import preview returns immutable completion and post-read cancellation evidence")
+    func importPreviewEvidence() async throws {
+        let source = URL(fileURLWithPath: "/virtual/templates.json")
+        let template = MetadataTemplate(name: "Agency")
+        let requestID = UUID()
+        let completedService = TemplateImportPreviewService(access: TemplateImportPreviewAccess(
+            readPreview: { url in
+                TemplateImportPreview(
+                    source: url,
+                    bundle: TemplateBundle(templates: [template]),
+                    newCount: 1,
+                    overwriteCount: 0
+                )
+            }
+        ))
+
+        let completed = try await completedService.preparePreview(
+            from: source,
+            requestID: requestID
+        )
+
+        guard case .prepared(let evidence) = completed else {
+            Issue.record("Expected completed preview evidence")
+            return
+        }
+        #expect(evidence.requestID == requestID)
+        #expect(evidence.sourceURL == source)
+        #expect(evidence.preview.bundle.templates.map(\.name) == ["Agency"])
+        #expect(evidence.inspectedBundleTemplateCount == 1)
+
+        let preCancelledRequestID = UUID()
+        let preCancelled = try await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await completedService.preparePreview(
+                from: source,
+                requestID: preCancelledRequestID
+            )
+        }.value
+        guard case let .cancelledBeforeRead(returnedRequestID, returnedSource) = preCancelled else {
+            Issue.record("Expected pre-read cancellation evidence")
+            return
+        }
+        #expect(returnedRequestID == preCancelledRequestID)
+        #expect(returnedSource == source)
+
+        let cancelledRequestID = UUID()
+        let cancelledService = TemplateImportPreviewService(access: TemplateImportPreviewAccess(
+            readPreview: { url in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return TemplateImportPreview(
+                    source: url,
+                    bundle: TemplateBundle(templates: [template]),
+                    newCount: 0,
+                    overwriteCount: 1
+                )
+            }
+        ))
+        let cancelled = try await Task {
+            try await cancelledService.preparePreview(
+                from: source,
+                requestID: cancelledRequestID
+            )
+        }.value
+
+        guard case let .cancelledAfterRead(
+            returnedRequestID,
+            returnedSource,
+            inspectedCount,
+            newCount,
+            overwriteCount
+        ) = cancelled else {
+            Issue.record("Expected post-read cancellation evidence")
+            return
+        }
+        #expect(returnedRequestID == cancelledRequestID)
+        #expect(returnedSource == source)
+        #expect(inspectedCount == 1)
+        #expect(newCount == 0)
+        #expect(overwriteCount == 1)
+    }
+
+    @MainActor
+    @Test("a superseded template import cannot publish a stale preview")
+    func supersededImportPreviewCannotPublish() async throws {
+        let probe = BlockingTemplateImportPreviewProbe()
+        defer { probe.releaseFirstRead() }
+        let storage = TemplateStorageService(
+            directoryURL: URL(fileURLWithPath: "/virtual/template-storage")
+        )
+        let viewModel = TemplateViewModel(
+            storage: storage,
+            importPreviewService: TemplateImportPreviewService(access: probe.access)
+        )
+        let firstURL = URL(fileURLWithPath: "/virtual/first.json")
+        let secondURL = URL(fileURLWithPath: "/virtual/second.json")
+
+        viewModel.preparePreview(from: firstURL)
+        try await probe.waitUntilFirstReadStarts()
+        viewModel.preparePreview(from: secondURL)
+        probe.releaseFirstRead()
+
+        // Match the repository's long-load diagnostic ceiling: under the unfiltered parallel
+        // suite the actor reader can be scheduler-starved even though focused execution is fast.
+        let deadline = ContinuousClock.now + .seconds(30)
+        while viewModel.pendingImportPreview?.source != secondURL {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Timed out waiting for the latest template preview")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(viewModel.pendingImportPreview?.source == secondURL)
+        #expect(viewModel.pendingImportPreview?.bundle.templates.map(\.name) == ["second"])
+        #expect(viewModel.errorMessage == nil)
+        #expect(probe.invocationCount == 2)
+        #expect(probe.maximumConcurrentReads == 1)
+    }
+
+    @Test("template import source keeps blocking reads below a serialized actor boundary")
+    func importPreviewSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let serviceSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/TemplateStorageService.swift"
+            ),
+            encoding: .utf8
+        )
+        let viewModelSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/TemplateViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let previewFunctionStart = try #require(
+            viewModelSource.range(of: "func preparePreview(from source: URL)")
+        )
+        let previewFunctionEnd = try #require(
+            viewModelSource.range(
+                of: "func commitPendingImport()",
+                range: previewFunctionStart.upperBound..<viewModelSource.endIndex
+            )
+        )
+        let previewFunction = viewModelSource[
+            previewFunctionStart.lowerBound..<previewFunctionEnd.lowerBound
+        ]
+
+        #expect(serviceSource.contains("actor TemplateImportPreviewService"))
+        #expect(serviceSource.contains("guard !Task.isCancelled"))
+        #expect(serviceSource.contains("case cancelledBeforeRead"))
+        #expect(serviceSource.contains("case cancelledAfterRead"))
+        #expect(previewFunction.contains("storage.previewImport") == false)
+        #expect(previewFunction.contains("try await importPreviewService.preparePreview"))
+        #expect(previewFunction.contains("importPreviewTask?.cancel()"))
+        #expect(previewFunction.contains("importPreviewRequestID == requestID"))
+    }
+}
+
+private enum TemplateImportPreviewProbeError: Error {
+    case timedOut
+}
+
+nonisolated private final class BlockingTemplateImportPreviewProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var readCount = 0
+    private var activeReads = 0
+    private var maximumActiveReads = 0
+    private var firstReadReleased = false
+
+    var access: TemplateImportPreviewAccess {
+        TemplateImportPreviewAccess(readPreview: { [self] in readPreview(from: $0) })
+    }
+
+    private func readPreview(from url: URL) -> TemplateImportPreview {
+        condition.lock()
+        readCount += 1
+        activeReads += 1
+        maximumActiveReads = max(maximumActiveReads, activeReads)
+        condition.broadcast()
+        if readCount == 1 {
+            while !firstReadReleased {
+                condition.wait()
+            }
+        }
+        activeReads -= 1
+        condition.unlock()
+
+        let name = url.deletingPathExtension().lastPathComponent
+        return TemplateImportPreview(
+            source: url,
+            bundle: TemplateBundle(templates: [MetadataTemplate(name: name)]),
+            newCount: 1,
+            overwriteCount: 0
+        )
+    }
+
+    func waitUntilFirstReadStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while invocationCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw TemplateImportPreviewProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstRead() {
+        condition.lock()
+        firstReadReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var invocationCount: Int {
+        condition.withLock { readCount }
+    }
+
+    var maximumConcurrentReads: Int {
+        condition.withLock { maximumActiveReads }
+    }
 }

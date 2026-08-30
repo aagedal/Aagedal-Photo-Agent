@@ -230,8 +230,9 @@ struct EditWorkspaceView: View {
     /// adjacent-RAW precaching, and lazy full-resolution zoom upgrades. One image-session boundary
     /// prevents previous-image work from publishing stale pixels or retaining decode graphs.
     @State private var previewSession = DevelopPreviewSessionCoordinator()
-    @State private var isSavingRenderedJPEG = false
-    @State private var saveError: String?
+    /// Owns the single-export task, durable-result publication, cancellation, and warning/error
+    /// presentation for this workspace lifetime. Render policy remains injected below.
+    @State private var exportSession = DevelopExportSessionCoordinator()
     @State private var copyPasteFeedback: String?
     /// Owns crop-tool presentation, image-scoped pointer state, preview zoom, aspect selection,
     /// and the value-mutation seam used before the view commits XMP or a named Develop version.
@@ -393,13 +394,6 @@ struct EditWorkspaceView: View {
 
     private var isHDREnabled: Bool {
         metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode == 1
-    }
-
-    private var saveErrorPresented: Binding<Bool> {
-        Binding(
-            get: { saveError != nil },
-            set: { if !$0 { saveError = nil } }
-        )
     }
 
     // Read aliases keep presentation code compact while the coordinator owns comparison mode,
@@ -948,7 +942,7 @@ struct EditWorkspaceView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: copyPasteFeedback)
-        .modifier(EditWorkspaceExportFailureAlertModifier(saveError: $saveError))
+        .modifier(EditWorkspaceExportFailureAlertModifier(exportSession: exportSession))
         .modifier(DevelopVersionDialogsModifier(
             nameAction: $developVersionNameAction,
             nameDraft: $developVersionNameDraft,
@@ -1599,12 +1593,12 @@ struct EditWorkspaceView: View {
                         Button {
                             saveCurrentRenderedImage()
                         } label: {
-                            Image(systemName: isSavingRenderedJPEG ? "hourglass" : "square.and.arrow.down")
+                            Image(systemName: exportSession.isExporting ? "hourglass" : "square.and.arrow.down")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .disabled(selectedImageURL == nil || isSavingRenderedJPEG)
+                        .disabled(selectedImageURL == nil || exportSession.isExporting)
                         .help(saveButtonLabel)
                         .accessibilityLabel(saveButtonLabel)
 
@@ -2624,6 +2618,7 @@ struct EditWorkspaceView: View {
     }
 
     private func handleEditWorkspaceDisappear() {
+        exportSession.endWorkspaceSession()
         cancelColorLUTImport()
         importingLUTForLayerID = nil
         isSpaceHandToolActive = false
@@ -2734,6 +2729,7 @@ struct EditWorkspaceView: View {
     }
 
     private func handleEditWorkspaceAppear() {
+        exportSession.beginWorkspaceSession()
         ensureSingleSelection()
         if metalPipeline == nil {
             let device = MetalPreviewView.Coordinator.device
@@ -7554,12 +7550,11 @@ struct EditWorkspaceView: View {
             let format = ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
             formatName = format.displayName
         }
-        return isSavingRenderedJPEG ? "Saving \(formatName)..." : "Save \(formatName)"
+        return exportSession.isExporting ? "Saving \(formatName)..." : "Save \(formatName)"
     }
 
     private func saveCurrentRenderedImage() {
-        guard !isSavingRenderedJPEG,
-              let selectedImageURL else { return }
+        guard let selectedImageURL else { return }
         let settings = metadataViewModel.editingMetadata.cameraRaw
         let maskCount = settings?.localAdjustments?.count ?? 0
         editLog.info("saveCurrentRenderedImage: \(maskCount) mask(s), exp=\(settings?.exposure2012 ?? 0)")
@@ -7569,43 +7564,36 @@ struct EditWorkspaceView: View {
             }
         }
         let hdr = isHDREnabled
-        isSavingRenderedJPEG = true
-
-        Task {
-            defer { isSavingRenderedJPEG = false }
-            do {
-                let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
-                let directoryCommit = try await ExportDirectoryService.shared.ensureDirectory(
-                    at: outputFolder
-                )
-                // Directory creation is a synchronous durable commit once the filesystem call
-                // starts. If cancellation arrived during it, retain the folder but do not begin
-                // the substantially more expensive render.
-                guard !directoryCommit.cancellationRequestedAfterCommit else { return }
-                try Task.checkCancellation()
-                let engine = browserViewModel.writeEngine
-                let failureTracker = MetadataFailureTracker()
-                let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-                    do {
-                        try await engine.copyMetadataToRenderedFile(
-                            from: src, to: dst, bakedCameraRaw: settings)
-                    } catch {
-                        await failureTracker.recordCopyFailure(src.lastPathComponent)
-                    }
-                }
-                let outputURL = try await Task.detached(priority: .userInitiated) {
-                    try await EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder, metadataCopier: copier)
-                }.value
-                browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
-                if await !failureTracker.metadataCopyFailures.isEmpty {
-                    saveError = "Image saved but metadata copy failed — IPTC data may be missing"
-                }
-            } catch is CancellationError {
-                // Cancellation before the directory commit writes nothing; cancellation after a
-                // committed directory intentionally leaves that harmless directory in place.
-            } catch {
-                saveError = "Failed to save image: \(error.localizedDescription)"
+        exportSession.requestExport {
+            let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
+            let directoryCommit = try await ExportDirectoryService.shared.ensureDirectory(
+                at: outputFolder
+            )
+            // Directory creation is a synchronous durable commit once the filesystem call
+            // starts. If cancellation arrived during it, retain the folder but do not begin
+            // the substantially more expensive render.
+            guard !directoryCommit.cancellationRequestedAfterCommit else {
+                throw CancellationError()
             }
+            try Task.checkCancellation()
+            let engine = browserViewModel.writeEngine
+            let failureTracker = MetadataFailureTracker()
+            let copier: EditedImageRenderer.MetadataCopier = { src, dst in
+                do {
+                    try await engine.copyMetadataToRenderedFile(
+                        from: src, to: dst, bakedCameraRaw: settings)
+                } catch {
+                    await failureTracker.recordCopyFailure(src.lastPathComponent)
+                }
+            }
+            let outputURL = try await Task.detached(priority: .userInitiated) {
+                try await EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder, metadataCopier: copier)
+            }.value
+            browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
+            return DevelopExportPersistenceResult(
+                outputURL: outputURL,
+                metadataWasCopied: await failureTracker.metadataCopyFailures.isEmpty
+            )
         }
     }
 
@@ -8544,16 +8532,16 @@ struct EditWorkspaceView: View {
 }
 
 private struct EditWorkspaceExportFailureAlertModifier: ViewModifier {
-    @Binding var saveError: String?
+    let exportSession: DevelopExportSessionCoordinator
 
     func body(content: Content) -> some View {
         content.alert("Export Failed", isPresented: Binding(
-            get: { saveError != nil },
-            set: { if !$0 { saveError = nil } }
+            get: { exportSession.errorMessage != nil },
+            set: { if !$0 { exportSession.dismissError() } }
         )) {
-            Button("OK", role: .cancel) { saveError = nil }
+            Button("OK", role: .cancel) { exportSession.dismissError() }
         } message: {
-            Text(saveError ?? "The export could not be completed.")
+            Text(exportSession.errorMessage ?? "The export could not be completed.")
         }
     }
 }

@@ -29,10 +29,18 @@ final class TemplateViewModel {
     private(set) var saveError: TemplateSaveError?
 
     private let storage: TemplateStorageService
+    private let importPreviewService: TemplateImportPreviewService
     private let interpolator = PresetVariableInterpolator()
+    @ObservationIgnored private var importPreviewTask: Task<Void, Never>?
+    @ObservationIgnored private var importPreviewRequestID: UUID?
 
-    init(storage: TemplateStorageService = TemplateStorageService()) {
+    init(
+        storage: TemplateStorageService = TemplateStorageService(),
+        importPreviewService: TemplateImportPreviewService? = nil
+    ) {
         self.storage = storage
+        self.importPreviewService = importPreviewService
+            ?? TemplateImportPreviewService(storage: storage)
     }
 
     func loadTemplates() {
@@ -204,10 +212,37 @@ final class TemplateViewModel {
     }
 
     func preparePreview(from source: URL) {
-        do {
-            pendingImportPreview = try storage.previewImport(from: source)
-        } catch {
-            errorMessage = "Could not read bundle: \(error.localizedDescription)"
+        importPreviewTask?.cancel()
+        let requestID = UUID()
+        importPreviewRequestID = requestID
+        pendingImportPreview = nil
+        errorMessage = nil
+
+        importPreviewTask = Task { [weak self, importPreviewService] in
+            do {
+                let result = try await importPreviewService.preparePreview(
+                    from: source,
+                    requestID: requestID
+                )
+                guard let self,
+                      self.importPreviewRequestID == requestID,
+                      !Task.isCancelled else { return }
+                self.importPreviewTask = nil
+                self.importPreviewRequestID = nil
+                switch result {
+                case .prepared(let completion):
+                    self.pendingImportPreview = completion.preview
+                case .cancelledBeforeRead, .cancelledAfterRead:
+                    break
+                }
+            } catch {
+                guard let self,
+                      self.importPreviewRequestID == requestID,
+                      !Task.isCancelled else { return }
+                self.importPreviewTask = nil
+                self.importPreviewRequestID = nil
+                self.errorMessage = "Could not read bundle: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -223,6 +258,9 @@ final class TemplateViewModel {
     }
 
     func cancelPendingImport() {
+        importPreviewTask?.cancel()
+        importPreviewTask = nil
+        importPreviewRequestID = nil
         pendingImportPreview = nil
     }
 }
