@@ -522,7 +522,7 @@ struct DevelopExportSessionCoordinatorTests {
         // The unfiltered suite can fully occupy the cooperative executor while the app test host
         // starts. Keep the success path polling-only, but use the repository's documented
         // long-load ceiling so scheduler starvation is not mistaken for an export-state failure.
-        timeout: Duration = .seconds(30),
+        timeout: Duration = .seconds(120),
         condition: @escaping @MainActor () -> Bool
     ) async throws {
         let clock = ContinuousClock()
@@ -1106,6 +1106,275 @@ struct DevelopPreviewSessionCoordinatorTests {
         #expect(coordinator.activeImageURL == nil)
         #expect(coordinator.sourceLoadedURL == nil)
         #expect(coordinator.sourceLoadedOrientation == nil)
+    }
+}
+
+@Suite("Develop layer session coordinator")
+@MainActor
+struct DevelopLayerSessionCoordinatorTests {
+    @Test("edit workspace delegates layer ownership, lifecycle, and durable mutations")
+    func editWorkspaceSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(
+            "@State private var layerSession = DevelopLayerSessionCoordinator()"
+        ))
+        #expect(source.contains("layerSession.beginImageSession(selectedImageURL)"))
+        #expect(source.contains("layerSession.endImageSession()"))
+        #expect(source.contains("layerSession.beginRename("))
+        #expect(source.contains("layerSession.commitRename(in: &settings)"))
+        #expect(source.contains("layerSession.reorder(dragged, onto: target, in: &settings)"))
+        #expect(source.contains("layerSession.deleteSelectedLayer(in: &settings)"))
+        #expect(!source.contains("@State private var selectedLayer"))
+        #expect(!source.contains("@State private var draggingLayer"))
+        #expect(!source.contains("@State private var dropTargetLayer"))
+        #expect(!source.contains("@State private var layerBeingRenamed"))
+        #expect(!source.contains("@State private var layerNameDraft"))
+    }
+
+    @Test("image navigation resets transient layer state but preserves outline visibility")
+    func imageNavigationResetsTransientState() {
+        let coordinator = DevelopLayerSessionCoordinator()
+        let firstURL = URL(fileURLWithPath: "/tmp/layer-first.jpg")
+        let secondURL = URL(fileURLWithPath: "/tmp/layer-second.jpg")
+        let mask = MaskAdjustment(name: "Sky")
+        let ref = LayerRef.mask(mask.id)
+        let settings = CameraRawSettings(localAdjustments: [mask])
+
+        coordinator.beginImageSession(firstURL)
+        coordinator.selectedLayer = ref
+        coordinator.draggingLayer = ref
+        coordinator.dropTargetLayer = .global
+        coordinator.hoveredLayer = ref
+        coordinator.hoveredAddLayerKind = .ellipseMask
+        coordinator.showsMaskOutlines = false
+        #expect(coordinator.beginRename(ref, in: settings))
+
+        coordinator.beginImageSession(secondURL)
+
+        #expect(coordinator.activeImageURL == secondURL)
+        #expect(coordinator.selectedLayer == .global)
+        #expect(coordinator.draggingLayer == nil)
+        #expect(coordinator.dropTargetLayer == nil)
+        #expect(coordinator.hoveredLayer == nil)
+        #expect(coordinator.hoveredAddLayerKind == nil)
+        #expect(!coordinator.isShowingRename)
+        #expect(coordinator.nameDraft.isEmpty)
+        #expect(!coordinator.showsMaskOutlines)
+
+        coordinator.selectedLayer = ref
+        coordinator.endImageSession()
+        #expect(coordinator.activeImageURL == nil)
+        #expect(coordinator.selectedLayer == .global)
+        #expect(!coordinator.showsMaskOutlines)
+    }
+
+    @Test("rename trims input and reports persistence only for a durable change")
+    func renameReturnsExplicitPersistenceIntent() {
+        let coordinator = DevelopLayerSessionCoordinator()
+        let mask = MaskAdjustment(name: "Sky")
+        let ref = LayerRef.mask(mask.id)
+        var settings = CameraRawSettings(localAdjustments: [mask])
+
+        #expect(coordinator.beginRename(ref, in: settings))
+        coordinator.nameDraft = "  Bright Sky  "
+        #expect(coordinator.commitRename(in: &settings) == .commit)
+        #expect(settings.localAdjustments?.first?.name == "Bright Sky")
+        #expect(!coordinator.isShowingRename)
+
+        #expect(coordinator.beginRename(ref, in: settings))
+        coordinator.nameDraft = "Bright Sky"
+        #expect(coordinator.commitRename(in: &settings) == .unchanged)
+    }
+
+    @Test("reorder materializes a sanitized layer chain as one durable mutation")
+    func reorderReturnsExplicitPersistenceIntent() {
+        let coordinator = DevelopLayerSessionCoordinator()
+        let first = MaskAdjustment(name: "First")
+        let second = MaskAdjustment(name: "Second")
+        let watermark = WatermarkLayer(libraryAssetID: UUID())
+        var settings = CameraRawSettings(
+            localAdjustments: [first, second],
+            watermarkLayers: [watermark]
+        )
+
+        #expect(
+            coordinator.reorder(
+                .watermark(watermark.id),
+                onto: .mask(first.id),
+                in: &settings
+            ) == .commit
+        )
+        #expect(settings.layerOrder == [
+            .global,
+            .watermark(watermark.id),
+            .mask(first.id),
+            .mask(second.id),
+        ])
+        #expect(
+            coordinator.reorder(
+                .watermark(watermark.id),
+                onto: .watermark(watermark.id),
+                in: &settings
+            ) == .unchanged
+        )
+    }
+
+    @Test("deleting a selected layer removes its order entry and selects its successor")
+    func deletionSelectsSuccessor() {
+        let coordinator = DevelopLayerSessionCoordinator()
+        let first = MaskAdjustment(name: "First")
+        let selected = MaskAdjustment(name: "Selected")
+        let successor = MaskAdjustment(name: "Successor")
+        var settings = CameraRawSettings(
+            localAdjustments: [first, selected, successor],
+            layerOrder: [.global, .mask(first.id), .mask(selected.id), .mask(successor.id)]
+        )
+        coordinator.selectedLayer = .mask(selected.id)
+
+        #expect(coordinator.deleteSelectedLayer(in: &settings) == .commit)
+        #expect(settings.localAdjustments?.map(\.id) == [first.id, successor.id])
+        #expect(settings.layerOrder == [.global, .mask(first.id), .mask(successor.id)])
+        #expect(coordinator.selectedLayer == .mask(successor.id))
+    }
+}
+
+@Suite("Develop Clean Feed publication coordinator")
+@MainActor
+struct DevelopCleanFeedPublicationCoordinatorTests {
+    @Test("edit workspace delegates Clean Feed lifecycle and publication")
+    func editWorkspaceSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(
+            "@State private var cleanFeedPublication = DevelopCleanFeedPublicationCoordinator()"
+        ))
+        #expect(source.contains("cleanFeedPublication.beginWorkspace(controller: cleanFeedController)"))
+        #expect(source.contains("cleanFeedPublication.endWorkspace("))
+        #expect(source.contains("cleanFeedPublication.updateMirror("))
+        #expect(source.contains("cleanFeedPublication.publish("))
+        #expect(!source.contains("cleanFeedController.editModeActive = true"))
+        #expect(!source.contains("cleanFeedController.feedImage = displayCIImage"))
+        #expect(!source.contains("cleanFeedController.useEditPipeline =\n            (metalPipeline"))
+    }
+
+    @Test("inactive sessions reject publication and active sessions choose live rendering")
+    func workspaceLifetimeAndLivePolicy() {
+        let coordinator = DevelopCleanFeedPublicationCoordinator()
+        let controller = CleanFeedController.shared
+        controller.feedCrop = nil
+
+        #expect(coordinator.publicationDecision(
+            hasSourceTexture: true,
+            isShowingBefore: false,
+            isMutingDevelop: false,
+            isCropToolActive: false,
+            proposedCrop: nil
+        ) == nil)
+
+        coordinator.beginWorkspace(controller: controller)
+        let decision = coordinator.publicationDecision(
+            hasSourceTexture: true,
+            isShowingBefore: false,
+            isMutingDevelop: false,
+            isCropToolActive: false,
+            proposedCrop: nil
+        )
+
+        #expect(coordinator.isWorkspaceActive)
+        #expect(controller.editModeActive)
+        #expect(decision?.usesEditPipeline == true)
+
+        coordinator.endWorkspace(editorPipeline: nil, controller: controller)
+        #expect(!coordinator.isWorkspaceActive)
+        #expect(!controller.editModeActive)
+        #expect(!controller.useEditPipeline)
+    }
+
+    @Test("before and muted states use the fallback even with a live texture")
+    func transientFallbackPolicy() {
+        let coordinator = DevelopCleanFeedPublicationCoordinator()
+        let controller = CleanFeedController.shared
+        coordinator.beginWorkspace(controller: controller)
+        defer { coordinator.endWorkspace(editorPipeline: nil, controller: controller) }
+
+        let before = coordinator.publicationDecision(
+            hasSourceTexture: true,
+            isShowingBefore: true,
+            isMutingDevelop: false,
+            isCropToolActive: false,
+            proposedCrop: nil
+        )
+        let muted = coordinator.publicationDecision(
+            hasSourceTexture: true,
+            isShowingBefore: false,
+            isMutingDevelop: true,
+            isCropToolActive: false,
+            proposedCrop: nil
+        )
+
+        #expect(before?.usesEditPipeline == false)
+        #expect(muted?.usesEditPipeline == false)
+    }
+
+    @Test("crop publication freezes while the crop tool is active")
+    func activeCropToolFreezesCommittedCrop() {
+        let coordinator = DevelopCleanFeedPublicationCoordinator()
+        let controller = CleanFeedController.shared
+        controller.feedCrop = nil
+        coordinator.beginWorkspace(controller: controller)
+        defer { coordinator.endWorkspace(editorPipeline: nil, controller: controller) }
+
+        let committed = CleanFeedController.FeedCrop(
+            left: 0.1, top: 0.2, right: 0.9, bottom: 0.8,
+            angle: 0, imageSize: CGSize(width: 4_000, height: 3_000)
+        )
+        let draft = CleanFeedController.FeedCrop(
+            left: 0.25, top: 0.25, right: 0.75, bottom: 0.75,
+            angle: 3, imageSize: CGSize(width: 4_000, height: 3_000)
+        )
+
+        let first = coordinator.publicationDecision(
+            hasSourceTexture: true,
+            isShowingBefore: false,
+            isMutingDevelop: false,
+            isCropToolActive: false,
+            proposedCrop: committed
+        )
+        let frozen = coordinator.publicationDecision(
+            hasSourceTexture: true,
+            isShowingBefore: false,
+            isMutingDevelop: false,
+            isCropToolActive: true,
+            proposedCrop: draft
+        )
+        let published = coordinator.publicationDecision(
+            hasSourceTexture: true,
+            isShowingBefore: false,
+            isMutingDevelop: false,
+            isCropToolActive: false,
+            proposedCrop: draft
+        )
+
+        #expect(first?.crop == committed)
+        #expect(frozen?.crop == committed)
+        #expect(published?.crop == draft)
     }
 }
 

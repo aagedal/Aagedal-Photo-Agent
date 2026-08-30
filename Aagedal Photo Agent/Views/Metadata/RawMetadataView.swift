@@ -27,6 +27,7 @@ struct RawMetadataView: View {
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var displayedText = ""
+    @State private var appSidecarRequestID: UUID?
     @FocusState private var isSearchFocused: Bool
 
     var body: some View {
@@ -61,15 +62,18 @@ struct RawMetadataView: View {
             minHeight: 400,
             idealHeight: (NSScreen.main?.visibleFrame.height ?? 800) * 0.9
         )
-        .task {
+        .task(id: imageURL) {
             await loadRawMetadata()
             await loadXMPSidecar()
-            loadAppSidecar()
+            await loadAppSidecar()
             if prefersSidecarTab, hasXMPSidecar {
                 selectedTab = .xmpSidecar
             }
             refreshDisplayedText()
             isSearchFocused = true
+        }
+        .onDisappear {
+            appSidecarRequestID = nil
         }
         .onChange(of: searchText) { _, _ in refreshDisplayedText() }
         .onChange(of: jsonText) { _, _ in refreshDisplayedText() }
@@ -217,19 +221,32 @@ struct RawMetadataView: View {
         xmpText = result.text
     }
 
-    private func loadAppSidecar() {
-        guard let folderURL,
-              let sidecar = MetadataSidecarService().loadSidecar(for: imageURL, in: folderURL) else {
+    private func loadAppSidecar() async {
+        guard let folderURL else {
             appSidecarText = ""
             return
         }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(sidecar), let text = String(data: data, encoding: .utf8) {
-            appSidecarText = text
-        } else {
-            appSidecarText = "Unable to encode app sidecar."
+
+        let requestID = UUID()
+        appSidecarRequestID = requestID
+        do {
+            let result = try await RawMetadataSidecarLoadService.shared.load(
+                imageURL: imageURL,
+                folderURL: folderURL,
+                requestID: requestID
+            )
+            guard appSidecarRequestID == requestID else { return }
+            switch result {
+            case .loaded(let snapshot):
+                appSidecarText = snapshot.text
+            case .notFound:
+                appSidecarText = ""
+            case .cancelledBeforeRead, .cancelledAfterRead:
+                break
+            }
+        } catch {
+            guard appSidecarRequestID == requestID else { return }
+            appSidecarText = error.localizedDescription
         }
     }
 }

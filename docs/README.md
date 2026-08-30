@@ -197,8 +197,8 @@ The [app improvement audit plan](app-improvement-audit-plan.md) is a proposed, r
 covering data-loss prevention, release reproducibility, security/privacy, accessibility,
 responsiveness, and maintainability. It is not a fourth 3.0 portfolio initiative, and its unchecked
 items do not claim implementation or replace the release gates in the three authoritative plans
-above. The audit baseline is reconciled to the latest recorded integrated run of 1,658 passing
-tests in 190 suites; manual, external-service, hardware, legal, and credential-dependent actions
+above. The audit baseline is reconciled to the latest recorded integrated run of 1,859 passing
+expanded test cases; manual, external-service, hardware, legal, and credential-dependent actions
 remain explicitly gated in that document.
 
 The latest [code-boundary continuation](plan-status-continuation-validation-2026-08-30.md) records the
@@ -243,6 +243,18 @@ directory preparation, and the Develop white-balance session owner. The combined
 final picker late-result hardening passed all seven focused white-balance tests, and the final serial unfiltered
 gate passed 1,707 tests in 197 suites. Remaining inventory, real-volume, broader state-owner, manual, and external
 gates keep the audit at 63 of 75.
+
+The latest [approved-list, template-commit, and Develop-layer continuation](plan-status-approved-template-layer-continuation-2026-08-30.md)
+records serialized approved-list source/commit ownership, partial-durable metadata-template import commits, and
+the Develop layer-session state owner. The final serial unfiltered gate passed 1,859 expanded test cases; the
+broad filesystem inventory/measurement and Develop render/persistence ownership gates remain open, so the audit
+stays 63 of 75.
+
+The subsequent [archive-preview, raw-metadata, and Clean Feed continuation](plan-status-archive-preview-raw-metadata-clean-feed-continuation-2026-08-30.md)
+records actor-owned keyword-list backup preview and raw-metadata app-sidecar loading plus the Clean Feed
+publication state owner. The combined selection passed 17 tests in four suites, and the serial unfiltered gate
+passed 1,745 tests in 203 suites. Remaining filesystem inventory/measurement, Develop render/persistence,
+manual, and external gates keep the audit at 63 of 75.
 
 ## File organization convention
 

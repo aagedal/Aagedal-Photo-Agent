@@ -384,7 +384,9 @@ private nonisolated final class BlockingHistoryAvailabilityProbe: @unchecked Sen
     }
 
     func waitUntilFirstProbeStarts() async throws {
-        let deadline = ContinuousClock.now + .seconds(2)
+        // Keep a bounded failure while allowing for scheduler starvation under the
+        // unfiltered parallel suite; focused execution remains immediate.
+        let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
                 throw HistoryAvailabilityProbeError.timedOut

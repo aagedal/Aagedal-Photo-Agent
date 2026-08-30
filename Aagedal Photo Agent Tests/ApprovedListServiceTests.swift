@@ -2,6 +2,11 @@ import Testing
 import Foundation
 @testable import Aagedal_Photo_Agent
 
+private func makeApprovedListTestDefaults() -> UserDefaults {
+    let suiteName = "com.aagedal.photo-agent.tests.approved.\(UUID().uuidString)"
+    return UserDefaults(suiteName: suiteName)!
+}
+
 // MARK: - Parser
 
 @Suite("ApprovedListParser")
@@ -71,6 +76,382 @@ struct ApprovedListParserTests {
     }
 }
 
+// MARK: - Import filesystem boundary
+
+@Suite("Approved-list import filesystem boundary")
+struct ApprovedListImportServiceTests {
+    @Test("a complete import runs off MainActor and returns immutable commit evidence")
+    @MainActor
+    func completeImportRunsOffMainActor() async throws {
+        let source = URL(fileURLWithPath: "/virtual/approved.csv")
+        let destination = URL(fileURLWithPath: "/virtual/store/keywords.txt")
+        let sourceData = Data("Berlin,DE\nParis,FR\nBerlin,duplicate\n".utf8)
+        let requestID = UUID()
+        let probe = ApprovedListImportAccessProbe(sourceData: sourceData)
+        let service = ApprovedListImportService(access: probe.fileAccess)
+
+        let result = try await service.importEntries(
+            from: source,
+            to: destination,
+            requestID: requestID
+        )
+
+        #expect(result == .committed(ApprovedListImportCommit(
+            requestID: requestID,
+            sourceURL: source,
+            destinationURL: destination,
+            entries: ["Berlin", "Paris"],
+            sourceByteCount: sourceData.count,
+            committedByteCount: Data("Berlin\nParis\n".utf8).count,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(probe.writtenData == Data("Berlin\nParis\n".utf8))
+        #expect(probe.writeDestination == destination)
+        #expect(probe.startAccessCount == 1)
+        #expect(probe.stopAccessCount == 1)
+        #expect(!probe.ranFilesystemCallOnMainThread)
+    }
+
+    @Test("a pre-cancelled import performs no filesystem access")
+    func preCancellation() async throws {
+        let requestID = UUID()
+        let probe = ApprovedListImportAccessProbe(sourceData: Data("unused".utf8))
+        let service = ApprovedListImportService(access: probe.fileAccess)
+        let task = Task {
+            await Task.yield()
+            return try await service.importEntries(
+                from: URL(fileURLWithPath: "/virtual/cancelled.txt"),
+                to: URL(fileURLWithPath: "/virtual/store.txt"),
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        let result = try await task.value
+
+        #expect(result == .cancelledBeforeAccess(requestID: requestID))
+        #expect(probe.filesystemCallCount == 0)
+    }
+
+    @Test("cancellation during the atomic write still reports a committed destination")
+    func cancellationDuringWriteIsCommitted() async throws {
+        let source = URL(fileURLWithPath: "/virtual/approved.txt")
+        let destination = URL(fileURLWithPath: "/virtual/store/keywords.txt")
+        let sourceData = Data("Berlin\nParis\n".utf8)
+        let requestID = UUID()
+        let probe = BlockingApprovedListImportWriteProbe(sourceData: sourceData)
+        let service = ApprovedListImportService(access: probe.fileAccess)
+        let task = Task {
+            try await service.importEntries(
+                from: source,
+                to: destination,
+                requestID: requestID
+            )
+        }
+        try await probe.waitUntilWriteStarts()
+        task.cancel()
+        probe.releaseWrite()
+        let result = try await task.value
+
+        guard case let .committed(commit) = result else {
+            Issue.record("Expected durable commit evidence after the write returned")
+            return
+        }
+        #expect(commit.requestID == requestID)
+        #expect(commit.destinationURL == destination)
+        #expect(commit.entries == ["Berlin", "Paris"])
+        #expect(commit.cancellationRequestedAfterCommit)
+        #expect(probe.writtenData == sourceData)
+    }
+
+    @Test("overlapping imports serialize and cancellation prevents a queued read or write")
+    func serializedQueuedCancellation() async throws {
+        let firstSource = URL(fileURLWithPath: "/virtual/first.txt")
+        let secondSource = URL(fileURLWithPath: "/virtual/second.txt")
+        let destination = URL(fileURLWithPath: "/virtual/store/keywords.txt")
+        let firstID = UUID()
+        let secondID = UUID()
+        let probe = BlockingApprovedListImportAccessProbe()
+        let service = ApprovedListImportService(access: probe.fileAccess)
+        let first = Task {
+            try await service.importEntries(
+                from: firstSource,
+                to: destination,
+                requestID: firstID
+            )
+        }
+        try await probe.waitUntilFirstReadStarts()
+        let second = Task {
+            try await service.importEntries(
+                from: secondSource,
+                to: destination,
+                requestID: secondID
+            )
+        }
+        second.cancel()
+        probe.releaseFirstRead()
+
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+
+        #expect(firstResult == .committed(ApprovedListImportCommit(
+            requestID: firstID,
+            sourceURL: firstSource,
+            destinationURL: destination,
+            entries: ["first"],
+            sourceByteCount: Data("first\n".utf8).count,
+            committedByteCount: Data("first\n".utf8).count,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(secondResult == .cancelledBeforeAccess(requestID: secondID))
+        #expect(probe.readCount == 1)
+        #expect(probe.writeCount == 1)
+    }
+
+    @Test("a newer service import prevents an older completion from publishing stale cache")
+    @MainActor
+    func serviceRejectsStaleCompletion() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ApprovedListStale-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let probe = BlockingApprovedListImportAccessProbe(persistWrites: true)
+            let filesystem = ApprovedListImportService(access: probe.fileAccess)
+            let service = ApprovedListService(
+                importService: filesystem,
+                defaults: makeApprovedListTestDefaults()
+            )
+            let first = Task { @MainActor in
+                try await service.importListURL(
+                    URL(fileURLWithPath: "/virtual/first.txt"),
+                    for: .keywords
+                )
+            }
+            try await probe.waitUntilFirstReadStarts()
+            let second = Task { @MainActor in
+                try await service.importListURL(
+                    URL(fileURLWithPath: "/virtual/second.txt"),
+                    for: .keywords
+                )
+            }
+            // Let the second MainActor call establish its request identity while the first actor
+            // operation remains blocked inside its non-preemptible read.
+            try await Task.sleep(for: .milliseconds(20))
+            probe.releaseFirstRead()
+
+            try await first.value
+            try await second.value
+
+            #expect(service.orderedEntries(for: .keywords) == ["second"])
+            #expect(KeywordListsStore.shared.readEntries(.approved(.keywords)) == ["second"])
+        }
+    }
+
+    @Test("approved-list notifications carry immutable entries instead of re-reading on MainActor")
+    func notificationPayloadSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let storeSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/KeywordListsStore.swift"
+            ),
+            encoding: .utf8
+        )
+        let serviceSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/ApprovedListService.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(storeSource.contains("changedEntriesUserInfo"))
+        #expect(storeSource.contains("func recordExternalWrite("))
+        #expect(storeSource.contains("entries: [String]? = nil"))
+        #expect(serviceSource.contains("entries: commit.entries"))
+        #expect(serviceSource.contains("sourceID: notificationSourceID"))
+        #expect(serviceSource.contains("if let committedEntries"))
+        #expect(serviceSource.contains("self.installParsed("))
+    }
+}
+
+private nonisolated final class ApprovedListImportAccessProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let sourceData: Data
+    private var storedWrittenData: Data?
+    private var storedWriteDestination: URL?
+    private var storedStartAccessCount = 0
+    private var storedStopAccessCount = 0
+    private var storedFilesystemCallCount = 0
+    private var storedRanFilesystemCallOnMainThread = false
+
+    init(sourceData: Data) {
+        self.sourceData = sourceData
+    }
+
+    var fileAccess: ApprovedListImportFileAccess {
+        ApprovedListImportFileAccess(
+            startAccessing: { [self] _ in
+                recordFilesystemCall()
+                lock.withLock { storedStartAccessCount += 1 }
+                return true
+            },
+            stopAccessing: { [self] _ in
+                recordFilesystemCall()
+                lock.withLock { storedStopAccessCount += 1 }
+            },
+            fileSize: { [self] _ in
+                recordFilesystemCall()
+                return Int64(sourceData.count)
+            },
+            readData: { [self] _ in
+                recordFilesystemCall()
+                return sourceData
+            },
+            writeData: { [self] data, destination in
+                recordFilesystemCall()
+                lock.withLock {
+                    storedWrittenData = data
+                    storedWriteDestination = destination
+                }
+            }
+        )
+    }
+
+    var writtenData: Data? { lock.withLock { storedWrittenData } }
+    var writeDestination: URL? { lock.withLock { storedWriteDestination } }
+    var startAccessCount: Int { lock.withLock { storedStartAccessCount } }
+    var stopAccessCount: Int { lock.withLock { storedStopAccessCount } }
+    var filesystemCallCount: Int { lock.withLock { storedFilesystemCallCount } }
+    var ranFilesystemCallOnMainThread: Bool {
+        lock.withLock { storedRanFilesystemCallOnMainThread }
+    }
+
+    private func recordFilesystemCall() {
+        let isMainThread = Thread.isMainThread
+        lock.withLock {
+            storedFilesystemCallCount += 1
+            storedRanFilesystemCallOnMainThread =
+                storedRanFilesystemCallOnMainThread || isMainThread
+        }
+    }
+}
+
+private nonisolated final class BlockingApprovedListImportWriteProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let sourceData: Data
+    private var writeStarted = false
+    private var shouldReleaseWrite = false
+    private var storedWrittenData: Data?
+
+    init(sourceData: Data) {
+        self.sourceData = sourceData
+    }
+
+    var fileAccess: ApprovedListImportFileAccess {
+        ApprovedListImportFileAccess(
+            startAccessing: { _ in false },
+            stopAccessing: { _ in },
+            fileSize: { [sourceData] _ in Int64(sourceData.count) },
+            readData: { [sourceData] _ in sourceData },
+            writeData: { [self] data, _ in
+                condition.withLock {
+                    storedWrittenData = data
+                    writeStarted = true
+                    condition.broadcast()
+                    while !shouldReleaseWrite {
+                        condition.wait()
+                    }
+                }
+            }
+        )
+    }
+
+    var writtenData: Data? { condition.withLock { storedWrittenData } }
+
+    func waitUntilWriteStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !condition.withLock({ writeStarted }) {
+            guard ContinuousClock.now < deadline else {
+                throw ApprovedListImportProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseWrite() {
+        condition.withLock {
+            shouldReleaseWrite = true
+            condition.broadcast()
+        }
+    }
+}
+
+private nonisolated enum ApprovedListImportProbeError: Error {
+    case timedOut
+}
+
+private nonisolated final class BlockingApprovedListImportAccessProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let persistWrites: Bool
+    private var firstReadStarted = false
+    private var shouldReleaseFirstRead = false
+    private var storedReadCount = 0
+    private var storedWriteCount = 0
+
+    init(persistWrites: Bool = false) {
+        self.persistWrites = persistWrites
+    }
+
+    var fileAccess: ApprovedListImportFileAccess {
+        ApprovedListImportFileAccess(
+            startAccessing: { _ in false },
+            stopAccessing: { _ in },
+            fileSize: { _ in Int64(Data("first\n".utf8).count) },
+            readData: { [self] url in
+                condition.lock()
+                storedReadCount += 1
+                if storedReadCount == 1 {
+                    firstReadStarted = true
+                    condition.broadcast()
+                    while !shouldReleaseFirstRead {
+                        condition.wait()
+                    }
+                }
+                condition.unlock()
+                return Data("\(url.deletingPathExtension().lastPathComponent)\n".utf8)
+            },
+            writeData: { [self] data, destination in
+                condition.withLock { storedWriteCount += 1 }
+                if persistWrites {
+                    try CloudCoordinatedIO.writeData(data, to: destination)
+                }
+            }
+        )
+    }
+
+    var readCount: Int { condition.withLock { storedReadCount } }
+    var writeCount: Int { condition.withLock { storedWriteCount } }
+
+    func waitUntilFirstReadStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !condition.withLock({ firstReadStarted }) {
+            guard ContinuousClock.now < deadline else {
+                throw ApprovedListImportProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstRead() {
+        condition.withLock {
+            shouldReleaseFirstRead = true
+            condition.broadcast()
+        }
+    }
+}
+
 // MARK: - Service suggestions/matching
 
 @Suite("ApprovedListService.suggestions (static)")
@@ -129,21 +510,11 @@ struct ApprovedListServiceTests {
         return url
     }
 
-    private func clearDefaults() {
-        let field = ApprovedListField.keywords
-        AppDefaults.store.removeObject(forKey: field.bookmarkKey)
-        AppDefaults.store.removeObject(forKey: field.enabledKey)
-        AppDefaults.store.removeObject(forKey: field.modeKey)
-        AppDefaults.store.removeObject(forKey: field.allowStructuredBypassKey)
-        KeywordListsStore.shared.delete(.approved(field))
-    }
-
     @Test("contains uses NFC + case-insensitive normalization")
-    func containsCaseAndUnicode() throws {
-        clearDefaults()
+    func containsCaseAndUnicode() async throws {
         let url = try tempCSV("Berlin,DE\nMünchen,DE\nParis,FR\n")
-        let service = ApprovedListService()
-        try service.importListURL(url, for: .keywords)
+        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        try await service.importListURL(url, for: .keywords)
 
         #expect(service.contains("berlin", in: .keywords))
         #expect(service.contains("BERLIN", in: .keywords))
@@ -157,11 +528,10 @@ struct ApprovedListServiceTests {
     }
 
     @Test("canonicalCasing returns file-original casing")
-    func canonicalCasing() throws {
-        clearDefaults()
+    func canonicalCasing() async throws {
         let url = try tempCSV("Berlin\nParis\nNew York\n")
-        let service = ApprovedListService()
-        try service.importListURL(url, for: .keywords)
+        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        try await service.importListURL(url, for: .keywords)
 
         #expect(service.canonicalCasing(of: "berlin", in: .keywords) == "Berlin")
         #expect(service.canonicalCasing(of: "NEW YORK", in: .keywords) == "New York")
@@ -171,11 +541,10 @@ struct ApprovedListServiceTests {
     }
 
     @Test("isActive requires both enabled toggle and a populated list")
-    func isActiveContract() throws {
-        clearDefaults()
+    func isActiveContract() async throws {
         let url = try tempCSV("Berlin\nParis\n")
-        let service = ApprovedListService()
-        try service.importListURL(url, for: .keywords)
+        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        try await service.importListURL(url, for: .keywords)
 
         #expect(service.hasListConfigured(for: .keywords))
         #expect(!service.isActive(for: .keywords))
@@ -191,17 +560,15 @@ struct ApprovedListServiceTests {
 
     @Test("mode defaults to .warn when unset")
     func modeDefaultsToWarn() {
-        clearDefaults()
-        let service = ApprovedListService()
+        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
         #expect(service.mode(for: .keywords) == .warn)
     }
 
     @Test("entryCount reflects parsed list size")
-    func entryCount() throws {
-        clearDefaults()
+    func entryCount() async throws {
         let url = try tempCSV("Berlin\nParis\nLondon\n")
-        let service = ApprovedListService()
-        try service.importListURL(url, for: .keywords)
+        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        try await service.importListURL(url, for: .keywords)
         #expect(service.entryCount(for: .keywords) == 3)
         try? FileManager.default.removeItem(at: url)
     }
@@ -220,28 +587,18 @@ struct ApprovedListValidationTests {
         return url
     }
 
-    private func clearDefaults() {
-        let field = ApprovedListField.keywords
-        AppDefaults.store.removeObject(forKey: field.bookmarkKey)
-        AppDefaults.store.removeObject(forKey: field.enabledKey)
-        AppDefaults.store.removeObject(forKey: field.modeKey)
-        AppDefaults.store.removeObject(forKey: field.allowStructuredBypassKey)
-        KeywordListsStore.shared.delete(.approved(field))
-    }
-
-    private func makeService(mode: ApprovedListMode, enabled: Bool = true) throws -> (ApprovedListService, URL) {
-        clearDefaults()
+    private func makeService(mode: ApprovedListMode, enabled: Bool = true) async throws -> (ApprovedListService, URL) {
         let url = try tempList("Berlin\nMunich\nParis\n")
-        let service = ApprovedListService()
-        try service.importListURL(url, for: .keywords)
+        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        try await service.importListURL(url, for: .keywords)
         service.setMode(mode, for: .keywords)
         service.setEnabled(enabled, for: .keywords)
         return (service, url)
     }
 
     @Test("validate returns .accept when list is inactive (no enforcement)")
-    func validateInactive() throws {
-        let (service, url) = try makeService(mode: .strict, enabled: false)
+    func validateInactive() async throws {
+        let (service, url) = try await makeService(mode: .strict, enabled: false)
         defer { try? FileManager.default.removeItem(at: url) }
 
         if case .accept = service.validate("anything", in: .keywords) {} else {
@@ -250,9 +607,9 @@ struct ApprovedListValidationTests {
     }
 
     @Test("validate canonicalises approved values regardless of mode")
-    func validateCanonicalAllModes() throws {
+    func validateCanonicalAllModes() async throws {
         for mode in [ApprovedListMode.suggest, .warn, .strict] {
-            let (service, url) = try makeService(mode: mode)
+            let (service, url) = try await makeService(mode: mode)
             defer { try? FileManager.default.removeItem(at: url) }
             if case .acceptCanonical(let canonical) = service.validate("berlin", in: .keywords) {
                 #expect(canonical == "Berlin")
@@ -263,9 +620,9 @@ struct ApprovedListValidationTests {
     }
 
     @Test("validate accepts non-approved values in Suggest and Warn modes")
-    func validateNonApprovedSuggestWarn() throws {
+    func validateNonApprovedSuggestWarn() async throws {
         for mode in [ApprovedListMode.suggest, .warn] {
-            let (service, url) = try makeService(mode: mode)
+            let (service, url) = try await makeService(mode: mode)
             defer { try? FileManager.default.removeItem(at: url) }
             if case .accept = service.validate("Tokyo", in: .keywords) {} else {
                 Issue.record("Expected .accept for non-approved in mode \(mode)")
@@ -274,8 +631,8 @@ struct ApprovedListValidationTests {
     }
 
     @Test("validate rejects non-approved values in Strict mode")
-    func validateNonApprovedStrict() throws {
-        let (service, url) = try makeService(mode: .strict)
+    func validateNonApprovedStrict() async throws {
+        let (service, url) = try await makeService(mode: .strict)
         defer { try? FileManager.default.removeItem(at: url) }
         if case .reject = service.validate("Tokyo", in: .keywords) {} else {
             Issue.record("Expected .reject for non-approved in Strict mode")
@@ -283,8 +640,8 @@ struct ApprovedListValidationTests {
     }
 
     @Test("validateBulk canonicalises accepted entries and preserves input order")
-    func validateBulkCanonicalAndOrder() throws {
-        let (service, url) = try makeService(mode: .warn)
+    func validateBulkCanonicalAndOrder() async throws {
+        let (service, url) = try await makeService(mode: .warn)
         defer { try? FileManager.default.removeItem(at: url) }
         let result = service.validateBulk(["paris", "BERLIN", "Munich"], in: .keywords)
         #expect(result.accepted == ["Paris", "Berlin", "Munich"])
@@ -292,8 +649,8 @@ struct ApprovedListValidationTests {
     }
 
     @Test("validateBulk dedupes case-insensitively across accepted entries")
-    func validateBulkDedupe() throws {
-        let (service, url) = try makeService(mode: .warn)
+    func validateBulkDedupe() async throws {
+        let (service, url) = try await makeService(mode: .warn)
         defer { try? FileManager.default.removeItem(at: url) }
         let result = service.validateBulk(["berlin", "BERLIN", "Berlin"], in: .keywords)
         #expect(result.accepted == ["Berlin"])
@@ -301,8 +658,8 @@ struct ApprovedListValidationTests {
     }
 
     @Test("validateBulk splits accepted vs rejected in Strict mode, preserves input casing of rejects")
-    func validateBulkStrictSplit() throws {
-        let (service, url) = try makeService(mode: .strict)
+    func validateBulkStrictSplit() async throws {
+        let (service, url) = try await makeService(mode: .strict)
         defer { try? FileManager.default.removeItem(at: url) }
         let result = service.validateBulk(["berlin", "Belin", "munich", "tokyo"], in: .keywords)
         #expect(result.accepted == ["Berlin", "Munich"])
@@ -310,8 +667,8 @@ struct ApprovedListValidationTests {
     }
 
     @Test("validateBulk in Warn mode accepts non-approved without canonicalising")
-    func validateBulkWarnPassthrough() throws {
-        let (service, url) = try makeService(mode: .warn)
+    func validateBulkWarnPassthrough() async throws {
+        let (service, url) = try await makeService(mode: .warn)
         defer { try? FileManager.default.removeItem(at: url) }
         let result = service.validateBulk(["berlin", "Belin"], in: .keywords)
         // "berlin" canonicalises to "Berlin"; "Belin" is non-approved but accepted in Warn.
@@ -320,8 +677,8 @@ struct ApprovedListValidationTests {
     }
 
     @Test("validateBulk on inactive list accepts everything verbatim")
-    func validateBulkInactive() throws {
-        let (service, url) = try makeService(mode: .strict, enabled: false)
+    func validateBulkInactive() async throws {
+        let (service, url) = try await makeService(mode: .strict, enabled: false)
         defer { try? FileManager.default.removeItem(at: url) }
         let result = service.validateBulk(["foo", "Bar", "baz"], in: .keywords)
         #expect(result.accepted == ["foo", "Bar", "baz"])

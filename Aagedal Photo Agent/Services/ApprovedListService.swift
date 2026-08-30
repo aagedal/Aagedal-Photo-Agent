@@ -90,9 +90,18 @@ final class ApprovedListService {
     }
 
     @ObservationIgnored private var cache: [ApprovedListField: ParsedList] = [:]
+    @ObservationIgnored private let importService: ApprovedListImportService
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let notificationSourceID = UUID()
+    @ObservationIgnored private var sourceImportRequestIDs: [ApprovedListField: UUID] = [:]
     @ObservationIgnored nonisolated(unsafe) private var changeObserver: NSObjectProtocol?
 
-    init() {
+    init(
+        importService: ApprovedListImportService = .shared,
+        defaults: UserDefaults = AppDefaults.store
+    ) {
+        self.importService = importService
+        self.defaults = defaults
         for field in ApprovedListField.allCases {
             loadFromStore(for: field)
         }
@@ -101,13 +110,26 @@ final class ApprovedListService {
             object: nil,
             queue: .main
         ) { [weak self] note in
+            let committedEntries = note.userInfo?[KeywordListsStore.changedEntriesUserInfo]
+                as? [String]
+            let sourceID = note.userInfo?[KeywordListsStore.changedSourceIDUserInfo] as? UUID
             guard
                 let key = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey,
                 case .approved(let field) = key
             else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.loadFromStore(for: field)
+                if let sourceID, sourceID != self.notificationSourceID { return }
+                if let committedEntries {
+                    self.installParsed(
+                        committedEntries,
+                        sourcePath: KeywordListsStore.shared.url(for: key).path,
+                        for: field
+                    )
+                    self.loadError = nil
+                } else {
+                    self.loadFromStore(for: field)
+                }
                 self.bumpVersion()
             }
         }
@@ -120,11 +142,11 @@ final class ApprovedListService {
     // MARK: - Public surface
 
     func isEnabled(_ field: ApprovedListField) -> Bool {
-        AppDefaults.store.bool(forKey: field.enabledKey)
+        defaults.bool(forKey: field.enabledKey)
     }
 
     func mode(for field: ApprovedListField) -> ApprovedListMode {
-        if let raw = AppDefaults.store.string(forKey: field.modeKey),
+        if let raw = defaults.string(forKey: field.modeKey),
            let mode = ApprovedListMode(rawValue: raw) {
             return mode
         }
@@ -134,10 +156,10 @@ final class ApprovedListService {
     /// Whether the structured-tree picker's contributions should bypass approved-list
     /// validation. Default true (matches pre-toggle behaviour).
     func allowStructuredBypass(_ field: ApprovedListField) -> Bool {
-        if AppDefaults.store.object(forKey: field.allowStructuredBypassKey) == nil {
+        if defaults.object(forKey: field.allowStructuredBypassKey) == nil {
             return true
         }
-        return AppDefaults.store.bool(forKey: field.allowStructuredBypassKey)
+        return defaults.bool(forKey: field.allowStructuredBypassKey)
     }
 
     func displayPath(for field: ApprovedListField) -> String? {
@@ -157,27 +179,56 @@ final class ApprovedListService {
     }
 
     func setEnabled(_ enabled: Bool, for field: ApprovedListField) {
-        AppDefaults.store.set(enabled, forKey: field.enabledKey)
+        defaults.set(enabled, forKey: field.enabledKey)
         bumpVersion()
     }
 
     func setMode(_ mode: ApprovedListMode, for field: ApprovedListField) {
-        AppDefaults.store.set(mode.rawValue, forKey: field.modeKey)
+        defaults.set(mode.rawValue, forKey: field.modeKey)
         bumpVersion()
     }
 
     func setAllowStructuredBypass(_ enabled: Bool, for field: ApprovedListField) {
-        AppDefaults.store.set(enabled, forKey: field.allowStructuredBypassKey)
+        defaults.set(enabled, forKey: field.allowStructuredBypassKey)
         bumpVersion()
     }
 
     /// Imports a user-picked file into the managed store. After this the file
     /// content lives in the store; the source URL is no longer referenced.
-    func importListURL(_ url: URL, for field: ApprovedListField) throws {
-        let entries = try KeywordListsStore.shared.importEntries(from: url, into: .approved(field))
-        installParsed(entries, sourcePath: KeywordListsStore.shared.url(for: .approved(field)).path, for: field)
+    func importListURL(_ url: URL, for field: ApprovedListField) async throws {
+        let key = KeywordListKey.approved(field)
+        let destinationURL = KeywordListsStore.shared.url(for: key)
+        let requestID = UUID()
+        sourceImportRequestIDs[field] = requestID
+        defer {
+            if sourceImportRequestIDs[field] == requestID {
+                sourceImportRequestIDs[field] = nil
+            }
+        }
+        let result = try await importService.importEntries(
+            from: url,
+            to: destinationURL,
+            requestID: requestID
+        )
+        guard sourceImportRequestIDs[field] == requestID,
+              case let .committed(commit) = result,
+              commit.requestID == requestID else { return }
+
+        KeywordListsStore.shared.recordExternalWrite(
+            to: key,
+            entries: commit.entries,
+            sourceID: notificationSourceID
+        )
+        installParsed(commit.entries, sourcePath: destinationURL.path, for: field)
         loadError = nil
         bumpVersion()
+    }
+
+    /// Invalidates observable publication for an in-flight import. The actor still returns
+    /// durable-commit evidence if cancellation arrived during its atomic write, but a view that
+    /// has disappeared will not publish stale cache state afterward.
+    func cancelImport(for field: ApprovedListField) {
+        sourceImportRequestIDs[field] = nil
     }
 
     /// Writes the given entries to the managed store. Used by the editor UI.
@@ -190,7 +241,11 @@ final class ApprovedListService {
     }
 
     func clearList(for field: ApprovedListField) {
-        KeywordListsStore.shared.delete(.approved(field))
+        cancelImport(for: field)
+        KeywordListsStore.shared.delete(
+            .approved(field),
+            sourceID: notificationSourceID
+        )
         cache.removeValue(forKey: field)
         loadError = nil
         bumpVersion()

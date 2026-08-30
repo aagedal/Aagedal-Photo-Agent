@@ -319,6 +319,152 @@ struct MetadataTemplatePersistenceTests {
         #expect(overwriteCount == 1)
     }
 
+    @Test("template import commit distinguishes cancellation from durable mutation")
+    func importCommitCancellationAndDurabilityEvidence() async throws {
+        let source = URL(fileURLWithPath: "/virtual/templates.json")
+        let template = MetadataTemplate(name: "Agency")
+        let bundle = TemplateBundle(templates: [template])
+        let preCancelledProbe = TemplateImportCommitProbe()
+        let preCancelledService = TemplateImportCommitService(access: preCancelledProbe.access)
+        let preCancelledRequestID = UUID()
+
+        let preCancelled = try await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await preCancelledService.commit(
+                bundle,
+                sourceURL: source,
+                requestID: preCancelledRequestID
+            )
+        }.value
+
+        guard case let .cancelledBeforeCommit(returnedRequestID, returnedSource) = preCancelled else {
+            Issue.record("Expected cancellation before any durable mutation")
+            return
+        }
+        #expect(returnedRequestID == preCancelledRequestID)
+        #expect(returnedSource == source)
+        #expect(preCancelledProbe.saveCount == 0)
+        #expect(preCancelledProbe.loadCount == 0)
+
+        let committedProbe = TemplateImportCommitProbe(cancelDuringCommit: true)
+        let committedService = TemplateImportCommitService(access: committedProbe.access)
+        let committedRequestID = UUID()
+        let committed = try await Task {
+            try await committedService.commit(
+                bundle,
+                sourceURL: source,
+                requestID: committedRequestID
+            )
+        }.value
+
+        guard case .committed(let evidence) = committed else {
+            Issue.record("Expected durable import evidence")
+            return
+        }
+        #expect(evidence.requestID == committedRequestID)
+        #expect(evidence.sourceURL == source)
+        #expect(evidence.addedCount == 1)
+        #expect(evidence.overwrittenCount == 0)
+        #expect(evidence.committedTemplateIDs == [template.id])
+        #expect(evidence.refreshedTemplates.map(\.name) == ["Agency"])
+        #expect(evidence.inventoryRefreshFailureReason == nil)
+        #expect(evidence.cancellationObservedAfterCommit)
+        #expect(committedProbe.saveCount == 1)
+        #expect(committedProbe.loadCount == 1)
+    }
+
+    @Test("template import commit returns a refreshed immutable inventory")
+    func importCommitReturnsRefreshedInventory() async throws {
+        let source = URL(fileURLWithPath: "/virtual/templates.json")
+        let template = MetadataTemplate(name: "Agency")
+        let probe = TemplateImportCommitProbe(refreshedTemplates: [template])
+        let service = TemplateImportCommitService(access: probe.access)
+        let requestID = UUID()
+
+        let result = try await service.commit(
+            TemplateBundle(templates: [template]),
+            sourceURL: source,
+            requestID: requestID
+        )
+
+        guard case .committed(let evidence) = result else {
+            Issue.record("Expected a committed import")
+            return
+        }
+        #expect(evidence.requestID == requestID)
+        #expect(evidence.refreshedTemplates.map(\.name) == ["Agency"])
+        #expect(evidence.inventoryRefreshFailureReason == nil)
+        #expect(!evidence.cancellationObservedAfterCommit)
+        #expect(probe.saveCount == 1)
+        #expect(probe.loadCount == 2)
+    }
+
+    @Test("template import failure reports already durable templates")
+    func importCommitFailureReportsPartialDurability() async throws {
+        let source = URL(fileURLWithPath: "/virtual/templates.json")
+        let templates = [MetadataTemplate(name: "First"), MetadataTemplate(name: "Second")]
+        let probe = TemplateImportCommitProbe(failOnSaveNumber: 2)
+        let service = TemplateImportCommitService(access: probe.access)
+        let requestID = UUID()
+
+        do {
+            _ = try await service.commit(
+                TemplateBundle(templates: templates),
+                sourceURL: source,
+                requestID: requestID
+            )
+            Issue.record("Expected the second save to fail")
+        } catch let error as TemplateImportCommitError {
+            #expect(error.requestID == requestID)
+            #expect(error.sourceURL == source)
+            #expect(error.addedCount == 1)
+            #expect(error.overwrittenCount == 0)
+            #expect(error.committedTemplateIDs == [templates[0].id])
+            #expect(error.refreshedTemplates.map(\.name) == ["First"])
+            #expect(error.reason == "Injected save failure")
+            #expect(error.localizedDescription.contains("1 template was already imported"))
+        }
+        #expect(probe.saveCount == 2)
+        #expect(probe.loadCount == 1)
+    }
+
+    @MainActor
+    @Test("template view model publishes durable partial import state")
+    func viewModelPublishesPartialImportState() async throws {
+        let source = URL(fileURLWithPath: "/virtual/templates.json")
+        let templates = [MetadataTemplate(name: "First"), MetadataTemplate(name: "Second")]
+        let probe = TemplateImportCommitProbe(failOnSaveNumber: 2)
+        let viewModel = TemplateViewModel(
+            storage: TemplateStorageService(
+                directoryURL: URL(fileURLWithPath: "/virtual/template-storage")
+            ),
+            importCommitService: TemplateImportCommitService(access: probe.access)
+        )
+        viewModel.pendingImportPreview = TemplateImportPreview(
+            source: source,
+            bundle: TemplateBundle(templates: templates),
+            newCount: 2,
+            overwriteCount: 0
+        )
+
+        viewModel.commitPendingImport()
+
+        // Match the repository's long-load diagnostic ceiling: the actor can be
+        // scheduler-starved while the complete suite occupies every test executor.
+        let deadline = ContinuousClock.now + .seconds(30)
+        while viewModel.errorMessage == nil {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Timed out waiting for the partial import result")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(viewModel.pendingImportPreview == nil)
+        #expect(viewModel.templates.map(\.name) == ["First"])
+        #expect(viewModel.errorMessage?.contains("1 template was already imported") == true)
+    }
+
     @MainActor
     @Test("a superseded template import cannot publish a stale preview")
     func supersededImportPreviewCannotPublish() async throws {
@@ -395,6 +541,26 @@ struct MetadataTemplatePersistenceTests {
         #expect(previewFunction.contains("try await importPreviewService.preparePreview"))
         #expect(previewFunction.contains("importPreviewTask?.cancel()"))
         #expect(previewFunction.contains("importPreviewRequestID == requestID"))
+
+        let commitFunctionStart = try #require(
+            viewModelSource.range(of: "func commitPendingImport()")
+        )
+        let commitFunctionEnd = try #require(
+            viewModelSource.range(
+                of: "func cancelPendingImport()",
+                range: commitFunctionStart.upperBound..<viewModelSource.endIndex
+            )
+        )
+        let commitFunction = viewModelSource[
+            commitFunctionStart.lowerBound..<commitFunctionEnd.lowerBound
+        ]
+        #expect(serviceSource.contains("actor TemplateImportCommitService"))
+        #expect(serviceSource.contains("case cancelledBeforeCommit"))
+        #expect(serviceSource.contains("cancellationObservedAfterCommit"))
+        #expect(commitFunction.contains("storage.importBundle") == false)
+        #expect(commitFunction.contains("loadTemplates()") == false)
+        #expect(commitFunction.contains("importCommitTask?.cancel()"))
+        #expect(commitFunction.contains("try await importCommitService.commit"))
     }
 }
 
@@ -460,4 +626,53 @@ nonisolated private final class BlockingTemplateImportPreviewProbe: @unchecked S
     var maximumConcurrentReads: Int {
         condition.withLock { maximumActiveReads }
     }
+}
+
+nonisolated private final class TemplateImportCommitProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let cancelDuringCommit: Bool
+    private let failOnSaveNumber: Int?
+    private let refreshedTemplates: [MetadataTemplate]
+    private var saves = 0
+    private var loads = 0
+
+    init(
+        cancelDuringCommit: Bool = false,
+        failOnSaveNumber: Int? = nil,
+        refreshedTemplates: [MetadataTemplate] = []
+    ) {
+        self.cancelDuringCommit = cancelDuringCommit
+        self.failOnSaveNumber = failOnSaveNumber
+        self.refreshedTemplates = refreshedTemplates
+    }
+
+    var access: TemplateImportCommitAccess {
+        TemplateImportCommitAccess(
+            loadAll: { [self] in
+                lock.withLock { loads += 1 }
+                return refreshedTemplates
+            },
+            save: { [self] _ in
+                let saveNumber = lock.withLock {
+                    saves += 1
+                    return saves
+                }
+                if saveNumber == failOnSaveNumber {
+                    throw TemplateImportCommitProbeError.injectedSaveFailure
+                }
+                if cancelDuringCommit {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }
+        )
+    }
+
+    var saveCount: Int { lock.withLock { saves } }
+    var loadCount: Int { lock.withLock { loads } }
+}
+
+nonisolated private enum TemplateImportCommitProbeError: LocalizedError {
+    case injectedSaveFailure
+
+    var errorDescription: String? { "Injected save failure" }
 }

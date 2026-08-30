@@ -153,3 +153,237 @@ struct KeywordListsArchiveTests {
         }
     }
 }
+
+@Suite("Keyword-list archive preview filesystem boundary")
+struct KeywordListsArchivePreviewServiceTests {
+    @Test("a complete immutable archive preview is inspected away from the main actor")
+    @MainActor
+    func completePreviewRunsOffMainActor() async throws {
+        let source = URL(fileURLWithPath: "/virtual/lists.zip")
+        let requestID = UUID()
+        let payload = samplePayload(kind: "quick.keywords", count: 3)
+        let probe = KeywordListsArchivePreviewReaderProbe(payload: payload)
+        let service = KeywordListsArchivePreviewService(
+            reader: KeywordListsArchivePreviewReader(inspect: probe.inspect)
+        )
+
+        let result = try await Task {
+            try await service.loadPreview(from: source, requestID: requestID)
+        }.value
+
+        #expect(result == .loaded(KeywordListsArchivePreviewSnapshot(
+            requestID: requestID,
+            sourceURL: source,
+            payload: payload
+        )))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("a pre-cancelled preview never starts archive inspection")
+    func preCancellation() async throws {
+        let requestID = UUID()
+        let probe = KeywordListsArchivePreviewReaderProbe(payload: samplePayload())
+        let service = KeywordListsArchivePreviewService(
+            reader: KeywordListsArchivePreviewReader(inspect: probe.inspect)
+        )
+        let task = Task {
+            await Task.yield()
+            return try await service.loadPreview(
+                from: URL(fileURLWithPath: "/virtual/cancelled.zip"),
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        let result = try await task.value
+
+        #expect(result == .cancelledBeforeInspection(requestID: requestID))
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("overlapping previews serialize and cancellation stops a queued inspection")
+    func serializedQueuedCancellation() async throws {
+        let firstSource = URL(fileURLWithPath: "/virtual/first.zip")
+        let secondSource = URL(fileURLWithPath: "/virtual/second.zip")
+        let firstID = UUID()
+        let secondID = UUID()
+        let payload = samplePayload(kind: "structured", count: 8)
+        let probe = BlockingKeywordListsArchivePreviewReaderProbe(payload: payload)
+        let service = KeywordListsArchivePreviewService(
+            reader: KeywordListsArchivePreviewReader(inspect: probe.inspect)
+        )
+        let first = Task {
+            try await service.loadPreview(from: firstSource, requestID: firstID)
+        }
+        try await probe.waitUntilFirstInspectionStarts()
+        let second = Task {
+            try await service.loadPreview(from: secondSource, requestID: secondID)
+        }
+        second.cancel()
+        probe.releaseFirstInspection()
+
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+
+        #expect(firstResult == .loaded(KeywordListsArchivePreviewSnapshot(
+            requestID: firstID,
+            sourceURL: firstSource,
+            payload: payload
+        )))
+        #expect(secondResult == .cancelledBeforeInspection(requestID: secondID))
+        #expect(probe.invocationCount == 1)
+        #expect(probe.maximumConcurrentInspections == 1)
+    }
+
+    @Test("cancellation during non-preemptible inspection returns only cancellation evidence")
+    func cancellationAfterInspection() async throws {
+        let source = URL(fileURLWithPath: "/virtual/slow.zip")
+        let requestID = UUID()
+        let payload = samplePayload(kind: "approved.keywords", count: 5)
+        let service = KeywordListsArchivePreviewService(
+            reader: KeywordListsArchivePreviewReader { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return payload
+            }
+        )
+
+        let result = try await Task {
+            try await service.loadPreview(from: source, requestID: requestID)
+        }.value
+
+        #expect(result == .cancelledAfterInspection(
+            requestID: requestID,
+            sourceURL: source,
+            discoveredEntryCount: 1
+        ))
+    }
+
+    @Test("the import sheet awaits inspection and rejects stale preview publication")
+    func importSheetSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/KeywordListsImportExportSheets.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func loadPreview()"))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n    private func cancelPreview()"))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains(
+            "try await KeywordListsArchivePreviewService.shared.loadPreview("
+        ))
+        #expect(functionSource.contains("guard previewRequestID == requestID else { return }"))
+        #expect(functionSource.contains(
+            "case .cancelledBeforeInspection, .cancelledAfterInspection:"
+        ))
+        #expect(!functionSource.contains("KeywordListsArchive.inspect(source)"))
+        #expect(source.contains(".onDisappear { cancelPreview() }"))
+    }
+
+    private func samplePayload(
+        kind: String = "quick.city",
+        count: Int = 2
+    ) -> KeywordListsArchivePreviewPayload {
+        KeywordListsArchivePreviewPayload(
+            entries: [KeywordListsArchivePreviewPayload.Entry(
+                path: "quick/city.txt",
+                kind: kind,
+                entryCount: count
+            )],
+            schemaVersion: 1,
+            exportedAt: Date(timeIntervalSince1970: 100)
+        )
+    }
+}
+
+private nonisolated final class KeywordListsArchivePreviewReaderProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let payload: KeywordListsArchivePreviewPayload
+    private var count = 0
+    private var observedMainThread = false
+
+    init(payload: KeywordListsArchivePreviewPayload) {
+        self.payload = payload
+    }
+
+    func inspect(_ sourceURL: URL) throws -> KeywordListsArchivePreviewPayload {
+        _ = sourceURL
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return payload
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private enum KeywordListsArchivePreviewProbeError: Error {
+    case timedOut
+}
+
+private nonisolated final class BlockingKeywordListsArchivePreviewReaderProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let payload: KeywordListsArchivePreviewPayload
+    private var inspectionCount = 0
+    private var activeInspections = 0
+    private var maximumActiveInspections = 0
+    private var firstInspectionReleased = false
+
+    init(payload: KeywordListsArchivePreviewPayload) {
+        self.payload = payload
+    }
+
+    func inspect(_ sourceURL: URL) throws -> KeywordListsArchivePreviewPayload {
+        _ = sourceURL
+        condition.lock()
+        inspectionCount += 1
+        activeInspections += 1
+        maximumActiveInspections = max(maximumActiveInspections, activeInspections)
+        condition.broadcast()
+        if inspectionCount == 1 {
+            while !firstInspectionReleased {
+                condition.wait()
+            }
+        }
+        activeInspections -= 1
+        condition.unlock()
+        return payload
+    }
+
+    func waitUntilFirstInspectionStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while invocationCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw KeywordListsArchivePreviewProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstInspection() {
+        condition.lock()
+        firstInspectionReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var invocationCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return inspectionCount
+    }
+
+    var maximumConcurrentInspections: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumActiveInspections
+    }
+}

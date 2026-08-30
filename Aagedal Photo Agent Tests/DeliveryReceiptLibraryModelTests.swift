@@ -421,6 +421,11 @@ private nonisolated final class BlockingReceiptSummaryWriter: @unchecked Sendabl
 private actor ControllableReceiptSummaryExporter: DeliveryReceiptSummaryExporting {
     private var continuations: [URL: CheckedContinuation<DeliveryReceiptSummaryExportResult, any Error>] = [:]
     private var invocationCount = 0
+    private struct InvocationWaiter {
+        let expectedCount: Int
+        let continuation: CheckedContinuation<Void, any Error>
+    }
+    private var invocationWaiters: [UUID: InvocationWaiter] = [:]
 
     func write(
         _ text: String,
@@ -428,19 +433,53 @@ private actor ControllableReceiptSummaryExporter: DeliveryReceiptSummaryExportin
     ) async throws -> DeliveryReceiptSummaryExportResult {
         _ = text
         invocationCount += 1
+        let readyWaiterIDs = invocationWaiters.compactMap { id, waiter in
+            waiter.expectedCount <= invocationCount ? id : nil
+        }
+        for id in readyWaiterIDs {
+            invocationWaiters.removeValue(forKey: id)?.continuation.resume()
+        }
         return try await withCheckedThrowingContinuation { continuation in
             continuations[destination] = continuation
         }
     }
 
     func waitForInvocationCount(_ expectedCount: Int) async throws {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while invocationCount < expectedCount {
-            guard ContinuousClock.now < deadline else {
-                throw ReceiptSummaryWriterProbeError.timedOut
+        guard invocationCount < expectedCount else { return }
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if invocationCount >= expectedCount {
+                    continuation.resume()
+                    return
+                }
+                invocationWaiters[waiterID] = InvocationWaiter(
+                    expectedCount: expectedCount,
+                    continuation: continuation
+                )
+                Task { [waiterID] in
+                    // The unfiltered ~200-suite host can leave this suspended producer
+                    // unscheduled well beyond the focused-suite budget.
+                    try? await Task.sleep(for: .seconds(120))
+                    guard !Task.isCancelled else { return }
+                    self.timeoutInvocationWaiter(waiterID)
+                }
             }
-            await Task.yield()
+        } onCancel: {
+            Task { await self.cancelInvocationWaiter(waiterID) }
         }
+    }
+
+    private func timeoutInvocationWaiter(_ id: UUID) {
+        invocationWaiters.removeValue(forKey: id)?.continuation.resume(
+            throwing: ReceiptSummaryWriterProbeError.timedOut
+        )
+    }
+
+    private func cancelInvocationWaiter(_ id: UUID) {
+        invocationWaiters.removeValue(forKey: id)?.continuation.resume(
+            throwing: CancellationError()
+        )
     }
 
     func complete(

@@ -190,3 +190,180 @@ actor TemplateImportPreviewService {
         ))
     }
 }
+
+nonisolated struct TemplateImportCommit: Sendable {
+    let requestID: UUID
+    let sourceURL: URL
+    let addedCount: Int
+    let overwrittenCount: Int
+    let committedTemplateIDs: [UUID]
+    let refreshedTemplates: [MetadataTemplate]
+    let inventoryRefreshFailureReason: String?
+    let cancellationObservedAfterCommit: Bool
+}
+
+nonisolated enum TemplateImportCommitOperationResult: Sendable {
+    case committed(TemplateImportCommit)
+    case cancelledBeforeCommit(requestID: UUID, sourceURL: URL)
+}
+
+nonisolated struct TemplateImportCommitError: LocalizedError, Sendable {
+    let requestID: UUID
+    let sourceURL: URL
+    let reason: String
+    let addedCount: Int
+    let overwrittenCount: Int
+    let committedTemplateIDs: [UUID]
+    let refreshedTemplates: [MetadataTemplate]
+
+    var errorDescription: String? {
+        let committedCount = committedTemplateIDs.count
+        guard committedCount > 0 else { return reason }
+        let noun = committedCount == 1 ? "template was" : "templates were"
+        return "\(reason) \(committedCount) \(noun) already imported."
+    }
+}
+
+nonisolated struct TemplateImportCommitAccess: Sendable {
+    let loadAll: @Sendable () throws -> [MetadataTemplate]
+    let save: @Sendable (MetadataTemplate) throws -> Void
+
+    static func storage(_ storage: TemplateStorageService) -> Self {
+        Self(
+            loadAll: { try storage.loadAll() },
+            save: { try storage.save($0) }
+        )
+    }
+}
+
+/// Serializes accepted template imports and their inventory refresh away from MainActor.
+/// Each coordinated save is a non-preemptible durable boundary. Cancellation before the first
+/// save prevents mutation; cancellation after any save reports the exact durable partial commit.
+actor TemplateImportCommitService {
+    private let access: TemplateImportCommitAccess
+
+    init(access: TemplateImportCommitAccess) {
+        self.access = access
+    }
+
+    init(storage: TemplateStorageService) {
+        self.access = .storage(storage)
+    }
+
+    func commit(
+        _ bundle: TemplateBundle,
+        sourceURL: URL,
+        requestID: UUID
+    ) throws -> TemplateImportCommitOperationResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(requestID: requestID, sourceURL: sourceURL)
+        }
+
+        var refreshedTemplates = try access.loadAll()
+        let existingIDs = Set(refreshedTemplates.map(\.id))
+        var addedCount = 0
+        var overwrittenCount = 0
+        var committedTemplateIDs: [UUID] = []
+
+        for template in bundle.templates {
+            guard !Task.isCancelled else {
+                return cancellationResult(
+                    requestID: requestID,
+                    sourceURL: sourceURL,
+                    addedCount: addedCount,
+                    overwrittenCount: overwrittenCount,
+                    committedTemplateIDs: committedTemplateIDs,
+                    refreshedTemplates: refreshedTemplates
+                )
+            }
+
+            let isOverwrite = existingIDs.contains(template.id)
+            do {
+                try access.save(template)
+            } catch {
+                throw TemplateImportCommitError(
+                    requestID: requestID,
+                    sourceURL: sourceURL,
+                    reason: error.localizedDescription,
+                    addedCount: addedCount,
+                    overwrittenCount: overwrittenCount,
+                    committedTemplateIDs: committedTemplateIDs,
+                    refreshedTemplates: refreshedTemplates
+                )
+            }
+            committedTemplateIDs.append(template.id)
+            if let index = refreshedTemplates.firstIndex(where: { $0.id == template.id }) {
+                refreshedTemplates[index] = template
+            } else {
+                refreshedTemplates.append(template)
+            }
+            refreshedTemplates.sort {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+            if isOverwrite {
+                overwrittenCount += 1
+            } else {
+                addedCount += 1
+            }
+        }
+
+        guard !Task.isCancelled else {
+            return cancellationResult(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                addedCount: addedCount,
+                overwrittenCount: overwrittenCount,
+                committedTemplateIDs: committedTemplateIDs,
+                refreshedTemplates: refreshedTemplates
+            )
+        }
+
+        do {
+            refreshedTemplates = try access.loadAll()
+            return .committed(TemplateImportCommit(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                addedCount: addedCount,
+                overwrittenCount: overwrittenCount,
+                committedTemplateIDs: committedTemplateIDs,
+                refreshedTemplates: refreshedTemplates,
+                inventoryRefreshFailureReason: nil,
+                cancellationObservedAfterCommit: false
+            ))
+        } catch {
+            return .committed(TemplateImportCommit(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                addedCount: addedCount,
+                overwrittenCount: overwrittenCount,
+                committedTemplateIDs: committedTemplateIDs,
+                refreshedTemplates: refreshedTemplates,
+                inventoryRefreshFailureReason: error.localizedDescription,
+                cancellationObservedAfterCommit: false
+            ))
+        }
+    }
+
+    private func cancellationResult(
+        requestID: UUID,
+        sourceURL: URL,
+        addedCount: Int,
+        overwrittenCount: Int,
+        committedTemplateIDs: [UUID],
+        refreshedTemplates: [MetadataTemplate]
+    ) -> TemplateImportCommitOperationResult {
+        guard addedCount > 0 || overwrittenCount > 0 else {
+            return .cancelledBeforeCommit(requestID: requestID, sourceURL: sourceURL)
+        }
+        return .committed(TemplateImportCommit(
+            requestID: requestID,
+            sourceURL: sourceURL,
+            addedCount: addedCount,
+            overwrittenCount: overwrittenCount,
+            committedTemplateIDs: committedTemplateIDs,
+            refreshedTemplates: refreshedTemplates,
+            inventoryRefreshFailureReason: nil,
+            cancellationObservedAfterCommit: true
+        ))
+    }
+}

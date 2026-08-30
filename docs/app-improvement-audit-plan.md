@@ -173,6 +173,25 @@ and parallel-load polling ceilings, the final unfiltered gate passed 1,844 expan
 The remaining filesystem inventory/measurement and broader Develop ownership gates stay open.
 ([validation](plan-status-template-bundle-export-continuation-2026-08-30.md))
 
+**Approved-list, template-commit, and Develop-layer continuation (2026-08-30):** the checklist remains 63 of 75.
+Approved-list source reads and managed commits plus metadata-template bundle commits now cross serialized actors
+with explicit cancellation, partial/durable commit evidence, and stale-publication suppression. A new
+`DevelopLayerSessionCoordinator` owns layer selection, strip interaction, rename/reorder/delete policy, lifecycle,
+and persistence intent. The combined implementation selection passed 52 tests in seven suites, the repository
+gate passed, and the final serial unfiltered run recorded 1,859 passing expanded test cases. Remaining direct
+paths, real-volume measurements, and broader Develop render/persistence ownership keep the Phase 3.1 and 4.1
+substeps open. ([validation](plan-status-approved-template-layer-continuation-2026-08-30.md))
+
+**Archive-preview, raw-metadata, and Clean Feed continuation (2026-08-30):** the checklist remains 63 of 75.
+Keyword-list archive previews and raw-metadata app-sidecar loads now cross serialized actors with immutable
+cancellation evidence, request-identity gating, and stale-result rejection. A new
+`DevelopCleanFeedPublicationCoordinator` owns Clean Feed workspace lifecycle, Metal mirror installation,
+live/fallback publication policy, crop freeze, redraw, and continuous-rendering state. The combined selection
+passed 17 tests in four suites, the repository gate passed, and the final serial unfiltered run passed 1,745
+tests in 203 suites. Remaining direct paths, real-volume measurements, and broader Develop render/persistence
+ownership keep the Phase 3.1 and 4.1 substeps open.
+([validation](plan-status-archive-preview-raw-metadata-clean-feed-continuation-2026-08-30.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data

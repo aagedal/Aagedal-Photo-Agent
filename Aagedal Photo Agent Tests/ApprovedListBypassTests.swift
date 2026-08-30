@@ -5,37 +5,31 @@ import Foundation
 @Suite("ApprovedListService source-based bypass")
 struct ApprovedListBypassTests {
 
-    private func clear() {
-        let field = ApprovedListField.keywords
-        AppDefaults.store.removeObject(forKey: field.bookmarkKey)
-        AppDefaults.store.removeObject(forKey: field.enabledKey)
-        AppDefaults.store.removeObject(forKey: field.modeKey)
-        AppDefaults.store.removeObject(forKey: field.allowStructuredBypassKey)
-        KeywordListsStore.shared.delete(.approved(field))
+    private func makeDefaults() -> UserDefaults {
+        UserDefaults(suiteName: "com.aagedal.photo-agent.tests.approved-bypass.\(UUID().uuidString)")!
     }
 
-    private func makeStrictService() throws -> ApprovedListService {
-        clear()
+    private func makeStrictService() async throws -> ApprovedListService {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("bypass-\(UUID().uuidString).txt")
         try "Berlin\nMunich\n".write(to: url, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: url) }
-        let service = ApprovedListService()
-        try service.importListURL(url, for: .keywords)
+        let service = ApprovedListService(defaults: makeDefaults())
+        try await service.importListURL(url, for: .keywords)
         service.setMode(.strict, for: .keywords)
         service.setEnabled(true, for: .keywords)
         return service
     }
 
     @Test("Bypass toggle defaults to true (matches pre-toggle behavior)")
-    func defaultIsBypassOn() throws {
-        let service = try makeStrictService()
+    func defaultIsBypassOn() async throws {
+        let service = try await makeStrictService()
         #expect(service.allowStructuredBypass(.keywords) == true)
     }
 
     @Test("With bypass ON, .structuredTree source accepts non-approved values even in Strict mode")
-    func bypassAcceptsStructured() throws {
-        let service = try makeStrictService()
+    func bypassAcceptsStructured() async throws {
+        let service = try await makeStrictService()
         service.setAllowStructuredBypass(true, for: .keywords)
 
         let result = service.validateBulk(["Berlin", "Tokyo", "Munich"], in: .keywords, source: .structuredTree)
@@ -44,8 +38,8 @@ struct ApprovedListBypassTests {
     }
 
     @Test("With bypass OFF, .structuredTree source is validated like any other source")
-    func bypassOffValidates() throws {
-        let service = try makeStrictService()
+    func bypassOffValidates() async throws {
+        let service = try await makeStrictService()
         service.setAllowStructuredBypass(false, for: .keywords)
 
         let result = service.validateBulk(["Berlin", "Tokyo", "Munich"], in: .keywords, source: .structuredTree)
@@ -54,8 +48,8 @@ struct ApprovedListBypassTests {
     }
 
     @Test("Bypass toggle never affects .user / .quickList / .template sources")
-    func bypassOnlyTouchesStructured() throws {
-        let service = try makeStrictService()
+    func bypassOnlyTouchesStructured() async throws {
+        let service = try await makeStrictService()
         service.setAllowStructuredBypass(true, for: .keywords)
 
         for source in [KeywordSource.user, .quickList, .template] {

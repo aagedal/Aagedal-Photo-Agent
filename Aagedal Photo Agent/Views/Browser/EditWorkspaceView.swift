@@ -219,6 +219,8 @@ struct EditWorkspaceView: View {
     @State private var isDraggingEditSlider = false
     @State private var previewCIImage: CIImage?
     @State private var previewRender = DevelopPreviewRenderCoordinator()
+    /// Owns the Develop workspace's Clean Feed mirror, crop-freeze policy, and publication.
+    @State private var cleanFeedPublication = DevelopCleanFeedPublicationCoordinator()
     @State private var developComparison = DevelopComparisonRenderCoordinator()
     @State private var developVersionSession = DevelopVersionSessionCoordinator()
     @State private var developVersionFlushRegistrationID: UUID?
@@ -264,23 +266,12 @@ struct EditWorkspaceView: View {
     @State private var editedURLsThisSession: Set<URL> = []
     @State private var metalPipeline: MetalLivePreviewPipeline?
     @State private var metalCoordinator = MetalPreviewView.Coordinator()
-    /// The selected node in the layer chain. `.global` shows the global adjustment sliders;
-    /// `.mask(id)` shows that mask's sliders and overlay. Identity-based so it survives reorder.
-    @State private var selectedLayer: LayerRef = .global
-    /// The layer card currently being dragged for reorder, and the card it's hovering over.
-    @State private var draggingLayer: LayerRef?
-    @State private var dropTargetLayer: LayerRef?
-    @State private var hoveredLayer: LayerRef?
-    @State private var hoveredAddLayerKind: LayerKind?
-    @State private var isShowingLayerRename = false
-    @State private var layerBeingRenamed: LayerRef?
-    @State private var layerNameDraft = ""
+    /// Owns image-scoped layer selection plus rename/reorder/delete policy. The coordinator
+    /// returns persistence intent; this view remains the XMP/named-version write boundary.
+    @State private var layerSession = DevelopLayerSessionCoordinator()
     @State private var isDraggingMask = false
     @State private var dragMaskGeometry: EllipseMaskGeometry?
     @State private var dragWatermarkGeometry: WatermarkGeometry?
-    /// Global visibility for interactive ellipse outlines/handles. Kept separate from the
-    /// selected mask's enabled state so users can inspect the adjusted image without deselecting.
-    @State private var showsMaskOutlines = true
     /// Shown when "Add Watermark" is tapped but the Watermark library (Settings ▸ Watermarks)
     /// has no PNGs imported yet.
     @State private var showWatermarkLibraryEmptyAlert = false
@@ -337,6 +328,52 @@ struct EditWorkspaceView: View {
 
     private var selectedImageURL: URL? {
         selectedImage?.url
+    }
+
+    // Transitional aliases keep the layer UI compact while `DevelopLayerSessionCoordinator`
+    // remains the sole owner of selection and strip interaction state.
+    private var selectedLayer: LayerRef {
+        get { layerSession.selectedLayer }
+        nonmutating set { layerSession.selectedLayer = newValue }
+    }
+
+    private var draggingLayer: LayerRef? {
+        get { layerSession.draggingLayer }
+        nonmutating set { layerSession.draggingLayer = newValue }
+    }
+
+    private var dropTargetLayer: LayerRef? {
+        get { layerSession.dropTargetLayer }
+        nonmutating set { layerSession.dropTargetLayer = newValue }
+    }
+
+    private var hoveredLayer: LayerRef? {
+        get { layerSession.hoveredLayer }
+        nonmutating set { layerSession.hoveredLayer = newValue }
+    }
+
+    private var hoveredAddLayerKind: LayerKind? {
+        get { layerSession.hoveredAddLayerKind }
+        nonmutating set { layerSession.hoveredAddLayerKind = newValue }
+    }
+
+    private var showsMaskOutlines: Bool {
+        get { layerSession.showsMaskOutlines }
+        nonmutating set { layerSession.showsMaskOutlines = newValue }
+    }
+
+    private var layerRenamePresented: Binding<Bool> {
+        Binding(
+            get: { layerSession.isShowingRename },
+            set: { if !$0 { layerSession.cancelRename() } }
+        )
+    }
+
+    private var layerNameDraftBinding: Binding<String> {
+        Binding(
+            get: { layerSession.nameDraft },
+            set: { layerSession.nameDraft = $0 }
+        )
     }
 
     // Transitional aliases keep the decode/render implementation compact while
@@ -814,7 +851,7 @@ struct EditWorkspaceView: View {
             )
             if isDragging, !wasDragging {
                 metalCoordinator.startContinuousRendering()
-                cleanFeedController.setFeedContinuousRendering(true)
+                cleanFeedPublication.setContinuousRendering(true, controller: cleanFeedController)
             }
             if wasDragging, !isDragging {
                 // Commit crop drag to ViewModel before clearing overlay state
@@ -823,7 +860,7 @@ struct EditWorkspaceView: View {
                     updateCropAngle(angle, commit: false)
                 }
                 metalCoordinator.stopContinuousRendering()
-                cleanFeedController.setFeedContinuousRendering(false)
+                cleanFeedPublication.setContinuousRendering(false, controller: cleanFeedController)
                 scopeThrottleTask?.cancel()
                 scopeThrottleTask = nil
                 renderPreview()
@@ -2622,6 +2659,7 @@ struct EditWorkspaceView: View {
         cancelColorLUTImport()
         importingLUTForLayerID = nil
         isSpaceHandToolActive = false
+        layerSession.endImageSession()
         transientPreview.endImageSession()
         cropSession.endImageSession()
         whiteBalanceSession.endImageSession()
@@ -2648,13 +2686,11 @@ struct EditWorkspaceView: View {
         previewSession.endImageSession()
         previewRender.endImageSession()
 
-        // Tear down the clean-feed mirror; browse mode resumes driving the feed.
-        metalPipeline?.mirror = nil
-        metalPipeline?.onParamsChanged = nil
-        cleanFeedController.editModeActive = false
-        cleanFeedController.useEditPipeline = false
-        cleanFeedController.feedPipeline?.clearSourceTexture()
-        cleanFeedController.requestFeedRedraw()
+        // Tear down the clean-feed publication session; browse mode resumes driving the feed.
+        cleanFeedPublication.endWorkspace(
+            editorPipeline: metalPipeline,
+            controller: cleanFeedController
+        )
 
         metadataViewModel.isInEditView = false
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
@@ -2752,7 +2788,7 @@ struct EditWorkspaceView: View {
                 }
             }
         }
-        cleanFeedController.editModeActive = true
+        cleanFeedPublication.beginWorkspace(controller: cleanFeedController)
         // Wire the clean-feed mirror only when the feed is actually enabled, so users
         // who never use it pay no overhead on the core edit path.
         updateCleanFeedMirror(enabled: cleanFeedController.isEnabled)
@@ -2840,6 +2876,7 @@ struct EditWorkspaceView: View {
     private func loadSelectedImagePreview() {
         let filename = selectedImageURL?.lastPathComponent ?? "nil"
         editLog.info("[\(filename)] loadSelectedImagePreview: resetting state, cancelling previous tasks")
+        layerSession.beginImageSession(selectedImageURL)
         transientPreview.beginImageSession(selectedImageURL)
         previewSession.beginImageSession(
             selectedImageURL,
@@ -2859,8 +2896,6 @@ struct EditWorkspaceView: View {
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         cropSession.beginImageSession(selectedImageURL, isCropEnabled: isCropEnabled)
         resetEditZoom()
-        selectedLayer = .global
-
         guard let selectedImageURL else {
             editLog.info("[nil] loadSelectedImagePreview: no selectedImageURL, returning")
             return
@@ -3452,22 +3487,12 @@ struct EditWorkspaceView: View {
     /// `updateParams` so the second display tracks edits live. Called on edit-view
     /// appear and whenever the feed is toggled while editing.
     private func updateCleanFeedMirror(enabled: Bool) {
-        guard let pipeline = metalPipeline else { return }
-        if enabled, let feed = cleanFeedController.feedPipeline {
-            pipeline.mirror = feed
-            feed.asShotTemperature = pipeline.asShotTemperature
-            feed.asShotTint = pipeline.asShotTint
-            feed.gamutClipMode = pipeline.gamutClipMode
-            pipeline.shareSourceTexture(with: feed)
-            pipeline.onParamsChanged = { [hooks = cleanFeedController.hooks] in hooks.redraw?() }
-            // Seed the feed with the current parameters + still, then redraw.
-            renderPreview()
-        } else {
-            pipeline.mirror = nil
-            pipeline.onParamsChanged = nil
-            cleanFeedController.useEditPipeline = false
-            cleanFeedController.feedPipeline?.clearSourceTexture()
-        }
+        cleanFeedPublication.updateMirror(
+            enabled: enabled,
+            editorPipeline: metalPipeline,
+            controller: cleanFeedController,
+            renderCurrent: renderPreview
+        )
     }
 
     /// Push the current editor display state to the clean-feed window. The compute
@@ -3476,21 +3501,26 @@ struct EditWorkspaceView: View {
     /// editor falls back to the CIImage. In those fallback cases the feed shows
     /// `displayCIImage` (aspect-fit on black) instead.
     private func syncCleanFeed() {
-        guard cleanFeedController.editModeActive else { return }
-        cleanFeedController.feedImage = displayCIImage
-        cleanFeedController.isHDR = isHDREnabled
-        cleanFeedController.useEditPipeline =
-            (metalPipeline?.hasSourceTexture == true) && !isShowingBefore && !isMutingDevelop
-        // Reflect the committed crop on the feed, but freeze updates while the crop tool is
-        // active so the feed only reframes once the crop is confirmed and the tool closes.
-        if !showCropControls, let imageSize = currentImageSize {
+        let proposedCrop: CleanFeedController.FeedCrop?
+        if let imageSize = currentImageSize {
             let crop = activeCrop
-            cleanFeedController.feedCrop = CleanFeedController.FeedCrop(
+            proposedCrop = CleanFeedController.FeedCrop(
                 left: crop.left, top: crop.top, right: crop.right, bottom: crop.bottom,
                 angle: activeCropAngle, imageSize: imageSize
             )
+        } else {
+            proposedCrop = nil
         }
-        cleanFeedController.requestFeedRedraw()
+        cleanFeedPublication.publish(
+            fallbackImage: displayCIImage,
+            isHDR: isHDREnabled,
+            hasSourceTexture: metalPipeline?.hasSourceTexture == true,
+            isShowingBefore: isShowingBefore,
+            isMutingDevelop: isMutingDevelop,
+            isCropToolActive: showCropControls,
+            proposedCrop: proposedCrop,
+            controller: cleanFeedController
+        )
     }
 
     private func renderPreview() {
@@ -5614,8 +5644,8 @@ struct EditWorkspaceView: View {
         } message: {
             Text(colorTransformError ?? "The color transform could not be loaded.")
         }
-        .alert("Rename Layer", isPresented: $isShowingLayerRename) {
-            TextField("Layer name", text: $layerNameDraft)
+        .alert("Rename Layer", isPresented: layerRenamePresented) {
+            TextField("Layer name", text: layerNameDraftBinding)
             Button("Cancel", role: .cancel) {
                 cancelLayerRename()
             }
@@ -5623,7 +5653,7 @@ struct EditWorkspaceView: View {
                 commitLayerRename()
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(layerNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(layerSession.nameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } message: {
             Text("Enter a name for this develop layer.")
         }
@@ -5884,47 +5914,20 @@ struct EditWorkspaceView: View {
     }
 
     private func beginLayerRename(_ ref: LayerRef) {
-        guard ref != .global else { return }
-        guard maskFor(ref) != nil || watermarkFor(ref) != nil else { return }
-        selectedLayer = ref
-        layerBeingRenamed = ref
-        layerNameDraft = layerName(ref, mask: maskFor(ref))
-        isShowingLayerRename = true
+        layerSession.beginRename(ref, in: metadataViewModel.editingMetadata.cameraRaw)
     }
 
     private func cancelLayerRename() {
-        isShowingLayerRename = false
-        layerBeingRenamed = nil
-        layerNameDraft = ""
+        layerSession.cancelRename()
     }
 
     private func commitLayerRename() {
-        let trimmedName = layerNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let ref = layerBeingRenamed, !trimmedName.isEmpty else {
-            cancelLayerRename()
+        guard var settings = metadataViewModel.editingMetadata.cameraRaw else {
+            layerSession.cancelRename()
             return
         }
-        let currentName = layerName(ref, mask: maskFor(ref))
-        guard currentName != trimmedName else {
-            cancelLayerRename()
-            return
-        }
-
-        updateCameraRaw { cameraRaw in
-            switch ref {
-            case .global:
-                break
-            case .mask(let id):
-                guard let index = cameraRaw.localAdjustments?
-                    .firstIndex(where: { $0.id == id }) else { return }
-                cameraRaw.localAdjustments?[index].name = trimmedName
-            case .watermark(let id):
-                guard let index = cameraRaw.watermarkLayers?
-                    .firstIndex(where: { $0.id == id }) else { return }
-                cameraRaw.watermarkLayers?[index].name = trimmedName
-            }
-        }
-        cancelLayerRename()
+        guard layerSession.commitRename(in: &settings) == .commit else { return }
+        updateCameraRaw { $0 = settings }
         commitEditAdjustments()
     }
 
@@ -5935,15 +5938,11 @@ struct EditWorkspaceView: View {
     /// Reorders the layer chain so `dragged` takes `target`'s slot. A single `updateCameraRaw`
     /// keeps it to one undo step.
     private func dropLayer(_ dragged: LayerRef, onto target: LayerRef) {
-        guard dragged != target else { return }
-        updateCameraRaw { cameraRaw in
-            var order = cameraRaw.resolvedLayerOrder()
-            guard let from = order.firstIndex(of: dragged) else { return }
-            order.remove(at: from)
-            guard let to = order.firstIndex(of: target) else { return }
-            order.insert(dragged, at: to)
-            cameraRaw.layerOrder = order
+        guard var settings = metadataViewModel.editingMetadata.cameraRaw,
+              layerSession.reorder(dragged, onto: target, in: &settings) == .commit else {
+            return
         }
+        updateCameraRaw { $0 = settings }
         commitEditAdjustments()
     }
 
@@ -7082,22 +7081,10 @@ struct EditWorkspaceView: View {
     }
 
     private func deleteSelectedWatermark() {
-        guard case .watermark(let id) = selectedLayer,
-              let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
-              let idx = layers.firstIndex(where: { $0.id == id }) else { return }
-        updateCameraRaw { cameraRaw in
-            cameraRaw.watermarkLayers?.removeAll { $0.id == id }
-            cameraRaw.layerOrder?.removeAll { $0 == .watermark(id) }
-            if cameraRaw.watermarkLayers?.isEmpty == true {
-                cameraRaw.watermarkLayers = nil
-            }
-        }
-        let remaining = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers ?? []
-        if remaining.isEmpty {
-            selectedLayer = .global
-        } else {
-            selectedLayer = .watermark(remaining[min(idx, remaining.count - 1)].id)
-        }
+        guard case .watermark = selectedLayer,
+              var settings = metadataViewModel.editingMetadata.cameraRaw,
+              layerSession.deleteSelectedLayer(in: &settings) == .commit else { return }
+        updateCameraRaw { $0 = settings }
         commitEditAdjustments()
     }
 
@@ -7325,23 +7312,10 @@ struct EditWorkspaceView: View {
     }
 
     private func deleteSelectedMask() {
-        guard case .mask(let id) = selectedLayer,
-              let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
-              let idx = masks.firstIndex(where: { $0.id == id }) else { return }
-        updateCameraRaw { cameraRaw in
-            cameraRaw.localAdjustments?.removeAll { $0.id == id }
-            cameraRaw.layerOrder?.removeAll { $0 == .mask(id) }
-            if cameraRaw.localAdjustments?.isEmpty == true {
-                cameraRaw.localAdjustments = nil
-            }
-        }
-        // Select the mask that now occupies the deleted slot (or the last one), else Global.
-        let remaining = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments ?? []
-        if remaining.isEmpty {
-            selectedLayer = .global
-        } else {
-            selectedLayer = .mask(remaining[min(idx, remaining.count - 1)].id)
-        }
+        guard case .mask = selectedLayer,
+              var settings = metadataViewModel.editingMetadata.cameraRaw,
+              layerSession.deleteSelectedLayer(in: &settings) == .commit else { return }
+        updateCameraRaw { $0 = settings }
         commitEditAdjustments()
     }
 

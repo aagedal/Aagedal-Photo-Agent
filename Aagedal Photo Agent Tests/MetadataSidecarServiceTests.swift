@@ -2,6 +2,129 @@ import Testing
 import Foundation
 @testable import Aagedal_Photo_Agent
 
+@Suite("Raw Metadata app-sidecar filesystem boundary")
+struct RawMetadataSidecarLoadServiceTests {
+    @Test("a complete immutable snapshot is read away from the main actor")
+    @MainActor
+    func completeSnapshotRunsOffMainActor() async throws {
+        let imageURL = URL(fileURLWithPath: "/virtual/photo.raw")
+        let folderURL = URL(fileURLWithPath: "/virtual/folder", isDirectory: true)
+        let requestID = UUID()
+        let bytes = Data("{\n  \"title\" : \"News\"\n}".utf8)
+        let probe = RawMetadataSidecarAccessProbe(data: bytes)
+        let service = RawMetadataSidecarLoadService(access: RawMetadataSidecarAccess(
+            readEncodedSidecar: probe.read
+        ))
+
+        let result = try await Task {
+            try await service.load(
+                imageURL: imageURL,
+                folderURL: folderURL,
+                requestID: requestID
+            )
+        }.value
+
+        #expect(result == .loaded(RawMetadataSidecarSnapshot(
+            requestID: requestID,
+            imageURL: imageURL,
+            folderURL: folderURL,
+            text: String(decoding: bytes, as: UTF8.self),
+            byteCount: bytes.count
+        )))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("pre-cancellation performs no synchronous read")
+    func preCancellation() async throws {
+        let requestID = UUID()
+        let probe = RawMetadataSidecarAccessProbe(data: Data("unused".utf8))
+        let service = RawMetadataSidecarLoadService(access: RawMetadataSidecarAccess(
+            readEncodedSidecar: probe.read
+        ))
+        let task = Task {
+            await Task.yield()
+            return try await service.load(
+                imageURL: URL(fileURLWithPath: "/virtual/cancelled.raw"),
+                folderURL: URL(fileURLWithPath: "/virtual/folder"),
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        #expect(try await task.value == .cancelledBeforeRead(requestID: requestID))
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("cancellation during a non-preemptible read is explicit")
+    func cancellationAfterRead() async throws {
+        let imageURL = URL(fileURLWithPath: "/virtual/slow.raw")
+        let bytes = Data("{}".utf8)
+        let requestID = UUID()
+        let service = RawMetadataSidecarLoadService(access: RawMetadataSidecarAccess { _, _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return bytes
+        })
+
+        let result = try await Task {
+            try await service.load(
+                imageURL: imageURL,
+                folderURL: URL(fileURLWithPath: "/virtual/folder"),
+                requestID: requestID
+            )
+        }.value
+
+        #expect(result == .cancelledAfterRead(
+            requestID: requestID,
+            imageURL: imageURL,
+            byteCount: bytes.count
+        ))
+    }
+
+    @Test("Raw Metadata awaits the service and rejects stale publication")
+    func rawMetadataViewSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Metadata/RawMetadataView.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func loadAppSidecar() async"))
+        let functionSource = String(source[functionStart.lowerBound...])
+
+        #expect(functionSource.contains("try await RawMetadataSidecarLoadService.shared.load("))
+        #expect(functionSource.contains("guard appSidecarRequestID == requestID else { return }"))
+        #expect(!functionSource.contains("MetadataSidecarService().loadSidecar"))
+    }
+}
+
+private nonisolated final class RawMetadataSidecarAccessProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let data: Data?
+    private var count = 0
+    private var observedMainThread = false
+
+    init(data: Data?) {
+        self.data = data
+    }
+
+    func read(imageURL: URL, folderURL: URL) throws -> Data? {
+        _ = imageURL
+        _ = folderURL
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return data
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
 private actor FolderEventProbe {
     private var eventCount = 0
 

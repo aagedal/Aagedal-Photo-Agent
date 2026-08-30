@@ -3,6 +3,89 @@ import os
 
 private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "KeywordListsArchive")
 
+/// Sendable archive facts produced by the blocking unzip/manifest inspection. Logical list-key
+/// resolution stays on MainActor because those keys are presentation/store types; the filesystem
+/// actor only transports stable strings, counts, and dates.
+nonisolated struct KeywordListsArchivePreviewPayload: Equatable, Sendable {
+    nonisolated struct Entry: Equatable, Sendable {
+        let path: String
+        let kind: String
+        let entryCount: Int
+    }
+
+    let entries: [Entry]
+    let schemaVersion: Int
+    let exportedAt: Date
+}
+
+nonisolated struct KeywordListsArchivePreviewSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let sourceURL: URL
+    let payload: KeywordListsArchivePreviewPayload
+}
+
+nonisolated enum KeywordListsArchivePreviewResult: Equatable, Sendable {
+    case loaded(KeywordListsArchivePreviewSnapshot)
+    case cancelledBeforeInspection(requestID: UUID)
+    case cancelledAfterInspection(requestID: UUID, sourceURL: URL, discoveredEntryCount: Int)
+}
+
+nonisolated struct KeywordListsArchivePreviewReader: Sendable {
+    let inspect: @Sendable (URL) throws -> KeywordListsArchivePreviewPayload
+
+    static let system = KeywordListsArchivePreviewReader { sourceURL in
+        try KeywordListsArchive.readPreviewPayload(from: sourceURL)
+    }
+}
+
+/// Serializes archive extraction and manifest reads away from MainActor. `ditto` and Foundation
+/// reads cannot be preempted once entered, so cancellation on either side of inspection is
+/// represented explicitly and a superseded payload is never returned as loaded.
+actor KeywordListsArchivePreviewService {
+    static let shared = KeywordListsArchivePreviewService()
+
+    private let reader: KeywordListsArchivePreviewReader
+
+    init(reader: KeywordListsArchivePreviewReader = .system) {
+        self.reader = reader
+    }
+
+    func loadPreview(
+        from sourceURL: URL,
+        requestID: UUID
+    ) throws -> KeywordListsArchivePreviewResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeInspection(requestID: requestID)
+        }
+
+        let didStartAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        guard !Task.isCancelled else {
+            return .cancelledBeforeInspection(requestID: requestID)
+        }
+
+        let payload = try reader.inspect(sourceURL)
+        guard !Task.isCancelled else {
+            return .cancelledAfterInspection(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                discoveredEntryCount: payload.entries.count
+            )
+        }
+
+        return .loaded(KeywordListsArchivePreviewSnapshot(
+            requestID: requestID,
+            sourceURL: sourceURL,
+            payload: payload
+        ))
+    }
+}
+
 /// Bundles every keyword list managed by `KeywordListsStore` into a single .zip
 /// for backup, migration, or sharing. Layout inside the archive:
 ///
@@ -45,12 +128,12 @@ enum KeywordListsArchive {
         let exportedAt: Date
     }
 
-    struct Manifest: Codable {
+    nonisolated struct Manifest: Codable {
         let schemaVersion: Int
         let exportedAt: Date
         let files: [File]
 
-        struct File: Codable {
+        nonisolated struct File: Codable {
             /// Relative path inside the archive (e.g. `quick/keywords.txt`).
             let path: String
             /// Logical list key, used by importers to route content even if we
@@ -60,7 +143,7 @@ enum KeywordListsArchive {
         }
     }
 
-    enum ArchiveError: LocalizedError {
+    nonisolated enum ArchiveError: LocalizedError {
         case dittoFailed(Int32)
         case manifestMissing
         case manifestDecodeFailed(String)
@@ -80,7 +163,7 @@ enum KeywordListsArchive {
         }
     }
 
-    static let currentSchemaVersion = 1
+    nonisolated static let currentSchemaVersion = 1
 
     /// Writes every list currently in the managed store to `destination`.
     /// Returns the number of files included in the archive.
@@ -137,6 +220,15 @@ enum KeywordListsArchive {
     /// Reads `source`'s manifest without importing anything, so the UI can
     /// render a per-list picker before the user commits.
     static func inspect(_ source: URL) throws -> ManifestPreview {
+        manifestPreview(from: try readPreviewPayload(from: source))
+    }
+
+    /// Blocking, transport-only half of archive inspection. This is nonisolated so the dedicated
+    /// preview actor can own extraction and manifest I/O without moving store/UI types off their
+    /// actor. Callers on MainActor convert the payload with `manifestPreview(from:)`.
+    nonisolated static func readPreviewPayload(
+        from source: URL
+    ) throws -> KeywordListsArchivePreviewPayload {
         let stagingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("klists-inspect-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: stagingRoot) }
@@ -145,15 +237,29 @@ enum KeywordListsArchive {
         let payloadRoot = resolvePayloadRoot(in: stagingRoot)
 
         let manifest = try readManifest(in: payloadRoot)
-        var previewEntries: [ManifestPreview.Entry] = []
-        for entry in manifest.files {
-            guard let key = resolveKey(forKind: entry.kind, path: entry.path) else { continue }
-            previewEntries.append(ManifestPreview.Entry(key: key, entryCount: entry.entryCount))
-        }
-        return ManifestPreview(
-            entries: previewEntries,
+        return KeywordListsArchivePreviewPayload(
+            entries: manifest.files.map {
+                KeywordListsArchivePreviewPayload.Entry(
+                    path: $0.path,
+                    kind: $0.kind,
+                    entryCount: $0.entryCount
+                )
+            },
             schemaVersion: manifest.schemaVersion,
             exportedAt: manifest.exportedAt
+        )
+    }
+
+    static func manifestPreview(
+        from payload: KeywordListsArchivePreviewPayload
+    ) -> ManifestPreview {
+        ManifestPreview(
+            entries: payload.entries.compactMap { entry in
+                guard let key = resolveKey(forKind: entry.kind, path: entry.path) else { return nil }
+                return ManifestPreview.Entry(key: key, entryCount: entry.entryCount)
+            },
+            schemaVersion: payload.schemaVersion,
+            exportedAt: payload.exportedAt
         )
     }
 
@@ -228,7 +334,7 @@ enum KeywordListsArchive {
         return try importSelected(from: source, choices: choices)
     }
 
-    private static func readManifest(in payloadRoot: URL) throws -> Manifest {
+    nonisolated private static func readManifest(in payloadRoot: URL) throws -> Manifest {
         let manifestURL = payloadRoot.appendingPathComponent("manifest.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path) else {
             throw ArchiveError.manifestMissing
@@ -321,7 +427,7 @@ enum KeywordListsArchive {
         return candidate
     }
 
-    private static func resolvePayloadRoot(in stagingRoot: URL) -> URL {
+    nonisolated private static func resolvePayloadRoot(in stagingRoot: URL) -> URL {
         // ditto's --keepParent wraps the source dir as the archive's top-level
         // entry. After unzip the staging root contains exactly that one folder.
         if let children = try? FileManager.default.contentsOfDirectory(
@@ -350,7 +456,7 @@ enum KeywordListsArchive {
         }
     }
 
-    private static func ditto(unzip source: URL, into destination: URL) throws {
+    nonisolated private static func ditto(unzip source: URL, into destination: URL) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = ["-x", "-k", source.path, destination.path]

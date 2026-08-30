@@ -102,6 +102,8 @@ nonisolated enum KeywordListsStoreStorageOverride {
 final class KeywordListsStore {
     static let shared = KeywordListsStore()
     nonisolated static let changedKeyUserInfo = "key"
+    nonisolated static let changedEntriesUserInfo = "entries"
+    nonisolated static let changedSourceIDUserInfo = "sourceID"
 
     /// Injectable so focused migration tests do not mutate launch UI state.
     static var migrationRecoveryNotices = MigrationRecoveryNoticeCenter.shared
@@ -238,8 +240,12 @@ final class KeywordListsStore {
     /// Publishes a write already committed by a serialized filesystem service.
     /// The service owns the blocking coordinated write; the main actor only updates
     /// observable state and delivers the same notification as `writeText`.
-    func recordExternalWrite(to key: KeywordListKey) {
-        notifyChanged(key)
+    func recordExternalWrite(
+        to key: KeywordListKey,
+        entries: [String]? = nil,
+        sourceID: UUID? = nil
+    ) {
+        notifyChanged(key, entries: entries, sourceID: sourceID)
     }
 
     /// Writes a list of entries one-per-line. Sanitizes whitespace and dedupes
@@ -258,9 +264,9 @@ final class KeywordListsStore {
         try writeText(joined, to: key)
     }
 
-    func delete(_ key: KeywordListKey) {
+    func delete(_ key: KeywordListKey, sourceID: UUID? = nil) {
         try? CloudCoordinatedIO.removeItem(at: url(for: key))
-        notifyChanged(key)
+        notifyChanged(key, sourceID: sourceID)
     }
 
     /// Convenience for editors that want to import a user-picked file directly.
@@ -487,12 +493,23 @@ final class KeywordListsStore {
         try CloudCoordinatedIO.ensureDirectory(url)
     }
 
-    private func notifyChanged(_ key: KeywordListKey) {
+    private func notifyChanged(
+        _ key: KeywordListKey,
+        entries: [String]? = nil,
+        sourceID: UUID? = nil
+    ) {
         bumpVersion()
+        var userInfo: [String: Any] = [Self.changedKeyUserInfo: key]
+        if let entries {
+            userInfo[Self.changedEntriesUserInfo] = entries
+        }
+        if let sourceID {
+            userInfo[Self.changedSourceIDUserInfo] = sourceID
+        }
         NotificationCenter.default.post(
             name: .keywordListChanged,
             object: self,
-            userInfo: [Self.changedKeyUserInfo: key]
+            userInfo: userInfo
         )
     }
 

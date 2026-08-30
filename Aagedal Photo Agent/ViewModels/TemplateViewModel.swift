@@ -30,17 +30,23 @@ final class TemplateViewModel {
 
     private let storage: TemplateStorageService
     private let importPreviewService: TemplateImportPreviewService
+    private let importCommitService: TemplateImportCommitService
     private let interpolator = PresetVariableInterpolator()
     @ObservationIgnored private var importPreviewTask: Task<Void, Never>?
     @ObservationIgnored private var importPreviewRequestID: UUID?
+    @ObservationIgnored private var importCommitTask: Task<Void, Never>?
+    @ObservationIgnored private var importCommitRequestID: UUID?
 
     init(
         storage: TemplateStorageService = TemplateStorageService(),
-        importPreviewService: TemplateImportPreviewService? = nil
+        importPreviewService: TemplateImportPreviewService? = nil,
+        importCommitService: TemplateImportCommitService? = nil
     ) {
         self.storage = storage
         self.importPreviewService = importPreviewService
             ?? TemplateImportPreviewService(storage: storage)
+        self.importCommitService = importCommitService
+            ?? TemplateImportCommitService(storage: storage)
     }
 
     func loadTemplates() {
@@ -248,19 +254,48 @@ final class TemplateViewModel {
 
     func commitPendingImport() {
         guard let preview = pendingImportPreview else { return }
-        do {
-            _ = try storage.importBundle(preview.bundle, overwriteByID: true)
-            loadTemplates()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        importCommitTask?.cancel()
+        let requestID = UUID()
+        importCommitRequestID = requestID
         pendingImportPreview = nil
+        errorMessage = nil
+
+        importCommitTask = Task { [weak self, importCommitService] in
+            do {
+                let result = try await importCommitService.commit(
+                    preview.bundle,
+                    sourceURL: preview.source,
+                    requestID: requestID
+                )
+                guard let self, self.importCommitRequestID == requestID else { return }
+                self.importCommitTask = nil
+                self.importCommitRequestID = nil
+                switch result {
+                case .committed(let commit):
+                    self.templates = commit.refreshedTemplates
+                    self.errorMessage = commit.inventoryRefreshFailureReason
+                case .cancelledBeforeCommit:
+                    break
+                }
+            } catch {
+                guard let self, self.importCommitRequestID == requestID else { return }
+                self.importCommitTask = nil
+                self.importCommitRequestID = nil
+                if let commitError = error as? TemplateImportCommitError {
+                    self.templates = commitError.refreshedTemplates
+                }
+                self.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func cancelPendingImport() {
         importPreviewTask?.cancel()
         importPreviewTask = nil
         importPreviewRequestID = nil
+        importCommitTask?.cancel()
+        importCommitTask = nil
+        importCommitRequestID = nil
         pendingImportPreview = nil
     }
 }

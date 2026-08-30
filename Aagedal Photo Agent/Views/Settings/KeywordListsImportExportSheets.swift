@@ -252,6 +252,8 @@ struct KeywordListsImportSheet: View {
     @State private var localCounts: [KeywordListKey: Int] = [:]
     @State private var loadError: String?
     @State private var feedback: String?
+    @State private var previewTask: Task<Void, Never>?
+    @State private var previewRequestID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -263,6 +265,7 @@ struct KeywordListsImportSheet: View {
         }
         .frame(minWidth: 500, idealWidth: 560, minHeight: 380, idealHeight: 500)
         .onAppear { loadPreview() }
+        .onDisappear { cancelPreview() }
     }
 
     /// Archive entries that fall within this sheet's scope.
@@ -399,18 +402,54 @@ struct KeywordListsImportSheet: View {
     // MARK: - Logic
 
     private func loadPreview() {
-        do {
-            let p = try KeywordListsArchive.inspect(source)
-            preview = p
-            // Only stage choices for in-scope entries; anything else stays absent
-            // from `choices` and is treated as skip by `importSelected`.
-            for entry in scopedEntries(p) {
-                localCounts[entry.key] = localEntryCount(for: entry.key)
-                choices[entry.key] = defaultMode(for: entry.key)
+        previewTask?.cancel()
+        let requestID = UUID()
+        previewRequestID = requestID
+        preview = nil
+        choices.removeAll()
+        localCounts.removeAll()
+        loadError = nil
+
+        previewTask = Task {
+            do {
+                let result = try await KeywordListsArchivePreviewService.shared.loadPreview(
+                    from: source,
+                    requestID: requestID
+                )
+                guard previewRequestID == requestID else { return }
+                previewTask = nil
+                previewRequestID = nil
+
+                switch result {
+                case .loaded(let snapshot):
+                    let loadedPreview = KeywordListsArchive.manifestPreview(from: snapshot.payload)
+                    preview = loadedPreview
+                    // Only stage choices for in-scope entries; anything else stays absent
+                    // from `choices` and is treated as skip by `importSelected`.
+                    for entry in scopedEntries(loadedPreview) {
+                        localCounts[entry.key] = localEntryCount(for: entry.key)
+                        choices[entry.key] = defaultMode(for: entry.key)
+                    }
+                case .cancelledBeforeInspection, .cancelledAfterInspection:
+                    break
+                }
+            } catch is CancellationError {
+                guard previewRequestID == requestID else { return }
+                previewTask = nil
+                previewRequestID = nil
+            } catch {
+                guard previewRequestID == requestID else { return }
+                previewTask = nil
+                previewRequestID = nil
+                loadError = error.localizedDescription
             }
-        } catch {
-            loadError = error.localizedDescription
         }
+    }
+
+    private func cancelPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        previewRequestID = nil
     }
 
     private func localEntryCount(for key: KeywordListKey) -> Int {

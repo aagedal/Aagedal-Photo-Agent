@@ -35,6 +35,8 @@ struct SettingsView: View {
 
     // Approved Keywords state
     @State private var approvedKeywordsErrorMessage: String?
+    @State private var approvedKeywordsImportTask: Task<Void, Never>?
+    @State private var approvedKeywordsImportRequestID: UUID?
     @State private var editingApprovedKeywords = false
 
     // Structured Keywords state
@@ -198,6 +200,9 @@ struct SettingsView: View {
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
             developTemplateViewModel.loadTemplates()
+        }
+        .onDisappear {
+            cancelApprovedKeywordsImport()
         }
         .onChange(of: settingsViewModel.requestedDestination) { _, _ in
             applyRequestedDestination()
@@ -1219,6 +1224,7 @@ struct SettingsView: View {
                 }
                 if listConfigured {
                     Button(role: .destructive) {
+                        cancelApprovedKeywordsImport()
                         service.clearList(for: field)
                         approvedKeywordsErrorMessage = nil
                     } label: {
@@ -1290,13 +1296,31 @@ struct SettingsView: View {
         panel.allowedContentTypes = [.plainText, .commaSeparatedText]
         panel.message = "Choose an approved keywords list (.txt or .csv)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try settingsViewModel.approvedLists.importListURL(url, for: .keywords)
-            approvedKeywordsErrorMessage = nil
-        } catch {
-            let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            approvedKeywordsErrorMessage = description
+        cancelApprovedKeywordsImport()
+        let requestID = UUID()
+        approvedKeywordsImportRequestID = requestID
+        approvedKeywordsErrorMessage = nil
+        approvedKeywordsImportTask = Task { @MainActor in
+            do {
+                try await settingsViewModel.approvedLists.importListURL(url, for: .keywords)
+                guard approvedKeywordsImportRequestID == requestID else { return }
+                approvedKeywordsErrorMessage = nil
+            } catch {
+                guard approvedKeywordsImportRequestID == requestID else { return }
+                let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                approvedKeywordsErrorMessage = description
+            }
+            guard approvedKeywordsImportRequestID == requestID else { return }
+            approvedKeywordsImportRequestID = nil
+            approvedKeywordsImportTask = nil
         }
+    }
+
+    private func cancelApprovedKeywordsImport() {
+        approvedKeywordsImportRequestID = nil
+        approvedKeywordsImportTask?.cancel()
+        approvedKeywordsImportTask = nil
+        settingsViewModel.approvedLists.cancelImport(for: .keywords)
     }
 
     // MARK: - Structured Keywords Section
