@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "KeywordListsArchive")
+nonisolated private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "KeywordListsArchive")
 
 /// Sendable archive facts produced by the blocking unzip/manifest inspection. Logical list-key
 /// resolution stays on MainActor because those keys are presentation/store types; the filesystem
@@ -83,6 +83,133 @@ actor KeywordListsArchivePreviewService {
             sourceURL: sourceURL,
             payload: payload
         ))
+    }
+}
+
+// MARK: - Import commit boundary
+
+nonisolated enum KeywordListsArchiveImportMode: Equatable, Sendable {
+    case replace
+    case append
+}
+
+/// A transport-only route from an archive manifest kind to one managed-list file. Keeping the
+/// actor request free of `KeywordListKey` lets the blocking extraction/read/write work remain
+/// outside the app's default MainActor isolation.
+nonisolated struct KeywordListsArchiveImportRoute: Equatable, Sendable {
+    let identifier: String
+    let kind: String
+    let destinationURL: URL
+    let mode: KeywordListsArchiveImportMode
+}
+
+nonisolated struct KeywordListsArchiveImportRequest: Equatable, Sendable {
+    let requestID: UUID
+    let sourceURL: URL
+    let routes: [KeywordListsArchiveImportRoute]
+}
+
+nonisolated struct KeywordListsArchiveImportCommit: Equatable, Sendable {
+    nonisolated struct Item: Equatable, Sendable {
+        let identifier: String
+        let destinationURL: URL
+        let entryCount: Int
+    }
+
+    let requestID: UUID
+    let sourceURL: URL
+    /// Every destination for which the coordinated atomic write returned successfully. These
+    /// files are durable even if a later list fails or task cancellation arrives in flight.
+    let items: [Item]
+}
+
+nonisolated struct KeywordListsArchiveImportFailure: LocalizedError, Equatable, Sendable {
+    let identifier: String?
+    let reason: String
+
+    var errorDescription: String? { reason }
+}
+
+/// Explicitly distinguishes work that never changed the store from cancellation/failure after
+/// one or more durable list commits. Callers must publish every item carried by a commit before
+/// deciding whether the originating view request is still current.
+nonisolated enum KeywordListsArchiveImportResult: Equatable, Sendable {
+    case committed(KeywordListsArchiveImportCommit)
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledBeforeCommit(requestID: UUID, sourceURL: URL, discoveredEntryCount: Int)
+    case cancelledAfterCommit(KeywordListsArchiveImportCommit)
+    case failedBeforeCommit(
+        requestID: UUID,
+        sourceURL: URL,
+        failure: KeywordListsArchiveImportFailure
+    )
+    case partiallyCommitted(
+        KeywordListsArchiveImportCommit,
+        failure: KeywordListsArchiveImportFailure
+    )
+
+    var durableCommit: KeywordListsArchiveImportCommit? {
+        switch self {
+        case .committed(let commit),
+             .cancelledAfterCommit(let commit),
+             .partiallyCommitted(let commit, _):
+            return commit
+        case .cancelledBeforeAccess, .cancelledBeforeCommit, .failedBeforeCommit:
+            return nil
+        }
+    }
+}
+
+nonisolated struct KeywordListsArchiveImporter: Sendable {
+    let perform: @Sendable (KeywordListsArchiveImportRequest) -> KeywordListsArchiveImportResult
+
+    static let system = KeywordListsArchiveImporter { request in
+        KeywordListsArchive.performImport(request)
+    }
+}
+
+/// Serializes complete archive imports away from MainActor. The unzip subprocess and coordinated
+/// writes cannot be preempted once entered. Cancellation is therefore observed only at stable
+/// boundaries, and a result never describes an already-written destination as merely cancelled.
+actor KeywordListsArchiveImportService {
+    static let shared = KeywordListsArchiveImportService()
+
+    private let importer: KeywordListsArchiveImporter
+
+    init(importer: KeywordListsArchiveImporter = .system) {
+        self.importer = importer
+    }
+
+    func importArchive(
+        _ request: KeywordListsArchiveImportRequest
+    ) -> KeywordListsArchiveImportResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeAccess(requestID: request.requestID)
+        }
+
+        let didStartAccessing = request.sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                request.sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        guard !Task.isCancelled else {
+            return .cancelledBeforeAccess(requestID: request.requestID)
+        }
+
+        let result = importer.perform(request)
+        guard Task.isCancelled, case .committed(let commit) = result else {
+            return result
+        }
+        guard !commit.items.isEmpty else {
+            return .cancelledBeforeCommit(
+                requestID: request.requestID,
+                sourceURL: request.sourceURL,
+                discoveredEntryCount: 0
+            )
+        }
+        return .cancelledAfterCommit(commit)
     }
 }
 
@@ -263,6 +390,182 @@ enum KeywordListsArchive {
         )
     }
 
+    /// Captures the MainActor-owned logical choices as a transport-only request. The actor can
+    /// subsequently read/merge/write using only stable identifiers and destination URLs.
+    static func importRequest(
+        from source: URL,
+        choices: [KeywordListKey: ImportMode],
+        requestID: UUID
+    ) -> KeywordListsArchiveImportRequest {
+        let store = KeywordListsStore.shared
+        let routes = choices.compactMap { key, mode -> KeywordListsArchiveImportRoute? in
+            let transportMode: KeywordListsArchiveImportMode
+            switch mode {
+            case .replace:
+                transportMode = .replace
+            case .append:
+                transportMode = .append
+            case .skip:
+                return nil
+            }
+            return KeywordListsArchiveImportRoute(
+                identifier: key.relativePath,
+                kind: kindString(for: key),
+                destinationURL: store.url(for: key),
+                mode: transportMode
+            )
+        }
+        return KeywordListsArchiveImportRequest(
+            requestID: requestID,
+            sourceURL: source,
+            routes: routes
+        )
+    }
+
+    /// Blocking transport half of archive import. Every successful coordinated write is appended
+    /// to the immutable commit immediately, so failure or cancellation on a later manifest entry
+    /// reports durable partial success instead of presenting the whole import as rolled back.
+    nonisolated static func performImport(
+        _ request: KeywordListsArchiveImportRequest
+    ) -> KeywordListsArchiveImportResult {
+        let stagingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("klists-import-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stagingRoot) }
+
+        let manifest: Manifest
+        let payloadRoot: URL
+        do {
+            try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+            try ditto(unzip: request.sourceURL, into: stagingRoot)
+            payloadRoot = resolvePayloadRoot(in: stagingRoot)
+            manifest = try readManifest(in: payloadRoot)
+        } catch {
+            return .failedBeforeCommit(
+                requestID: request.requestID,
+                sourceURL: request.sourceURL,
+                failure: KeywordListsArchiveImportFailure(
+                    identifier: nil,
+                    reason: error.localizedDescription
+                )
+            )
+        }
+
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: request.requestID,
+                sourceURL: request.sourceURL,
+                discoveredEntryCount: manifest.files.count
+            )
+        }
+
+        let routesByKind = Dictionary(
+            request.routes.map { ($0.kind, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var committedItems: [KeywordListsArchiveImportCommit.Item] = []
+
+        func commitSnapshot() -> KeywordListsArchiveImportCommit {
+            KeywordListsArchiveImportCommit(
+                requestID: request.requestID,
+                sourceURL: request.sourceURL,
+                items: committedItems
+            )
+        }
+
+        for entry in manifest.files {
+            guard !Task.isCancelled else {
+                if committedItems.isEmpty {
+                    return .cancelledBeforeCommit(
+                        requestID: request.requestID,
+                        sourceURL: request.sourceURL,
+                        discoveredEntryCount: manifest.files.count
+                    )
+                }
+                return .cancelledAfterCommit(commitSnapshot())
+            }
+            guard let route = routesByKind[entry.kind] else { continue }
+            guard let fileURL = safeEntryURL(for: entry.path, in: payloadRoot) else {
+                logger.warning("Skipping keyword-list import entry with unsafe path: \(entry.path, privacy: .private(mask: .hash))")
+                continue
+            }
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
+
+            let importedText = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+            let committedText: String
+            let committedEntryCount: Int
+            if entry.kind == "structured" || entry.kind == "structuredPersonShown" {
+                // Append has historically meant replace for structured trees.
+                committedText = importedText
+                committedEntryCount = entry.entryCount
+            } else {
+                let importedEntries = importedText
+                    .components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                let finalEntries: [String]
+                switch route.mode {
+                case .replace:
+                    finalEntries = sanitizeFlatEntries(importedEntries)
+                case .append:
+                    let existingEntries: [String]
+                    if CloudCoordinatedIO.itemExists(at: route.destinationURL),
+                       let data = try? CloudCoordinatedIO.readData(at: route.destinationURL) {
+                        existingEntries = ApprovedListParser.parseString(
+                            String(decoding: data, as: UTF8.self),
+                            csv: false
+                        )
+                    } else {
+                        existingEntries = []
+                    }
+                    var seen = Set(existingEntries.map { $0.lowercased() })
+                    var combined = existingEntries
+                    for importedEntry in importedEntries
+                    where seen.insert(importedEntry.lowercased()).inserted {
+                        combined.append(importedEntry)
+                    }
+                    finalEntries = sanitizeFlatEntries(combined)
+                }
+                committedText = finalEntries.joined(separator: "\n")
+                    + (finalEntries.isEmpty ? "" : "\n")
+                committedEntryCount = finalEntries.count
+            }
+
+            do {
+                try CloudCoordinatedIO.writeText(committedText, to: route.destinationURL)
+            } catch {
+                let failure = KeywordListsArchiveImportFailure(
+                    identifier: route.identifier,
+                    reason: error.localizedDescription
+                )
+                if committedItems.isEmpty {
+                    return .failedBeforeCommit(
+                        requestID: request.requestID,
+                        sourceURL: request.sourceURL,
+                        failure: failure
+                    )
+                }
+                return .partiallyCommitted(commitSnapshot(), failure: failure)
+            }
+            committedItems.append(KeywordListsArchiveImportCommit.Item(
+                identifier: route.identifier,
+                destinationURL: route.destinationURL,
+                entryCount: committedEntryCount
+            ))
+        }
+
+        let commit = commitSnapshot()
+        if Task.isCancelled {
+            return committedItems.isEmpty
+                ? .cancelledBeforeCommit(
+                    requestID: request.requestID,
+                    sourceURL: request.sourceURL,
+                    discoveredEntryCount: manifest.files.count
+                )
+                : .cancelledAfterCommit(commit)
+        }
+        return .committed(commit)
+    }
+
     /// Reads `source` and applies a per-list policy. Lists with `.skip` (or
     /// missing from `choices`) are left untouched. Returns the number of lists
     /// actually written.
@@ -413,7 +716,7 @@ enum KeywordListsArchive {
     /// — or a symlink planted inside the archive — would otherwise make us read an
     /// arbitrary file and copy it into one of the user's keyword lists. Mirrors the
     /// containment guard in `MetadataSidecarService`.
-    private static func safeEntryURL(for path: String, in payloadRoot: URL) -> URL? {
+    nonisolated private static func safeEntryURL(for path: String, in payloadRoot: URL) -> URL? {
         guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("..") else { return nil }
 
         let candidate = payloadRoot.appendingPathComponent(path)
@@ -425,6 +728,19 @@ enum KeywordListsArchive {
         let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
         guard resolved.hasPrefix(rootPrefix) else { return nil }
         return candidate
+    }
+
+    nonisolated private static func sanitizeFlatEntries(_ entries: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for entry in entries {
+            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if seen.insert(trimmed).inserted {
+                ordered.append(trimmed)
+            }
+        }
+        return ordered
     }
 
     nonisolated private static func resolvePayloadRoot(in stagingRoot: URL) -> URL {

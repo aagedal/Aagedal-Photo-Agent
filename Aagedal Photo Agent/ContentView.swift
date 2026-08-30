@@ -827,16 +827,19 @@ struct ContentView: View {
                     switch mainViewMode.templateCommandTarget {
                     case .metadata:
                         performAfterCaptionFlush {
-                            templateViewModel.loadTemplates()
-                            if let template = templateViewModel.template(forSlot: slot) {
+                            templateViewModel.loadTemplates { templates in
+                                guard let template = templates.first(where: { $0.shortcutSlot == slot }) else {
+                                    return
+                                }
                                 applyTemplate(template)
                                 restoreGridFocus()
                             }
                         }
                     case .develop:
-                        developTemplateViewModel.loadTemplates()
-                        if let template = developTemplateViewModel.template(forSlot: slot) {
-                            commandRouter.send(.applyDevelopTemplate(template))
+                        developTemplateViewModel.loadTemplates { templates in
+                            if let template = templates.first(where: { $0.shortcutSlot == slot }) {
+                                commandRouter.send(.applyDevelopTemplate(template))
+                            }
                         }
                     }
                 case .writeAllPendingMetadata:
@@ -2461,10 +2464,11 @@ struct ContentView: View {
                     saveTemplateName = ""
                 }
                 Button("Save") {
-                    templateViewModel.createTemplateFromMetadata(
-                        metadataViewModel.editingMetadata,
-                        name: saveTemplateName
-                    )
+                    let metadata = metadataViewModel.editingMetadata
+                    let name = saveTemplateName
+                    Task {
+                        await templateViewModel.createTemplateFromMetadata(metadata, name: name)
+                    }
                     isShowingSaveTemplateName = false
                     saveTemplateName = ""
                 }
@@ -2497,11 +2501,16 @@ struct ContentView: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 Button("Save") {
-                    developTemplateViewModel.createTemplate(
-                        from: metadataViewModel.editingMetadata.cameraRaw,
-                        name: saveDevelopTemplateName.trimmingCharacters(in: .whitespacesAndNewlines),
-                        includesCrop: saveDevelopTemplateIncludesCrop
-                    )
+                    let settings = metadataViewModel.editingMetadata.cameraRaw
+                    let name = saveDevelopTemplateName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let includesCrop = saveDevelopTemplateIncludesCrop
+                    Task {
+                        _ = await developTemplateViewModel.createTemplate(
+                            from: settings,
+                            name: name,
+                            includesCrop: includesCrop
+                        )
+                    }
                     isShowingSaveDevelopTemplateName = false
                     saveDevelopTemplateName = ""
                     saveDevelopTemplateIncludesCrop = true

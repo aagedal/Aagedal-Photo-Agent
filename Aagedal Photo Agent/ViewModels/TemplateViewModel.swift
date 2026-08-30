@@ -28,7 +28,7 @@ final class TemplateViewModel {
     var errorMessage: String?
     private(set) var saveError: TemplateSaveError?
 
-    private let storage: TemplateStorageService
+    private let crudService: TemplateCRUDService<MetadataTemplate>
     private let importPreviewService: TemplateImportPreviewService
     private let importCommitService: TemplateImportCommitService
     private let interpolator = PresetVariableInterpolator()
@@ -36,60 +36,135 @@ final class TemplateViewModel {
     @ObservationIgnored private var importPreviewRequestID: UUID?
     @ObservationIgnored private var importCommitTask: Task<Void, Never>?
     @ObservationIgnored private var importCommitRequestID: UUID?
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var loadRequestID: UUID?
+    @ObservationIgnored private var mutationTask: Task<TemplateMutationOperationResult<MetadataTemplate>, Error>?
+    @ObservationIgnored private var mutationRequestID: UUID?
+    @ObservationIgnored private var exportTask: Task<Void, Never>?
+    @ObservationIgnored private var exportRequestID: UUID?
 
     init(
         storage: TemplateStorageService = TemplateStorageService(),
+        crudService: TemplateCRUDService<MetadataTemplate>? = nil,
         importPreviewService: TemplateImportPreviewService? = nil,
         importCommitService: TemplateImportCommitService? = nil
     ) {
-        self.storage = storage
+        self.crudService = crudService
+            ?? TemplateCRUDService(access: .storage(storage))
         self.importPreviewService = importPreviewService
             ?? TemplateImportPreviewService(storage: storage)
         self.importCommitService = importCommitService
             ?? TemplateImportCommitService(storage: storage)
     }
 
-    func loadTemplates() {
-        do {
-            templates = try storage.loadAll()
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
+    func loadTemplates(onLoaded: (([MetadataTemplate]) -> Void)? = nil) {
+        loadTask?.cancel()
+        let requestID = UUID()
+        loadRequestID = requestID
+        loadTask = Task { [weak self, crudService] in
+            do {
+                let result = try await crudService.load(requestID: requestID)
+                guard let self,
+                      self.loadRequestID == requestID,
+                      !Task.isCancelled else { return }
+                self.loadTask = nil
+                self.loadRequestID = nil
+                guard case .loaded(let snapshot) = result else { return }
+                self.templates = snapshot.templates
+                self.errorMessage = nil
+                onLoaded?(snapshot.templates)
+            } catch {
+                guard let self,
+                      self.loadRequestID == requestID,
+                      !Task.isCancelled else { return }
+                self.loadTask = nil
+                self.loadRequestID = nil
+                self.errorMessage = error.localizedDescription
+            }
         }
     }
 
     @discardableResult
-    func saveTemplate(_ template: MetadataTemplate) -> Result<MetadataTemplate, TemplateSaveError> {
+    func saveTemplate(_ template: MetadataTemplate) async -> Result<MetadataTemplate, TemplateSaveError> {
         saveError = nil
+        invalidatePendingLoad()
+        mutationTask?.cancel()
+        let requestID = UUID()
+        mutationRequestID = requestID
+        let task = Task { [crudService] in
+            try await crudService.save(template, requestID: requestID)
+        }
+        mutationTask = task
         do {
-            // If this template claims a shortcut slot, clear it from any other template
-            if let slot = template.shortcutSlot {
-                for existing in templates where existing.shortcutSlot == slot && existing.id != template.id {
-                    var cleared = existing
-                    cleared.shortcutSlot = nil
-                    try storage.save(cleared)
-                }
+            let result = try await task.value
+            guard mutationRequestID == requestID else {
+                return .failure(supersededSaveError(kind: .metadata))
             }
-            try storage.save(template)
-            loadTemplates()
+            mutationTask = nil
+            mutationRequestID = nil
+            guard case .committed(let commit) = result,
+                  commit.requestedTemplateCommitted else {
+                return recordSaveFailure(reason: "Save was cancelled.", kind: .metadata)
+            }
+            templates = commit.refreshedTemplates
+            if let reason = commit.inventoryRefreshFailureReason {
+                errorMessage = "Template was saved, but the list could not be refreshed: \(reason)"
+            } else {
+                errorMessage = nil
+            }
             return .success(template)
+        } catch let error as TemplateMutationError<MetadataTemplate> {
+            guard mutationRequestID == requestID else {
+                return .failure(supersededSaveError(kind: .metadata))
+            }
+            mutationTask = nil
+            mutationRequestID = nil
+            if !error.durableTemplateIDs.isEmpty {
+                templates = error.refreshedTemplates
+            }
+            return recordSaveFailure(reason: error.reason, kind: .metadata)
         } catch {
-            let failure = TemplateSaveError(
-                templateKind: .metadata,
-                reason: error.localizedDescription
-            )
-            saveError = failure
-            errorMessage = failure.localizedDescription
-            return .failure(failure)
+            guard mutationRequestID == requestID else {
+                return .failure(supersededSaveError(kind: .metadata))
+            }
+            mutationTask = nil
+            mutationRequestID = nil
+            return recordSaveFailure(reason: error.localizedDescription, kind: .metadata)
         }
     }
 
     func deleteTemplate(_ template: MetadataTemplate) {
-        do {
-            try storage.delete(template)
-            loadTemplates()
-        } catch {
-            errorMessage = error.localizedDescription
+        invalidatePendingLoad()
+        mutationTask?.cancel()
+        let requestID = UUID()
+        mutationRequestID = requestID
+        let task = Task { [crudService] in
+            try await crudService.delete(template, requestID: requestID)
+        }
+        mutationTask = task
+        Task { [weak self] in
+            do {
+                let result = try await task.value
+                guard let self, self.mutationRequestID == requestID else { return }
+                self.mutationTask = nil
+                self.mutationRequestID = nil
+                guard case .committed(let commit) = result else { return }
+                self.templates = commit.refreshedTemplates
+                self.errorMessage = commit.inventoryRefreshFailureReason
+            } catch let error as TemplateMutationError<MetadataTemplate> {
+                guard let self, self.mutationRequestID == requestID else { return }
+                self.mutationTask = nil
+                self.mutationRequestID = nil
+                if !error.durableTemplateIDs.isEmpty {
+                    self.templates = error.refreshedTemplates
+                }
+                self.errorMessage = error.reason
+            } catch {
+                guard let self, self.mutationRequestID == requestID else { return }
+                self.mutationTask = nil
+                self.mutationRequestID = nil
+                self.errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -101,15 +176,15 @@ final class TemplateViewModel {
     }
 
     @discardableResult
-    func saveEditingTemplate() -> Result<MetadataTemplate, TemplateSaveError> {
-        finishEditingIfSaved(saveTemplate(editingTemplate))
+    func saveEditingTemplate() async -> Result<MetadataTemplate, TemplateSaveError> {
+        finishEditingIfSaved(await saveTemplate(editingTemplate))
     }
 
     @discardableResult
-    func saveEditingTemplateAsNew() -> Result<MetadataTemplate, TemplateSaveError> {
+    func saveEditingTemplateAsNew() async -> Result<MetadataTemplate, TemplateSaveError> {
         var copy = editingTemplate
         copy.id = UUID()
-        let result = saveTemplate(copy)
+        let result = await saveTemplate(copy)
         if case .success = result {
             editingTemplate = copy
         }
@@ -134,7 +209,7 @@ final class TemplateViewModel {
     }
 
     /// Creates a template from the current metadata state.
-    func createTemplateFromMetadata(_ metadata: IPTCMetadata, name: String) {
+    func createTemplateFromMetadata(_ metadata: IPTCMetadata, name: String) async {
         var template = MetadataTemplate(name: name, templateType: .full)
         var fields: [TemplateField] = []
 
@@ -179,7 +254,7 @@ final class TemplateViewModel {
         if let v = metadata.source, !v.isEmpty { fields.append(TemplateField(fieldKey: "source", templateValue: v)) }
 
         template.fields = fields
-        saveTemplate(template)
+        _ = await saveTemplate(template)
     }
 
     /// Returns the template assigned to the given shortcut slot (1-9), if any.
@@ -210,11 +285,48 @@ final class TemplateViewModel {
     var pendingImportPreview: TemplateImportPreview?
 
     func exportAll(to destination: URL) {
-        do {
-            try storage.exportAll(to: destination)
-        } catch {
-            errorMessage = error.localizedDescription
+        exportTask?.cancel()
+        let requestID = UUID()
+        exportRequestID = requestID
+        exportTask = Task { [weak self, crudService] in
+            do {
+                let result = try await crudService.exportAll(to: destination, requestID: requestID)
+                guard let self,
+                      self.exportRequestID == requestID,
+                      !Task.isCancelled else { return }
+                self.exportTask = nil
+                self.exportRequestID = nil
+                guard case .exported = result else { return }
+                self.errorMessage = nil
+            } catch {
+                guard let self,
+                      self.exportRequestID == requestID,
+                      !Task.isCancelled else { return }
+                self.exportTask = nil
+                self.exportRequestID = nil
+                self.errorMessage = error.localizedDescription
+            }
         }
+    }
+
+    private func recordSaveFailure(
+        reason: String,
+        kind: TemplateSaveError.TemplateKind
+    ) -> Result<MetadataTemplate, TemplateSaveError> {
+        let failure = TemplateSaveError(templateKind: kind, reason: reason)
+        saveError = failure
+        errorMessage = failure.localizedDescription
+        return .failure(failure)
+    }
+
+    private func supersededSaveError(kind: TemplateSaveError.TemplateKind) -> TemplateSaveError {
+        TemplateSaveError(templateKind: kind, reason: "A newer template operation replaced this save.")
+    }
+
+    private func invalidatePendingLoad() {
+        loadTask?.cancel()
+        loadTask = nil
+        loadRequestID = nil
     }
 
     func preparePreview(from source: URL) {

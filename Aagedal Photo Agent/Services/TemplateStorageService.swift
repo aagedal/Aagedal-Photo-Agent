@@ -54,7 +54,8 @@ nonisolated struct TemplateStorageService: Sendable {
 
     // MARK: - Export / Import
 
-    func exportAll(to destination: URL) throws {
+    @discardableResult
+    func exportAll(to destination: URL) throws -> Int {
         let templates = try loadAll()
         let bundle = TemplateBundle(templates: templates)
         let encoder = JSONEncoder()
@@ -62,6 +63,7 @@ nonisolated struct TemplateStorageService: Sendable {
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(bundle)
         try data.write(to: destination, options: .atomic)
+        return templates.count
     }
 
     func loadBundle(from source: URL) throws -> TemplateBundle {

@@ -216,7 +216,9 @@ struct EditWorkspaceView: View {
 
     @State private var sourceImage: NSImage?
     @State private var sourceCIImage: CIImage?
-    @State private var isDraggingEditSlider = false
+    /// Owns slider-interaction lifecycle, commit intent, and throttled CPU-scope publication.
+    /// Pixel rendering, notifications, and durable writes remain injected at this view boundary.
+    @State private var interactiveRender = DevelopInteractiveRenderCoordinator()
     @State private var previewCIImage: CIImage?
     @State private var previewRender = DevelopPreviewRenderCoordinator()
     /// Owns the Develop workspace's Clean Feed mirror, crop-freeze policy, and publication.
@@ -280,8 +282,6 @@ struct EditWorkspaceView: View {
     @State private var colorLUTImportTask: Task<Void, Never>?
     @State private var colorLUTImportRequestID: UUID?
     @State private var colorTransformError: String?
-    @State private var scopeThrottleTask: Task<Void, Never>?
-    @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
     /// Owns the paired live/committed zoom and pan values used by scroll, magnify, keyboard,
     /// and drag input. Preview geometry and Metal publication remain at this view boundary.
     @State private var previewNavigation = DevelopPreviewNavigationCoordinator()
@@ -843,7 +843,7 @@ struct EditWorkspaceView: View {
             installLoadedDevelopVersionIfReady()
             renderPreview()
         }
-        .onChange(of: isDraggingEditSlider) { wasDragging, isDragging in
+        .onChange(of: interactiveRender.isSliderInteractionActive) { wasDragging, isDragging in
             NotificationCenter.default.post(
                 name: .editSliderDragStateChanged,
                 object: nil,
@@ -861,8 +861,6 @@ struct EditWorkspaceView: View {
                 }
                 metalCoordinator.stopContinuousRendering()
                 cleanFeedPublication.setContinuousRendering(false, controller: cleanFeedController)
-                scopeThrottleTask?.cancel()
-                scopeThrottleTask = nil
                 renderPreview()
             }
         }
@@ -1189,7 +1187,7 @@ struct EditWorkspaceView: View {
                                         inverted: masks[maskIdx].inverted,
                                         onStart: {
                                             isDraggingMask = true
-                                            isDraggingEditSlider = true
+                                            interactiveRender.setSliderInteraction(active: true)
                                         },
                                         onChange: { newGeometry in
                                             // The overlay drags in the display frame; store sensor-frame.
@@ -1209,7 +1207,7 @@ struct EditWorkspaceView: View {
                                                 dragMaskGeometry = nil
                                             }
                                             isDraggingMask = false
-                                            isDraggingEditSlider = false
+                                            interactiveRender.setSliderInteraction(active: false)
                                             commitEditAdjustments()
                                         }
                                     )
@@ -1233,7 +1231,9 @@ struct EditWorkspaceView: View {
                                         assetAspect: assetAspect(forWatermarkAssetID: layers[wmIdx].libraryAssetID),
                                         imageSize: watermarkImageSize,
                                         contentRect: watermarkCropContentRect(in: geometry.size, imageSize: imgSize),
-                                        onStart: { isDraggingEditSlider = true },
+                                        onStart: {
+                                            interactiveRender.setSliderInteraction(active: true)
+                                        },
                                         onChange: { newGeometry in
                                             let sensorGeometry = watermarkGeometryForSensor(newGeometry, includeStraighten: false)
                                             dragWatermarkGeometry = sensorGeometry
@@ -1250,7 +1250,7 @@ struct EditWorkspaceView: View {
                                                 }
                                                 dragWatermarkGeometry = nil
                                             }
-                                            isDraggingEditSlider = false
+                                            interactiveRender.setSliderInteraction(active: false)
                                             commitEditAdjustments()
                                         }
                                     )
@@ -1331,7 +1331,7 @@ struct EditWorkspaceView: View {
                                     inverted: masks[maskIdx].inverted,
                                     onStart: {
                                         isDraggingMask = true
-                                        isDraggingEditSlider = true
+                                        interactiveRender.setSliderInteraction(active: true)
                                     },
                                     onChange: { newGeometry in
                                         // The overlay drags in the display frame; store sensor-frame.
@@ -1354,7 +1354,7 @@ struct EditWorkspaceView: View {
                                             dragMaskGeometry = nil
                                         }
                                         isDraggingMask = false
-                                        isDraggingEditSlider = false
+                                        interactiveRender.setSliderInteraction(active: false)
                                         commitEditAdjustments()
                                     }
                                 )
@@ -1374,7 +1374,9 @@ struct EditWorkspaceView: View {
                                     assetAspect: assetAspect(forWatermarkAssetID: layers[wmIdx].libraryAssetID),
                                     imageSize: imgSize,
                                     contentRect: nil,
-                                    onStart: { isDraggingEditSlider = true },
+                                    onStart: {
+                                        interactiveRender.setSliderInteraction(active: true)
+                                    },
                                     onChange: { newGeometry in
                                         let sensorGeometry = watermarkGeometryForSensor(newGeometry)
                                         dragWatermarkGeometry = sensorGeometry
@@ -1391,7 +1393,7 @@ struct EditWorkspaceView: View {
                                             }
                                             dragWatermarkGeometry = nil
                                         }
-                                        isDraggingEditSlider = false
+                                        interactiveRender.setSliderInteraction(active: false)
                                         commitEditAdjustments()
                                     }
                                 )
@@ -2129,7 +2131,7 @@ struct EditWorkspaceView: View {
                 range: -45...45,
                 step: 0.01,
                 onEditingChanged: { editing in
-                    isDraggingEditSlider = editing
+                    interactiveRender.setSliderInteraction(active: editing)
                     if !editing {
                         commitEditAdjustments()
                     }
@@ -2697,8 +2699,7 @@ struct EditWorkspaceView: View {
         metalCoordinator.stopContinuousRendering()
         scopeViewModel.metalScopeCoordinator?.stopContinuousRendering()
         scopeViewModel.clearMetal()
-        scopeThrottleTask?.cancel()
-        scopeThrottleTask = nil
+        interactiveRender.endWorkspace()
         if let monitor = keyEventMonitor {
             NSEvent.removeMonitor(monitor)
             keyEventMonitor = nil
@@ -2765,6 +2766,7 @@ struct EditWorkspaceView: View {
     }
 
     private func handleEditWorkspaceAppear() {
+        interactiveRender.beginWorkspace()
         exportSession.beginWorkspaceSession()
         ensureSingleSelection()
         if metalPipeline == nil {
@@ -2883,6 +2885,7 @@ struct EditWorkspaceView: View {
             orientation: selectedImageURL == nil ? nil : selectedImageOrientation
         )
         previewRender.beginImageSession()
+        interactiveRender.beginImageSession()
         whiteBalanceSession.beginImageSession(selectedImageURL)
         sourceImage = nil
         sourceCIImage = nil
@@ -3565,7 +3568,7 @@ struct EditWorkspaceView: View {
         // During drag: Metal update already handled by EditSlider.onDragValueChanged
         // (direct callback that bypasses SwiftUI body re-evaluation delay).
         // Only handle scope updates here.
-        if isDraggingEditSlider {
+        if interactiveRender.isSliderInteractionActive {
             let elapsed = ContinuousClock.now - renderStart
             editLog.debug("renderPreview: drag path (\(elapsed))")
             // Metal scope renders automatically via continuous MTKView — skip CPU scope
@@ -3841,21 +3844,7 @@ struct EditWorkspaceView: View {
     }
 
     private func updateScopeDuringDrag() {
-        let now = ContinuousClock.now
-        let interval = Duration.milliseconds(100)
-        if now - lastScopeUpdateTime >= interval {
-            lastScopeUpdateTime = now
-            performScopeUpdate()
-        } else {
-            scopeThrottleTask?.cancel()
-            let remaining = interval - (now - lastScopeUpdateTime)
-            scopeThrottleTask = Task {
-                try? await Task.sleep(for: remaining)
-                guard !Task.isCancelled else { return }
-                lastScopeUpdateTime = .now
-                performScopeUpdate()
-            }
-        }
+        performScopeUpdate()
     }
 
     private func performScopeUpdate() {
@@ -3871,33 +3860,41 @@ struct EditWorkspaceView: View {
         let hdr = isHDREnabled
         let orientation = selectedImageOrientation
 
-        let maxDim: CGFloat = 360
-        let extent = sourceCIImage.extent
-        let scale = min(maxDim / extent.width, maxDim / extent.height, 1.0)
-        let small = sourceCIImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let filtered = CameraRawApproximation.apply(to: small, settings: settings, exifOrientation: orientation)
-        let scopeSource = CameraRawApproximation.applyCrop(
-            to: filtered, originalExtent: small.extent,
-            settings: settings, exifOrientation: orientation
-        )
-
-        scopeThrottleTask?.cancel()
-        scopeThrottleTask = Task {
-            let cgImage = await Task.detached(priority: .utility) {
-                CameraRawApproximation.ciContext.createCGImage(
-                    scopeSource,
-                    from: scopeSource.extent,
-                    format: .RGBAh,
-                    colorSpace: CameraRawApproximation.workingColorSpace
+        interactiveRender.requestScopePublication(
+            operation: {
+                let maxDim: CGFloat = 360
+                let extent = sourceCIImage.extent
+                let scale = min(maxDim / extent.width, maxDim / extent.height, 1.0)
+                let small = sourceCIImage.transformed(
+                    by: CGAffineTransform(scaleX: scale, y: scale)
                 )
-            }.value
-            guard !Task.isCancelled, let cgImage else { return }
-            NotificationCenter.default.post(
-                name: .scopeSourceImageDidChange,
-                object: nil,
-                userInfo: ["cgImage": cgImage, "isHDR": hdr]
-            )
-        }
+                let filtered = CameraRawApproximation.apply(
+                    to: small,
+                    settings: settings,
+                    exifOrientation: orientation
+                )
+                let scopeSource = CameraRawApproximation.applyCrop(
+                    to: filtered,
+                    originalExtent: small.extent,
+                    settings: settings,
+                    exifOrientation: orientation
+                )
+                let cgImage = await Task.detached(priority: .utility) {
+                    CameraRawApproximation.ciContext.createCGImage(
+                        scopeSource,
+                        from: scopeSource.extent,
+                        format: .RGBAh,
+                        colorSpace: CameraRawApproximation.workingColorSpace
+                    )
+                }.value
+                guard let cgImage else { return nil }
+                return DevelopInteractiveRenderCoordinator.ScopeOutput(
+                    image: cgImage,
+                    isHDR: hdr
+                )
+            },
+            publisher: publishDevelopPreviewToScope
+        )
     }
 
     private func commitEditAdjustments() {
@@ -4385,7 +4382,7 @@ struct EditWorkspaceView: View {
             formatter: { "\(Int($0.rounded()))" },
             displayValueTransform: { [self] in kelvinValue(forNormalizedLogScale: $0) },
             onEditingChanged: { editing in
-                isDraggingEditSlider = editing
+                interactiveRender.setSliderInteraction(active: editing)
                 if !editing {
                     commitEditAdjustments()
                 }
@@ -4584,9 +4581,9 @@ struct EditWorkspaceView: View {
                 gradientColors: gradientColors,
                 formatter: formatter,
                 onEditingChanged: { editing in
-                    isDraggingEditSlider = editing
+                    let persistenceIntent = interactiveRender.setSliderInteraction(active: editing)
                     onSliderEditingChanged?(editing)
-                    if !editing {
+                    if persistenceIntent == .commit {
                         commitEditAdjustments()
                     }
                 },
@@ -4774,7 +4771,7 @@ struct EditWorkspaceView: View {
                     }
                 },
                 onEditingChanged: { editing in
-                    isDraggingEditSlider = editing
+                    interactiveRender.setSliderInteraction(active: editing)
                     if !editing {
                         commitEditAdjustments()
                     }
@@ -4798,7 +4795,7 @@ struct EditWorkspaceView: View {
             HSLAdjustmentView(
                 adjustments: hslAdjustmentsBinding,
                 onEditingChanged: { editing in
-                    isDraggingEditSlider = editing
+                    interactiveRender.setSliderInteraction(active: editing)
                 },
                 onDragChanged: { adjustments in
                     if let pipeline = metalPipeline, pipeline.hasSourceTexture {

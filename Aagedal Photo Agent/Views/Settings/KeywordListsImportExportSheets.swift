@@ -254,6 +254,8 @@ struct KeywordListsImportSheet: View {
     @State private var feedback: String?
     @State private var previewTask: Task<Void, Never>?
     @State private var previewRequestID: UUID?
+    @State private var importTask: Task<Void, Never>?
+    @State private var importRequestID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -265,7 +267,10 @@ struct KeywordListsImportSheet: View {
         }
         .frame(minWidth: 500, idealWidth: 560, minHeight: 380, idealHeight: 500)
         .onAppear { loadPreview() }
-        .onDisappear { cancelPreview() }
+        .onDisappear {
+            cancelPreview()
+            cancelImport()
+        }
     }
 
     /// Archive entries that fall within this sheet's scope.
@@ -386,7 +391,7 @@ struct KeywordListsImportSheet: View {
             Button("Import") { runImport() }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(!canImport)
+                .disabled(!canImport || importTask != nil)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -425,7 +430,7 @@ struct KeywordListsImportSheet: View {
                     let loadedPreview = KeywordListsArchive.manifestPreview(from: snapshot.payload)
                     preview = loadedPreview
                     // Only stage choices for in-scope entries; anything else stays absent
-                    // from `choices` and is treated as skip by `importSelected`.
+                    // from `choices` and therefore gets no destination route in the import request.
                     for entry in scopedEntries(loadedPreview) {
                         localCounts[entry.key] = localEntryCount(for: entry.key)
                         choices[entry.key] = defaultMode(for: entry.key)
@@ -484,13 +489,65 @@ struct KeywordListsImportSheet: View {
     }
 
     private func runImport() {
-        do {
-            let imported = try KeywordListsArchive.importSelected(from: source, choices: choices)
-            onCompletion(.success(imported))
-            dismiss()
-        } catch {
-            feedback = "Import failed: \(error.localizedDescription)"
-            onCompletion(.failure(error))
+        importTask?.cancel()
+        let requestID = UUID()
+        importRequestID = requestID
+        let request = KeywordListsArchive.importRequest(
+            from: source,
+            choices: choices,
+            requestID: requestID
+        )
+        let keysByIdentifier = Dictionary(
+            uniqueKeysWithValues: choices.keys.map { ($0.relativePath, $0) }
+        )
+        feedback = "Importing…"
+
+        importTask = Task {
+            let result = await KeywordListsArchiveImportService.shared.importArchive(request)
+
+            // A cancelled or superseded view request can still own durable writes because an
+            // atomic coordinated write is non-preemptible. Always publish those store commits;
+            // only the sheet's feedback/completion state is guarded by the current request ID.
+            if let commit = result.durableCommit {
+                publish(commit, keysByIdentifier: keysByIdentifier)
+            }
+            guard importRequestID == requestID else { return }
+            importTask = nil
+            importRequestID = nil
+
+            switch result {
+            case .committed(let commit):
+                onCompletion(.success(commit.items.count))
+                dismiss()
+            case .cancelledBeforeAccess, .cancelledBeforeCommit:
+                feedback = "Import cancelled"
+            case .cancelledAfterCommit(let commit):
+                feedback = "Import stopped after committing \(commit.items.count) \(commit.items.count == 1 ? "list" : "lists")"
+                onCompletion(.success(commit.items.count))
+            case .failedBeforeCommit(_, _, let failure):
+                feedback = "Import failed: \(failure.localizedDescription)"
+                onCompletion(.failure(failure))
+            case .partiallyCommitted(let commit, let failure):
+                feedback = "Imported \(commit.items.count) \(commit.items.count == 1 ? "list" : "lists"), then failed: \(failure.localizedDescription)"
+                onCompletion(.failure(failure))
+            }
+        }
+    }
+
+    private func cancelImport() {
+        importRequestID = nil
+        importTask?.cancel()
+        importTask = nil
+    }
+
+    private func publish(
+        _ commit: KeywordListsArchiveImportCommit,
+        keysByIdentifier: [String: KeywordListKey]
+    ) {
+        let store = KeywordListsStore.shared
+        for item in commit.items {
+            guard let key = keysByIdentifier[item.identifier] else { continue }
+            store.recordExternalWrite(to: key)
         }
     }
 

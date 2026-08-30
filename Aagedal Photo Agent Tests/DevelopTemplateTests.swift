@@ -119,7 +119,7 @@ struct DevelopTemplateTests {
 
     @Test("failed editor saves keep the develop draft open and allow saving a new copy")
     @MainActor
-    func failedEditorSaveKeepsDevelopDraftAndSavesCopy() throws {
+    func failedEditorSaveKeepsDevelopDraftAndSavesCopy() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("DevelopTemplateSaveTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -136,7 +136,7 @@ struct DevelopTemplateTests {
         viewModel.startEditing(original)
         viewModel.editingTemplate.name = "Edited develop draft"
 
-        let failedResult = viewModel.saveEditingTemplate()
+        let failedResult = await viewModel.saveEditingTemplate()
 
         guard case let .failure(failure) = failedResult else {
             Issue.record("Expected the injected storage failure")
@@ -153,7 +153,7 @@ struct DevelopTemplateTests {
         try FileManager.default.removeItem(at: storageLocation)
         try FileManager.default.createDirectory(at: storageLocation, withIntermediateDirectories: false)
 
-        let saveAsResult = viewModel.saveEditingTemplateAsNew()
+        let saveAsResult = await viewModel.saveEditingTemplateAsNew()
 
         guard case let .success(saved) = saveAsResult else {
             Issue.record("Expected Save as New to succeed after restoring writable storage")
@@ -165,6 +165,30 @@ struct DevelopTemplateTests {
         #expect(viewModel.saveError == nil)
         #expect(try DevelopTemplateStorageService(directoryURL: storageLocation).loadAll() == [saved])
     }
+
+    @MainActor
+    @Test("Develop template CRUD runs storage away from MainActor and returns refreshed values")
+    func developTemplateCRUDRunsOffMainActor() async throws {
+        let probe = DevelopTemplateCRUDProbe()
+        let service = TemplateCRUDService(access: probe.access)
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.75
+        let template = DevelopTemplate(name: "Bright", settings: settings, shortcutSlot: 2)
+        let requestID = UUID()
+
+        let result = try await service.save(template, requestID: requestID)
+
+        guard case .committed(let commit) = result else {
+            Issue.record("Expected a durable Develop template save")
+            return
+        }
+        #expect(commit.requestID == requestID)
+        #expect(commit.requestedTemplateCommitted)
+        #expect(commit.refreshedTemplates == [template])
+        #expect(commit.durableTemplateIDs == [template.id])
+        #expect(!probe.observedMainThreadStorage)
+        #expect(probe.maximumConcurrentOperations == 1)
+    }
 }
 
 private struct LegacyDevelopTemplate: Codable {
@@ -172,6 +196,55 @@ private struct LegacyDevelopTemplate: Codable {
     let name: String
     let settings: CameraRawSettings
     let shortcutSlot: Int?
+}
+
+nonisolated private final class DevelopTemplateCRUDProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var inventory: [DevelopTemplate] = []
+    private var sawMainThread = false
+    private var activeOperations = 0
+    private var maximumActiveOperations = 0
+
+    var access: TemplateCRUDAccess<DevelopTemplate> {
+        TemplateCRUDAccess(
+            loadAll: { [self] in operation { inventory } },
+            save: { [self] template in
+                operation {
+                    if let index = inventory.firstIndex(where: { $0.id == template.id }) {
+                        inventory[index] = template
+                    } else {
+                        inventory.append(template)
+                    }
+                }
+            },
+            delete: { [self] template in
+                operation { inventory.removeAll { $0.id == template.id } }
+            },
+            exportAll: { [self] _ in operation { inventory.count } },
+            shortcutSlot: { $0.shortcutSlot },
+            clearingShortcutSlot: {
+                var copy = $0
+                copy.shortcutSlot = nil
+                return copy
+            },
+            sorted: { $0.sorted { $0.name < $1.name } }
+        )
+    }
+
+    private func operation<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        sawMainThread = sawMainThread || Thread.isMainThread
+        activeOperations += 1
+        maximumActiveOperations = max(maximumActiveOperations, activeOperations)
+        defer {
+            activeOperations -= 1
+            lock.unlock()
+        }
+        return try body()
+    }
+
+    var observedMainThreadStorage: Bool { lock.withLock { sawMainThread } }
+    var maximumConcurrentOperations: Int { lock.withLock { maximumActiveOperations } }
 }
 
 @Suite("Template command routing")

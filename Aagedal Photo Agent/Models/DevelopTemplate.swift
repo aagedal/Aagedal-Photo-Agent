@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Image-specific decoder state is deliberately excluded when a template is
 /// created and restored from the destination image when it is applied.
-struct DevelopTemplate: Codable, Identifiable, Sendable, Equatable {
+nonisolated struct DevelopTemplate: Codable, Identifiable, Sendable, Equatable {
     var id: UUID
     var name: String
     var settings: CameraRawSettings
@@ -115,7 +115,7 @@ struct DevelopTemplate: Codable, Identifiable, Sendable, Equatable {
     }
 }
 
-private extension CameraRawSettings {
+nonisolated private extension CameraRawSettings {
     var settingsForDevelopTemplate: CameraRawSettings {
         var copy = self
         copy.asShotNeutralTemperature = nil

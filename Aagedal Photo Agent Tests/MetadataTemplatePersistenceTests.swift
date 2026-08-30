@@ -193,7 +193,7 @@ struct MetadataTemplatePersistenceTests {
 
     @Test("failed editor saves keep the metadata draft open and can be retried")
     @MainActor
-    func failedEditorSaveKeepsMetadataDraftAndRetries() throws {
+    func failedEditorSaveKeepsMetadataDraftAndRetries() async throws {
         let root = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: root) }
         let storageLocation = root.appendingPathComponent("templates")
@@ -209,7 +209,7 @@ struct MetadataTemplatePersistenceTests {
         viewModel.startEditing(original)
         viewModel.editingTemplate.name = "Edited name"
 
-        let failedResult = viewModel.saveEditingTemplate()
+        let failedResult = await viewModel.saveEditingTemplate()
 
         guard case let .failure(failure) = failedResult else {
             Issue.record("Expected the injected storage failure")
@@ -226,7 +226,7 @@ struct MetadataTemplatePersistenceTests {
         try FileManager.default.removeItem(at: storageLocation)
         try FileManager.default.createDirectory(at: storageLocation, withIntermediateDirectories: false)
 
-        let retryResult = viewModel.saveEditingTemplate()
+        let retryResult = await viewModel.saveEditingTemplate()
 
         guard case let .success(saved) = retryResult else {
             Issue.record("Expected retry to succeed after restoring writable storage")
@@ -562,6 +562,176 @@ struct MetadataTemplatePersistenceTests {
         #expect(commitFunction.contains("importCommitTask?.cancel()"))
         #expect(commitFunction.contains("try await importCommitService.commit"))
     }
+
+    @Test("template CRUD save clears shortcut conflicts and returns immutable durable evidence")
+    func templateCRUDSaveReturnsDurableInventory() async throws {
+        var conflict = MetadataTemplate(name: "Existing")
+        conflict.shortcutSlot = 3
+        var replacement = MetadataTemplate(name: "Replacement")
+        replacement.shortcutSlot = 3
+        let probe = MetadataTemplateCRUDProbe(initial: [conflict])
+        let service = TemplateCRUDService(access: probe.access)
+        let requestID = UUID()
+
+        let result = try await service.save(replacement, requestID: requestID)
+
+        guard case .committed(let commit) = result else {
+            Issue.record("Expected a durable template save")
+            return
+        }
+        #expect(commit.requestID == requestID)
+        #expect(commit.requestedTemplateCommitted)
+        #expect(commit.durableTemplateIDs == [conflict.id, replacement.id])
+        #expect(commit.refreshedTemplates.map(\.name) == ["Existing", "Replacement"])
+        #expect(commit.refreshedTemplates.first?.shortcutSlot == nil)
+        #expect(commit.refreshedTemplates.last?.shortcutSlot == 3)
+        #expect(commit.inventoryRefreshFailureReason == nil)
+        #expect(!commit.cancellationObservedAfterCommit)
+        #expect(probe.maximumConcurrentOperations == 1)
+    }
+
+    @Test("template CRUD cancellation distinguishes zero IO from a durable save")
+    func templateCRUDCancellationEvidence() async throws {
+        let template = MetadataTemplate(name: "Agency")
+        let preCancelledProbe = MetadataTemplateCRUDProbe()
+        let preCancelledService = TemplateCRUDService(access: preCancelledProbe.access)
+        let preCancelledID = UUID()
+        let preCancelled = try await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await preCancelledService.save(template, requestID: preCancelledID)
+        }.value
+
+        guard case .cancelledBeforeCommit(let returnedID) = preCancelled else {
+            Issue.record("Expected cancellation before template IO")
+            return
+        }
+        #expect(returnedID == preCancelledID)
+        #expect(preCancelledProbe.loadCount == 0)
+        #expect(preCancelledProbe.saveCount == 0)
+
+        let durableProbe = MetadataTemplateCRUDProbe(cancelOnSave: true)
+        let durableService = TemplateCRUDService(access: durableProbe.access)
+        let durableID = UUID()
+        let durable = try await Task {
+            try await durableService.save(template, requestID: durableID)
+        }.value
+
+        guard case .committed(let commit) = durable else {
+            Issue.record("Expected post-save cancellation evidence")
+            return
+        }
+        #expect(commit.requestID == durableID)
+        #expect(commit.requestedTemplateCommitted)
+        #expect(commit.durableTemplateIDs == [template.id])
+        #expect(commit.refreshedTemplates.map(\.name) == ["Agency"])
+        #expect(commit.cancellationObservedAfterCommit)
+    }
+
+    @Test("template CRUD delete and export return durable immutable evidence")
+    func templateCRUDDeleteAndExportEvidence() async throws {
+        let template = MetadataTemplate(name: "Agency")
+        let deleteProbe = MetadataTemplateCRUDProbe(initial: [template])
+        let deleteService = TemplateCRUDService(access: deleteProbe.access)
+        let deleteID = UUID()
+
+        let deleteResult = try await deleteService.delete(template, requestID: deleteID)
+        guard case .committed(let deleteCommit) = deleteResult else {
+            Issue.record("Expected a durable deletion")
+            return
+        }
+        #expect(deleteCommit.requestID == deleteID)
+        #expect(deleteCommit.requestedTemplate == nil)
+        #expect(deleteCommit.durableTemplateIDs == [template.id])
+        #expect(deleteCommit.refreshedTemplates.isEmpty)
+        #expect(deleteProbe.deleteCount == 1)
+
+        let exportProbe = MetadataTemplateCRUDProbe(initial: [template], cancelOnExport: true)
+        let exportService = TemplateCRUDService(access: exportProbe.access)
+        let exportID = UUID()
+        let destination = URL(fileURLWithPath: "/virtual/export.json")
+        let exportResult = try await Task {
+            try await exportService.exportAll(to: destination, requestID: exportID)
+        }.value
+        guard case .exported(let exportCommit) = exportResult else {
+            Issue.record("Expected durable export evidence")
+            return
+        }
+        #expect(exportCommit.requestID == exportID)
+        #expect(exportCommit.destinationURL == destination)
+        #expect(exportCommit.exportedTemplateCount == 1)
+        #expect(exportCommit.cancellationObservedAfterCommit)
+        #expect(exportProbe.exportCount == 1)
+    }
+
+    @MainActor
+    @Test("superseded template inventory cannot publish stale results")
+    func supersededTemplateInventoryCannotPublish() async throws {
+        let probe = BlockingMetadataTemplateCRUDProbe()
+        defer { probe.releaseFirstLoad() }
+        let service = TemplateCRUDService(access: probe.access)
+        let viewModel = TemplateViewModel(
+            storage: TemplateStorageService(directoryURL: URL(fileURLWithPath: "/virtual/templates")),
+            crudService: service
+        )
+
+        viewModel.loadTemplates()
+        try await probe.waitUntilFirstLoadStarts()
+        viewModel.loadTemplates()
+        probe.releaseFirstLoad()
+
+        let deadline = ContinuousClock.now + .seconds(30)
+        while viewModel.templates.map(\.name) != ["second"] {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Timed out waiting for the latest template inventory")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(viewModel.templates.map(\.name) == ["second"])
+        #expect(probe.loadCount == 2)
+        #expect(probe.maximumConcurrentOperations == 1)
+    }
+
+    @Test("template view models keep synchronous CRUD below the actor boundary")
+    func templateCRUDSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let serviceSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/TemplateCRUDService.swift"
+            ),
+            encoding: .utf8
+        )
+        let metadataViewModelSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/TemplateViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let developViewModelSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/DevelopTemplateViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(serviceSource.contains("actor TemplateCRUDService"))
+        #expect(serviceSource.contains("case cancelledBeforeRead"))
+        #expect(serviceSource.contains("case cancelledAfterRead"))
+        #expect(serviceSource.contains("case cancelledBeforeCommit"))
+        #expect(serviceSource.contains("cancellationObservedAfterCommit"))
+        #expect(metadataViewModelSource.contains("try storage.loadAll()") == false)
+        #expect(metadataViewModelSource.contains("try storage.save(") == false)
+        #expect(metadataViewModelSource.contains("try storage.delete(") == false)
+        #expect(metadataViewModelSource.contains("try storage.exportAll(") == false)
+        #expect(developViewModelSource.contains("try storage.loadAll()") == false)
+        #expect(developViewModelSource.contains("try storage.save(") == false)
+        #expect(developViewModelSource.contains("try storage.delete(") == false)
+        #expect(metadataViewModelSource.contains("loadRequestID == requestID"))
+        #expect(developViewModelSource.contains("loadRequestID == requestID"))
+    }
 }
 
 private enum TemplateImportPreviewProbeError: Error {
@@ -675,4 +845,150 @@ nonisolated private enum TemplateImportCommitProbeError: LocalizedError {
     case injectedSaveFailure
 
     var errorDescription: String? { "Injected save failure" }
+}
+
+nonisolated private final class MetadataTemplateCRUDProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let cancelOnSave: Bool
+    private let cancelOnExport: Bool
+    private var inventory: [MetadataTemplate]
+    private var loads = 0
+    private var saves = 0
+    private var deletes = 0
+    private var exports = 0
+    private var activeOperations = 0
+    private var maximumActiveOperations = 0
+
+    init(
+        initial: [MetadataTemplate] = [],
+        cancelOnSave: Bool = false,
+        cancelOnExport: Bool = false
+    ) {
+        inventory = initial
+        self.cancelOnSave = cancelOnSave
+        self.cancelOnExport = cancelOnExport
+    }
+
+    var access: TemplateCRUDAccess<MetadataTemplate> {
+        TemplateCRUDAccess(
+            loadAll: { [self] in
+                operation {
+                    loads += 1
+                    return inventory
+                }
+            },
+            save: { [self] template in
+                operation {
+                    saves += 1
+                    if let index = inventory.firstIndex(where: { $0.id == template.id }) {
+                        inventory[index] = template
+                    } else {
+                        inventory.append(template)
+                    }
+                }
+                if cancelOnSave {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            },
+            delete: { [self] template in
+                operation {
+                    deletes += 1
+                    inventory.removeAll { $0.id == template.id }
+                }
+            },
+            exportAll: { [self] _ in
+                let count = operation {
+                    exports += 1
+                    return inventory.count
+                }
+                if cancelOnExport {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                return count
+            },
+            shortcutSlot: { $0.shortcutSlot },
+            clearingShortcutSlot: {
+                var copy = $0
+                copy.shortcutSlot = nil
+                return copy
+            },
+            sorted: { $0.sorted { $0.name < $1.name } }
+        )
+    }
+
+    private func operation<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        activeOperations += 1
+        maximumActiveOperations = max(maximumActiveOperations, activeOperations)
+        defer {
+            activeOperations -= 1
+            lock.unlock()
+        }
+        return try body()
+    }
+
+    var loadCount: Int { lock.withLock { loads } }
+    var saveCount: Int { lock.withLock { saves } }
+    var deleteCount: Int { lock.withLock { deletes } }
+    var exportCount: Int { lock.withLock { exports } }
+    var maximumConcurrentOperations: Int { lock.withLock { maximumActiveOperations } }
+}
+
+nonisolated private final class BlockingMetadataTemplateCRUDProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var loads = 0
+    private var activeOperations = 0
+    private var maximumActiveOperations = 0
+    private var firstLoadReleased = false
+
+    var access: TemplateCRUDAccess<MetadataTemplate> {
+        TemplateCRUDAccess(
+            loadAll: { [self] in loadAll() },
+            save: { _ in },
+            delete: { _ in },
+            exportAll: { _ in 0 },
+            shortcutSlot: { $0.shortcutSlot },
+            clearingShortcutSlot: {
+                var copy = $0
+                copy.shortcutSlot = nil
+                return copy
+            },
+            sorted: { $0.sorted { $0.name < $1.name } }
+        )
+    }
+
+    private func loadAll() -> [MetadataTemplate] {
+        condition.lock()
+        loads += 1
+        let invocation = loads
+        activeOperations += 1
+        maximumActiveOperations = max(maximumActiveOperations, activeOperations)
+        condition.broadcast()
+        if invocation == 1 {
+            while !firstLoadReleased { condition.wait() }
+        }
+        activeOperations -= 1
+        condition.unlock()
+        return [MetadataTemplate(name: invocation == 1 ? "first" : "second")]
+    }
+
+    func waitUntilFirstLoadStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while loadCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw TemplateImportPreviewProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstLoad() {
+        condition.lock()
+        firstLoadReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var loadCount: Int { condition.withLock { loads } }
+    var maximumConcurrentOperations: Int { condition.withLock { maximumActiveOperations } }
 }

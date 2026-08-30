@@ -283,7 +283,9 @@ struct KeywordListsArchivePreviewServiceTests {
             "case .cancelledBeforeInspection, .cancelledAfterInspection:"
         ))
         #expect(!functionSource.contains("KeywordListsArchive.inspect(source)"))
-        #expect(source.contains(".onDisappear { cancelPreview() }"))
+        #expect(source.contains(
+            ".onDisappear {\n            cancelPreview()\n            cancelImport()\n        }"
+        ))
     }
 
     private func samplePayload(
@@ -298,6 +300,193 @@ struct KeywordListsArchivePreviewServiceTests {
             )],
             schemaVersion: 1,
             exportedAt: Date(timeIntervalSince1970: 100)
+        )
+    }
+}
+
+@Suite("Keyword-list archive import commit filesystem boundary")
+struct KeywordListsArchiveImportServiceTests {
+    @Test("system importer preserves replace and append behavior")
+    @MainActor
+    func systemImporterRoundTrip() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kl-async-import-store-\(UUID().uuidString)", isDirectory: true)
+        let zipURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kl-async-import-\(UUID().uuidString).zip")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: zipURL)
+        }
+
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let store = KeywordListsStore.shared
+            try store.writeEntries(["Local", "Shared"], to: .quick(.keywords))
+            try store.writeEntries(["Imported", "shared"], to: .quick(.keywords))
+            try KeywordListsArchive.exportSelected([.quick(.keywords)], to: zipURL)
+            try store.writeEntries(["Local", "Shared"], to: .quick(.keywords))
+
+            let requestID = UUID()
+            let request = KeywordListsArchive.importRequest(
+                from: zipURL,
+                choices: [.quick(.keywords): .append],
+                requestID: requestID
+            )
+            let result = await KeywordListsArchiveImportService().importArchive(request)
+
+            #expect(result.durableCommit?.requestID == requestID)
+            #expect(result.durableCommit?.items.count == 1)
+            #expect(store.readEntries(.quick(.keywords)) == ["Local", "Shared", "Imported"])
+        }
+    }
+
+    @Test("a complete immutable commit is performed away from the main actor")
+    @MainActor
+    func completeImportRunsOffMainActor() async {
+        let request = sampleRequest(source: URL(fileURLWithPath: "/virtual/lists.zip"))
+        let commit = sampleCommit(for: request)
+        let probe = KeywordListsArchiveImporterProbe(result: .committed(commit))
+        let service = KeywordListsArchiveImportService(
+            importer: KeywordListsArchiveImporter(perform: probe.perform)
+        )
+
+        let result = await Task { await service.importArchive(request) }.value
+
+        #expect(result == .committed(commit))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("a pre-cancelled import never enters the synchronous importer")
+    func preCancellation() async {
+        let request = sampleRequest(source: URL(fileURLWithPath: "/virtual/cancelled.zip"))
+        let probe = KeywordListsArchiveImporterProbe(result: .committed(sampleCommit(for: request)))
+        let service = KeywordListsArchiveImportService(
+            importer: KeywordListsArchiveImporter(perform: probe.perform)
+        )
+        let task = Task {
+            await Task.yield()
+            return await service.importArchive(request)
+        }
+        task.cancel()
+
+        let result = await task.value
+
+        #expect(result == .cancelledBeforeAccess(requestID: request.requestID))
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("overlapping imports serialize and cancellation stops queued commit work")
+    func serializedQueuedCancellation() async throws {
+        let firstRequest = sampleRequest(source: URL(fileURLWithPath: "/virtual/first.zip"))
+        let secondRequest = sampleRequest(source: URL(fileURLWithPath: "/virtual/second.zip"))
+        let probe = BlockingKeywordListsArchiveImporterProbe()
+        let service = KeywordListsArchiveImportService(
+            importer: KeywordListsArchiveImporter(perform: probe.perform)
+        )
+        let first = Task { await service.importArchive(firstRequest) }
+        try await probe.waitUntilFirstImportStarts()
+        let second = Task { await service.importArchive(secondRequest) }
+        second.cancel()
+        probe.releaseFirstImport()
+
+        let firstResult = await first.value
+        let secondResult = await second.value
+
+        #expect(firstResult == .committed(sampleCommit(for: firstRequest)))
+        #expect(secondResult == .cancelledBeforeAccess(requestID: secondRequest.requestID))
+        #expect(probe.invocationCount == 1)
+        #expect(probe.maximumConcurrentImports == 1)
+    }
+
+    @Test("cancellation during a non-preemptible import preserves durable commit evidence")
+    func cancellationAfterCommit() async {
+        let request = sampleRequest(source: URL(fileURLWithPath: "/virtual/slow.zip"))
+        let commit = sampleCommit(for: request)
+        let service = KeywordListsArchiveImportService(
+            importer: KeywordListsArchiveImporter { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return .committed(commit)
+            }
+        )
+
+        let result = await Task { await service.importArchive(request) }.value
+
+        #expect(result == .cancelledAfterCommit(commit))
+        #expect(result.durableCommit == commit)
+    }
+
+    @Test("partial failure retains every earlier durable destination")
+    func partialCommitEvidence() async {
+        let request = sampleRequest(source: URL(fileURLWithPath: "/virtual/partial.zip"))
+        let commit = sampleCommit(for: request)
+        let failure = KeywordListsArchiveImportFailure(
+            identifier: "approved/keywords.txt",
+            reason: "simulated destination failure"
+        )
+        let service = KeywordListsArchiveImportService(
+            importer: KeywordListsArchiveImporter { _ in
+                .partiallyCommitted(commit, failure: failure)
+            }
+        )
+
+        let result = await service.importArchive(request)
+
+        #expect(result == .partiallyCommitted(commit, failure: failure))
+        #expect(result.durableCommit?.items == commit.items)
+    }
+
+    @Test("the import sheet awaits commits and rejects stale UI publication")
+    func importSheetSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/KeywordListsImportExportSheets.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func runImport()"))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n    private func cancelImport()"))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+        let publishRange = try #require(functionSource.range(of: "publish(commit"))
+        let staleGuardRange = try #require(functionSource.range(of: "guard importRequestID == requestID"))
+
+        #expect(functionSource.contains(
+            "await KeywordListsArchiveImportService.shared.importArchive(request)"
+        ))
+        #expect(publishRange.lowerBound < staleGuardRange.lowerBound)
+        #expect(functionSource.contains("case .partiallyCommitted(let commit, let failure):"))
+        #expect(functionSource.contains("case .cancelledAfterCommit(let commit):"))
+        #expect(!functionSource.contains("KeywordListsArchive.importSelected("))
+        #expect(source.contains("cancelPreview()\n            cancelImport()"))
+    }
+
+    private func sampleRequest(source: URL) -> KeywordListsArchiveImportRequest {
+        KeywordListsArchiveImportRequest(
+            requestID: UUID(),
+            sourceURL: source,
+            routes: [KeywordListsArchiveImportRoute(
+                identifier: "quick/keywords.txt",
+                kind: "quick.keywords",
+                destinationURL: URL(fileURLWithPath: "/virtual/store/quick/keywords.txt"),
+                mode: .replace
+            )]
+        )
+    }
+
+    private func sampleCommit(
+        for request: KeywordListsArchiveImportRequest
+    ) -> KeywordListsArchiveImportCommit {
+        KeywordListsArchiveImportCommit(
+            requestID: request.requestID,
+            sourceURL: request.sourceURL,
+            items: [KeywordListsArchiveImportCommit.Item(
+                identifier: request.routes[0].identifier,
+                destinationURL: request.routes[0].destinationURL,
+                entryCount: 3
+            )]
         )
     }
 }
@@ -323,6 +512,90 @@ private nonisolated final class KeywordListsArchivePreviewReaderProbe: @unchecke
 
     var invocationCount: Int { lock.withLock { count } }
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private nonisolated final class KeywordListsArchiveImporterProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let result: KeywordListsArchiveImportResult
+    private var count = 0
+    private var observedMainThread = false
+
+    init(result: KeywordListsArchiveImportResult) {
+        self.result = result
+    }
+
+    func perform(_ request: KeywordListsArchiveImportRequest) -> KeywordListsArchiveImportResult {
+        _ = request
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return result
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private nonisolated final class BlockingKeywordListsArchiveImporterProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var importCount = 0
+    private var activeImports = 0
+    private var maximumActiveImports = 0
+    private var firstImportReleased = false
+
+    func perform(_ request: KeywordListsArchiveImportRequest) -> KeywordListsArchiveImportResult {
+        condition.lock()
+        importCount += 1
+        activeImports += 1
+        maximumActiveImports = max(maximumActiveImports, activeImports)
+        condition.broadcast()
+        if importCount == 1 {
+            while !firstImportReleased {
+                condition.wait()
+            }
+        }
+        activeImports -= 1
+        condition.unlock()
+        return .committed(KeywordListsArchiveImportCommit(
+            requestID: request.requestID,
+            sourceURL: request.sourceURL,
+            items: [KeywordListsArchiveImportCommit.Item(
+                identifier: request.routes[0].identifier,
+                destinationURL: request.routes[0].destinationURL,
+                entryCount: 3
+            )]
+        ))
+    }
+
+    func waitUntilFirstImportStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while invocationCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw KeywordListsArchivePreviewProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstImport() {
+        condition.lock()
+        firstImportReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var invocationCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return importCount
+    }
+
+    var maximumConcurrentImports: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumActiveImports
+    }
 }
 
 private enum KeywordListsArchivePreviewProbeError: Error {

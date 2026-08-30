@@ -256,6 +256,12 @@ publication state owner. The combined selection passed 17 tests in four suites, 
 passed 1,745 tests in 203 suites. Remaining filesystem inventory/measurement, Develop render/persistence,
 manual, and external gates keep the audit at 63 of 75.
 
+The latest [template, keyword-import, and interactive-render continuation](plan-status-template-keyword-interactive-render-continuation-2026-08-30.md)
+records serialized metadata/Develop template CRUD, partial-durable keyword-list archive import commits, and the
+Develop interactive-render state owner. The combined selection passed 71 tests in seven suites, and the serial
+unfiltered gate passed 1,763 tests in 205 suites. Remaining filesystem inventory/measurement, broader Develop
+persistence ownership, manual, and external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

@@ -628,6 +628,15 @@ when cancellation is observed after a durable directory commit. Remaining direct
 Thread Performance Checker gate stay open.
 ([validation](plan-status-cleanup-storage-white-balance-continuation-2026-08-30.md))
 
+**Template CRUD and keyword-archive import follow-up (2026-08-30):** metadata and Develop template inventory,
+save, delete, shortcut-conflict clearing, and export now cross one serialized generic actor with immutable
+read/commit evidence, durable-prefix reporting, request-identity publication, and stale-result rejection.
+Keyword-list archive extraction, manifest reads, append/replace merging, and multi-file commits cross a separate
+serialized actor that reports cancellation before mutation versus cancellation/failure after an exact durable
+prefix. Store notifications are published for every committed destination even after the sheet disappears.
+Other lower-priority direct paths and the real-volume/Thread Performance Checker gate remain open.
+([validation](plan-status-template-keyword-interactive-render-continuation-2026-08-30.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -801,6 +810,13 @@ Rendering, destination preparation, metadata copying, and thumbnail invalidation
 boundaries, and late work cannot publish into a closed or replacement workspace. Layer, broader render-policy, and
 metadata/sidecar persistence ownership remain open.
 ([validation](plan-status-template-bundle-export-continuation-2026-08-30.md#develop-export-state-owner))
+
+**Interactive-render state-owner follow-up (2026-08-30):** `DevelopInteractiveRenderCoordinator` now owns
+workspace/image interaction lifetime, slider-active state, preview-only versus commit intent, CPU-scope
+throttling, cancellation, and stale-publication identity. Slider, curve, HSL, mask, and watermark interactions
+delegate to the coordinator while concrete rendering, scope notifications, and XMP/named-version persistence
+remain injected at the view boundary. Broader metadata/sidecar persistence and undo ownership remain open.
+([validation](plan-status-template-keyword-interactive-render-continuation-2026-08-30.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

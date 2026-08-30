@@ -137,22 +137,26 @@ struct DevelopTemplateEditorView: View {
     }
 
     private func saveTemplate(isRecovery: Bool) {
-        switch viewModel.saveEditingTemplate() {
-        case .success:
-            AccessibilityAnnouncementCenter.post(
-                isRecovery ? .recovery(.templateSaved) : .success(.templateSaved)
-            )
-        case .failure:
-            break
+        Task {
+            switch await viewModel.saveEditingTemplate() {
+            case .success:
+                AccessibilityAnnouncementCenter.post(
+                    isRecovery ? .recovery(.templateSaved) : .success(.templateSaved)
+                )
+            case .failure:
+                break
+            }
         }
     }
 
     private func saveTemplateAsNew() {
-        switch viewModel.saveEditingTemplateAsNew() {
-        case .success:
-            AccessibilityAnnouncementCenter.post(.recovery(.templateSaved))
-        case .failure:
-            break
+        Task {
+            switch await viewModel.saveEditingTemplateAsNew() {
+            case .success:
+                AccessibilityAnnouncementCenter.post(.recovery(.templateSaved))
+            case .failure:
+                break
+            }
         }
     }
 }

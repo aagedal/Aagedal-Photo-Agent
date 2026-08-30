@@ -6,7 +6,7 @@ nonisolated private let developTemplateStorageLog = Logger(
     category: "DevelopTemplateStorageService"
 )
 
-struct DevelopTemplateStorageService: Sendable {
+nonisolated struct DevelopTemplateStorageService: Sendable {
     private let directoryOverride: URL?
 
     init(directoryURL: URL? = nil) {
