@@ -136,6 +136,14 @@ mutes as one workspace-lifetime snapshot. These slices advance the broad Phase 3
 state-owner items without satisfying their remaining inventory, real-volume, manual, or architectural exit
 conditions. ([validation](plan-status-certificate-export-mutes-continuation-2026-08-30.md))
 
+**Source-file import continuation (2026-08-30):** the checklist remains 63 of 75. Code Replacement bookmark
+and source loading, Metadata Quick List conditional file creation, and Develop color-LUT reads now cross
+serialized actors with immutable cancellation evidence. Their MainActor owners cancel superseded or
+disappearing work and reject stale publication. The combined selection passed 40 tests and the unfiltered gate
+passed 1,672 tests in 193 suites. Remaining direct paths and the real-volume/Thread Performance Checker gate
+keep the broad Phase 3.1 items open.
+([validation](plan-status-source-file-import-continuation-2026-08-30.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -546,6 +554,15 @@ certificate availability fails closed until verified. Keyword-list and Structure
 the serialized `TextFileExportService` with atomic UTF-8 commits, queued cancellation, durable-after-cancel
 evidence, and stale-result rejection. Lower-priority direct filesystem paths and the real-volume measurement
 gate remain open. ([validation](plan-status-certificate-export-mutes-continuation-2026-08-30.md))
+
+**Source-file import follow-up (2026-08-30):** Code Replacement bookmark creation/resolution, source reads,
+resource-value reads, and parsing now cross one serialized actor with immutable loaded/cancelled evidence and
+stale-publication rejection. Metadata Quick List conditional file creation and Develop `.cube` LUT reads also
+cross serialized actors; both UI owners cancel replacement/disappearance work and reject late completion. The
+three slices remove their direct blocking calls from MainActor presentation while preserving bookmark,
+best-effort Quick List, security-scope, parser, and edit-commit behavior. The combined 40-test selection and
+the unfiltered 1,672-test gate passed. Lower-priority direct paths and real-volume/Thread Performance Checker
+evidence remain open. ([validation](plan-status-source-file-import-continuation-2026-08-30.md))
 
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.

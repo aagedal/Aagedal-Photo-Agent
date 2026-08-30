@@ -260,7 +260,7 @@ struct CodeReplacementTests {
 
     @MainActor
     @Test("future configuration remains disabled and its settings and bookmark bytes are untouched")
-    func futureConfigurationIsReadOnly() throws {
+    func futureConfigurationIsReadOnly() async throws {
         let suiteName = "CodeReplacementFutureTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -288,11 +288,11 @@ struct CodeReplacementTests {
         store.setEnabled(true)
         store.setStartDelimiter("[[")
         store.removeSource()
-        #expect(throws: CodeReplacementSettingsStoreError.newerSchema(
+        await #expect(throws: CodeReplacementSettingsStoreError.newerSchema(
             found: 99,
             supported: CodeReplacementConfiguration.currentSchemaVersion
         )) {
-            try store.selectSource(URL(fileURLWithPath: "/tmp/codes.txt"))
+            try await store.selectSource(URL(fileURLWithPath: "/tmp/codes.txt"))
         }
         #expect(defaults.data(forKey: configurationKey) == futureData)
         #expect(defaults.data(forKey: bookmarkKey) == bookmarkData)
@@ -319,5 +319,247 @@ struct CodeReplacementTests {
         #expect(store.isConfigurationReadOnly)
         store.setEndDelimiter("]]")
         #expect(defaults.data(forKey: configurationKey) == unreadableData)
+    }
+}
+
+@Suite("Code replacement source I/O", .serialized)
+struct CodeReplacementSourceIOTests {
+    @Test("bookmark, source, and resource-value access runs away from MainActor")
+    func accessRunsOffMainActor() async throws {
+        let probe = CodeReplacementSourceAccessProbe()
+        let service = CodeReplacementSourceService(access: probe.access)
+        let sourceURL = URL(fileURLWithPath: "/virtual/codes.txt")
+
+        _ = try await Task { @MainActor in
+            try await service.selectSource(
+                sourceURL,
+                sourceID: UUID(),
+                bookmarkID: UUID(),
+                timestamp: Date(timeIntervalSince1970: 10),
+                requestID: UUID()
+            )
+        }.value
+
+        #expect(probe.createCount == 1)
+        #expect(probe.readCount == 1)
+        #expect(probe.modificationDateCount == 1)
+        #expect(!probe.observedMainThread)
+    }
+
+    @Test("queued cancellation is explicit and serialized")
+    func queuedCancellationIsExplicitAndSerialized() async throws {
+        let probe = CodeReplacementSourceAccessProbe(blockFirstRead: true)
+        let service = CodeReplacementSourceService(access: probe.access)
+        let firstID = UUID()
+        let secondID = UUID()
+
+        let first = Task {
+            try await service.selectSource(
+                URL(fileURLWithPath: "/virtual/first.txt"),
+                sourceID: UUID(),
+                bookmarkID: UUID(),
+                timestamp: .distantPast,
+                requestID: firstID
+            )
+        }
+        try await probe.waitUntilFirstReadStarts()
+        let second = Task {
+            try await service.selectSource(
+                URL(fileURLWithPath: "/virtual/second.txt"),
+                sourceID: UUID(),
+                bookmarkID: UUID(),
+                timestamp: .distantPast,
+                requestID: secondID
+            )
+        }
+        second.cancel()
+        probe.releaseFirstRead()
+
+        _ = try await first.value
+        let secondResult = try await second.value
+
+        #expect(secondResult == .cancelled(CodeReplacementSourceCancellation(
+            requestID: secondID,
+            operation: .select,
+            completedStage: nil,
+            sourceURL: nil,
+            byteCount: nil
+        )))
+        #expect(probe.createCount == 1)
+        #expect(probe.maximumConcurrentReads == 1)
+    }
+
+    @MainActor
+    @Test("a superseded selection cannot publish stale source or bookmark state")
+    func storeRejectsStaleSelection() async throws {
+        let suiteName = "CodeReplacementStalePublicationTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let probe = CodeReplacementSourceAccessProbe(blockFirstRead: true)
+        let store = CodeReplacementSettingsStore(defaults: defaults, access: probe.access)
+        let firstURL = URL(fileURLWithPath: "/virtual/first.txt")
+        let secondURL = URL(fileURLWithPath: "/virtual/second.txt")
+
+        let first = Task { @MainActor in
+            try await store.selectSource(firstURL)
+        }
+        try await probe.waitUntilFirstReadStarts()
+        let second = Task { @MainActor in
+            try await store.selectSource(secondURL)
+        }
+        await Task.yield()
+        probe.releaseFirstRead()
+
+        try await first.value
+        try await second.value
+
+        #expect(store.configuration.source?.path == secondURL.path)
+        #expect(store.list.entries.map(\.code) == ["second"])
+        #expect(defaults.data(forKey: UserDefaultsKeys.codeReplacementSourceBookmark)
+            == Data("bookmark-second.txt".utf8))
+    }
+
+    @Test("source contract keeps blocking Foundation access below the actor boundary")
+    func sourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let serviceSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/CodeReplacementSettingsStore.swift"
+            ),
+            encoding: .utf8
+        )
+        let viewSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Metadata/CodeReplacementSettingsView.swift"
+            ),
+            encoding: .utf8
+        )
+        let mainActorStart = try #require(serviceSource.range(of: "@MainActor\n@Observable"))
+        let storeSource = serviceSource[mainActorStart.lowerBound...]
+
+        #expect(storeSource.contains("Data(contentsOf:") == false)
+        #expect(storeSource.contains(".resourceValues(") == false)
+        #expect(storeSource.contains(".bookmarkData(") == false)
+        #expect(storeSource.contains("sourceOperationTask?.cancel()"))
+        #expect(storeSource.contains("sourceOperationRequestID == requestID"))
+        #expect(storeSource.contains("try await service.selectSource("))
+        #expect(storeSource.contains("try await service.reloadSource("))
+        #expect(viewSource.contains("try await store.selectSource(url)"))
+        #expect(viewSource.contains("Task { await store.reloadSource() }"))
+    }
+}
+
+nonisolated private enum CodeReplacementSourceProbeError: Error {
+    case timedOut
+}
+
+nonisolated private final class CodeReplacementSourceAccessProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let blockFirstRead: Bool
+    private var creates = 0
+    private var reads = 0
+    private var modificationDates = 0
+    private var activeReads = 0
+    private var maximumActiveReads = 0
+    private var firstReadReleased = false
+    private var didObserveMainThread = false
+
+    init(blockFirstRead: Bool = false) {
+        self.blockFirstRead = blockFirstRead
+    }
+
+    var access: CodeReplacementSourceAccess {
+        CodeReplacementSourceAccess(
+            createBookmark: { [self] url in createBookmark(url) },
+            resolveBookmark: { [self] data in resolveBookmark(data) },
+            readData: { [self] url in readData(url) },
+            modificationDate: { [self] url in modificationDate(url) }
+        )
+    }
+
+    private func createBookmark(_ url: URL) -> Data {
+        condition.lock()
+        creates += 1
+        didObserveMainThread = didObserveMainThread || Thread.isMainThread
+        condition.unlock()
+        return Data("bookmark-\(url.lastPathComponent)".utf8)
+    }
+
+    private func resolveBookmark(_ data: Data) -> CodeReplacementBookmarkResolution {
+        condition.lock()
+        didObserveMainThread = didObserveMainThread || Thread.isMainThread
+        condition.unlock()
+        let name = String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "bookmark-", with: "")
+        return CodeReplacementBookmarkResolution(
+            url: URL(fileURLWithPath: "/virtual/\(name)"),
+            isStale: false
+        )
+    }
+
+    private func readData(_ url: URL) -> Data {
+        condition.lock()
+        reads += 1
+        activeReads += 1
+        maximumActiveReads = max(maximumActiveReads, activeReads)
+        didObserveMainThread = didObserveMainThread || Thread.isMainThread
+        condition.broadcast()
+        if blockFirstRead, reads == 1 {
+            while !firstReadReleased {
+                condition.wait()
+            }
+        }
+        activeReads -= 1
+        condition.unlock()
+        let code = url.deletingPathExtension().lastPathComponent
+        return Data("\(code)\tvalue".utf8)
+    }
+
+    private func modificationDate(_ url: URL) -> Date? {
+        _ = url
+        condition.lock()
+        modificationDates += 1
+        didObserveMainThread = didObserveMainThread || Thread.isMainThread
+        condition.unlock()
+        return Date(timeIntervalSince1970: 20)
+    }
+
+    func waitUntilFirstReadStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while readCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw CodeReplacementSourceProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstRead() {
+        condition.lock()
+        firstReadReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var createCount: Int {
+        condition.withLock { creates }
+    }
+
+    var readCount: Int {
+        condition.withLock { reads }
+    }
+
+    var modificationDateCount: Int {
+        condition.withLock { modificationDates }
+    }
+
+    var maximumConcurrentReads: Int {
+        condition.withLock { maximumActiveReads }
+    }
+
+    var observedMainThread: Bool {
+        condition.withLock { didObserveMainThread }
     }
 }

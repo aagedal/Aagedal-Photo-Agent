@@ -417,6 +417,199 @@ struct DevelopInteractionBehaviorTests {
     }
 }
 
+@Suite("Color LUT import filesystem boundary")
+struct ColorLUTImportServiceTests {
+    @Test("a complete immutable LUT snapshot is read away from the main actor")
+    @MainActor
+    func completeSnapshotRunsOffMainActor() async throws {
+        let source = URL(fileURLWithPath: "/virtual/look.cube")
+        let bytes = Data("LUT_3D_SIZE 2\n".utf8)
+        let requestID = UUID()
+        let probe = ColorLUTImportReaderProbe(data: bytes)
+        let service = ColorLUTImportService(
+            reader: ColorLUTImportReader(read: probe.read)
+        )
+
+        let result = try await Task {
+            try await service.loadLUT(from: source, requestID: requestID)
+        }.value
+
+        #expect(result == .loaded(ColorLUTImportSnapshot(
+            requestID: requestID,
+            sourceURL: source,
+            data: bytes,
+            byteCount: bytes.count
+        )))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("overlapping LUT imports serialize and cancellation stops a queued read")
+    func serializedQueuedCancellation() async throws {
+        let firstURL = URL(fileURLWithPath: "/virtual/first.cube")
+        let secondURL = URL(fileURLWithPath: "/virtual/second.cube")
+        let firstID = UUID()
+        let secondID = UUID()
+        let probe = BlockingColorLUTImportReaderProbe()
+        let service = ColorLUTImportService(
+            reader: ColorLUTImportReader(read: probe.read)
+        )
+        let first = Task {
+            try await service.loadLUT(from: firstURL, requestID: firstID)
+        }
+        try await probe.waitUntilFirstReadStarts()
+        let second = Task {
+            try await service.loadLUT(from: secondURL, requestID: secondID)
+        }
+        second.cancel()
+        probe.releaseFirstRead()
+
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+
+        #expect(firstResult == .loaded(ColorLUTImportSnapshot(
+            requestID: firstID,
+            sourceURL: firstURL,
+            data: Data("first".utf8),
+            byteCount: Data("first".utf8).count
+        )))
+        #expect(secondResult == .cancelledBeforeRead(requestID: secondID))
+        #expect(probe.invocationCount == 1)
+        #expect(probe.maximumConcurrentReads == 1)
+    }
+
+    @Test("cancellation during a non-preemptible LUT read reports byte evidence only")
+    func cancellationAfterRead() async throws {
+        let source = URL(fileURLWithPath: "/virtual/slow.cube")
+        let bytes = Data("complete LUT bytes".utf8)
+        let requestID = UUID()
+        let service = ColorLUTImportService(
+            reader: ColorLUTImportReader { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return bytes
+            }
+        )
+
+        let result = try await Task {
+            try await service.loadLUT(from: source, requestID: requestID)
+        }.value
+
+        #expect(result == .cancelledAfterRead(
+            requestID: requestID,
+            sourceURL: source,
+            byteCount: bytes.count
+        ))
+    }
+
+    @Test("the edit workspace owns LUT request lifetime and rejects stale completion")
+    func editWorkspaceSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func importColorLUT("))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n    // MARK: - AI subject/object mask"))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+
+        #expect(source.contains("@State private var colorLUTImportTask: Task<Void, Never>?"))
+        #expect(source.contains("@State private var colorLUTImportRequestID: UUID?"))
+        #expect(functionSource.contains("try await ColorLUTImportService.shared.loadLUT("))
+        #expect(functionSource.contains("guard colorLUTImportRequestID == requestID else { return }"))
+        #expect(functionSource.contains("case .cancelledBeforeRead, .cancelledAfterRead:"))
+        #expect(!functionSource.contains("Data(contentsOf:"))
+        #expect(source.contains("private func beginColorLUTImport(for layerID: UUID) {\n        cancelColorLUTImport()"))
+        #expect(source.contains("if oldURL != newURL {\n                cancelColorLUTImport()"))
+        #expect(source.contains("private func handleEditWorkspaceDisappear() {\n        cancelColorLUTImport()"))
+    }
+}
+
+private nonisolated final class ColorLUTImportReaderProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let data: Data
+    private var count = 0
+    private var observedMainThread = false
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func read(_ url: URL) throws -> Data {
+        _ = url
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return data
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private enum ColorLUTImportProbeError: Error {
+    case timedOut
+}
+
+private nonisolated final class BlockingColorLUTImportReaderProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var readCount = 0
+    private var activeReads = 0
+    private var maximumActiveReads = 0
+    private var firstReadReleased = false
+
+    func read(_ url: URL) throws -> Data {
+        _ = url
+        condition.lock()
+        readCount += 1
+        activeReads += 1
+        maximumActiveReads = max(maximumActiveReads, activeReads)
+        condition.broadcast()
+        if readCount == 1 {
+            while !firstReadReleased {
+                condition.wait()
+            }
+        }
+        activeReads -= 1
+        condition.unlock()
+        return Data("first".utf8)
+    }
+
+    func waitUntilFirstReadStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while invocationCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw ColorLUTImportProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstRead() {
+        condition.lock()
+        firstReadReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var invocationCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return readCount
+    }
+
+    var maximumConcurrentReads: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumActiveReads
+    }
+}
+
 @Suite("Develop mask interaction coordinator")
 @MainActor
 struct DevelopMaskInteractionCoordinatorTests {

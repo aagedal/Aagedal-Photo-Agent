@@ -172,7 +172,7 @@ struct CaptionCodeReplacementCoordinatorTests {
     }
 
     @Test("Configuration and opaque bookmark bytes persist in separate keys")
-    func settingsPersistenceSeparatesBookmark() throws {
+    func settingsPersistenceSeparatesBookmark() async throws {
         let suiteName = "CaptionCodeReplacementCoordinatorTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -201,7 +201,7 @@ struct CaptionCodeReplacementCoordinatorTests {
         store.setEnabled(false)
         store.setStartDelimiter("[[")
         store.setEndDelimiter("]] ")
-        try store.selectSource(sourceURL)
+        try await store.selectSource(sourceURL)
 
         let configurationData = try #require(defaults.data(
             forKey: UserDefaultsKeys.codeReplacementConfiguration
@@ -215,6 +215,7 @@ struct CaptionCodeReplacementCoordinatorTests {
             access: access,
             now: { instant }
         )
+        await restored.waitForPendingSourceOperation()
         #expect(restored.configuration.isEnabled == false)
         #expect(restored.configuration.startDelimiter == "[[")
         #expect(restored.configuration.endDelimiter == "]] ")
@@ -225,7 +226,7 @@ struct CaptionCodeReplacementCoordinatorTests {
     }
 
     @Test("Missing bookmark permission is visible and cannot produce a usable list")
-    func missingBookmarkIsVisible() throws {
+    func missingBookmarkIsVisible() async throws {
         let suiteName = "CaptionCodeReplacementCoordinatorTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -240,13 +241,14 @@ struct CaptionCodeReplacementCoordinatorTests {
                 readData: { _ in throw TestError.unexpectedAccess }
             )
         )
+        await store.waitForPendingSourceOperation()
 
         #expect(store.sourceLoadError != nil)
         #expect(store.list.entries.isEmpty)
     }
 
     @Test("A stale security-scoped bookmark is refreshed only after the source is readable")
-    func staleBookmarkRefreshesAfterRead() throws {
+    func staleBookmarkRefreshesAfterRead() async throws {
         let suiteName = "CaptionCodeReplacementStaleBookmarkTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -270,14 +272,14 @@ struct CaptionCodeReplacementCoordinatorTests {
             forKey: UserDefaultsKeys.codeReplacementConfiguration
         )
         defaults.set(oldBookmark, forKey: UserDefaultsKeys.codeReplacementSourceBookmark)
-        var refreshCount = 0
+        let refreshProbe = BookmarkRefreshProbe()
 
         let store = CodeReplacementSettingsStore(
             defaults: defaults,
             access: CodeReplacementSourceAccess(
                 createBookmark: { url in
                     #expect(url == sourceURL)
-                    refreshCount += 1
+                    refreshProbe.recordRefresh()
                     return refreshedBookmark
                 },
                 resolveBookmark: { data in
@@ -291,20 +293,21 @@ struct CaptionCodeReplacementCoordinatorTests {
             ),
             now: { Date(timeIntervalSince1970: 1_900_000_000) }
         )
+        await store.waitForPendingSourceOperation()
 
         #expect(store.sourceLoadError == nil)
         #expect(store.list.entries.map(\.code) == ["desk"])
         #expect(store.configuration.source?.bookmark?.wasStaleWhenLastResolved == true)
         #expect(defaults.data(forKey: UserDefaultsKeys.codeReplacementSourceBookmark)
             == refreshedBookmark)
-        #expect(refreshCount == 1)
+        #expect(refreshProbe.refreshCount == 1)
     }
 
     @Test(
         "Denied bookmark resolution or source read fails closed with a sanitized message",
         arguments: [BookmarkAccessFailure.resolutionDenied, .readDenied]
     )
-    private func deniedBookmarkAccessIsSanitized(failure: BookmarkAccessFailure) throws {
+    private func deniedBookmarkAccessIsSanitized(failure: BookmarkAccessFailure) async throws {
         let suiteName = "CaptionCodeReplacementDeniedBookmarkTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -331,6 +334,7 @@ struct CaptionCodeReplacementCoordinatorTests {
                 }
             )
         )
+        await store.waitForPendingSourceOperation()
 
         #expect(store.list.entries.isEmpty)
         let message = try #require(store.sourceLoadError).lowercased()
@@ -353,16 +357,29 @@ struct CaptionCodeReplacementCoordinatorTests {
     }
 }
 
-private enum TestError: Error {
+nonisolated private enum TestError: Error {
     case unexpectedAccess
 }
 
-private enum BookmarkAccessFailure: Sendable {
+nonisolated private enum BookmarkAccessFailure: Sendable {
     case resolutionDenied
     case readDenied
 }
 
-private struct BookmarkEnvironmentalFailure: LocalizedError {
+nonisolated private struct BookmarkEnvironmentalFailure: LocalizedError {
     let errorDescription: String? =
         "Denied /Newsroom/private-denied-codes.txt with account-token-secret"
+}
+
+nonisolated private final class BookmarkRefreshProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var refreshCount: Int {
+        lock.withLock { count }
+    }
+
+    func recordRefresh() {
+        lock.withLock { count += 1 }
+    }
 }

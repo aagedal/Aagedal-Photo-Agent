@@ -61,6 +61,8 @@ struct MetadataPanel: View {
     @State private var captionAutocompleteField: MetadataFieldID?
     @State private var captionAutocompleteRestoreFocusKey: String?
     @State private var lastCaptionEditorFocusKey: String?
+    @State private var quickListCreationTask: Task<Void, Never>?
+    @State private var quickListCreationRequestID: UUID?
 
     enum ListFileTarget {
         case keywords
@@ -760,7 +762,8 @@ struct MetadataPanel: View {
 
         if settingsViewModel.quickListURL(for: type) == nil {
             guard let url = promptForQuickListFile(type: type) else { return }
-            settingsViewModel.setQuickListURL(url, for: type)
+            createQuickListFile(at: url, type: type, values: sanitized)
+            return
         }
 
         _ = settingsViewModel.appendToQuickList(for: type, values: sanitized)
@@ -789,14 +792,49 @@ struct MetadataPanel: View {
         panel.nameFieldStringValue = type.defaultFilename
         panel.message = "Create Quick List file for \(type.displayName)"
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        if !FileManager.default.fileExists(atPath: url.path) {
+        return url
+    }
+
+    private func createQuickListFile(at url: URL, type: QuickListType, values: [String]) {
+        cancelQuickListCreation()
+        let requestID = UUID()
+        quickListCreationRequestID = requestID
+        quickListCreationTask = Task {
             do {
-                try "".write(to: url, atomically: true, encoding: .utf8)
+                let result = try await QuickListFileCreationService.shared.createIfNeeded(
+                    at: url,
+                    requestID: requestID
+                )
+                guard quickListCreationRequestID == requestID else { return }
+                quickListCreationTask = nil
+                quickListCreationRequestID = nil
+                switch result {
+                case .existing, .created:
+                    completeQuickListAddition(from: url, type: type, values: values)
+                case .cancelledBeforeAccess, .cancelledBeforeCreation:
+                    break
+                }
             } catch {
+                guard quickListCreationRequestID == requestID else { return }
+                quickListCreationTask = nil
+                quickListCreationRequestID = nil
                 metadataPanelLog.error("Failed to create quick list file at \(url.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+                // Preserve the prior best-effort behavior: a failed user-selected file creation
+                // does not prevent the managed Quick List store from accepting these values.
+                completeQuickListAddition(from: url, type: type, values: values)
             }
         }
-        return url
+    }
+
+    private func completeQuickListAddition(from url: URL, type: QuickListType, values: [String]) {
+        settingsViewModel.setQuickListURL(url, for: type)
+        _ = settingsViewModel.appendToQuickList(for: type, values: values)
+    }
+
+    private func cancelQuickListCreation() {
+        quickListCreationRequestID = nil
+        quickListCreationTask?.cancel()
+        quickListCreationTask = nil
     }
 
     private func insertVariable(_ variable: String) {
@@ -1120,6 +1158,7 @@ struct MetadataPanel: View {
             }
         }
         .onDisappear {
+            cancelQuickListCreation()
             StructuredKeywordsCoordinator.shared.unregister(owner: viewModel)
             captionFlushCoordinator?.unregister(owner: captionFlushOwner)
         }

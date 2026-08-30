@@ -815,3 +815,313 @@ private nonisolated struct ExportDirectoryFixture {
         try? FileManager.default.removeItem(at: root)
     }
 }
+
+@Suite("Metadata Quick List file-creation boundary")
+struct QuickListFileCreationServiceTests {
+    @Test("a missing file is created off the main actor with immutable commit evidence")
+    @MainActor
+    func createsMissingFileOffMainActor() async throws {
+        let fixture = try QuickListFileFixture()
+        defer { fixture.remove() }
+        let destination = fixture.root.appendingPathComponent("keywords.txt")
+        let requestID = UUID()
+        let probe = QuickListFileAccessProbe(fileExists: false)
+        let service = QuickListFileCreationService(access: QuickListFileAccess(
+            fileExists: probe.exists,
+            createEmptyFile: probe.createEmptyFile
+        ))
+
+        let result = try await Task {
+            try await service.createIfNeeded(at: destination, requestID: requestID)
+        }.value
+
+        #expect(result == .created(QuickListFileCreationCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            byteCount: 0,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(probe.existenceCheckCount == 1)
+        #expect(probe.creationCount == 1)
+        #expect(!probe.ranOnMainThread)
+        #expect(try Data(contentsOf: destination).isEmpty)
+    }
+
+    @Test("an existing selected file is preserved without entering the writer")
+    func preservesExistingFile() async throws {
+        let fixture = try QuickListFileFixture()
+        defer { fixture.remove() }
+        let destination = fixture.root.appendingPathComponent("people.txt")
+        let original = Data("Alice\n".utf8)
+        try original.write(to: destination)
+        let requestID = UUID()
+        let probe = QuickListFileAccessProbe(fileExists: true)
+        let service = QuickListFileCreationService(access: QuickListFileAccess(
+            fileExists: probe.exists,
+            createEmptyFile: probe.createEmptyFile
+        ))
+
+        let result = try await service.createIfNeeded(at: destination, requestID: requestID)
+
+        #expect(result == .existing(QuickListExistingFileEvidence(
+            requestID: requestID,
+            destinationURL: destination,
+            cancellationRequestedAfterCheck: false
+        )))
+        #expect(probe.existenceCheckCount == 1)
+        #expect(probe.creationCount == 0)
+        #expect(try Data(contentsOf: destination) == original)
+    }
+
+    @Test("cancellation after a missing-file probe prevents creation explicitly")
+    func cancellationBeforeCreation() async throws {
+        let requestID = UUID()
+        let destination = URL(fileURLWithPath: "/virtual/cancelled-quick-list.txt")
+        let probe = QuickListFileAccessProbe(fileExists: false, cancelDuringExistenceCheck: true)
+        let service = QuickListFileCreationService(access: QuickListFileAccess(
+            fileExists: probe.exists,
+            createEmptyFile: probe.createEmptyFile
+        ))
+
+        let result = try await Task {
+            try await service.createIfNeeded(at: destination, requestID: requestID)
+        }.value
+
+        #expect(result == .cancelledBeforeCreation(
+            requestID: requestID,
+            destinationURL: destination
+        ))
+        #expect(probe.creationCount == 0)
+    }
+
+    @Test("overlapping requests serialize and queued cancellation performs no access")
+    func serializedQueuedCancellation() async throws {
+        let probe = BlockingQuickListFileAccessProbe()
+        let service = QuickListFileCreationService(access: QuickListFileAccess(
+            fileExists: probe.exists,
+            createEmptyFile: probe.createEmptyFile
+        ))
+        let firstID = UUID()
+        let secondID = UUID()
+        let first = Task {
+            try await service.createIfNeeded(
+                at: URL(fileURLWithPath: "/virtual/existing.txt"),
+                requestID: firstID
+            )
+        }
+        try await probe.waitUntilFirstCheckStarts()
+        let second = Task {
+            try await service.createIfNeeded(
+                at: URL(fileURLWithPath: "/virtual/cancelled.txt"),
+                requestID: secondID
+            )
+        }
+        second.cancel()
+        probe.releaseFirstCheck()
+
+        _ = try await first.value
+        let secondResult = try await second.value
+
+        #expect(secondResult == .cancelledBeforeAccess(requestID: secondID))
+        #expect(probe.existenceCheckCount == 1)
+        #expect(probe.maximumConcurrentChecks == 1)
+        #expect(probe.creationCount == 0)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("cancellation during creation still reports the durable empty-file commit")
+    func cancellationAfterCommit() async throws {
+        let fixture = try QuickListFileFixture()
+        defer { fixture.remove() }
+        let destination = fixture.root.appendingPathComponent("cities.txt")
+        let requestID = UUID()
+        let service = QuickListFileCreationService(access: QuickListFileAccess(
+            fileExists: { _ in false },
+            createEmptyFile: { url in
+                try Data().write(to: url, options: .atomic)
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        ))
+
+        let result = try await Task {
+            try await service.createIfNeeded(at: destination, requestID: requestID)
+        }.value
+
+        #expect(result == .created(QuickListFileCreationCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            byteCount: 0,
+            cancellationRequestedAfterCommit: true
+        )))
+        #expect(try Data(contentsOf: destination).isEmpty)
+    }
+
+    @Test("MetadataPanel owns request lifetime and performs no direct file creation")
+    func metadataPanelSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Metadata/MetadataPanel.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func createQuickListFile("))
+        let functionSuffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(functionSuffix.range(
+            of: "\n    private func completeQuickListAddition("
+        ))
+        let functionSource = String(functionSuffix[..<functionEnd.lowerBound])
+        let promptStart = try #require(source.range(of: "private func promptForQuickListFile("))
+        let promptSuffix = source[promptStart.lowerBound...]
+        let promptEnd = try #require(promptSuffix.range(of: "\n    private func createQuickListFile("))
+        let promptSource = String(promptSuffix[..<promptEnd.lowerBound])
+
+        #expect(source.contains("@State private var quickListCreationTask: Task<Void, Never>?"))
+        #expect(source.contains("@State private var quickListCreationRequestID: UUID?"))
+        #expect(functionSource.contains("cancelQuickListCreation()"))
+        #expect(functionSource.contains("try await QuickListFileCreationService.shared.createIfNeeded("))
+        #expect(functionSource.contains("guard quickListCreationRequestID == requestID else { return }"))
+        #expect(source.contains(".onDisappear {\n            cancelQuickListCreation()"))
+        #expect(source.contains("private func cancelQuickListCreation()"))
+        #expect(source.contains("quickListCreationTask?.cancel()"))
+        #expect(!promptSource.contains("FileManager.default.fileExists"))
+        #expect(!promptSource.contains(".write(to:"))
+    }
+}
+
+private nonisolated final class QuickListFileAccessProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let existsResult: Bool
+    private let cancelDuringExistenceCheck: Bool
+    private var checkCount = 0
+    private var createCount = 0
+    private var observedMainThread = false
+
+    init(fileExists: Bool, cancelDuringExistenceCheck: Bool = false) {
+        existsResult = fileExists
+        self.cancelDuringExistenceCheck = cancelDuringExistenceCheck
+    }
+
+    func exists(_ url: URL) -> Bool {
+        _ = url
+        lock.withLock {
+            checkCount += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        if cancelDuringExistenceCheck {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        return existsResult
+    }
+
+    func createEmptyFile(at url: URL) throws {
+        lock.withLock {
+            createCount += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        try Data().write(to: url, options: .atomic)
+    }
+
+    var existenceCheckCount: Int { lock.withLock { checkCount } }
+    var creationCount: Int { lock.withLock { createCount } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private enum QuickListFileAccessProbeError: Error {
+    case timedOut
+}
+
+private nonisolated final class BlockingQuickListFileAccessProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var checkCount = 0
+    private var activeChecks = 0
+    private var maximumActive = 0
+    private var createCount = 0
+    private var firstCheckReleased = false
+    private var observedMainThread = false
+
+    func exists(_ url: URL) -> Bool {
+        _ = url
+        condition.lock()
+        checkCount += 1
+        activeChecks += 1
+        maximumActive = max(maximumActive, activeChecks)
+        observedMainThread = observedMainThread || Thread.isMainThread
+        condition.broadcast()
+        if checkCount == 1 {
+            while !firstCheckReleased {
+                condition.wait()
+            }
+        }
+        activeChecks -= 1
+        condition.unlock()
+        return true
+    }
+
+    func createEmptyFile(at url: URL) throws {
+        _ = url
+        condition.lock()
+        createCount += 1
+        observedMainThread = observedMainThread || Thread.isMainThread
+        condition.unlock()
+    }
+
+    func waitUntilFirstCheckStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while existenceCheckCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw QuickListFileAccessProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstCheck() {
+        condition.lock()
+        firstCheckReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var existenceCheckCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return checkCount
+    }
+
+    var maximumConcurrentChecks: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumActive
+    }
+
+    var creationCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return createCount
+    }
+
+    var ranOnMainThread: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return observedMainThread
+    }
+}
+
+private nonisolated struct QuickListFileFixture {
+    let root: URL
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "QuickListFileCreationServiceTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: root)
+    }
+}

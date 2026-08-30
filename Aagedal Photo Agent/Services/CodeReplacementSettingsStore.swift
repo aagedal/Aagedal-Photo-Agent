@@ -21,10 +21,25 @@ nonisolated struct CodeReplacementBookmarkResolution: Equatable, Sendable {
 
 /// Injectable boundary around security-scoped bookmark bytes and source-file reads.
 /// Bookmark bytes stay in the dedicated defaults key and never enter Codable configuration.
-struct CodeReplacementSourceAccess {
-    var createBookmark: (URL) throws -> Data
-    var resolveBookmark: (Data) throws -> CodeReplacementBookmarkResolution
-    var readData: (URL) throws -> Data
+nonisolated struct CodeReplacementSourceAccess: Sendable {
+    var createBookmark: @Sendable (URL) throws -> Data
+    var resolveBookmark: @Sendable (Data) throws -> CodeReplacementBookmarkResolution
+    var readData: @Sendable (URL) throws -> Data
+    var modificationDate: @Sendable (URL) throws -> Date?
+
+    init(
+        createBookmark: @escaping @Sendable (URL) throws -> Data,
+        resolveBookmark: @escaping @Sendable (Data) throws -> CodeReplacementBookmarkResolution,
+        readData: @escaping @Sendable (URL) throws -> Data,
+        modificationDate: @escaping @Sendable (URL) throws -> Date? = { url in
+            try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        }
+    ) {
+        self.createBookmark = createBookmark
+        self.resolveBookmark = resolveBookmark
+        self.readData = readData
+        self.modificationDate = modificationDate
+    }
 
     static let live = Self(
         createBookmark: { url in
@@ -50,8 +65,215 @@ struct CodeReplacementSourceAccess {
             let didStart = url.startAccessingSecurityScopedResource()
             defer { if didStart { url.stopAccessingSecurityScopedResource() } }
             return try Data(contentsOf: url, options: .mappedIfSafe)
+        },
+        modificationDate: { url in
+            try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         }
     )
+}
+
+nonisolated enum CodeReplacementSourceOperation: Equatable, Sendable {
+    case select
+    case reload
+}
+
+nonisolated enum CodeReplacementSourceOperationStage: Equatable, Sendable {
+    case bookmarkCreated
+    case bookmarkResolved
+    case sourceRead
+    case bookmarkRefreshed
+    case resourceValuesRead
+}
+
+/// Immutable evidence returned when cooperative cancellation is observed between synchronous
+/// Foundation calls. No partially loaded source from this evidence is safe to publish.
+nonisolated struct CodeReplacementSourceCancellation: Equatable, Sendable {
+    let requestID: UUID
+    let operation: CodeReplacementSourceOperation
+    let completedStage: CodeReplacementSourceOperationStage?
+    let sourceURL: URL?
+    let byteCount: Int?
+}
+
+nonisolated struct CodeReplacementSourceSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let operation: CodeReplacementSourceOperation
+    let source: CodeReplacementSourceReference
+    let list: CodeReplacementList
+    /// Present for a new selection or when a stale bookmark was refreshed after a successful read.
+    let bookmarkDataToPersist: Data?
+}
+
+nonisolated enum CodeReplacementSourceOperationResult: Equatable, Sendable {
+    case loaded(CodeReplacementSourceSnapshot)
+    case cancelled(CodeReplacementSourceCancellation)
+}
+
+/// Serializes bookmark creation/resolution, source reads, and resource-value reads away from
+/// MainActor. Those Foundation calls cannot be interrupted once entered, so cancellation is
+/// checked between them and returned as immutable evidence instead of partial publishable state.
+actor CodeReplacementSourceService {
+    private let access: CodeReplacementSourceAccess
+    private let parser = CodeReplacementParser()
+
+    init(access: CodeReplacementSourceAccess = .live) {
+        self.access = access
+    }
+
+    func selectSource(
+        _ url: URL,
+        sourceID: UUID,
+        bookmarkID: UUID,
+        timestamp: Date,
+        requestID: UUID
+    ) throws -> CodeReplacementSourceOperationResult {
+        guard !Task.isCancelled else {
+            return cancelled(requestID: requestID, operation: .select)
+        }
+
+        let bookmarkData = try access.createBookmark(url)
+        guard !Task.isCancelled else {
+            return cancelled(
+                requestID: requestID,
+                operation: .select,
+                stage: .bookmarkCreated,
+                url: url
+            )
+        }
+
+        let data = try access.readData(url)
+        guard !Task.isCancelled else {
+            return cancelled(
+                requestID: requestID,
+                operation: .select,
+                stage: .sourceRead,
+                url: url,
+                byteCount: data.count
+            )
+        }
+
+        let modificationDate = try? access.modificationDate(url)
+        guard !Task.isCancelled else {
+            return cancelled(
+                requestID: requestID,
+                operation: .select,
+                stage: .resourceValuesRead,
+                url: url,
+                byteCount: data.count
+            )
+        }
+
+        let source = CodeReplacementSourceReference(
+            id: sourceID,
+            displayName: url.lastPathComponent,
+            path: url.path,
+            bookmark: CodeReplacementBookmarkReference(
+                id: bookmarkID,
+                createdAt: timestamp,
+                lastResolvedAt: timestamp,
+                wasStaleWhenLastResolved: false
+            ),
+            fingerprint: CodeReplacementSourceFingerprint(
+                byteCount: Int64(data.count),
+                modificationDate: modificationDate
+            )
+        )
+        return .loaded(CodeReplacementSourceSnapshot(
+            requestID: requestID,
+            operation: .select,
+            source: source,
+            list: parser.parse(data, source: source),
+            bookmarkDataToPersist: bookmarkData
+        ))
+    }
+
+    func reloadSource(
+        source originalSource: CodeReplacementSourceReference,
+        bookmarkData: Data,
+        timestamp: Date,
+        requestID: UUID
+    ) throws -> CodeReplacementSourceOperationResult {
+        guard !Task.isCancelled else {
+            return cancelled(requestID: requestID, operation: .reload)
+        }
+
+        let resolution = try access.resolveBookmark(bookmarkData)
+        guard !Task.isCancelled else {
+            return cancelled(
+                requestID: requestID,
+                operation: .reload,
+                stage: .bookmarkResolved,
+                url: resolution.url
+            )
+        }
+
+        let data = try access.readData(resolution.url)
+        guard !Task.isCancelled else {
+            return cancelled(
+                requestID: requestID,
+                operation: .reload,
+                stage: .sourceRead,
+                url: resolution.url,
+                byteCount: data.count
+            )
+        }
+
+        let refreshedBookmark = try resolution.isStale
+            ? access.createBookmark(resolution.url)
+            : nil
+        guard !Task.isCancelled else {
+            return cancelled(
+                requestID: requestID,
+                operation: .reload,
+                stage: resolution.isStale ? .bookmarkRefreshed : .sourceRead,
+                url: resolution.url,
+                byteCount: data.count
+            )
+        }
+
+        let modificationDate = try? access.modificationDate(resolution.url)
+        guard !Task.isCancelled else {
+            return cancelled(
+                requestID: requestID,
+                operation: .reload,
+                stage: .resourceValuesRead,
+                url: resolution.url,
+                byteCount: data.count
+            )
+        }
+
+        var source = originalSource
+        source.displayName = resolution.url.lastPathComponent
+        source.path = resolution.url.path
+        source.bookmark?.lastResolvedAt = timestamp
+        source.bookmark?.wasStaleWhenLastResolved = resolution.isStale
+        source.fingerprint?.byteCount = Int64(data.count)
+        source.fingerprint?.modificationDate = modificationDate
+
+        return .loaded(CodeReplacementSourceSnapshot(
+            requestID: requestID,
+            operation: .reload,
+            source: source,
+            list: parser.parse(data, source: source),
+            bookmarkDataToPersist: refreshedBookmark
+        ))
+    }
+
+    private func cancelled(
+        requestID: UUID,
+        operation: CodeReplacementSourceOperation,
+        stage: CodeReplacementSourceOperationStage? = nil,
+        url: URL? = nil,
+        byteCount: Int? = nil
+    ) -> CodeReplacementSourceOperationResult {
+        .cancelled(CodeReplacementSourceCancellation(
+            requestID: requestID,
+            operation: operation,
+            completedStage: stage,
+            sourceURL: url,
+            byteCount: byteCount
+        ))
+    }
 }
 
 @MainActor
@@ -63,12 +285,13 @@ final class CodeReplacementSettingsStore {
     private(set) var configurationLoadError: CodeReplacementSettingsStoreError?
     private(set) var isConfigurationReadOnly: Bool
 
-    private let defaults: UserDefaults
-    private let access: CodeReplacementSourceAccess
-    private let configurationKey: String
-    private let bookmarkKey: String
-    private let now: () -> Date
-    private let parser = CodeReplacementParser()
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let sourceService: CodeReplacementSourceService
+    @ObservationIgnored private let configurationKey: String
+    @ObservationIgnored private let bookmarkKey: String
+    @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private var sourceOperationTask: Task<CodeReplacementSourceOperationResult, Error>?
+    @ObservationIgnored private var sourceOperationRequestID = UUID()
 
     init(
         defaults: UserDefaults = .standard,
@@ -78,7 +301,7 @@ final class CodeReplacementSettingsStore {
         now: @escaping () -> Date = Date.init
     ) {
         self.defaults = defaults
-        self.access = access
+        sourceService = CodeReplacementSourceService(access: access)
         self.configurationKey = configurationKey
         self.bookmarkKey = bookmarkKey
         self.now = now
@@ -89,7 +312,14 @@ final class CodeReplacementSettingsStore {
         configurationLoadError = load.error
         isConfigurationReadOnly = load.error != nil
         list = CodeReplacementList(source: restoredConfiguration.source)
-        reloadSource()
+
+        // Establish request identity synchronously, then observe the actor work without making
+        // initialization wait for bookmark or filesystem access.
+        if let operation = prepareReloadSource() {
+            Task { [weak self] in
+                await self?.completeReloadSource(operation)
+            }
+        }
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -113,84 +343,143 @@ final class CodeReplacementSettingsStore {
         saveConfiguration()
     }
 
-    func selectSource(_ url: URL) throws {
+    func selectSource(_ url: URL) async throws {
         if let configurationLoadError { throw configurationLoadError }
-        let bookmarkData = try access.createBookmark(url)
-        let data = try access.readData(url)
-        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-        let bookmarkID = UUID()
-        let source = CodeReplacementSourceReference(
-            displayName: url.lastPathComponent,
-            path: url.path,
-            bookmark: CodeReplacementBookmarkReference(
-                id: bookmarkID,
-                createdAt: now(),
-                lastResolvedAt: now(),
-                wasStaleWhenLastResolved: false
-            ),
-            fingerprint: CodeReplacementSourceFingerprint(
-                byteCount: Int64(data.count),
-                modificationDate: values?.contentModificationDate
+
+        let requestID = beginSourceOperation()
+        let timestamp = now()
+        let service = sourceService
+        let task = Task {
+            try await service.selectSource(
+                url,
+                sourceID: UUID(),
+                bookmarkID: UUID(),
+                timestamp: timestamp,
+                requestID: requestID
             )
-        )
-
-        defaults.set(bookmarkData, forKey: bookmarkKey)
-        configuration.source = source
-        list = parser.parse(data, source: source)
-        sourceLoadError = nil
-        saveConfiguration()
-    }
-
-    func reloadSource() {
-        guard !isConfigurationReadOnly else {
-            list = CodeReplacementList()
-            sourceLoadError = nil
-            return
         }
-        guard configuration.source != nil else {
-            list = CodeReplacementList()
-            sourceLoadError = nil
-            return
-        }
-        guard let bookmarkData = defaults.data(forKey: bookmarkKey) else {
-            list = CodeReplacementList(source: configuration.source)
-            sourceLoadError = "The code-replacement source permission is missing. Choose the file again."
-            return
-        }
+        sourceOperationTask = task
 
         do {
-            let resolution = try access.resolveBookmark(bookmarkData)
-            let data = try access.readData(resolution.url)
-            if resolution.isStale {
-                defaults.set(try access.createBookmark(resolution.url), forKey: bookmarkKey)
-            }
-
-            var source = configuration.source
-            source?.displayName = resolution.url.lastPathComponent
-            source?.path = resolution.url.path
-            source?.bookmark?.lastResolvedAt = now()
-            source?.bookmark?.wasStaleWhenLastResolved = resolution.isStale
-            source?.fingerprint?.byteCount = Int64(data.count)
-            source?.fingerprint?.modificationDate = try? resolution.url.resourceValues(
-                forKeys: [.contentModificationDateKey]
-            ).contentModificationDate
-            configuration.source = source
-            list = parser.parse(data, source: source)
-            sourceLoadError = nil
-            saveConfiguration()
+            let result = try await task.value
+            publish(result, requestID: requestID)
         } catch {
-            list = CodeReplacementList(source: configuration.source)
-            sourceLoadError = "The code-replacement source could not be read. Choose the file again."
+            finishSourceOperation(requestID: requestID)
+            throw error
         }
+    }
+
+    func reloadSource() async {
+        guard let operation = prepareReloadSource() else { return }
+        await completeReloadSource(operation)
+    }
+
+    /// Lets integration callers synchronize with the nonblocking launch reload without starting
+    /// a duplicate filesystem request.
+    func waitForPendingSourceOperation() async {
+        guard let task = sourceOperationTask else { return }
+        await completeReloadSource((sourceOperationRequestID, task))
     }
 
     func removeSource() {
         guard !isConfigurationReadOnly else { return }
+        cancelSourceOperation()
         defaults.removeObject(forKey: bookmarkKey)
         configuration.source = nil
         list = CodeReplacementList()
         sourceLoadError = nil
         saveConfiguration()
+    }
+
+    private func prepareReloadSource() -> (
+        requestID: UUID,
+        task: Task<CodeReplacementSourceOperationResult, Error>
+    )? {
+        guard !isConfigurationReadOnly else {
+            cancelSourceOperation()
+            list = CodeReplacementList()
+            sourceLoadError = nil
+            return nil
+        }
+        guard let source = configuration.source else {
+            cancelSourceOperation()
+            list = CodeReplacementList()
+            sourceLoadError = nil
+            return nil
+        }
+        guard let bookmarkData = defaults.data(forKey: bookmarkKey) else {
+            cancelSourceOperation()
+            list = CodeReplacementList(source: source)
+            sourceLoadError = "The code-replacement source permission is missing. Choose the file again."
+            return nil
+        }
+
+        let requestID = beginSourceOperation()
+        let timestamp = now()
+        let service = sourceService
+        let task = Task {
+            try await service.reloadSource(
+                source: source,
+                bookmarkData: bookmarkData,
+                timestamp: timestamp,
+                requestID: requestID
+            )
+        }
+        sourceOperationTask = task
+        return (requestID, task)
+    }
+
+    private func completeReloadSource(
+        _ operation: (
+            requestID: UUID,
+            task: Task<CodeReplacementSourceOperationResult, Error>
+        )
+    ) async {
+        do {
+            let result = try await operation.task.value
+            publish(result, requestID: operation.requestID)
+        } catch {
+            guard sourceOperationRequestID == operation.requestID else { return }
+            sourceOperationTask = nil
+            list = CodeReplacementList(source: configuration.source)
+            sourceLoadError = "The code-replacement source could not be read. Choose the file again."
+        }
+    }
+
+    private func beginSourceOperation() -> UUID {
+        sourceOperationTask?.cancel()
+        let requestID = UUID()
+        sourceOperationRequestID = requestID
+        return requestID
+    }
+
+    private func cancelSourceOperation() {
+        sourceOperationTask?.cancel()
+        sourceOperationTask = nil
+        sourceOperationRequestID = UUID()
+    }
+
+    private func publish(
+        _ result: CodeReplacementSourceOperationResult,
+        requestID: UUID
+    ) {
+        guard sourceOperationRequestID == requestID else { return }
+        sourceOperationTask = nil
+        guard case let .loaded(snapshot) = result,
+              snapshot.requestID == requestID else { return }
+
+        if let bookmarkData = snapshot.bookmarkDataToPersist {
+            defaults.set(bookmarkData, forKey: bookmarkKey)
+        }
+        configuration.source = snapshot.source
+        list = snapshot.list
+        sourceLoadError = nil
+        saveConfiguration()
+    }
+
+    private func finishSourceOperation(requestID: UUID) {
+        guard sourceOperationRequestID == requestID else { return }
+        sourceOperationTask = nil
     }
 
     private func saveConfiguration() {

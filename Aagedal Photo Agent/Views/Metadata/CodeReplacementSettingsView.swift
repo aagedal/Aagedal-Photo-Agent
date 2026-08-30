@@ -50,7 +50,9 @@ struct CodeReplacementSettingsView: View {
 
                     HStack {
                         Button("Choose File…") { choosingSource = true }
-                        Button("Reload") { store.reloadSource() }
+                        Button("Reload") {
+                            Task { await store.reloadSource() }
+                        }
                             .disabled(store.configuration.source == nil)
                         Button("Remove", role: .destructive) { store.removeSource() }
                             .disabled(store.configuration.source == nil)
@@ -107,10 +109,12 @@ struct CodeReplacementSettingsView: View {
             allowsMultipleSelection: false
         ) { result in
             guard case let .success(urls) = result, let url = urls.first else { return }
-            do {
-                try store.selectSource(url)
-            } catch {
-                importError = "The selected code-replacement file could not be bookmarked or read."
+            Task {
+                do {
+                    try await store.selectSource(url)
+                } catch {
+                    importError = "The selected code-replacement file could not be bookmarked or read."
+                }
             }
         }
         .alert("Code Replacement Source", isPresented: Binding(

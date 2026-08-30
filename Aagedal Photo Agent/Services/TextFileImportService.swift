@@ -135,3 +135,81 @@ actor TextFileExportService {
         ))
     }
 }
+
+nonisolated struct QuickListExistingFileEvidence: Equatable, Sendable {
+    let requestID: UUID
+    let destinationURL: URL
+    let cancellationRequestedAfterCheck: Bool
+}
+
+nonisolated struct QuickListFileCreationCommit: Equatable, Sendable {
+    let requestID: UUID
+    let destinationURL: URL
+    let byteCount: Int
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum QuickListFileCreationResult: Equatable, Sendable {
+    case existing(QuickListExistingFileEvidence)
+    case created(QuickListFileCreationCommit)
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledBeforeCreation(requestID: UUID, destinationURL: URL)
+}
+
+nonisolated struct QuickListFileAccess: Sendable {
+    let fileExists: @Sendable (URL) -> Bool
+    let createEmptyFile: @Sendable (URL) throws -> Void
+
+    static let system = QuickListFileAccess(
+        fileExists: { FileManager.default.fileExists(atPath: $0.path) },
+        // Preserve a file that appears between the existence probe and commit (for example from
+        // a collaborating process or synced volume) instead of replacing it with an empty file.
+        createEmptyFile: { try Data().write(to: $0, options: [.atomic, .withoutOverwriting]) }
+    )
+}
+
+/// Serializes the existence probe and conditional empty-file commit selected by MetadataPanel.
+/// Both Foundation calls can block on external, network, or cloud-backed volumes. Cancellation is
+/// therefore observed around the non-preemptible calls, while a completed write always returns
+/// immutable commit evidence even if cancellation arrived while the write was in flight.
+actor QuickListFileCreationService {
+    static let shared = QuickListFileCreationService()
+
+    private let access: QuickListFileAccess
+
+    init(access: QuickListFileAccess = .system) {
+        self.access = access
+    }
+
+    func createIfNeeded(
+        at destinationURL: URL,
+        requestID: UUID
+    ) throws -> QuickListFileCreationResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+
+        if access.fileExists(destinationURL) {
+            return .existing(QuickListExistingFileEvidence(
+                requestID: requestID,
+                destinationURL: destinationURL,
+                cancellationRequestedAfterCheck: Task.isCancelled
+            ))
+        }
+
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCreation(
+                requestID: requestID,
+                destinationURL: destinationURL
+            )
+        }
+
+        try access.createEmptyFile(destinationURL)
+        return .created(QuickListFileCreationCommit(
+            requestID: requestID,
+            destinationURL: destinationURL,
+            byteCount: 0,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        ))
+    }
+}

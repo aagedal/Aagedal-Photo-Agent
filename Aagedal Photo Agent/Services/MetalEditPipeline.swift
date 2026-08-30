@@ -118,6 +118,65 @@ nonisolated struct ParsedCubeLUT: Sendable, Equatable {
     }
 }
 
+nonisolated struct ColorLUTImportSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let sourceURL: URL
+    let data: Data
+    let byteCount: Int
+}
+
+nonisolated enum ColorLUTImportResult: Equatable, Sendable {
+    case loaded(ColorLUTImportSnapshot)
+    case cancelledBeforeRead(requestID: UUID)
+    case cancelledAfterRead(requestID: UUID, sourceURL: URL, byteCount: Int)
+}
+
+nonisolated struct ColorLUTImportReader: Sendable {
+    let read: @Sendable (URL) throws -> Data
+
+    static let system = ColorLUTImportReader { url in
+        try Data(contentsOf: url, options: .mappedIfSafe)
+    }
+}
+
+/// Serializes user-selected LUT reads away from MainActor. The Foundation read cannot be
+/// preempted once entered, so cancellation before and after that synchronous operation returns
+/// distinct immutable evidence and never publishes bytes for a superseded layer request.
+actor ColorLUTImportService {
+    static let shared = ColorLUTImportService()
+
+    private let reader: ColorLUTImportReader
+
+    init(reader: ColorLUTImportReader = .system) {
+        self.reader = reader
+    }
+
+    func loadLUT(
+        from sourceURL: URL,
+        requestID: UUID
+    ) throws -> ColorLUTImportResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID)
+        }
+
+        let data = try reader.read(sourceURL)
+        guard !Task.isCancelled else {
+            return .cancelledAfterRead(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                byteCount: data.count
+            )
+        }
+
+        return .loaded(ColorLUTImportSnapshot(
+            requestID: requestID,
+            sourceURL: sourceURL,
+            data: data,
+            byteCount: data.count
+        ))
+    }
+}
+
 nonisolated enum CubeLUTParser {
     enum ParseError: LocalizedError {
         case notUTF8

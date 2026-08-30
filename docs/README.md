@@ -225,6 +225,12 @@ certificate availability, and the Develop section-mute owner. The current-source
 190 suites; the remaining filesystem inventory, real-volume, broader state-owner, manual, and external gates
 keep the audit at 63 of 75.
 
+The subsequent [source-file import continuation](plan-status-source-file-import-continuation-2026-08-30.md)
+records serialized Code Replacement bookmark/source loading, Metadata Quick List file creation, and Develop
+color-LUT import with explicit cancellation and stale-result rejection. The current-source gate passes 1,672
+tests in 193 suites; remaining filesystem inventory, real-volume/Thread Performance Checker evidence, broader
+Develop ownership, and manual/external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

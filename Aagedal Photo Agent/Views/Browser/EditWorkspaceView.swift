@@ -289,6 +289,8 @@ struct EditWorkspaceView: View {
     @State private var showWatermarkLibraryEmptyAlert = false
     @State private var isShowingLUTImporter = false
     @State private var importingLUTForLayerID: UUID?
+    @State private var colorLUTImportTask: Task<Void, Never>?
+    @State private var colorLUTImportRequestID: UUID?
     @State private var colorTransformError: String?
     @State private var scopeThrottleTask: Task<Void, Never>?
     @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
@@ -770,6 +772,8 @@ struct EditWorkspaceView: View {
         }
         .onChange(of: selectedImageURL) { oldURL, newURL in
             if oldURL != newURL {
+                cancelColorLUTImport()
+                importingLUTForLayerID = nil
                 closeDevelopComparison()
                 handleDevelopVersionImageChange(from: oldURL, to: newURL)
             }
@@ -2604,6 +2608,8 @@ struct EditWorkspaceView: View {
     }
 
     private func handleEditWorkspaceDisappear() {
+        cancelColorLUTImport()
+        importingLUTForLayerID = nil
         isSpaceHandToolActive = false
         transientPreview.endImageSession()
         maskInteraction.endImageSession()
@@ -6036,8 +6042,7 @@ struct EditWorkspaceView: View {
                         .lineLimit(1)
                     Spacer()
                     Button(transform.hasLUT ? "Replace…" : "Choose…") {
-                        importingLUTForLayerID = masks[idx].id
-                        isShowingLUTImporter = true
+                        beginColorLUTImport(for: masks[idx].id)
                     }
                     .controlSize(.small)
                 }
@@ -6920,30 +6925,70 @@ struct EditWorkspaceView: View {
         commitEditAdjustments()
     }
 
+    private func beginColorLUTImport(for layerID: UUID) {
+        cancelColorLUTImport()
+        importingLUTForLayerID = layerID
+        isShowingLUTImporter = true
+    }
+
+    private func cancelColorLUTImport() {
+        colorLUTImportTask?.cancel()
+        colorLUTImportTask = nil
+        colorLUTImportRequestID = nil
+    }
+
     private func importColorLUT(_ result: Result<[URL], any Error>) {
         guard let layerID = importingLUTForLayerID else { return }
-        defer { importingLUTForLayerID = nil }
+        importingLUTForLayerID = nil
+        cancelColorLUTImport()
+
         do {
             let url = try result.get().first
             guard let url else { return }
             let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
-            let parsed = try CubeLUTParser.parse(data)
-            let displayName = parsed.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let name = displayName.flatMap { $0.isEmpty ? nil : $0 }
-                ?? url.deletingPathExtension().lastPathComponent
-            updateCameraRaw { cameraRaw in
-                guard let index = cameraRaw.localAdjustments?
-                    .firstIndex(where: { $0.id == layerID }),
-                      var transform = cameraRaw.localAdjustments?[index].colorTransform
-                else { return }
-                transform.mode = .lut
-                transform.lutName = name
-                transform.lutData = data
-                cameraRaw.localAdjustments?[index].colorTransform = transform
+            let requestID = UUID()
+            colorLUTImportRequestID = requestID
+            colorLUTImportTask = Task { @MainActor in
+                defer {
+                    if accessed { url.stopAccessingSecurityScopedResource() }
+                    if colorLUTImportRequestID == requestID {
+                        colorLUTImportRequestID = nil
+                        colorLUTImportTask = nil
+                    }
+                }
+                do {
+                    let importResult = try await ColorLUTImportService.shared.loadLUT(
+                        from: url,
+                        requestID: requestID
+                    )
+                    guard colorLUTImportRequestID == requestID else { return }
+                    switch importResult {
+                    case .loaded(let snapshot):
+                        let parsed = try CubeLUTParser.parse(snapshot.data)
+                        guard colorLUTImportRequestID == requestID, !Task.isCancelled else { return }
+                        let displayName = parsed.title?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let name = displayName.flatMap { $0.isEmpty ? nil : $0 }
+                            ?? snapshot.sourceURL.deletingPathExtension().lastPathComponent
+                        updateCameraRaw { cameraRaw in
+                            guard let index = cameraRaw.localAdjustments?
+                                .firstIndex(where: { $0.id == layerID }),
+                                  var transform = cameraRaw.localAdjustments?[index].colorTransform
+                            else { return }
+                            transform.mode = .lut
+                            transform.lutName = name
+                            transform.lutData = snapshot.data
+                            cameraRaw.localAdjustments?[index].colorTransform = transform
+                        }
+                        commitEditAdjustments()
+                    case .cancelledBeforeRead, .cancelledAfterRead:
+                        return
+                    }
+                } catch {
+                    guard colorLUTImportRequestID == requestID, !Task.isCancelled else { return }
+                    colorTransformError = error.localizedDescription
+                }
             }
-            commitEditAdjustments()
         } catch {
             colorTransformError = error.localizedDescription
         }
