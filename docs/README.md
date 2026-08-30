@@ -210,6 +210,11 @@ the serialized Structured Keyword import boundary, the Develop preview-render pu
 clean 1,613-test unfiltered run after full-load timing stabilization. These slices advance broad open gates;
 the audit remains 63 of 75.
 
+The latest [responsiveness and navigation continuation](plan-status-responsiveness-navigation-continuation-2026-08-30.md)
+records serialized roster import and keyword-backup preview reads, stable filesystem measurement signposts and
+a repeatable blocked-volume gate, plus the Develop preview-navigation state owner. Real-volume, Instruments,
+Thread Performance Checker, manual, and external release gates remain open, so the audit stays 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

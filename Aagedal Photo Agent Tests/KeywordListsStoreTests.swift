@@ -103,3 +103,217 @@ struct KeywordListsStoreTests {
         #expect(observed == key)
     }
 }
+
+@Suite("Keyword-list backup preview filesystem boundary")
+struct KeywordListBackupPreviewServiceTests {
+    @Test("a complete immutable preview is read away from the main actor")
+    @MainActor
+    func completePreviewRunsOffMainActor() async throws {
+        let source = URL(fileURLWithPath: "/virtual/backup.txt")
+        let bytes = Data("People\n\tAlice\n".utf8)
+        let requestID = UUID()
+        let probe = KeywordListBackupPreviewReaderProbe(data: bytes)
+        let service = KeywordListBackupPreviewService(
+            reader: KeywordListBackupPreviewReader(read: probe.read)
+        )
+
+        let result = try await Task {
+            try await service.loadPreview(from: source, requestID: requestID)
+        }.value
+
+        #expect(result == .loaded(KeywordListBackupPreviewSnapshot(
+            requestID: requestID,
+            sourceURL: source,
+            text: "People\n\tAlice\n",
+            byteCount: bytes.count
+        )))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("a pre-cancelled preview never enters the synchronous reader")
+    func preCancellation() async throws {
+        let requestID = UUID()
+        let probe = KeywordListBackupPreviewReaderProbe(data: Data("unused".utf8))
+        let service = KeywordListBackupPreviewService(
+            reader: KeywordListBackupPreviewReader(read: probe.read)
+        )
+        let task = Task {
+            await Task.yield()
+            return try await service.loadPreview(
+                from: URL(fileURLWithPath: "/virtual/cancelled.txt"),
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        let result = try await task.value
+
+        #expect(result == .cancelledBeforeRead(requestID: requestID))
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("overlapping previews serialize and cancellation stops a queued read")
+    func serializedQueuedCancellation() async throws {
+        let firstURL = URL(fileURLWithPath: "/virtual/first.txt")
+        let secondURL = URL(fileURLWithPath: "/virtual/second.txt")
+        let firstID = UUID()
+        let secondID = UUID()
+        let probe = BlockingKeywordListBackupPreviewReaderProbe()
+        let service = KeywordListBackupPreviewService(
+            reader: KeywordListBackupPreviewReader(read: probe.read)
+        )
+        let first = Task {
+            try await service.loadPreview(from: firstURL, requestID: firstID)
+        }
+        try await probe.waitUntilFirstReadStarts()
+        let second = Task {
+            try await service.loadPreview(from: secondURL, requestID: secondID)
+        }
+        second.cancel()
+        probe.releaseFirstRead()
+
+        let firstResult = try await first.value
+        let secondResult = try await second.value
+
+        #expect(firstResult == .loaded(KeywordListBackupPreviewSnapshot(
+            requestID: firstID,
+            sourceURL: firstURL,
+            text: "first",
+            byteCount: Data("first".utf8).count
+        )))
+        #expect(secondResult == .cancelledBeforeRead(requestID: secondID))
+        #expect(probe.invocationCount == 1)
+        #expect(probe.maximumConcurrentReads == 1)
+    }
+
+    @Test("cancellation during a non-preemptible read reports evidence without text")
+    func cancellationAfterRead() async throws {
+        let source = URL(fileURLWithPath: "/virtual/slow.txt")
+        let bytes = Data("complete bytes".utf8)
+        let requestID = UUID()
+        let service = KeywordListBackupPreviewService(
+            reader: KeywordListBackupPreviewReader { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return bytes
+            }
+        )
+
+        let result = try await Task {
+            try await service.loadPreview(from: source, requestID: requestID)
+        }.value
+
+        #expect(result == .cancelledAfterRead(
+            requestID: requestID,
+            sourceURL: source,
+            byteCount: bytes.count
+        ))
+    }
+
+    @Test("the backup sheet awaits the boundary and rejects stale completion")
+    func backupSheetSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/KeywordListBackupsSheet.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func loadPreview("))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n    private func cancelPreview()"))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains(
+            "try await KeywordListBackupPreviewService.shared.loadPreview("
+        ))
+        #expect(functionSource.contains("guard previewRequestID == requestID,"))
+        #expect(functionSource.contains("previewedVersion?.id == version.id"))
+        #expect(functionSource.contains("case .cancelledBeforeRead, .cancelledAfterRead:"))
+        #expect(source.contains(".onDisappear { cancelPreview() }"))
+        #expect(!source.contains("String(contentsOf: version.url"))
+    }
+}
+
+private nonisolated final class KeywordListBackupPreviewReaderProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let data: Data
+    private var count = 0
+    private var observedMainThread = false
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func read(_ url: URL) throws -> Data {
+        _ = url
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return data
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private enum KeywordListBackupPreviewProbeError: Error {
+    case timedOut
+}
+
+private nonisolated final class BlockingKeywordListBackupPreviewReaderProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var readCount = 0
+    private var activeReads = 0
+    private var maximumActiveReads = 0
+    private var firstReadReleased = false
+
+    func read(_ url: URL) throws -> Data {
+        _ = url
+        condition.lock()
+        readCount += 1
+        activeReads += 1
+        maximumActiveReads = max(maximumActiveReads, activeReads)
+        condition.broadcast()
+        if readCount == 1 {
+            while !firstReadReleased {
+                condition.wait()
+            }
+        }
+        activeReads -= 1
+        condition.unlock()
+        return Data("first".utf8)
+    }
+
+    func waitUntilFirstReadStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while invocationCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw KeywordListBackupPreviewProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstRead() {
+        condition.lock()
+        firstReadReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var invocationCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return readCount
+    }
+
+    var maximumConcurrentReads: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return maximumActiveReads
+    }
+}

@@ -4,6 +4,88 @@ import os
 
 private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "KeywordListsBackupService")
 
+nonisolated struct KeywordListBackupPreviewSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let sourceURL: URL
+    let text: String
+    let byteCount: Int
+}
+
+nonisolated enum KeywordListBackupPreviewResult: Equatable, Sendable {
+    case loaded(KeywordListBackupPreviewSnapshot)
+    case cancelledBeforeRead(requestID: UUID)
+    case cancelledAfterRead(requestID: UUID, sourceURL: URL, byteCount: Int)
+}
+
+nonisolated enum KeywordListBackupPreviewError: LocalizedError, Equatable {
+    case invalidUTF8(URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidUTF8:
+            return "The backup is not valid UTF-8 text."
+        }
+    }
+}
+
+nonisolated struct KeywordListBackupPreviewReader: Sendable {
+    let read: @Sendable (URL) throws -> Data
+
+    static let system = KeywordListBackupPreviewReader { url in
+        try Data(contentsOf: url, options: .mappedIfSafe)
+    }
+}
+
+/// Serializes backup-preview reads away from MainActor. The Foundation read cannot be preempted
+/// once entered, so cancellation after that point returns byte-count evidence but never publishes
+/// text that belongs to a superseded preview request.
+actor KeywordListBackupPreviewService {
+    static let shared = KeywordListBackupPreviewService()
+
+    private let reader: KeywordListBackupPreviewReader
+
+    init(reader: KeywordListBackupPreviewReader = .system) {
+        self.reader = reader
+    }
+
+    func loadPreview(
+        from sourceURL: URL,
+        requestID: UUID
+    ) throws -> KeywordListBackupPreviewResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID)
+        }
+
+        let data = try reader.read(sourceURL)
+        guard !Task.isCancelled else {
+            return .cancelledAfterRead(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                byteCount: data.count
+            )
+        }
+
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw KeywordListBackupPreviewError.invalidUTF8(sourceURL)
+        }
+
+        guard !Task.isCancelled else {
+            return .cancelledAfterRead(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                byteCount: data.count
+            )
+        }
+
+        return .loaded(KeywordListBackupPreviewSnapshot(
+            requestID: requestID,
+            sourceURL: sourceURL,
+            text: text,
+            byteCount: data.count
+        ))
+    }
+}
+
 /// Keeps timestamped **local** backups of every keyword list managed by
 /// `KeywordListsStore`, so a list that disappears — e.g. an unlucky iCloud
 /// launch that reads an empty/stub file, or a sync conflict that drops content

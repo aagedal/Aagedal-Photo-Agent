@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 nonisolated protocol ImageTrashHandling: Sendable {
     func trashItem(at url: URL) throws
@@ -103,6 +104,13 @@ actor FileSystemService {
     private let rejectMove: @Sendable ([URL], URL) -> RejectMoveService.MoveResult
     private let supportedFilesContents: @Sendable (URL) throws -> [URL]
     private let classifyDropSource: @Sendable (URL) -> DropSourceKind
+    /// Measures volume-facing reads without recording paths or filenames. The interval names and
+    /// aggregate counts are intentionally stable so the same Instruments template can compare
+    /// local, network, cloud-placeholder, and large-folder runs.
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "FileSystemRead"
+    )
 
     init(
         isLocallyAvailable: @escaping @Sendable (URL) -> Bool = {
@@ -145,46 +153,67 @@ actor FileSystemService {
 
     func scanFolderWithStatus(at url: URL, includeAllFiles: Bool = false) async throws -> FolderScanResult {
         try Task.checkCancellation()
-        guard locallyAvailableForEnumeration(url) else {
-            return FolderScanResult(files: [], deferredICloudItemCount: 1)
-        }
+        let interval = signposter.beginInterval("FolderScan", id: signposter.makeSignpostID())
 
-        let contents = try FileManager.default.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: [
-                .fileSizeKey,
-                .contentModificationDateKey,
-                .addedToDirectoryDateKey,
-                .isRegularFileKey,
-                .ubiquitousItemDownloadingStatusKey,
-            ],
-            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
-        )
-
-        var deferredICloudItemCount = 0
-        var files: [ImageFile] = []
-        files.reserveCapacity(contents.count)
-        for (index, item) in contents.enumerated() {
-            if index.isMultiple(of: 32) { try Task.checkCancellation() }
-            // Camera voice memos are companions, never browser photos. Keep this boundary even
-            // when the user asks to show otherwise-unsupported files.
-            if item.pathExtension.lowercased() == "wav" { continue }
-            if locallyAvailableForEnumeration(item) {
-                let isSupported = includeAllFiles
-                    ? ((try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true)
-                    : SupportedImageFormats.isSupported(url: item)
-                guard isSupported else { continue }
-                files.append(ImageFile(url: item))
-            } else {
-                guard includeAllFiles || SupportedImageFormats.isSupported(url: item) else { continue }
-                deferredICloudItemCount += 1
-                files.append(ImageFile(url: item, isICloudDownloadPending: true))
+        do {
+            guard locallyAvailableForEnumeration(url) else {
+                signposter.endInterval(
+                    "FolderScan",
+                    interval,
+                    "result=deferred itemCount=0 deferredCount=1"
+                )
+                return FolderScanResult(files: [], deferredICloudItemCount: 1)
             }
+
+            let contents = try FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [
+                    .fileSizeKey,
+                    .contentModificationDateKey,
+                    .addedToDirectoryDateKey,
+                    .isRegularFileKey,
+                    .ubiquitousItemDownloadingStatusKey,
+                ],
+                options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+            )
+
+            var deferredICloudItemCount = 0
+            var files: [ImageFile] = []
+            files.reserveCapacity(contents.count)
+            for (index, item) in contents.enumerated() {
+                if index.isMultiple(of: 32) { try Task.checkCancellation() }
+                // Camera voice memos are companions, never browser photos. Keep this boundary even
+                // when the user asks to show otherwise-unsupported files.
+                if item.pathExtension.lowercased() == "wav" { continue }
+                if locallyAvailableForEnumeration(item) {
+                    let isSupported = includeAllFiles
+                        ? ((try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true)
+                        : SupportedImageFormats.isSupported(url: item)
+                    guard isSupported else { continue }
+                    files.append(ImageFile(url: item))
+                } else {
+                    guard includeAllFiles || SupportedImageFormats.isSupported(url: item) else { continue }
+                    deferredICloudItemCount += 1
+                    files.append(ImageFile(url: item, isICloudDownloadPending: true))
+                }
+            }
+            let result = FolderScanResult(
+                files: files,
+                deferredICloudItemCount: deferredICloudItemCount
+            )
+            signposter.endInterval(
+                "FolderScan",
+                interval,
+                "result=ready itemCount=\(files.count, privacy: .private) deferredCount=\(deferredICloudItemCount, privacy: .private)"
+            )
+            return result
+        } catch is CancellationError {
+            signposter.endInterval("FolderScan", interval, "result=cancelled")
+            throw CancellationError()
+        } catch {
+            signposter.endInterval("FolderScan", interval, "result=failed")
+            throw error
         }
-        return FolderScanResult(
-            files: files,
-            deferredICloudItemCount: deferredICloudItemCount
-        )
     }
 
     /// Returns an immutable, name-sorted snapshot of the supported regular files directly inside
@@ -192,50 +221,86 @@ actor FileSystemService {
     /// `ImageFile` metadata; synchronous Foundation enumeration stays on this serialized actor.
     func supportedFilesSnapshot(at url: URL) throws -> [URL] {
         try Task.checkCancellation()
-        let contents = try supportedFilesContents(url)
+        let interval = signposter.beginInterval(
+            "SupportedFilesSnapshot",
+            id: signposter.makeSignpostID()
+        )
+        do {
+            let contents = try supportedFilesContents(url)
 
-        var supportedFiles: [URL] = []
-        supportedFiles.reserveCapacity(contents.count)
-        for item in contents {
+            var supportedFiles: [URL] = []
+            supportedFiles.reserveCapacity(contents.count)
+            for item in contents {
+                try Task.checkCancellation()
+                guard SupportedImageFormats.isSupported(url: item) else { continue }
+                let values = try item.resourceValues(forKeys: [.isRegularFileKey])
+                guard values.isRegularFile == true else { continue }
+                supportedFiles.append(item)
+            }
             try Task.checkCancellation()
-            guard SupportedImageFormats.isSupported(url: item) else { continue }
-            let values = try item.resourceValues(forKeys: [.isRegularFileKey])
-            guard values.isRegularFile == true else { continue }
-            supportedFiles.append(item)
-        }
-        try Task.checkCancellation()
-        return supportedFiles.sorted { lhs, rhs in
-            let order = lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent)
-            if order != .orderedSame { return order == .orderedAscending }
-            return lhs.path < rhs.path
+            let result = supportedFiles.sorted { lhs, rhs in
+                let order = lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent)
+                if order != .orderedSame { return order == .orderedAscending }
+                return lhs.path < rhs.path
+            }
+            signposter.endInterval(
+                "SupportedFilesSnapshot",
+                interval,
+                "result=ready itemCount=\(result.count, privacy: .private)"
+            )
+            return result
+        } catch is CancellationError {
+            signposter.endInterval("SupportedFilesSnapshot", interval, "result=cancelled")
+            throw CancellationError()
+        } catch {
+            signposter.endInterval("SupportedFilesSnapshot", interval, "result=failed")
+            throw error
         }
     }
 
     func dropSourceSnapshot(for urls: [URL]) throws -> DropSourceSnapshot {
         try Task.checkCancellation()
-        var directories: [URL] = []
-        var regularFiles: [URL] = []
-        var missingURLs: [URL] = []
-        directories.reserveCapacity(urls.count)
-        regularFiles.reserveCapacity(urls.count)
-
-        for url in urls {
-            try Task.checkCancellation()
-            switch classifyDropSource(url) {
-            case .directory:
-                directories.append(url)
-            case .regularFile:
-                regularFiles.append(url)
-            case .missing:
-                missingURLs.append(url)
-            }
-        }
-        try Task.checkCancellation()
-        return DropSourceSnapshot(
-            directories: directories,
-            regularFiles: regularFiles,
-            missingURLs: missingURLs
+        let interval = signposter.beginInterval(
+            "DropSourceClassification",
+            id: signposter.makeSignpostID()
         )
+        do {
+            var directories: [URL] = []
+            var regularFiles: [URL] = []
+            var missingURLs: [URL] = []
+            directories.reserveCapacity(urls.count)
+            regularFiles.reserveCapacity(urls.count)
+
+            for url in urls {
+                try Task.checkCancellation()
+                switch classifyDropSource(url) {
+                case .directory:
+                    directories.append(url)
+                case .regularFile:
+                    regularFiles.append(url)
+                case .missing:
+                    missingURLs.append(url)
+                }
+            }
+            try Task.checkCancellation()
+            let result = DropSourceSnapshot(
+                directories: directories,
+                regularFiles: regularFiles,
+                missingURLs: missingURLs
+            )
+            signposter.endInterval(
+                "DropSourceClassification",
+                interval,
+                "result=ready itemCount=\(urls.count, privacy: .private)"
+            )
+            return result
+        } catch is CancellationError {
+            signposter.endInterval("DropSourceClassification", interval, "result=cancelled")
+            throw CancellationError()
+        } catch {
+            signposter.endInterval("DropSourceClassification", interval, "result=failed")
+            throw error
+        }
     }
 
     func listSubfolders(at url: URL) throws -> [URL] {

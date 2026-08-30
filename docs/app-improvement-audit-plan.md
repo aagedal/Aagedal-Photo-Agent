@@ -110,6 +110,14 @@ unfiltered gate then passed 1,613 tests in 182 suites. Lower-priority filesystem
 gesture/render/persistence ownership, and the manual/external gates remain open.
 ([validation](plan-status-implementation-continuation-2026-08-30.md))
 
+**Responsiveness and navigation continuation (2026-08-30):** the checklist remains 63 of 75. Team roster
+imports and keyword-backup previews now use cancellable serialized readers with request-identity gating, and
+three common filesystem-read boundaries expose stable privacy-safe signposts plus a repeatable blocked-volume
+responsiveness gate. `DevelopPreviewNavigationCoordinator` now owns the live/committed zoom and pan session for
+the normal Develop preview. These slices advance the open Phase 3.1 measurement/inventory and Phase 4.1
+state-owner items without claiming real-volume, Thread Performance Checker, Instruments, or broader extraction
+exit gates. ([validation](plan-status-responsiveness-navigation-continuation-2026-08-30.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -498,6 +506,21 @@ the non-preemptible read; the view cancels superseded work and rejects stale com
 Other direct filesystem paths and the slow-volume/signpost/benchmark gate remain open.
 ([validation](structured-keyword-import-filesystem-validation-2026-08-30.md))
 
+**Roster import and keyword-backup preview follow-up (2026-08-30):** user-selected team-roster imports now
+reuse the serialized `TextFileImportService` rather than reading synchronously in the team editor. Backup
+preview reads use a dedicated serialized reader with immutable loaded/pre-read-cancelled/post-read-cancelled
+evidence. Both views cancel disappearing or superseded work and reject stale completion by request identity.
+Other direct filesystem paths and the real-volume measurement gate remain open.
+([validation](plan-status-responsiveness-navigation-continuation-2026-08-30.md))
+
+**Filesystem measurement follow-up (2026-08-30):** browser folder scans, supported-file snapshots, and drop
+classification now publish stable `OSSignposter` intervals containing only private aggregate counts and result
+state. A deterministic blocked-probe characterization and bounded repeat-run script prove the actor keeps the
+main actor responsive and cancels a queued request before another volume probe. This makes the required manual
+measurement repeatable; it does not replace captures on local SSD, network, iCloud-placeholder, read-only, and
+large-folder fixtures or Thread Performance Checker evidence.
+([validation](slow-volume-measurement-gate-2026-08-30.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
@@ -636,6 +659,13 @@ and image-session teardown. Replacement, cancellation, and teardown reject late 
 work that ignores cooperative cancellation. Core Image/Metal render policy remains in the view, and broader
 gesture, interactive-render, and persistence ownership remains open.
 ([validation](plan-status-implementation-continuation-2026-08-30.md#develop-preview-render-publication-owner))
+
+**Preview-navigation state-owner follow-up (2026-08-30):** `DevelopPreviewNavigationCoordinator` now owns the
+normal preview's paired live/committed zoom and pan state. Scroll, keyboard, magnify, drag, Space-hand, clamp,
+recenter, and image-reset transitions cross that owner, while the view retains cursor geometry, crop-tool zoom,
+and Metal viewport publication. Five characterizations cover bounds, gesture anchoring, recentering, clamping,
+and teardown. Other Develop interaction, layer, render-policy, and persistence owners remain open.
+([validation](develop-preview-navigation-validation-2026-08-30.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

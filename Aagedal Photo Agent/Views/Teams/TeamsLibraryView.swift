@@ -212,6 +212,9 @@ private struct TeamEditorView: View {
     @State private var showPaste = false
     @State private var knownPeople: [KnownPerson] = []
     @State private var saveTask: Task<Void, Never>?
+    @State private var textImportTask: Task<Void, Never>?
+    @State private var textImportRequestID: UUID?
+    @State private var textImportErrorMessage: String?
 
     private let teamID: UUID
     private let createdAt: Date
@@ -323,10 +326,23 @@ private struct TeamEditorView: View {
         .onChange(of: roster) { scheduleSave() }
         .onDisappear {
             saveTask?.cancel()
+            textImportTask?.cancel()
+            textImportRequestID = nil
             save()
         }
         .sheet(isPresented: $showPaste) {
             pasteSheet
+        }
+        .alert(
+            "Import Not Completed",
+            isPresented: Binding(
+                get: { textImportErrorMessage != nil },
+                set: { if !$0 { textImportErrorMessage = nil } }
+            )
+        ) {
+            Button("OK") { textImportErrorMessage = nil }
+        } message: {
+            Text(textImportErrorMessage ?? "")
         }
     }
 
@@ -516,11 +532,31 @@ private struct TeamEditorView: View {
         panel.title = "Import Roster Text"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        do {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            importRoster(from: text)
-        } catch {
-            NSAlert(error: error).runModal()
+        textImportTask?.cancel()
+        let requestID = UUID()
+        textImportRequestID = requestID
+        textImportErrorMessage = nil
+        textImportTask = Task { @MainActor in
+            do {
+                let result = try await TextFileImportService.shared.loadText(
+                    from: url,
+                    requestID: requestID
+                )
+                guard textImportRequestID == requestID else { return }
+                switch result {
+                case .loaded(let snapshot):
+                    importRoster(from: snapshot.text)
+                case .cancelledBeforeRead, .cancelledAfterRead:
+                    break
+                }
+            } catch {
+                guard textImportRequestID == requestID else { return }
+                textImportErrorMessage = error.localizedDescription
+            }
+
+            guard textImportRequestID == requestID else { return }
+            textImportRequestID = nil
+            textImportTask = nil
         }
     }
 }

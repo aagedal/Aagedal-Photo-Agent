@@ -473,6 +473,82 @@ struct DevelopMaskInteractionCoordinatorTests {
     }
 }
 
+@Suite("Develop preview navigation coordinator")
+@MainActor
+struct DevelopPreviewNavigationCoordinatorTests {
+    @Test("magnification is dampened from the last committed scale and capped")
+    func magnificationUsesCommittedScaleAndBounds() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+
+        coordinator.updateMagnification(3.0)
+        #expect(coordinator.zoomScale == 1.8)
+        coordinator.finishMagnification()
+
+        coordinator.updateMagnification(100)
+        #expect(coordinator.zoomScale == EditZoomBehavior.maximumScale)
+        #expect(coordinator.committedZoomScale == 1.8)
+        coordinator.finishMagnification()
+        #expect(coordinator.committedZoomScale == EditZoomBehavior.maximumScale)
+    }
+
+    @Test("a discrete return to fit clears live and committed pan anchors")
+    func returnToFitRecentersNavigation() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+        coordinator.applyZoom(scale: 4, anchoredOffset: CGSize(width: 80, height: -60))
+        #expect(coordinator.updatePan(translation: CGSize(width: 25, height: 10)))
+
+        coordinator.applyZoom(scale: 1)
+
+        #expect(coordinator.zoomScale == 1)
+        #expect(coordinator.committedZoomScale == 1)
+        #expect(coordinator.offset == .zero)
+        #expect(coordinator.committedOffset == .zero)
+        #expect(!coordinator.updatePan(translation: CGSize(width: 10, height: 10)))
+    }
+
+    @Test("pan uses the committed gesture anchor and completion constrains both copies")
+    func panAnchorsAndConstrains() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+        coordinator.applyZoom(scale: 2, anchoredOffset: CGSize(width: 20, height: -10))
+
+        #expect(coordinator.updatePan(translation: CGSize(width: 100, height: -100)))
+        #expect(coordinator.offset == CGSize(width: 120, height: -110))
+
+        coordinator.constrainOffset(maximum: CGSize(width: 75, height: 40))
+        #expect(coordinator.offset == CGSize(width: 75, height: -40))
+        #expect(coordinator.committedOffset == CGSize(width: 75, height: -40))
+
+        #expect(coordinator.updatePan(translation: CGSize(width: -5, height: 6)))
+        #expect(coordinator.offset == CGSize(width: 70, height: -34))
+    }
+
+    @Test("an image-session reset clears every navigation value")
+    func resetClearsNavigationSession() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+        coordinator.applyZoom(scale: 6, anchoredOffset: CGSize(width: 42, height: 18))
+
+        coordinator.reset()
+
+        #expect(coordinator.zoomScale == 1)
+        #expect(coordinator.committedZoomScale == 1)
+        #expect(coordinator.offset == .zero)
+        #expect(coordinator.committedOffset == .zero)
+    }
+
+    @Test("gesture recentering clears pan without changing zoom")
+    func recenterPreservesZoom() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+        coordinator.applyZoom(scale: 3, anchoredOffset: CGSize(width: 18, height: -9))
+
+        coordinator.recenter()
+
+        #expect(coordinator.zoomScale == 3)
+        #expect(coordinator.committedZoomScale == 3)
+        #expect(coordinator.offset == .zero)
+        #expect(coordinator.committedOffset == .zero)
+    }
+}
+
 @Suite("Develop preview session coordinator")
 @MainActor
 struct DevelopPreviewSessionCoordinatorTests {

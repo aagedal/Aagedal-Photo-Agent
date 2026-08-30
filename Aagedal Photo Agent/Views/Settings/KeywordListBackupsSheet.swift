@@ -18,6 +18,11 @@ struct KeywordListBackupsSheet: View {
     @State private var groups: [(key: KeywordListKey, versions: [KeywordListsBackupService.Version])] = []
     @State private var selectedKey: KeywordListKey?
     @State private var previewedVersion: KeywordListsBackupService.Version?
+    @State private var previewText: String?
+    @State private var previewError: String?
+    @State private var previewIsLoading = false
+    @State private var previewRequestID: UUID?
+    @State private var previewTask: Task<Void, Never>?
     @State private var pendingRestore: KeywordListsBackupService.Version?
     @State private var feedback: String?
 
@@ -44,6 +49,8 @@ struct KeywordListBackupsSheet: View {
         }
         .frame(minWidth: 640, idealWidth: 740, minHeight: 440, idealHeight: 540)
         .onAppear { reload() }
+        .onChange(of: selectedKey) { _, _ in cancelPreview() }
+        .onDisappear { cancelPreview() }
         .alert(
             "Restore this version?",
             isPresented: Binding(
@@ -152,9 +159,9 @@ struct KeywordListBackupsSheet: View {
                 }
                 .listStyle(.inset)
 
-                if let previewedVersion {
+                if let previewedVersion, previewedVersion.key == key {
                     Divider()
-                    preview(previewedVersion)
+                    preview
                         .frame(height: 150)
                 }
             }
@@ -175,24 +182,36 @@ struct KeywordListBackupsSheet: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Preview") { previewedVersion = version }
+            Button("Preview") { loadPreview(version) }
                 .buttonStyle(.borderless)
             Button("Restore") { pendingRestore = version }
                 .buttonStyle(.bordered)
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-        .onTapGesture { previewedVersion = version }
+        .onTapGesture { loadPreview(version) }
     }
 
-    private func preview(_ version: KeywordListsBackupService.Version) -> some View {
-        let text = (try? String(contentsOf: version.url, encoding: .utf8)) ?? ""
-        return ScrollView {
-            Text(text)
-                .font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
+    private var preview: some View {
+        ScrollView {
+            if previewIsLoading {
+                ProgressView("Loading preview…")
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            } else if let previewError {
+                ContentUnavailableView(
+                    "Preview Unavailable",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text(previewError)
+                )
+                .frame(maxWidth: .infinity, minHeight: 120)
+            } else {
+                Text(previewText ?? "")
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+            }
         }
         .background(Color(nsColor: .textBackgroundColor))
     }
@@ -223,6 +242,7 @@ struct KeywordListBackupsSheet: View {
     }
 
     private func reload() {
+        cancelPreview()
         groups = KeywordListsBackupService.shared.allVersionsByKey()
         // Keep/establish a sensible selection.
         if let initialKey, groups.contains(where: { $0.key == initialKey }) {
@@ -230,7 +250,57 @@ struct KeywordListBackupsSheet: View {
         } else if selectedKey == nil || !groups.contains(where: { $0.key == selectedKey }) {
             selectedKey = groups.first?.key
         }
+    }
+
+    private func loadPreview(_ version: KeywordListsBackupService.Version) {
+        cancelPreview()
+
+        let requestID = UUID()
+        previewedVersion = version
+        previewRequestID = requestID
+        previewIsLoading = true
+
+        previewTask = Task {
+            do {
+                let result = try await KeywordListBackupPreviewService.shared.loadPreview(
+                    from: version.url,
+                    requestID: requestID
+                )
+                guard previewRequestID == requestID,
+                      previewedVersion?.id == version.id else { return }
+
+                previewTask = nil
+                previewRequestID = nil
+                previewIsLoading = false
+                switch result {
+                case .loaded(let snapshot):
+                    previewText = snapshot.text
+                case .cancelledBeforeRead, .cancelledAfterRead:
+                    previewedVersion = nil
+                }
+            } catch is CancellationError {
+                guard previewRequestID == requestID,
+                      previewedVersion?.id == version.id else { return }
+                cancelPreview()
+            } catch {
+                guard previewRequestID == requestID,
+                      previewedVersion?.id == version.id else { return }
+                previewTask = nil
+                previewRequestID = nil
+                previewIsLoading = false
+                previewError = error.localizedDescription
+            }
+        }
+    }
+
+    private func cancelPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        previewRequestID = nil
         previewedVersion = nil
+        previewText = nil
+        previewError = nil
+        previewIsLoading = false
     }
 
     private func performRestore() {

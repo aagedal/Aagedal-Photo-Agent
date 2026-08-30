@@ -478,6 +478,69 @@ struct SerializedFileSystemServiceTests {
     }
 }
 
+@Suite("Slow volume responsiveness gate", .serialized)
+struct SlowVolumeResponsivenessGateTests {
+    @Test("filesystem read signposts keep stable privacy-safe measurement labels")
+    func fileSystemReadSignpostSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/FileSystemService.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("category: \"FileSystemRead\""))
+        #expect(source.contains("beginInterval(\"FolderScan\""))
+        #expect(source.contains("\"SupportedFilesSnapshot\","))
+        #expect(source.contains("\"DropSourceClassification\","))
+        #expect(source.contains(
+            #"itemCount=\(files.count, privacy: .private) deferredCount=\(deferredICloudItemCount, privacy: .private)"#
+        ))
+        #expect(source.contains(#"itemCount=\(result.count, privacy: .private)"#))
+        #expect(source.contains(#"itemCount=\(urls.count, privacy: .private)"#))
+        #expect(!source.contains(#"path=\("#))
+        #expect(!source.contains(#"filename=\("#))
+    }
+
+    @Test("blocked drop source probe keeps the main actor responsive and cancellation queued")
+    @MainActor
+    func blockedDropSourceProbeDoesNotBlockMainActor() async throws {
+        let probe = BlockingDropSourceProbe()
+        defer { probe.release() }
+        let firstURL = URL(fileURLWithPath: "/simulated-slow-volume/first.jpg")
+        let queuedURL = URL(fileURLWithPath: "/simulated-slow-volume/queued.jpg")
+        let service = FileSystemService(classifyDropSource: probe.classify)
+        let first = Task {
+            try await service.dropSourceSnapshot(for: [firstURL])
+        }
+
+        let didBlock = await probe.waitUntilBlocked()
+        #expect(didBlock, "The simulated slow-volume probe did not start within 30 seconds")
+        guard didBlock else { return }
+
+        // Reaching these assertions while the synchronous probe is still blocked proves that an
+        // indefinitely slow volume cannot occupy the UI executor. A second request is queued on
+        // the serialized actor and cancelled before it is allowed to touch the volume.
+        #expect(probe.callCount == 1)
+        #expect(!probe.ranOnMainThread)
+        let queued = Task {
+            try await service.dropSourceSnapshot(for: [queuedURL])
+        }
+        queued.cancel()
+        probe.release()
+
+        let snapshot = try await first.value
+        #expect(snapshot.regularFiles == [firstURL])
+        await #expect(throws: CancellationError.self) {
+            _ = try await queued.value
+        }
+        #expect(probe.callCount == 1)
+    }
+}
+
 private struct TemporaryFixture {
     let directoryURL: URL
     let fileURL: URL
@@ -554,6 +617,60 @@ nonisolated private final class DropSourceThreadProbe: @unchecked Sendable {
             recordedCallCount += 1
         }
         return .regularFile
+    }
+}
+
+/// Deterministic stand-in for a filesystem call stalled by a network, external, or cloud volume.
+/// The test controls the release explicitly instead of depending on machine timing or `sleep`.
+nonisolated private final class BlockingDropSourceProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var isBlocked = false
+    private var isReleased = false
+    private var observedMainThread = false
+    private var recordedCallCount = 0
+
+    var ranOnMainThread: Bool {
+        condition.withLock { observedMainThread }
+    }
+
+    var callCount: Int {
+        condition.withLock { recordedCallCount }
+    }
+
+    func classify(_ url: URL) -> FileSystemService.DropSourceKind {
+        condition.lock()
+        observedMainThread = observedMainThread || Thread.isMainThread
+        recordedCallCount += 1
+        isBlocked = true
+        condition.broadcast()
+        while !isReleased {
+            condition.wait()
+        }
+        condition.unlock()
+        return .regularFile
+    }
+
+    func waitUntilBlocked(timeout: TimeInterval = 30) async -> Bool {
+        await Task.detached { [self] in
+            waitUntilBlockedSynchronously(timeout: timeout)
+        }.value
+    }
+
+    private func waitUntilBlockedSynchronously(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !isBlocked {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    func release() {
+        condition.withLock {
+            isReleased = true
+            condition.broadcast()
+        }
     }
 }
 

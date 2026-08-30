@@ -121,6 +121,28 @@ struct TextFileImportServiceTests {
         #expect(functionSource.contains("case .cancelledBeforeRead, .cancelledAfterRead:"))
         #expect(!functionSource.contains("Data(contentsOf:"))
     }
+
+    @Test("Team roster import awaits the service and rejects stale completion")
+    func teamRosterEditorSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Teams/TeamsLibraryView.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func importTextFile()"))
+        let suffix = source[functionStart.lowerBound...]
+        let functionEnd = try #require(suffix.range(of: "\n}"))
+        let functionSource = String(suffix[..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains("try await TextFileImportService.shared.loadText("))
+        #expect(functionSource.contains("guard textImportRequestID == requestID else { return }"))
+        #expect(functionSource.contains("case .cancelledBeforeRead, .cancelledAfterRead:"))
+        #expect(!functionSource.contains("String(contentsOf:"))
+    }
 }
 
 private nonisolated final class TextFileImportReaderProbe: @unchecked Sendable {

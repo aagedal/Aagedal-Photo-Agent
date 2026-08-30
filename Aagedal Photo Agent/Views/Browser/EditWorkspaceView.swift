@@ -193,20 +193,6 @@ nonisolated enum EditPreviewCoordinateMapper {
     }
 }
 
-/// Shared zoom bounds for every normal Develop-preview input path. Crop-tool zoom remains
-/// intentionally separate because it controls framing for the crop handles rather than
-/// pixel-level image inspection.
-nonisolated enum EditZoomBehavior {
-    static let scaleRange: ClosedRange<CGFloat> = 1.0...40.0
-    static let maximumScale = scaleRange.upperBound
-
-    static func clampedScale(_ scale: CGFloat) -> CGFloat {
-        if scale < scaleRange.lowerBound { return scaleRange.lowerBound }
-        if scale > scaleRange.upperBound { return scaleRange.upperBound }
-        return scale
-    }
-}
-
 /// Crop handles need breathing room around the image while the crop tool is open. Once the
 /// crop is confirmed, the result should use the entire preview pane like any other image.
 nonisolated enum EditCropPreviewFraming {
@@ -311,10 +297,9 @@ struct EditWorkspaceView: View {
     @State private var colorTransformError: String?
     @State private var scopeThrottleTask: Task<Void, Never>?
     @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
-    @State private var editZoomScale: CGFloat = 1.0
-    @State private var lastEditZoomScale: CGFloat = 1.0
-    @State private var editOffset: CGSize = .zero
-    @State private var lastEditOffset: CGSize = .zero
+    /// Owns the paired live/committed zoom and pan values used by scroll, magnify, keyboard,
+    /// and drag input. Preview geometry and Metal publication remain at this view boundary.
+    @State private var previewNavigation = DevelopPreviewNavigationCoordinator()
     @State private var previewPaneFrame: CGRect = .zero
     @State private var isHoveringHDR = false
     @State private var asShotWhiteBalance: (temperature: Float, tint: Float)?
@@ -491,6 +476,9 @@ struct EditWorkspaceView: View {
     private var brushFlow: Double { maskInteraction.brushFlow }
     private var brushErase: Bool { maskInteraction.brushErase }
     private var maskMattePreviewMaskID: UUID? { maskInteraction.mattePreviewMaskID }
+
+    private var editZoomScale: CGFloat { previewNavigation.zoomScale }
+    private var editOffset: CGSize { previewNavigation.offset }
 
     private var aiMaskTarget: AIMaskTarget {
         get { aiMaskSelection.target }
@@ -1494,11 +1482,11 @@ struct EditWorkspaceView: View {
             .simultaneousGesture(
                 MagnifyGesture()
                     .onChanged { value in
-                        let dampened = 1.0 + (value.magnification - 1.0) * 0.4
                         if showCropControls {
+                            let dampened = 1.0 + (value.magnification - 1.0) * 0.4
                             cropZoomScale = (lastCropZoomScale * dampened).clamped(to: 0.25...3.0)
                         } else {
-                            editZoomScale = EditZoomBehavior.clampedScale(lastEditZoomScale * dampened)
+                            previewNavigation.updateMagnification(value.magnification)
                             syncViewportToMetal()
                         }
                     }
@@ -1506,11 +1494,8 @@ struct EditWorkspaceView: View {
                         if showCropControls {
                             lastCropZoomScale = cropZoomScale
                         } else {
-                            lastEditZoomScale = editZoomScale
-                            if editZoomScale <= 1.0 {
-                                editOffset = .zero
-                                lastEditOffset = .zero
-                            } else if isCropEnabled, !isShowingBefore {
+                            previewNavigation.finishMagnification()
+                            if editZoomScale > 1.0, isCropEnabled, !isShowingBefore {
                                 constrainEditOffset(in: geometry.size, imageSize: geometry.size)
                             }
                             syncViewportToMetal()
@@ -8078,10 +8063,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetEditZoom() {
-        editZoomScale = 1.0
-        lastEditZoomScale = 1.0
-        editOffset = .zero
-        lastEditOffset = .zero
+        previewNavigation.reset()
         syncViewportToMetal()
     }
 
@@ -8111,10 +8093,7 @@ struct EditWorkspaceView: View {
         }
 
         if newScale <= 1.0 {
-            editZoomScale = newScale
-            lastEditZoomScale = newScale
-            editOffset = .zero
-            lastEditOffset = .zero
+            previewNavigation.applyZoom(scale: newScale)
             syncViewportToMetal()
             return
         }
@@ -8125,8 +8104,7 @@ struct EditWorkspaceView: View {
         let containerSize = previewPaneFrame.size
         guard containerSize.width > 0, containerSize.height > 0,
               let imageSize = metalImageSize else {
-            editZoomScale = newScale
-            lastEditZoomScale = newScale
+            previewNavigation.applyZoom(scale: newScale)
             syncViewportToMetal()
             return
         }
@@ -8171,21 +8149,15 @@ struct EditWorkspaceView: View {
             height: offNormY * fittedHeight * newScale
         )
 
-        editZoomScale = newScale
-        lastEditZoomScale = newScale
-        editOffset = newOffset
-        lastEditOffset = newOffset
-
         // Constrain to valid bounds
         let scaledWidth = fittedWidth * newScale
         let scaledHeight = fittedHeight * newScale
         let maxOffsetX = max(0, (scaledWidth - containerSize.width) / 2)
         let maxOffsetY = max(0, (scaledHeight - containerSize.height) / 2)
-        editOffset = CGSize(
-            width: editOffset.width.clamped(to: -maxOffsetX...maxOffsetX),
-            height: editOffset.height.clamped(to: -maxOffsetY...maxOffsetY)
+        previewNavigation.applyZoom(scale: newScale, anchoredOffset: newOffset)
+        previewNavigation.constrainOffset(
+            maximum: CGSize(width: maxOffsetX, height: maxOffsetY)
         )
-        lastEditOffset = editOffset
 
         syncViewportToMetal()
     }
@@ -8197,17 +8169,13 @@ struct EditWorkspaceView: View {
     ) {
         let containerSize = previewPaneFrame.size
         guard containerSize.width > 0, containerSize.height > 0 else {
-            editZoomScale = newScale
-            lastEditZoomScale = newScale
+            previewNavigation.applyZoom(scale: newScale)
             syncViewportToMetal()
             return
         }
 
         if newScale <= 1.0 {
-            editZoomScale = newScale
-            lastEditZoomScale = newScale
-            editOffset = .zero
-            lastEditOffset = .zero
+            previewNavigation.applyZoom(scale: newScale)
             syncViewportToMetal()
             return
         }
@@ -8218,10 +8186,7 @@ struct EditWorkspaceView: View {
             height: cursor.height - (cursor.height - editOffset.height) * zoomRatio
         )
 
-        editZoomScale = newScale
-        lastEditZoomScale = newScale
-        editOffset = anchoredOffset
-        lastEditOffset = anchoredOffset
+        previewNavigation.applyZoom(scale: newScale, anchoredOffset: anchoredOffset)
         constrainEditOffset(in: containerSize, imageSize: containerSize)
     }
 
@@ -8286,21 +8251,15 @@ struct EditWorkspaceView: View {
     private func editPanGesture(in containerSize: CGSize, imageSize: CGSize) -> some Gesture {
         DragGesture()
             .onChanged { value in
-                guard editZoomScale > 1.0 else { return }
-                editOffset = CGSize(
-                    width: lastEditOffset.width + value.translation.width,
-                    height: lastEditOffset.height + value.translation.height
-                )
+                guard previewNavigation.updatePan(translation: value.translation) else { return }
                 syncViewportToMetal()
             }
             .onEnded { _ in
                 guard editZoomScale > 1.0 else {
-                    editOffset = .zero
-                    lastEditOffset = .zero
+                    previewNavigation.recenter()
                     syncViewportToMetal()
                     return
                 }
-                lastEditOffset = editOffset
                 constrainEditOffset(in: containerSize, imageSize: imageSize)
             }
     }
@@ -8310,23 +8269,17 @@ struct EditWorkspaceView: View {
     private func editHandPanGesture(in containerSize: CGSize, imageSize: CGSize) -> some Gesture {
         DragGesture()
             .onChanged { value in
-                guard editZoomScale > 1.0 else { return }
+                guard previewNavigation.updatePan(translation: value.translation) else { return }
                 NSCursor.closedHand.set()
-                editOffset = CGSize(
-                    width: lastEditOffset.width + value.translation.width,
-                    height: lastEditOffset.height + value.translation.height
-                )
                 syncViewportToMetal()
             }
             .onEnded { _ in
                 guard editZoomScale > 1.0 else {
-                    editOffset = .zero
-                    lastEditOffset = .zero
+                    previewNavigation.recenter()
                     syncViewportToMetal()
                     NSCursor.openHand.set()
                     return
                 }
-                lastEditOffset = editOffset
                 constrainEditOffset(in: containerSize, imageSize: imageSize)
                 if isSpaceHandToolActive {
                     NSCursor.openHand.set()
@@ -8361,11 +8314,9 @@ struct EditWorkspaceView: View {
         }
         let maxOffsetX = max(0, (scaledWidth - containerSize.width) / 2)
         let maxOffsetY = max(0, (scaledHeight - containerSize.height) / 2)
-        editOffset = CGSize(
-            width: editOffset.width.clamped(to: -maxOffsetX...maxOffsetX),
-            height: editOffset.height.clamped(to: -maxOffsetY...maxOffsetY)
+        previewNavigation.constrainOffset(
+            maximum: CGSize(width: maxOffsetX, height: maxOffsetY)
         )
-        lastEditOffset = editOffset
         syncViewportToMetal()
     }
 
