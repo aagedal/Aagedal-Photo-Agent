@@ -288,6 +288,13 @@ structured trees. The serial unfiltered gate passed 1,817 tests in 212 suites. R
 paths, real-volume and Thread Performance Checker evidence, broader Develop persistence/view decomposition, and
 manual/external gates keep the audit at 63 of 75.
 
+The subsequent [Develop persistence-routing continuation](plan-status-develop-persistence-routing-continuation-2026-08-31.md)
+records coordinator-owned dispatch from Develop persistence intent to the injected Primary XMP/history or named-
+version boundary. Both normal adjustment and reset paths publish their image snapshot exactly once before one
+durable action. The affected four-suite selection passed 34 tests, and the serial unfiltered gate passed 1,818
+tests in 212 suites. Broader persistence lifetime/cancellation and view decomposition, filesystem measurement,
+manual, and external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

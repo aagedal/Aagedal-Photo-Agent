@@ -235,6 +235,16 @@ passed 1,817 tests in 212 suites. Remaining direct paths, real-volume evidence, 
 decomposition, and manual or external gates remain incomplete.
 ([validation](plan-status-quick-list-routing-continuation-2026-08-31.md))
 
+**Develop persistence-routing continuation (2026-08-31):** the checklist remains 63 of 75. The existing
+`DevelopPersistenceSessionCoordinator` now owns Primary-versus-named-version commit dispatch as well as intent:
+it publishes the in-memory image snapshot exactly once before invoking exactly one injected durable boundary,
+and inactive or unchanged workspaces invoke neither. Normal adjustments and reset commits both use the same
+policy owner while retaining their established XMP-only versus embedded-CRS reset modes. The affected four-suite
+selection passed 34 tests, the repository gate passed, and the serial unfiltered gate passed 1,818 tests in 212
+suites. Broader persistence lifetime/cancellation and view decomposition, direct filesystem inventory and
+real-volume evidence, and manual or external gates remain incomplete.
+([validation](plan-status-develop-persistence-routing-continuation-2026-08-31.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -869,6 +879,13 @@ throttling, cancellation, and stale-publication identity. Slider, curve, HSL, ma
 delegate to the coordinator while concrete rendering, scope notifications, and XMP/named-version persistence
 remain injected at the view boundary. Broader metadata/sidecar persistence and undo ownership remain open.
 ([validation](plan-status-template-keyword-interactive-render-continuation-2026-08-30.md))
+
+**Persistence-routing state-owner follow-up (2026-08-31):** `DevelopPersistenceSessionCoordinator` now owns
+the final Primary-versus-named-version dispatch policy used by normal adjustments and Develop reset. It publishes
+the image snapshot before exactly one injected durable action and suppresses every action outside an active
+workspace. Concrete XMP/history and version-catalog writers remain injected, preserving their current file
+semantics and keeping broader task lifetime, cancellation, publication, and view decomposition work open.
+([validation](plan-status-develop-persistence-routing-continuation-2026-08-31.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

@@ -20,6 +20,7 @@ nonisolated enum DevelopPersistenceIntent: Equatable, Sendable {
 @Observable
 final class DevelopPersistenceSessionCoordinator {
     typealias SettingsPublisher = @MainActor (CameraRawSettings?, Bool) -> Void
+    typealias PersistenceAction = @MainActor () -> Void
 
     private(set) var isWorkspaceActive = false
     private(set) var activeImageURL: URL?
@@ -94,6 +95,37 @@ final class DevelopPersistenceSessionCoordinator {
         guard isWorkspaceActive else { return .unchanged }
         if editsNamedVersion { return .commitNamedVersion }
         return hasChanges ? .commitPrimary : .unchanged
+    }
+
+    /// Routes one persistence request to the durable boundary selected for the active image.
+    ///
+    /// Concrete XMP and named-version writers stay injected so this coordinator owns policy and
+    /// lifecycle without taking a dependency on `MetadataViewModel` or the version store. The
+    /// in-memory image snapshot is published exactly once before either durable action, matching
+    /// the Develop workspace's established thumbnail/full-screen invalidation order.
+    @discardableResult
+    func performPersistence(
+        hasChanges: Bool,
+        editsNamedVersion: Bool,
+        publishImageSnapshot: PersistenceAction,
+        commitPrimary: PersistenceAction,
+        commitNamedVersion: PersistenceAction
+    ) -> DevelopPersistenceIntent {
+        let intent = persistenceIntent(
+            hasChanges: hasChanges,
+            editsNamedVersion: editsNamedVersion
+        )
+        switch intent {
+        case .commitPrimary:
+            publishImageSnapshot()
+            commitPrimary()
+        case .commitNamedVersion:
+            publishImageSnapshot()
+            commitNamedVersion()
+        case .unchanged, .previewOnly:
+            break
+        }
+        return intent
     }
 
     /// Registers one value transition with an image identity. Undo and redo both restore the

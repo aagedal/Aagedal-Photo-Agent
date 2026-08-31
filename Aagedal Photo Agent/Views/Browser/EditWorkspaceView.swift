@@ -3846,30 +3846,22 @@ struct EditWorkspaceView: View {
     }
 
     private func commitEditAdjustments() {
-        let intent = persistenceSession.persistenceIntent(
+        persistenceSession.performPersistence(
             hasChanges: metadataViewModel.hasChanges,
-            editsNamedVersion: developVersionCatalog?.activeVersionID != nil
+            editsNamedVersion: developVersionCatalog?.activeVersionID != nil,
+            publishImageSnapshot: syncCameraRawToImageFile,
+            commitPrimary: {
+                // Develop edits persist to the .xmp sidecar during editing — the source file is
+                // NEVER rewritten in place by the editor. Embedding XMP into the source on every
+                // tweak races with the full-res mmap decode (CGImageSourceCreateWithURL) and
+                // crashes; edits bake into a file only on Export. Sidecar wins over embedded crs
+                // on reload for RAW and non-RAW sources.
+                metadataViewModel.commitEdits(mode: .writeToXMPSidecar) {
+                    onPendingStatusChanged?()
+                }
+            },
+            commitNamedVersion: scheduleActiveDevelopVersionSave
         )
-        if intent == .commitNamedVersion {
-            syncCameraRawToImageFile()
-            scheduleActiveDevelopVersionSave()
-            return
-        }
-        guard intent == .commitPrimary else { return }
-
-        // Develop edits persist to the .xmp sidecar during editing — the source file is NEVER
-        // rewritten in place by the editor. Embedding XMP into the source on every tweak races
-        // with the full-res mmap decode (CGImageSourceCreateWithURL) and crashes; edits bake
-        // into a file only on Export, which renders a separate output. RAW was already
-        // sidecar-only; this makes non-RAW match. (Sidecar wins over embedded crs on reload.)
-        let effectiveMode: MetadataWriteMode = .writeToXMPSidecar
-
-        // Sync cameraRaw to ImageFile so the thumbnail reflects edits immediately
-        syncCameraRawToImageFile()
-
-        metadataViewModel.commitEdits(mode: effectiveMode) {
-            onPendingStatusChanged?()
-        }
     }
 
     /// Commit a develop RESET. Like `commitEditAdjustments` it writes the cleared state to the
@@ -3880,28 +3872,26 @@ struct EditWorkspaceView: View {
     /// user-initiated, so this one-off file write carries negligible decode-race risk. RAW is
     /// never written to the file.
     private func commitDevelopReset() {
-        let intent = persistenceSession.persistenceIntent(
+        persistenceSession.performPersistence(
             hasChanges: metadataViewModel.hasChanges,
-            editsNamedVersion: developVersionCatalog?.activeVersionID != nil
+            editsNamedVersion: developVersionCatalog?.activeVersionID != nil,
+            publishImageSnapshot: syncCameraRawToImageFile,
+            commitPrimary: {
+                let sourceHasEmbeddedCRS: Bool = {
+                    guard let url = selectedImageURL, !SupportedImageFormats.isRaw(url: url),
+                          let crs = metadataViewModel.embeddedMetadata?.cameraRaw else { return false }
+                    return !crs.isEmpty
+                }()
+                let mode: MetadataWriteMode = sourceHasEmbeddedCRS
+                    ? .writeToFileAndXMPSidecar
+                    : .writeToXMPSidecar
+
+                metadataViewModel.commitEdits(mode: mode) {
+                    onPendingStatusChanged?()
+                }
+            },
+            commitNamedVersion: scheduleActiveDevelopVersionSave
         )
-        if intent == .commitNamedVersion {
-            syncCameraRawToImageFile()
-            scheduleActiveDevelopVersionSave()
-            return
-        }
-        guard intent == .commitPrimary else { return }
-        syncCameraRawToImageFile()
-
-        let sourceHasEmbeddedCRS: Bool = {
-            guard let url = selectedImageURL, !SupportedImageFormats.isRaw(url: url),
-                  let crs = metadataViewModel.embeddedMetadata?.cameraRaw else { return false }
-            return !crs.isEmpty
-        }()
-        let mode: MetadataWriteMode = sourceHasEmbeddedCRS ? .writeToFileAndXMPSidecar : .writeToXMPSidecar
-
-        metadataViewModel.commitEdits(mode: mode) {
-            onPendingStatusChanged?()
-        }
     }
 
     private func syncCameraRawToImageFile() {

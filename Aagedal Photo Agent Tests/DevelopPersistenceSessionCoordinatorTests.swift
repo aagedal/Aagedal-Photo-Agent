@@ -39,6 +39,44 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(coordinator.persistenceIntent(hasChanges: false, editsNamedVersion: true) == .commitNamedVersion)
     }
 
+    @Test("persistence routing publishes once before the selected durable boundary")
+    func persistenceRouting() {
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        var events: [String] = []
+
+        let inactiveIntent = coordinator.performPersistence(
+            hasChanges: true,
+            editsNamedVersion: false,
+            publishImageSnapshot: { events.append("publish") },
+            commitPrimary: { events.append("primary") },
+            commitNamedVersion: { events.append("named") }
+        )
+        #expect(inactiveIntent == .unchanged)
+        #expect(events.isEmpty)
+
+        coordinator.beginWorkspace()
+        let primaryIntent = coordinator.performPersistence(
+            hasChanges: true,
+            editsNamedVersion: false,
+            publishImageSnapshot: { events.append("publish-primary") },
+            commitPrimary: { events.append("primary") },
+            commitNamedVersion: { events.append("unexpected-named") }
+        )
+        #expect(primaryIntent == .commitPrimary)
+        #expect(events == ["publish-primary", "primary"])
+
+        events.removeAll()
+        let namedIntent = coordinator.performPersistence(
+            hasChanges: false,
+            editsNamedVersion: true,
+            publishImageSnapshot: { events.append("publish-named") },
+            commitPrimary: { events.append("unexpected-primary") },
+            commitNamedVersion: { events.append("named") }
+        )
+        #expect(namedIntent == .commitNamedVersion)
+        #expect(events == ["publish-named", "named"])
+    }
+
     @Test("undo and redo restore one image-scoped settings transition")
     func undoAndRedo() {
         let imageURL = URL(fileURLWithPath: "/tmp/develop-persistence-undo.raw")
@@ -149,6 +187,7 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(source.contains("persistenceSession.endWorkspace()"))
         #expect(source.contains("persistenceSession.recordMutation("))
         #expect(source.contains("persistenceSession.recordPublishedSettingsChange(for: url)"))
+        #expect(source.components(separatedBy: "persistenceSession.performPersistence(").count == 3)
         #expect(!source.contains("@State private var editUndoManager"))
         #expect(!source.contains("@State private var editedURLsThisSession"))
     }
