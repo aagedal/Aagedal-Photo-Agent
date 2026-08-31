@@ -407,13 +407,9 @@ public struct VideoMetadata: Sendable {
         }
 
         if options.atomic {
-            let dir = url.deletingLastPathComponent()
-            let tempURL = dir.appendingPathComponent(".swiftexif_tmp_\(UUID().uuidString)")
             do {
-                try data.write(to: tempURL)
-                _ = try fm.replaceItemAt(url, withItemAt: tempURL)
+                try AtomicFileWriter.replaceContents(of: url, with: data)
             } catch {
-                try? fm.removeItem(at: tempURL)
                 throw MetadataError.fileWriteError("Atomic write failed: \(error.localizedDescription)")
             }
         } else {

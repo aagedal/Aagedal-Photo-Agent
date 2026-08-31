@@ -170,14 +170,9 @@ public struct AudioMetadata: Sendable {
 
     public func write(to url: URL) throws {
         let data = try writeToData()
-        let fm = FileManager.default
-        let dir = url.deletingLastPathComponent()
-        let tempURL = dir.appendingPathComponent(".swiftexif_tmp_\(UUID().uuidString)")
         do {
-            try data.write(to: tempURL)
-            _ = try fm.replaceItemAt(url, withItemAt: tempURL)
+            try AtomicFileWriter.replaceContents(of: url, with: data)
         } catch {
-            try? fm.removeItem(at: tempURL)
             throw MetadataError.fileWriteError("Audio write failed: \(error.localizedDescription)")
         }
     }

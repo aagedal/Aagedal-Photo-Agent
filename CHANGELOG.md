@@ -49,6 +49,9 @@ upload the current image from Photo Agent.
 - Command-S export now preserves originals and existing renditions when a derived filename collides,
   appending a number for same-folder exports, RAW/JPEG siblings, and selected files that share a
   basename. Metadata copying also rejects source/destination aliases before touching either file.
+- Exported files now remain visible in Finder and iCloud Drive after atomic metadata rewrites;
+  image, audio, and video metadata writes explicitly preserve the destination's visibility, and
+  the export pipeline clears any hidden staging-file flag before reporting success.
 - Import can discover Sony WAV voice memos on the same card as RAW or JPEG images, or use an
   optional second media source. RAW Only, JPEG Only, and Both apply across both sources; matching
   image variants retain verified WAV companions. WAVs may be recorded arbitrarily later but are

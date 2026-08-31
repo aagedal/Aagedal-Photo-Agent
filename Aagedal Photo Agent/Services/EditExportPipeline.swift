@@ -86,7 +86,7 @@ enum EditExportPipeline {
             // A DNG is still a camera RAW, not a rendered output. Do not run the
             // rendered-metadata copier or sidecar overlay; the converter preserves
             // camera metadata and the DNG service carries the source XMP sidecar.
-            return try await Task.detached(priority: .userInitiated) {
+            let renderedURL = try await Task.detached(priority: .userInitiated) {
                 try await AdobeDNGConverterService.convert(
                     sourceURL: sourceURL,
                     destinationFolder: outputFolder,
@@ -94,6 +94,8 @@ enum EditExportPipeline {
                     executableURL: executableURL
                 )
             }.value
+            try ensureExportArtifactIsVisible(at: renderedURL)
+            return renderedURL
         }
 
         let bakedCameraRaw: CameraRawSettings?
@@ -179,7 +181,22 @@ enum EditExportPipeline {
         case .format, .saveAs, .rawDNG, .jpeg:
             break
         }
+        try ensureExportArtifactIsVisible(at: renderedURL)
         return renderedURL
+    }
+
+    /// Export artifacts are user-facing files and must remain discoverable in Finder.
+    /// Metadata writers normally preserve the destination's visibility, but this final
+    /// postcondition also protects formats handled by external encoders and filesystem
+    /// providers that retain a hidden staging-file flag during an atomic replacement.
+    static func ensureExportArtifactIsVisible(at url: URL) throws {
+        let values = try url.resourceValues(forKeys: [.isHiddenKey])
+        guard values.isHidden == true else { return }
+
+        var visibleValues = URLResourceValues()
+        visibleValues.isHidden = false
+        var mutableURL = url
+        try mutableURL.setResourceValues(visibleValues)
     }
 }
 

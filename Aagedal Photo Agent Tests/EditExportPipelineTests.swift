@@ -544,7 +544,53 @@ struct EditExportPipelineTests {
             writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
 
         #expect(FileManager.default.fileExists(atPath: rendered.path))
+        #expect(try rendered.resourceValues(forKeys: [.isHiddenKey]).isHidden == false)
         #expect(await tracker.sidecarOverlayFailures.isEmpty)
+    }
+
+    @Test("SwiftExif atomic rewrites preserve destination visibility")
+    func metadataRewritePreservesVisibility() throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let metadata = try SwiftExif.readMetadata(from: source)
+
+        var visibleValues = URLResourceValues()
+        visibleValues.isHidden = false
+        var mutableSource = source
+        try mutableSource.setResourceValues(visibleValues)
+        _ = try metadata.write(to: source)
+        #expect(try source.resourceValues(forKeys: [.isHiddenKey]).isHidden == false)
+
+        var hiddenValues = URLResourceValues()
+        hiddenValues.isHidden = true
+        mutableSource = source
+        try mutableSource.setResourceValues(hiddenValues)
+        _ = try metadata.write(to: source)
+        #expect(try source.resourceValues(forKeys: [.isHiddenKey]).isHidden == true)
+    }
+
+    @Test("export visibility postcondition clears a hidden filesystem flag")
+    func exportArtifactIsMadeVisible() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-export-visibility-\(UUID().uuidString)", isDirectory: true)
+        let artifact = directory.appendingPathComponent("rendered.jpg")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("rendered".utf8).write(to: artifact)
+
+        var hiddenValues = URLResourceValues()
+        hiddenValues.isHidden = true
+        var mutableArtifact = artifact
+        try mutableArtifact.setResourceValues(hiddenValues)
+        #expect(try artifact.resourceValues(forKeys: [.isHiddenKey]).isHidden == true)
+
+        try EditExportPipeline.ensureExportArtifactIsVisible(at: artifact)
+
+        #expect(try artifact.resourceValues(forKeys: [.isHiddenKey]).isHidden == false)
+        #expect(try Data(contentsOf: artifact) == Data("rendered".utf8))
     }
 
     /// Command-S can target the current source folder. A JPEG-to-JPEG export used to
