@@ -86,6 +86,132 @@ actor KeywordListsArchivePreviewService {
     }
 }
 
+// MARK: - Managed-list inventory boundary
+
+/// One stable managed-list route whose existence and contents can be inspected away from
+/// MainActor. Logical `KeywordListKey` values stay in the settings owner; this transport value
+/// carries only the path, archive kind, and count format needed by the filesystem actor.
+nonisolated struct KeywordListsArchiveInventoryCandidate: Equatable, Sendable {
+    nonisolated enum Format: Equatable, Sendable {
+        case flat
+        case structured
+    }
+
+    let identifier: String
+    let sourceURL: URL
+    let kind: String
+    let format: Format
+}
+
+nonisolated struct KeywordListsArchiveInventorySnapshot: Equatable, Sendable {
+    nonisolated struct Item: Equatable, Sendable {
+        let identifier: String
+        let sourceURL: URL
+        let kind: String
+        let entryCount: Int
+        let byteCount: Int
+    }
+
+    let requestID: UUID
+    let items: [Item]
+}
+
+/// A cancelled inventory carries the exact fully inspected prefix. Settings never publishes a
+/// partial prefix, but the evidence makes cancellation and slow-volume behavior deterministic.
+nonisolated enum KeywordListsArchiveInventoryResult: Equatable, Sendable {
+    case loaded(KeywordListsArchiveInventorySnapshot)
+    case cancelled(KeywordListsArchiveInventorySnapshot)
+}
+
+nonisolated struct KeywordListsArchiveInventoryFileAccess: Sendable {
+    let itemExists: @Sendable (URL) -> Bool
+    let readData: @Sendable (URL) throws -> Data
+
+    static let system = KeywordListsArchiveInventoryFileAccess(
+        itemExists: { CloudCoordinatedIO.itemExists(at: $0) },
+        readData: { try CloudCoordinatedIO.readData(at: $0) }
+    )
+}
+
+/// Serializes Settings archive inventory reads away from MainActor. Each coordinated existence
+/// probe and read is synchronous once entered, so cancellation is sampled between candidates and
+/// immediately after a read. Only immutable counts and source routes return to the view.
+actor KeywordListsArchiveInventoryService {
+    static let shared = KeywordListsArchiveInventoryService()
+
+    private let access: KeywordListsArchiveInventoryFileAccess
+
+    init(access: KeywordListsArchiveInventoryFileAccess = .system) {
+        self.access = access
+    }
+
+    func loadInventory(
+        candidates: [KeywordListsArchiveInventoryCandidate],
+        requestID: UUID
+    ) throws -> KeywordListsArchiveInventoryResult {
+        var items: [KeywordListsArchiveInventorySnapshot.Item] = []
+
+        func snapshot() -> KeywordListsArchiveInventorySnapshot {
+            KeywordListsArchiveInventorySnapshot(requestID: requestID, items: items)
+        }
+
+        guard !Task.isCancelled else { return .cancelled(snapshot()) }
+        for candidate in candidates {
+            guard !Task.isCancelled else { return .cancelled(snapshot()) }
+            let exists = access.itemExists(candidate.sourceURL)
+            guard !Task.isCancelled else { return .cancelled(snapshot()) }
+            guard exists else { continue }
+
+            let data = try access.readData(candidate.sourceURL)
+            let entryCount: Int
+            switch candidate.format {
+            case .flat:
+                entryCount = try ApprovedListParser.parse(data, csv: false).count
+            case .structured:
+                entryCount = Self.structuredKeywordCount(in: data)
+            }
+            items.append(KeywordListsArchiveInventorySnapshot.Item(
+                identifier: candidate.identifier,
+                sourceURL: candidate.sourceURL,
+                kind: candidate.kind,
+                entryCount: entryCount,
+                byteCount: data.count
+            ))
+            guard !Task.isCancelled else { return .cancelled(snapshot()) }
+        }
+        return .loaded(snapshot())
+    }
+
+    /// Mirrors the parser's keyword/container syntax without constructing UI-owned tree nodes.
+    nonisolated private static func structuredKeywordCount(in data: Data) -> Int {
+        let text = String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "\u{FEFF}", with: "")
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+        var count = 0
+        text.enumerateLines { line, _ in
+            let payload = line.drop { $0 == "\t" || $0 == " " }
+            let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            if trimmed.hasPrefix("{"), trimmed.hasSuffix("}"), trimmed.count >= 2,
+               !trimmed.dropFirst().dropLast()
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return
+            }
+            if trimmed.hasPrefix("#"), trimmed.count >= 2,
+               !trimmed.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return
+            }
+            if trimmed.hasPrefix("["), trimmed.hasSuffix("]"), trimmed.count >= 2,
+               !trimmed.dropFirst().dropLast()
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return
+            }
+            count += 1
+        }
+        return count
+    }
+}
+
 // MARK: - Export commit boundary
 
 /// An immutable snapshot of one managed keyword-list file selected for export. Store lookup stays
@@ -834,7 +960,7 @@ enum KeywordListsArchive {
 
     // MARK: - Internals
 
-    private static func enumerateKeys() -> [KeywordListKey] {
+    static func enumerateKeys() -> [KeywordListKey] {
         var keys: [KeywordListKey] = []
         keys.append(contentsOf: QuickListType.allCases.map { KeywordListKey.quick($0) })
         keys.append(contentsOf: ApprovedListField.allCases.map { KeywordListKey.approved($0) })
@@ -860,13 +986,58 @@ enum KeywordListsArchive {
         return n
     }
 
-    private static func kindString(for key: KeywordListKey) -> String {
+    static func kindString(for key: KeywordListKey) -> String {
         switch key {
         case .quick(let type): return "quick.\(type.rawValue)"
         case .approved(let field): return "approved.\(field.rawValue)"
         case .structured: return "structured"
         case .structuredPersonShown: return "structuredPersonShown"
         }
+    }
+
+    /// Captures logical store routes only; the inventory actor performs every existence probe and
+    /// content read. This is intentionally separate from `exportRequest`, which remains as the
+    /// synchronous compatibility entry point for non-UI callers.
+    static func inventoryCandidates(
+        for keys: some Sequence<KeywordListKey>
+    ) -> [KeywordListsArchiveInventoryCandidate] {
+        let store = KeywordListsStore.shared
+        return keys.map { key in
+            KeywordListsArchiveInventoryCandidate(
+                identifier: key.relativePath,
+                sourceURL: store.url(for: key),
+                kind: kindString(for: key),
+                format: {
+                    switch key {
+                    case .quick, .approved: .flat
+                    case .structured, .structuredPersonShown: .structured
+                    }
+                }()
+            )
+        }
+    }
+
+    /// Builds an export request exclusively from a completed immutable inventory snapshot.
+    static func exportRequest(
+        from snapshot: KeywordListsArchiveInventorySnapshot,
+        selecting keys: Set<KeywordListKey>,
+        destinationURL: URL,
+        requestID: UUID
+    ) -> KeywordListsArchiveExportRequest {
+        let selectedIdentifiers = Set(keys.map(\.relativePath))
+        return KeywordListsArchiveExportRequest(
+            requestID: requestID,
+            destinationURL: destinationURL,
+            items: snapshot.items.compactMap { item in
+                guard selectedIdentifiers.contains(item.identifier) else { return nil }
+                return KeywordListsArchiveExportItem(
+                    sourceURL: item.sourceURL,
+                    relativePath: item.identifier,
+                    kind: item.kind,
+                    entryCount: item.entryCount
+                )
+            }
+        )
     }
 
     private static func resolveKey(forKind kind: String, path: String) -> KeywordListKey? {

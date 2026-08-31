@@ -154,6 +154,149 @@ struct KeywordListsArchiveTests {
     }
 }
 
+@Suite("Keyword-list archive inventory filesystem boundary")
+struct KeywordListsArchiveInventoryServiceTests {
+    @Test("a complete inventory counts flat and structured lists away from the main actor")
+    @MainActor
+    func completeInventoryRunsOffMainActor() async throws {
+        let flat = candidate("quick/keywords.txt", format: .flat)
+        let structured = candidate("structured/keywords.txt", format: .structured)
+        let missing = candidate("quick/city.txt", format: .flat)
+        let probe = KeywordListsArchiveInventoryProbe(files: [
+            flat.sourceURL: Data("Paris\n# note\nOslo\nParis\n".utf8),
+            structured.sourceURL: Data("[Places]\n\tNorway\n\t\t{Norge}\n\t\t#Scandinavia\n\tFrance\n".utf8)
+        ])
+        let service = KeywordListsArchiveInventoryService(access: probe.access)
+        let requestID = UUID()
+
+        let result = try await Task {
+            try await service.loadInventory(
+                candidates: [flat, structured, missing],
+                requestID: requestID
+            )
+        }.value
+
+        #expect(result == .loaded(KeywordListsArchiveInventorySnapshot(
+            requestID: requestID,
+            items: [
+                .init(
+                    identifier: flat.identifier,
+                    sourceURL: flat.sourceURL,
+                    kind: flat.kind,
+                    entryCount: 2,
+                    byteCount: probe.files[flat.sourceURL]!.count
+                ),
+                .init(
+                    identifier: structured.identifier,
+                    sourceURL: structured.sourceURL,
+                    kind: structured.kind,
+                    entryCount: 2,
+                    byteCount: probe.files[structured.sourceURL]!.count
+                )
+            ]
+        )))
+        #expect(probe.readCount == 2)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("a pre-cancelled inventory performs no filesystem probes")
+    func preCancellation() async throws {
+        let item = candidate("quick/keywords.txt", format: .flat)
+        let probe = KeywordListsArchiveInventoryProbe(files: [item.sourceURL: Data("Oslo\n".utf8)])
+        let service = KeywordListsArchiveInventoryService(access: probe.access)
+        let requestID = UUID()
+        let task = Task {
+            await Task.yield()
+            return try await service.loadInventory(candidates: [item], requestID: requestID)
+        }
+        task.cancel()
+
+        let result = try await task.value
+
+        #expect(result == .cancelled(KeywordListsArchiveInventorySnapshot(
+            requestID: requestID,
+            items: []
+        )))
+        #expect(probe.probeCount == 0)
+        #expect(probe.readCount == 0)
+    }
+
+    @Test("cancellation after a non-preemptible read returns the exact inspected prefix")
+    func cancellationAfterRead() async throws {
+        let first = candidate("quick/city.txt", format: .flat)
+        let second = candidate("quick/country.txt", format: .flat)
+        let firstData = Data("Oslo\nBergen\n".utf8)
+        let probe = KeywordListsArchiveInventoryProbe(
+            files: [first.sourceURL: firstData, second.sourceURL: Data("Norway\n".utf8)],
+            cancelAfterRead: 1
+        )
+        let service = KeywordListsArchiveInventoryService(access: probe.access)
+        let requestID = UUID()
+
+        let result = try await Task {
+            try await service.loadInventory(candidates: [first, second], requestID: requestID)
+        }.value
+
+        #expect(result == .cancelled(KeywordListsArchiveInventorySnapshot(
+            requestID: requestID,
+            items: [.init(
+                identifier: first.identifier,
+                sourceURL: first.sourceURL,
+                kind: first.kind,
+                entryCount: 2,
+                byteCount: firstData.count
+            )]
+        )))
+        #expect(probe.readCount == 1)
+    }
+
+    @Test("settings archive sheets use immutable inventory snapshots")
+    func settingsSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/KeywordListsImportExportSheets.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.components(
+            separatedBy: "KeywordListsArchiveInventoryService.shared.loadInventory("
+        ).count == 3)
+        #expect(source.contains("guard inventoryRequestID == requestID else { return }"))
+        #expect(source.contains("from: inventorySnapshot,"))
+        #expect(!source.contains("store.exists("))
+        #expect(!source.contains("store.readEntries("))
+        #expect(!source.contains("store.readText("))
+        #expect(!source.contains("private func localEntryCount("))
+
+        let previewStart = try #require(source.range(of: "private func loadPreview()"))
+        let previewSource = source[previewStart.lowerBound...]
+        let inventoryAwait = try #require(previewSource.range(
+            of: "KeywordListsArchiveInventoryService.shared.loadInventory("
+        ))
+        let requestClear = try #require(previewSource.range(
+            of: "previewRequestID = nil",
+            range: inventoryAwait.upperBound..<previewSource.endIndex
+        ))
+        #expect(inventoryAwait.lowerBound < requestClear.lowerBound)
+    }
+
+    private func candidate(
+        _ identifier: String,
+        format: KeywordListsArchiveInventoryCandidate.Format
+    ) -> KeywordListsArchiveInventoryCandidate {
+        KeywordListsArchiveInventoryCandidate(
+            identifier: identifier,
+            sourceURL: URL(fileURLWithPath: "/virtual/store/\(identifier)"),
+            kind: identifier,
+            format: format
+        )
+    }
+}
+
 @Suite("Keyword-list archive export filesystem boundary")
 struct KeywordListsArchiveExportServiceTests {
     @Test("a complete immutable export commit is performed away from the main actor")
@@ -256,7 +399,7 @@ struct KeywordListsArchiveExportServiceTests {
         )
         let functionStart = try #require(source.range(of: "private func runExport()"))
         let suffix = source[functionStart.lowerBound...]
-        let functionEnd = try #require(suffix.range(of: "\n    private func countKeywords"))
+        let functionEnd = try #require(suffix.range(of: "\n}\n\n// MARK: - Import selection"))
         let functionSource = String(suffix[..<functionEnd.lowerBound])
 
         #expect(functionSource.contains(
@@ -763,6 +906,51 @@ private nonisolated final class BlockingKeywordListsArchiveImporterProbe: @unche
 
 private enum KeywordListsArchivePreviewProbeError: Error {
     case timedOut
+}
+
+private nonisolated final class KeywordListsArchiveInventoryProbe: @unchecked Sendable {
+    let files: [URL: Data]
+    private let cancelAfterRead: Int?
+    private let lock = NSLock()
+    private var _probeCount = 0
+    private var _readCount = 0
+    private var _ranOnMainThread = false
+
+    init(files: [URL: Data], cancelAfterRead: Int? = nil) {
+        self.files = files
+        self.cancelAfterRead = cancelAfterRead
+    }
+
+    var access: KeywordListsArchiveInventoryFileAccess {
+        KeywordListsArchiveInventoryFileAccess(
+            itemExists: itemExists,
+            readData: readData
+        )
+    }
+
+    var probeCount: Int { lock.withLock { _probeCount } }
+    var readCount: Int { lock.withLock { _readCount } }
+    var ranOnMainThread: Bool { lock.withLock { _ranOnMainThread } }
+
+    private func itemExists(_ url: URL) -> Bool {
+        lock.withLock {
+            _probeCount += 1
+            _ranOnMainThread = _ranOnMainThread || Thread.isMainThread
+        }
+        return files[url] != nil
+    }
+
+    private func readData(_ url: URL) throws -> Data {
+        let readNumber = lock.withLock { () -> Int in
+            _readCount += 1
+            _ranOnMainThread = _ranOnMainThread || Thread.isMainThread
+            return _readCount
+        }
+        if cancelAfterRead == readNumber {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        return files[url] ?? Data()
+    }
 }
 
 private nonisolated final class BlockingKeywordListsArchivePreviewReaderProbe: @unchecked Sendable {

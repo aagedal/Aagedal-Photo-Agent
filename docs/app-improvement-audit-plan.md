@@ -245,6 +245,18 @@ suites. Broader persistence lifetime/cancellation and view decomposition, direct
 real-volume evidence, and manual or external gates remain incomplete.
 ([validation](plan-status-develop-persistence-routing-continuation-2026-08-31.md))
 
+**Settings keyword-archive inventory continuation (2026-08-31):** the checklist remains 63 of 75. The
+Quick Lists and Keywords archive sheets no longer synchronously probe and read every managed list while
+SwiftUI evaluates export availability or prepares import defaults. `KeywordListsArchiveInventoryService`
+serializes coordinated existence/read work away from MainActor, returns immutable ordered counts with exact
+cancelled-prefix evidence, and lets export requests reuse the inspected source routes without a second read.
+Both sheets own task/request lifetime and reject stale publication; the import sheet retains one request
+identity across archive inspection and local inventory. The affected 11-suite selection passed 65 tests, the
+repository gate passed, and the serial unfiltered gate passed 1,822 tests in 213 suites. Remaining roster-store
+and other direct paths, real-volume evidence, broader Develop persistence/view decomposition, and manual or
+external gates remain incomplete.
+([validation](plan-status-settings-keyword-archive-inventory-continuation-2026-08-31.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data

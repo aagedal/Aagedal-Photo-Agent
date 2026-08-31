@@ -80,6 +80,10 @@ struct KeywordListsExportSheet: View {
 
     @State private var selection: Set<KeywordListKey> = []
     @State private var feedback: String?
+    @State private var inventorySnapshot: KeywordListsArchiveInventorySnapshot?
+    @State private var inventoryError: String?
+    @State private var inventoryTask: Task<Void, Never>?
+    @State private var inventoryRequestID: UUID?
     @State private var exportTask: Task<Void, Never>?
     @State private var exportRequestID: UUID?
 
@@ -87,27 +91,13 @@ struct KeywordListsExportSheet: View {
     /// `scope`. We never offer empty lists for export — the bundle should
     /// describe meaningful data only.
     private var availableEntries: [(key: KeywordListKey, count: Int)] {
-        let store = KeywordListsStore.shared
-        var rows: [(KeywordListKey, Int)] = []
-        for type in QuickListType.allCases where store.exists(.quick(type)) {
-            rows.append((.quick(type), store.readEntries(.quick(type)).count))
+        let keysByIdentifier = Dictionary(
+            uniqueKeysWithValues: KeywordListsArchive.enumerateKeys().map { ($0.relativePath, $0) }
+        )
+        return (inventorySnapshot?.items ?? []).compactMap { item in
+            guard let key = keysByIdentifier[item.identifier], scope.includes(key) else { return nil }
+            return (key, item.entryCount)
         }
-        for field in ApprovedListField.allCases where store.exists(.approved(field)) {
-            rows.append((.approved(field), store.readEntries(.approved(field)).count))
-        }
-        if store.exists(.structured) {
-            let text = store.readText(.structured) ?? ""
-            let count = StructuredKeywordParser.parseString(text)
-                .reduce(0) { $0 + countKeywords(in: $1) }
-            rows.append((.structured, count))
-        }
-        if store.exists(.structuredPersonShown) {
-            let text = store.readText(.structuredPersonShown) ?? ""
-            let count = StructuredKeywordParser.parseString(text)
-                .reduce(0) { $0 + countKeywords(in: $1) }
-            rows.append((.structuredPersonShown, count))
-        }
-        return rows.filter { scope.includes($0.0) }
     }
 
     var body: some View {
@@ -119,11 +109,11 @@ struct KeywordListsExportSheet: View {
             footer
         }
         .frame(minWidth: 420, idealWidth: 480, minHeight: 380, idealHeight: 460)
-        .onAppear {
-            // Default to all available lists selected.
-            selection = Set(availableEntries.map { $0.key })
-        }
+        .onAppear { loadInventory() }
         .onDisappear {
+            inventoryRequestID = nil
+            inventoryTask?.cancel()
+            inventoryTask = nil
             exportRequestID = nil
             exportTask?.cancel()
             exportTask = nil
@@ -144,7 +134,26 @@ struct KeywordListsExportSheet: View {
 
     @ViewBuilder
     private var content: some View {
-        if availableEntries.isEmpty {
+        if inventorySnapshot == nil, let inventoryError {
+            VStack(spacing: 8) {
+                Spacer()
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(.orange)
+                Text("Could not inspect lists").font(.headline)
+                Text(inventoryError)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                Button("Retry") { loadInventory() }
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if inventorySnapshot == nil {
+            ProgressView("Inspecting lists…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if availableEntries.isEmpty {
             VStack(spacing: 8) {
                 Spacer()
                 Image(systemName: "tray")
@@ -213,10 +222,51 @@ struct KeywordListsExportSheet: View {
             }
             .keyboardShortcut(.defaultAction)
             .buttonStyle(.borderedProminent)
-            .disabled(selection.isEmpty || exportRequestID != nil)
+            .disabled(selection.isEmpty || inventorySnapshot == nil || exportRequestID != nil)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    private func loadInventory() {
+        inventoryTask?.cancel()
+        let requestID = UUID()
+        inventoryRequestID = requestID
+        inventorySnapshot = nil
+        inventoryError = nil
+        selection.removeAll()
+        let candidates = KeywordListsArchive.inventoryCandidates(
+            for: KeywordListsArchive.enumerateKeys().filter(scope.includes)
+        )
+
+        inventoryTask = Task {
+            do {
+                let result = try await KeywordListsArchiveInventoryService.shared.loadInventory(
+                    candidates: candidates,
+                    requestID: requestID
+                )
+                guard inventoryRequestID == requestID else { return }
+                inventoryTask = nil
+                inventoryRequestID = nil
+                switch result {
+                case .loaded(let snapshot):
+                    inventorySnapshot = snapshot
+                    let keysByIdentifier = Dictionary(
+                        uniqueKeysWithValues: KeywordListsArchive.enumerateKeys().map {
+                            ($0.relativePath, $0)
+                        }
+                    )
+                    selection = Set(snapshot.items.compactMap { keysByIdentifier[$0.identifier] })
+                case .cancelled:
+                    break
+                }
+            } catch {
+                guard inventoryRequestID == requestID else { return }
+                inventoryTask = nil
+                inventoryRequestID = nil
+                inventoryError = error.localizedDescription
+            }
+        }
     }
 
     private func runExport() {
@@ -226,11 +276,13 @@ struct KeywordListsExportSheet: View {
         panel.message = "Export the selected lists as a single bundle"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        guard let inventorySnapshot else { return }
         exportTask?.cancel()
         let requestID = UUID()
         exportRequestID = requestID
         let request = KeywordListsArchive.exportRequest(
-            for: selection,
+            from: inventorySnapshot,
+            selecting: selection,
             destinationURL: url,
             requestID: requestID
         )
@@ -258,11 +310,6 @@ struct KeywordListsExportSheet: View {
         }
     }
 
-    private func countKeywords(in node: StructuredKeyword) -> Int {
-        var n = node.isKeyword ? 1 : 0
-        for child in node.children { n += countKeywords(in: child) }
-        return n
-    }
 }
 
 // MARK: - Import selection
@@ -452,22 +499,40 @@ struct KeywordListsImportSheet: View {
                     requestID: requestID
                 )
                 guard previewRequestID == requestID else { return }
-                previewTask = nil
-                previewRequestID = nil
 
                 switch result {
                 case .loaded(let snapshot):
                     let loadedPreview = KeywordListsArchive.manifestPreview(from: snapshot.payload)
+                    let scoped = scopedEntries(loadedPreview)
+                    let candidates = KeywordListsArchive.inventoryCandidates(for: scoped.map(\.key))
+                    let inventoryResult = try await KeywordListsArchiveInventoryService.shared.loadInventory(
+                        candidates: candidates,
+                        requestID: requestID
+                    )
+                    guard previewRequestID == requestID else { return }
+                    guard case .loaded(let inventory) = inventoryResult else {
+                        previewTask = nil
+                        previewRequestID = nil
+                        return
+                    }
+                    let keysByIdentifier = Dictionary(
+                        uniqueKeysWithValues: scoped.map { ($0.key.relativePath, $0.key) }
+                    )
+                    localCounts = inventory.items.reduce(into: [:]) { result, item in
+                        guard let key = keysByIdentifier[item.identifier] else { return }
+                        result[key] = item.entryCount
+                    }
                     preview = loadedPreview
                     // Only stage choices for in-scope entries; anything else stays absent
                     // from `choices` and therefore gets no destination route in the import request.
-                    for entry in scopedEntries(loadedPreview) {
-                        localCounts[entry.key] = localEntryCount(for: entry.key)
+                    for entry in scoped {
                         choices[entry.key] = defaultMode(for: entry.key)
                     }
                 case .cancelledBeforeInspection, .cancelledAfterInspection:
                     break
                 }
+                previewTask = nil
+                previewRequestID = nil
             } catch is CancellationError {
                 guard previewRequestID == requestID else { return }
                 previewTask = nil
@@ -485,17 +550,6 @@ struct KeywordListsImportSheet: View {
         previewTask?.cancel()
         previewTask = nil
         previewRequestID = nil
-    }
-
-    private func localEntryCount(for key: KeywordListKey) -> Int {
-        let store = KeywordListsStore.shared
-        switch key {
-        case .structured, .structuredPersonShown:
-            let text = store.readText(key) ?? ""
-            return StructuredKeywordParser.parseString(text).reduce(0) { $0 + countKeywords(in: $1) }
-        case .quick, .approved:
-            return store.readEntries(key).count
-        }
     }
 
     /// Sensible default: Append when there's something local to preserve, else
@@ -581,9 +635,4 @@ struct KeywordListsImportSheet: View {
         }
     }
 
-    private func countKeywords(in node: StructuredKeyword) -> Int {
-        var n = node.isKeyword ? 1 : 0
-        for child in node.children { n += countKeywords(in: child) }
-        return n
-    }
 }
