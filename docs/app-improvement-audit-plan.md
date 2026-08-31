@@ -214,6 +214,16 @@ repository gate passed, and the serial unfiltered current-source gate passed 1,9
 paths, real-volume measurements, broader Develop persistence/modal/geometry ownership, and manual or external
 exit gates remain incomplete. ([validation](plan-status-browser-keyword-develop-persistence-continuation-2026-08-31.md))
 
+**Watermark import and Develop modal/geometry continuation (2026-08-31):** the checklist remains 63 of 75.
+Watermark PNG imports now cross a serialized actor with security-scope ownership, explicit cancellation states,
+compensated two-file commits, durable evidence, and stale-presentation rejection. Dedicated coordinators now own
+named-version modal intent and image-scoped mask/watermark interaction geometry with consume-once persistence
+intent. Instance-injected watermark test storage removed a parallel-suite race, and an injected throttle delay
+made the interactive-render coalescing test independent of MainActor saturation. The final unfiltered gate passed
+1,804 tests in 212 suites. Remaining direct paths, real-volume measurements, broader metadata/sidecar persistence
+routing and view decomposition, and manual or external exit gates remain incomplete.
+([validation](plan-status-watermark-version-geometry-continuation-2026-08-31.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data

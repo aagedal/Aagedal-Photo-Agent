@@ -31,8 +31,10 @@ struct DevelopInteractiveRenderCoordinatorTests {
 
     @Test("throttle coalesces queued scope work onto the latest edit")
     func throttleCoalescesQueuedWork() async throws {
+        var observedDelays: [Duration] = []
         let coordinator = DevelopInteractiveRenderCoordinator(
-            minimumScopeInterval: .milliseconds(60)
+            minimumScopeInterval: .milliseconds(60),
+            scopeThrottleDelay: { delay in observedDelays.append(delay) }
         )
         coordinator.beginWorkspace()
         _ = coordinator.setSliderInteraction(active: true)
@@ -54,7 +56,12 @@ struct DevelopInteractiveRenderCoordinatorTests {
             publisher: { image, _ in publishedWidths.append(image.width) }
         )
 
-        try await eventually { publishedWidths == [2] }
+        for _ in 0..<20 where publishedWidths.isEmpty {
+            await Task.yield()
+        }
+        #expect(observedDelays.count == 1)
+        #expect(observedDelays.first.map { $0 > .zero } == true)
+        #expect(publishedWidths == [2])
         #expect(renderedWidths == [2])
         #expect(!coordinator.isScopePublicationPending)
     }

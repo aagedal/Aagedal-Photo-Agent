@@ -275,6 +275,12 @@ The combined selection passed 52 tests, the repository gate passed, and the seri
 passed 1,923 tests. Lower-priority filesystem inventory, real-volume evidence, broader Develop ownership, and
 manual/external gates keep the audit at 63 of 75.
 
+The subsequent [Watermark import and Develop modal/geometry continuation](plan-status-watermark-version-geometry-continuation-2026-08-31.md)
+records actor-owned security-scoped watermark PNG imports, named-version dialog state, and image-scoped
+mask/watermark interaction geometry. The final unfiltered gate passed 1,804 tests in 212 suites. Remaining
+direct filesystem paths and real-volume evidence, broader metadata/sidecar persistence and view decomposition,
+and manual/external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

@@ -22,6 +22,126 @@ nonisolated enum WatermarkImportError: Error, LocalizedError {
     }
 }
 
+nonisolated struct WatermarkLibraryImportCommit: Equatable, Sendable {
+    let requestID: UUID
+    let sourceURL: URL
+    let asset: WatermarkAsset
+    let imageURL: URL
+    let metadataURL: URL
+    let byteCount: Int
+    /// Coordinated writes are non-preemptible. Cancellation observed after both files are
+    /// installed therefore describes a durable import rather than an abandoned operation.
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum WatermarkLibraryImportResult: Equatable, Sendable {
+    case committed(WatermarkLibraryImportCommit)
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledBeforeRead(requestID: UUID, sourceURL: URL)
+    case cancelledAfterRead(requestID: UUID, sourceURL: URL, byteCount: Int)
+    case cancelledBeforeCommit(requestID: UUID, sourceURL: URL, byteCount: Int)
+}
+
+nonisolated struct WatermarkLibraryImportFileAccess: Sendable {
+    let startAccessing: @Sendable (URL) -> Bool
+    let stopAccessing: @Sendable (URL) -> Void
+    let readData: @Sendable (URL) throws -> Data
+    let writeData: @Sendable (Data, URL) throws -> Void
+    let removeItem: @Sendable (URL) throws -> Void
+
+    static let system = WatermarkLibraryImportFileAccess(
+        startAccessing: { $0.startAccessingSecurityScopedResource() },
+        stopAccessing: { $0.stopAccessingSecurityScopedResource() },
+        readData: { try Data(contentsOf: $0) },
+        writeData: { try CloudCoordinatedIO.writeData($0, to: $1) },
+        removeItem: { try CloudCoordinatedIO.removeItem(at: $0) }
+    )
+}
+
+/// Serializes the security-scoped source read and two-file library commit away from MainActor.
+/// The PNG is installed before `meta.json`, which is the record-discovery boundary. If metadata
+/// installation fails, the service compensates by removing the incomplete item directory.
+actor WatermarkLibraryImportService {
+    static let shared = WatermarkLibraryImportService()
+
+    private let access: WatermarkLibraryImportFileAccess
+
+    init(access: WatermarkLibraryImportFileAccess = .system) {
+        self.access = access
+    }
+
+    func importPNG(
+        from sourceURL: URL,
+        name: String,
+        into itemsDirectory: URL,
+        requestID: UUID
+    ) throws -> WatermarkLibraryImportResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+
+        let didStartAccess = access.startAccessing(sourceURL)
+        defer { if didStartAccess { access.stopAccessing(sourceURL) } }
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID, sourceURL: sourceURL)
+        }
+
+        let data = try access.readData(sourceURL)
+        guard !Task.isCancelled else {
+            return .cancelledAfterRead(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                byteCount: data.count
+            )
+        }
+        guard let rep = NSBitmapImageRep(data: data),
+              rep.pixelsWide > 0, rep.pixelsHigh > 0 else {
+            throw WatermarkImportError.notAPNG
+        }
+
+        let asset = WatermarkAsset(
+            name: name,
+            pixelWidth: rep.pixelsWide,
+            pixelHeight: rep.pixelsHigh
+        )
+        let itemDirectory = itemsDirectory.appendingPathComponent(
+            asset.id.uuidString,
+            isDirectory: true
+        )
+        let imageURL = itemDirectory.appendingPathComponent("image.png")
+        let metadataURL = itemDirectory.appendingPathComponent("meta.json")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let metadata = try encoder.encode(asset)
+
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                byteCount: data.count
+            )
+        }
+
+        do {
+            try access.writeData(data, imageURL)
+            try access.writeData(metadata, metadataURL)
+        } catch {
+            try? access.removeItem(itemDirectory)
+            throw error
+        }
+
+        return .committed(WatermarkLibraryImportCommit(
+            requestID: requestID,
+            sourceURL: sourceURL,
+            asset: asset,
+            imageURL: imageURL,
+            metadataURL: metadataURL,
+            byteCount: data.count,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        ))
+    }
+}
+
 /// Global, optionally iCloud-synced library of watermark PNGs (name + image), referenced by
 /// `WatermarkLayer.libraryAssetID` in the develop layer chain.
 ///
@@ -50,15 +170,19 @@ final class WatermarkStore {
     @ObservationIgnored nonisolated(unsafe) static var storageOverrideURL: URL?
     @ObservationIgnored static var deletionIO = DurableDeletionIO.live
 
+    @ObservationIgnored private let injectedStorageRoot: URL?
     @ObservationIgnored private var didLoad = false
     @ObservationIgnored private var cachedDirectory: URL?
     @ObservationIgnored private var recentLocalWrites: [String: Date] = [:]
+    @ObservationIgnored private let importService = WatermarkLibraryImportService.shared
 
     private static let selfWriteWindow: TimeInterval = 10
     private static let selfWriteTolerance: TimeInterval = 3
     private static let tombstoneRetention: TimeInterval = 30 * 24 * 60 * 60
 
-    private init() {}
+    init(storageRoot: URL? = nil) {
+        injectedStorageRoot = storageRoot
+    }
 
     // MARK: - Storage paths
 
@@ -70,7 +194,9 @@ final class WatermarkStore {
     private var watermarksRootDirectory: URL {
         if let cached = cachedDirectory { return cached }
         let url: URL
-        if let override = Self.storageOverrideURL {
+        if let injectedStorageRoot {
+            url = injectedStorageRoot
+        } else if let override = Self.storageOverrideURL {
             url = override
         } else if UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled),
                   let cloud = AppPaths.iCloudWatermarksURL {
@@ -257,16 +383,44 @@ final class WatermarkStore {
     /// Imports a PNG from an arbitrary source URL (e.g. a `.fileImporter` result), decodes
     /// its pixel dimensions, copies the bytes into this item's own folder, and adds it to
     /// the library. Throws `WatermarkImportError.notAPNG` if the file isn't a readable image.
-    @discardableResult
-    func importPNG(from sourceURL: URL, name: String) throws -> WatermarkAsset {
+    func importPNG(
+        from sourceURL: URL,
+        name: String,
+        requestID: UUID
+    ) async throws -> WatermarkLibraryImportResult {
         ensureLoaded()
-        let data = try Data(contentsOf: sourceURL)
-        guard let rep = NSBitmapImageRep(data: data) else { throw WatermarkImportError.notAPNG }
-        let asset = WatermarkAsset(name: name, pixelWidth: rep.pixelsWide, pixelHeight: rep.pixelsHigh)
-        try writeAsset(asset, imageData: data)
-        assets.append(asset)
-        sortAndNotify()
-        return asset
+        let result = try await importService.importPNG(
+            from: sourceURL,
+            name: name,
+            into: itemsDirectory,
+            requestID: requestID
+        )
+        if case .committed(let commit) = result {
+            stampLocalWrite(commit.imageURL)
+            stampLocalWrite(commit.metadataURL)
+            if let index = assets.firstIndex(where: { $0.id == commit.asset.id }) {
+                assets[index] = commit.asset
+            } else {
+                assets.append(commit.asset)
+            }
+            sortAndNotify()
+        }
+        return result
+    }
+
+    /// Convenience for non-UI callers. Interactive owners should keep the request ID so they can
+    /// reject stale presentation while the store still publishes every durable commit.
+    @discardableResult
+    func importPNG(from sourceURL: URL, name: String) async throws -> WatermarkAsset {
+        let result = try await importPNG(
+            from: sourceURL,
+            name: name,
+            requestID: UUID()
+        )
+        guard case .committed(let commit) = result else {
+            throw CancellationError()
+        }
+        return commit.asset
     }
 
     /// Renames an existing asset in place.

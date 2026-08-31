@@ -8,41 +8,8 @@ nonisolated private let editLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "EditWorkspace"
 )
 
-private enum DevelopVersionNameAction: Identifiable, Equatable {
-    case create
-    case rename(UUID)
-    case duplicate(UUID)
-
-    var id: String {
-        switch self {
-        case .create: "create"
-        case let .rename(id): "rename-\(id.uuidString)"
-        case let .duplicate(id): "duplicate-\(id.uuidString)"
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .create: "New Version from Current"
-        case .rename: "Rename Version"
-        case .duplicate: "Duplicate Version"
-        }
-    }
-
-    var actionLabel: String {
-        switch self {
-        case .create: "Create"
-        case .rename: "Rename"
-        case .duplicate: "Duplicate"
-        }
-    }
-}
-
 private struct DevelopVersionDialogsModifier: ViewModifier {
-    @Binding var nameAction: DevelopVersionNameAction?
-    @Binding var nameDraft: String
-    @Binding var pendingDeleteID: UUID?
-    @Binding var pendingPromotionID: UUID?
+    @Bindable var dialogs: DevelopVersionDialogsCoordinator
     let promotionMessage: String
     let performNameAction: () -> Void
     let deleteVersion: (UUID) -> Void
@@ -50,41 +17,36 @@ private struct DevelopVersionDialogsModifier: ViewModifier {
 
     private var nameActionPresented: Binding<Bool> {
         Binding(
-            get: { nameAction != nil },
-            set: {
-                if !$0 {
-                    nameAction = nil
-                    nameDraft = ""
-                }
-            }
+            get: { dialogs.isNameActionPresented },
+            set: { dialogs.isNameActionPresented = $0 }
         )
     }
 
     private var deletePresented: Binding<Bool> {
         Binding(
-            get: { pendingDeleteID != nil },
-            set: { if !$0 { pendingDeleteID = nil } }
+            get: { dialogs.isDeletePresented },
+            set: { dialogs.isDeletePresented = $0 }
         )
     }
 
     private var promotionPresented: Binding<Bool> {
         Binding(
-            get: { pendingPromotionID != nil },
-            set: { if !$0 { pendingPromotionID = nil } }
+            get: { dialogs.isPromotionPresented },
+            set: { dialogs.isPromotionPresented = $0 }
         )
     }
 
     func body(content: Content) -> some View {
         content
             .alert(
-                nameAction?.title ?? "Develop Version",
+                dialogs.nameAction?.title ?? "Develop Version",
                 isPresented: nameActionPresented
             ) {
-                TextField("Version name", text: $nameDraft)
-                Button(nameAction?.actionLabel ?? "Save") {
+                TextField("Version name", text: $dialogs.nameDraft)
+                Button(dialogs.nameAction?.actionLabel ?? "Save") {
                     performNameAction()
                 }
-                .disabled(nameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(dialogs.nameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Cancel", role: .cancel) {}
             }
             .confirmationDialog(
@@ -93,7 +55,7 @@ private struct DevelopVersionDialogsModifier: ViewModifier {
                 titleVisibility: .visible
             ) {
                 Button("Delete Version", role: .destructive) {
-                    guard let id = pendingDeleteID else { return }
+                    guard let id = dialogs.consumeDelete() else { return }
                     deleteVersion(id)
                 }
                 Button("Cancel", role: .cancel) {}
@@ -106,7 +68,7 @@ private struct DevelopVersionDialogsModifier: ViewModifier {
                 titleVisibility: .visible
             ) {
                 Button("Promote and Verify") {
-                    guard let id = pendingPromotionID else { return }
+                    guard let id = dialogs.consumePromotion() else { return }
                     promoteVersion(id)
                 }
                 Button("Cancel", role: .cancel) {}
@@ -225,11 +187,8 @@ struct EditWorkspaceView: View {
     @State private var cleanFeedPublication = DevelopCleanFeedPublicationCoordinator()
     @State private var developComparison = DevelopComparisonRenderCoordinator()
     @State private var developVersionSession = DevelopVersionSessionCoordinator()
+    @State private var developVersionDialogs = DevelopVersionDialogsCoordinator()
     @State private var developVersionFlushRegistrationID: UUID?
-    @State private var developVersionNameAction: DevelopVersionNameAction?
-    @State private var developVersionNameDraft = ""
-    @State private var developVersionPendingDeleteID: UUID?
-    @State private var developVersionPendingPromotionID: UUID?
     /// Owns source URL/orientation, loading progress, and the tasks for preview decode/render,
     /// adjacent-RAW precaching, and lazy full-resolution zoom upgrades. One image-session boundary
     /// prevents previous-image work from publishing stale pixels or retaining decode graphs.
@@ -268,9 +227,8 @@ struct EditWorkspaceView: View {
     /// Owns image-scoped layer selection plus rename/reorder/delete policy. The coordinator
     /// returns persistence intent; this view remains the XMP/named-version write boundary.
     @State private var layerSession = DevelopLayerSessionCoordinator()
-    @State private var isDraggingMask = false
-    @State private var dragMaskGeometry: EllipseMaskGeometry?
-    @State private var dragWatermarkGeometry: WatermarkGeometry?
+    /// Owns transient mask/watermark handle and slider geometry for the current image.
+    @State private var layerGeometryInteraction = DevelopLayerGeometryInteractionCoordinator()
     /// Shown when "Add Watermark" is tapped but the Watermark library (Settings ▸ Watermarks)
     /// has no PNGs imported yet.
     @State private var showWatermarkLibraryEmptyAlert = false
@@ -486,6 +444,21 @@ struct EditWorkspaceView: View {
     private var brushFlow: Double { maskInteraction.brushFlow }
     private var brushErase: Bool { maskInteraction.brushErase }
     private var maskMattePreviewMaskID: UUID? { maskInteraction.mattePreviewMaskID }
+
+    private var isDraggingMask: Bool {
+        get { layerGeometryInteraction.isDraggingMask }
+        nonmutating set { layerGeometryInteraction.isDraggingMask = newValue }
+    }
+
+    private var dragMaskGeometry: EllipseMaskGeometry? {
+        get { layerGeometryInteraction.maskGeometry }
+        nonmutating set { layerGeometryInteraction.updateMaskGeometry(newValue) }
+    }
+
+    private var dragWatermarkGeometry: WatermarkGeometry? {
+        get { layerGeometryInteraction.watermarkGeometry }
+        nonmutating set { layerGeometryInteraction.updateWatermarkGeometry(newValue) }
+    }
 
     private var editZoomScale: CGFloat { previewNavigation.zoomScale }
     private var editOffset: CGSize { previewNavigation.offset }
@@ -979,10 +952,7 @@ struct EditWorkspaceView: View {
         .animation(.easeInOut(duration: 0.2), value: copyPasteFeedback)
         .modifier(EditWorkspaceExportFailureAlertModifier(exportSession: exportSession))
         .modifier(DevelopVersionDialogsModifier(
-            nameAction: $developVersionNameAction,
-            nameDraft: $developVersionNameDraft,
-            pendingDeleteID: $developVersionPendingDeleteID,
-            pendingPromotionID: $developVersionPendingPromotionID,
+            dialogs: developVersionDialogs,
             promotionMessage: developVersionPromotionMessage,
             performNameAction: performDevelopVersionNameAction,
             deleteVersion: deleteDevelopVersion,
@@ -1186,7 +1156,7 @@ struct EditWorkspaceView: View {
                                         geometry: maskGeometryForDisplay(dragMaskGeometry ?? masks[maskIdx].geometry),
                                         inverted: masks[maskIdx].inverted,
                                         onStart: {
-                                            isDraggingMask = true
+                                            layerGeometryInteraction.beginMaskDrag()
                                             interactiveRender.setSliderInteraction(active: true)
                                         },
                                         onChange: { newGeometry in
@@ -1200,13 +1170,11 @@ struct EditWorkspaceView: View {
                                             }
                                         },
                                         onCommit: {
-                                            if let finalGeo = dragMaskGeometry {
+                                            if let finalGeo = layerGeometryInteraction.consumeMaskGeometry() {
                                                 updateCameraRaw { cameraRaw in
                                                     cameraRaw.localAdjustments?[maskIdx].geometry = finalGeo
                                                 }
-                                                dragMaskGeometry = nil
                                             }
-                                            isDraggingMask = false
                                             interactiveRender.setSliderInteraction(active: false)
                                             commitEditAdjustments()
                                         }
@@ -1244,11 +1212,10 @@ struct EditWorkspaceView: View {
                                             }
                                         },
                                         onCommit: {
-                                            if let finalGeo = dragWatermarkGeometry {
+                                            if let finalGeo = layerGeometryInteraction.consumeWatermarkGeometry() {
                                                 updateCameraRaw { cameraRaw in
                                                     cameraRaw.watermarkLayers?[wmIdx].geometry = finalGeo
                                                 }
-                                                dragWatermarkGeometry = nil
                                             }
                                             interactiveRender.setSliderInteraction(active: false)
                                             commitEditAdjustments()
@@ -1330,7 +1297,7 @@ struct EditWorkspaceView: View {
                                     geometry: maskGeometryForDisplay(dragMaskGeometry ?? masks[maskIdx].geometry),
                                     inverted: masks[maskIdx].inverted,
                                     onStart: {
-                                        isDraggingMask = true
+                                        layerGeometryInteraction.beginMaskDrag()
                                         interactiveRender.setSliderInteraction(active: true)
                                     },
                                     onChange: { newGeometry in
@@ -1347,13 +1314,11 @@ struct EditWorkspaceView: View {
                                     },
                                     onCommit: {
                                         // Commit final geometry to ViewModel
-                                        if let finalGeo = dragMaskGeometry {
+                                        if let finalGeo = layerGeometryInteraction.consumeMaskGeometry() {
                                             updateCameraRaw { cameraRaw in
                                                 cameraRaw.localAdjustments?[maskIdx].geometry = finalGeo
                                             }
-                                            dragMaskGeometry = nil
                                         }
-                                        isDraggingMask = false
                                         interactiveRender.setSliderInteraction(active: false)
                                         commitEditAdjustments()
                                     }
@@ -1387,11 +1352,10 @@ struct EditWorkspaceView: View {
                                         }
                                     },
                                     onCommit: {
-                                        if let finalGeo = dragWatermarkGeometry {
+                                        if let finalGeo = layerGeometryInteraction.consumeWatermarkGeometry() {
                                             updateCameraRaw { cameraRaw in
                                                 cameraRaw.watermarkLayers?[wmIdx].geometry = finalGeo
                                             }
-                                            dragWatermarkGeometry = nil
                                         }
                                         interactiveRender.setSliderInteraction(active: false)
                                         commitEditAdjustments()
@@ -1838,11 +1802,11 @@ struct EditWorkspaceView: View {
                             toggleDefaultDevelopVersion(activeVersion.id)
                         }
                         Button("Promote to Primary…", systemImage: "arrow.up.doc") {
-                            developVersionPendingPromotionID = activeVersion.id
+                            developVersionDialogs.requestPromotion(activeVersion.id)
                         }
                         Divider()
                         Button("Delete…", systemImage: "trash", role: .destructive) {
-                            developVersionPendingDeleteID = activeVersion.id
+                            developVersionDialogs.requestDelete(activeVersion.id)
                         }
                     }
                 } label: {
@@ -2293,10 +2257,7 @@ struct EditWorkspaceView: View {
 
     private func resetDevelopVersionState() {
         developVersionSession.reset()
-        developVersionNameAction = nil
-        developVersionNameDraft = ""
-        developVersionPendingDeleteID = nil
-        developVersionPendingPromotionID = nil
+        developVersionDialogs.reset()
     }
 
     private func loadDevelopVersionCatalog() {
@@ -2341,26 +2302,11 @@ struct EditWorkspaceView: View {
     }
 
     private func beginDevelopVersionNameAction(_ action: DevelopVersionNameAction) {
-        developVersionNameAction = action
-        switch action {
-        case .create:
-            let nextNumber = (developVersionCatalog?.versions.count ?? 0) + 1
-            developVersionNameDraft = "Version \(nextNumber)"
-        case let .rename(id):
-            developVersionNameDraft = developVersionCatalog?.versions
-                .first(where: { $0.id == id })?.name ?? ""
-        case let .duplicate(id):
-            let sourceName = developVersionCatalog?.versions
-                .first(where: { $0.id == id })?.name ?? "Version"
-            developVersionNameDraft = "\(sourceName) Copy"
-        }
+        developVersionDialogs.beginNameAction(action, catalog: developVersionCatalog)
     }
 
     private func performDevelopVersionNameAction() {
-        guard let action = developVersionNameAction else { return }
-        let name = developVersionNameDraft
-        developVersionNameAction = nil
-        developVersionNameDraft = ""
+        guard let (action, name) = developVersionDialogs.consumeNameAction() else { return }
         closeDevelopComparison()
 
         switch action {
@@ -2427,7 +2373,6 @@ struct EditWorkspaceView: View {
     }
 
     private func deleteDevelopVersion(id: UUID) {
-        developVersionPendingDeleteID = nil
         closeDevelopComparison()
         guard var candidate = developVersionCatalog else { return }
         let wasActive = candidate.activeVersionID == id
@@ -2440,7 +2385,7 @@ struct EditWorkspaceView: View {
     }
 
     private var developVersionPromotionMessage: String {
-        guard let id = developVersionPendingPromotionID,
+        guard let id = developVersionDialogs.pendingPromotionID,
               let version = developVersionCatalog?.versions.first(where: { $0.id == id }),
               let imageURL = selectedImageURL else { return "" }
 
@@ -2462,7 +2407,6 @@ struct EditWorkspaceView: View {
     }
 
     private func promoteDevelopVersion(id: UUID) {
-        developVersionPendingPromotionID = nil
         guard !developVersionSession.hasTransition,
               let repository = developVersionSession.repository as? DevelopVersionCatalogRepository,
               let imageURL = selectedImageURL,
@@ -2661,6 +2605,7 @@ struct EditWorkspaceView: View {
         colorLUTImport.endImageSession()
         isSpaceHandToolActive = false
         layerSession.endImageSession()
+        layerGeometryInteraction.endImageSession()
         transientPreview.endImageSession()
         cropSession.endImageSession()
         whiteBalanceSession.endImageSession()
@@ -2881,6 +2826,7 @@ struct EditWorkspaceView: View {
         persistenceSession.beginImageSession(selectedImageURL)
         colorLUTImport.beginImageSession(selectedImageURL)
         layerSession.beginImageSession(selectedImageURL)
+        layerGeometryInteraction.beginImageSession(selectedImageURL)
         transientPreview.beginImageSession(selectedImageURL)
         previewSession.beginImageSession(
             selectedImageURL,

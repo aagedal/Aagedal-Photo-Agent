@@ -4,6 +4,34 @@ import Testing
 
 @Suite("Develop version session coordinator")
 struct DevelopVersionSessionCoordinatorTests {
+    @Test("version dialogs consume typed intents and reset as one image-scoped session")
+    func dialogIntentLifecycle() {
+        let coordinator = DevelopVersionDialogsCoordinator()
+        let deleteID = UUID()
+        let promotionID = UUID()
+
+        coordinator.beginNameAction(.create, catalog: nil)
+        #expect(coordinator.nameDraft == "Version 1")
+        coordinator.nameDraft = "  Editorial  "
+        let consumed = coordinator.consumeNameAction()
+        #expect(consumed?.0 == .create)
+        #expect(consumed?.1 == "  Editorial  ")
+        #expect(coordinator.nameAction == nil)
+        #expect(coordinator.nameDraft.isEmpty)
+
+        coordinator.requestDelete(deleteID)
+        coordinator.requestPromotion(promotionID)
+        #expect(coordinator.consumeDelete() == deleteID)
+        #expect(coordinator.pendingDeleteID == nil)
+        #expect(coordinator.pendingPromotionID == promotionID)
+
+        coordinator.reset()
+        #expect(coordinator.pendingPromotionID == nil)
+        #expect(!coordinator.isNameActionPresented)
+        #expect(!coordinator.isDeletePresented)
+        #expect(!coordinator.isPromotionPresented)
+    }
+
     @Test("a replacement image session rejects a cancelled loader's late result")
     func replacementSessionRejectsLateLoad() async throws {
         let firstURL = URL(fileURLWithPath: "/tmp/session-a/source.raw")
@@ -104,6 +132,31 @@ struct DevelopVersionSessionCoordinatorTests {
         #expect(coordinator.persistenceState == .saved)
         #expect(await persistence.saveCount == 1)
         #expect(await persistence.lastSaved?.versions.first?.snapshot.settings.exposure2012 == 1.25)
+    }
+
+    @Test("Develop view delegates all named-version modal state to the coordinator")
+    func dialogOwnerSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(
+            "@State private var developVersionDialogs = DevelopVersionDialogsCoordinator()"
+        ))
+        #expect(source.contains("developVersionDialogs.beginNameAction("))
+        #expect(source.contains("developVersionDialogs.consumeNameAction()"))
+        #expect(source.contains("developVersionDialogs.requestDelete("))
+        #expect(source.contains("developVersionDialogs.requestPromotion("))
+        #expect(source.contains("developVersionDialogs.reset()"))
+        #expect(!source.contains("@State private var developVersionNameAction"))
+        #expect(!source.contains("@State private var developVersionPendingDeleteID"))
+        #expect(!source.contains("@State private var developVersionPendingPromotionID"))
     }
 
     private func revision(url: URL, hashCharacter: Character) -> SourceImageRevision {

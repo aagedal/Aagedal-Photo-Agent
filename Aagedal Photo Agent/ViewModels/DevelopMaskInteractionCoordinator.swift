@@ -81,3 +81,60 @@ final class DevelopMaskInteractionCoordinator {
         return true
     }
 }
+
+/// Owns the image-scoped transient geometry used while mask and watermark handles or their
+/// inspector sliders are moving. The durable Camera Raw model is updated only when the view
+/// consumes a final value, keeping high-frequency pointer state out of metadata persistence.
+@MainActor
+@Observable
+final class DevelopLayerGeometryInteractionCoordinator {
+    private(set) var activeImageURL: URL?
+    var isDraggingMask = false
+    var maskGeometry: EllipseMaskGeometry?
+    var watermarkGeometry: WatermarkGeometry?
+
+    func beginImageSession(_ imageURL: URL?) {
+        activeImageURL = imageURL
+        cancelInteractions()
+    }
+
+    func endImageSession() {
+        beginImageSession(nil)
+    }
+
+    func beginMaskDrag() {
+        isDraggingMask = true
+    }
+
+    func updateMaskGeometry(_ geometry: EllipseMaskGeometry?) {
+        maskGeometry = geometry
+    }
+
+    func consumeMaskGeometry() -> EllipseMaskGeometry? {
+        defer {
+            maskGeometry = nil
+            isDraggingMask = false
+        }
+        return maskGeometry
+    }
+
+    func endMaskOverride() {
+        maskGeometry = nil
+        isDraggingMask = false
+    }
+
+    func updateWatermarkGeometry(_ geometry: WatermarkGeometry?) {
+        watermarkGeometry = geometry
+    }
+
+    func consumeWatermarkGeometry() -> WatermarkGeometry? {
+        defer { watermarkGeometry = nil }
+        return watermarkGeometry
+    }
+
+    func cancelInteractions() {
+        isDraggingMask = false
+        maskGeometry = nil
+        watermarkGeometry = nil
+    }
+}

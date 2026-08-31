@@ -33,19 +33,27 @@ final class DevelopInteractiveRenderCoordinator {
 
     typealias ScopeOperation = @MainActor () async -> ScopeOutput?
     typealias ScopePublisher = @MainActor (CGImage, Bool) -> Void
+    typealias ScopeThrottleDelay = @MainActor (Duration) async -> Void
 
     private(set) var isWorkspaceActive = false
     private(set) var isSliderInteractionActive = false
     private(set) var isScopePublicationPending = false
 
     @ObservationIgnored private let minimumScopeInterval: Duration
+    @ObservationIgnored private let scopeThrottleDelay: ScopeThrottleDelay
     @ObservationIgnored private let clock = ContinuousClock()
     @ObservationIgnored private var lastScopeRequestTime: ContinuousClock.Instant
     @ObservationIgnored private var scopeTask: Task<Void, Never>?
     @ObservationIgnored private var scopeRequestID = UUID()
 
-    init(minimumScopeInterval: Duration = .milliseconds(100)) {
+    init(
+        minimumScopeInterval: Duration = .milliseconds(100),
+        scopeThrottleDelay: @escaping ScopeThrottleDelay = { delay in
+            try? await Task.sleep(for: delay)
+        }
+    ) {
         self.minimumScopeInterval = minimumScopeInterval
+        self.scopeThrottleDelay = scopeThrottleDelay
         lastScopeRequestTime = clock.now
     }
 
@@ -105,17 +113,17 @@ final class DevelopInteractiveRenderCoordinator {
         isScopePublicationPending = true
 
         scopeTask = Task { [weak self] in
+            guard let self else { return }
             if delay > .zero {
-                try? await Task.sleep(for: delay)
-                guard let self,
-                      !Task.isCancelled,
+                guard !Task.isCancelled else { return }
+                await self.scopeThrottleDelay(delay)
+                guard !Task.isCancelled,
                       scopeRequestID == requestID else { return }
                 lastScopeRequestTime = clock.now
             }
 
             let output = await operation()
-            guard let self,
-                  !Task.isCancelled,
+            guard !Task.isCancelled,
                   scopeRequestID == requestID else { return }
             if let output {
                 publisher(output.image, output.isHDR)

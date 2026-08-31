@@ -2,6 +2,112 @@ import Foundation
 import Observation
 import os
 
+nonisolated enum DevelopVersionNameAction: Identifiable, Equatable, Sendable {
+    case create
+    case rename(UUID)
+    case duplicate(UUID)
+
+    var id: String {
+        switch self {
+        case .create: "create"
+        case let .rename(id): "rename-\(id.uuidString)"
+        case let .duplicate(id): "duplicate-\(id.uuidString)"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .create: "New Version from Current"
+        case .rename: "Rename Version"
+        case .duplicate: "Duplicate Version"
+        }
+    }
+
+    var actionLabel: String {
+        switch self {
+        case .create: "Create"
+        case .rename: "Rename"
+        case .duplicate: "Duplicate"
+        }
+    }
+}
+
+/// Owns the short-lived alerts and confirmation intents for named Develop versions.
+/// Image replacement and workspace teardown clear the complete modal session together, so a
+/// confirmation captured for one image cannot be applied after navigation to another image.
+@MainActor
+@Observable
+final class DevelopVersionDialogsCoordinator {
+    var nameAction: DevelopVersionNameAction?
+    var nameDraft = ""
+    var pendingDeleteID: UUID?
+    var pendingPromotionID: UUID?
+
+    var isNameActionPresented: Bool {
+        get { nameAction != nil }
+        set { if !newValue { cancelNameAction() } }
+    }
+
+    var isDeletePresented: Bool {
+        get { pendingDeleteID != nil }
+        set { if !newValue { pendingDeleteID = nil } }
+    }
+
+    var isPromotionPresented: Bool {
+        get { pendingPromotionID != nil }
+        set { if !newValue { pendingPromotionID = nil } }
+    }
+
+    func beginNameAction(_ action: DevelopVersionNameAction, catalog: DevelopVersionCatalog?) {
+        nameAction = action
+        switch action {
+        case .create:
+            nameDraft = "Version \((catalog?.versions.count ?? 0) + 1)"
+        case let .rename(id):
+            nameDraft = catalog?.versions.first(where: { $0.id == id })?.name ?? ""
+        case let .duplicate(id):
+            let sourceName = catalog?.versions.first(where: { $0.id == id })?.name ?? "Version"
+            nameDraft = "\(sourceName) Copy"
+        }
+    }
+
+    func consumeNameAction() -> (DevelopVersionNameAction, String)? {
+        guard let nameAction else { return nil }
+        let result = (nameAction, nameDraft)
+        cancelNameAction()
+        return result
+    }
+
+    func requestDelete(_ id: UUID) {
+        pendingDeleteID = id
+    }
+
+    func consumeDelete() -> UUID? {
+        defer { pendingDeleteID = nil }
+        return pendingDeleteID
+    }
+
+    func requestPromotion(_ id: UUID) {
+        pendingPromotionID = id
+    }
+
+    func consumePromotion() -> UUID? {
+        defer { pendingPromotionID = nil }
+        return pendingPromotionID
+    }
+
+    func cancelNameAction() {
+        nameAction = nil
+        nameDraft = ""
+    }
+
+    func reset() {
+        cancelNameAction()
+        pendingDeleteID = nil
+        pendingPromotionID = nil
+    }
+}
+
 nonisolated enum DevelopVersionPersistenceState: Equatable {
     case unavailable
     case loading

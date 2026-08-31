@@ -11,6 +11,8 @@ struct WatermarksLibraryContent: View {
     @State private var showDeleteAlert = false
     @State private var isImportingPNG = false
     @State private var importErrorMessage: String?
+    @State private var importTask: Task<Void, Never>?
+    @State private var importRequestID: UUID?
     @State private var deletionErrorMessage: String?
     @State private var searchText = ""
 
@@ -131,21 +133,50 @@ struct WatermarksLibraryContent: View {
         } message: {
             Text(importErrorMessage ?? "")
         }
+        .onDisappear {
+            cancelImport()
+        }
     }
 
     private func handleImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result else { return }
-        for url in urls {
-            let didStartAccess = url.startAccessingSecurityScopedResource()
-            defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
-            let defaultName = url.deletingPathExtension().lastPathComponent
-            do {
-                let asset = try store.importPNG(from: url, name: defaultName)
-                selection = asset.id
-            } catch {
-                importErrorMessage = "Could not import \(url.lastPathComponent): \(error.localizedDescription)"
+        cancelImport()
+        let requestID = UUID()
+        importRequestID = requestID
+        importTask = Task {
+            var latestSelection: UUID?
+            var latestError: String?
+            for url in urls {
+                guard !Task.isCancelled else { break }
+                let defaultName = url.deletingPathExtension().lastPathComponent
+                do {
+                    let result = try await store.importPNG(
+                        from: url,
+                        name: defaultName,
+                        requestID: requestID
+                    )
+                    if case .committed(let commit) = result {
+                        latestSelection = commit.asset.id
+                    }
+                } catch {
+                    latestError = "Could not import \(url.lastPathComponent): \(error.localizedDescription)"
+                }
             }
+
+            guard importRequestID == requestID else { return }
+            importTask = nil
+            importRequestID = nil
+            if let latestSelection {
+                selection = latestSelection
+            }
+            importErrorMessage = latestError
         }
+    }
+
+    private func cancelImport() {
+        importRequestID = nil
+        importTask?.cancel()
+        importTask = nil
     }
 
     @ViewBuilder

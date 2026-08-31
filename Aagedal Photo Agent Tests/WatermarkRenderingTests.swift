@@ -119,7 +119,7 @@ struct WatermarkRenderingTests {
     }
 
     @Test("a fully-opaque watermark layer composites its own color inside its footprint and leaves the rest of the image untouched")
-    func watermarkCompositesAtItsFootprint() throws {
+    func watermarkCompositesAtItsFootprint() async throws {
         let dir = makeTempDir()
         activateStore(dir)
         defer { teardownStore(dir) }
@@ -129,7 +129,7 @@ struct WatermarkRenderingTests {
         let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
         try pngData.write(to: pngURL)
         defer { try? FileManager.default.removeItem(at: pngURL) }
-        let asset = try WatermarkStore.shared.importPNG(from: pngURL, name: "Red Square")
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Red Square")
 
         // 200×100 solid opaque blue source image.
         let sourceExtent = CGRect(x: 0, y: 0, width: 200, height: 100)
@@ -166,7 +166,7 @@ struct WatermarkRenderingTests {
     }
 
     @Test("cropped renders place watermark geometry relative to the cropped output frame")
-    func croppedRenderUsesCropFrameForWatermark() throws {
+    func croppedRenderUsesCropFrameForWatermark() async throws {
         let dir = makeTempDir()
         activateStore(dir)
         defer { teardownStore(dir) }
@@ -175,7 +175,7 @@ struct WatermarkRenderingTests {
         let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
         try pngData.write(to: pngURL)
         defer { try? FileManager.default.removeItem(at: pngURL) }
-        let asset = try WatermarkStore.shared.importPNG(from: pngURL, name: "Red Square")
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Red Square")
 
         let sourceExtent = CGRect(x: 0, y: 0, width: 200, height: 100)
         let source = CIImage(color: CIColor(red: 0, green: 0, blue: 1, alpha: 1)).cropped(to: sourceExtent)
@@ -206,7 +206,7 @@ struct WatermarkRenderingTests {
     }
 
     @Test("opacity attenuates the watermark's blend toward the background")
-    func opacityAttenuatesBlend() throws {
+    func opacityAttenuatesBlend() async throws {
         let dir = makeTempDir()
         activateStore(dir)
         defer { teardownStore(dir) }
@@ -215,7 +215,7 @@ struct WatermarkRenderingTests {
         let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
         try pngData.write(to: pngURL)
         defer { try? FileManager.default.removeItem(at: pngURL) }
-        let asset = try WatermarkStore.shared.importPNG(from: pngURL, name: "Red Square")
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Red Square")
 
         let sourceExtent = CGRect(x: 0, y: 0, width: 200, height: 100)
         let source = CIImage(color: CIColor(red: 0, green: 0, blue: 1, alpha: 1)).cropped(to: sourceExtent)
@@ -247,7 +247,7 @@ struct WatermarkRenderingTests {
     /// which is exactly why the original tests above missed it — this uses a top/bottom
     /// two-tone PNG with an unambiguous ground truth instead.
     @Test("the watermark texture uploads right-side-up, matching the source PNG's own top/bottom order")
-    func watermarkUploadsRightSideUp() throws {
+    func watermarkUploadsRightSideUp() async throws {
         let dir = makeTempDir()
         activateStore(dir)
         defer { teardownStore(dir) }
@@ -260,7 +260,7 @@ struct WatermarkRenderingTests {
         let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
         try pngData.write(to: pngURL)
         defer { try? FileManager.default.removeItem(at: pngURL) }
-        let asset = try WatermarkStore.shared.importPNG(from: pngURL, name: "Two Tone")
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Two Tone")
 
         // Neutral gray background so it's visually distinct from both watermark colors.
         let sourceExtent = CGRect(x: 0, y: 0, width: 200, height: 100)

@@ -417,6 +417,72 @@ struct DevelopInteractionBehaviorTests {
     }
 }
 
+@Suite("Develop layer geometry interaction coordinator")
+@MainActor
+struct DevelopLayerGeometryInteractionCoordinatorTests {
+    @Test("mask and watermark geometry commit exactly once")
+    func geometryCommitLifecycle() {
+        let coordinator = DevelopLayerGeometryInteractionCoordinator()
+        let imageURL = URL(fileURLWithPath: "/tmp/geometry-session/image.raw")
+        var mask = EllipseMaskGeometry()
+        mask.centerX = 0.25
+        var watermark = WatermarkGeometry()
+        watermark.centerY = 0.75
+
+        coordinator.beginImageSession(imageURL)
+        coordinator.beginMaskDrag()
+        coordinator.updateMaskGeometry(mask)
+        coordinator.updateWatermarkGeometry(watermark)
+
+        #expect(coordinator.isDraggingMask)
+        #expect(coordinator.consumeMaskGeometry() == mask)
+        #expect(!coordinator.isDraggingMask)
+        #expect(coordinator.consumeMaskGeometry() == nil)
+        #expect(coordinator.consumeWatermarkGeometry() == watermark)
+        #expect(coordinator.consumeWatermarkGeometry() == nil)
+    }
+
+    @Test("image replacement cancels every transient geometry override")
+    func imageReplacementClearsGeometry() {
+        let coordinator = DevelopLayerGeometryInteractionCoordinator()
+        coordinator.beginImageSession(URL(fileURLWithPath: "/tmp/geometry-a.raw"))
+        coordinator.beginMaskDrag()
+        coordinator.updateMaskGeometry(EllipseMaskGeometry())
+        coordinator.updateWatermarkGeometry(WatermarkGeometry())
+
+        let replacement = URL(fileURLWithPath: "/tmp/geometry-b.raw")
+        coordinator.beginImageSession(replacement)
+
+        #expect(coordinator.activeImageURL == replacement)
+        #expect(!coordinator.isDraggingMask)
+        #expect(coordinator.maskGeometry == nil)
+        #expect(coordinator.watermarkGeometry == nil)
+    }
+
+    @Test("Develop view retains no standalone mask or watermark geometry state")
+    func viewDelegationSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(
+            "@State private var layerGeometryInteraction = DevelopLayerGeometryInteractionCoordinator()"
+        ))
+        #expect(source.contains("layerGeometryInteraction.beginImageSession(selectedImageURL)"))
+        #expect(source.contains("layerGeometryInteraction.consumeMaskGeometry()"))
+        #expect(source.contains("layerGeometryInteraction.consumeWatermarkGeometry()"))
+        #expect(!source.contains("@State private var dragMaskGeometry"))
+        #expect(!source.contains("@State private var dragWatermarkGeometry"))
+        #expect(!source.contains("@State private var isDraggingMask"))
+    }
+}
+
 @Suite("Develop export session coordinator")
 @MainActor
 struct DevelopExportSessionCoordinatorTests {
