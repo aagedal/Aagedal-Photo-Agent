@@ -15,11 +15,103 @@ nonisolated enum ICloudSyncCategory: CaseIterable, Sendable {
     case watermarks
 }
 
+nonisolated struct KeywordListsRoutingCommit: Equatable, Sendable {
+    let requestID: UUID
+    let enabled: Bool
+    let sourceURL: URL
+    let destinationURL: URL
+    let performedMerge: Bool
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum KeywordListsRoutingResult: Equatable, Sendable {
+    case committed(KeywordListsRoutingCommit)
+    case unavailable(requestID: UUID, enabled: Bool)
+    case cancelledBeforeResolution(requestID: UUID, enabled: Bool)
+    case cancelledBeforeCommit(requestID: UUID, enabled: Bool)
+}
+
+nonisolated struct KeywordListsRoutingFileAccess: Sendable {
+    let localRootURL: @Sendable () -> URL
+    let cloudRootURL: @Sendable () -> URL?
+    let merge: @Sendable (URL, URL) throws -> Void
+
+    static let system = KeywordListsRoutingFileAccess(
+        localRootURL: {
+            AppPaths.applicationSupport.appendingPathComponent("Lists", isDirectory: true)
+        },
+        cloudRootURL: {
+            FileManager.default
+                .url(forUbiquityContainerIdentifier: KeywordListsStore.iCloudContainerID)?
+                .appendingPathComponent("Documents/Lists", isDirectory: true)
+        },
+        merge: { source, destination in
+            try KeywordListsStore.reconcileTree(from: source, to: destination)
+        }
+    )
+}
+
+/// Resolves iCloud/local roots and reconciles the selected route away from MainActor. Each merge
+/// is serialized, and cancellation is sampled before resolution and before the non-preemptible
+/// coordinated tree commit. A completed merge returns durable evidence even if the caller was
+/// cancelled while Foundation was inside the filesystem operation.
+actor KeywordListsRoutingService {
+    static let shared = KeywordListsRoutingService()
+
+    private let access: KeywordListsRoutingFileAccess
+
+    init(access: KeywordListsRoutingFileAccess = .system) {
+        self.access = access
+    }
+
+    func reconcile(enabled: Bool, requestID: UUID) throws -> KeywordListsRoutingResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeResolution(requestID: requestID, enabled: enabled)
+        }
+
+        let local = access.localRootURL()
+        let resolvedCloud = access.cloudRootURL()
+        if enabled, resolvedCloud == nil {
+            return .unavailable(requestID: requestID, enabled: enabled)
+        }
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(requestID: requestID, enabled: enabled)
+        }
+
+        // Turning sync off must remain possible while iCloud is unavailable. In that case there
+        // are no reachable cloud bytes to reconcile, and the caller can safely install the local
+        // route without a filesystem commit.
+        guard let cloud = resolvedCloud else {
+            return .committed(KeywordListsRoutingCommit(
+                requestID: requestID,
+                enabled: false,
+                sourceURL: local,
+                destinationURL: local,
+                performedMerge: false,
+                cancellationRequestedAfterCommit: false
+            ))
+        }
+
+        let source = enabled ? local : cloud
+        let destination = enabled ? cloud : local
+        try access.merge(source, destination)
+        return .committed(KeywordListsRoutingCommit(
+            requestID: requestID,
+            enabled: enabled,
+            sourceURL: source,
+            destinationURL: destination,
+            performedMerge: true,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        ))
+    }
+}
+
 /// Single entry point the Sync settings UI binds to. Owns the per-category
 /// iCloud opt-in toggles and the data movement they imply:
 ///
 /// - **Preferences** → delegates to `PreferencesSyncService` (key-value store).
-/// - **Keyword lists** → delegates to `KeywordListsStore` (already file-backed).
+/// - **Keyword lists** → reconciles roots through `KeywordListsRoutingService`, then publishes
+///   the selected route through `KeywordListsStore`.
 /// - **Templates** / **Known People** / **Teams** / **Watermarks** → flips a
 ///   flag and copies the backing directory between the local Application
 ///   Support folder and the iCloud ubiquity container.
@@ -35,6 +127,10 @@ final class ICloudSyncCoordinator {
 
     /// Last failure reason for the most recent toggle, surfaced in the UI.
     private(set) var lastError: String?
+
+    private var pendingKeywordListsEnabled: Bool?
+    @ObservationIgnored private var keywordListsRoutingTask: Task<Void, Never>?
+    @ObservationIgnored private var keywordListsRoutingRequestID: UUID?
 
     /// Whether iCloud Drive is reachable for this app right now.
     var iCloudAvailable: Bool {
@@ -91,17 +187,45 @@ final class ICloudSyncCoordinator {
 
     var keywordListsEnabled: Bool {
         _ = version
-        return KeywordListsStore.shared.iCloudEnabled
+        return pendingKeywordListsEnabled ?? KeywordListsStore.shared.iCloudEnabled
     }
 
     func setKeywordListsEnabled(_ on: Bool) {
+        keywordListsRoutingTask?.cancel()
+        let requestID = UUID()
+        keywordListsRoutingRequestID = requestID
+        pendingKeywordListsEnabled = on
         lastError = nil
-        let ok = KeywordListsStore.shared.setICloudEnabled(on)
-        if !ok {
-            lastError = KeywordListsStore.shared.lastSyncError ?? Self.unavailableMessage
-        }
-        KeywordListsCloudCoordinator.shared.refresh()
         bump()
+        keywordListsRoutingTask = Task { [weak self] in
+            do {
+                let result = try await KeywordListsRoutingService.shared.reconcile(
+                    enabled: on,
+                    requestID: requestID
+                )
+                guard let self, keywordListsRoutingRequestID == requestID else { return }
+                keywordListsRoutingTask = nil
+                keywordListsRoutingRequestID = nil
+                pendingKeywordListsEnabled = nil
+                switch result {
+                case .committed:
+                    KeywordListsStore.shared.applyICloudRoutingPreference(on)
+                    KeywordListsCloudCoordinator.shared.refresh()
+                case .unavailable:
+                    lastError = Self.unavailableMessage
+                case .cancelledBeforeResolution, .cancelledBeforeCommit:
+                    break
+                }
+                bump()
+            } catch {
+                guard let self, keywordListsRoutingRequestID == requestID else { return }
+                keywordListsRoutingTask = nil
+                keywordListsRoutingRequestID = nil
+                pendingKeywordListsEnabled = nil
+                lastError = "Could not reconcile keyword lists with iCloud Drive: \(error.localizedDescription)"
+                bump()
+            }
+        }
     }
 
     // MARK: - Templates

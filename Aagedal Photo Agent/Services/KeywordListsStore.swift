@@ -6,7 +6,7 @@ private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "Key
 
 /// Identifies one of the keyword lists managed by `KeywordListsStore`. Maps 1:1
 /// to a stable on-disk path so iCloud sync is deterministic across machines.
-enum KeywordListKey: Hashable, CustomStringConvertible {
+nonisolated enum KeywordListKey: Hashable, CustomStringConvertible, Sendable {
     case quick(QuickListType)
     case approved(ApprovedListField)
     case structured
@@ -121,16 +121,14 @@ final class KeywordListsStore {
     }
 
     /// iCloud container identifier. Must match the entry in the entitlements file.
-    static let iCloudContainerID = "iCloud.aagedal.Aagedal-Photo-Agent"
+    nonisolated static let iCloudContainerID = "iCloud.aagedal.Aagedal-Photo-Agent"
 
     /// Bumped whenever the backing root changes (e.g. iCloud toggled) so SwiftUI
     /// views observing the store re-evaluate `url(for:)` derived values.
     private(set) var version: Int = 0
 
-    /// Set to a non-nil string when `setICloudEnabled` fails so Settings can
-    /// surface the reason. Cleared on the next successful toggle attempt.
-    private(set) var lastSyncError: String?
-
+    /// Cached active root, invalidated only after the routing actor has reconciled
+    /// the destination and the coordinator installs the new preference.
     @ObservationIgnored private var cachedRoot: URL?
 
     init() {
@@ -296,42 +294,15 @@ final class KeywordListsStore {
         return text
     }
 
-    // MARK: - iCloud routing
-
-    /// Atomically switches between local and iCloud storage. Copies all existing
-    /// files from the old root to the new (overwriting same-name files on the
-    /// target) and updates the preference. Falls back to local if the user asks
-    /// for iCloud but the ubiquity container is unavailable.
-    @discardableResult
-    func setICloudEnabled(_ enabled: Bool) -> Bool {
-        lastSyncError = nil
-        if enabled {
-            guard let cloud = iCloudContainerListsURL else {
-                lastSyncError = "iCloud Drive is not available. Sign in to iCloud in System Settings and enable iCloud Drive for this app."
-                bumpVersion()
-                return false
-            }
-            do {
-                try mergeTree(from: localRootURL, to: cloud)
-                UserDefaults.standard.set(true, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
-                resetRootCache()
-                bumpVersion()
-                return true
-            } catch {
-                lastSyncError = "Could not copy lists into iCloud Drive: \(error.localizedDescription)"
-                bumpVersion()
-                return false
-            }
-        } else {
-            let current = rootURL
-            UserDefaults.standard.set(false, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
-            resetRootCache()
-            let local = localRootURL
-            // Best-effort merge back so the user still has access locally after
-            // toggle off, without clobbering anything already present locally.
-            try? mergeTree(from: current, to: local)
-            bumpVersion()
-            return true
+    /// Installs the route chosen by `KeywordListsRoutingService` after its coordinated merge has
+    /// completed away from MainActor. The destination skeleton already exists at this point, so
+    /// publication only changes the preference/cache and invalidates observers.
+    func applyICloudRoutingPreference(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
+        cachedRoot = nil
+        bumpVersion()
+        for key in Self.allKnownKeys() {
+            notifyChanged(key)
         }
     }
 
@@ -340,7 +311,7 @@ final class KeywordListsStore {
     /// per-key change notifications.
     func notifyRemoteUpdate() {
         bumpVersion()
-        for key in allKnownKeys() {
+        for key in Self.allKnownKeys() {
             notifyChanged(key)
         }
     }
@@ -477,11 +448,6 @@ final class KeywordListsStore {
 
     private func bumpVersion() { version &+= 1 }
 
-    private func resetRootCache() {
-        cachedRoot = nil
-        ensureDirectories(at: rootURL)
-    }
-
     private func ensureDirectories(at root: URL) {
         for sub in ["quick", "approved", "structured"] {
             let dir = root.appendingPathComponent(sub, isDirectory: true)
@@ -513,7 +479,7 @@ final class KeywordListsStore {
         )
     }
 
-    private func allKnownKeys() -> [KeywordListKey] {
+    nonisolated private static func allKnownKeys() -> [KeywordListKey] {
         var keys: [KeywordListKey] = []
         keys.append(contentsOf: QuickListType.allCases.map { KeywordListKey.quick($0) })
         keys.append(contentsOf: ApprovedListField.allCases.map { KeywordListKey.approved($0) })
@@ -539,7 +505,7 @@ final class KeywordListsStore {
     /// - The structured tree is free-form text we can't safely merge line-by-line,
     ///   so it is **seeded only when the destination has none** — an existing
     ///   destination tree is left untouched rather than clobbered.
-    private func mergeTree(from source: URL, to destination: URL) throws {
+    nonisolated static func reconcileTree(from source: URL, to destination: URL) throws {
         try CloudCoordinatedIO.ensureDirectory(destination)
         for key in allKnownKeys() {
             let sourceURL = source.appendingPathComponent(key.relativePath)
@@ -563,9 +529,9 @@ final class KeywordListsStore {
         }
     }
 
-    /// Reads line entries from an explicit file URL (used by `mergeTree`, which
+    /// Reads line entries from an explicit file URL (used by `reconcileTree`, which
     /// must read both roots regardless of which one is currently active).
-    private func entries(at url: URL) -> [String] {
+    nonisolated private static func entries(at url: URL) -> [String] {
         guard CloudCoordinatedIO.itemExists(at: url),
               let data = try? CloudCoordinatedIO.readData(at: url) else { return [] }
         return ApprovedListParser.parseString(String(decoding: data, as: UTF8.self), csv: false)

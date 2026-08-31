@@ -116,6 +116,136 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(probe.writtenURL == destination)
     }
 
+    @Test("append merges one serialized snapshot away from MainActor")
+    @MainActor
+    func appendRunsOffMainActor() async throws {
+        let destination = URL(fileURLWithPath: "/virtual/city.txt")
+        let bytes = Data("Oslo\nBergen\n".utf8)
+        let probe = KeywordListEditorFileAccessProbe(readData: bytes)
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.appendEntries(
+            [" Bergen ", "Trondheim", "Oslo", "Tromsø"],
+            to: destination,
+            requestID: requestID
+        )
+
+        #expect(result == .committed(QuickListMutationCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            entries: ["Oslo", "Bergen", "Trondheim", "Tromsø"],
+            addedEntries: ["Trondheim", "Tromsø"],
+            byteCount: Data("Oslo\nBergen\nTrondheim\nTromsø\n".utf8).count,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(probe.writtenData == Data("Oslo\nBergen\nTrondheim\nTromsø\n".utf8))
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("append reports a missing managed list without entering the reader")
+    func appendMissingDestination() async throws {
+        let destination = URL(fileURLWithPath: "/virtual/missing.txt")
+        let probe = KeywordListEditorFileAccessProbe(itemExists: false)
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.appendEntries(
+            ["News"],
+            to: destination,
+            requestID: requestID
+        )
+
+        #expect(result == .missingDestination(
+            requestID: requestID,
+            destinationURL: destination
+        ))
+        #expect(probe.readInvocationCount == 0)
+        #expect(probe.writtenData == nil)
+    }
+
+    @Test("first-use import holds security scope and replaces the managed snapshot before append")
+    func firstUseImport() async throws {
+        let source = URL(fileURLWithPath: "/picked/credit.txt")
+        let destination = URL(fileURLWithPath: "/managed/credit.txt")
+        let probe = KeywordListEditorFileAccessProbe(readData: Data("Agency\nDesk\n".utf8))
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.appendEntries(
+            ["Desk", "Freelance"],
+            to: destination,
+            importing: source,
+            requestID: requestID
+        )
+
+        #expect(result == .committed(QuickListMutationCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            entries: ["Agency", "Desk", "Freelance"],
+            addedEntries: ["Freelance"],
+            byteCount: Data("Agency\nDesk\nFreelance\n".utf8).count,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(probe.securityScopeStartCount == 1)
+        #expect(probe.securityScopeStopCount == 1)
+    }
+
+    @Test("first-use import preserves CSV parsing before appending")
+    func firstUseCSVImport() async throws {
+        let source = URL(fileURLWithPath: "/picked/keywords.csv")
+        let destination = URL(fileURLWithPath: "/managed/keywords.txt")
+        let probe = KeywordListEditorFileAccessProbe(
+            readData: Data("News,ignored column\nSport,ignored column\n".utf8)
+        )
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.appendEntries(
+            ["Weather"],
+            to: destination,
+            importing: source,
+            requestID: requestID
+        )
+
+        #expect(result == .committed(QuickListMutationCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            entries: ["News", "Sport", "Weather"],
+            addedEntries: ["Weather"],
+            byteCount: Data("News\nSport\nWeather\n".utf8).count,
+            cancellationRequestedAfterCommit: false
+        )))
+    }
+
+    @Test("append publishes exact durable evidence when cancellation arrives in the writer")
+    func appendDurableCancellationEvidence() async throws {
+        let destination = URL(fileURLWithPath: "/virtual/event.txt")
+        let probe = KeywordListEditorFileAccessProbe(
+            readData: Data("Final\n".utf8),
+            cancelDuringWrite: true
+        )
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await Task {
+            try await service.appendEntries(
+                ["Awards"],
+                to: destination,
+                requestID: requestID
+            )
+        }.value
+
+        #expect(result == .committed(QuickListMutationCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            entries: ["Final", "Awards"],
+            addedEntries: ["Awards"],
+            byteCount: Data("Final\nAwards\n".utf8).count,
+            cancellationRequestedAfterCommit: true
+        )))
+    }
+
     @Test("SwiftUI editor awaits the owner and rejects stale load and save publication")
     func editorSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -152,6 +282,21 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(!source.contains("KeywordListsStore.shared.readEntries(storeKey)"))
         #expect(!source.contains("KeywordListsStore.shared.writeEntries(entries, to: storeKey)"))
         #expect(!source.contains("ApprovedListService.shared.saveEntries(entries"))
+
+        let panelSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Metadata/MetadataPanel.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(panelSource.contains(
+            "try await KeywordListEditorPersistenceService.shared.appendEntries("
+        ))
+        #expect(panelSource.contains(
+            "KeywordListsStore.shared.recordExternalWrite("
+        ))
+        #expect(!panelSource.contains("settingsViewModel.appendToQuickList("))
+        #expect(!panelSource.contains("settingsViewModel.setQuickListURL("))
     }
 }
 
@@ -165,6 +310,8 @@ private nonisolated final class KeywordListEditorFileAccessProbe: @unchecked Sen
     private var observedMainThread = false
     private var committedData: Data?
     private var committedURL: URL?
+    private var scopeStartCount = 0
+    private var scopeStopCount = 0
 
     init(
         itemExists: Bool = true,
@@ -201,6 +348,13 @@ private nonisolated final class KeywordListEditorFileAccessProbe: @unchecked Sen
                 if cancelDuringWrite {
                     withUnsafeCurrentTask { $0?.cancel() }
                 }
+            },
+            startAccessingSecurityScopedResource: { [self] _ in
+                lock.withLock { scopeStartCount += 1 }
+                return true
+            },
+            stopAccessingSecurityScopedResource: { [self] _ in
+                lock.withLock { scopeStopCount += 1 }
             }
         )
     }
@@ -210,6 +364,8 @@ private nonisolated final class KeywordListEditorFileAccessProbe: @unchecked Sen
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
     var writtenData: Data? { lock.withLock { committedData } }
     var writtenURL: URL? { lock.withLock { committedURL } }
+    var securityScopeStartCount: Int { lock.withLock { scopeStartCount } }
+    var securityScopeStopCount: Int { lock.withLock { scopeStopCount } }
 }
 
 private enum KeywordListEditorFileAccessProbeError: Error {

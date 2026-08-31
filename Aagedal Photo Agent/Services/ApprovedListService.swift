@@ -4,7 +4,7 @@ import os
 
 private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "ApprovedListService")
 
-enum ApprovedListField: String, CaseIterable {
+nonisolated enum ApprovedListField: String, CaseIterable, Sendable {
     case keywords
     // v1 ships only .keywords. The enum exists so v2 can add .personShown / .city / etc.
     // without changing the service's public API.

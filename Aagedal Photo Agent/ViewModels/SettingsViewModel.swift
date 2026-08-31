@@ -101,7 +101,7 @@ nonisolated enum RAWDecoderVersionPreference: String, CaseIterable, Identifiable
     }
 }
 
-enum QuickListType: String, CaseIterable, Identifiable {
+nonisolated enum QuickListType: String, CaseIterable, Identifiable, Sendable {
     case keywords
     case personShown
     case copyright

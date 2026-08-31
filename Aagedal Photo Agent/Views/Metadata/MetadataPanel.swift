@@ -759,14 +759,7 @@ struct MetadataPanel: View {
     private func addCurrentToQuickList(type: QuickListType, values: [String]) {
         let sanitized = sanitizeQuickListValues(values)
         guard !sanitized.isEmpty else { return }
-
-        if settingsViewModel.quickListURL(for: type) == nil {
-            guard let url = promptForQuickListFile(type: type) else { return }
-            createQuickListFile(at: url, type: type, values: sanitized)
-            return
-        }
-
-        _ = settingsViewModel.appendToQuickList(for: type, values: sanitized)
+        appendToQuickList(type: type, values: sanitized)
     }
 
     private func addCurrentToQuickList(type: QuickListType, value: String?) {
@@ -805,30 +798,108 @@ struct MetadataPanel: View {
                     at: url,
                     requestID: requestID
                 )
-                guard quickListCreationRequestID == requestID else { return }
-                quickListCreationTask = nil
-                quickListCreationRequestID = nil
                 switch result {
                 case .existing, .created:
-                    completeQuickListAddition(from: url, type: type, values: values)
+                    try await completeQuickListAddition(
+                        from: url,
+                        type: type,
+                        values: values,
+                        requestID: requestID
+                    )
                 case .cancelledBeforeAccess, .cancelledBeforeCreation:
+                    guard quickListCreationRequestID == requestID else { return }
+                    quickListCreationTask = nil
+                    quickListCreationRequestID = nil
                     break
+                }
+            } catch {
+                guard quickListCreationRequestID == requestID else { return }
+                metadataPanelLog.error("Failed to create or import quick list file at \(url.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+                do {
+                    let destinationURL = KeywordListsStore.shared.url(for: .quick(type))
+                    let fallback = try await KeywordListEditorPersistenceService.shared.appendEntries(
+                        values,
+                        to: destinationURL,
+                        createDestinationIfMissing: true,
+                        requestID: requestID
+                    )
+                    completeQuickListMutation(fallback, type: type, requestID: requestID)
+                } catch {
+                    guard quickListCreationRequestID == requestID else { return }
+                    quickListCreationTask = nil
+                    quickListCreationRequestID = nil
+                    metadataPanelLog.error("Failed to save managed Quick List fallback: \(error.localizedDescription, privacy: .private)")
+                }
+            }
+        }
+    }
+
+    private func appendToQuickList(type: QuickListType, values: [String]) {
+        cancelQuickListCreation()
+        let requestID = UUID()
+        quickListCreationRequestID = requestID
+        let destinationURL = KeywordListsStore.shared.url(for: .quick(type))
+        quickListCreationTask = Task {
+            do {
+                let result = try await KeywordListEditorPersistenceService.shared.appendEntries(
+                    values,
+                    to: destinationURL,
+                    requestID: requestID
+                )
+                switch result {
+                case .missingDestination:
+                    guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
+                    guard let url = promptForQuickListFile(type: type) else {
+                        quickListCreationTask = nil
+                        quickListCreationRequestID = nil
+                        return
+                    }
+                    createQuickListFile(at: url, type: type, values: values)
+                default:
+                    completeQuickListMutation(result, type: type, requestID: requestID)
                 }
             } catch {
                 guard quickListCreationRequestID == requestID else { return }
                 quickListCreationTask = nil
                 quickListCreationRequestID = nil
-                metadataPanelLog.error("Failed to create quick list file at \(url.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
-                // Preserve the prior best-effort behavior: a failed user-selected file creation
-                // does not prevent the managed Quick List store from accepting these values.
-                completeQuickListAddition(from: url, type: type, values: values)
+                metadataPanelLog.error("Failed to append Quick List: \(error.localizedDescription, privacy: .private)")
             }
         }
     }
 
-    private func completeQuickListAddition(from url: URL, type: QuickListType, values: [String]) {
-        settingsViewModel.setQuickListURL(url, for: type)
-        _ = settingsViewModel.appendToQuickList(for: type, values: values)
+    private func completeQuickListAddition(
+        from url: URL,
+        type: QuickListType,
+        values: [String],
+        requestID: UUID
+    ) async throws {
+        let destinationURL = KeywordListsStore.shared.url(for: .quick(type))
+        let result = try await KeywordListEditorPersistenceService.shared.appendEntries(
+            values,
+            to: destinationURL,
+            importing: url,
+            requestID: requestID
+        )
+        completeQuickListMutation(result, type: type, requestID: requestID)
+    }
+
+    private func completeQuickListMutation(
+        _ result: QuickListMutationResult,
+        type: QuickListType,
+        requestID: UUID
+    ) {
+        if case let .committed(commit) = result {
+            // Publish every durable commit before checking whether this view still owns the
+            // request. A disappearing or superseded panel must not leave observers stale.
+            KeywordListsStore.shared.recordExternalWrite(
+                to: .quick(type),
+                entries: commit.entries,
+                sourceID: commit.requestID
+            )
+        }
+        guard quickListCreationRequestID == requestID else { return }
+        quickListCreationTask = nil
+        quickListCreationRequestID = nil
     }
 
     private func cancelQuickListCreation() {

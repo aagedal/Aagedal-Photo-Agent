@@ -224,6 +224,17 @@ made the interactive-render coalescing test independent of MainActor saturation.
 routing and view decomposition, and manual or external exit gates remain incomplete.
 ([validation](plan-status-watermark-version-geometry-continuation-2026-08-31.md))
 
+**Quick List mutation and iCloud routing continuation (2026-08-31):** the checklist remains 63 of 75.
+Metadata-panel Quick List additions now share the serialized editor persistence actor, including first-use
+security-scoped text/CSV import, no-op and cancellation evidence, durable write publication, and stale-result
+rejection. Keyword Lists iCloud route resolution and reconciliation now run on a serialized actor; superseded
+requests are cancelled, only the latest completion changes the preference, disabling remains available without
+a reachable container, and the existing flat-union/structured-preserve merge policy is characterized. The
+affected eight-suite selection passed 55 tests, the repository gate passed, and the serial unfiltered gate
+passed 1,817 tests in 212 suites. Remaining direct paths, real-volume evidence, broader Develop persistence/view
+decomposition, and manual or external gates remain incomplete.
+([validation](plan-status-quick-list-routing-continuation-2026-08-31.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -668,6 +679,15 @@ serialized actor that reports cancellation before mutation versus cancellation/f
 prefix. Store notifications are published for every committed destination even after the sheet disappears.
 Other lower-priority direct paths and the real-volume/Thread Performance Checker gate remain open.
 ([validation](plan-status-template-keyword-interactive-render-continuation-2026-08-30.md))
+
+**Quick List mutation and iCloud routing follow-up (2026-08-31):** Metadata-panel appends, missing-list
+detection, and first-use file import now share `KeywordListEditorPersistenceService` with Settings editor
+loads/saves, eliminating the read/merge/write race and synchronous MainActor probes. Keyword Lists iCloud root
+resolution and tree reconciliation now cross `KeywordListsRoutingService`; the UI publishes a pending desired
+state, cancels superseded requests, and applies only the latest result. The prior destination-ordered union for
+flat lists and preserve-existing policy for structured trees remains intact. Lower-priority direct paths and the
+real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-quick-list-routing-continuation-2026-08-31.md))
 
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.

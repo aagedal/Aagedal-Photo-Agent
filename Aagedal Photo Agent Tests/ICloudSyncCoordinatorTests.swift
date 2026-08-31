@@ -16,6 +16,165 @@ struct ICloudSyncCoordinatorTests {
         ])
     }
 
+    @Test("keyword-list routing resolves and merges off MainActor in both directions")
+    @MainActor
+    func keywordListRoutingRunsOffMainActor() async throws {
+        let local = URL(fileURLWithPath: "/virtual/local-lists", isDirectory: true)
+        let cloud = URL(fileURLWithPath: "/virtual/cloud-lists", isDirectory: true)
+        let probe = KeywordListsRoutingProbe(local: local, cloud: cloud)
+        let service = KeywordListsRoutingService(access: probe.fileAccess)
+        let enableID = UUID()
+        let disableID = UUID()
+
+        let enable = try await service.reconcile(enabled: true, requestID: enableID)
+        let disable = try await service.reconcile(enabled: false, requestID: disableID)
+
+        #expect(enable == .committed(KeywordListsRoutingCommit(
+            requestID: enableID,
+            enabled: true,
+            sourceURL: local,
+            destinationURL: cloud,
+            performedMerge: true,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(disable == .committed(KeywordListsRoutingCommit(
+            requestID: disableID,
+            enabled: false,
+            sourceURL: cloud,
+            destinationURL: local,
+            performedMerge: true,
+            cancellationRequestedAfterCommit: false
+        )))
+        let merges = probe.merges
+        #expect(merges.count == 2)
+        #expect(merges[0].0 == local)
+        #expect(merges[0].1 == cloud)
+        #expect(merges[1].0 == cloud)
+        #expect(merges[1].1 == local)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("keyword-list routing reports unavailable without entering the merger")
+    func keywordListRoutingUnavailable() async throws {
+        let probe = KeywordListsRoutingProbe(
+            local: URL(fileURLWithPath: "/virtual/local"),
+            cloud: nil
+        )
+        let service = KeywordListsRoutingService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.reconcile(enabled: true, requestID: requestID)
+
+        #expect(result == .unavailable(requestID: requestID, enabled: true))
+        #expect(probe.merges.isEmpty)
+    }
+
+    @Test("turning keyword-list sync off remains available without an iCloud container")
+    func keywordListRoutingDisableWithoutCloud() async throws {
+        let local = URL(fileURLWithPath: "/virtual/local")
+        let probe = KeywordListsRoutingProbe(local: local, cloud: nil)
+        let service = KeywordListsRoutingService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.reconcile(enabled: false, requestID: requestID)
+
+        #expect(result == .committed(KeywordListsRoutingCommit(
+            requestID: requestID,
+            enabled: false,
+            sourceURL: local,
+            destinationURL: local,
+            performedMerge: false,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(probe.merges.isEmpty)
+    }
+
+    @Test("keyword-list routing returns durable evidence when cancellation arrives during merge")
+    func keywordListRoutingDurableCancellation() async throws {
+        let local = URL(fileURLWithPath: "/virtual/local")
+        let cloud = URL(fileURLWithPath: "/virtual/cloud")
+        let probe = KeywordListsRoutingProbe(
+            local: local,
+            cloud: cloud,
+            cancelDuringMerge: true
+        )
+        let service = KeywordListsRoutingService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await Task {
+            try await service.reconcile(enabled: true, requestID: requestID)
+        }.value
+
+        #expect(result == .committed(KeywordListsRoutingCommit(
+            requestID: requestID,
+            enabled: true,
+            sourceURL: local,
+            destinationURL: cloud,
+            performedMerge: true,
+            cancellationRequestedAfterCommit: true
+        )))
+    }
+
+    @Test("coordinator starts serialized routing and applies only its latest request")
+    func keywordListRoutingSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/ICloudSyncCoordinator.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("keywordListsRoutingTask?.cancel()"))
+        #expect(source.contains("try await KeywordListsRoutingService.shared.reconcile("))
+        #expect(source.contains("keywordListsRoutingRequestID == requestID"))
+        #expect(source.contains("KeywordListsStore.shared.applyICloudRoutingPreference(on)"))
+        #expect(!source.contains("let ok = KeywordListsStore.shared.setICloudEnabled(on)"))
+    }
+
+    @Test("keyword-list routing unions flat lists and preserves an existing structured tree")
+    func keywordListRoutingMergePolicy() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "KeywordListsRoutingPolicyTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        let destination = root.appendingPathComponent("destination", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceQuick = source.appendingPathComponent("quick/keywords.txt")
+        let destinationQuick = destination.appendingPathComponent("quick/keywords.txt")
+        let sourceStructured = source.appendingPathComponent("structured/keywords.txt")
+        let destinationStructured = destination.appendingPathComponent("structured/keywords.txt")
+        try FileManager.default.createDirectory(
+            at: sourceQuick.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: destinationQuick.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: sourceStructured.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: destinationStructured.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("Local\nShared\n".utf8).write(to: sourceQuick)
+        try Data("Cloud\nShared\n".utf8).write(to: destinationQuick)
+        try Data("source tree\n".utf8).write(to: sourceStructured)
+        try Data("destination tree\n".utf8).write(to: destinationStructured)
+
+        try KeywordListsStore.reconcileTree(from: source, to: destination)
+
+        #expect(try Data(contentsOf: destinationQuick) == Data("Cloud\nShared\nLocal\n".utf8))
+        #expect(try Data(contentsOf: destinationStructured) == Data("destination tree\n".utf8))
+    }
+
     @Test("Known People disclosure and iCloud confirmation are versioned independently")
     func knownPeoplePrivacyAcknowledgements() throws {
         let suiteName = "KnownPeoplePrivacyLifecycleTests-\(UUID().uuidString)"
@@ -205,6 +364,52 @@ struct ICloudSyncCoordinatorTests {
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(60)], ofItemAtPath: sourceFile.path)
         try CloudCoordinatedIO.mergeCopyPreservingNewer(from: source, to: destination)
         #expect(try Data(contentsOf: destinationFile) == Data("newest-local".utf8))
+    }
+}
+
+nonisolated private final class KeywordListsRoutingProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let local: URL
+    private let cloud: URL?
+    private let cancelDuringMerge: Bool
+    private var observedMainThread = false
+    private var recordedMerges: [(URL, URL)] = []
+
+    init(local: URL, cloud: URL?, cancelDuringMerge: Bool = false) {
+        self.local = local
+        self.cloud = cloud
+        self.cancelDuringMerge = cancelDuringMerge
+    }
+
+    var fileAccess: KeywordListsRoutingFileAccess {
+        KeywordListsRoutingFileAccess(
+            localRootURL: { [self] in
+                recordThread()
+                return local
+            },
+            cloudRootURL: { [self] in
+                recordThread()
+                return cloud
+            },
+            merge: { [self] source, destination in
+                lock.withLock {
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                    recordedMerges.append((source, destination))
+                }
+                if cancelDuringMerge {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }
+        )
+    }
+
+    var merges: [(URL, URL)] { lock.withLock { recordedMerges } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+
+    private func recordThread() {
+        lock.withLock {
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
     }
 }
 

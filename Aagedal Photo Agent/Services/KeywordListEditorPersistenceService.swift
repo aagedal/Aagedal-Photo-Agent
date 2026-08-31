@@ -35,10 +35,61 @@ nonisolated enum KeywordListEditorSaveResult: Equatable, Sendable {
     )
 }
 
+nonisolated struct QuickListMutationCommit: Equatable, Sendable {
+    let requestID: UUID
+    let destinationURL: URL
+    let entries: [String]
+    let addedEntries: [String]
+    let byteCount: Int
+    /// Coordinated writes are non-preemptible after entry. A cancelled caller must still publish
+    /// this durable mutation so every list observer invalidates its in-memory snapshot.
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum QuickListMutationResult: Equatable, Sendable {
+    /// The managed list has not been created yet. Callers may present the existing first-use file
+    /// picker without performing a synchronous existence probe on MainActor.
+    case missingDestination(requestID: UUID, destinationURL: URL)
+    case committed(QuickListMutationCommit)
+    case unchanged(requestID: UUID, destinationURL: URL, entries: [String])
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledAfterRead(
+        requestID: UUID,
+        destinationURL: URL,
+        byteCount: Int
+    )
+    case cancelledBeforeCommit(
+        requestID: UUID,
+        destinationURL: URL,
+        entryCount: Int,
+        byteCount: Int
+    )
+}
+
 nonisolated struct KeywordListEditorFileAccess: Sendable {
     let itemExists: @Sendable (URL) -> Bool
     let readData: @Sendable (URL) throws -> Data
     let writeData: @Sendable (Data, URL) throws -> Void
+    let startAccessingSecurityScopedResource: @Sendable (URL) -> Bool
+    let stopAccessingSecurityScopedResource: @Sendable (URL) -> Void
+
+    init(
+        itemExists: @escaping @Sendable (URL) -> Bool,
+        readData: @escaping @Sendable (URL) throws -> Data,
+        writeData: @escaping @Sendable (Data, URL) throws -> Void,
+        startAccessingSecurityScopedResource: @escaping @Sendable (URL) -> Bool = {
+            $0.startAccessingSecurityScopedResource()
+        },
+        stopAccessingSecurityScopedResource: @escaping @Sendable (URL) -> Void = {
+            $0.stopAccessingSecurityScopedResource()
+        }
+    ) {
+        self.itemExists = itemExists
+        self.readData = readData
+        self.writeData = writeData
+        self.startAccessingSecurityScopedResource = startAccessingSecurityScopedResource
+        self.stopAccessingSecurityScopedResource = stopAccessingSecurityScopedResource
+    }
 
     static let system = KeywordListEditorFileAccess(
         itemExists: { CloudCoordinatedIO.itemExists(at: $0) },
@@ -118,6 +169,120 @@ actor KeywordListEditorPersistenceService {
             requestID: requestID,
             destinationURL: destinationURL,
             entries: normalized,
+            byteCount: data.count,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        ))
+    }
+
+    /// Appends values to an existing managed Quick List, or imports a user-selected first-use
+    /// file before appending. The read/merge/write transaction shares this actor with editor
+    /// saves, preventing an editor save and a Caption-panel append from overwriting each other.
+    func appendEntries(
+        _ entries: [String],
+        to destinationURL: URL,
+        importing sourceURL: URL? = nil,
+        createDestinationIfMissing: Bool = false,
+        requestID: UUID
+    ) throws -> QuickListMutationResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+
+        let importedData: Data?
+        var destinationExists = false
+        if let sourceURL {
+            let didStart = access.startAccessingSecurityScopedResource(sourceURL)
+            defer {
+                if didStart {
+                    access.stopAccessingSecurityScopedResource(sourceURL)
+                }
+            }
+            importedData = try access.readData(sourceURL)
+            guard !Task.isCancelled else {
+                return .cancelledAfterRead(
+                    requestID: requestID,
+                    destinationURL: destinationURL,
+                    byteCount: importedData?.count ?? 0
+                )
+            }
+        } else {
+            destinationExists = access.itemExists(destinationURL)
+            guard destinationExists || createDestinationIfMissing else {
+                return .missingDestination(
+                    requestID: requestID,
+                    destinationURL: destinationURL
+                )
+            }
+            guard !Task.isCancelled else {
+                return .cancelledAfterRead(
+                    requestID: requestID,
+                    destinationURL: destinationURL,
+                    byteCount: 0
+                )
+            }
+            importedData = nil
+        }
+
+        let existing: [String]
+        if let importedData, let sourceURL {
+            guard importedData.count <= ApprovedListParser.maxFileSizeBytes else {
+                throw ApprovedListParserError.fileTooLarge(
+                    bytes: Int64(importedData.count),
+                    limit: ApprovedListParser.maxFileSizeBytes
+                )
+            }
+            existing = try ApprovedListParser.parse(
+                importedData,
+                csv: sourceURL.pathExtension.lowercased() == "csv"
+            )
+        } else if destinationExists {
+            let existingData = try access.readData(destinationURL)
+            guard !Task.isCancelled else {
+                return .cancelledAfterRead(
+                    requestID: requestID,
+                    destinationURL: destinationURL,
+                    byteCount: existingData.count
+                )
+            }
+            existing = ApprovedListParser.parseString(
+                String(decoding: existingData, as: UTF8.self),
+                csv: false
+            )
+        } else {
+            existing = []
+        }
+        let incoming = Self.normalizedEntries(entries)
+        var seen = Set(existing)
+        let added = incoming.filter { seen.insert($0).inserted }
+        let combined = existing + added
+
+        // An import replaces the managed list even when it adds no new values. Without an import,
+        // avoiding a no-op write preserves the former best-effort append behavior.
+        guard sourceURL != nil || !added.isEmpty else {
+            return .unchanged(
+                requestID: requestID,
+                destinationURL: destinationURL,
+                entries: existing
+            )
+        }
+
+        let text = combined.joined(separator: "\n") + (combined.isEmpty ? "" : "\n")
+        let data = Data(text.utf8)
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: requestID,
+                destinationURL: destinationURL,
+                entryCount: combined.count,
+                byteCount: data.count
+            )
+        }
+
+        try access.writeData(data, destinationURL)
+        return .committed(QuickListMutationCommit(
+            requestID: requestID,
+            destinationURL: destinationURL,
+            entries: combined,
+            addedEntries: added,
             byteCount: data.count,
             cancellationRequestedAfterCommit: Task.isCancelled
         ))

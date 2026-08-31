@@ -61,6 +61,9 @@ upload the current image from Photo Agent.
 - Replaced the thumbnail toolbar's bound sort picker with an explicitly titled sort menu so the
   active mode remains visible and cannot change merely because the app loses focus on newer macOS
   releases.
+- Quick List additions and Keyword Lists iCloud route changes now perform coordinated file access
+  away from the main thread, reject stale completions, and preserve list contents when local and
+  cloud copies are reconciled.
 
 ### Documentation
 

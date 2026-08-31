@@ -281,6 +281,13 @@ mask/watermark interaction geometry. The final unfiltered gate passed 1,804 test
 direct filesystem paths and real-volume evidence, broader metadata/sidecar persistence and view decomposition,
 and manual/external gates keep the audit at 63 of 75.
 
+The latest [Quick List mutation and iCloud routing continuation](plan-status-quick-list-routing-continuation-2026-08-31.md)
+records serialized Metadata-panel Quick List append/import transactions and actor-owned Keyword Lists iCloud
+route reconciliation. The merge keeps destination-ordered unions for flat lists and preserves existing
+structured trees. The serial unfiltered gate passed 1,817 tests in 212 suites. Remaining lower-priority direct
+paths, real-volume and Thread Performance Checker evidence, broader Develop persistence/view decomposition, and
+manual/external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.
