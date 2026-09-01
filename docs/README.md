@@ -326,6 +326,15 @@ selection passed 44 tests, the repository gate passed, and the fresh-derived ser
 tests in 215 suites. Primary XMP/history task ownership, remaining source/render/geometry view decomposition,
 filesystem measurement, and manual/external gates keep the audit at 63 of 75.
 
+The latest [Develop Primary-persistence continuation](plan-status-develop-primary-persistence-continuation-2026-09-01.md)
+records coordinator-owned awaiting tasks, request/image/workspace identity, pending state, explicit cancellation,
+and typed result publication for Primary XMP/history saves and Develop resets. The existing serialized durable
+writer remains injected; only the newest active-image request may publish, late completion after navigation or
+teardown is rejected, and current failures surface in the workspace. The focused suite passed 13 tests, the
+adjacent four-suite selection passed 47 tests, the repository gate passed, and the serial unfiltered gate passed
+1,838 tests in 215 suites. Remaining source/render/geometry view decomposition, filesystem measurement, and
+manual/external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

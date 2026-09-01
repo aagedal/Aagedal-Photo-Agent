@@ -20,6 +20,24 @@ nonisolated enum DevelopBatchPersistenceOutcome: Equatable, Sendable {
     case failed(requestID: UUID, message: String)
 }
 
+/// The completion reported by the injected Primary metadata/history writer.
+///
+/// The durable writer remains responsible for distinguishing a complete transaction from a
+/// partial/cancelled one. Keeping that distinction in the completion lets this coordinator own
+/// presentation without inspecting mutable `MetadataViewModel` state after a newer save begins.
+nonisolated enum DevelopPrimaryPersistenceCompletion: Equatable, Sendable {
+    case succeeded
+    case cancelled(message: String?)
+    case failed(message: String)
+}
+
+/// The observable result of the latest Primary metadata/history request in an image session.
+nonisolated enum DevelopPrimaryPersistenceOutcome: Equatable, Sendable {
+    case succeeded(requestID: UUID)
+    case cancelled(requestID: UUID, message: String?)
+    case failed(requestID: UUID, message: String)
+}
+
 /// Owns the Develop workspace's undo lifetime and the set of image previews invalidated by edits.
 ///
 /// The coordinator deliberately does not write XMP or named-version JSON. Those operations remain
@@ -31,22 +49,33 @@ nonisolated enum DevelopBatchPersistenceOutcome: Equatable, Sendable {
 final class DevelopPersistenceSessionCoordinator {
     typealias SettingsPublisher = @MainActor (CameraRawSettings?, Bool) -> Void
     typealias PersistenceAction = @MainActor () -> Void
+    typealias PrimaryPersistenceCompletion = @MainActor (DevelopPrimaryPersistenceCompletion) -> Void
+    typealias PrimaryPersistenceOperation = @MainActor (@escaping PrimaryPersistenceCompletion) -> Void
     typealias BatchPersistenceOperation = @MainActor () async throws -> Void
 
     private(set) var isWorkspaceActive = false
     private(set) var activeImageURL: URL?
     private(set) var editedURLs: Set<URL> = []
+    private(set) var pendingPrimaryPersistenceCount = 0
+    private(set) var latestPrimaryPersistenceOutcome: DevelopPrimaryPersistenceOutcome?
     private(set) var pendingBatchPersistenceCount = 0
     private(set) var latestBatchPersistenceOutcome: DevelopBatchPersistenceOutcome?
 
     @ObservationIgnored private(set) var undoManager = UndoManager()
     @ObservationIgnored private var imageSessionID = UUID()
     @ObservationIgnored private var workspaceSessionID = UUID()
+    @ObservationIgnored private var latestPrimaryPersistenceRequestID: UUID?
+    @ObservationIgnored private var primaryPersistenceTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var latestBatchPersistenceRequestID: UUID?
     @ObservationIgnored private var batchPersistenceTasks: [UUID: Task<Void, Never>] = [:]
 
     var canUndo: Bool { undoManager.canUndo }
     var canRedo: Bool { undoManager.canRedo }
+    var isPrimaryPersistenceInProgress: Bool { pendingPrimaryPersistenceCount > 0 }
+    var primaryPersistenceErrorMessage: String? {
+        guard case .failed(_, let message) = latestPrimaryPersistenceOutcome else { return nil }
+        return message
+    }
     var isBatchPersistenceInProgress: Bool { pendingBatchPersistenceCount > 0 }
     var batchPersistenceErrorMessage: String? {
         guard case .failed(_, let message) = latestBatchPersistenceOutcome else { return nil }
@@ -58,6 +87,9 @@ final class DevelopPersistenceSessionCoordinator {
     func beginWorkspace() {
         invalidateImageSession()
         workspaceSessionID = UUID()
+        latestPrimaryPersistenceRequestID = nil
+        pendingPrimaryPersistenceCount = 0
+        latestPrimaryPersistenceOutcome = nil
         latestBatchPersistenceRequestID = nil
         pendingBatchPersistenceCount = 0
         latestBatchPersistenceOutcome = nil
@@ -74,6 +106,9 @@ final class DevelopPersistenceSessionCoordinator {
         // history exactly as the former view-owned UndoManager did.
         guard activeImageURL != imageURL else { return }
         invalidateImageSession()
+        latestPrimaryPersistenceRequestID = nil
+        pendingPrimaryPersistenceCount = 0
+        latestPrimaryPersistenceOutcome = nil
         activeImageURL = imageURL
     }
 
@@ -90,6 +125,9 @@ final class DevelopPersistenceSessionCoordinator {
         // cancel that work when the view disappears: finishing it preserves the in-memory edit
         // the user already saw. Rotating the session identity suppresses late UI publication.
         workspaceSessionID = UUID()
+        latestPrimaryPersistenceRequestID = nil
+        pendingPrimaryPersistenceCount = 0
+        latestPrimaryPersistenceOutcome = nil
         latestBatchPersistenceRequestID = nil
         pendingBatchPersistenceCount = 0
         latestBatchPersistenceOutcome = nil
@@ -97,6 +135,58 @@ final class DevelopPersistenceSessionCoordinator {
         editedURLs.removeAll(keepingCapacity: false)
         isWorkspaceActive = false
         return result
+    }
+
+    /// Starts one Primary XMP/history transaction and owns its completion publication.
+    ///
+    /// The operation is invoked synchronously so it snapshots the same edit that requested the
+    /// save. The injected metadata owner retains the actual durable transaction, including its
+    /// per-file serialization and partial-commit rules. This coordinator retains the awaiting
+    /// task, request/image/workspace identities, pending state, and latest-result policy. Image or
+    /// workspace replacement therefore cannot publish a late failure into a different session.
+    @discardableResult
+    func schedulePrimaryPersistence(
+        operation: @escaping PrimaryPersistenceOperation
+    ) -> UUID? {
+        guard isWorkspaceActive, activeImageURL != nil else { return nil }
+
+        let requestID = UUID()
+        let workspaceID = workspaceSessionID
+        let imageID = imageSessionID
+        latestPrimaryPersistenceRequestID = requestID
+        latestPrimaryPersistenceOutcome = nil
+        pendingPrimaryPersistenceCount += 1
+
+        var streamContinuation: AsyncStream<DevelopPrimaryPersistenceCompletion>.Continuation?
+        let completions = AsyncStream<DevelopPrimaryPersistenceCompletion> { continuation in
+            streamContinuation = continuation
+        }
+        operation { completion in
+            streamContinuation?.yield(completion)
+            streamContinuation?.finish()
+        }
+
+        let task = Task { @MainActor [weak self] in
+            var iterator = completions.makeAsyncIterator()
+            let completion = await iterator.next()
+                ?? .cancelled(message: "The Develop save was cancelled before it completed.")
+            self?.finishPrimaryPersistence(
+                requestID: requestID,
+                workspaceID: workspaceID,
+                imageID: imageID,
+                completion: completion
+            )
+        }
+        primaryPersistenceTasks[requestID] = task
+        return requestID
+    }
+
+    func cancelPrimaryPersistence(requestID: UUID) {
+        primaryPersistenceTasks[requestID]?.cancel()
+    }
+
+    func dismissPrimaryPersistenceResult() {
+        latestPrimaryPersistenceOutcome = nil
     }
 
     /// Starts a batch settings write owned by this workspace coordinator.
@@ -295,5 +385,28 @@ final class DevelopPersistenceSessionCoordinator {
         pendingBatchPersistenceCount = max(0, pendingBatchPersistenceCount - 1)
         guard latestBatchPersistenceRequestID == requestID else { return }
         latestBatchPersistenceOutcome = outcome
+    }
+
+    private func finishPrimaryPersistence(
+        requestID: UUID,
+        workspaceID: UUID,
+        imageID: UUID,
+        completion: DevelopPrimaryPersistenceCompletion
+    ) {
+        primaryPersistenceTasks[requestID] = nil
+        guard isWorkspaceActive,
+              workspaceSessionID == workspaceID,
+              imageSessionID == imageID else { return }
+        pendingPrimaryPersistenceCount = max(0, pendingPrimaryPersistenceCount - 1)
+        guard latestPrimaryPersistenceRequestID == requestID else { return }
+
+        switch completion {
+        case .succeeded:
+            latestPrimaryPersistenceOutcome = .succeeded(requestID: requestID)
+        case .cancelled(let message):
+            latestPrimaryPersistenceOutcome = .cancelled(requestID: requestID, message: message)
+        case .failed(let message):
+            latestPrimaryPersistenceOutcome = .failed(requestID: requestID, message: message)
+        }
     }
 }

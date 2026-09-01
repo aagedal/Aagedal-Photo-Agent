@@ -61,6 +61,14 @@ nonisolated enum BatchListSelectionError: Error, Sendable, Equatable {
     case emptyImageSupplierReplace
 }
 
+/// Typed completion from a metadata/history commit. This is separate from presentation state so
+/// an owner awaiting an older request never has to infer its result from a mutable error string.
+nonisolated enum MetadataCommitResult: Sendable, Equatable {
+    case succeeded
+    case cancelled(message: String)
+    case failed(message: String)
+}
+
 @Observable
 final class MetadataViewModel {
     var metadata: IPTCMetadata?
@@ -1046,10 +1054,22 @@ final class MetadataViewModel {
         mode: MetadataWriteMode,
         onComplete: (() -> Void)? = nil
     ) {
+        commitEditsReportingResult(mode: mode) { _ in
+            onComplete?()
+        }
+    }
+
+    /// Reports the result of the exact commit request to an external lifecycle owner.
+    /// `historyOnly` retains its established fire-and-forget contract; Develop uses the two
+    /// durable modes whose completions occur only after their metadata/history work finishes.
+    func commitEditsReportingResult(
+        mode: MetadataWriteMode,
+        onComplete: @escaping (MetadataCommitResult) -> Void
+    ) {
         switch mode {
         case .historyOnly:
             saveToSidecar()
-            onComplete?()
+            onComplete(.succeeded)
         case .writeToXMPSidecar:
             writeXMPSidecarAndPreserveHistory(onComplete: onComplete)
         case .writeToFile, .writeToFileAndXMPSidecar:
@@ -1512,12 +1532,18 @@ final class MetadataViewModel {
         }
     }
 
-    private func writeXMPSidecarAndPreserveHistory(onComplete: (() -> Void)? = nil) {
+    private func writeXMPSidecarAndPreserveHistory(
+        onComplete: @escaping (MetadataCommitResult) -> Void
+    ) {
         guard let folderURL = currentFolderURL else {
             writeTask?.cancel()
             writeTask = Task {
                 await writeXMPSidecar()
-                onComplete?()
+                if let saveError {
+                    onComplete(.failed(message: saveError))
+                } else {
+                    onComplete(.succeeded)
+                }
             }
             return
         }
@@ -1528,13 +1554,17 @@ final class MetadataViewModel {
                 await writeXMPSidecar()
                 await saveBatchSidecars(folderURL: folderURL, pendingChanges: false)
                 hasChanges = false
-                onComplete?()
+                if let saveError {
+                    onComplete(.failed(message: saveError))
+                } else {
+                    onComplete(.succeeded)
+                }
             }
             return
         }
 
         guard let imageURL = selectedURLs.first else {
-            onComplete?()
+            onComplete(.succeeded)
             return
         }
 
@@ -1596,15 +1626,27 @@ final class MetadataViewModel {
                     }
                     self.hasChanges = false
                 }
+                onComplete(.succeeded)
             } else if let failure = result.failure {
                 let artifact = failure.stage == .metadataSidecar ? "metadata history" : "XMP sidecar"
-                self.saveError = "Failed to save \(artifact): \(failure.message)"
+                let message = "Failed to save \(artifact): \(failure.message)"
+                self.saveError = message
+                onComplete(.failed(message: message))
             } else if result.wasCancelled, result.installedSidecar != nil {
-                self.saveError = "Save cancelled after metadata history was written; the XMP sidecar was not changed."
+                let message = "Save cancelled after metadata history was written; the XMP sidecar was not changed."
+                self.saveError = message
+                onComplete(.cancelled(message: message))
+            } else if result.wasCancelled {
+                let message = "Save cancelled before metadata history was written."
+                self.saveError = message
+                onComplete(.cancelled(message: message))
+            } else {
+                let message = "The metadata history and XMP sidecar save did not complete."
+                self.saveError = message
+                onComplete(.failed(message: message))
             }
 
             self.isSaving = false
-            onComplete?()
         }
     }
 
@@ -1754,7 +1796,10 @@ final class MetadataViewModel {
         fields[.crsToneCurveName2012] = ""
     }
 
-    private func writeMetadataAndPreserveHistory(alsoWriteXMPSidecar: Bool = false, onComplete: (() -> Void)? = nil) {
+    private func writeMetadataAndPreserveHistory(
+        alsoWriteXMPSidecar: Bool = false,
+        onComplete: @escaping (MetadataCommitResult) -> Void
+    ) {
         guard selectedCount == 1,
               let imageURL = selectedURLs.first,
               let folderURL = currentFolderURL else {
@@ -1762,7 +1807,7 @@ final class MetadataViewModel {
             if alsoWriteXMPSidecar {
                 Task { await writeXMPSidecar() }
             }
-            onComplete?()
+            onComplete(.succeeded)
             return
         }
 
@@ -1775,6 +1820,7 @@ final class MetadataViewModel {
 
         writeTask?.cancel()
         writeTask = Task {
+            let commitResult: MetadataCommitResult
             do {
                 // Touch the crs block only when develop settings actually changed:
                 // a caption-only save on an ACR-edited file must not rewrite (and,
@@ -1858,11 +1904,16 @@ final class MetadataViewModel {
                     }
                     self.hasChanges = false
                 }
+                commitResult = .succeeded
             } catch {
-                self.saveError = error.localizedDescription
+                let message = error.localizedDescription
+                self.saveError = message
+                commitResult = error is CancellationError
+                    ? .cancelled(message: message)
+                    : .failed(message: message)
             }
             self.isSaving = false
-            onComplete?()
+            onComplete(commitResult)
         }
     }
 

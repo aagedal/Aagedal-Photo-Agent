@@ -963,6 +963,9 @@ struct EditWorkspaceView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: copyPasteFeedback)
+        .modifier(DevelopPrimaryPersistenceFailureAlertModifier(
+            persistenceSession: persistenceSession
+        ))
         .modifier(DevelopBatchPersistenceFailureAlertModifier(
             persistenceSession: persistenceSession
         ))
@@ -3864,9 +3867,7 @@ struct EditWorkspaceView: View {
                 // tweak races with the full-res mmap decode (CGImageSourceCreateWithURL) and
                 // crashes; edits bake into a file only on Export. Sidecar wins over embedded crs
                 // on reload for RAW and non-RAW sources.
-                metadataViewModel.commitEdits(mode: .writeToXMPSidecar) {
-                    onPendingStatusChanged?()
-                }
+                schedulePrimaryMetadataCommit(mode: .writeToXMPSidecar)
             },
             commitNamedVersion: scheduleActiveDevelopVersionSave
         )
@@ -3894,12 +3895,29 @@ struct EditWorkspaceView: View {
                     ? .writeToFileAndXMPSidecar
                     : .writeToXMPSidecar
 
-                metadataViewModel.commitEdits(mode: mode) {
-                    onPendingStatusChanged?()
-                }
+                schedulePrimaryMetadataCommit(mode: mode)
             },
             commitNamedVersion: scheduleActiveDevelopVersionSave
         )
+    }
+
+    /// Bridges the existing serialized MetadataViewModel transaction into the Develop workspace's
+    /// request lifetime. The metadata owner still decides whether the transaction fully committed;
+    /// this snapshots that result before a later save can replace its mutable presentation state.
+    private func schedulePrimaryMetadataCommit(mode: MetadataWriteMode) {
+        persistenceSession.schedulePrimaryPersistence { completion in
+            metadataViewModel.commitEditsReportingResult(mode: mode) { result in
+                onPendingStatusChanged?()
+                switch result {
+                case .succeeded:
+                    completion(.succeeded)
+                case .cancelled(let message):
+                    completion(.cancelled(message: message))
+                case .failed(let message):
+                    completion(.failed(message: message))
+                }
+            }
+        }
     }
 
     private func syncCameraRawToImageFile() {
@@ -8427,6 +8445,23 @@ private struct EditWorkspaceExportFailureAlertModifier: ViewModifier {
             Button("OK", role: .cancel) { exportSession.dismissError() }
         } message: {
             Text(exportSession.errorMessage ?? "The export could not be completed.")
+        }
+    }
+}
+
+private struct DevelopPrimaryPersistenceFailureAlertModifier: ViewModifier {
+    @Bindable var persistenceSession: DevelopPersistenceSessionCoordinator
+
+    func body(content: Content) -> some View {
+        content.alert("Save Develop Edits Failed", isPresented: Binding(
+            get: { persistenceSession.primaryPersistenceErrorMessage != nil },
+            set: { if !$0 { persistenceSession.dismissPrimaryPersistenceResult() } }
+        )) {
+            Button("OK") {
+                persistenceSession.dismissPrimaryPersistenceResult()
+            }
+        } message: {
+            Text(persistenceSession.primaryPersistenceErrorMessage ?? "The Develop edits could not be saved.")
         }
     }
 }

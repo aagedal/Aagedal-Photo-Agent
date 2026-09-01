@@ -167,6 +167,93 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(coordinator.activeImageURL == second)
     }
 
+    @Test("primary persistence owns success failure and cancellation publication")
+    func primaryPersistenceOutcomes() async throws {
+        let imageURL = URL(fileURLWithPath: "/tmp/develop-primary-persistence.raw")
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(imageURL)
+
+        let successID = try #require(coordinator.schedulePrimaryPersistence { completion in
+            completion(.succeeded)
+        })
+        try await waitForPrimaryPersistence(coordinator)
+        #expect(coordinator.latestPrimaryPersistenceOutcome == .succeeded(requestID: successID))
+
+        let failureID = try #require(coordinator.schedulePrimaryPersistence { completion in
+            completion(.failed(message: "Simulated XMP failure"))
+        })
+        try await waitForPrimaryPersistence(coordinator)
+        #expect(coordinator.latestPrimaryPersistenceOutcome == .failed(
+            requestID: failureID,
+            message: "Simulated XMP failure"
+        ))
+        #expect(coordinator.primaryPersistenceErrorMessage == "Simulated XMP failure")
+
+        let cancelledID = try #require(coordinator.schedulePrimaryPersistence { completion in
+            completion(.cancelled(message: "Cancelled after metadata history commit"))
+        })
+        try await waitForPrimaryPersistence(coordinator)
+        #expect(coordinator.latestPrimaryPersistenceOutcome == .cancelled(
+            requestID: cancelledID,
+            message: "Cancelled after metadata history commit"
+        ))
+
+        var finishExplicitlyCancelled: DevelopPersistenceSessionCoordinator.PrimaryPersistenceCompletion?
+        let explicitlyCancelledID = try #require(coordinator.schedulePrimaryPersistence { completion in
+            finishExplicitlyCancelled = completion
+        })
+        coordinator.cancelPrimaryPersistence(requestID: explicitlyCancelledID)
+        try await waitForPrimaryPersistence(coordinator)
+        #expect(coordinator.latestPrimaryPersistenceOutcome == .cancelled(
+            requestID: explicitlyCancelledID,
+            message: "The Develop save was cancelled before it completed."
+        ))
+        finishExplicitlyCancelled?(.succeeded)
+    }
+
+    @Test("only the latest primary request publishes within an image session")
+    func latestPrimaryResultWins() async throws {
+        let imageURL = URL(fileURLWithPath: "/tmp/develop-primary-latest.raw")
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(imageURL)
+        var finishFirst: DevelopPersistenceSessionCoordinator.PrimaryPersistenceCompletion?
+
+        _ = coordinator.schedulePrimaryPersistence { completion in
+            finishFirst = completion
+        }
+        let latestID = try #require(coordinator.schedulePrimaryPersistence { completion in
+            completion(.succeeded)
+        })
+        finishFirst?(.failed(message: "Late superseded failure"))
+
+        try await waitForPrimaryPersistence(coordinator)
+        #expect(coordinator.latestPrimaryPersistenceOutcome == .succeeded(requestID: latestID))
+        #expect(coordinator.primaryPersistenceErrorMessage == nil)
+    }
+
+    @Test("image replacement rejects a late primary result")
+    func imageReplacementRejectsPrimaryResult() async throws {
+        let first = URL(fileURLWithPath: "/tmp/develop-primary-first.raw")
+        let second = URL(fileURLWithPath: "/tmp/develop-primary-second.raw")
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(first)
+        var finish: DevelopPersistenceSessionCoordinator.PrimaryPersistenceCompletion?
+
+        _ = coordinator.schedulePrimaryPersistence { completion in
+            finish = completion
+        }
+        coordinator.beginImageSession(second)
+        finish?(.failed(message: "Late previous-image failure"))
+        try await Task.sleep(for: .milliseconds(10))
+
+        #expect(coordinator.activeImageURL == second)
+        #expect(coordinator.pendingPrimaryPersistenceCount == 0)
+        #expect(coordinator.latestPrimaryPersistenceOutcome == nil)
+    }
+
     @Test("batch persistence owns success failure and explicit cancellation")
     func batchPersistenceOutcomes() async throws {
         let coordinator = DevelopPersistenceSessionCoordinator()
@@ -225,7 +312,9 @@ struct DevelopPersistenceSessionCoordinatorTests {
         }
         _ = coordinator.endWorkspace()
 
-        try await Task.sleep(for: .milliseconds(50))
+        for _ in 0..<200 where !didFinishDurableWork {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         #expect(didFinishDurableWork)
         #expect(coordinator.latestBatchPersistenceOutcome == nil)
         #expect(coordinator.pendingBatchPersistenceCount == 0)
@@ -251,12 +340,25 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(source.contains("persistenceSession.endWorkspace()"))
         #expect(source.contains("persistenceSession.recordMutation("))
         #expect(source.contains("persistenceSession.recordPublishedSettingsChange(for: url)"))
+        #expect(source.components(separatedBy: "persistenceSession.schedulePrimaryPersistence").count == 2)
+        #expect(source.contains("persistenceSession.primaryPersistenceErrorMessage"))
+        #expect(source.contains("metadataViewModel.commitEditsReportingResult(mode: mode)"))
+        #expect(!source.contains("localizedCaseInsensitiveContains(\"cancel\")"))
         #expect(source.contains("persistenceSession.scheduleBatchPersistence"))
         #expect(source.contains("persistenceSession.batchPersistenceErrorMessage"))
         #expect(source.components(separatedBy: "persistenceSession.performPersistence(").count == 3)
         #expect(!source.contains("Failed to paste camera raw to multiple images"))
         #expect(!source.contains("@State private var editUndoManager"))
         #expect(!source.contains("@State private var editedURLsThisSession"))
+    }
+
+    private func waitForPrimaryPersistence(
+        _ coordinator: DevelopPersistenceSessionCoordinator
+    ) async throws {
+        for _ in 0..<100 where coordinator.isPrimaryPersistenceInProgress {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(!coordinator.isPrimaryPersistenceInProgress)
     }
 
     private func waitForBatchPersistence(

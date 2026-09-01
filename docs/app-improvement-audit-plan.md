@@ -288,6 +288,16 @@ passed 1,835 tests in 215 suites. Primary XMP/history task ownership, remaining 
 decomposition, filesystem measurement, and manual/external gates remain open.
 ([validation](plan-status-develop-batch-persistence-continuation-2026-09-01.md))
 
+**Develop Primary-persistence continuation (2026-09-01):** the checklist remains 63 of 75. The existing
+`DevelopPersistenceSessionCoordinator` now owns each Primary XMP/history request's awaiting task, request/image/
+workspace identities, pending state, explicit cancellation, and success/cancellation/failure publication while
+the serialized durable transaction remains injected. Only the latest overlapping request may publish, image or
+workspace replacement rejects late completion, and current failures appear in a Develop alert. The focused suite
+passed 13 tests, the adjacent four-suite selection passed 47 tests, the repository gate passed, and the serial
+unfiltered gate passed 1,838 tests in 215 suites. Remaining source-decode, render-policy, Metal-publication,
+geometry/view decomposition, filesystem measurement, and manual/external gates remain open.
+([validation](plan-status-develop-primary-persistence-continuation-2026-09-01.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -956,6 +966,15 @@ semantics remain at their existing injected boundaries. Three new lifecycle char
 contracts cover success, failure, cancellation, overlap, teardown, and view routing. Primary XMP/history task
 ownership and remaining source/render/geometry view decomposition stay open.
 ([validation](plan-status-develop-batch-persistence-continuation-2026-09-01.md))
+
+**Primary-persistence state-owner follow-up (2026-09-01):** `DevelopPersistenceSessionCoordinator` now owns
+the awaiting task, request/image/workspace identities, pending state, explicit cancellation, and typed result
+publication for normal Primary XMP/history saves and Develop resets. The durable metadata transaction remains at
+its established injected boundary; overlapping saves retain that writer's semantics while only the latest active
+image request may publish. Image/workspace replacement rejects late completion, and current failures surface in
+the Develop workspace. Remaining source-decode, render-policy, Metal-publication, geometry, and view decomposition
+keep the broad Phase 4.1 extraction gate open.
+([validation](plan-status-develop-primary-persistence-continuation-2026-09-01.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.
