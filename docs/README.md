@@ -352,6 +352,14 @@ the repository gate passed, and the serial unfiltered gate passed 1,845 tests in
 render-policy, geometry/view decomposition, filesystem measurement, and manual/external gates keep the audit at
 63 of 75.
 
+The latest [Develop source-decode continuation](plan-status-develop-source-decode-continuation-2026-09-01.md)
+records actor-owned embedded-RAW preview extraction, HDR-first non-RAW fallback routing, screen/full-resolution
+decode, orientation correction, and preview materialization. Foreground RAW, zoom-upgrade, and adjacent pre-cache
+requests now share one serialized CIRAWFilter executor while existing session-generation and Metal gates retain
+publication ownership. The focused suite passed 4 tests, the adjacent five-suite selection passed 78 tests, the
+repository gate passed, and the serial unfiltered gate passed 1,849 tests in 217 suites. Remaining render-policy,
+geometry/view decomposition, filesystem measurement, and manual/external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

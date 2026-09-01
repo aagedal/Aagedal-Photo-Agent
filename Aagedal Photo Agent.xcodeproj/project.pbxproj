@@ -109,6 +109,7 @@
 		D3C006000000000000000002 /* DevelopInteractiveRenderCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */; };
 		D3C007000000000000000002 /* DevelopPersistenceSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */; };
 		D3C008000000000000000002 /* DevelopWorkspaceInputCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C008000000000000000001 /* DevelopWorkspaceInputCoordinatorTests.swift */; };
+		D3C009000000000000000002 /* DevelopSourceDecodeServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C009000000000000000001 /* DevelopSourceDecodeServiceTests.swift */; };
 		D4A700000000000000000002 /* MetadataReviewValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A700000000000000000001 /* MetadataReviewValidationTests.swift */; };
 		DD0100000000000000000002 /* DurableDeletionTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */; };
 		DD0200000000000000000002 /* RosterStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0200000000000000000001 /* RosterStoreTests.swift */; };
@@ -249,6 +250,7 @@
 		D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopInteractiveRenderCoordinatorTests.swift; sourceTree = "<group>"; };
 		D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopPersistenceSessionCoordinatorTests.swift; sourceTree = "<group>"; };
 		D3C008000000000000000001 /* DevelopWorkspaceInputCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopWorkspaceInputCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C009000000000000000001 /* DevelopSourceDecodeServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopSourceDecodeServiceTests.swift; sourceTree = "<group>"; };
 		D4A700000000000000000001 /* MetadataReviewValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataReviewValidationTests.swift; sourceTree = "<group>"; };
 		DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DurableDeletionTransactionTests.swift; sourceTree = "<group>"; };
 		DD0200000000000000000001 /* RosterStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RosterStoreTests.swift; sourceTree = "<group>"; };
@@ -388,6 +390,7 @@
 				D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */,
 				D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */,
 				D3C008000000000000000001 /* DevelopWorkspaceInputCoordinatorTests.swift */,
+				D3C009000000000000000001 /* DevelopSourceDecodeServiceTests.swift */,
 				AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */,
 				AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */,
 				AB5200000000000000000001 /* MetadataValidationTests.swift */,
@@ -690,6 +693,7 @@
 				D3C006000000000000000002 /* DevelopInteractiveRenderCoordinatorTests.swift in Sources */,
 				D3C007000000000000000002 /* DevelopPersistenceSessionCoordinatorTests.swift in Sources */,
 				D3C008000000000000000002 /* DevelopWorkspaceInputCoordinatorTests.swift in Sources */,
+				D3C009000000000000000002 /* DevelopSourceDecodeServiceTests.swift in Sources */,
 				AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */,
 				AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */,
 				AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */,

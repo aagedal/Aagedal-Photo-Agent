@@ -319,6 +319,16 @@ decode execution,
 render-policy, geometry/view decomposition, filesystem measurement, and manual/external gates remain open.
 ([validation](plan-status-develop-metal-publication-continuation-2026-09-01.md))
 
+**Develop source-decode continuation (2026-09-01):** the checklist remains 63 of 75. A dedicated
+`DevelopSourceDecodeService` actor now owns embedded-RAW preview extraction, HDR-first non-RAW fallback routing,
+screen/full-resolution source decode, orientation correction, and bounded preview materialization. Foreground
+RAW, zoom-upgrade, and adjacent-image pre-cache requests use one serialized RAW executor, avoiding independent
+CIRAWFilter transient-memory peaks while preserving cancellation checks and the existing preview-session/Metal
+publication gates. The focused suite passed 4 tests, the adjacent five-suite selection passed 78 tests, the
+repository gate passed, and the serial unfiltered gate passed 1,849 tests in 217 suites. Remaining render-policy,
+geometry/view decomposition, filesystem measurement, and manual/external gates remain open.
+([validation](plan-status-develop-source-decode-continuation-2026-09-01.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -1012,6 +1022,15 @@ without clearing the valid fallback texture. Every interactive Develop quick, fi
 upload uses the generation-bearing live-preview facade; isolated pipeline callers retain the unscoped entry.
 Decode execution, render policy, geometry, and broader view decomposition remain open.
 ([validation](plan-status-develop-metal-publication-continuation-2026-09-01.md))
+
+**Source-decode execution follow-up (2026-09-01):** `DevelopSourceDecodeService` now owns the concrete quick,
+final, zoom-upgrade, and speculative-precache decode paths that previously lived in `EditWorkspaceView`. Its
+actor serializes every CIRAWFilter request across those paths, applies the file-to-session orientation correction,
+preserves HDR-first non-RAW fallback order, and returns completed immutable image references to the existing
+preview-session publication owner. Decoder and orientation dependencies are injectable, so serialization,
+pre-cancellation, representation alignment, and view delegation are independently characterized. Render policy,
+geometry, and broader view decomposition remain open.
+([validation](plan-status-develop-source-decode-continuation-2026-09-01.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

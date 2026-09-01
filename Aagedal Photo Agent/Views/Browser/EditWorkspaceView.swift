@@ -623,31 +623,6 @@ struct EditWorkspaceView: View {
         selectedImage?.exifOrientation ?? 1
     }
 
-    /// Orient a freshly decoded preview to the in-memory target orientation.
-    /// Decodes bake the FILE's orientation tag into the pixels, but a rotation
-    /// done in the browser may not have reached the file yet (async write, or
-    /// withheld entirely for C2PA-protected files) — leaving file ≠ target.
-    /// `sourceCIImage`/`sourceImage` feed layout, the Metal upload, the scope,
-    /// and the CIImage fallback, so they must ALL share the target frame —
-    /// correcting only the texture upload leaves the fallback and layout on the
-    /// file's frame and a rotated image renders stretched into the swapped canvas.
-    nonisolated private static func orientedToTarget(
-        ciImage: CIImage?, nsImage: NSImage?, from fileOrientation: Int, to targetOrientation: Int
-    ) -> (ciImage: CIImage?, nsImage: NSImage?) {
-        let correction = ImageFile.orientationCorrection(from: fileOrientation, to: targetOrientation)
-        guard correction != .up else { return (ciImage, nsImage) }
-        guard let orientedCI = ciImage?.oriented(correction) else { return (ciImage, nsImage) }
-        var orientedNS = nsImage
-        if nsImage != nil,
-           let cg = CameraRawApproximation.ciContext.createCGImage(
-               orientedCI, from: orientedCI.extent, format: .RGBAh,
-               colorSpace: CameraRawApproximation.workingColorSpace
-           ) {
-            orientedNS = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-        }
-        return (orientedCI, orientedNS)
-    }
-
     /// Mask geometry is stored in the sensor (XMP) frame; the overlay and its
     /// drag interaction work on the display-oriented image. Aspect comes from
     /// the displayed image (only the ratio matters, so the downscaled preview
@@ -2897,20 +2872,10 @@ struct EditWorkspaceView: View {
                 // Phase 1: Extract embedded JPEG preview from RAW container (no RAW decode).
                 // Oriented to the in-memory target inside the task — see orientedToTarget.
                 let phase1Start = ContinuousClock.now
-                let quickPreview = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?)? in
-                    guard let result = await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(
-                        from: selectedImageURL
-                    ) else { return nil }
-                    let nsImage = NSImage(
-                        cgImage: result.image,
-                        size: NSSize(width: result.image.width, height: result.image.height)
-                    )
-                    let oriented = Self.orientedToTarget(
-                        ciImage: CIImage(cgImage: result.image), nsImage: nsImage,
-                        from: result.orientation, to: targetOrientation
-                    )
-                    return (image: oriented.nsImage, ciImage: oriented.ciImage)
-                }.value
+                let quickPreview = await DevelopSourceDecodeService.shared.loadEmbeddedRAWPreview(
+                    from: selectedImageURL,
+                    targetOrientation: targetOrientation
+                )
                 let phase1Elapsed = ContinuousClock.now - phase1Start
 
                 guard !Task.isCancelled else {
@@ -2993,25 +2958,11 @@ struct EditWorkspaceView: View {
                     editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
 
                     let phase2Start = ContinuousClock.now
-                    let rawResult: FullScreenImageCache.RAWDecodeResult? = await Task.detached(priority: .userInitiated) {
-                        // Read the tag adjacent to the decode so the correction matches
-                        // these bytes even if a pending rotation write lands mid-load.
-                        let orientation = FullScreenImageCache.fileEXIFOrientation(at: selectedImageURL)
-                        guard let result = FullScreenImageCache.loadRAWImage(
-                            from: selectedImageURL,
-                            draftMode: false,
-                            maxPixelSize: previewMaxPixelSize
-                        ) else { return nil }
-                        let oriented = Self.orientedToTarget(
-                            ciImage: result.image, nsImage: nil,
-                            from: orientation, to: targetOrientation
-                        ).ciImage ?? result.image
-                        return FullScreenImageCache.RAWDecodeResult(
-                            image: oriented,
-                            neutralTemperature: result.neutralTemperature,
-                            neutralTint: result.neutralTint
-                        )
-                    }.value
+                    let rawResult = await DevelopSourceDecodeService.shared.loadRAW(
+                        from: selectedImageURL,
+                        maxPixelSize: previewMaxPixelSize,
+                        targetOrientation: targetOrientation
+                    )
                     let rawCIImage = rawResult?.image
                     let decodeElapsed = ContinuousClock.now - phase2Start
 
@@ -3065,21 +3016,10 @@ struct EditWorkspaceView: View {
                     // CIRAWFilter decode graph. The Metal texture holds full-res data for
                     // interactive editing; sourceCIImage is only used for scope/preview CGImage.
                     if let rawCIImage {
-                        let materialized: CIImage? = await Task.detached(priority: .medium) {
-                            let extent = rawCIImage.extent
-                            let maxDim = max(extent.width, extent.height)
-                            let targetPx = previewMaxPixelSize
-                            let scale = maxDim > targetPx * 1.5 ? targetPx / maxDim : 1.0
-                            let downsampled = scale < 1.0
-                                ? rawCIImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-                                : rawCIImage
-                            guard let cgImage = CameraRawApproximation.ciContext.createCGImage(
-                                downsampled, from: downsampled.extent,
-                                format: .RGBAh,
-                                colorSpace: CameraRawApproximation.workingColorSpace
-                            ) else { return nil }
-                            return CIImage(cgImage: cgImage)
-                        }.value
+                        let materialized = await DevelopSourceDecodeService.shared.materialize(
+                            rawCIImage,
+                            maxPixelSize: previewMaxPixelSize
+                        )
                         guard previewSession.publishMaterializedSource(
                             materialized ?? rawCIImage,
                             for: selectedImageURL,
@@ -3110,54 +3050,21 @@ struct EditWorkspaceView: View {
                 // Falls back to SDR CGImageSource path for formats CIImage can't decode.
                 let phase1Start = ContinuousClock.now
                 // Oriented to the in-memory target inside the task — see orientedToTarget.
-                let previewSource = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?) in
-                    if let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(from: selectedImageURL, maxPixelSize: previewMaxPixelSize) {
-                        // Orient BEFORE rendering the NSImage so it comes out corrected for free.
-                        let correction = ImageFile.orientationCorrection(from: result.orientation, to: targetOrientation)
-                        let ci = correction != .up ? result.image.oriented(correction) : result.image
-                        // Stamp content headroom so the Phase-1 NSImage preview engages EDR
-                        // before the Metal texture is ready (otherwise the develop view briefly
-                        // flips to SDR). See CameraRawApproximation.createDisplayCGImage.
-                        if let cgImage = CameraRawApproximation.createDisplayCGImage(ci, from: ci.extent) {
-                            let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-                            return (image: nsImage, ciImage: ci)
-                        }
-                    }
-                    if let result = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(
-                        from: selectedImageURL,
-                        maxPixelSize: previewMaxPixelSize
-                    ) {
-                        let image = NSImage(
-                            cgImage: result.image,
-                            size: NSSize(width: result.image.width, height: result.image.height)
-                        )
-                        let oriented = Self.orientedToTarget(
-                            ciImage: CIImage(cgImage: result.image), nsImage: image,
-                            from: result.orientation, to: targetOrientation
-                        )
-                        return (image: oriented.nsImage, ciImage: oriented.ciImage)
-                    }
-                    if let image = NSImage(contentsOf: selectedImageURL) {
-                        let orientation = FullScreenImageCache.fileEXIFOrientation(at: selectedImageURL)
-                        let ciImage = image.tiffRepresentation.flatMap { CIImage(data: $0) }
-                        let oriented = Self.orientedToTarget(
-                            ciImage: ciImage, nsImage: nil,
-                            from: orientation, to: targetOrientation
-                        )
-                        return (image: image, ciImage: oriented.ciImage)
-                    }
-                    return (image: nil, ciImage: nil)
-                }.value
+                let previewSource = await DevelopSourceDecodeService.shared.loadNonRAWPreview(
+                    from: selectedImageURL,
+                    maxPixelSize: previewMaxPixelSize,
+                    targetOrientation: targetOrientation
+                )
                 let phase1Elapsed = ContinuousClock.now - phase1Start
 
                 guard !Task.isCancelled else { return }
 
                 // Thumbnail fallback needs no correction either — thumbnails are
                 // kept rotated to match the in-memory orientation.
-                if let image = previewSource.image {
+                if let image = previewSource?.image {
                     guard previewSession.publishSource(
                         image: image,
-                        ciImage: previewSource.ciImage,
+                        ciImage: previewSource?.ciImage,
                         for: selectedImageURL,
                         sessionGeneration: previewSessionGeneration
                     ) else { return }
@@ -3198,21 +3105,10 @@ struct EditWorkspaceView: View {
                 if let pipeline = metalPipeline {
                     let phase2Start = ContinuousClock.now
                     // Oriented to the in-memory target inside the task — see orientedToTarget.
-                    let fullRes: CIImage? = await Task.detached(priority: .userInitiated) {
-                        let decoded: (image: CIImage, orientation: Int)?
-                        if let result = await FullScreenImageCache.loadHDRFullResolutionOffPoolWithOrientation(from: selectedImageURL) {
-                            decoded = result
-                        } else if let result = await FullScreenImageCache.loadFullResolutionOffPoolWithOrientation(from: selectedImageURL) {
-                            decoded = (CIImage(cgImage: result.image), result.orientation)
-                        } else {
-                            decoded = nil
-                        }
-                        guard let decoded else { return nil }
-                        return Self.orientedToTarget(
-                            ciImage: decoded.image, nsImage: nil,
-                            from: decoded.orientation, to: targetOrientation
-                        ).ciImage
-                    }.value
+                    let fullRes = await DevelopSourceDecodeService.shared.loadNonRAWFullResolution(
+                        from: selectedImageURL,
+                        targetOrientation: targetOrientation
+                    )
 
                     guard !Task.isCancelled else { return }
 
@@ -3235,20 +3131,10 @@ struct EditWorkspaceView: View {
 
                         // Materialize sourceCIImage at screen resolution to release the
                         // full-res CIImage graph. Metal texture holds full-res for editing.
-                        let materialized: CIImage? = await Task.detached(priority: .medium) {
-                            let maxDim = max(extent.width, extent.height)
-                            let targetPx = previewMaxPixelSize
-                            let scale = maxDim > targetPx * 1.5 ? targetPx / maxDim : 1.0
-                            let downsampled = scale < 1.0
-                                ? fullResCIImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-                                : fullResCIImage
-                            guard let cgImage = CameraRawApproximation.ciContext.createCGImage(
-                                downsampled, from: downsampled.extent,
-                                format: .RGBAh,
-                                colorSpace: CameraRawApproximation.workingColorSpace
-                            ) else { return nil }
-                            return CIImage(cgImage: cgImage)
-                        }.value
+                        let materialized = await DevelopSourceDecodeService.shared.materialize(
+                            fullResCIImage,
+                            maxPixelSize: previewMaxPixelSize
+                        )
                         guard previewSession.publishMaterializedSource(
                             materialized ?? fullResCIImage,
                             for: selectedImageURL,
@@ -3311,24 +3197,22 @@ struct EditWorkspaceView: View {
                 // texture matches the final render (no auto-boost / tone mismatch).
                 // Decode straight to screen resolution (don't decode full sensor then
                 // shrink). Read the tag adjacent to the decode (see Phase 2).
-                let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
-                guard let rawResult = FullScreenImageCache.loadRAWImage(
-                    from: url, draftMode: false, maxPixelSize: screenMaxPx
+                guard let rawResult = await DevelopSourceDecodeService.shared.loadRAW(
+                    from: url,
+                    maxPixelSize: screenMaxPx,
+                    targetOrientation: neighborOrientation
                 ) else {
                     editLog.info("[\(url.lastPathComponent)] precache: decode failed")
                     continue
                 }
-                // Textures are target-oriented (see orientedToTarget) — a neighbor
-                // rotated in the browser may have a pending orientation write.
-                let oriented = Self.orientedToTarget(
-                    ciImage: rawResult.image, nsImage: nil,
-                    from: fileOrientation, to: neighborOrientation
-                ).ciImage ?? rawResult.image
                 guard !Task.isCancelled else {
                     editLog.info("[\(url.lastPathComponent)] precache: cancelled after decode")
                     return
                 }
-                let ciImage = FullScreenImageCache.downsample(oriented, maxPixelSize: screenMaxPx)
+                let ciImage = FullScreenImageCache.downsample(
+                    rawResult.image,
+                    maxPixelSize: screenMaxPx
+                )
                 pipeline.precacheTexture(
                     for: url, ciImage: ciImage,
                     neutralTemperature: rawResult.neutralTemperature,
@@ -3347,7 +3231,7 @@ struct EditWorkspaceView: View {
     /// (whose EXIF tag is rewritten on rotate). Full resolution is dropped and re-fetched
     /// lazily on the next zoom, matching the normal load path.
     private func rotateSourceInPlace(from: Int, to: Int) {
-        let (rotatedCI, rotatedNS) = Self.orientedToTarget(
+        let (rotatedCI, rotatedNS) = DevelopSourceDecodeService.orientedToTarget(
             ciImage: sourceCIImage, nsImage: sourceImage, from: from, to: to
         )
         guard let imageURL = selectedImageURL,
@@ -3417,25 +3301,20 @@ struct EditWorkspaceView: View {
 
         editFullResTask = Task {
             let start = ContinuousClock.now
-            let fullRes: CIImage? = await Task.detached(priority: .userInitiated) {
-                let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
-                var decoded: CIImage?
-                if isRaw {
-                    // nil maxPixelSize → full sensor resolution.
-                    decoded = FullScreenImageCache.loadRAWImage(from: url, draftMode: false)?.image
-                } else {
-                    decoded = await FullScreenImageCache.loadHDRFullResolutionOffPool(from: url)
-                    if decoded == nil,
-                       let cgImage = await FullScreenImageCache.loadFullResolutionOffPool(from: url) {
-                        decoded = CIImage(cgImage: cgImage)
-                    }
-                }
-                guard let decoded else { return nil }
-                return Self.orientedToTarget(
-                    ciImage: decoded, nsImage: nil,
-                    from: fileOrientation, to: targetOrientation
-                ).ciImage ?? decoded
-            }.value
+            let fullRes: CIImage?
+            if isRaw {
+                // nil maxPixelSize → full sensor resolution on the shared RAW executor.
+                fullRes = await DevelopSourceDecodeService.shared.loadRAW(
+                    from: url,
+                    maxPixelSize: nil,
+                    targetOrientation: targetOrientation
+                )?.image
+            } else {
+                fullRes = await DevelopSourceDecodeService.shared.loadNonRAWFullResolution(
+                    from: url,
+                    targetOrientation: targetOrientation
+                )
+            }
 
             guard !Task.isCancelled, selectedImageURL == url, let fullRes else {
                 previewSession.finishFullResolutionUpgrade(
