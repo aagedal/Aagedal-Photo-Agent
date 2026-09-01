@@ -1032,6 +1032,16 @@ pre-cancellation, representation alignment, and view delegation are independentl
 geometry, and broader view decomposition remain open.
 ([validation](plan-status-develop-source-decode-continuation-2026-09-01.md))
 
+**Preview-geometry ownership follow-up (2026-09-01):** `DevelopPreviewNavigationCoordinator` now derives the
+normal fitted viewport, confirmed-crop viewport, crop-tool image framing, cursor-anchored zoom, and normal/cropped
+pan limits from its owned zoom and pan snapshot. The view no longer maintains a private crop-viewport type or
+duplicates the letterbox, crop-fit, rotation, zoom-anchor, and pan-bound formulas; it only publishes the
+coordinator's immutable viewport to Metal and the Core Image fallback. Seven new characterizations cover normal
+and rotated-crop projection, normal/cropped cursor anchoring, shared crop framing/pan limits, inert invalid-size
+behavior, and view delegation. Mask/watermark transforms, broader render policy, and view decomposition remain
+open.
+([validation](plan-status-develop-preview-geometry-continuation-2026-09-01.md))
+
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.
 

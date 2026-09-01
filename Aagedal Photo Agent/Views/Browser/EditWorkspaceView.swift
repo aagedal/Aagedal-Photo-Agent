@@ -1045,12 +1045,12 @@ struct EditWorkspaceView: View {
                     if (showCropControls || isCropEnabled), !isShowingBefore {
                         // Crop-centered: image scales/positions so crop fills view
                         let zoom = showCropControls ? cropZoomScale : 1.0
-                        let computedImageRect = cropFittedImageRect(
-                            in: geometry.size,
+                        let computedImageRect = previewNavigation.cropFittedImageRect(
+                            containerSize: geometry.size,
                             imageSize: imageSize,
                             crop: displayCrop,
                             angleDegrees: displayCropAngle,
-                            zoom: zoom,
+                            zoomScale: zoom,
                             handlePadding: EditCropPreviewFraming.handlePadding(
                                 isCropToolActive: showCropControls
                             )
@@ -1260,8 +1260,9 @@ struct EditWorkspaceView: View {
                         }
                     } else {
                         // Normal fit: Metal viewport handles zoom/pan and letterboxing
-                        let vpOrigin = currentViewportOrigin
-                        let vpSize = currentViewportSize
+                        let viewport = currentViewport
+                        let vpOrigin = viewport.origin
+                        let vpSize = viewport.size
 
                         ZStack {
                             MetalPreviewView(
@@ -3874,117 +3875,6 @@ struct EditWorkspaceView: View {
         browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
         // Remember this image so its edited previews get pre-warmed on exit (see disappear handler).
         persistenceSession.recordPublishedSettingsChange(for: url)
-    }
-
-    private func fittedImageRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
-        guard containerSize.width > 0, containerSize.height > 0, imageSize.width > 0, imageSize.height > 0 else {
-            return .zero
-        }
-        let scale = min(containerSize.width / imageSize.width, containerSize.height / imageSize.height)
-        let width = imageSize.width * scale
-        let height = imageSize.height * scale
-        let x = (containerSize.width - width) * 0.5
-        let y = (containerSize.height - height) * 0.5
-        return CGRect(x: x, y: y, width: width, height: height)
-    }
-
-    /// Computes a smaller image rect so that the rotated bounding box fits within the view.
-    private func fittedImageRectForRotation(in containerSize: CGSize, imageSize: CGSize, angleDegrees: Double) -> CGRect {
-        guard containerSize.width > 0, containerSize.height > 0, imageSize.width > 0, imageSize.height > 0 else {
-            return .zero
-        }
-        let theta = abs(angleDegrees) * Double.pi / 180.0
-        let cosT = cos(theta)
-        let sinT = sin(theta)
-        let rotBoundsW = imageSize.width * cosT + imageSize.height * sinT
-        let rotBoundsH = imageSize.width * sinT + imageSize.height * cosT
-        let scale = min(containerSize.width / rotBoundsW, containerSize.height / rotBoundsH)
-        let width = imageSize.width * scale
-        let height = imageSize.height * scale
-        let x = (containerSize.width - width) * 0.5
-        let y = (containerSize.height - height) * 0.5
-        return CGRect(x: x, y: y, width: width, height: height)
-    }
-
-    /// Scales and positions the image so the crop region fills the view.
-    /// `handlePadding` is non-zero only while the crop controls are visible.
-    /// The image may extend beyond the view bounds. The crop rectangle will be centered in the view.
-    private func cropFittedImageRect(
-        in containerSize: CGSize,
-        imageSize: CGSize,
-        crop: NormalizedCropRegion,
-        angleDegrees: Double,
-        zoom: CGFloat = 1.0,
-        handlePadding: CGFloat = 0
-    ) -> CGRect {
-        guard containerSize.width > 0, containerSize.height > 0, imageSize.width > 0, imageSize.height > 0 else {
-            return .zero
-        }
-
-        let availW = max(containerSize.width - handlePadding * 2, 1)
-        let availH = max(containerSize.height - handlePadding * 2, 1)
-
-        // The stored region is the upright crop — its dimensions are the actual crop dims.
-        let actualW = crop.width * imageSize.width
-        let actualH = crop.height * imageSize.height
-
-        // Scale so actual crop fills available area, then apply zoom
-        let baseScale = min(availW / max(actualW, 1), availH / max(actualH, 1))
-        let scale = baseScale * zoom
-        let imgW = imageSize.width * scale
-        let imgH = imageSize.height * scale
-
-        // Position so crop center maps to view center
-        // Crop center offset from image center in scaled image coords
-        let imgCropOffX = (crop.centerX - 0.5) * imgW
-        let imgCropOffY = (crop.centerY - 0.5) * imgH
-
-        // Rotate center offset by view rotation (-angle)
-        let viewAngle = -angleDegrees * Double.pi / 180.0
-        let cosV = cos(viewAngle)
-        let sinV = sin(viewAngle)
-        let viewCropOffX = imgCropOffX * cosV - imgCropOffY * sinV
-        let viewCropOffY = imgCropOffX * sinV + imgCropOffY * cosV
-
-        // Image center = view center minus crop offset
-        let viewCenterX = containerSize.width * 0.5
-        let viewCenterY = containerSize.height * 0.5
-        let imgMidX = viewCenterX - viewCropOffX
-        let imgMidY = viewCenterY - viewCropOffY
-
-        return CGRect(
-            x: imgMidX - imgW * 0.5,
-            y: imgMidY - imgH * 0.5,
-            width: imgW,
-            height: imgH
-        )
-    }
-
-    /// Computes the view-space crop rectangle for a given crop region, angle, and image rect.
-    /// Matches CropOverlayView.viewCropRect (upright crop, rotated center offset).
-    private func cropViewRect(crop: NormalizedCropRegion, angleDegrees: Double, imageRect: CGRect) -> CGRect {
-        let A = -angleDegrees * Double.pi / 180.0
-        let cosA = cos(A)
-        let sinA = sin(A)
-
-        // Crop center offset from image center in image-rect pixel units
-        let imgCX = (crop.centerX - 0.5) * imageRect.width
-        let imgCY = (crop.centerY - 0.5) * imageRect.height
-
-        // Rotate center offset to view space
-        let viewCX = imgCX * cosA - imgCY * sinA + imageRect.midX
-        let viewCY = imgCX * sinA + imgCY * cosA + imageRect.midY
-
-        // The stored region is the upright crop — its dimensions map directly.
-        let actualW = crop.width * imageRect.width
-        let actualH = crop.height * imageRect.height
-
-        return CGRect(
-            x: viewCX - actualW / 2,
-            y: viewCY - actualH / 2,
-            width: max(2, actualW),
-            height: max(2, actualH)
-        )
     }
 
     private var usesIncrementalWhiteBalance: Bool {
@@ -7682,106 +7572,28 @@ struct EditWorkspaceView: View {
 
     // MARK: - Edit Zoom / Pan
 
-    private struct EditCropViewport {
-        var origin: SIMD2<Float>
-        var size: SIMD2<Float>
-    }
-
     /// Image dimensions from the Metal source texture (resolution-stable across Phase 1→2).
     /// Falls back to sourceCIImage/sourceImage for initial display before texture upload.
     private var metalImageSize: CGSize? {
         metalPipeline?.sourceTextureSize ?? sourceCIImage?.extent.size ?? sourceImage?.size
     }
 
-    /// Current viewport origin for the Metal shader. Recomputed from zoom/offset state.
-    private var currentViewportOrigin: SIMD2<Float> {
-        guard let imageSize = metalImageSize else { return .zero }
-        let containerSize = previewPaneFrame.size
-        guard containerSize.width > 0, containerSize.height > 0,
-              imageSize.width > 0, imageSize.height > 0 else { return .zero }
-
-        let imageAspect = imageSize.width / imageSize.height
-        let containerAspect = containerSize.width / containerSize.height
-
-        let vpW: CGFloat
-        let vpH: CGFloat
-        if containerAspect > imageAspect {
-            vpH = 1.0 / editZoomScale
-            vpW = (1.0 / editZoomScale) * (containerAspect / imageAspect)
-        } else {
-            vpW = 1.0 / editZoomScale
-            vpH = (1.0 / editZoomScale) * (imageAspect / containerAspect)
-        }
-
-        let fittedScale = min(containerSize.width / imageSize.width,
-                              containerSize.height / imageSize.height)
-        let fittedWidth = imageSize.width * fittedScale
-        let fittedHeight = imageSize.height * fittedScale
-
-        let offsetNormX = editOffset.width / (fittedWidth * editZoomScale)
-        let offsetNormY = editOffset.height / (fittedHeight * editZoomScale)
-
-        return SIMD2<Float>(Float(0.5 - offsetNormX - vpW / 2),
-                            Float(0.5 - offsetNormY - vpH / 2))
+    /// Current paired viewport for the Metal shader and Core Image fallback.
+    private var currentViewport: DevelopPreviewViewport {
+        guard let imageSize = metalImageSize else { return .identity }
+        return previewNavigation.viewport(
+            containerSize: previewPaneFrame.size,
+            imageSize: imageSize
+        )
     }
 
-    /// Current viewport size for the Metal shader.
-    private var currentViewportSize: SIMD2<Float> {
-        guard let imageSize = metalImageSize else { return SIMD2<Float>(1, 1) }
-        let containerSize = previewPaneFrame.size
-        guard containerSize.width > 0, containerSize.height > 0,
-              imageSize.width > 0, imageSize.height > 0 else { return SIMD2<Float>(1, 1) }
-
-        let imageAspect = imageSize.width / imageSize.height
-        let containerAspect = containerSize.width / containerSize.height
-
-        if containerAspect > imageAspect {
-            return SIMD2<Float>(Float((1.0 / editZoomScale) * (containerAspect / imageAspect)),
-                                Float(1.0 / editZoomScale))
-        } else {
-            return SIMD2<Float>(Float(1.0 / editZoomScale),
-                                Float((1.0 / editZoomScale) * (imageAspect / containerAspect)))
-        }
-    }
-
-    private func editCropViewport(in containerSize: CGSize, imageSize: CGSize) -> EditCropViewport {
-        guard containerSize.width > 0, containerSize.height > 0,
-              imageSize.width > 0, imageSize.height > 0 else {
-            return EditCropViewport(origin: .zero, size: SIMD2<Float>(1, 1))
-        }
-
-        let crop = displayCrop
-        let imgW = Double(imageSize.width)
-        let imgH = Double(imageSize.height)
-        let actualW = max(crop.width, 0.0001) * imgW
-        let actualH = max(crop.height, 0.0001) * imgH
-        let centerX = crop.centerX
-        let centerY = crop.centerY
-
-        let handlePadding = EditCropPreviewFraming.handlePadding(isCropToolActive: false)
-        let availW = max(Double(containerSize.width - handlePadding * 2), 1)
-        let availH = max(Double(containerSize.height - handlePadding * 2), 1)
-        let fitScale = min(availW / max(actualW, 1), availH / max(actualH, 1)) * max(Double(editZoomScale), 0.0001)
-        guard fitScale > 0 else {
-            return EditCropViewport(origin: .zero, size: SIMD2<Float>(1, 1))
-        }
-
-        let vpW = Double(containerSize.width) / fitScale / imgW
-        let vpH = Double(containerSize.height) / fitScale / imgH
-
-        let radians = displayCropAngle * .pi / 180.0
-        let offsetPxX = Double(editOffset.width) / fitScale
-        let offsetPxY = Double(editOffset.height) / fitScale
-        let cosA = cos(radians)
-        let sinA = sin(radians)
-        let rotatedOffsetX = offsetPxX * cosA - offsetPxY * sinA
-        let rotatedOffsetY = offsetPxX * sinA + offsetPxY * cosA
-        let viewportCenterX = centerX - rotatedOffsetX / imgW
-        let viewportCenterY = centerY - rotatedOffsetY / imgH
-
-        return EditCropViewport(
-            origin: SIMD2<Float>(Float(viewportCenterX - vpW / 2), Float(viewportCenterY - vpH / 2)),
-            size: SIMD2<Float>(Float(vpW), Float(vpH))
+    private func editCropViewport(in containerSize: CGSize, imageSize: CGSize) -> DevelopPreviewViewport {
+        previewNavigation.cropViewport(
+            containerSize: containerSize,
+            imageSize: imageSize,
+            crop: displayCrop,
+            angleDegrees: displayCropAngle,
+            handlePadding: EditCropPreviewFraming.handlePadding(isCropToolActive: false)
         )
     }
 
@@ -7833,8 +7645,9 @@ struct EditWorkspaceView: View {
             imageSize: imageSize
         )
         // Also sync to the CIImage fallback path (used for "before" toggle)
-        metalCoordinator.viewportOrigin = currentViewportOrigin
-        metalCoordinator.viewportSize = currentViewportSize
+        let viewport = currentViewport
+        metalCoordinator.viewportOrigin = viewport.origin
+        metalCoordinator.viewportSize = viewport.size
         metalCoordinator.requestRedraw()
     }
 
@@ -7850,7 +7663,6 @@ struct EditWorkspaceView: View {
         guard newScale != oldScale else { return }
 
         applyEditZoom(
-            oldScale: oldScale,
             newScale: newScale,
             cursorFromCenter: editCursorFromCenter(event: event)
         )
@@ -7858,88 +7670,26 @@ struct EditWorkspaceView: View {
 
     /// Applies an edit zoom while preserving the source point beneath the cursor. Both scroll
     /// zoom and the Z-key 1:1 toggle use this path so their anchoring behavior stays identical.
-    private func applyEditZoom(oldScale: CGFloat, newScale: CGFloat, cursorFromCenter: CGSize) {
+    private func applyEditZoom(newScale: CGFloat, cursorFromCenter: CGSize) {
         if isCropEnabled, !showCropControls, !isShowingBefore {
             handleCroppedEditZoom(
-                oldScale: oldScale,
                 newScale: newScale,
                 cursorFromCenter: cursorFromCenter
             )
             return
         }
 
-        if newScale <= 1.0 {
-            previewNavigation.applyZoom(scale: newScale)
-            syncViewportToMetal()
-            return
-        }
-
-        // Cursor-anchored zoom in viewport UV space: compute which UV coordinate
-        // is under the cursor, then solve for the offset that keeps it there
-        // after the zoom change.
         let containerSize = previewPaneFrame.size
-        guard containerSize.width > 0, containerSize.height > 0,
-              let imageSize = metalImageSize else {
-            previewNavigation.applyZoom(scale: newScale)
-            syncViewportToMetal()
-            return
-        }
-
-        let screenNormX = 0.5 + cursorFromCenter.width / containerSize.width
-        let screenNormY = 0.5 + cursorFromCenter.height / containerSize.height
-
-        // Current viewport: UV at cursor
-        let vpOrigin = currentViewportOrigin
-        let vpSize = currentViewportSize
-        let uvX = Double(vpOrigin.x) + screenNormX * Double(vpSize.x)
-        let uvY = Double(vpOrigin.y) + screenNormY * Double(vpSize.y)
-
-        // New viewport size at newScale
-        let imageAspect = imageSize.width / imageSize.height
-        let containerAspect = containerSize.width / containerSize.height
-        let newVpW: Double
-        let newVpH: Double
-        if containerAspect > imageAspect {
-            newVpH = 1.0 / newScale
-            newVpW = (1.0 / newScale) * (containerAspect / imageAspect)
-        } else {
-            newVpW = 1.0 / newScale
-            newVpH = (1.0 / newScale) * (imageAspect / containerAspect)
-        }
-
-        // Solve for new offset: place uvX at screenNormX in new viewport
-        // newVpOrigin = uv - screenNorm * newVpSize
-        // vpOrigin = 0.5 - offNorm - vpSize/2, so offNorm = 0.5 - vpSize/2 - vpOrigin
-        let newVpOriginX = uvX - screenNormX * newVpW
-        let newVpOriginY = uvY - screenNormY * newVpH
-
-        let fittedScale = min(containerSize.width / imageSize.width,
-                              containerSize.height / imageSize.height)
-        let fittedWidth = imageSize.width * fittedScale
-        let fittedHeight = imageSize.height * fittedScale
-
-        let offNormX = 0.5 - newVpW / 2 - newVpOriginX
-        let offNormY = 0.5 - newVpH / 2 - newVpOriginY
-        let newOffset = CGSize(
-            width: offNormX * fittedWidth * newScale,
-            height: offNormY * fittedHeight * newScale
+        previewNavigation.applyZoom(
+            scale: newScale,
+            preserving: cursorFromCenter,
+            containerSize: containerSize,
+            imageSize: metalImageSize ?? .zero
         )
-
-        // Constrain to valid bounds
-        let scaledWidth = fittedWidth * newScale
-        let scaledHeight = fittedHeight * newScale
-        let maxOffsetX = max(0, (scaledWidth - containerSize.width) / 2)
-        let maxOffsetY = max(0, (scaledHeight - containerSize.height) / 2)
-        previewNavigation.applyZoom(scale: newScale, anchoredOffset: newOffset)
-        previewNavigation.constrainOffset(
-            maximum: CGSize(width: maxOffsetX, height: maxOffsetY)
-        )
-
         syncViewportToMetal()
     }
 
     private func handleCroppedEditZoom(
-        oldScale: CGFloat,
         newScale: CGFloat,
         cursorFromCenter cursor: CGSize
     ) {
@@ -7950,19 +7700,7 @@ struct EditWorkspaceView: View {
             return
         }
 
-        if newScale <= 1.0 {
-            previewNavigation.applyZoom(scale: newScale)
-            syncViewportToMetal()
-            return
-        }
-
-        let zoomRatio = newScale / oldScale
-        let anchoredOffset = CGSize(
-            width: cursor.width - (cursor.width - editOffset.width) * zoomRatio,
-            height: cursor.height - (cursor.height - editOffset.height) * zoomRatio
-        )
-
-        previewNavigation.applyZoom(scale: newScale, anchoredOffset: anchoredOffset)
+        previewNavigation.applyCropZoom(scale: newScale, preserving: cursor)
         constrainEditOffset(in: containerSize, imageSize: containerSize)
     }
 
@@ -8008,13 +7746,13 @@ struct EditWorkspaceView: View {
             x: paneSize.width / 2 + cursor.width,
             y: paneSize.height / 2 + cursor.height
         )
-        let viewport: (origin: SIMD2<Float>, size: SIMD2<Float>)
+        let viewport: DevelopPreviewViewport
         if isCropEnabled, !isShowingBefore {
             let imageSize = metalImageSize ?? currentImageSize ?? CGSize(width: 1, height: 1)
             let cropViewport = editCropViewport(in: paneSize, imageSize: imageSize)
-            viewport = (cropViewport.origin, cropViewport.size)
+            viewport = cropViewport
         } else {
-            viewport = (currentViewportOrigin, currentViewportSize)
+            viewport = currentViewport
         }
         return EditPreviewCoordinateMapper.displayUV(
             forPanePoint: panePoint,
@@ -8066,33 +7804,24 @@ struct EditWorkspaceView: View {
     }
 
     private func constrainEditOffset(in containerSize: CGSize, imageSize: CGSize) {
-        let scaledWidth: CGFloat
-        let scaledHeight: CGFloat
+        let maximumOffset: CGSize
         if isCropEnabled, !showCropControls, !isShowingBefore {
             let imgSize = currentImageSize ?? metalImageSize ?? imageSize
-            let imageRect = cropFittedImageRect(
-                in: containerSize,
+            maximumOffset = previewNavigation.cropMaximumOffset(
+                containerSize: containerSize,
                 imageSize: imgSize,
                 crop: displayCrop,
                 angleDegrees: displayCropAngle,
-                zoom: editZoomScale,
                 handlePadding: EditCropPreviewFraming.handlePadding(isCropToolActive: false)
             )
-            let cropRect = cropViewRect(crop: displayCrop, angleDegrees: displayCropAngle, imageRect: imageRect)
-            scaledWidth = cropRect.width
-            scaledHeight = cropRect.height
         } else {
             let imgSize = metalImageSize ?? imageSize
-            let fittedScale = min(containerSize.width / imgSize.width,
-                                  containerSize.height / imgSize.height)
-            scaledWidth = imgSize.width * fittedScale * editZoomScale
-            scaledHeight = imgSize.height * fittedScale * editZoomScale
+            maximumOffset = previewNavigation.maximumOffset(
+                containerSize: containerSize,
+                imageSize: imgSize
+            )
         }
-        let maxOffsetX = max(0, (scaledWidth - containerSize.width) / 2)
-        let maxOffsetY = max(0, (scaledHeight - containerSize.height) / 2)
-        previewNavigation.constrainOffset(
-            maximum: CGSize(width: maxOffsetX, height: maxOffsetY)
-        )
+        previewNavigation.constrainOffset(maximum: maximumOffset)
         syncViewportToMetal()
     }
 
@@ -8109,7 +7838,6 @@ struct EditWorkspaceView: View {
         } else {
             // Zoom to 100% (clamped to max), preserving the point beneath the cursor.
             applyEditZoom(
-                oldScale: editZoomScale,
                 newScale: min(zoom100, EditZoomBehavior.maximumScale),
                 cursorFromCenter: isCursorOverPreview ? currentEditCursorFromCenter() : .zero
             )

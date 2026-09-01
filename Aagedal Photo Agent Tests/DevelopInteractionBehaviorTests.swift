@@ -1064,6 +1064,178 @@ struct DevelopPreviewNavigationCoordinatorTests {
         #expect(coordinator.offset == .zero)
         #expect(coordinator.committedOffset == .zero)
     }
+
+    @Test("normal viewport derives letterboxing and pan from one navigation snapshot")
+    func normalViewportGeometry() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+        coordinator.applyZoom(
+            scale: 2,
+            anchoredOffset: CGSize(width: 30, height: -20)
+        )
+
+        let viewport = coordinator.viewport(
+            containerSize: CGSize(width: 600, height: 400),
+            imageSize: CGSize(width: 400, height: 400)
+        )
+
+        #expect(abs(viewport.origin.x - 0.0875) < 0.000_001)
+        #expect(abs(viewport.origin.y - 0.275) < 0.000_001)
+        #expect(abs(viewport.size.x - 0.75) < 0.000_001)
+        #expect(abs(viewport.size.y - 0.5) < 0.000_001)
+    }
+
+    @Test("cursor-anchored zoom preserves the source point and clamps pan")
+    func cursorAnchoredZoomGeometry() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+        let container = CGSize(width: 600, height: 400)
+        let image = CGSize(width: 400, height: 400)
+        let cursor = CGSize(width: 100, height: 0)
+        let cursorX = 0.5 + cursor.width / container.width
+        let before = coordinator.viewport(containerSize: container, imageSize: image)
+        let sourceXBefore = Double(before.origin.x) + Double(cursorX) * Double(before.size.x)
+
+        coordinator.applyZoom(
+            scale: 2,
+            preserving: cursor,
+            containerSize: container,
+            imageSize: image
+        )
+
+        let after = coordinator.viewport(containerSize: container, imageSize: image)
+        let sourceXAfter = Double(after.origin.x) + Double(cursorX) * Double(after.size.x)
+        #expect(abs(sourceXBefore - sourceXAfter) < 0.000_001)
+        #expect(coordinator.offset == CGSize(width: -100, height: 0))
+        #expect(coordinator.committedOffset == coordinator.offset)
+    }
+
+    @Test("cropped viewport rotates view-space pan back into source space")
+    func croppedViewportGeometry() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+        coordinator.applyZoom(
+            scale: 2,
+            anchoredOffset: CGSize(width: 100, height: 0)
+        )
+        let crop = NormalizedCropRegion(
+            top: 0.25,
+            left: 0.25,
+            bottom: 0.75,
+            right: 0.75
+        )
+
+        let viewport = coordinator.cropViewport(
+            containerSize: CGSize(width: 600, height: 400),
+            imageSize: CGSize(width: 1_200, height: 800),
+            crop: crop,
+            angleDegrees: 90
+        )
+
+        #expect(abs(viewport.origin.x - 0.375) < 0.000_001)
+        #expect(abs(viewport.origin.y - 0.3125) < 0.000_001)
+        #expect(abs(viewport.size.x - 0.25) < 0.000_001)
+        #expect(abs(viewport.size.y - 0.25) < 0.000_001)
+    }
+
+    @Test("cropped cursor-anchored zoom derives from the owned navigation snapshot")
+    func croppedCursorAnchoredZoom() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+        coordinator.applyZoom(
+            scale: 2,
+            anchoredOffset: CGSize(width: 30, height: -10)
+        )
+
+        coordinator.applyCropZoom(
+            scale: 4,
+            preserving: CGSize(width: 100, height: 50)
+        )
+
+        #expect(coordinator.zoomScale == 4)
+        #expect(coordinator.offset == CGSize(width: -40, height: -70))
+        #expect(coordinator.committedOffset == coordinator.offset)
+    }
+
+    @Test("crop framing and pan limits share the same zoom geometry")
+    func cropFramingAndPanLimits() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+        coordinator.applyZoom(scale: 2)
+        let crop = NormalizedCropRegion(
+            top: 0.25,
+            left: 0.25,
+            bottom: 0.75,
+            right: 0.75
+        )
+
+        let imageRect = coordinator.cropFittedImageRect(
+            containerSize: CGSize(width: 600, height: 400),
+            imageSize: CGSize(width: 1_200, height: 800),
+            crop: crop,
+            angleDegrees: 0
+        )
+        let maximum = coordinator.cropMaximumOffset(
+            containerSize: CGSize(width: 600, height: 400),
+            imageSize: CGSize(width: 1_200, height: 800),
+            crop: crop,
+            angleDegrees: 0
+        )
+
+        #expect(imageRect == CGRect(x: -900, y: -600, width: 2_400, height: 1_600))
+        #expect(maximum == CGSize(width: 300, height: 200))
+    }
+
+    @Test("invalid preview sizes return inert geometry")
+    func invalidSizesReturnFallbackGeometry() {
+        let coordinator = DevelopPreviewNavigationCoordinator()
+        coordinator.applyZoom(
+            scale: 4,
+            anchoredOffset: CGSize(width: 50, height: 25)
+        )
+        let crop = NormalizedCropRegion.full
+
+        #expect(coordinator.viewport(
+            containerSize: .zero,
+            imageSize: CGSize(width: 100, height: 100)
+        ) == .identity)
+        #expect(coordinator.cropViewport(
+            containerSize: CGSize(width: 100, height: 100),
+            imageSize: .zero,
+            crop: crop,
+            angleDegrees: 12
+        ) == .identity)
+        #expect(coordinator.cropFittedImageRect(
+            containerSize: .zero,
+            imageSize: CGSize(width: 100, height: 100),
+            crop: crop,
+            angleDegrees: 0
+        ) == .zero)
+        #expect(coordinator.maximumOffset(
+            containerSize: .zero,
+            imageSize: CGSize(width: 100, height: 100)
+        ) == .zero)
+    }
+
+    @Test("Develop view delegates preview viewport and pan-limit geometry")
+    func viewDelegationSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("previewNavigation.viewport("))
+        #expect(source.contains("previewNavigation.cropViewport("))
+        #expect(source.contains("previewNavigation.cropFittedImageRect("))
+        #expect(source.contains("previewNavigation.cropMaximumOffset("))
+        #expect(source.contains("previewNavigation.maximumOffset("))
+        #expect(source.contains("previewNavigation.applyCropZoom("))
+        #expect(source.contains("preserving: cursorFromCenter"))
+        #expect(!source.contains("private struct EditCropViewport"))
+        #expect(!source.contains("private func cropFittedImageRect("))
+        #expect(!source.contains("private func cropViewRect("))
+        #expect(!source.contains("let newVpOriginX"))
+    }
 }
 
 @Suite("Develop transient preview coordinator")
