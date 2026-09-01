@@ -200,18 +200,9 @@ struct EditWorkspaceView: View {
     /// Owns crop-tool presentation, image-scoped pointer state, preview zoom, aspect selection,
     /// and the value-mutation seam used before the view commits XMP or a named Develop version.
     @State private var cropSession = DevelopCropSessionCoordinator()
-    @State private var isCursorOverPreview = false
-    @State private var scrollEventMonitor: Any?
-    @State private var keyEventMonitor: Any?
-    @State private var middleMouseEventMonitor: Any?
-    @State private var hoveredFilmstripURL: URL?
-    /// Hold-Space override for panning the zoomed preview. A transparent drag surface is
-    /// installed above the active brush/mask/watermark overlay while this is true, so the
-    /// current editing tool remains selected but temporarily gives up pointer input.
-    @State private var isSpaceHandToolActive = false
-    /// Set only by left/right keyboard navigation so the filmstrip follows keyboard selection
-    /// without recentering itself when the user clicks or extends a selection with the mouse.
-    @State private var filmstripKeyboardScrollTarget: URL?
+    /// Owns local AppKit monitor registration and transient hover/Space-hand navigation state.
+    /// Event interpretation remains at the view boundary.
+    @State private var workspaceInput = DevelopWorkspaceInputCoordinator()
     /// Owns press-and-hold before/Develop/current-layer comparisons and projects them onto
     /// render-only settings copies so transient keyboard state never mutates editable metadata.
     @State private var transientPreview = DevelopTransientPreviewCoordinator()
@@ -364,6 +355,28 @@ struct EditWorkspaceView: View {
 
     private var canEditSingleImage: Bool {
         metadataViewModel.selectedCount == 1 && !metadataViewModel.isBatchEdit
+    }
+
+    // Transitional aliases keep presentation and event interpretation compact while the
+    // coordinator owns the complete input-session lifetime.
+    private var isCursorOverPreview: Bool {
+        get { workspaceInput.isCursorOverPreview }
+        nonmutating set { workspaceInput.isCursorOverPreview = newValue }
+    }
+
+    private var hoveredFilmstripURL: URL? {
+        get { workspaceInput.hoveredFilmstripURL }
+        nonmutating set { workspaceInput.hoveredFilmstripURL = newValue }
+    }
+
+    private var isSpaceHandToolActive: Bool {
+        get { workspaceInput.isSpaceHandToolActive }
+        nonmutating set { workspaceInput.isSpaceHandToolActive = newValue }
+    }
+
+    private var filmstripKeyboardScrollTarget: URL? {
+        get { workspaceInput.filmstripKeyboardScrollTarget }
+        nonmutating set { workspaceInput.filmstripKeyboardScrollTarget = newValue }
     }
 
     private var displayImage: NSImage? {
@@ -1516,7 +1529,7 @@ struct EditWorkspaceView: View {
                     }
             )
             .onAppear {
-                scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                let monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
                     guard isCursorOverPreview else { return event }
                     // Only handle direct scroll input, ignore momentum to avoid drift
                     guard event.phase != [] || event.momentumPhase == [] else { return event }
@@ -1533,12 +1546,10 @@ struct EditWorkspaceView: View {
                     }
                     return nil
                 }
+                workspaceInput.installScrollMonitor(monitor) { NSEvent.removeMonitor($0) }
             }
             .onDisappear {
-                if let monitor = scrollEventMonitor {
-                    NSEvent.removeMonitor(monitor)
-                    scrollEventMonitor = nil
-                }
+                workspaceInput.removeScrollMonitor()
             }
         }
     }
@@ -2603,7 +2614,6 @@ struct EditWorkspaceView: View {
     private func handleEditWorkspaceDisappear() {
         exportSession.endWorkspaceSession()
         colorLUTImport.endImageSession()
-        isSpaceHandToolActive = false
         layerSession.endImageSession()
         layerGeometryInteraction.endImageSession()
         transientPreview.endImageSession()
@@ -2644,15 +2654,7 @@ struct EditWorkspaceView: View {
         scopeViewModel.metalScopeCoordinator?.stopContinuousRendering()
         scopeViewModel.clearMetal()
         interactiveRender.endWorkspace()
-        if let monitor = keyEventMonitor {
-            NSEvent.removeMonitor(monitor)
-            keyEventMonitor = nil
-        }
-        if let monitor = middleMouseEventMonitor {
-            NSEvent.removeMonitor(monitor)
-            middleMouseEventMonitor = nil
-        }
-        hoveredFilmstripURL = nil
+        workspaceInput.endWorkspace()
 
         // Proactively re-warm caches for every image whose develop settings changed this session,
         // so the return to the grid/loupe is instant and correct instead of catching up reactively
@@ -2713,6 +2715,7 @@ struct EditWorkspaceView: View {
         persistenceSession.beginWorkspace()
         interactiveRender.beginWorkspace()
         exportSession.beginWorkspaceSession()
+        workspaceInput.beginWorkspace()
         ensureSingleSelection()
         if metalPipeline == nil {
             let device = MetalPreviewView.Coordinator.device
@@ -2749,12 +2752,13 @@ struct EditWorkspaceView: View {
         loadDevelopVersionCatalog()
         editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
         loadSelectedImagePreview()
-        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [self] event in
+        let keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [self] event in
             handleKeyEvent(event)
         }
+        workspaceInput.installKeyMonitor(keyMonitor) { NSEvent.removeMonitor($0) }
         // DaVinci Resolve-style grade copy: middle-click the hovered filmstrip thumbnail to
         // apply its develop settings to the current selection without changing that selection.
-        middleMouseEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [self] event in
+        let middleMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [self] event in
             guard event.buttonNumber == 2,
                   let sourceURL = hoveredFilmstripURL,
                   let source = browserViewModel.images.first(where: { $0.url == sourceURL }) else {
@@ -2763,6 +2767,7 @@ struct EditWorkspaceView: View {
             applyFilmstripSettingsFromImageToCurrentSelection(source)
             return nil
         }
+        workspaceInput.installMiddleMouseMonitor(middleMouseMonitor) { NSEvent.removeMonitor($0) }
     }
 
     private func ensureSingleSelection() {

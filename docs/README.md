@@ -309,6 +309,14 @@ passed 55 tests, the repository gate passed, and the fresh-derived serial unfilt
 214 suites. Remaining lower-priority direct paths, real-volume and Thread Performance Checker evidence, broader
 Develop persistence/view decomposition, and manual/external gates keep the audit at 63 of 75.
 
+The latest [Develop input-session continuation](plan-status-develop-input-session-continuation-2026-09-01.md)
+records coordinator-owned keyboard, scroll-wheel, and middle-mouse monitor lifetimes plus preview/filmstrip
+hover, temporary Space-hand, and keyboard-scroll-target state. Replacement and teardown remove each monitor
+exactly once while the view retains concrete event interpretation. The adjacent four-suite selection passed
+41 tests, the repository gate passed, and the serial unfiltered gate passed 1,832 tests in 215 suites. Broader
+persistence lifetime and remaining source/render/geometry view decomposition, filesystem measurement, manual,
+and external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

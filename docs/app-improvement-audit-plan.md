@@ -268,6 +268,15 @@ passed 1,827 tests in 214 suites. Remaining direct paths, real-volume evidence, 
 persistence/view decomposition, and manual or external gates remain incomplete.
 ([validation](plan-status-roster-library-persistence-continuation-2026-08-31.md))
 
+**Develop input-session continuation (2026-09-01):** the checklist remains 63 of 75. A dedicated
+`DevelopWorkspaceInputCoordinator` now owns keyboard, scroll-wheel, and middle-mouse monitor registration plus
+preview/filmstrip hover, Space-hand, and keyboard-scroll-target state for one workspace lifetime. Replacement,
+reappearance, and teardown remove each injected monitor exactly once, while concrete event interpretation stays
+at the existing view boundary. The adjacent four-suite selection passed 41 tests, the repository gate passed,
+and the serial unfiltered gate passed 1,832 tests in 215 suites. Broader persistence lifetime, render/source
+publication, geometry/view decomposition, filesystem measurement, and manual/external gates remain open.
+([validation](plan-status-develop-input-session-continuation-2026-09-01.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -917,6 +926,14 @@ the image snapshot before exactly one injected durable action and suppresses eve
 workspace. Concrete XMP/history and version-catalog writers remain injected, preserving their current file
 semantics and keeping broader task lifetime, cancellation, publication, and view decomposition work open.
 ([validation](plan-status-develop-persistence-routing-continuation-2026-08-31.md))
+
+**Workspace-input state-owner follow-up (2026-09-01):** `DevelopWorkspaceInputCoordinator` now owns the local
+keyboard, scroll-wheel, and middle-mouse monitor registrations together with preview/filmstrip hover, temporary
+Space-hand, and keyboard-scroll-target state. Replaced, inactive, interrupted, and ended sessions remove their
+monitor tokens through one lifecycle boundary; `EditWorkspaceView` retains event interpretation and UI effects.
+Five focused characterizations and the adjacent 41-test regression preserve established input behavior. Broader
+persistence task lifetime and remaining source/render/geometry view decomposition stay open.
+([validation](plan-status-develop-input-session-continuation-2026-09-01.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.
