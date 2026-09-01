@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import CoreGraphics
 import Foundation
 import Testing
@@ -1253,6 +1254,123 @@ struct DevelopSectionMuteCoordinatorTests {
 @Suite("Develop preview session coordinator")
 @MainActor
 struct DevelopPreviewSessionCoordinatorTests {
+    @Test("decoded source publication is generation gated and cleared with its image")
+    func sourcePublicationRejectsStaleGenerations() {
+        let coordinator = DevelopPreviewSessionCoordinator()
+        let firstURL = URL(fileURLWithPath: "/tmp/preview-source-first.jpg")
+        let secondURL = URL(fileURLWithPath: "/tmp/preview-source-second.jpg")
+        let firstImage = NSImage(size: NSSize(width: 4, height: 3))
+        let firstCIImage = CIImage(color: .red).cropped(
+            to: CGRect(x: 0, y: 0, width: 4, height: 3)
+        )
+
+        coordinator.beginImageSession(firstURL, orientation: 1)
+        let firstGeneration = coordinator.sessionGeneration
+        #expect(coordinator.publishSource(
+            image: firstImage,
+            ciImage: firstCIImage,
+            for: firstURL,
+            sessionGeneration: firstGeneration
+        ))
+        #expect(coordinator.sourceImage === firstImage)
+        #expect(coordinator.sourceCIImage === firstCIImage)
+
+        coordinator.beginImageSession(secondURL, orientation: 6)
+        #expect(coordinator.sourceImage == nil)
+        #expect(coordinator.sourceCIImage == nil)
+        #expect(!coordinator.publishSource(
+            image: firstImage,
+            ciImage: firstCIImage,
+            for: firstURL,
+            sessionGeneration: firstGeneration
+        ))
+        #expect(coordinator.sourceImage == nil)
+        #expect(coordinator.sourceCIImage == nil)
+
+        coordinator.endImageSession()
+        #expect(coordinator.sourceImage == nil)
+        #expect(coordinator.sourceCIImage == nil)
+    }
+
+    @Test("materialization and rotation only replace the active retained source")
+    func materializationAndRotationAreImageScoped() {
+        let coordinator = DevelopPreviewSessionCoordinator()
+        let imageURL = URL(fileURLWithPath: "/tmp/preview-source-active.jpg")
+        let otherURL = URL(fileURLWithPath: "/tmp/preview-source-other.jpg")
+        let quickImage = NSImage(size: NSSize(width: 4, height: 3))
+        let quickCIImage = CIImage(color: .red).cropped(
+            to: CGRect(x: 0, y: 0, width: 4, height: 3)
+        )
+        let materialized = CIImage(color: .green).cropped(
+            to: CGRect(x: 0, y: 0, width: 8, height: 6)
+        )
+        let rotatedImage = NSImage(size: NSSize(width: 3, height: 4))
+        let rotatedCIImage = CIImage(color: .blue).cropped(
+            to: CGRect(x: 0, y: 0, width: 3, height: 4)
+        )
+
+        coordinator.beginImageSession(imageURL, orientation: 1)
+        let generation = coordinator.sessionGeneration
+        #expect(coordinator.publishSource(
+            image: quickImage,
+            ciImage: quickCIImage,
+            for: imageURL,
+            sessionGeneration: generation
+        ))
+        #expect(!coordinator.publishMaterializedSource(
+            materialized,
+            for: otherURL,
+            sessionGeneration: generation
+        ))
+        #expect(coordinator.sourceCIImage === quickCIImage)
+        #expect(coordinator.publishMaterializedSource(
+            materialized,
+            for: imageURL,
+            sessionGeneration: generation
+        ))
+        #expect(coordinator.sourceImage === quickImage)
+        #expect(coordinator.sourceCIImage === materialized)
+
+        #expect(!coordinator.replaceSourceAfterRotation(
+            image: rotatedImage,
+            ciImage: rotatedCIImage,
+            orientation: 6,
+            for: otherURL
+        ))
+        #expect(coordinator.replaceSourceAfterRotation(
+            image: rotatedImage,
+            ciImage: rotatedCIImage,
+            orientation: 6,
+            for: imageURL
+        ))
+        #expect(coordinator.sourceImage === rotatedImage)
+        #expect(coordinator.sourceCIImage === rotatedCIImage)
+        #expect(coordinator.loadedOrientation(for: imageURL) == 6)
+    }
+
+    @Test("edit workspace delegates retained source publication to the preview owner")
+    func editWorkspaceSourcePublicationContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("private var sourceImage: NSImage? { previewSession.sourceImage }"))
+        #expect(source.contains("private var sourceCIImage: CIImage? { previewSession.sourceCIImage }"))
+        #expect(source.contains("previewSession.publishSource("))
+        #expect(source.contains("previewSession.publishMaterializedSource("))
+        #expect(source.contains("previewSession.replaceSourceAfterRotation("))
+        #expect(!source.contains("@State private var sourceImage"))
+        #expect(!source.contains("@State private var sourceCIImage"))
+        #expect(!source.contains("sourceImage ="))
+        #expect(!source.contains("sourceCIImage ="))
+    }
+
     @Test("an image change cancels every source-lifecycle task and resets progress")
     func imageChangeCancelsTasksAndResetsProgress() {
         let coordinator = DevelopPreviewSessionCoordinator()

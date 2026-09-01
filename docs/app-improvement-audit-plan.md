@@ -298,6 +298,17 @@ unfiltered gate passed 1,838 tests in 215 suites. Remaining source-decode, rende
 geometry/view decomposition, filesystem measurement, and manual/external gates remain open.
 ([validation](plan-status-develop-primary-persistence-continuation-2026-09-01.md))
 
+**Develop source-publication continuation (2026-09-01):** the checklist remains 63 of 75. The existing
+`DevelopPreviewSessionCoordinator` now owns the retained decoded `NSImage` and `CIImage` together with their
+image URL, orientation, session generation, progress, and producer tasks. Quick previews, thumbnail fallbacks,
+materialized final decodes, and in-memory rotations publish through image/generation-gated APIs, so an A → B →
+A navigation cannot install the first A session's late pixels. Image replacement and teardown clear both
+representations at the same lifecycle boundary. The focused suite passed 5 tests, the adjacent four-suite
+selection passed 36 tests, the repository gate passed, and the serial unfiltered gate passed 1,841 tests in 215
+suites. Remaining decode execution, render-policy, Metal-publication, geometry/view decomposition, filesystem
+measurement, and manual/external gates remain open.
+([validation](plan-status-develop-source-publication-continuation-2026-09-01.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -975,6 +986,14 @@ image request may publish. Image/workspace replacement rejects late completion, 
 the Develop workspace. Remaining source-decode, render-policy, Metal-publication, geometry, and view decomposition
 keep the broad Phase 4.1 extraction gate open.
 ([validation](plan-status-develop-primary-persistence-continuation-2026-09-01.md))
+
+**Source-publication state-owner follow-up (2026-09-01):** `DevelopPreviewSessionCoordinator` now owns the
+retained decoded `NSImage` and `CIImage` as well as source identity, orientation, progress, and all source-lifecycle
+tasks. Quick/fallback pixels, materialized final decodes, and in-memory rotations cross image- and generation-
+checked publication methods; navigation and teardown clear them through the same owner. Decode execution and
+Metal texture publication remain injected at the view/pipeline boundary, and broader render-policy, geometry,
+and view decomposition stay open.
+([validation](plan-status-develop-source-publication-continuation-2026-09-01.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

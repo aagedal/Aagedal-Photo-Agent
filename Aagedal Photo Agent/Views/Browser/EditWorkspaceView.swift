@@ -176,8 +176,6 @@ struct EditWorkspaceView: View {
     let onExit: () -> Void
     var onPendingStatusChanged: (() -> Void)?
 
-    @State private var sourceImage: NSImage?
-    @State private var sourceCIImage: CIImage?
     /// Owns slider-interaction lifecycle, commit intent, and throttled CPU-scope publication.
     /// Pixel rendering, notifications, and durable writes remain injected at this view boundary.
     @State private var interactiveRender = DevelopInteractiveRenderCoordinator()
@@ -337,6 +335,10 @@ struct EditWorkspaceView: View {
         get { previewSession.isEditFullResLoaded }
         nonmutating set { previewSession.isEditFullResLoaded = newValue }
     }
+
+    private var sourceImage: NSImage? { previewSession.sourceImage }
+
+    private var sourceCIImage: CIImage? { previewSession.sourceCIImage }
 
     private var previewTask: Task<Void, Never>? {
         get { previewSession.sourceLoadTask }
@@ -2846,8 +2848,6 @@ struct EditWorkspaceView: View {
         previewRender.beginImageSession()
         interactiveRender.beginImageSession()
         whiteBalanceSession.beginImageSession(selectedImageURL)
-        sourceImage = nil
-        sourceCIImage = nil
         aiMaskSelection.beginImageSession(selectedImageURL)
         maskInteraction.beginImageSession(selectedImageURL)
         metalPipeline?.maskMattePreviewMaskID = nil
@@ -2875,6 +2875,7 @@ struct EditWorkspaceView: View {
         // the orientation of the bytes it actually decoded — a single upfront read can
         // race the pending write (Phase 2 decodes seconds later) and over-rotate.
         let targetOrientation = selectedImageOrientation
+        let previewSessionGeneration = previewSession.sessionGeneration
         // The preview-session owner recorded this image/orientation before reset so a later
         // in-app rotation can rotate the retained source in place instead of re-decoding.
 
@@ -2920,8 +2921,12 @@ struct EditWorkspaceView: View {
                 // kept rotated to match the in-memory orientation.
                 if let quickPreview, let image = quickPreview.image {
                     editLog.info("[\(filename)] Phase 1: embedded preview in \(phase1Elapsed) (\(image.size.width)x\(image.size.height))")
-                    sourceImage = image
-                    sourceCIImage = quickPreview.ciImage
+                    guard previewSession.publishSource(
+                        image: image,
+                        ciImage: quickPreview.ciImage,
+                        for: selectedImageURL,
+                        sessionGeneration: previewSessionGeneration
+                    ) else { return }
                 } else {
                     editLog.info("[\(filename)] Phase 1: no embedded preview, falling back to thumbnail")
                     let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
@@ -2929,8 +2934,12 @@ struct EditWorkspaceView: View {
                         editLog.info("[\(filename)] Phase 1: cancelled during thumbnail fallback")
                         return
                     }
-                    sourceImage = thumbnail
-                    sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
+                    guard previewSession.publishSource(
+                        image: thumbnail,
+                        ciImage: thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) },
+                        for: selectedImageURL,
+                        sessionGeneration: previewSessionGeneration
+                    ) else { return }
                 }
 
                 // Sync viewport before Metal upload so the CIImage fallback path
@@ -3062,7 +3071,11 @@ struct EditWorkspaceView: View {
                             ) else { return nil }
                             return CIImage(cgImage: cgImage)
                         }.value
-                        sourceCIImage = materialized ?? rawCIImage
+                        guard previewSession.publishMaterializedSource(
+                            materialized ?? rawCIImage,
+                            for: selectedImageURL,
+                            sessionGeneration: previewSessionGeneration
+                        ) else { return }
                     }
                     let totalPhase2 = ContinuousClock.now - phase2Start
                     editLog.info("[\(filename)] Phase 2: complete in \(totalPhase2), hasTexture=\(pipeline.hasSourceTexture)")
@@ -3133,14 +3146,22 @@ struct EditWorkspaceView: View {
                 // Thumbnail fallback needs no correction either — thumbnails are
                 // kept rotated to match the in-memory orientation.
                 if let image = previewSource.image {
-                    sourceImage = image
-                    sourceCIImage = previewSource.ciImage
+                    guard previewSession.publishSource(
+                        image: image,
+                        ciImage: previewSource.ciImage,
+                        for: selectedImageURL,
+                        sessionGeneration: previewSessionGeneration
+                    ) else { return }
                     editLog.info("[\(filename)] Phase 1: preview in \(phase1Elapsed) (\(image.size.width)x\(image.size.height))")
                 } else {
                     let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
                     guard !Task.isCancelled else { return }
-                    sourceImage = thumbnail
-                    sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
+                    guard previewSession.publishSource(
+                        image: thumbnail,
+                        ciImage: thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) },
+                        for: selectedImageURL,
+                        sessionGeneration: previewSessionGeneration
+                    ) else { return }
                     editLog.info("[\(filename)] Phase 1: thumbnail fallback in \(phase1Elapsed)")
                 }
 
@@ -3211,7 +3232,11 @@ struct EditWorkspaceView: View {
                             ) else { return nil }
                             return CIImage(cgImage: cgImage)
                         }.value
-                        sourceCIImage = materialized ?? fullResCIImage
+                        guard previewSession.publishMaterializedSource(
+                            materialized ?? fullResCIImage,
+                            for: selectedImageURL,
+                            sessionGeneration: previewSessionGeneration
+                        ) else { return }
 
                         let totalPhase2 = ContinuousClock.now - phase2Start
                         editLog.info("[\(filename)] Phase 2: complete in \(totalPhase2)")
@@ -3308,9 +3333,13 @@ struct EditWorkspaceView: View {
         let (rotatedCI, rotatedNS) = Self.orientedToTarget(
             ciImage: sourceCIImage, nsImage: sourceImage, from: from, to: to
         )
-        sourceCIImage = rotatedCI
-        sourceImage = rotatedNS
-        previewSession.recordLoadedOrientation(to)
+        guard let imageURL = selectedImageURL,
+              previewSession.replaceSourceAfterRotation(
+                  image: rotatedNS,
+                  ciImage: rotatedCI,
+                  orientation: to,
+                  for: imageURL
+              ) else { return }
         // Aspect ratio swapped (landscape ↔ portrait) — re-fit and re-fetch full-res on zoom.
         isEditFullResLoaded = false
         editFullResTask?.cancel()

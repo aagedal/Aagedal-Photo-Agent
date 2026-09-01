@@ -335,6 +335,15 @@ adjacent four-suite selection passed 47 tests, the repository gate passed, and t
 1,838 tests in 215 suites. Remaining source/render/geometry view decomposition, filesystem measurement, and
 manual/external gates keep the audit at 63 of 75.
 
+The latest [Develop source-publication continuation](plan-status-develop-source-publication-continuation-2026-09-01.md)
+records coordinator ownership of the retained decoded `NSImage`/`CIImage`, image URL, orientation, generation,
+progress, and source producer tasks. Quick previews, thumbnail fallbacks, materialized final decodes, and
+in-memory rotations now use image/generation-gated publication, while navigation and teardown clear both
+representations together. The focused suite passed 5 tests, the adjacent four-suite selection passed 36 tests,
+the repository gate passed, and the serial unfiltered gate passed 1,841 tests in 215 suites. Decode execution,
+render-policy, Metal publication, geometry/view decomposition, filesystem measurement, and manual/external gates
+keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.
