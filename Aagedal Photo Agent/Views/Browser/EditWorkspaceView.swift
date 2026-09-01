@@ -134,27 +134,6 @@ nonisolated enum GlobalLayerResetBehavior {
     }
 }
 
-/// Maps a pointer in preview-pane coordinates to the display-frame UV used by mask overlays.
-/// Returns nil over letterboxing/outside-image areas so callers can retain a safe fallback.
-nonisolated enum EditPreviewCoordinateMapper {
-    static func displayUV(
-        forPanePoint point: CGPoint,
-        paneSize: CGSize,
-        viewportOrigin: SIMD2<Float>,
-        viewportSize: SIMD2<Float>
-    ) -> CGPoint? {
-        guard paneSize.width > 0, paneSize.height > 0,
-              viewportSize.x > 0, viewportSize.y > 0 else { return nil }
-
-        let x = Double(viewportOrigin.x)
-            + Double(point.x / paneSize.width) * Double(viewportSize.x)
-        let y = Double(viewportOrigin.y)
-            + Double(point.y / paneSize.height) * Double(viewportSize.y)
-        guard x >= 0, x < 1, y >= 0, y < 1 else { return nil }
-        return CGPoint(x: x, y: y)
-    }
-}
-
 /// Crop handles need breathing room around the image while the crop tool is open. Once the
 /// crop is confirmed, the result should use the entire preview pane like any other image.
 nonisolated enum EditCropPreviewFraming {
@@ -623,13 +602,16 @@ struct EditWorkspaceView: View {
         selectedImage?.exifOrientation ?? 1
     }
 
-    /// Mask geometry is stored in the sensor (XMP) frame; the overlay and its
-    /// drag interaction work on the display-oriented image. Aspect comes from
-    /// the displayed image (only the ratio matters, so the downscaled preview
-    /// is fine).
-    private var maskDisplayAspect: Double {
-        guard let size = currentImageSize, size.height > 0 else { return 1 }
-        return size.width / size.height
+    /// One immutable projection snapshot for every mask/watermark interaction. The coordinator
+    /// owns the transforms; this view supplies only current image and presentation facts.
+    private var layerGeometryProjection: DevelopLayerGeometryProjection {
+        DevelopLayerGeometryProjection(
+            orientation: selectedImageOrientation,
+            displayImageSize: currentImageSize ?? .zero,
+            crop: displayCrop,
+            straightenAngle: displayCropAngle,
+            zoomScale: editZoomScale
+        )
     }
 
     /// Sensor (stored) → display geometry for the overlay. Two stacked
@@ -639,51 +621,39 @@ struct EditWorkspaceView: View {
     /// so the overlay must bake the same rotation). The straighten step is the
     /// identity when no angled crop is active (`displayCropAngle` == 0).
     private func maskGeometryForDisplay(_ geometry: EllipseMaskGeometry) -> EllipseMaskGeometry {
-        var g = geometry
-        let orientation = selectedImageOrientation
-        if orientation > 1 {
-            let aspect = maskDisplayAspect
-            let sensorAspect = orientation >= 5 ? 1 / aspect : aspect
-            g = g.transformedForDisplay(orientation: orientation, sensorAspect: sensorAspect)
-        }
-        return g.rotatedInDisplay(byDegrees: -displayCropAngle, aspect: maskDisplayAspect)
+        layerGeometryInteraction.maskForDisplay(
+            geometry,
+            projection: layerGeometryProjection
+        )
     }
 
     /// Display → sensor geometry on store: exact inverse of
     /// `maskGeometryForDisplay`, undoing the straighten first, then EXIF.
     private func maskGeometryForSensor(_ geometry: EllipseMaskGeometry) -> EllipseMaskGeometry {
-        var g = geometry.rotatedInDisplay(byDegrees: displayCropAngle, aspect: maskDisplayAspect)
-        let orientation = selectedImageOrientation
-        if orientation > 1 {
-            g = g.transformedForSensor(orientation: orientation, displayAspect: maskDisplayAspect)
-        }
-        return g
+        layerGeometryInteraction.maskForSensor(
+            geometry,
+            projection: layerGeometryProjection
+        )
     }
 
     /// Sensor (stored) → display geometry for the watermark overlay, mirroring
     /// `maskGeometryForDisplay` — same two-stage EXIF-then-straighten transform, just for
     /// the simpler point-only `WatermarkGeometry`.
     private func watermarkGeometryForDisplay(_ geometry: WatermarkGeometry, includeStraighten: Bool = true) -> WatermarkGeometry {
-        var g = geometry
-        let orientation = selectedImageOrientation
-        if orientation > 1 {
-            g = g.transformedForDisplay(orientation: orientation)
-        }
-        return includeStraighten
-            ? g.rotatedInDisplay(byDegrees: -displayCropAngle, aspect: maskDisplayAspect)
-            : g
+        layerGeometryInteraction.watermarkForDisplay(
+            geometry,
+            projection: layerGeometryProjection,
+            includesStraighten: includeStraighten
+        )
     }
 
     /// Display → sensor geometry on store: exact inverse of `watermarkGeometryForDisplay`.
     private func watermarkGeometryForSensor(_ geometry: WatermarkGeometry, includeStraighten: Bool = true) -> WatermarkGeometry {
-        var g = includeStraighten
-            ? geometry.rotatedInDisplay(byDegrees: displayCropAngle, aspect: maskDisplayAspect)
-            : geometry
-        let orientation = selectedImageOrientation
-        if orientation > 1 {
-            g = g.transformedForSensor(orientation: orientation)
-        }
-        return g
+        layerGeometryInteraction.watermarkForSensor(
+            geometry,
+            projection: layerGeometryProjection,
+            includesStraighten: includeStraighten
+        )
     }
 
     /// The library asset's decoded aspect ratio (width/height) for a watermark layer's
@@ -724,25 +694,19 @@ struct EditWorkspaceView: View {
     }
 
     private func watermarkCropImageSize(from imageSize: CGSize) -> CGSize {
-        CGSize(
-            width: max(1, CGFloat(displayCrop.width) * imageSize.width),
-            height: max(1, CGFloat(displayCrop.height) * imageSize.height)
+        var projection = layerGeometryProjection
+        projection.displayImageSize = imageSize
+        return layerGeometryInteraction.watermarkCropImageSize(
+            projection: projection
         )
     }
 
     private func watermarkCropContentRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
-        let cropSize = watermarkCropImageSize(from: imageSize)
-        let handlePadding = EditCropPreviewFraming.handlePadding(isCropToolActive: false)
-        let availW = max(containerSize.width - handlePadding * 2, 1)
-        let availH = max(containerSize.height - handlePadding * 2, 1)
-        let fitScale = min(availW / cropSize.width, availH / cropSize.height) * max(editZoomScale, 0.0001)
-        let width = cropSize.width * fitScale
-        let height = cropSize.height * fitScale
-        return CGRect(
-            x: (containerSize.width - width) * 0.5,
-            y: (containerSize.height - height) * 0.5,
-            width: width,
-            height: height
+        var projection = layerGeometryProjection
+        projection.displayImageSize = imageSize
+        return layerGeometryInteraction.watermarkCropContentRect(
+            in: containerSize,
+            projection: projection
         )
     }
 
@@ -6310,12 +6274,13 @@ struct EditWorkspaceView: View {
     /// only correcting the next time the position handle is dragged. No-op if the display
     /// image size isn't known yet.
     private func watermarkGeometryClampingOwnPosition(_ geometry: WatermarkGeometry, assetAspect: Double) -> WatermarkGeometry {
-        guard let size = currentImageSize, size.width > 0, size.height > 0 else { return geometry }
         let cropFrame = metadataViewModel.editingMetadata.cameraRaw?.crop?.isEffectiveCrop == true
-        let referenceSize = cropFrame ? watermarkCropImageSize(from: size) : size
-        let display = watermarkGeometryForDisplay(geometry, includeStraighten: !cropFrame)
-            .clamped(assetAspect: assetAspect, imageWidth: referenceSize.width, imageHeight: referenceSize.height)
-        return watermarkGeometryForSensor(display, includeStraighten: !cropFrame)
+        return layerGeometryInteraction.watermarkClampingOwnPosition(
+            geometry,
+            assetAspect: assetAspect,
+            usesCropFrame: cropFrame,
+            projection: layerGeometryProjection
+        )
     }
 
     /// Applies `mutate` to the selected watermark layer's geometry, then re-clamps its
@@ -6717,19 +6682,6 @@ struct EditWorkspaceView: View {
         NSCursor.arrow.set()
     }
 
-    /// Reverse the crop-straighten display rotation after pane→viewport mapping. Vision analyzes
-    /// the un-straightened `sourceCIImage`, so the click must land in that same source frame.
-    private func aiSourcePoint(fromDisplayedUV point: CGPoint) -> CGPoint {
-        var marker = WatermarkGeometry()
-        marker.centerX = Double(point.x)
-        marker.centerY = Double(point.y)
-        marker = marker.rotatedInDisplay(byDegrees: displayCropAngle, aspect: maskDisplayAspect)
-        return CGPoint(
-            x: min(max(marker.centerX, 0), 1),
-            y: min(max(marker.centerY, 0), 1)
-        )
-    }
-
     private func performAIMaskPick(
         panePoint: CGPoint,
         paneSize: CGSize,
@@ -6739,15 +6691,17 @@ struct EditWorkspaceView: View {
         guard isSelectingAIMask, !isGeneratingAIMask,
               let source = sourceCIImage,
               let imageURL = selectedImageURL,
-              let displayedUV = EditPreviewCoordinateMapper.displayUV(
+              let displayedUV = layerGeometryInteraction.displayUV(
                   forPanePoint: panePoint,
                   paneSize: paneSize,
-                  viewportOrigin: viewportOrigin,
-                  viewportSize: viewportSize
+                  viewport: DevelopPreviewViewport(origin: viewportOrigin, size: viewportSize)
               )
         else { return }
 
-        let sourcePoint = aiSourcePoint(fromDisplayedUV: displayedUV)
+        let sourcePoint = layerGeometryInteraction.sourcePointForAIMask(
+            fromDisplayedUV: displayedUV,
+            projection: layerGeometryProjection
+        )
         aiMaskSelection.generate(
             from: source,
             sourcePoint: sourcePoint,
@@ -6919,10 +6873,10 @@ struct EditWorkspaceView: View {
     /// EXIF-orientation transform the render path applies. (Crop straighten isn't applied to brush
     /// dabs; painting on a straightened-but-unconfirmed image is an edge case, flagged for later.)
     private func brushStrokeForSensor(_ stroke: BrushStroke) -> BrushStroke {
-        let orientation = selectedImageOrientation
-        guard orientation > 1 else { return stroke }
-        let g = BrushMaskGeometry(strokes: [stroke]).transformedForSensor(orientation: orientation)
-        return g.strokes.first ?? stroke
+        layerGeometryInteraction.brushStrokeForSensor(
+            stroke,
+            projection: layerGeometryProjection
+        )
     }
 
     /// `onStrokeBegan`: resolve the target brush mask (selected one, or a fresh mask), make sure
@@ -7754,11 +7708,10 @@ struct EditWorkspaceView: View {
         } else {
             viewport = currentViewport
         }
-        return EditPreviewCoordinateMapper.displayUV(
+        return layerGeometryInteraction.displayUV(
             forPanePoint: panePoint,
             paneSize: paneSize,
-            viewportOrigin: viewport.origin,
-            viewportSize: viewport.size
+            viewport: viewport
         )
     }
 

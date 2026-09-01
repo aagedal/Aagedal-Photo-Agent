@@ -360,6 +360,20 @@ publication ownership. The focused suite passed 4 tests, the adjacent five-suite
 repository gate passed, and the serial unfiltered gate passed 1,849 tests in 217 suites. Remaining render-policy,
 geometry/view decomposition, filesystem measurement, and manual/external gates keep the audit at 63 of 75.
 
+The subsequent [Develop preview-geometry continuation](plan-status-develop-preview-geometry-continuation-2026-09-01.md)
+records coordinator-owned normal/cropped viewport projection, crop framing, cursor-anchored zoom, and pan limits.
+Seven characterizations cover normal and rotated-crop geometry, the adjacent three-suite selection passed 41
+tests, the repository gate passed, and the serial unfiltered gate passed 1,856 tests in 217 suites. Mask/watermark
+geometry, broader render policy/view decomposition, filesystem measurement, and manual/external gates kept the
+audit at 63 of 75.
+
+The latest [Develop layer-geometry continuation](plan-status-develop-layer-geometry-continuation-2026-09-01.md)
+records coordinator-owned pane-to-UV mapping, ellipse/watermark EXIF and straighten transforms, brush and AI-pick
+projection, confirmed-crop watermark framing, and size/margin reclamping. Seven focused tests and the adjacent
+seven-suite selection passed 56 tests; the repository gate passed, and the serial unfiltered gate passed 1,860
+tests in 217 suites. Broader render policy/view decomposition, filesystem measurement, and manual/external gates
+keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

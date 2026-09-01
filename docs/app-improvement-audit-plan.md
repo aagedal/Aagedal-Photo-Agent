@@ -329,6 +329,26 @@ repository gate passed, and the serial unfiltered gate passed 1,849 tests in 217
 geometry/view decomposition, filesystem measurement, and manual/external gates remain open.
 ([validation](plan-status-develop-source-decode-continuation-2026-09-01.md))
 
+**Develop preview-geometry continuation (2026-09-01):** the checklist remains 63 of 75. The existing
+`DevelopPreviewNavigationCoordinator` now owns normal and confirmed-crop viewport derivation, crop-tool framing,
+cursor-anchored zoom, and pan-limit geometry. The view publishes its immutable viewport to Metal/Core Image but
+no longer defines the duplicate letterbox, crop-fit, rotation, zoom-anchor, or pan-bound formulas. Seven focused
+characterizations and the adjacent 41-test selection passed, the repository gate passed, and the serial
+unfiltered gate passed 1,856 tests in 217 suites. Mask/watermark geometry, broader render policy and view
+decomposition, filesystem measurement, and manual/external gates remained open.
+([validation](plan-status-develop-preview-geometry-continuation-2026-09-01.md))
+
+**Develop layer-geometry continuation (2026-09-01):** the checklist remains 63 of 75. The existing image-scoped
+`DevelopLayerGeometryInteractionCoordinator` now owns pane-to-UV projection, EXIF/straighten transforms for
+ellipse masks and watermark anchors, brush display-to-sensor conversion, AI-pick source projection, confirmed-
+crop watermark framing, and size/margin reclamping from one immutable projection snapshot. The view supplies
+current image/presentation facts and retains Metal publication plus durable metadata commits, but no longer
+defines those formulas. Seven focused characterizations and the adjacent 56-test selection preserve round trips,
+crop framing, overlay/render geometry, and the existing transient commit lifecycle; the repository gate passed,
+and the serial unfiltered gate passed 1,860 tests in 217 suites. Broader render policy and view decomposition,
+filesystem measurement, and manual/external gates remain open.
+([validation](plan-status-develop-layer-geometry-continuation-2026-09-01.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -1041,6 +1061,16 @@ and rotated-crop projection, normal/cropped cursor anchoring, shared crop framin
 behavior, and view delegation. Mask/watermark transforms, broader render policy, and view decomposition remain
 open.
 ([validation](plan-status-develop-preview-geometry-continuation-2026-09-01.md))
+
+**Layer-geometry ownership follow-up (2026-09-01):** `DevelopLayerGeometryInteractionCoordinator` now pairs its
+image-scoped mask/watermark drag state with the coordinate policy used by every local-layer gesture. An immutable
+projection snapshot supplies orientation, display size, crop, straighten, and zoom facts; the coordinator maps
+preview points, ellipse and watermark sensor/display frames, brush strokes, AI picks, confirmed-crop watermark
+content, and size/margin reclamping. The view retains layout, Metal updates, and durable commits without defining
+those formulas. Seven focused tests and the adjacent seven-suite selection passed 56 tests, the repository gate
+passed, and the serial unfiltered gate passed 1,860 tests in 217 suites. Broader render policy and view
+decomposition remain open.
+([validation](plan-status-develop-layer-geometry-continuation-2026-09-01.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

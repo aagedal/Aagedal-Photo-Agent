@@ -335,12 +335,16 @@ struct DevelopInteractionBehaviorTests {
     }
 
     @Test("Preview cursor maps through the active viewport")
+    @MainActor
     func previewCursorMapsToDisplayUV() throws {
-        let uv = try #require(EditPreviewCoordinateMapper.displayUV(
+        let coordinator = DevelopLayerGeometryInteractionCoordinator()
+        let uv = try #require(coordinator.displayUV(
             forPanePoint: CGPoint(x: 100, y: 150),
             paneSize: CGSize(width: 400, height: 200),
-            viewportOrigin: SIMD2<Float>(0.2, 0.3),
-            viewportSize: SIMD2<Float>(0.5, 0.25)
+            viewport: DevelopPreviewViewport(
+                origin: SIMD2<Float>(0.2, 0.3),
+                size: SIMD2<Float>(0.5, 0.25)
+            )
         ))
 
         #expect(abs(uv.x - 0.325) < 0.0001)
@@ -348,12 +352,16 @@ struct DevelopInteractionBehaviorTests {
     }
 
     @Test("Preview cursor ignores letterboxing outside the image")
+    @MainActor
     func previewCursorRejectsLetterbox() {
-        let uv = EditPreviewCoordinateMapper.displayUV(
+        let coordinator = DevelopLayerGeometryInteractionCoordinator()
+        let uv = coordinator.displayUV(
             forPanePoint: .zero,
             paneSize: CGSize(width: 400, height: 200),
-            viewportOrigin: SIMD2<Float>(-0.25, 0),
-            viewportSize: SIMD2<Float>(1.5, 1)
+            viewport: DevelopPreviewViewport(
+                origin: SIMD2<Float>(-0.25, 0),
+                size: SIMD2<Float>(1.5, 1)
+            )
         )
 
         #expect(uv == nil)
@@ -460,6 +468,114 @@ struct DevelopLayerGeometryInteractionCoordinatorTests {
         #expect(coordinator.watermarkGeometry == nil)
     }
 
+    @Test("mask and watermark transforms round-trip through orientation and straighten")
+    func layerGeometryProjectionRoundTrips() {
+        let coordinator = DevelopLayerGeometryInteractionCoordinator()
+        let projection = DevelopLayerGeometryProjection(
+            orientation: 6,
+            displayImageSize: CGSize(width: 3000, height: 4000),
+            crop: NormalizedCropRegion(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8),
+            straightenAngle: 7.5,
+            zoomScale: 2
+        )
+        var mask = EllipseMaskGeometry()
+        mask.centerX = 0.23
+        mask.centerY = 0.67
+        mask.radiusX = 0.12
+        mask.radiusY = 0.08
+        mask.rotation = 14
+        var watermark = WatermarkGeometry()
+        watermark.centerX = 0.81
+        watermark.centerY = 0.72
+
+        let maskRoundTrip = coordinator.maskForSensor(
+            coordinator.maskForDisplay(mask, projection: projection),
+            projection: projection
+        )
+        let watermarkRoundTrip = coordinator.watermarkForSensor(
+            coordinator.watermarkForDisplay(watermark, projection: projection),
+            projection: projection
+        )
+
+        #expect(abs(maskRoundTrip.centerX - mask.centerX) < 0.000_001)
+        #expect(abs(maskRoundTrip.centerY - mask.centerY) < 0.000_001)
+        #expect(abs(maskRoundTrip.trueRadii(aspect: 4.0 / 3.0).x - mask.trueRadii(aspect: 4.0 / 3.0).x) < 0.000_001)
+        #expect(abs(maskRoundTrip.trueRadii(aspect: 4.0 / 3.0).y - mask.trueRadii(aspect: 4.0 / 3.0).y) < 0.000_001)
+        #expect(abs(watermarkRoundTrip.centerX - watermark.centerX) < 0.000_001)
+        #expect(abs(watermarkRoundTrip.centerY - watermark.centerY) < 0.000_001)
+    }
+
+    @Test("crop watermark framing uses crop dimensions and preview zoom")
+    func cropWatermarkFraming() {
+        let coordinator = DevelopLayerGeometryInteractionCoordinator()
+        let projection = DevelopLayerGeometryProjection(
+            displayImageSize: CGSize(width: 4000, height: 3000),
+            crop: NormalizedCropRegion(top: 0.25, left: 0.25, bottom: 0.75, right: 0.75),
+            zoomScale: 2
+        )
+
+        #expect(coordinator.watermarkCropImageSize(projection: projection) == CGSize(width: 2000, height: 1500))
+        let content = coordinator.watermarkCropContentRect(
+            in: CGSize(width: 1000, height: 500),
+            projection: projection
+        )
+        #expect(abs(content.width - 1_333.333_333) < 0.001)
+        #expect(abs(content.height - 1_000) < 0.001)
+        #expect(abs(content.midX - 500) < 0.001)
+        #expect(abs(content.midY - 250) < 0.001)
+    }
+
+    @Test("watermark reclamping uses the confirmed crop frame")
+    func cropWatermarkReclamping() {
+        let coordinator = DevelopLayerGeometryInteractionCoordinator()
+        let projection = DevelopLayerGeometryProjection(
+            displayImageSize: CGSize(width: 1000, height: 500),
+            crop: NormalizedCropRegion(top: 0.25, left: 0.25, bottom: 0.75, right: 0.75)
+        )
+        var watermark = WatermarkGeometry()
+        watermark.centerX = 1
+        watermark.centerY = 1
+        watermark.sizeUnit = .pixel
+        watermark.sizeValue = 100
+        watermark.marginUnit = .pixel
+        watermark.marginValue = 50
+
+        let clamped = coordinator.watermarkClampingOwnPosition(
+            watermark,
+            assetAspect: 1,
+            usesCropFrame: true,
+            projection: projection
+        )
+
+        #expect(abs(clamped.centerX - 0.8) < 0.000_001)
+        #expect(abs(clamped.centerY - 0.6) < 0.000_001)
+    }
+
+    @Test("AI picks and brush strokes share the layer projection boundary")
+    func aiAndBrushProjection() {
+        let coordinator = DevelopLayerGeometryInteractionCoordinator()
+        let projection = DevelopLayerGeometryProjection(
+            orientation: 6,
+            displayImageSize: CGSize(width: 3000, height: 4000),
+            straightenAngle: 10
+        )
+        let stroke = BrushStroke(dabs: [
+            BrushDab(x: 0.2, y: 0.3, flow: 0.8, hardness: 0.6)
+        ])
+
+        let sensorStroke = coordinator.brushStrokeForSensor(stroke, projection: projection)
+        #expect(abs(sensorStroke.dabs[0].x - 0.3) < 0.000_001)
+        #expect(abs(sensorStroke.dabs[0].y - 0.8) < 0.000_001)
+
+        let sourcePoint = coordinator.sourcePointForAIMask(
+            fromDisplayedUV: CGPoint(x: 0.1, y: 0.2),
+            projection: projection
+        )
+        #expect(sourcePoint.x >= 0 && sourcePoint.x <= 1)
+        #expect(sourcePoint.y >= 0 && sourcePoint.y <= 1)
+        #expect(sourcePoint != CGPoint(x: 0.1, y: 0.2))
+    }
+
     @Test("Develop view retains no standalone mask or watermark geometry state")
     func viewDelegationSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -478,9 +594,16 @@ struct DevelopLayerGeometryInteractionCoordinatorTests {
         #expect(source.contains("layerGeometryInteraction.beginImageSession(selectedImageURL)"))
         #expect(source.contains("layerGeometryInteraction.consumeMaskGeometry()"))
         #expect(source.contains("layerGeometryInteraction.consumeWatermarkGeometry()"))
+        #expect(source.contains("layerGeometryInteraction.maskForDisplay("))
+        #expect(source.contains("layerGeometryInteraction.watermarkForSensor("))
+        #expect(source.contains("layerGeometryInteraction.watermarkCropContentRect("))
+        #expect(source.contains("layerGeometryInteraction.sourcePointForAIMask("))
+        #expect(source.contains("layerGeometryInteraction.brushStrokeForSensor("))
         #expect(!source.contains("@State private var dragMaskGeometry"))
         #expect(!source.contains("@State private var dragWatermarkGeometry"))
         #expect(!source.contains("@State private var isDraggingMask"))
+        #expect(!source.contains("EditPreviewCoordinateMapper"))
+        #expect(!source.contains(".rotatedInDisplay(byDegrees: -displayCropAngle"))
     }
 }
 

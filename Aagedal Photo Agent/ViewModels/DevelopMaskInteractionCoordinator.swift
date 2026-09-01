@@ -1,5 +1,36 @@
+import CoreGraphics
 import Foundation
 import Observation
+
+/// Immutable inputs for projecting Develop layer geometry between its durable sensor frame and
+/// the current preview. The view supplies source facts; the interaction coordinator owns how
+/// those facts affect masks, brush strokes, AI picks, and watermark placement.
+struct DevelopLayerGeometryProjection: Equatable {
+    var orientation: Int
+    var displayImageSize: CGSize
+    var crop: NormalizedCropRegion
+    var straightenAngle: Double
+    var zoomScale: CGFloat
+
+    init(
+        orientation: Int = 1,
+        displayImageSize: CGSize = .zero,
+        crop: NormalizedCropRegion = .full,
+        straightenAngle: Double = 0,
+        zoomScale: CGFloat = 1
+    ) {
+        self.orientation = orientation
+        self.displayImageSize = displayImageSize
+        self.crop = crop
+        self.straightenAngle = straightenAngle
+        self.zoomScale = zoomScale
+    }
+
+    var displayAspect: Double {
+        guard displayImageSize.width > 0, displayImageSize.height > 0 else { return 1 }
+        return displayImageSize.width / displayImageSize.height
+    }
+}
 
 /// Owns the image-scoped, transient interaction state shared by Develop mask tools.
 ///
@@ -136,5 +167,187 @@ final class DevelopLayerGeometryInteractionCoordinator {
         isDraggingMask = false
         maskGeometry = nil
         watermarkGeometry = nil
+    }
+
+    /// Maps a preview-pane point into display-frame UV. Letterbox and invalid-geometry points
+    /// are rejected so keyboard mask creation and AI selection share the overlay's hit contract.
+    func displayUV(
+        forPanePoint point: CGPoint,
+        paneSize: CGSize,
+        viewport: DevelopPreviewViewport
+    ) -> CGPoint? {
+        guard paneSize.width > 0, paneSize.height > 0,
+              viewport.size.x > 0, viewport.size.y > 0 else { return nil }
+
+        let x = Double(viewport.origin.x)
+            + Double(point.x / paneSize.width) * Double(viewport.size.x)
+        let y = Double(viewport.origin.y)
+            + Double(point.y / paneSize.height) * Double(viewport.size.y)
+        guard x >= 0, x < 1, y >= 0, y < 1 else { return nil }
+        return CGPoint(x: x, y: y)
+    }
+
+    /// Durable sensor-frame ellipse to the preview's EXIF-oriented, straightened display frame.
+    func maskForDisplay(
+        _ geometry: EllipseMaskGeometry,
+        projection: DevelopLayerGeometryProjection
+    ) -> EllipseMaskGeometry {
+        var result = geometry
+        if projection.orientation > 1 {
+            let sensorAspect = projection.orientation >= 5
+                ? 1 / projection.displayAspect
+                : projection.displayAspect
+            result = result.transformedForDisplay(
+                orientation: projection.orientation,
+                sensorAspect: sensorAspect
+            )
+        }
+        return result.rotatedInDisplay(
+            byDegrees: -projection.straightenAngle,
+            aspect: projection.displayAspect
+        )
+    }
+
+    /// Exact inverse of `maskForDisplay`, suitable for the persisted XMP geometry.
+    func maskForSensor(
+        _ geometry: EllipseMaskGeometry,
+        projection: DevelopLayerGeometryProjection
+    ) -> EllipseMaskGeometry {
+        var result = geometry.rotatedInDisplay(
+            byDegrees: projection.straightenAngle,
+            aspect: projection.displayAspect
+        )
+        if projection.orientation > 1 {
+            result = result.transformedForSensor(
+                orientation: projection.orientation,
+                displayAspect: projection.displayAspect
+            )
+        }
+        return result
+    }
+
+    func watermarkForDisplay(
+        _ geometry: WatermarkGeometry,
+        projection: DevelopLayerGeometryProjection,
+        includesStraighten: Bool = true
+    ) -> WatermarkGeometry {
+        var result = projection.orientation > 1
+            ? geometry.transformedForDisplay(orientation: projection.orientation)
+            : geometry
+        if includesStraighten {
+            result = result.rotatedInDisplay(
+                byDegrees: -projection.straightenAngle,
+                aspect: projection.displayAspect
+            )
+        }
+        return result
+    }
+
+    /// Exact inverse of `watermarkForDisplay`, suitable for the persisted XMP geometry.
+    func watermarkForSensor(
+        _ geometry: WatermarkGeometry,
+        projection: DevelopLayerGeometryProjection,
+        includesStraighten: Bool = true
+    ) -> WatermarkGeometry {
+        var result = includesStraighten
+            ? geometry.rotatedInDisplay(
+                byDegrees: projection.straightenAngle,
+                aspect: projection.displayAspect
+            )
+            : geometry
+        if projection.orientation > 1 {
+            result = result.transformedForSensor(orientation: projection.orientation)
+        }
+        return result
+    }
+
+    /// Brush dabs use the same sensor/display orientation boundary as the other local masks.
+    /// Straighten remains intentionally excluded to preserve the established brush behavior.
+    func brushStrokeForSensor(
+        _ stroke: BrushStroke,
+        projection: DevelopLayerGeometryProjection
+    ) -> BrushStroke {
+        guard projection.orientation > 1 else { return stroke }
+        let geometry = BrushMaskGeometry(strokes: [stroke])
+            .transformedForSensor(orientation: projection.orientation)
+        return geometry.strokes.first ?? stroke
+    }
+
+    /// Vision analyzes the un-straightened source, so reverse only the displayed straighten
+    /// rotation after the common pane-to-viewport projection.
+    func sourcePointForAIMask(
+        fromDisplayedUV point: CGPoint,
+        projection: DevelopLayerGeometryProjection
+    ) -> CGPoint {
+        var marker = WatermarkGeometry()
+        marker.centerX = Double(point.x)
+        marker.centerY = Double(point.y)
+        marker = marker.rotatedInDisplay(
+            byDegrees: projection.straightenAngle,
+            aspect: projection.displayAspect
+        )
+        return CGPoint(
+            x: min(max(marker.centerX, 0), 1),
+            y: min(max(marker.centerY, 0), 1)
+        )
+    }
+
+    func watermarkCropImageSize(
+        projection: DevelopLayerGeometryProjection
+    ) -> CGSize {
+        CGSize(
+            width: max(1, CGFloat(projection.crop.width) * projection.displayImageSize.width),
+            height: max(1, CGFloat(projection.crop.height) * projection.displayImageSize.height)
+        )
+    }
+
+    func watermarkCropContentRect(
+        in containerSize: CGSize,
+        projection: DevelopLayerGeometryProjection
+    ) -> CGRect {
+        let cropSize = watermarkCropImageSize(projection: projection)
+        let availableWidth = max(containerSize.width, 1)
+        let availableHeight = max(containerSize.height, 1)
+        let fitScale = min(
+            availableWidth / cropSize.width,
+            availableHeight / cropSize.height
+        ) * max(projection.zoomScale, 0.0001)
+        let width = cropSize.width * fitScale
+        let height = cropSize.height * fitScale
+        return CGRect(
+            x: (containerSize.width - width) * 0.5,
+            y: (containerSize.height - height) * 0.5,
+            width: width,
+            height: height
+        )
+    }
+
+    /// Re-clamps a watermark after its own size or margin changes. Confirmed crops use the
+    /// crop-sized frame and omit straighten because the Metal crop viewport already supplies it.
+    func watermarkClampingOwnPosition(
+        _ geometry: WatermarkGeometry,
+        assetAspect: Double,
+        usesCropFrame: Bool,
+        projection: DevelopLayerGeometryProjection
+    ) -> WatermarkGeometry {
+        guard projection.displayImageSize.width > 0,
+              projection.displayImageSize.height > 0 else { return geometry }
+        let referenceSize = usesCropFrame
+            ? watermarkCropImageSize(projection: projection)
+            : projection.displayImageSize
+        let display = watermarkForDisplay(
+            geometry,
+            projection: projection,
+            includesStraighten: !usesCropFrame
+        ).clamped(
+            assetAspect: assetAspect,
+            imageWidth: referenceSize.width,
+            imageHeight: referenceSize.height
+        )
+        return watermarkForSensor(
+            display,
+            projection: projection,
+            includesStraighten: !usesCropFrame
+        )
     }
 }
