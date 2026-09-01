@@ -104,6 +104,7 @@ struct MatchSetupView: View {
         }
         .frame(width: 460, height: 520)
         .task(id: folderURL) {
+            await store.loadIfNeeded()
             guard let folderURL else { return }
             let roster = await viewModel.loadMatchRoster(for: folderURL)
             guard !Task.isCancelled else { return }

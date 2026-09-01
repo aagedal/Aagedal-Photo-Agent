@@ -257,6 +257,17 @@ and other direct paths, real-volume evidence, broader Develop persistence/view d
 external gates remain incomplete.
 ([validation](plan-status-settings-keyword-archive-inventory-continuation-2026-08-31.md))
 
+**Roster-library persistence continuation (2026-08-31):** the checklist remains 63 of 75. Teams-library root
+preparation, enumeration, coordinated record reads/writes, tombstone cleanup, corrupt backup, iCloud conflict
+resolution, verified deletion, and remote reload now cross `RosterLibraryPersistenceService` instead of running
+synchronously on MainActor. Immutable results distinguish pre-access cancellation, an exact inspected prefix
+with already-durable cleanup, cancellation before mutation, and cancellation after a durable write. The
+observable owner publishes only current complete snapshots while retaining every durable commit. The affected
+seven-suite selection passed 55 tests, the repository gate passed, and the fresh-derived serial unfiltered gate
+passed 1,827 tests in 214 suites. Remaining direct paths, real-volume evidence, broader Develop
+persistence/view decomposition, and manual or external gates remain incomplete.
+([validation](plan-status-roster-library-persistence-continuation-2026-08-31.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -710,6 +721,14 @@ state, cancels superseded requests, and applies only the latest result. The prio
 flat lists and preserve-existing policy for structured trees remains intact. Lower-priority direct paths and the
 real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-quick-list-routing-continuation-2026-08-31.md))
+
+**Roster-library persistence follow-up (2026-08-31):** reusable Teams-library enumeration, coordinated reads
+and writes, tombstone retention/cleanup, corrupt backup, conflict resolution, verified deletion, and remote
+reload now run on a serialized actor. MainActor owns only the observable snapshot, request identity, durable
+commit publication, and self-write stamps. Loads report complete or exact cancelled-prefix evidence; mutations
+distinguish cancellation before commit from cancellation observed after durability. Other lower-priority direct
+paths and the real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-roster-library-persistence-continuation-2026-08-31.md))
 
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.

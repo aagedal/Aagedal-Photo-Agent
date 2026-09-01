@@ -68,6 +68,9 @@ struct TeamsLibraryContent: View {
             editor
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .task {
+            await store.loadIfNeeded()
+        }
     }
 
     private var teamList: some View {
@@ -149,11 +152,13 @@ struct TeamsLibraryContent: View {
         .alert("Delete this team?", isPresented: $showDeleteAlert) {
             Button("Delete", role: .destructive) {
                 if let id = selection {
-                    do {
-                        try store.delete(id: id)
-                        selection = nil
-                    } catch {
-                        deletionErrorMessage = error.localizedDescription
+                    Task { @MainActor in
+                        do {
+                            try await store.delete(id: id)
+                            selection = nil
+                        } catch {
+                            deletionErrorMessage = error.localizedDescription
+                        }
                     }
                 }
             }
@@ -190,8 +195,10 @@ struct TeamsLibraryContent: View {
         searchText = ""
         sportFilter = nil
         let team = Team(name: "", primaryColor: TeamKitColor(r: 0.2, g: 0.4, b: 0.9))
-        try? store.upsert(team)
-        selection = team.id
+        Task { @MainActor in
+            try? await store.upsert(team)
+            selection = team.id
+        }
     }
 }
 
@@ -332,7 +339,7 @@ private struct TeamEditorView: View {
             exportRequestID = nil
             textImportTask?.cancel()
             textImportRequestID = nil
-            save()
+            saveIfPresent()
         }
         .sheet(isPresented: $showPaste) {
             pasteSheet
@@ -452,15 +459,23 @@ private struct TeamEditorView: View {
         saveTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            save()
+            await save()
         }
     }
 
-    private func save() {
+    private func save() async {
         // If the team was deleted while its editor was on screen, onDisappear
         // would otherwise resurrect it via upsert. Skip when it's already gone.
         guard store.team(byID: teamID) != nil else { return }
-        try? store.upsert(currentTeam())
+        try? await store.upsert(currentTeam())
+    }
+
+    private func saveIfPresent() {
+        guard store.team(byID: teamID) != nil else { return }
+        let team = currentTeam()
+        Task { @MainActor in
+            try? await store.upsert(team)
+        }
     }
 
     /// Build a `Team` from the current editor state, dropping unnamed rows and

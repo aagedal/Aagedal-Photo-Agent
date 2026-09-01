@@ -295,6 +295,20 @@ durable action. The affected four-suite selection passed 34 tests, and the seria
 tests in 212 suites. Broader persistence lifetime/cancellation and view decomposition, filesystem measurement,
 manual, and external gates keep the audit at 63 of 75.
 
+The latest [Settings keyword-archive inventory continuation](plan-status-settings-keyword-archive-inventory-continuation-2026-08-31.md)
+records actor-owned Quick List and structured-keyword archive inventory, ordered immutable counts, exact
+cancelled-prefix evidence, and export-request reuse without a second file read. The affected 11-suite selection
+passed 65 tests and the serial unfiltered gate passed 1,822 tests in 213 suites. Remaining direct paths,
+real-volume evidence, broader Develop persistence/view decomposition, and manual/external gates keep the audit
+at 63 of 75.
+
+The subsequent [roster-library persistence continuation](plan-status-roster-library-persistence-continuation-2026-08-31.md)
+records serialized Teams-library scans, coordinated record reads/writes, tombstone cleanup, corrupt backup,
+iCloud conflict resolution, verified deletion, and complete remote reloads. The affected seven-suite selection
+passed 55 tests, the repository gate passed, and the fresh-derived serial unfiltered gate passed 1,827 tests in
+214 suites. Remaining lower-priority direct paths, real-volume and Thread Performance Checker evidence, broader
+Develop persistence/view decomposition, and manual/external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

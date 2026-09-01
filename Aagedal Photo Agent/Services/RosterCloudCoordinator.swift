@@ -137,7 +137,7 @@ final class RosterCloudCoordinator {
             self.pendingChanges.removeAll()
             guard !changes.isEmpty else { return }
             logger.info("Remote Teams change detected — applying \(changes.count, privacy: .public) file change(s)")
-            RosterStore.shared.applyRemoteChanges(changes)
+            await RosterStore.shared.applyRemoteChanges(changes)
         }
     }
 }

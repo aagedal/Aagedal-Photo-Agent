@@ -2309,7 +2309,11 @@ final class FaceRecognitionViewModel {
               let player = team.roster.first(where: { $0.number == playerNumber }) else { return false }
         do {
             let result = try addGroupToKnownPeople(groupID: groupID, name: player.playerName)
-            try RosterStore.shared.linkKnownPerson(result.personID, toPlayerNumber: playerNumber, teamID: teamID)
+            try await RosterStore.shared.linkKnownPerson(
+                result.personID,
+                toPlayerNumber: playerNumber,
+                teamID: teamID
+            )
             nameGroup(groupID, name: player.playerName, knownPersonID: result.personID)
             knownPersonMatchByGroup[groupID] = (personID: result.personID, confidence: 1.0)
             if var match = matchRoster, let updatedTeam = RosterStore.shared.team(byID: teamID) {

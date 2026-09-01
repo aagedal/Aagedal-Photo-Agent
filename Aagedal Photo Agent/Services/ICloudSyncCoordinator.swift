@@ -339,7 +339,9 @@ final class ICloudSyncCoordinator {
                 try mergeCopy(from: cloud, to: RosterStore.localTeamsDirectory)
                 UserDefaults.standard.set(false, forKey: UserDefaultsKeys.teamsICloudEnabled)
             }
-            RosterStore.shared.reloadAfterStorageChange()
+            Task { @MainActor in
+                await RosterStore.shared.reloadAfterStorageChange()
+            }
         } catch {
             lastError = "Could not reconcile the Teams library with iCloud Drive: \(error.localizedDescription)"
         }
