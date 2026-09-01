@@ -153,6 +153,7 @@ final class ImportViewModel {
     @ObservationIgnored private var voiceMemoScanTask: Task<Void, Never>?
     @ObservationIgnored private var voiceMemoAssociationTask: Task<Void, Never>?
     @ObservationIgnored private var dateScanTask: Task<Void, Never>?
+    @ObservationIgnored private var dateScanRequestID = UUID()
     @ObservationIgnored private var folderSuggestionTask: Task<Void, Never>?
     @ObservationIgnored private var folderSuggestionRequestID = UUID()
     @ObservationIgnored private var importTask: Task<Void, Never>?
@@ -162,6 +163,8 @@ final class ImportViewModel {
     @ObservationIgnored private let sourceDiscoveryService = ImportSourceDiscoveryService()
     @ObservationIgnored private let preflightService: ImportPreflightService
     @ObservationIgnored private let directoryService: ExportDirectoryService
+    @ObservationIgnored private let captureDateScanService: ImportCaptureDateScanService
+    @ObservationIgnored private let folderSuggestionService: ImportFolderSuggestionService
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
     init(
@@ -169,13 +172,17 @@ final class ImportViewModel {
         writeEngine: any MetadataWriteEngine,
         activityHistory: ActivityHistoryStore? = nil,
         preflightService: ImportPreflightService = ImportPreflightService(),
-        directoryService: ExportDirectoryService = .shared
+        directoryService: ExportDirectoryService = .shared,
+        captureDateScanService: ImportCaptureDateScanService = ImportCaptureDateScanService(),
+        folderSuggestionService: ImportFolderSuggestionService = ImportFolderSuggestionService()
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
         self.activityHistory = activityHistory
         self.preflightService = preflightService
         self.directoryService = directoryService
+        self.captureDateScanService = captureDateScanService
+        self.folderSuggestionService = folderSuggestionService
 
         // Restore last-used verification mode (default = .on).
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importVerificationMode),
@@ -335,6 +342,8 @@ final class ImportViewModel {
         // (and any manual shoot splits); clear them so the list never shows stale
         // entries from the old folder.
         dateScanTask?.cancel()
+        dateScanRequestID = UUID()
+        isScanningDates = false
         importPhase = .scanning
         sourceFiles = []
         sourceVoiceMemoFiles = []
@@ -604,23 +613,17 @@ final class ImportViewModel {
         previousImportFolderSuggestions = [:]
         isScanningPreviousImportFolders = true
 
-        folderSuggestionTask = Task.detached(priority: .utility) { [weak self] in
-            var suggestions: [String: [URL]] = [:]
-            for date in dates.sorted() {
-                guard !Task.isCancelled else { return }
-                let folders = PreviousImportDetector.matchingDateFolders(
-                    named: date,
-                    under: destinationBaseURL
-                )
-                if !folders.isEmpty {
-                    suggestions[date] = folders
-                }
-            }
-
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard let self, self.folderSuggestionRequestID == requestID else { return }
-                self.previousImportFolderSuggestions = suggestions
+        folderSuggestionTask = Task(priority: .utility) { [weak self, folderSuggestionService] in
+            let result = await folderSuggestionService.suggestions(
+                for: dates,
+                under: destinationBaseURL
+            )
+            guard let self, self.folderSuggestionRequestID == requestID else { return }
+            switch result {
+            case .complete(let evidence):
+                self.previousImportFolderSuggestions = evidence.suggestions
+                self.isScanningPreviousImportFolders = false
+            case .cancelled:
                 self.isScanningPreviousImportFolders = false
             }
         }
@@ -1593,108 +1596,34 @@ final class ImportViewModel {
 
     func scanCaptureDates() {
         let files = filteredSourceFiles
+        dateScanTask?.cancel()
+        let requestID = UUID()
+        dateScanRequestID = requestID
         guard !files.isEmpty else {
             dateGroups = []
+            isScanningDates = false
             return
         }
 
-        dateScanTask?.cancel()
         isScanningDates = true
 
-        dateScanTask = Task.detached(priority: .userInitiated) {
-            // Read DateTimeOriginal for all files via SwiftExif. SwiftExif reads
-            // are in-process and fast; a serial scan is simpler and avoids
-            // shipping non-Sendable captures across a task group.
-            //
-            // We keep the full timestamp (not just the date) so the UI can order
-            // files within a day, sample evenly-spread thumbnails, and detect
-            // shoot-boundary gaps. The date-only key still drives grouping.
-            var fileToDateKey: [URL: String] = [:]
-            var fileToTimestamp: [URL: Date] = [:]
-            let fm = FileManager.default
-
-            // EXIF DateTimeOriginal is local wall-clock with no zone. Anchor parsing
-            // to UTC + POSIX locale so ordering and gap math are stable (no DST skew).
-            // These times are only used relatively and for HH:mm display, never stored.
-            let exifParser = DateFormatter()
-            exifParser.locale = Locale(identifier: "en_US_POSIX")
-            exifParser.timeZone = TimeZone(secondsFromGMT: 0)
-            exifParser.dateFormat = "yyyy:MM:dd HH:mm:ss"
-
-            let keyFromDate = DateFormatter()
-            keyFromDate.locale = Locale(identifier: "en_US_POSIX")
-            keyFromDate.timeZone = TimeZone(secondsFromGMT: 0)
-            keyFromDate.dateFormat = "yyyy:MM:dd"
-
-            for file in files {
-                if Task.isCancelled { return }
-                if let metadata = try? ImageMetadata.read(from: file),
-                   let dateStr = metadata.exif?.dateTimeOriginal {
-                    fileToDateKey[file] = String(dateStr.prefix(10))
-                    if let parsed = exifParser.date(from: dateStr) {
-                        fileToTimestamp[file] = parsed
-                    }
-                    continue
+        dateScanTask = Task(priority: .userInitiated) { [weak self, captureDateScanService] in
+            let result = await captureDateScanService.scan(files)
+            guard let self, self.dateScanRequestID == requestID else { return }
+            switch result {
+            case .complete(let evidence):
+                var currentGroups = evidence.groups.map { group in
+                    ImportDateGroup(
+                        dateString: group.dateString,
+                        folderName: group.folderDate,
+                        shootFolderName: nil,
+                        isIncluded: true,
+                        yearFolder: group.yearFolder,
+                        monthFolder: group.monthFolder,
+                        files: group.files,
+                        captureTimes: group.captureTimes
+                    )
                 }
-                if let attrs = try? fm.attributesOfItem(atPath: file.path),
-                   let modDate = attrs[.modificationDate] as? Date {
-                    fileToDateKey[file] = keyFromDate.string(from: modDate)
-                    fileToTimestamp[file] = modDate
-                }
-            }
-
-            // Group files by date
-            var grouped: [String: [URL]] = [:]
-            for file in files {
-                let dateKey = fileToDateKey[file] ?? "Unknown Date"
-                grouped[dateKey, default: []].append(file)
-            }
-
-            // Build groups sorted by date
-            let folderDateFormatter = DateFormatter()
-            folderDateFormatter.dateFormat = "yyyy-MM-dd"
-            let yearFormatter = DateFormatter()
-            yearFormatter.dateFormat = "yyyy"
-            let monthFormatter = DateFormatter()
-            monthFormatter.dateFormat = "MM"
-            let parseDateFormatter = DateFormatter()
-            parseDateFormatter.dateFormat = "yyyy:MM:dd"
-
-            let groups = grouped.keys.sorted().map { dateKey -> ImportDateGroup in
-                let folderDate: String
-                let yearFolder: String?
-                let monthFolder: String?
-                if let parsed = parseDateFormatter.date(from: dateKey) {
-                    folderDate = folderDateFormatter.string(from: parsed)
-                    yearFolder = yearFormatter.string(from: parsed)
-                    monthFolder = monthFormatter.string(from: parsed)
-                } else {
-                    folderDate = dateKey
-                    yearFolder = nil
-                    monthFolder = nil
-                }
-                let groupFiles = grouped[dateKey] ?? []
-                var groupTimes: [URL: Date] = [:]
-                for file in groupFiles {
-                    if let t = fileToTimestamp[file] { groupTimes[file] = t }
-                }
-                return ImportDateGroup(
-                    dateString: dateKey,
-                    // The current import title is applied on the main actor when the
-                    // scan finishes. This placeholder prevents a title typed during
-                    // a long-running scan from being replaced by the stale start value.
-                    folderName: folderDate,
-                    shootFolderName: nil,
-                    isIncluded: true,
-                    yearFolder: yearFolder,
-                    monthFolder: monthFolder,
-                    files: groupFiles,
-                    captureTimes: groupTimes
-                )
-            }
-
-            await MainActor.run {
-                var currentGroups = groups
                 for index in currentGroups.indices {
                     currentGroups[index].folderName = self.autoLeafName(
                         for: currentGroups[index],
@@ -1704,6 +1633,8 @@ final class ImportViewModel {
                 self.dateGroups = currentGroups
                 self.isScanningDates = false
                 self.refreshPreviousImportFolderSuggestions()
+            case .cancelled:
+                self.isScanningDates = false
             }
         }
     }
@@ -2146,6 +2077,7 @@ final class ImportViewModel {
         isScanningDates = false
         scanTask?.cancel()
         dateScanTask?.cancel()
+        dateScanRequestID = UUID()
         voiceMemoScanTask?.cancel()
         voiceMemoAssociationTask?.cancel()
         folderSuggestionTask?.cancel()

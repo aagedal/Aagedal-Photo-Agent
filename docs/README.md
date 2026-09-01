@@ -396,6 +396,13 @@ completing the three remaining Phase 4.1 checklist items. Four new characterizat
 selection, the repository gate, and the serial unfiltered 1,875-test run all passed. The audit is now 66 of 75,
 with nine filesystem/performance, manual, and external release gates remaining.
 
+The latest [Import metadata-scan continuation](plan-status-import-metadata-scan-continuation-2026-09-01.md)
+records serialized actor ownership of Import capture-date reads and same-date destination-folder discovery.
+Immutable complete/cancelled-prefix evidence, request identities, and source/reset cancellation prevent obsolete
+work from publishing. Eight new characterizations, the adjacent 38-test selection, the repository gate, and the
+serial unfiltered 1,883-test run passed. The audit remains 66 of 75 while Phase 3.1's remaining direct-path
+inventory and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

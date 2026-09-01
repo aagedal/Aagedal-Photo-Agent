@@ -51,6 +51,7 @@
 		AB2900000000000000000002 /* C2PASigningImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2900000000000000000001 /* C2PASigningImportTests.swift */; };
 		AB3000000000000000000002 /* C2PAValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3000000000000000000001 /* C2PAValidationTests.swift */; };
 		AB3100000000000000000002 /* ImportViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3100000000000000000001 /* ImportViewModelTests.swift */; };
+		F3A100000000000000000002 /* ImportMetadataScanServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */; };
 		AB3200000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3200000000000000000001 /* PresetVariableInterpolatorTests.swift */; };
 		AB3300000000000000000002 /* RejectMoveServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3300000000000000000001 /* RejectMoveServiceTests.swift */; };
 		AB3400000000000000000002 /* RecentFoldersStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3400000000000000000001 /* RecentFoldersStoreTests.swift */; };
@@ -193,6 +194,7 @@
 		AB2900000000000000000001 /* C2PASigningImportTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = C2PASigningImportTests.swift; sourceTree = "<group>"; };
 		AB3000000000000000000001 /* C2PAValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = C2PAValidationTests.swift; sourceTree = "<group>"; };
 		AB3100000000000000000001 /* ImportViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportViewModelTests.swift; sourceTree = "<group>"; };
+		F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportMetadataScanServiceTests.swift; sourceTree = "<group>"; };
 		AB3200000000000000000001 /* PresetVariableInterpolatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PresetVariableInterpolatorTests.swift; sourceTree = "<group>"; };
 		AB3300000000000000000001 /* RejectMoveServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RejectMoveServiceTests.swift; sourceTree = "<group>"; };
 		AB3400000000000000000001 /* RecentFoldersStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RecentFoldersStoreTests.swift; sourceTree = "<group>"; };
@@ -363,6 +365,7 @@
 				AB2900000000000000000001 /* C2PASigningImportTests.swift */,
 				AB3000000000000000000001 /* C2PAValidationTests.swift */,
 				AB3100000000000000000001 /* ImportViewModelTests.swift */,
+				F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */,
 				AB3200000000000000000001 /* PresetVariableInterpolatorTests.swift */,
 				AB3300000000000000000001 /* RejectMoveServiceTests.swift */,
 				AB3400000000000000000001 /* RecentFoldersStoreTests.swift */,
@@ -666,6 +669,7 @@
 				AB2900000000000000000002 /* C2PASigningImportTests.swift in Sources */,
 				AB3000000000000000000002 /* C2PAValidationTests.swift in Sources */,
 				AB3100000000000000000002 /* ImportViewModelTests.swift in Sources */,
+				F3A100000000000000000002 /* ImportMetadataScanServiceTests.swift in Sources */,
 				AB3200000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */,
 				AB3300000000000000000002 /* RejectMoveServiceTests.swift in Sources */,
 				AB3400000000000000000002 /* RecentFoldersStoreTests.swift in Sources */,

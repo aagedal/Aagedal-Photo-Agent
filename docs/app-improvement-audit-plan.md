@@ -368,6 +368,14 @@ lifecycle/test-seam, and characterization substeps are complete. Four new charac
 37-test selection, the repository gate, and the serial unfiltered 1,875-test run all passed.
 ([validation](plan-status-develop-metal-session-phase-completion-2026-09-01.md))
 
+**Import metadata-scan continuation (2026-09-01):** the checklist remains 66 of 75. Import capture-date reads
+and same-date destination-folder discovery now cross injected serialized actors instead of ad-hoc detached tasks.
+Both boundaries return immutable complete or exact cancelled-prefix evidence, check cancellation around each
+non-preemptible read, and let the MainActor publish only the current request. Eight new characterizations, the
+adjacent 38-test selection, the repository gate, and the serial unfiltered 1,883-test run all passed. Other
+lower-priority direct paths and the real-volume/signpost/Thread Performance Checker evidence keep all three broad
+Phase 3.1 substeps open. ([validation](plan-status-import-metadata-scan-continuation-2026-09-01.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -829,6 +837,16 @@ commit publication, and self-write stamps. Loads report complete or exact cancel
 distinguish cancellation before commit from cancellation observed after durability. Other lower-priority direct
 paths and the real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-roster-library-persistence-continuation-2026-08-31.md))
+
+**Import metadata-scan follow-up (2026-09-01):** capture-date EXIF/modification-time discovery and existing
+same-date destination-folder suggestions now run on injected serialized actors. Each actor returns immutable
+complete or exact cancelled-prefix evidence and samples cancellation before and after every synchronous read.
+`ImportViewModel` owns request identity, cancels replacement/source-reset work, rejects late evidence, and applies
+the current import title only after a complete capture scan. Eight focused characterizations cover grouping,
+fallbacks, actor serialization, post-read cancellation, replacement rejection, and source delegation. The
+adjacent five-suite selection passed 38 tests, the repository gate passed, and the serial unfiltered gate passed
+1,883 tests in 221 suites. Other lower-priority direct paths and real-volume signpost/Thread Performance Checker
+evidence remain open. ([validation](plan-status-import-metadata-scan-continuation-2026-09-01.md))
 
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
