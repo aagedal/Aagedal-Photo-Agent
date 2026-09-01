@@ -1686,15 +1686,22 @@ struct DevelopPreviewSessionCoordinatorTests {
         )
 
         #expect(source.contains(
-            "metalPipeline?.beginSourceImageSession(previewSession.sessionGeneration)"
+            "metalSession.beginImageSession(previewSession.sessionGeneration)"
         ))
         #expect(source.contains(
-            "pipeline.beginSourceImagePublication(previewSession.sessionGeneration)"
+            "metalSession.replaceSourceImagePublication(previewSession.sessionGeneration)"
         ))
         #expect(source.contains("sessionGeneration: previewSessionGeneration"))
         #expect(source.contains("let didPublishTexture = await Task.detached"))
         #expect(source.contains("guard didPublishTexture, !Task.isCancelled"))
-        #expect(source.contains("previewSession.endImageSession()\n        metalPipeline?.clearSourceTexture()"))
+        #expect(source.contains("metalSession.endImageSession()"))
+        #expect(!source.contains(
+            "metalPipeline?.beginSourceImageSession(previewSession.sessionGeneration)"
+        ))
+        #expect(!source.contains(
+            "pipeline.beginSourceImagePublication(previewSession.sessionGeneration)"
+        ))
+        #expect(!source.contains("metalPipeline?.clearSourceTexture()"))
         #expect(!source.contains("pipeline.uploadSourceImage(ci, exifOrientation:"))
         #expect(!source.contains("pipeline.uploadSourceImage(rawCIImage, exifOrientation:"))
         #expect(!source.contains("pipeline.uploadSourceImage(fullResCIImage, exifOrientation:"))
@@ -2088,6 +2095,24 @@ struct DevelopCleanFeedPublicationCoordinatorTests {
 @Suite("Develop preview render coordinator")
 @MainActor
 struct DevelopPreviewRenderCoordinatorTests {
+    @Test("edit workspace has one materialized preview publication owner")
+    func sourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("@State private var previewRender = DevelopPreviewRenderCoordinator()"))
+        #expect(source.contains("isShowingBefore ? sourceImage : previewRender.previewImage"))
+        #expect(!source.contains("@State private var previewCIImage"))
+        #expect(!source.contains("previewCIImage ="))
+    }
+
     @Test("a replacement request rejects a cancelled renderer's late publication")
     func replacementRejectsLatePublication() async throws {
         let coordinator = DevelopPreviewRenderCoordinator()
@@ -2223,6 +2248,101 @@ struct DevelopPreviewRenderCoordinatorTests {
             }
             try await Task.sleep(for: .milliseconds(10))
         }
+    }
+}
+
+@Suite("Develop Metal preview session coordinator")
+@MainActor
+struct DevelopMetalPreviewSessionCoordinatorTests {
+    @Test("workspace and image generations share one explicit lifecycle")
+    func lifecycle() {
+        var factoryCalls = 0
+        let coordinator = DevelopMetalPreviewSessionCoordinator(
+            pipelineFactory: {
+                factoryCalls += 1
+                return nil
+            },
+            warmup: { _ in }
+        )
+
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(17)
+
+        #expect(coordinator.isWorkspaceActive)
+        #expect(coordinator.sourceSessionGeneration == 17)
+        #expect(factoryCalls == 1)
+
+        coordinator.replaceSourceImagePublication(18)
+        #expect(coordinator.sourceSessionGeneration == 18)
+
+        coordinator.endImageSession()
+        #expect(coordinator.sourceSessionGeneration == nil)
+
+        coordinator.endWorkspace()
+        #expect(!coordinator.isWorkspaceActive)
+        #expect(!coordinator.isContinuousRenderingRequested)
+    }
+
+    @Test("inactive sessions reject image and continuous-render publication")
+    func inactiveSessionRejectsPublication() {
+        let coordinator = DevelopMetalPreviewSessionCoordinator(
+            pipelineFactory: { nil },
+            warmup: { _ in }
+        )
+
+        coordinator.beginImageSession(9)
+        coordinator.replaceSourceImagePublication(10)
+        coordinator.startContinuousRendering()
+
+        #expect(coordinator.sourceSessionGeneration == nil)
+        #expect(!coordinator.isContinuousRenderingRequested)
+    }
+
+    @Test("continuous rendering is coordinator-owned and teardown is idempotent")
+    func continuousRenderingLifecycle() {
+        let coordinator = DevelopMetalPreviewSessionCoordinator(
+            pipelineFactory: { nil },
+            warmup: { _ in }
+        )
+        coordinator.beginWorkspace()
+
+        coordinator.startContinuousRendering()
+        #expect(coordinator.isContinuousRenderingRequested)
+
+        coordinator.stopContinuousRendering()
+        #expect(!coordinator.isContinuousRenderingRequested)
+
+        coordinator.endWorkspace()
+        coordinator.endWorkspace()
+        #expect(!coordinator.isWorkspaceActive)
+        #expect(coordinator.sourceSessionGeneration == nil)
+    }
+
+    @Test("edit workspace delegates raw Metal preview ownership")
+    func sourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(
+            "@State private var metalSession = DevelopMetalPreviewSessionCoordinator()"
+        ))
+        #expect(source.contains("metalSession.beginWorkspace()"))
+        #expect(source.contains("metalSession.beginImageSession(previewSession.sessionGeneration)"))
+        #expect(source.contains(
+            "metalSession.replaceSourceImagePublication(previewSession.sessionGeneration)"
+        ))
+        #expect(source.contains("metalSession.endImageSession()"))
+        #expect(source.contains("metalSession.endWorkspace()"))
+        #expect(!source.contains("@State private var metalPipeline:"))
+        #expect(!source.contains("@State private var metalCoordinator"))
+        #expect(!source.contains("MetalLivePreviewPipeline(device:"))
     }
 }
 

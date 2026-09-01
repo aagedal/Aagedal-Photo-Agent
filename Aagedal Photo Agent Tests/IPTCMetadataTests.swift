@@ -5088,7 +5088,9 @@ struct BrushRasterizationTests {
         // engine and bypass compile-time isolation.
         for (relativePath, facadeDeclaration) in [
             ("Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift",
-             "@State private var metalPipeline: MetalLivePreviewPipeline?"),
+             "private var metalPipeline: MetalLivePreviewPipeline?"),
+            ("Aagedal Photo Agent/ViewModels/DevelopMetalPreviewSessionCoordinator.swift",
+             "private(set) var pipeline: MetalLivePreviewPipeline?"),
             ("Aagedal Photo Agent/Views/Browser/MetalPreviewView.swift",
              "var metalPipeline: MetalLivePreviewPipeline?"),
             ("Aagedal Photo Agent/Views/Browser/MetalScopeView.swift",

@@ -161,14 +161,12 @@ struct EditWorkspaceView: View {
     /// Owns deterministic preview dispatch and gamut policy. Concrete pixel work and publication
     /// remain injected into their existing lifecycle coordinators below.
     private let renderPolicy = DevelopRenderPolicyCoordinator()
-    @State private var previewCIImage: CIImage?
     @State private var previewRender = DevelopPreviewRenderCoordinator()
     /// Owns the Develop workspace's Clean Feed mirror, crop-freeze policy, and publication.
     @State private var cleanFeedPublication = DevelopCleanFeedPublicationCoordinator()
     @State private var developComparison = DevelopComparisonRenderCoordinator()
     @State private var developVersionSession = DevelopVersionSessionCoordinator()
     @State private var developVersionDialogs = DevelopVersionDialogsCoordinator()
-    @State private var developVersionFlushRegistrationID: UUID?
     /// Owns source URL/orientation, loading progress, and the tasks for preview decode/render,
     /// adjacent-RAW precaching, and lazy full-resolution zoom upgrades. One image-session boundary
     /// prevents previous-image work from publishing stale pixels or retaining decode graphs.
@@ -176,13 +174,14 @@ struct EditWorkspaceView: View {
     /// Owns the single-export task, durable-result publication, cancellation, and warning/error
     /// presentation for this workspace lifetime. Render policy remains injected below.
     @State private var exportSession = DevelopExportSessionCoordinator()
-    @State private var copyPasteFeedback: String?
     /// Owns crop-tool presentation, image-scoped pointer state, preview zoom, aspect selection,
     /// and the value-mutation seam used before the view commits XMP or a named Develop version.
     @State private var cropSession = DevelopCropSessionCoordinator()
     /// Owns local AppKit monitor registration and transient hover/Space-hand navigation state.
     /// Event interpretation remains at the view boundary.
     @State private var workspaceInput = DevelopWorkspaceInputCoordinator()
+    /// Owns workspace-wide named-version flush registration and replaceable transient notices.
+    @State private var workspaceSession = DevelopWorkspaceSessionCoordinator()
     /// Owns press-and-hold before/Develop/current-layer comparisons and projects them onto
     /// render-only settings copies so transient keyboard state never mutates editable metadata.
     @State private var transientPreview = DevelopTransientPreviewCoordinator()
@@ -193,8 +192,9 @@ struct EditWorkspaceView: View {
     /// refreshed on exit. Durable XMP/version writes remain at this view boundary.
     @State private var persistenceSession = DevelopPersistenceSessionCoordinator()
     @State private var watermarkStore = WatermarkStore.shared
-    @State private var metalPipeline: MetalLivePreviewPipeline?
-    @State private var metalCoordinator = MetalPreviewView.Coordinator()
+    /// Owns the live Metal pipeline, AppKit render coordinator, source-generation reset, warmup,
+    /// continuous rendering, and workspace teardown.
+    @State private var metalSession = DevelopMetalPreviewSessionCoordinator()
     /// Owns image-scoped layer selection plus rename/reorder/delete policy. The coordinator
     /// returns persistence intent; this view remains the XMP/named-version write boundary.
     @State private var layerSession = DevelopLayerSessionCoordinator()
@@ -252,6 +252,16 @@ struct EditWorkspaceView: View {
 
     private var selectedImageURL: URL? {
         selectedImage?.url
+    }
+
+    // Transitional read aliases keep render call sites compact while `metalSession` remains the
+    // sole owner of both live Metal preview objects.
+    private var metalPipeline: MetalLivePreviewPipeline? {
+        metalSession.pipeline
+    }
+
+    private var metalCoordinator: MetalPreviewView.Coordinator {
+        metalSession.viewCoordinator
     }
 
     // Transitional aliases keep the layer UI compact while `DevelopLayerSessionCoordinator`
@@ -367,10 +377,11 @@ struct EditWorkspaceView: View {
         isShowingBefore ? sourceImage : previewRender.previewImage
     }
 
-    /// CIImage for MetalPreviewView — shows unedited source during "before" toggle,
-    /// or the lazy CIFilter chain output during editing.
+    /// The SwiftUI fallback always receives the retained source. Interactive adjustments are
+    /// published by the Metal pipeline, while materialized AppKit preview output has the single
+    /// `previewRender` owner above.
     private var displayCIImage: CIImage? {
-        (isShowingBefore || isMutingDevelop) ? sourceCIImage : (previewCIImage ?? sourceCIImage)
+        sourceCIImage
     }
 
     /// Image dimensions for layout calculations (stable across edits since filters
@@ -780,7 +791,7 @@ struct EditWorkspaceView: View {
                 userInfo: ["isDragging": isDragging]
             )
             if isDragging, !wasDragging {
-                metalCoordinator.startContinuousRendering()
+                metalSession.startContinuousRendering()
                 cleanFeedPublication.setContinuousRendering(true, controller: cleanFeedController)
             }
             if wasDragging, !isDragging {
@@ -789,7 +800,7 @@ struct EditWorkspaceView: View {
                 if let angle = cropDrag.angle {
                     updateCropAngle(angle, commit: false)
                 }
-                metalCoordinator.stopContinuousRendering()
+                metalSession.stopContinuousRendering()
                 cleanFeedPublication.setContinuousRendering(false, controller: cleanFeedController)
                 renderPreview()
             }
@@ -837,7 +848,7 @@ struct EditWorkspaceView: View {
                 aiMaskSelection.adoptTarget(target)
             }
             syncMaskOverlayTarget()
-            metalCoordinator.requestRedraw()
+            metalSession.requestRedraw()
         }
         .onChange(of: cleanFeedController.isEnabled) { _, enabled in
             // Feed toggled while editing — connect/disconnect the live mirror.
@@ -895,7 +906,7 @@ struct EditWorkspaceView: View {
             }
         }
         .overlay(alignment: .top) {
-            if let feedback = copyPasteFeedback {
+            if let feedback = workspaceSession.notice {
                 Text(feedback)
                     .font(.caption.bold())
                     .foregroundStyle(.white)
@@ -906,7 +917,7 @@ struct EditWorkspaceView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: copyPasteFeedback)
+        .animation(.easeInOut(duration: 0.2), value: workspaceSession.notice)
         .modifier(DevelopPrimaryPersistenceFailureAlertModifier(
             persistenceSession: persistenceSession
         ))
@@ -2571,7 +2582,7 @@ struct EditWorkspaceView: View {
         cropSession.endImageSession()
         whiteBalanceSession.endImageSession()
         maskInteraction.endImageSession()
-        metalPipeline?.maskMattePreviewMaskID = nil
+        metalSession.endImageSession()
         developComparison.close()
         NSCursor.arrow.set()
 
@@ -2584,14 +2595,10 @@ struct EditWorkspaceView: View {
             syncCameraRawToImageFile()
         }
 
-        if let registrationID = developVersionFlushRegistrationID {
-            DevelopVersionFlushCoordinator.shared.unregister(registrationID)
-            developVersionFlushRegistrationID = nil
-        }
+        workspaceSession.endWorkspace()
         developVersionSession.reset()
         aiMaskSelection.endImageSession()
         previewSession.endImageSession()
-        metalPipeline?.clearSourceTexture()
         previewRender.endImageSession()
 
         // Tear down the clean-feed publication session; browse mode resumes driving the feed.
@@ -2601,8 +2608,7 @@ struct EditWorkspaceView: View {
         )
 
         metadataViewModel.isInEditView = false
-        metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
-        metalCoordinator.stopContinuousRendering()
+        metalSession.endWorkspace()
         scopeViewModel.metalScopeCoordinator?.stopContinuousRendering()
         scopeViewModel.clearMetal()
         interactiveRender.endWorkspace()
@@ -2669,16 +2675,7 @@ struct EditWorkspaceView: View {
         exportSession.beginWorkspaceSession()
         workspaceInput.beginWorkspace()
         ensureSingleSelection()
-        if metalPipeline == nil {
-            let device = MetalPreviewView.Coordinator.device
-            let queue = MetalPreviewView.Coordinator.commandQueue
-            metalPipeline = MetalLivePreviewPipeline(device: device, commandQueue: queue)
-            if let pipeline = metalPipeline {
-                Task.detached(priority: .low) {
-                    pipeline.warmupCIContext()
-                }
-            }
-        }
+        metalSession.beginWorkspace()
         if let pipeline = metalPipeline {
             scopeViewModel.metalEditPipeline = pipeline
             if scopeViewModel.metalScopePipeline == nil {
@@ -2697,10 +2694,9 @@ struct EditWorkspaceView: View {
 
         updateGamutClipMode()
         metadataViewModel.isInEditView = true
-        developVersionFlushRegistrationID = DevelopVersionFlushCoordinator.shared.register {
-            reason in
+        workspaceSession.beginWorkspace(flushHandler: { reason in
             await flushActiveDevelopVersion(reason: reason)
-        }
+        })
         loadDevelopVersionCatalog()
         editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
         loadSelectedImagePreview()
@@ -2789,17 +2785,12 @@ struct EditWorkspaceView: View {
             selectedImageURL,
             orientation: selectedImageURL == nil ? nil : selectedImageOrientation
         )
-        metalPipeline?.beginSourceImageSession(previewSession.sessionGeneration)
+        metalSession.beginImageSession(previewSession.sessionGeneration)
         previewRender.beginImageSession()
         interactiveRender.beginImageSession()
         whiteBalanceSession.beginImageSession(selectedImageURL)
         aiMaskSelection.beginImageSession(selectedImageURL)
         maskInteraction.beginImageSession(selectedImageURL)
-        metalPipeline?.maskMattePreviewMaskID = nil
-        metalPipeline?.asShotTemperature = 6500
-        metalPipeline?.asShotTint = 0
-        previewCIImage = nil
-        metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         cropSession.beginImageSession(selectedImageURL, isCropEnabled: isCropEnabled)
         resetEditZoom()
         guard let selectedImageURL else {
@@ -3220,7 +3211,7 @@ struct EditWorkspaceView: View {
             renderPreview()
             return
         }
-        pipeline.beginSourceImagePublication(previewSession.sessionGeneration)
+        metalSession.replaceSourceImagePublication(previewSession.sessionGeneration)
         previewTask?.cancel()
         let previewSessionGeneration = previewSession.sessionGeneration
         previewTask = Task {
@@ -3329,7 +3320,7 @@ struct EditWorkspaceView: View {
             target: scopeViewModel.targetGamut
         )
         pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
-        metalCoordinator.requestRedraw()
+        metalSession.requestRedraw()
     }
 
     /// Returns the transient coordinator's render-only projection of the editable settings. The
@@ -3398,7 +3389,6 @@ struct EditWorkspaceView: View {
         ))
 
         guard decision.workPath != .sourceFallback, let sourceCIImage else {
-            previewCIImage = nil
             previewRender.publishFallback(
                 sourceImage,
                 isHDR: isHDREnabled,
@@ -4172,7 +4162,7 @@ struct EditWorkspaceView: View {
                     settings.whiteBalance = "Custom"
                     settings.temperature = Int(kelvin.rounded())
                     pipeline.updateParams(settingsForPipeline(settings))
-                    metalCoordinator.requestRedraw()
+                    metalSession.requestRedraw()
                 }
             },
             onReset: {
@@ -4371,7 +4361,7 @@ struct EditWorkspaceView: View {
                         mutator(&settings, dragValue)
                         if let pipeline = metalPipeline, pipeline.hasSourceTexture {
                             pipeline.updateParams(settingsForPipeline(settings))
-                            metalCoordinator.requestRedraw()
+                            metalSession.requestRedraw()
                         }
                     }
                 },
@@ -4545,7 +4535,7 @@ struct EditWorkspaceView: View {
                         var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
                         settings.toneCurve = dragCurve
                         pipeline.updateParams(settingsForPipeline(settings))
-                        metalCoordinator.requestRedraw()
+                        metalSession.requestRedraw()
                     }
                 },
                 onEditingChanged: { editing in
@@ -4580,7 +4570,7 @@ struct EditWorkspaceView: View {
                         var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
                         settings.hslAdjustments = adjustments.isEmpty ? nil : adjustments
                         pipeline.updateParams(settingsForPipeline(settings))
-                        metalCoordinator.requestRedraw()
+                        metalSession.requestRedraw()
                     }
                 },
                 onDragEnded: {
@@ -6763,7 +6753,7 @@ struct EditWorkspaceView: View {
         selectedLayer = .mask(targetID)
         if let pipeline = metalPipeline, pipeline.hasSourceTexture {
             pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
-            metalCoordinator.requestRedraw()
+            metalSession.requestRedraw()
         }
         syncMaskOverlayTarget()
         commitEditAdjustments()
@@ -6924,7 +6914,7 @@ struct EditWorkspaceView: View {
             ? selectedMaskID : nil
         if pipeline.hasSourceTexture {
             pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
-            metalCoordinator.requestRedraw()
+            metalSession.requestRedraw()
         }
     }
 
@@ -6938,7 +6928,7 @@ struct EditWorkspaceView: View {
         pipeline.maskMattePreviewMaskID = nextID
         if pipeline.hasSourceTexture {
             pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
-            metalCoordinator.requestRedraw()
+            metalSession.requestRedraw()
         }
     }
 
@@ -6949,7 +6939,7 @@ struct EditWorkspaceView: View {
         pipeline.maskMattePreviewMaskID = nil
         if pipeline.hasSourceTexture {
             pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
-            metalCoordinator.requestRedraw()
+            metalSession.requestRedraw()
         }
     }
 
@@ -6959,7 +6949,7 @@ struct EditWorkspaceView: View {
     private func liveBrushStamp(_ stroke: BrushStroke, layer: Int) {
         guard let pipeline = metalPipeline, pipeline.hasSourceTexture else { return }
         pipeline.stampBrushStroke(stroke, layer: layer)
-        metalCoordinator.requestRedraw()
+        metalSession.requestRedraw()
     }
 
     /// `onStrokeEnded`: append the finished gesture to the selected brush mask as ONE undo entry,
@@ -6976,7 +6966,7 @@ struct EditWorkspaceView: View {
         }
         if let pipeline = metalPipeline, pipeline.hasSourceTexture {
             pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
-            metalCoordinator.requestRedraw()
+            metalSession.requestRedraw()
         }
         commitEditAdjustments()
     }
@@ -7520,11 +7510,7 @@ struct EditWorkspaceView: View {
     }
 
     private func showCopyPasteFeedback(_ message: String) {
-        copyPasteFeedback = message
-        Task {
-            try? await Task.sleep(for: .seconds(1))
-            copyPasteFeedback = nil
-        }
+        workspaceSession.showNotice(message)
     }
 
     private func isTextFieldActive() -> Bool {
@@ -7580,7 +7566,7 @@ struct EditWorkspaceView: View {
             )
             metalCoordinator.viewportOrigin = .zero
             metalCoordinator.viewportSize = SIMD2<Float>(1, 1)
-            metalCoordinator.requestRedraw()
+            metalSession.requestRedraw()
             return
         }
 
@@ -7602,7 +7588,7 @@ struct EditWorkspaceView: View {
             let viewport = editCropViewport(in: previewPaneFrame.size, imageSize: imageSize)
             metalCoordinator.viewportOrigin = viewport.origin
             metalCoordinator.viewportSize = viewport.size
-            metalCoordinator.requestRedraw()
+            metalSession.requestRedraw()
             return
         }
 
@@ -7617,7 +7603,7 @@ struct EditWorkspaceView: View {
         let viewport = currentViewport
         metalCoordinator.viewportOrigin = viewport.origin
         metalCoordinator.viewportSize = viewport.size
-        metalCoordinator.requestRedraw()
+        metalSession.requestRedraw()
     }
 
     private func resetEditZoom() {

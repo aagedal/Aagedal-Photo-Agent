@@ -380,6 +380,22 @@ materialization, comparison refresh, scope crop, and gamut mapping. Five new cha
 36-test selection, the repository gate, and the serial unfiltered 1,865-test run all passed. Further Develop view
 decomposition, filesystem measurement, and manual/external gates keep the audit at 63 of 75.
 
+The latest [Develop workspace-session continuation](plan-status-develop-workspace-session-continuation-2026-09-01.md)
+records coordinator ownership of the workspace-lifetime named-version flush registration and replaceable transient
+notices, including exact-token teardown and protection against an older timer clearing newer feedback. It also
+removes a redundant Core Image preview-publication slot so the existing preview coordinator is the single
+materialized AppKit owner. Six new characterizations, the adjacent 42-test selection, the repository gate, and
+the serial unfiltered 1,871-test run all passed. Further Develop view decomposition, filesystem measurement, and
+manual/external gates keep the audit at 63 of 75.
+
+The latest [Develop Metal-session and Phase 4.1 completion](plan-status-develop-metal-session-phase-completion-2026-09-01.md)
+records ownership of live-preview pipeline creation and warmup, the Metal view coordinator, workspace/source
+generations, continuous rendering, redraw routing, image-scoped GPU reset, and teardown. A current Develop state
+inventory confirms every major feature has a named owner and independently characterized lifecycle/test seam,
+completing the three remaining Phase 4.1 checklist items. Four new characterizations, the adjacent 37-test
+selection, the repository gate, and the serial unfiltered 1,875-test run all passed. The audit is now 66 of 75,
+with nine filesystem/performance, manual, and external release gates remaining.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

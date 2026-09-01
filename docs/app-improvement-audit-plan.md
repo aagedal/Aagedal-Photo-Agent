@@ -349,6 +349,25 @@ and the serial unfiltered gate passed 1,860 tests in 217 suites. Broader render 
 filesystem measurement, and manual/external gates remain open.
 ([validation](plan-status-develop-layer-geometry-continuation-2026-09-01.md))
 
+**Develop workspace-session continuation (2026-09-01):** the checklist remains 63 of 75. A dedicated
+`DevelopWorkspaceSessionCoordinator` now owns the workspace-lifetime named-version flush registration and
+replaceable copy/paste/template notice task, including exact-token teardown and identity-gated rejection of an
+older timer clearing newer feedback. The view also removes a redundant Core Image preview-publication slot that
+was never assigned a rendered value, leaving `DevelopPreviewRenderCoordinator` as the single materialized AppKit
+preview owner. Six new characterizations, the adjacent 42-test selection, the repository gate, and the serial
+unfiltered 1,871-test run all passed. Further Develop view decomposition, filesystem measurement, and
+manual/external gates keep the audit at 63 of 75.
+([validation](plan-status-develop-workspace-session-continuation-2026-09-01.md))
+
+**Develop Metal-session and Phase 4.1 completion (2026-09-01):** the checklist advances to 66 of 75, with nine
+remaining. `DevelopMetalPreviewSessionCoordinator` now owns live-preview pipeline creation and warmup, its view
+coordinator, workspace/source generations, continuous-render state, redraw routing, and teardown. A current
+`EditWorkspaceView` inventory finds every major Develop feature state behind a named, characterized owner; its
+remaining direct state is presentation, layout, focus, or nested-helper state. The three open Phase 4.1 ownership,
+lifecycle/test-seam, and characterization substeps are complete. Four new characterizations, the adjacent
+37-test selection, the repository gate, and the serial unfiltered 1,875-test run all passed.
+([validation](plan-status-develop-metal-session-phase-completion-2026-09-01.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -867,13 +886,16 @@ longer restart Deadline capture; slow high-resolution loads offer actionable rec
 
 **Plan:**
 
-- [ ] Extract state-owning coordinators such as Develop session, versions, masks, and rendering; do not merely
+- [x] Extract state-owning coordinators such as Develop session, versions, masks, and rendering; do not merely
   move extensions between files.
-- [ ] Define lifecycle, cancellation, persistence, and test seams for each coordinator.
+  ([validation](plan-status-develop-metal-session-phase-completion-2026-09-01.md), 2026-09-01)
+- [x] Define lifecycle, cancellation, persistence, and test seams for each coordinator.
+  ([validation](plan-status-develop-metal-session-phase-completion-2026-09-01.md), 2026-09-01)
 - [x] Replace the global command notification bus incrementally with a typed, scene-scoped `AppCommand`
   router; retain NotificationCenter for genuine system/process broadcasts.
   ([validation](plan-status-follow-up-validation-2026-08-29.md#scene-ui-handoff-router-completion), 2026-08-29)
-- [ ] Add a characterization test before each extraction and keep UI behavior unchanged.
+- [x] Add a characterization test before each extraction and keep UI behavior unchanged.
+  ([validation](plan-status-develop-metal-session-phase-completion-2026-09-01.md), 2026-09-01)
 
 **Command-router follow-ups (2026-08-27 through 2026-08-29):** Open Folder/Open Recent, rating/label, core
 export, previous/next-image, clockwise/counterclockwise rotation, Rename, Duplicate, Reset All Edits, Remove
@@ -1080,6 +1102,27 @@ Metal mutation, preview/scope materialization, comparison, and Clean Feed public
 lifecycle owners. Five new characterizations and an adjacent 36-test selection preserve the dispatch behavior;
 the serial unfiltered gate passes 1,865 tests in 218 suites. Further view decomposition keeps the broad Phase 4.1
 gate open. ([validation](plan-status-develop-render-policy-continuation-2026-09-01.md))
+
+**Workspace-session ownership follow-up (2026-09-01):** `DevelopWorkspaceSessionCoordinator` now owns the
+workspace-lifetime named-version flush registration and replaceable copy/paste/template notice task. Repeated
+appearance replaces the complete session, disappearance unregisters the exact token, and timer cancellation plus
+request identity prevents an older notice task from clearing newer feedback. The unused `previewCIImage` slot is
+also removed, leaving `DevelopPreviewRenderCoordinator` as the single materialized AppKit preview owner while
+Metal retains interactive rendering. Six new characterizations and an adjacent 42-test selection passed; the
+repository gate passed, and the serial unfiltered gate passed 1,871 tests in 219 suites. Further view
+decomposition keeps the broad Phase 4.1 gate open.
+([validation](plan-status-develop-workspace-session-continuation-2026-09-01.md))
+
+**Metal-preview session and Phase 4.1 completion follow-up (2026-09-01):**
+`DevelopMetalPreviewSessionCoordinator` now owns the live-preview pipeline and view coordinator, lazy creation and
+warmup, workspace/source generations, image-scoped GPU reset, continuous rendering, redraw routing, and teardown.
+The expensive pipeline remains reusable across appearances while inactive publication starts and redraws are
+rejected and replaced source generations cannot publish stale textures.
+The current view inventory places every major Develop feature state behind a named coordinator or store; only
+presentation, layout, focus, and nested-helper cursor state remain direct. Four new characterizations and updated
+source contracts cover this final extraction; the adjacent selection passed 37 tests, the repository gate passed,
+and the serial unfiltered gate passed 1,875 tests in 220 suites. All Phase 4.1 checklist items and its exit gate are
+now satisfied. ([validation](plan-status-develop-metal-session-phase-completion-2026-09-01.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.
