@@ -963,6 +963,9 @@ struct EditWorkspaceView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: copyPasteFeedback)
+        .modifier(DevelopBatchPersistenceFailureAlertModifier(
+            persistenceSession: persistenceSession
+        ))
         .modifier(EditWorkspaceExportFailureAlertModifier(exportSession: exportSession))
         .modifier(DevelopVersionDialogsModifier(
             dialogs: developVersionDialogs,
@@ -7622,9 +7625,12 @@ struct EditWorkspaceView: View {
             }
         }
 
-        // Write camera raw settings to XMP in the image files
+        // Write camera raw settings to XMP in the image files. The coordinator owns the task and
+        // active-session result publication; the write itself remains on the existing serialized
+        // metadata engine and is allowed to finish if the workspace closes mid-transaction.
         let targetURLs = Array(urls)
-        Task {
+        let writeEngine = browserViewModel.writeEngine
+        persistenceSession.scheduleBatchPersistence {
             // Simple crs scalar fields via the canonical serializer (ACR-style signed
             // ints, +exposure) — shared with the export engine and MetadataViewModel so
             // the three write paths can't drift. Crop is written separately below
@@ -7669,30 +7675,25 @@ struct EditWorkspaceView: View {
                 anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil
             )
 
-            do {
-                if let crop, cropIsAngled {
-                    // crs crop fields use Adobe's un-rotated-frame corner encoding,
-                    // which depends on each target's pixel aspect — encode per
-                    // aspect group instead of one shared field set.
-                    var aspectGroups: [Double?: [URL]] = [:]
-                    for url in targetURLs {
-                        aspectGroups[ImagePixelAspect.aspect(at: url), default: []].append(url)
-                    }
-                    for (aspect, urls) in aspectGroups {
-                        var groupFields = fields
-                        groupFields.merge(cropFields(for: crop.encodedForACR(aspect: aspect))) { _, new in new }
-                        try await browserViewModel.writeEngine.writeFields(
-                            groupFields, to: urls, structuredData: structuredData
-                        )
-                    }
-                } else {
-                    try await browserViewModel.writeEngine.writeFields(
-                        fields, to: targetURLs, structuredData: structuredData
+            if let crop, cropIsAngled {
+                // crs crop fields use Adobe's un-rotated-frame corner encoding,
+                // which depends on each target's pixel aspect — encode per
+                // aspect group instead of one shared field set.
+                var aspectGroups: [Double?: [URL]] = [:]
+                for url in targetURLs {
+                    aspectGroups[ImagePixelAspect.aspect(at: url), default: []].append(url)
+                }
+                for (aspect, urls) in aspectGroups {
+                    var groupFields = fields
+                    groupFields.merge(cropFields(for: crop.encodedForACR(aspect: aspect))) { _, new in new }
+                    try await writeEngine.writeFields(
+                        groupFields, to: urls, structuredData: structuredData
                     )
                 }
-            } catch {
-                Logger(subsystem: "com.aagedal.photo-agent", category: "EditWorkspaceView")
-                    .error("Failed to paste camera raw to multiple images: \(error.localizedDescription)")
+            } else {
+                try await writeEngine.writeFields(
+                    fields, to: targetURLs, structuredData: structuredData
+                )
             }
         }
 
@@ -8426,6 +8427,23 @@ private struct EditWorkspaceExportFailureAlertModifier: ViewModifier {
             Button("OK", role: .cancel) { exportSession.dismissError() }
         } message: {
             Text(exportSession.errorMessage ?? "The export could not be completed.")
+        }
+    }
+}
+
+private struct DevelopBatchPersistenceFailureAlertModifier: ViewModifier {
+    @Bindable var persistenceSession: DevelopPersistenceSessionCoordinator
+
+    func body(content: Content) -> some View {
+        content.alert("Paste Develop Settings Failed", isPresented: Binding(
+            get: { persistenceSession.batchPersistenceErrorMessage != nil },
+            set: { if !$0 { persistenceSession.dismissBatchPersistenceResult() } }
+        )) {
+            Button("OK") {
+                persistenceSession.dismissBatchPersistenceResult()
+            }
+        } message: {
+            Text(persistenceSession.batchPersistenceErrorMessage ?? "The settings could not be written.")
         }
     }
 }

@@ -167,6 +167,70 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(coordinator.activeImageURL == second)
     }
 
+    @Test("batch persistence owns success failure and explicit cancellation")
+    func batchPersistenceOutcomes() async throws {
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+
+        let successID = try #require(coordinator.scheduleBatchPersistence {})
+        try await waitForBatchPersistence(coordinator)
+        #expect(coordinator.latestBatchPersistenceOutcome == .succeeded(requestID: successID))
+        #expect(!coordinator.isBatchPersistenceInProgress)
+
+        let failureID = try #require(coordinator.scheduleBatchPersistence {
+            throw BatchPersistenceTestError.writeFailed
+        })
+        try await waitForBatchPersistence(coordinator)
+        #expect(coordinator.latestBatchPersistenceOutcome == .failed(
+            requestID: failureID,
+            message: BatchPersistenceTestError.writeFailed.localizedDescription
+        ))
+        #expect(coordinator.batchPersistenceErrorMessage == "Simulated batch write failure")
+
+        let cancelledID = try #require(coordinator.scheduleBatchPersistence {
+            try await Task.sleep(for: .seconds(10))
+        })
+        coordinator.cancelBatchPersistence(requestID: cancelledID)
+        try await waitForBatchPersistence(coordinator)
+        #expect(coordinator.latestBatchPersistenceOutcome == .cancelled(requestID: cancelledID))
+    }
+
+    @Test("only the latest overlapping batch request publishes a result")
+    func latestBatchResultWins() async throws {
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+
+        _ = coordinator.scheduleBatchPersistence {
+            try? await Task.sleep(for: .milliseconds(60))
+            throw BatchPersistenceTestError.lateFailure
+        }
+        let latestID = try #require(coordinator.scheduleBatchPersistence {
+            try await Task.sleep(for: .milliseconds(10))
+        })
+
+        try await waitForBatchPersistence(coordinator)
+        #expect(coordinator.latestBatchPersistenceOutcome == .succeeded(requestID: latestID))
+        #expect(coordinator.batchPersistenceErrorMessage == nil)
+    }
+
+    @Test("workspace teardown preserves durable work and rejects its late UI result")
+    func teardownPreservesBatchWrite() async throws {
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        var didFinishDurableWork = false
+
+        _ = coordinator.scheduleBatchPersistence {
+            try await Task.sleep(for: .milliseconds(20))
+            didFinishDurableWork = true
+        }
+        _ = coordinator.endWorkspace()
+
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(didFinishDurableWork)
+        #expect(coordinator.latestBatchPersistenceOutcome == nil)
+        #expect(coordinator.pendingBatchPersistenceCount == 0)
+    }
+
     @Test("edit workspace delegates undo and dirty URL ownership")
     func editWorkspaceSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -187,8 +251,32 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(source.contains("persistenceSession.endWorkspace()"))
         #expect(source.contains("persistenceSession.recordMutation("))
         #expect(source.contains("persistenceSession.recordPublishedSettingsChange(for: url)"))
+        #expect(source.contains("persistenceSession.scheduleBatchPersistence"))
+        #expect(source.contains("persistenceSession.batchPersistenceErrorMessage"))
         #expect(source.components(separatedBy: "persistenceSession.performPersistence(").count == 3)
+        #expect(!source.contains("Failed to paste camera raw to multiple images"))
         #expect(!source.contains("@State private var editUndoManager"))
         #expect(!source.contains("@State private var editedURLsThisSession"))
+    }
+
+    private func waitForBatchPersistence(
+        _ coordinator: DevelopPersistenceSessionCoordinator
+    ) async throws {
+        for _ in 0..<100 where coordinator.isBatchPersistenceInProgress {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(!coordinator.isBatchPersistenceInProgress)
+    }
+}
+
+private enum BatchPersistenceTestError: LocalizedError {
+    case writeFailed
+    case lateFailure
+
+    var errorDescription: String? {
+        switch self {
+        case .writeFailed: "Simulated batch write failure"
+        case .lateFailure: "Late batch write failure"
+        }
     }
 }

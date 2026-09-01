@@ -317,6 +317,15 @@ exactly once while the view retains concrete event interpretation. The adjacent 
 persistence lifetime and remaining source/render/geometry view decomposition, filesystem measurement, manual,
 and external gates keep the audit at 63 of 75.
 
+The latest [Develop batch-persistence continuation](plan-status-develop-batch-persistence-continuation-2026-09-01.md)
+records coordinator-owned multi-image Develop paste tasks, request identity, pending state, explicit cancellation,
+and observable outcomes. Every durable write is retained, only the newest overlapping request may publish UI
+state, and workspace teardown suppresses late results without cancelling a possibly partially committed write.
+Failures now appear in an active-workspace alert. The focused suite passed 10 tests, the adjacent four-suite
+selection passed 44 tests, the repository gate passed, and the fresh-derived serial unfiltered gate passed 1,835
+tests in 215 suites. Primary XMP/history task ownership, remaining source/render/geometry view decomposition,
+filesystem measurement, and manual/external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

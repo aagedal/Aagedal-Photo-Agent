@@ -277,6 +277,17 @@ and the serial unfiltered gate passed 1,832 tests in 215 suites. Broader persist
 publication, geometry/view decomposition, filesystem measurement, and manual/external gates remain open.
 ([validation](plan-status-develop-input-session-continuation-2026-09-01.md))
 
+**Develop batch-persistence continuation (2026-09-01):** the checklist remains 63 of 75. The existing
+`DevelopPersistenceSessionCoordinator` now owns the multi-image Develop paste task, request identity, pending
+count, explicit cancellation, and success/failure publication. Overlapping writes retain every durable operation
+but only the latest request may publish UI state. Workspace teardown deliberately lets a possibly partially
+committed write finish while rotating session identity to reject its late result, and write failures now surface
+in an active-workspace alert instead of only a log entry. The focused suite passed 10 tests, the adjacent
+four-suite selection passed 44 tests, the repository gate passed, and the fresh-derived serial unfiltered gate
+passed 1,835 tests in 215 suites. Primary XMP/history task ownership, remaining source/render/geometry view
+decomposition, filesystem measurement, and manual/external gates remain open.
+([validation](plan-status-develop-batch-persistence-continuation-2026-09-01.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -934,6 +945,17 @@ monitor tokens through one lifecycle boundary; `EditWorkspaceView` retains event
 Five focused characterizations and the adjacent 41-test regression preserve established input behavior. Broader
 persistence task lifetime and remaining source/render/geometry view decomposition stay open.
 ([validation](plan-status-develop-input-session-continuation-2026-09-01.md))
+
+**Batch-persistence state-owner follow-up (2026-09-01):** `DevelopPersistenceSessionCoordinator` now owns
+multi-image Develop paste task creation, request identity, pending state, explicit cancellation, and observable
+success/failure publication. Concurrent requests continue across the existing serialized metadata engine, with
+latest-request-wins UI publication and retained durable completion for older requests. Ending the workspace does
+not cancel a write that may already be partially committed; it rotates session identity so that completion cannot
+publish into a closed or replacement workspace. XMP serialization, crop aspect grouping, and structured-data
+semantics remain at their existing injected boundaries. Three new lifecycle characterizations plus updated source
+contracts cover success, failure, cancellation, overlap, teardown, and view routing. Primary XMP/history task
+ownership and remaining source/render/geometry view decomposition stay open.
+([validation](plan-status-develop-batch-persistence-continuation-2026-09-01.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

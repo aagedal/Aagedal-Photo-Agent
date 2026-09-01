@@ -10,6 +10,16 @@ nonisolated enum DevelopPersistenceIntent: Equatable, Sendable {
     case commitNamedVersion
 }
 
+/// The observable result of the most recently requested batch settings write.
+///
+/// Request identity is part of the value so callers and tests can distinguish an explicit
+/// cancellation from a failure without coupling themselves to the coordinator's task storage.
+nonisolated enum DevelopBatchPersistenceOutcome: Equatable, Sendable {
+    case succeeded(requestID: UUID)
+    case cancelled(requestID: UUID)
+    case failed(requestID: UUID, message: String)
+}
+
 /// Owns the Develop workspace's undo lifetime and the set of image previews invalidated by edits.
 ///
 /// The coordinator deliberately does not write XMP or named-version JSON. Those operations remain
@@ -21,21 +31,36 @@ nonisolated enum DevelopPersistenceIntent: Equatable, Sendable {
 final class DevelopPersistenceSessionCoordinator {
     typealias SettingsPublisher = @MainActor (CameraRawSettings?, Bool) -> Void
     typealias PersistenceAction = @MainActor () -> Void
+    typealias BatchPersistenceOperation = @MainActor () async throws -> Void
 
     private(set) var isWorkspaceActive = false
     private(set) var activeImageURL: URL?
     private(set) var editedURLs: Set<URL> = []
+    private(set) var pendingBatchPersistenceCount = 0
+    private(set) var latestBatchPersistenceOutcome: DevelopBatchPersistenceOutcome?
 
     @ObservationIgnored private(set) var undoManager = UndoManager()
     @ObservationIgnored private var imageSessionID = UUID()
+    @ObservationIgnored private var workspaceSessionID = UUID()
+    @ObservationIgnored private var latestBatchPersistenceRequestID: UUID?
+    @ObservationIgnored private var batchPersistenceTasks: [UUID: Task<Void, Never>] = [:]
 
     var canUndo: Bool { undoManager.canUndo }
     var canRedo: Bool { undoManager.canRedo }
+    var isBatchPersistenceInProgress: Bool { pendingBatchPersistenceCount > 0 }
+    var batchPersistenceErrorMessage: String? {
+        guard case .failed(_, let message) = latestBatchPersistenceOutcome else { return nil }
+        return message
+    }
 
     /// Starts a clean workspace lifetime. Session-local cache refresh evidence never leaks from a
     /// previous presentation of the editor.
     func beginWorkspace() {
         invalidateImageSession()
+        workspaceSessionID = UUID()
+        latestBatchPersistenceRequestID = nil
+        pendingBatchPersistenceCount = 0
+        latestBatchPersistenceOutcome = nil
         editedURLs.removeAll(keepingCapacity: true)
         activeImageURL = nil
         isWorkspaceActive = true
@@ -61,10 +86,74 @@ final class DevelopPersistenceSessionCoordinator {
     func endWorkspace() -> Set<URL> {
         let result = editedURLs
         invalidateImageSession()
+        // A batch paste may already have crossed into a durable sidecar transaction. Do not
+        // cancel that work when the view disappears: finishing it preserves the in-memory edit
+        // the user already saw. Rotating the session identity suppresses late UI publication.
+        workspaceSessionID = UUID()
+        latestBatchPersistenceRequestID = nil
+        pendingBatchPersistenceCount = 0
+        latestBatchPersistenceOutcome = nil
         activeImageURL = nil
         editedURLs.removeAll(keepingCapacity: false)
         isWorkspaceActive = false
         return result
+    }
+
+    /// Starts a batch settings write owned by this workspace coordinator.
+    ///
+    /// Multiple durable writes are allowed to finish because the injected metadata engine owns
+    /// per-file transaction serialization. Only the latest request may publish UI state, while
+    /// every request remains explicitly cancellable by identity. Workspace teardown intentionally
+    /// lets already-started durable work finish and rejects its late result instead of cancelling
+    /// a possibly partially committed batch.
+    @discardableResult
+    func scheduleBatchPersistence(
+        operation: @escaping BatchPersistenceOperation
+    ) -> UUID? {
+        guard isWorkspaceActive else { return nil }
+
+        let requestID = UUID()
+        let sessionID = workspaceSessionID
+        latestBatchPersistenceRequestID = requestID
+        latestBatchPersistenceOutcome = nil
+        pendingBatchPersistenceCount += 1
+
+        let task = Task { @MainActor [weak self] in
+            do {
+                try await operation()
+                try Task.checkCancellation()
+                self?.finishBatchPersistence(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    outcome: .succeeded(requestID: requestID)
+                )
+            } catch is CancellationError {
+                self?.finishBatchPersistence(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    outcome: .cancelled(requestID: requestID)
+                )
+            } catch {
+                self?.finishBatchPersistence(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    outcome: .failed(
+                        requestID: requestID,
+                        message: error.localizedDescription
+                    )
+                )
+            }
+        }
+        batchPersistenceTasks[requestID] = task
+        return requestID
+    }
+
+    func cancelBatchPersistence(requestID: UUID) {
+        batchPersistenceTasks[requestID]?.cancel()
+    }
+
+    func dismissBatchPersistenceResult() {
+        latestBatchPersistenceOutcome = nil
     }
 
     /// Records an already-published in-memory settings change for the active image. This is
@@ -194,5 +283,17 @@ final class DevelopPersistenceSessionCoordinator {
     private func invalidateImageSession() {
         imageSessionID = UUID()
         undoManager.removeAllActions()
+    }
+
+    private func finishBatchPersistence(
+        requestID: UUID,
+        sessionID: UUID,
+        outcome: DevelopBatchPersistenceOutcome
+    ) {
+        batchPersistenceTasks[requestID] = nil
+        guard isWorkspaceActive, workspaceSessionID == sessionID else { return }
+        pendingBatchPersistenceCount = max(0, pendingBatchPersistenceCount - 1)
+        guard latestBatchPersistenceRequestID == requestID else { return }
+        latestBatchPersistenceOutcome = outcome
     }
 }
