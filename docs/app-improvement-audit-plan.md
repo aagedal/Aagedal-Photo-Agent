@@ -1072,6 +1072,15 @@ passed, and the serial unfiltered gate passed 1,860 tests in 217 suites. Broader
 decomposition remain open.
 ([validation](plan-status-develop-layer-geometry-continuation-2026-09-01.md))
 
+**Render-policy ownership follow-up (2026-09-01):** `DevelopRenderPolicyCoordinator` now selects the exact
+missing-source fallback, interactive Metal-scope, throttled CPU-scope, crop-only Metal, or settled materialization
+path from one immutable input. The same decision owns comparison refresh, scope-crop synchronization, Metal
+parameter/redraw requirements, SDR/HDR display-gamut selection, and the clipping shader mapping. Concrete decode,
+Metal mutation, preview/scope materialization, comparison, and Clean Feed publication remain in their existing
+lifecycle owners. Five new characterizations and an adjacent 36-test selection preserve the dispatch behavior;
+the serial unfiltered gate passes 1,865 tests in 218 suites. Further view decomposition keeps the broad Phase 4.1
+gate open. ([validation](plan-status-develop-render-policy-continuation-2026-09-01.md))
+
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.
 

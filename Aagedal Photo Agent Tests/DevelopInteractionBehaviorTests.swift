@@ -2225,3 +2225,122 @@ struct DevelopPreviewRenderCoordinatorTests {
         }
     }
 }
+
+@Suite("Develop render policy coordinator")
+struct DevelopRenderPolicyCoordinatorTests {
+    private let coordinator = DevelopRenderPolicyCoordinator()
+
+    @Test("missing source publishes only the retained fallback")
+    func missingSourceUsesFallback() {
+        let decision = coordinator.decision(for: DevelopRenderPolicyInput(
+            hasSourceImage: false,
+            isSliderInteractionActive: false,
+            hasMetalScopePipeline: true,
+            hasMetalSourceTexture: true,
+            isCropInteractionActive: true,
+            isComparisonActive: true
+        ))
+
+        #expect(decision == DevelopRenderPolicyDecision(
+            workPath: .sourceFallback,
+            shouldScheduleComparison: false,
+            shouldUpdateScopeCrop: false,
+            shouldUpdateMetalPipeline: false
+        ))
+    }
+
+    @Test("interactive edits select Metal or throttled CPU scope without duplicate pipeline work")
+    func interactiveScopePolicy() {
+        let metal = coordinator.decision(for: DevelopRenderPolicyInput(
+            hasSourceImage: true,
+            isSliderInteractionActive: true,
+            hasMetalScopePipeline: true,
+            hasMetalSourceTexture: true,
+            isCropInteractionActive: false,
+            isComparisonActive: true
+        ))
+        let cpu = coordinator.decision(for: DevelopRenderPolicyInput(
+            hasSourceImage: true,
+            isSliderInteractionActive: true,
+            hasMetalScopePipeline: false,
+            hasMetalSourceTexture: true,
+            isCropInteractionActive: false,
+            isComparisonActive: false
+        ))
+
+        #expect(metal.workPath == .interactiveMetalScope)
+        #expect(metal.shouldScheduleComparison)
+        #expect(metal.shouldUpdateScopeCrop)
+        #expect(!metal.shouldUpdateMetalPipeline)
+        #expect(!metal.shouldRequestMetalScopeRedraw)
+        #expect(cpu.workPath == .interactiveCPUScope)
+        #expect(!cpu.shouldScheduleComparison)
+        #expect(!cpu.shouldUpdateMetalPipeline)
+    }
+
+    @Test("crop gestures retain Metal while settled edits materialize the preview")
+    func cropAndMaterializationPolicy() {
+        let crop = coordinator.decision(for: DevelopRenderPolicyInput(
+            hasSourceImage: true,
+            isSliderInteractionActive: false,
+            hasMetalScopePipeline: true,
+            hasMetalSourceTexture: true,
+            isCropInteractionActive: true,
+            isComparisonActive: false
+        ))
+        let settled = coordinator.decision(for: DevelopRenderPolicyInput(
+            hasSourceImage: true,
+            isSliderInteractionActive: false,
+            hasMetalScopePipeline: true,
+            hasMetalSourceTexture: false,
+            isCropInteractionActive: false,
+            isComparisonActive: true
+        ))
+
+        #expect(crop.workPath == .cropInteraction)
+        #expect(crop.shouldUpdateMetalPipeline)
+        #expect(crop.shouldRequestMetalScopeRedraw)
+        #expect(settled.workPath == .materializePreview)
+        #expect(settled.shouldScheduleComparison)
+        #expect(!settled.shouldUpdateMetalPipeline)
+    }
+
+    @Test("display and clipping gamut mappings remain exact")
+    func gamutPolicy() {
+        #expect(coordinator.displayGamut(
+            isHDR: false,
+            sdr: .adobeRGB,
+            hdr: .rec2020
+        ) == .adobeRGB)
+        #expect(coordinator.displayGamut(
+            isHDR: true,
+            sdr: .adobeRGB,
+            hdr: .rec2020
+        ) == .rec2020)
+        #expect(coordinator.gamutClipMode(isEnabled: false, target: .adobeRGB) == 0)
+        #expect(coordinator.gamutClipMode(isEnabled: true, target: .sRGB) == 1)
+        #expect(coordinator.gamutClipMode(isEnabled: true, target: .displayP3) == 2)
+        #expect(coordinator.gamutClipMode(isEnabled: true, target: .rec2020) == 3)
+        #expect(coordinator.gamutClipMode(isEnabled: true, target: .adobeRGB) == 4)
+    }
+
+    @Test("Develop view delegates render dispatch and gamut mapping")
+    func viewDelegationSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("private let renderPolicy = DevelopRenderPolicyCoordinator()"))
+        #expect(source.contains("let decision = renderPolicy.decision("))
+        #expect(source.contains("renderPolicy.displayGamut("))
+        #expect(source.contains("renderPolicy.gamutClipMode("))
+        #expect(!source.contains("switch scopeViewModel.targetGamut"))
+        #expect(!source.contains("if lockedCropImageRect != nil {"))
+    }
+}

@@ -158,6 +158,9 @@ struct EditWorkspaceView: View {
     /// Owns slider-interaction lifecycle, commit intent, and throttled CPU-scope publication.
     /// Pixel rendering, notifications, and durable writes remain injected at this view boundary.
     @State private var interactiveRender = DevelopInteractiveRenderCoordinator()
+    /// Owns deterministic preview dispatch and gamut policy. Concrete pixel work and publication
+    /// remain injected into their existing lifecycle coordinators below.
+    private let renderPolicy = DevelopRenderPolicyCoordinator()
     @State private var previewCIImage: CIImage?
     @State private var previewRender = DevelopPreviewRenderCoordinator()
     /// Owns the Develop workspace's Clean Feed mirror, crop-freeze policy, and publication.
@@ -3311,24 +3314,20 @@ struct EditWorkspaceView: View {
     }
 
     private func updateDisplayGamut() {
-        scopeViewModel.displayGamut = isHDREnabled
-            ? settingsViewModel.exportColorGamutHDR
-            : settingsViewModel.exportColorGamutSDR
+        scopeViewModel.displayGamut = renderPolicy.displayGamut(
+            isHDR: isHDREnabled,
+            sdr: settingsViewModel.exportColorGamutSDR,
+            hdr: settingsViewModel.exportColorGamutHDR
+        )
     }
 
     private func updateGamutClipMode() {
         updateDisplayGamut()
         guard let pipeline = metalPipeline else { return }
-        if scopeViewModel.showClippedGamut {
-            switch scopeViewModel.targetGamut {
-            case .sRGB:      pipeline.gamutClipMode = 1
-            case .displayP3: pipeline.gamutClipMode = 2
-            case .rec2020:   pipeline.gamutClipMode = 3
-            case .adobeRGB:  pipeline.gamutClipMode = 4
-            }
-        } else {
-            pipeline.gamutClipMode = 0
-        }
+        pipeline.gamutClipMode = renderPolicy.gamutClipMode(
+            isEnabled: scopeViewModel.showClippedGamut,
+            target: scopeViewModel.targetGamut
+        )
         pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
         metalCoordinator.requestRedraw()
     }
@@ -3389,7 +3388,16 @@ struct EditWorkspaceView: View {
         updateDisplayGamut()
         syncCleanFeed()
         let renderStart = ContinuousClock.now
-        guard let sourceCIImage else {
+        let decision = renderPolicy.decision(for: DevelopRenderPolicyInput(
+            hasSourceImage: sourceCIImage != nil,
+            isSliderInteractionActive: interactiveRender.isSliderInteractionActive,
+            hasMetalScopePipeline: scopeViewModel.metalScopePipeline != nil,
+            hasMetalSourceTexture: metalPipeline?.hasSourceTexture == true,
+            isCropInteractionActive: lockedCropImageRect != nil,
+            isComparisonActive: isDevelopComparisonActive
+        ))
+
+        guard decision.workPath != .sourceFallback, let sourceCIImage else {
             previewCIImage = nil
             previewRender.publishFallback(
                 sourceImage,
@@ -3411,12 +3419,13 @@ struct EditWorkspaceView: View {
             return settingsForPipeline(s)
         }()
 
-        if isDevelopComparisonActive {
+        if decision.shouldScheduleComparison {
             scheduleDevelopComparisonRender()
         }
 
         // Keep Metal scope coordinator's crop region up to date
-        if let coordinator = scopeViewModel.metalScopeCoordinator {
+        if decision.shouldUpdateScopeCrop,
+           let coordinator = scopeViewModel.metalScopeCoordinator {
             let crop = activeCrop
             coordinator.cropLeft = Float(crop.left)
             coordinator.cropTop = Float(crop.top)
@@ -3427,25 +3436,31 @@ struct EditWorkspaceView: View {
         // During drag: Metal update already handled by EditSlider.onDragValueChanged
         // (direct callback that bypasses SwiftUI body re-evaluation delay).
         // Only handle scope updates here.
-        if interactiveRender.isSliderInteractionActive {
+        switch decision.workPath {
+        case .interactiveMetalScope:
             let elapsed = ContinuousClock.now - renderStart
             editLog.debug("renderPreview: drag path (\(elapsed))")
-            // Metal scope renders automatically via continuous MTKView — skip CPU scope
-            if scopeViewModel.metalScopePipeline == nil {
-                updateScopeDuringDrag()
-            }
             return
+        case .interactiveCPUScope:
+            let elapsed = ContinuousClock.now - renderStart
+            editLog.debug("renderPreview: drag path (\(elapsed))")
+            updateScopeDuringDrag()
+            return
+        case .sourceFallback, .cropInteraction, .materializePreview:
+            break
         }
 
         // Full render: update Metal compute params + request redraw.
-        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+        if decision.shouldUpdateMetalPipeline, let pipeline = metalPipeline {
             pipeline.updateParams(settings)
             syncViewportToMetal()
             // Metal overlay is only used during active drags — SwiftUI handles static display
             pipeline.updateOverlayParams(geometry: nil, visible: false)
-            scopeViewModel.metalScopeCoordinator?.requestRedraw()
+            if decision.shouldRequestMetalScopeRedraw {
+                scopeViewModel.metalScopeCoordinator?.requestRedraw()
+            }
         }
-        if lockedCropImageRect != nil {
+        if decision.workPath == .cropInteraction {
             editLog.debug("renderPreview: crop interaction path (full-res Metal, skip CGImage)")
             return
         }

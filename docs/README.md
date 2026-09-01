@@ -374,6 +374,12 @@ seven-suite selection passed 56 tests; the repository gate passed, and the seria
 tests in 217 suites. Broader render policy/view decomposition, filesystem measurement, and manual/external gates
 keep the audit at 63 of 75.
 
+The subsequent [Develop render-policy continuation](plan-status-develop-render-policy-continuation-2026-09-01.md)
+records one immutable dispatch decision for source fallback, Metal/CPU interactive scopes, crop-only Metal, settled
+materialization, comparison refresh, scope crop, and gamut mapping. Five new characterizations, the adjacent
+36-test selection, the repository gate, and the serial unfiltered 1,865-test run all passed. Further Develop view
+decomposition, filesystem measurement, and manual/external gates keep the audit at 63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.
