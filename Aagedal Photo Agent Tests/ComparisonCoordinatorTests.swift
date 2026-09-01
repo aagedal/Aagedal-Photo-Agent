@@ -854,11 +854,25 @@ struct MetalPipelineTSANStressTests {
         }
 
         let initialImage = Self.makeImage(width: 192, height: 128, seed: 0)
-        preview.uploadSourceImage(initialImage)
+        preview.beginSourceImageSession(1)
+        #expect(preview.uploadSourceImage(initialImage, sessionGeneration: 1))
         preview.updateParams(Self.makeSettings(iteration: 0))
         #expect(preview.hasSourceTexture)
         #expect(cleanFeed.hasSourceTexture)
         #expect(preview.sourceTextureSize == cleanFeed.sourceTextureSize)
+
+        // Exercise the real editor/mirror publication boundary, not only its pure lock gate.
+        // Replacing the image clears both textures and an obsolete completed upload cannot restore
+        // either one; only the new generation may republish the shared source.
+        preview.beginSourceImageSession(2)
+        #expect(!preview.hasSourceTexture)
+        #expect(!cleanFeed.hasSourceTexture)
+        #expect(!preview.uploadSourceImage(initialImage, sessionGeneration: 1))
+        #expect(!preview.hasSourceTexture)
+        #expect(!cleanFeed.hasSourceTexture)
+        #expect(preview.uploadSourceImage(initialImage, sessionGeneration: 2))
+        #expect(preview.hasSourceTexture)
+        #expect(cleanFeed.hasSourceTexture)
 
         for iteration in 0..<iterationCount {
             // Start real export work on the shared serialized offscreen renderer. Constructing

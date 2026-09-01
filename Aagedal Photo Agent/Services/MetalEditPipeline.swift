@@ -515,6 +515,52 @@ nonisolated final class MTLTextureWrapper: @unchecked Sendable {
     }
 }
 
+/// Serializes source-texture replacement against image-session invalidation.
+///
+/// A source upload performs expensive Core Image and Metal work off the main actor. Cancelling
+/// its Swift task cannot stop a command buffer that has already been committed, so cooperative
+/// cancellation alone is not enough: an obsolete upload could otherwise publish after the user
+/// navigates away. The gate holds one generation lock across the final publication closure. A
+/// session transition either runs before that closure and rejects it, or runs afterwards and
+/// clears the just-published texture; stale pixels therefore cannot survive the transition.
+nonisolated final class MetalSourcePublicationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeGeneration: UInt64?
+
+    func beginSession(_ generation: UInt64, clearing: () -> Void) {
+        lock.withLock {
+            activeGeneration = generation
+            clearing()
+        }
+    }
+
+    /// Advances publication identity without clearing the last good texture. Used by an
+    /// in-memory rotation, where the old texture remains a valid fallback until its replacement
+    /// finishes but every upload started before the rotation must be rejected.
+    func replaceGeneration(_ generation: UInt64) {
+        lock.withLock { activeGeneration = generation }
+    }
+
+    @discardableResult
+    func publishIfCurrent(
+        sessionGeneration: UInt64,
+        publication: () -> Void
+    ) -> Bool {
+        lock.withLock {
+            guard activeGeneration == sessionGeneration else { return false }
+            publication()
+            return true
+        }
+    }
+
+    func invalidate(clearing: () -> Void) {
+        lock.withLock {
+            activeGeneration = nil
+            clearing()
+        }
+    }
+}
+
 /// Handles ALL edit operations via a unified shader: tonal adjustments through a 1D LUT
 /// (Exposure, Contrast, Blacks, Shadows, Highlights, Whites), plus vibrance, saturation,
 /// and white balance. The LUT is regenerated on every slider change (~microseconds).
@@ -841,6 +887,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     private let pipelineState: MTLComputePipelineState
 
     private let sourceState = SourceState()
+    private let sourcePublicationGate = MetalSourcePublicationGate()
     /// EXIF orientation baked into the source texture's pixels. Mask geometry
     /// arrives in the sensor (XMP) frame, so `updateParams` uses this to
     /// transform masks into the texture's display frame. Guarded by
@@ -1532,19 +1579,14 @@ final class MetalEditPipeline: @unchecked Sendable {
         commandBuffer.waitUntilCompleted()
     }
 
-    /// Renders the source CIImage to an MTLTexture. Call once per image load (not per frame).
-    /// `exifOrientation` is the orientation already baked into the CIImage's pixels —
-    /// used by `updateParams` to transform sensor-frame mask geometry to match.
-    nonisolated func uploadSourceImage(_ ciImage: CIImage, exifOrientation: Int = 1) {
+    /// Renders source pixels into a fully populated texture without publishing it. Publication is
+    /// a separate step so the live-preview facade can generation-gate the final state mutation.
+    nonisolated private func makeSourceTexture(_ ciImage: CIImage) -> MTLTexture? {
         let extent = ciImage.extent
-        guard extent.width > 0, extent.height > 0 else { return }
+        guard extent.width > 0, extent.height > 0 else { return nil }
 
         let width = Int(extent.width)
         let height = Int(extent.height)
-        // A foreground source transition is the boundary that permits adjacent-image work again
-        // after memory pressure. The live source itself is never treated as speculative.
-        speculativePrecacheGate.resume()
-
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float,
             width: width,
@@ -1555,7 +1597,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         desc.storageMode = .private
 
         guard let texture = device.makeTexture(descriptor: desc),
-              let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+              let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
 
         let destination = CIRenderDestination(
             width: width,
@@ -1580,15 +1622,45 @@ final class MetalEditPipeline: @unchecked Sendable {
                 at: .zero
             )
         } catch {
-            return
+            return nil
         }
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         Self.generateMipmaps(for: texture, commandQueue: commandQueue)
+        return texture
+    }
+
+    /// Renders the source CIImage to an MTLTexture. Call once per image load (not per frame).
+    /// `exifOrientation` is the orientation already baked into the CIImage's pixels —
+    /// used by `updateParams` to transform sensor-frame mask geometry to match.
+    ///
+    /// This unscoped entry remains for isolated pipeline callers. Interactive Develop uses the
+    /// generation-bearing overload below so navigation can invalidate an in-flight upload.
+    nonisolated func uploadSourceImage(_ ciImage: CIImage, exifOrientation: Int = 1) {
+        // Unscoped callers use the upload itself as their foreground-source boundary.
+        speculativePrecacheGate.resume()
+        guard let texture = makeSourceTexture(ciImage) else { return }
         setSourceTexture(texture, orientation: exifOrientation)
         // Share the same texture object with the clean-feed mirror (zero-copy).
         mirror?.setSourceTexture(texture, orientation: exifOrientation)
+    }
+
+    /// Publishes only when the image session that requested the upload is still active. The gate
+    /// covers both the editor and its Clean Feed mirror as one atomic publication boundary.
+    @discardableResult
+    nonisolated func uploadSourceImage(
+        _ ciImage: CIImage,
+        exifOrientation: Int = 1,
+        sessionGeneration: UInt64
+    ) -> Bool {
+        guard let texture = makeSourceTexture(ciImage) else { return false }
+        return sourcePublicationGate.publishIfCurrent(
+            sessionGeneration: sessionGeneration
+        ) { [self] in
+            setSourceTexture(texture, orientation: exifOrientation)
+            mirror?.setSourceTexture(texture, orientation: exifOrientation)
+        }
     }
 
     // MARK: - LUT Upload
@@ -3105,10 +3177,31 @@ final class MetalEditPipeline: @unchecked Sendable {
         metalPipelineLog.info("CIContext warmup complete (CITemperatureAndTint)")
     }
 
+    /// Starts an image-scoped publication lifetime and clears the previous editor/mirror texture
+    /// under the same lock consulted by worker uploads.
+    nonisolated func beginSourceImageSession(_ sessionGeneration: UInt64) {
+        preconditionOnStateExecutor()
+        // A foreground source transition permits adjacent-image work again after memory pressure.
+        // Resuming here, rather than inside texture construction, prevents a rejected stale upload
+        // from re-enabling speculative work for an obsolete image.
+        speculativePrecacheGate.resume()
+        sourcePublicationGate.beginSession(sessionGeneration) { [self] in
+            setSourceTexture(nil)
+            mirror?.setSourceTexture(nil)
+        }
+    }
+
+    nonisolated func beginSourceImagePublication(_ sessionGeneration: UInt64) {
+        preconditionOnStateExecutor()
+        sourcePublicationGate.replaceGeneration(sessionGeneration)
+    }
+
     nonisolated func clearSourceTexture() {
         preconditionOnStateExecutor()
-        setSourceTexture(nil)
-        mirror?.clearSourceTexture()
+        sourcePublicationGate.invalidate { [self] in
+            setSourceTexture(nil)
+            mirror?.setSourceTexture(nil)
+        }
     }
 
     /// Share this pipeline's current source texture with another pipeline (by
@@ -3818,6 +3911,12 @@ final class MetalLivePreviewPipeline {
         )
     }
     func clearSourceTexture() { engine.clearSourceTexture() }
+    func beginSourceImageSession(_ sessionGeneration: UInt64) {
+        engine.beginSourceImageSession(sessionGeneration)
+    }
+    func beginSourceImagePublication(_ sessionGeneration: UInt64) {
+        engine.beginSourceImagePublication(sessionGeneration)
+    }
     func shareSourceTexture(with other: MetalLivePreviewPipeline) {
         engine.shareSourceTexture(with: other.engine)
     }
@@ -3868,6 +3967,18 @@ final class MetalLivePreviewPipeline {
 
     nonisolated func uploadSourceImage(_ image: CIImage, exifOrientation: Int = 1) {
         engine.uploadSourceImage(image, exifOrientation: exifOrientation)
+    }
+    @discardableResult
+    nonisolated func uploadSourceImage(
+        _ image: CIImage,
+        exifOrientation: Int = 1,
+        sessionGeneration: UInt64
+    ) -> Bool {
+        engine.uploadSourceImage(
+            image,
+            exifOrientation: exifOrientation,
+            sessionGeneration: sessionGeneration
+        )
     }
     nonisolated func precacheTexture(
         for url: URL,

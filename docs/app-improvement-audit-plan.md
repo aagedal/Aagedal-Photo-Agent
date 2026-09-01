@@ -309,6 +309,16 @@ suites. Remaining decode execution, render-policy, Metal-publication, geometry/v
 measurement, and manual/external gates remain open.
 ([validation](plan-status-develop-source-publication-continuation-2026-09-01.md))
 
+**Develop Metal-publication continuation (2026-09-01):** the checklist remains 63 of 75. Every asynchronous
+Develop source-texture upload now carries the preview-session generation into a lock-backed final-publication
+gate shared by the editor texture and Clean Feed mirror. Navigation and teardown either reject an obsolete
+completed upload or clear it before returning, and in-memory rotation advances identity without blanking the
+last good texture so same-URL pre-rotation work is also rejected. The focused three-suite selection passed 16
+tests, the repository gate passed, and the serial unfiltered gate passed 1,845 tests in 216 suites. Remaining
+decode execution,
+render-policy, geometry/view decomposition, filesystem measurement, and manual/external gates remain open.
+([validation](plan-status-develop-metal-publication-continuation-2026-09-01.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -994,6 +1004,14 @@ checked publication methods; navigation and teardown clear them through the same
 Metal texture publication remain injected at the view/pipeline boundary, and broader render-policy, geometry,
 and view decomposition stay open.
 ([validation](plan-status-develop-source-publication-continuation-2026-09-01.md))
+
+**Metal-publication state-owner follow-up (2026-09-01):** the preview-session generation now gates the final
+source-texture mutation inside `MetalEditPipeline`, including its zero-copy Clean Feed mirror. The lock orders
+publication against image replacement and teardown, while in-memory rotation advances the same identity boundary
+without clearing the valid fallback texture. Every interactive Develop quick, final, rotation, and zoom-upgrade
+upload uses the generation-bearing live-preview facade; isolated pipeline callers retain the unscoped entry.
+Decode execution, render policy, geometry, and broader view decomposition remain open.
+([validation](plan-status-develop-metal-publication-continuation-2026-09-01.md))
 
 **Exit gate:** major feature state has one named owner; command payloads are compiler checked and scoped to
 the intended window/pane; extracted units are independently testable.

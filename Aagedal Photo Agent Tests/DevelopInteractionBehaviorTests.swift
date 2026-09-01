@@ -1331,6 +1331,7 @@ struct DevelopPreviewSessionCoordinatorTests {
         #expect(coordinator.sourceImage === quickImage)
         #expect(coordinator.sourceCIImage === materialized)
 
+        let preRotationGeneration = coordinator.sessionGeneration
         #expect(!coordinator.replaceSourceAfterRotation(
             image: rotatedImage,
             ciImage: rotatedCIImage,
@@ -1346,6 +1347,12 @@ struct DevelopPreviewSessionCoordinatorTests {
         #expect(coordinator.sourceImage === rotatedImage)
         #expect(coordinator.sourceCIImage === rotatedCIImage)
         #expect(coordinator.loadedOrientation(for: imageURL) == 6)
+        #expect(coordinator.sessionGeneration == preRotationGeneration + 1)
+        #expect(!coordinator.publishMaterializedSource(
+            materialized,
+            for: imageURL,
+            sessionGeneration: preRotationGeneration
+        ))
     }
 
     @Test("edit workspace delegates retained source publication to the preview owner")
@@ -1369,6 +1376,34 @@ struct DevelopPreviewSessionCoordinatorTests {
         #expect(!source.contains("@State private var sourceCIImage"))
         #expect(!source.contains("sourceImage ="))
         #expect(!source.contains("sourceCIImage ="))
+    }
+
+    @Test("Develop texture uploads carry the preview session generation")
+    func editWorkspaceMetalPublicationContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(
+            "metalPipeline?.beginSourceImageSession(previewSession.sessionGeneration)"
+        ))
+        #expect(source.contains(
+            "pipeline.beginSourceImagePublication(previewSession.sessionGeneration)"
+        ))
+        #expect(source.contains("sessionGeneration: previewSessionGeneration"))
+        #expect(source.contains("let didPublishTexture = await Task.detached"))
+        #expect(source.contains("guard didPublishTexture, !Task.isCancelled"))
+        #expect(source.contains("previewSession.endImageSession()\n        metalPipeline?.clearSourceTexture()"))
+        #expect(!source.contains("pipeline.uploadSourceImage(ci, exifOrientation:"))
+        #expect(!source.contains("pipeline.uploadSourceImage(rawCIImage, exifOrientation:"))
+        #expect(!source.contains("pipeline.uploadSourceImage(fullResCIImage, exifOrientation:"))
+        #expect(!source.contains("pipeline.uploadSourceImage(fullRes, exifOrientation:"))
     }
 
     @Test("an image change cancels every source-lifecycle task and resets progress")
@@ -1426,6 +1461,63 @@ struct DevelopPreviewSessionCoordinatorTests {
         #expect(coordinator.activeImageURL == nil)
         #expect(coordinator.sourceLoadedURL == nil)
         #expect(coordinator.sourceLoadedOrientation == nil)
+    }
+}
+
+@Suite("Metal source publication gate")
+struct MetalSourcePublicationGateTests {
+    @Test("only the active image generation may publish")
+    func rejectsReplacedGeneration() {
+        let gate = MetalSourcePublicationGate()
+        var published: [String] = []
+
+        gate.beginSession(1) { published.append("clear-1") }
+        #expect(gate.publishIfCurrent(sessionGeneration: 1) {
+            published.append("publish-1")
+        })
+
+        gate.beginSession(2) { published.append("clear-2") }
+        #expect(!gate.publishIfCurrent(sessionGeneration: 1) {
+            published.append("stale-1")
+        })
+        #expect(gate.publishIfCurrent(sessionGeneration: 2) {
+            published.append("publish-2")
+        })
+
+        #expect(published == ["clear-1", "publish-1", "clear-2", "publish-2"])
+    }
+
+    @Test("same-image replacement invalidates an older upload without clearing")
+    func replacementAdvancesWithoutClearing() {
+        let gate = MetalSourcePublicationGate()
+        var published: [String] = []
+
+        gate.beginSession(10) { published.append("clear") }
+        gate.replaceGeneration(11)
+
+        #expect(!gate.publishIfCurrent(sessionGeneration: 10) {
+            published.append("stale")
+        })
+        #expect(gate.publishIfCurrent(sessionGeneration: 11) {
+            published.append("rotated")
+        })
+        #expect(published == ["clear", "rotated"])
+    }
+
+    @Test("teardown clears and rejects every late publication")
+    func invalidationRejectsLatePublication() {
+        let gate = MetalSourcePublicationGate()
+        var publicationCount = 0
+        var clearCount = 0
+
+        gate.beginSession(42) { clearCount += 1 }
+        gate.invalidate { clearCount += 1 }
+
+        #expect(!gate.publishIfCurrent(sessionGeneration: 42) {
+            publicationCount += 1
+        })
+        #expect(clearCount == 2)
+        #expect(publicationCount == 0)
     }
 }
 

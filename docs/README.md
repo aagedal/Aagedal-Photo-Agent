@@ -344,6 +344,14 @@ the repository gate passed, and the serial unfiltered gate passed 1,841 tests in
 render-policy, Metal publication, geometry/view decomposition, filesystem measurement, and manual/external gates
 keep the audit at 63 of 75.
 
+The latest [Develop Metal-publication continuation](plan-status-develop-metal-publication-continuation-2026-09-01.md)
+records generation-gated source-texture replacement across the editor and zero-copy Clean Feed mirror. Navigation,
+teardown, and same-image rotation now reject late quick/final/zoom uploads at the final Metal state mutation even
+when an already-committed command buffer cannot be cancelled. The focused three-suite selection passed 16 tests;
+the repository gate passed, and the serial unfiltered gate passed 1,845 tests in 216 suites. Remaining decode execution,
+render-policy, geometry/view decomposition, filesystem measurement, and manual/external gates keep the audit at
+63 of 75.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

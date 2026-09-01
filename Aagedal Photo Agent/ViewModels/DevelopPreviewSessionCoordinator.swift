@@ -104,6 +104,11 @@ final class DevelopPreviewSessionCoordinator {
         for imageURL: URL
     ) -> Bool {
         guard activeImageURL == imageURL, sourceLoadedURL == imageURL else { return false }
+        // Rotation replaces the complete source lifecycle without blanking the last good pixels.
+        // Advance identity so an already-running decode/upload from the pre-rotation task cannot
+        // publish into this same-URL session after cooperative cancellation arrives too late.
+        cancelAllTasks()
+        sessionGeneration &+= 1
         sourceImage = image
         sourceCIImage = ciImage
         sourceLoadedOrientation = orientation

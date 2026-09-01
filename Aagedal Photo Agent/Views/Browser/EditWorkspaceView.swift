@@ -2648,6 +2648,7 @@ struct EditWorkspaceView: View {
         developVersionSession.reset()
         aiMaskSelection.endImageSession()
         previewSession.endImageSession()
+        metalPipeline?.clearSourceTexture()
         previewRender.endImageSession()
 
         // Tear down the clean-feed publication session; browse mode resumes driving the feed.
@@ -2845,6 +2846,7 @@ struct EditWorkspaceView: View {
             selectedImageURL,
             orientation: selectedImageURL == nil ? nil : selectedImageOrientation
         )
+        metalPipeline?.beginSourceImageSession(previewSession.sessionGeneration)
         previewRender.beginImageSession()
         interactiveRender.beginImageSession()
         whiteBalanceSession.beginImageSession(selectedImageURL)
@@ -2854,7 +2856,6 @@ struct EditWorkspaceView: View {
         metalPipeline?.asShotTemperature = 6500
         metalPipeline?.asShotTint = 0
         previewCIImage = nil
-        metalPipeline?.clearSourceTexture()
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         cropSession.beginImageSession(selectedImageURL, isCropEnabled: isCropEnabled)
         resetEditZoom()
@@ -2952,10 +2953,14 @@ struct EditWorkspaceView: View {
                 // metadata loads, even before the full RAW decode completes).
                 // sourceCIImage is already target-oriented — no correction here.
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
-                    await Task.detached(priority: .medium) {
-                        pipeline.uploadSourceImage(ci, exifOrientation: targetOrientation)
+                    let didPublishTexture = await Task.detached(priority: .medium) {
+                        pipeline.uploadSourceImage(
+                            ci,
+                            exifOrientation: targetOrientation,
+                            sessionGeneration: previewSessionGeneration
+                        )
                     }.value
-                    guard !Task.isCancelled else {
+                    guard didPublishTexture, !Task.isCancelled else {
                         editLog.info("[\(filename)] Phase 1: cancelled during Metal upload")
                         return
                     }
@@ -3035,11 +3040,15 @@ struct EditWorkspaceView: View {
                         }
                         let uploadStart = ContinuousClock.now
                         // Already target-oriented from the decode task.
-                        await Task.detached(priority: .medium) {
-                            pipeline.uploadSourceImage(rawCIImage, exifOrientation: targetOrientation)
+                        let didPublishTexture = await Task.detached(priority: .medium) {
+                            pipeline.uploadSourceImage(
+                                rawCIImage,
+                                exifOrientation: targetOrientation,
+                                sessionGeneration: previewSessionGeneration
+                            )
                         }.value
                         let uploadElapsed = ContinuousClock.now - uploadStart
-                        guard !Task.isCancelled else {
+                        guard didPublishTexture, !Task.isCancelled else {
                             editLog.info("[\(filename)] Phase 2: cancelled after upload (\(uploadElapsed))")
                             return
                         }
@@ -3168,10 +3177,14 @@ struct EditWorkspaceView: View {
                 // Upload Phase 1 preview to Metal for immediate interactive editing.
                 // sourceCIImage is already target-oriented — no correction here.
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
-                    await Task.detached(priority: .medium) {
-                        pipeline.uploadSourceImage(ci, exifOrientation: targetOrientation)
+                    let didPublishTexture = await Task.detached(priority: .medium) {
+                        pipeline.uploadSourceImage(
+                            ci,
+                            exifOrientation: targetOrientation,
+                            sessionGeneration: previewSessionGeneration
+                        )
                     }.value
-                    guard !Task.isCancelled else { return }
+                    guard didPublishTexture, !Task.isCancelled else { return }
                     syncViewportToMetal()
                 }
 
@@ -3210,10 +3223,14 @@ struct EditWorkspaceView: View {
 
                         let uploadStart = ContinuousClock.now
                         // Already target-oriented from the decode task.
-                        await Task.detached(priority: .medium) {
-                            pipeline.uploadSourceImage(fullResCIImage, exifOrientation: targetOrientation)
+                        let didPublishTexture = await Task.detached(priority: .medium) {
+                            pipeline.uploadSourceImage(
+                                fullResCIImage,
+                                exifOrientation: targetOrientation,
+                                sessionGeneration: previewSessionGeneration
+                            )
                         }.value
-                        guard !Task.isCancelled else { return }
+                        guard didPublishTexture, !Task.isCancelled else { return }
                         editLog.info("[\(filename)] Phase 2: texture uploaded in \(ContinuousClock.now - uploadStart)")
 
                         // Materialize sourceCIImage at screen resolution to release the
@@ -3351,12 +3368,18 @@ struct EditWorkspaceView: View {
             renderPreview()
             return
         }
+        pipeline.beginSourceImagePublication(previewSession.sessionGeneration)
         previewTask?.cancel()
+        let previewSessionGeneration = previewSession.sessionGeneration
         previewTask = Task {
-            await Task.detached(priority: .userInitiated) {
-                pipeline.uploadSourceImage(ci, exifOrientation: to)
+            let didPublishTexture = await Task.detached(priority: .userInitiated) {
+                pipeline.uploadSourceImage(
+                    ci,
+                    exifOrientation: to,
+                    sessionGeneration: previewSessionGeneration
+                )
             }.value
-            guard !Task.isCancelled else { return }
+            guard didPublishTexture, !Task.isCancelled else { return }
             syncViewportToMetal()
             renderPreview()
         }
@@ -3420,10 +3443,14 @@ struct EditWorkspaceView: View {
                 )
                 return
             }
-            await Task.detached(priority: .medium) {
-                pipeline.uploadSourceImage(fullRes, exifOrientation: targetOrientation)
+            let didPublishTexture = await Task.detached(priority: .medium) {
+                pipeline.uploadSourceImage(
+                    fullRes,
+                    exifOrientation: targetOrientation,
+                    sessionGeneration: previewSessionGeneration
+                )
             }.value
-            guard !Task.isCancelled, selectedImageURL == url else {
+            guard didPublishTexture, !Task.isCancelled, selectedImageURL == url else {
                 previewSession.finishFullResolutionUpgrade(
                     sessionGeneration: previewSessionGeneration
                 )
