@@ -403,6 +403,11 @@ work from publishing. Eight new characterizations, the adjacent 38-test selectio
 serial unfiltered 1,883-test run passed. The audit remains 66 of 75 while Phase 3.1's remaining direct-path
 inventory and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+AuraFace production publication is recorded in the
+[on-demand runtime validation](auraface-on-demand-runtime-validation-2026-08-27.md#remaining-external-validation):
+the archive, descriptor, and detached-signature endpoints were live and returned HTTP 200 on 2026-09-01.
+Publication is complete; the model-omitted release candidate and supported-macOS production-server drills remain.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

@@ -55,8 +55,14 @@ download, offline removal, and deferral of embedding migration until model verif
 
 ## Remaining external validation
 
-- Release operations must create the real deterministic archive/descriptor, sign the descriptor with the
-  Sparkle private key matching `SUPublicEDKey`, and publish all three immutable files at `aagedal.me`.
+- **Production publication update (2026-09-01):** all three production endpoints are live and returned HTTP 200:
+  [AuraFaceR100.mlpackage.zip](https://aagedal.me/models/auraface/AuraFaceR100.mlpackage.zip) as
+  `application/zip` with 130,597,925 bytes,
+  [AuraFaceR100.distribution.json](https://aagedal.me/models/auraface/AuraFaceR100.distribution.json) as
+  `application/json` with 779 bytes, and
+  [AuraFaceR100.distribution.json.sig](https://aagedal.me/models/auraface/AuraFaceR100.distribution.json.sig) as
+  `application/pgp-signature` with 89 bytes. Publication is no longer a missing prerequisite; the release-candidate
+  drills below must still prove the hosted bytes satisfy the app's signature and hash contract.
 - A release candidate without the bundled model must exercise clean install, offline startup, interrupted
   download, update, rollback, removal, and relaunch on each supported macOS tier against that production host.
 - Hosting cache headers, content lengths, TLS behavior, and operational rollback are external server state and

@@ -51,5 +51,6 @@ iCloud-placeholder, read-only-volume, large-library, signpost, and Thread Perfor
 still needs the representative RAW/HDR Instruments benchmark.
 
 The other open gates are protected-release-branch enforcement, focused Known People privacy/legal review, real
-FTP/FTPS/SFTP drills, assistive-technology and keyboard-only validation, and production AuraFace publishing plus
-clean-install/offline/update/rollback/corrupt-download validation.
+FTP/FTPS/SFTP drills, assistive-technology and keyboard-only validation, and an AuraFace model-omitted release
+candidate plus clean-install/offline/update/rollback/removal/interrupted-or-corrupt-download validation against
+the now-live production endpoints.

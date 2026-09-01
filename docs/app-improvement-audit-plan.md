@@ -54,6 +54,12 @@ verified, and provides download/removal/offline disclosure. The production-downl
 the artifacts are published at `aagedal.me`, a model-omitted release candidate is built, and real-server
 macOS-tier drills pass.
 
+**AuraFace production-publication update (2026-09-01):** the model archive, distribution descriptor, and detached
+signature are now live at their fixed `aagedal.me` endpoints and each returned HTTP 200. Publication is complete;
+the combined checklist item remains open only for the model-omitted release candidate and supported-macOS
+production-server install/offline/update/rollback/removal/interrupted-or-corrupt-download drills.
+([validation](auraface-on-demand-runtime-validation-2026-08-27.md#remaining-external-validation))
+
 **Executor-contract reconciliation (2026-08-27):** 60 of 75 substeps are now checked and 15 remain open.
 The existing executor-isolation validation proves owner/executor preconditions at live render-state,
 offscreen-renderer, and cross-pipeline boundaries. The compile-time live-preview facade and remaining
@@ -1249,10 +1255,12 @@ Normal one-time Core ML preparation of an `.mlpackage` is not model conversion a
 - [x] Define model availability states: not installed, downloading, ready, update available, incompatible,
   verification failed, and offline.
   ([validation](auraface-on-demand-packaging-validation.md), 2026-08-26)
-- [ ] Publish the pre-converted quantized Core ML artifact and signed descriptor at `aagedal.me`, build a
-  model-omitted release candidate, and validate clean install, offline, update, rollback, and corrupt-download
-  behavior against the production server on every supported macOS tier. The HTTPS runtime, signature/hash
-  verification, atomic install, receipt revalidation, rollback, and failure-injection tests are implemented.
+- [ ] The pre-converted quantized Core ML archive, descriptor, and detached signature are published at their
+  production `aagedal.me` endpoints and returned HTTP 200 with the expected content types and lengths on
+  2026-09-01. Build a model-omitted release candidate and validate clean install, offline, update, rollback,
+  removal, interrupted/corrupt download, and relaunch behavior against the production server on every supported
+  macOS tier. The HTTPS runtime, signature/hash verification, atomic install, receipt revalidation, rollback, and
+  failure-injection tests are implemented.
   ([validation](auraface-on-demand-runtime-validation-2026-08-27.md))
 - [x] Never reset stored embeddings until the new model and backup are both verified.
   ([validation](auraface-on-demand-runtime-validation-2026-08-27.md), 2026-08-27)

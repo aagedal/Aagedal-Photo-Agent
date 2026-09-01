@@ -53,13 +53,13 @@ coverage and the existing unavailable-build behavior intact.
 The later [runtime integration](auraface-on-demand-runtime-validation-2026-08-27.md) completed the signed
 descriptor trust boundary, background download, archive verification, Core ML preparation, atomic
 install/rollback/removal, relaunch-safe receipts, and embedding-preserving migration policy that were still
-open when this packaging record was first written. The remaining blockers are now external release work:
+open when this packaging record was first written. The production archive, descriptor, and signature were live
+at their fixed `aagedal.me` endpoints and returned HTTP 200 on 2026-09-01. The remaining blockers are external
+release work:
 
-1. create the production archive and descriptor, sign the descriptor with the private key matching the
-   shipped Sparkle public key, and publish all immutable files at `aagedal.me`;
-2. build a model-omitted release candidate and record the actual app/update size reduction; and
-3. run clean-install, offline, interrupted/corrupt download, update, rollback, removal, and relaunch tests on
+1. build a model-omitted release candidate and record the actual app/update size reduction; and
+2. run clean-install, offline, interrupted/corrupt download, update, rollback, removal, and relaunch tests on
    every supported macOS tier against the production server, including its real TLS and cache behavior.
 
-The local app/component separation boundary is complete, but these publishing and real-server gates keep the
-background-download TODO and the overall on-demand component exit gate open.
+The local app/component separation and production-publication boundaries are complete, but the release-candidate
+and real-server drill gates keep the background-download TODO and overall on-demand component exit gate open.
