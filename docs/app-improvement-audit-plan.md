@@ -402,6 +402,16 @@ without failures. Other lower-priority direct paths and real-volume/signpost/Thr
 keep all three broad Phase 3.1 substeps open.
 ([validation](plan-status-batch-rename-relocation-continuation-2026-09-02.md))
 
+**Face folder-load continuation (2026-09-02):** the checklist remains 66 of 75. Folder navigation now sends
+`.face_data` decode, expiration cleanup, and complete all-face thumbnail reads through one injected serialized
+actor. The boundary returns immutable complete or exact cancelled-prefix evidence, records cleanup that committed
+before cancellation, and lets `FaceRecognitionViewModel` publish only the current folder request. SwiftUI
+thumbnail lookup is cache-only; scans publish newly written thumbnail bytes directly and refresh the final cache
+through the same actor. Six new characterizations, the adjacent 33-test selection, the repository gate, and the
+serial unfiltered 1,896-test run passed. Remaining face-data mutations, other lower-priority direct paths, and
+real-volume/signpost/Thread Performance Checker evidence keep all three broad Phase 3.1 substeps open.
+([validation](plan-status-face-folder-load-continuation-2026-09-02.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -895,6 +905,13 @@ and Analysis use an immutable path-only relocation projection that preserves the
 filesystem-backed copy initializer remains on `FileSystemService` for Duplicate. Other lower-priority direct paths
 and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-batch-rename-relocation-continuation-2026-09-02.md))
+
+**Face folder-load follow-up (2026-09-02):** folder navigation no longer decodes `.face_data`, evaluates expiry,
+or reads face thumbnails on the MainActor. `FaceDataFolderLoadService` serializes the complete snapshot, reports
+exact cancellation and committed-cleanup evidence, and `FaceRecognitionViewModel` identity-gates publication.
+Render-time thumbnail lookup is cache-only, including during scans. Remaining face-data mutations, other direct
+paths, and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-face-folder-load-continuation-2026-09-02.md))
 
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.

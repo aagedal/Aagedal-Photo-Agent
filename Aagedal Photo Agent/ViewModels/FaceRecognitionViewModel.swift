@@ -583,6 +583,8 @@ final class FaceRecognitionViewModel {
     @ObservationIgnored private var deferredPostprocessingFolders: Set<URL> = []
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var lensPrewarmTask: Task<Void, Never>?
+    @ObservationIgnored private var faceDataLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var faceDataLoadRequestID = UUID()
     private let detectionService = FaceDetectionService()
     /// Shared across off-main merge-suggestion recomputations so each face's feature print
     /// is unarchived once and reused, rather than allocating a fresh cache per call.
@@ -590,6 +592,7 @@ final class FaceRecognitionViewModel {
     @ObservationIgnored private let mergeFeaturePrintCache = FaceDetectionService.FeaturePrintCache()
     private let lensService = FaceLensService()
     private let storageService = FaceDataStorageService()
+    @ObservationIgnored private let folderLoadService: FaceDataFolderLoadService
     private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
     private let sidecarService = MetadataSidecarService()
@@ -605,7 +608,8 @@ final class FaceRecognitionViewModel {
         activityHistory: ActivityHistoryStore? = nil,
         faceModelAvailability: FaceRecognitionModelAvailability? = nil,
         fileSystemService: FileSystemService = FileSystemService(),
-        imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler()
+        imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler(),
+        folderLoadService: FaceDataFolderLoadService = FaceDataFolderLoadService()
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
@@ -613,6 +617,7 @@ final class FaceRecognitionViewModel {
         self.faceModelAvailabilityOverride = faceModelAvailability
         self.fileSystemService = fileSystemService
         self.imageTrashHandler = imageTrashHandler
+        self.folderLoadService = folderLoadService
     }
 
     deinit {
@@ -620,6 +625,7 @@ final class FaceRecognitionViewModel {
         activeScanWorkerTask?.cancel()
         metadataWriteTask?.cancel()
         lensPrewarmTask?.cancel()
+        faceDataLoadTask?.cancel()
         matchRosterLoadTask?.cancel()
     }
 
@@ -722,27 +728,60 @@ final class FaceRecognitionViewModel {
             matchRoster = nil
         }
         displayedFolderURL = folderURL.standardizedFileURL
-
-        // Apply cleanup policy first
-        try? storageService.applyCleanupIfNeeded(for: folderURL, policy: cleanupPolicy)
-
         lensPrewarmTask?.cancel()
+        faceDataLoadTask?.cancel()
+        let requestID = UUID()
+        faceDataLoadRequestID = requestID
 
-        if let data = storageService.loadFaceData(for: folderURL) {
-            self.faceData = data
-            self.scanComplete = data.scanComplete
-            loadThumbnails(for: data)
-            if deferredPostprocessingFolders.remove(folderURL.standardizedFileURL) != nil {
-                if UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled) {
-                    scheduleMatchRosterLoad(for: folderURL, resolveAfterLoad: true)
-                }
-                applyKnownPeopleMatches()
+        // Never present the preceding folder's people or thumbnails while the new immutable
+        // snapshot is being read. Folder identity itself remains synchronous for scan routing.
+        faceData = nil
+        scanComplete = false
+        thumbnailCache.removeAllObjects()
+
+        let folderLoadService = self.folderLoadService
+        faceDataLoadTask = Task(priority: .userInitiated) { [weak self] in
+            let result = await folderLoadService.load(
+                folderURL: folderURL,
+                cleanupPolicy: cleanupPolicy
+            )
+            guard let self,
+                  self.faceDataLoadRequestID == requestID,
+                  self.displayedFolderURL == folderURL.standardizedFileURL else {
+                return
             }
-            prewarmSecondaryLensesIfNeeded()
-        } else {
-            self.faceData = nil
-            self.scanComplete = false
-            self.thumbnailCache.removeAllObjects()
+
+            switch result {
+            case .cancelled:
+                return
+            case .complete(let evidence):
+                self.faceData = evidence.faceData
+                self.scanComplete = evidence.faceData?.scanComplete ?? false
+                self.installThumbnails(evidence.thumbnailData)
+
+                guard evidence.faceData != nil else { return }
+                if self.deferredPostprocessingFolders.remove(folderURL.standardizedFileURL) != nil {
+                    if UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled) {
+                        self.scheduleMatchRosterLoad(for: folderURL, resolveAfterLoad: true)
+                    }
+                    self.applyKnownPeopleMatches()
+                }
+                self.prewarmSecondaryLensesIfNeeded()
+            }
+        }
+    }
+
+    /// Test and command-boundary synchronization without exposing the task itself.
+    func waitForCurrentFaceDataLoad() async {
+        _ = await faceDataLoadTask?.value
+    }
+
+    private func installThumbnails(_ thumbnailData: [UUID: Data]) {
+        thumbnailCache.removeAllObjects()
+        for (faceID, data) in thumbnailData {
+            if let image = NSImage(data: data) {
+                thumbnailCache.setObject(image, forKey: faceID as NSUUID)
+            }
         }
     }
 
@@ -781,6 +820,11 @@ final class FaceRecognitionViewModel {
             errorMessage = "Face scanning is paused while files in this folder are being renamed."
             return
         }
+
+        // The scan owns its own initial disk snapshot. Prevent an older navigation load from
+        // publishing over incremental results once detection has started.
+        faceDataLoadTask?.cancel()
+        faceDataLoadRequestID = UUID()
 
         // A scan invalidates the face set the prewarm was working from.
         lensPrewarmTask?.cancel()
@@ -906,6 +950,11 @@ final class FaceRecognitionViewModel {
                 self.scanProcessedCount = count
                 self.scanProgress = progress
             }
+            let reportThumbnail: @MainActor @Sendable (UUID, Data) -> Void = { [self] faceID, data in
+                guard self.displayedFolderURL == folderURL.standardizedFileURL,
+                      let image = NSImage(data: data) else { return }
+                self.thumbnailCache.setObject(image, forKey: faceID as NSUUID)
+            }
 
             // Keep detection, disk writes, and clustering off the main actor. `Task {}` inherits
             // this view model's MainActor isolation; without this worker the increasingly costly
@@ -974,6 +1023,7 @@ final class FaceRecognitionViewModel {
                         pendingFaces.append(result.face)
                         do {
                             try storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
+                            await reportThumbnail(result.face.id, result.thumbnail)
                         } catch {
                             scanLogger.warning("Failed to save thumbnail for face \(result.face.id): \(error.localizedDescription)")
                         }
@@ -1100,12 +1150,29 @@ final class FaceRecognitionViewModel {
                 }
             }
 
+            // A detached child is intentional here: a cancelled scan still saves and presents
+            // its exact partial result, so its just-committed thumbnails must be loaded even
+            // though the parent scan task carries cancellation.
+            let folderLoadService = self.folderLoadService
+            let thumbnailRefresh = await Task.detached(priority: .utility) {
+                await folderLoadService.load(folderURL: folderURL, cleanupPolicy: .never)
+            }.value
+            let refreshedThumbnailData: [UUID: Data]
+            switch thumbnailRefresh {
+            case .complete(let evidence):
+                refreshedThumbnailData = evidence.thumbnailData
+            case .cancelled:
+                refreshedThumbnailData = [:]
+            }
+
             await MainActor.run {
                 let isDisplayedFolder = self.displayedFolderURL == folderURL.standardizedFileURL
                 if isDisplayedFolder {
                     self.faceData = folderData
                     self.scanComplete = !isCancelled
-                    self.loadThumbnails(for: folderData)
+                    if !refreshedThumbnailData.isEmpty || folderData.faces.isEmpty {
+                        self.installThumbnails(refreshedThumbnailData)
+                    }
                     self.updateMergeSuggestions()
 
                     // Sports mode: resolve detected numbers → player names (or surface
@@ -3314,18 +3381,7 @@ final class FaceRecognitionViewModel {
     }
 
     func thumbnailImage(for faceID: UUID) -> NSImage? {
-        if let cached = thumbnailCache.object(forKey: faceID as NSUUID) { return cached }
-
-        // During a brand-new/full scan there may be no `faceData` yet. The live groups still
-        // have thumbnails on disk, scoped to the active scan folder.
-        let folderURL = faceData?.folderURL ?? (isScanning(folderURL: displayedFolderURL) ? scanningFolderURL : nil)
-        guard let folderURL,
-              let data = storageService.loadThumbnail(for: faceID, folderURL: folderURL),
-              let image = NSImage(data: data) else {
-            return nil
-        }
-        thumbnailCache.setObject(image, forKey: faceID as NSUUID)
-        return image
+        thumbnailCache.object(forKey: faceID as NSUUID)
     }
 }
 

@@ -170,6 +170,9 @@ Supporting documents:
 - [Batch Rename relocation continuation](plan-status-batch-rename-relocation-continuation-2026-09-02.md) —
   nonblocking immutable rename projection for Browser, Compare, and Analysis publication, while destination
   file-fact reads for Duplicate remain on the serialized filesystem actor.
+- [Face folder-load continuation](plan-status-face-folder-load-continuation-2026-09-02.md) — serialized,
+  cancellation-aware `.face_data` and complete thumbnail reads with request-gated publication and cache-only
+  render lookup.
 
 ## Solar overlay document set
 
@@ -430,6 +433,15 @@ The unchanged 10,000-file planning benchmark also passed alone after exceeding i
 full-suite host contention; a 58.697-second serial run excluding only that separately passing benchmark covered
 the rest of the suite without failures. The audit remains 66 of 75 while Phase 3.1's remaining direct paths and
 real-volume/signpost/Thread Performance Checker evidence stay open.
+
+The latest [Face folder-load continuation](plan-status-face-folder-load-continuation-2026-09-02.md) moves folder
+navigation `.face_data` decode, expiration cleanup, and complete thumbnail reads onto one serialized actor.
+Immutable complete or exact cancelled-prefix evidence, durable-cleanup reporting, and request identity prevent
+stale folder snapshots from publishing. Render-time thumbnail lookup is now cache-only, while scans hand newly
+written bytes to the cache and refresh the final snapshot through the same boundary. Six new characterizations
+and the adjacent 33-test selection, repository gate, and serial unfiltered 1,896-test run passed. The audit
+remains 66 of 75 while remaining face mutations, other direct paths, and real-volume/signpost/Thread Performance
+Checker evidence stay open.
 
 ## File organization convention
 

@@ -654,6 +654,322 @@ struct FaceEmbeddingTests {
     }
 }
 
+private nonisolated final class FaceFolderLoadGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var activeCount = 0
+    private var storedMaximumActiveCount = 0
+    private var didStart = false
+    private var isReleased = false
+
+    func block() {
+        condition.lock()
+        activeCount += 1
+        storedMaximumActiveCount = max(storedMaximumActiveCount, activeCount)
+        didStart = true
+        condition.broadcast()
+        while !isReleased {
+            condition.wait()
+        }
+        activeCount -= 1
+        condition.unlock()
+    }
+
+    func waitUntilStarted() async -> Bool {
+        for _ in 0..<200 {
+            if started { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    func release() {
+        condition.lock()
+        isReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var maximumActiveCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return storedMaximumActiveCount
+    }
+
+    private var started: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return didStart
+    }
+}
+
+private nonisolated final class FaceFolderLoadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedThumbnailIDs: [UUID] = []
+    private var storedRanOnMainThread = false
+
+    func recordDocumentRead() {
+        lock.lock()
+        storedRanOnMainThread = storedRanOnMainThread || Thread.isMainThread
+        lock.unlock()
+    }
+
+    func recordThumbnailRead(_ faceID: UUID) {
+        lock.lock()
+        storedRanOnMainThread = storedRanOnMainThread || Thread.isMainThread
+        storedThumbnailIDs.append(faceID)
+        lock.unlock()
+    }
+
+    var thumbnailIDs: [UUID] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedThumbnailIDs
+    }
+
+    var ranOnMainThread: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRanOnMainThread
+    }
+}
+
+private nonisolated func makeFaceFolderData(
+    folder: URL,
+    faceIDs: [UUID]
+) -> FolderFaceData {
+    let groupID = UUID()
+    let faces = faceIDs.map { faceID in
+        DetectedFace(
+            id: faceID,
+            imageURL: folder.appendingPathComponent("\(faceID.uuidString).jpg"),
+            faceRect: .zero,
+            featurePrintData: Data([1]),
+            groupID: groupID,
+            detectedAt: .distantPast
+        )
+    }
+    let groups: [FaceGroup] = faceIDs.first.map { representativeID in
+        [FaceGroup(
+            id: groupID,
+            name: nil,
+            representativeFaceID: representativeID,
+            faceIDs: faceIDs
+        )]
+    } ?? []
+    return FolderFaceData(
+        folderURL: folder,
+        faces: faces,
+        groups: groups,
+        lastScanDate: .distantPast,
+        scanComplete: true
+    )
+}
+
+@Suite("Face folder-load filesystem boundary")
+struct FaceFolderLoadServiceTests {
+    @Test @MainActor
+    func folderLoadReadsEveryThumbnailOffMainActor() async throws {
+        let folder = URL(fileURLWithPath: "/faces/current")
+        let firstID = UUID()
+        let secondID = UUID()
+        let data = makeFaceFolderData(folder: folder, faceIDs: [firstID, secondID])
+        let probe = FaceFolderLoadProbe()
+        let service = FaceDataFolderLoadService(
+            loadFaceData: { _ in
+                probe.recordDocumentRead()
+                return data
+            },
+            loadThumbnail: { faceID, _ in
+                probe.recordThumbnailRead(faceID)
+                return Data(faceID.uuidString.utf8)
+            }
+        )
+
+        let result = await service.load(folderURL: folder, cleanupPolicy: .never)
+        let evidence: FaceDataFolderLoadEvidence
+        switch result {
+        case .complete(let complete):
+            evidence = complete
+        case .cancelled:
+            Issue.record("An uncancelled folder load must complete")
+            return
+        }
+
+        #expect(evidence.faceData?.folderURL == folder)
+        #expect(evidence.requestedThumbnailCount == 2)
+        #expect(evidence.processedThumbnailCount == 2)
+        #expect(Set(evidence.thumbnailData.keys) == [firstID, secondID])
+        #expect(probe.thumbnailIDs == [firstID, secondID])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test
+    func cancellationAfterThumbnailReadReturnsExactPrefix() async {
+        let folder = URL(fileURLWithPath: "/faces/cancelled")
+        let faceIDs = [UUID(), UUID()]
+        let data = makeFaceFolderData(folder: folder, faceIDs: faceIDs)
+        let gate = FaceFolderLoadGate()
+        let service = FaceDataFolderLoadService(
+            loadFaceData: { _ in data },
+            loadThumbnail: { _, _ in
+                gate.block()
+                return Data([1])
+            }
+        )
+        let task = Task {
+            await service.load(folderURL: folder, cleanupPolicy: .never)
+        }
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+        task.cancel()
+        gate.release()
+
+        switch await task.value {
+        case .complete:
+            Issue.record("A cancelled thumbnail scan must not return complete evidence")
+        case .cancelled(let evidence):
+            #expect(evidence.requestedThumbnailCount == 2)
+            #expect(evidence.processedThumbnailCount == 0)
+        }
+    }
+
+    @Test
+    func folderLoadActorSerializesOverlappingReads() async {
+        let gate = FaceFolderLoadGate()
+        let folder = URL(fileURLWithPath: "/faces/serialized")
+        let service = FaceDataFolderLoadService(
+            loadFaceData: { folder in
+                gate.block()
+                return makeFaceFolderData(folder: folder, faceIDs: [])
+            }
+        )
+        let first = Task { await service.load(folderURL: folder, cleanupPolicy: .never) }
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+        let second = Task {
+            await service.load(
+                folderURL: folder.appendingPathComponent("second"),
+                cleanupPolicy: .never
+            )
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(gate.maximumActiveCount == 1)
+        gate.release()
+
+        _ = await first.value
+        _ = await second.value
+        #expect(gate.maximumActiveCount == 1)
+    }
+
+    @Test
+    func cancellationAfterExpiredDataDeletionReportsDurableCleanup() async {
+        let folder = URL(fileURLWithPath: "/faces/expired")
+        let data = makeFaceFolderData(folder: folder, faceIDs: [UUID()])
+        let gate = FaceFolderLoadGate()
+        let service = FaceDataFolderLoadService(
+            loadFaceData: { _ in data },
+            deleteFaceData: { _ in gate.block() },
+            currentDate: { .now }
+        )
+        let task = Task {
+            await service.load(folderURL: folder, cleanupPolicy: .sevenDays)
+        }
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+        task.cancel()
+        gate.release()
+
+        switch await task.value {
+        case .cancelled:
+            Issue.record("A committed cleanup must not be presented as if nothing changed")
+        case .complete(let evidence):
+            #expect(evidence.faceData == nil)
+            #expect(evidence.thumbnailData.isEmpty)
+            #expect(evidence.cleanupDisposition == .deleted(
+                cancellationRequestedAfterCommit: true
+            ))
+        }
+    }
+
+    @Test @MainActor
+    func viewModelRejectsSupersededFolderAndUsesCacheOnlyLookup() async {
+        let firstFolder = URL(fileURLWithPath: "/faces/first")
+        let secondFolder = URL(fileURLWithPath: "/faces/second")
+        let firstID = UUID()
+        let secondID = UUID()
+        let gate = FaceFolderLoadGate()
+        let probe = FaceFolderLoadProbe()
+        let service = FaceDataFolderLoadService(
+            loadFaceData: { folder in
+                probe.recordDocumentRead()
+                if folder == firstFolder { gate.block() }
+                return makeFaceFolderData(
+                    folder: folder,
+                    faceIDs: [folder == firstFolder ? firstID : secondID]
+                )
+            },
+            loadThumbnail: { faceID, _ in
+                probe.recordThumbnailRead(faceID)
+                return Data([0x00])
+            }
+        )
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            folderLoadService: service
+        )
+
+        viewModel.loadFaceData(for: firstFolder, cleanupPolicy: .never)
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+        // The main actor remains available while the synchronous reader is blocked.
+        viewModel.loadFaceData(for: secondFolder, cleanupPolicy: .never)
+        #expect(viewModel.displayedFolderURL == secondFolder.standardizedFileURL)
+        gate.release()
+        await viewModel.waitForCurrentFaceDataLoad()
+
+        #expect(viewModel.faceData?.folderURL == secondFolder)
+        #expect(viewModel.faceData?.faces.map(\.id) == [secondID])
+        #expect(probe.thumbnailIDs == [secondID])
+        let readCount = probe.thumbnailIDs.count
+        #expect(viewModel.thumbnailImage(for: secondID) == nil)
+        #expect(viewModel.thumbnailImage(for: secondID) == nil)
+        #expect(probe.thumbnailIDs.count == readCount)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test
+    func viewModelSourceKeepsFolderReadsBehindBoundary() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = workspace
+            .appendingPathComponent("Aagedal Photo Agent", isDirectory: true)
+            .appendingPathComponent("ViewModels", isDirectory: true)
+            .appendingPathComponent("FaceRecognitionViewModel.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let loadSlice = try #require(source.range(
+            of: "func loadFaceData(for folderURL: URL, cleanupPolicy: FaceCleanupPolicy)"
+        )).lowerBound..<#require(source.range(
+            of: "    private func loadThumbnails(for data: FolderFaceData)"
+        )).lowerBound
+        let loadSource = String(source[loadSlice])
+        let thumbnailSlice = try #require(source.range(
+            of: "func thumbnailImage(for faceID: UUID) -> NSImage?"
+        )).lowerBound..<source.endIndex
+        let thumbnailSource = String(source[thumbnailSlice])
+
+        #expect(loadSource.contains("await folderLoadService.load("))
+        #expect(loadSource.contains("faceDataLoadRequestID == requestID"))
+        #expect(!loadSource.contains("storageService.loadFaceData"))
+        #expect(!loadSource.contains("storageService.applyCleanupIfNeeded"))
+        #expect(!loadSource.contains("storageService.loadThumbnail"))
+        #expect(thumbnailSource.contains("thumbnailCache.object(forKey:"))
+        #expect(!thumbnailSource.contains("storageService.loadThumbnail"))
+    }
+
+}
+
 @Suite("Face group deletion filesystem boundary")
 @MainActor
 struct FaceGroupDeletionTests {

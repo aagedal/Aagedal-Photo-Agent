@@ -123,3 +123,183 @@ nonisolated struct FaceDataStorageService: Sendable {
         }
     }
 }
+
+/// Immutable folder state returned after every face-data and thumbnail read has finished on the
+/// serialized filesystem actor. Thumbnail bytes deliberately cross the actor boundary instead of
+/// `NSImage`; AppKit image objects remain owned by the main-actor view model.
+nonisolated struct FaceDataFolderLoadEvidence: @unchecked Sendable {
+    enum CleanupDisposition: Sendable, Equatable {
+        case notRequested
+        case retained
+        case deletionFailed(String)
+        case deleted(cancellationRequestedAfterCommit: Bool)
+    }
+
+    let folderURL: URL
+    let faceData: FolderFaceData?
+    let thumbnailData: [UUID: Data]
+    let requestedThumbnailCount: Int
+    let processedThumbnailCount: Int
+    let cleanupDisposition: CleanupDisposition
+}
+
+/// A cancelled folder load retains its exact thumbnail prefix for diagnostics, but callers must
+/// not publish it as a complete folder snapshot.
+nonisolated struct CancelledFaceDataFolderLoadEvidence: Sendable, Equatable {
+    let folderURL: URL
+    let requestedThumbnailCount: Int
+    let processedThumbnailCount: Int
+}
+
+nonisolated enum FaceDataFolderLoadResult: @unchecked Sendable {
+    case complete(FaceDataFolderLoadEvidence)
+    case cancelled(CancelledFaceDataFolderLoadEvidence)
+}
+
+/// Serializes folder-navigation face-data reads away from the app's default MainActor.
+///
+/// Foundation reads cannot be interrupted once entered, so cancellation is sampled before and
+/// after the document read and every thumbnail read. Expiration cleanup is a durable mutation:
+/// cancellation observed after deletion is recorded in complete evidence rather than pretending
+/// the deleted data still exists.
+actor FaceDataFolderLoadService {
+    typealias FaceDataLoader = @Sendable (URL) -> FolderFaceData?
+    typealias ThumbnailLoader = @Sendable (UUID, URL) -> Data?
+    typealias FaceDataDeleter = @Sendable (URL) throws -> Void
+    typealias CurrentDate = @Sendable () -> Date
+
+    private let loadFaceData: FaceDataLoader
+    private let loadThumbnail: ThumbnailLoader
+    private let deleteFaceData: FaceDataDeleter
+    private let currentDate: CurrentDate
+
+    init(
+        loadFaceData: @escaping FaceDataLoader = { folderURL in
+            FaceDataStorageService().loadFaceData(for: folderURL)
+        },
+        loadThumbnail: @escaping ThumbnailLoader = { faceID, folderURL in
+            FaceDataStorageService().loadThumbnail(for: faceID, folderURL: folderURL)
+        },
+        deleteFaceData: @escaping FaceDataDeleter = { folderURL in
+            try FaceDataStorageService().deleteFaceData(for: folderURL)
+        },
+        currentDate: @escaping CurrentDate = Date.init
+    ) {
+        self.loadFaceData = loadFaceData
+        self.loadThumbnail = loadThumbnail
+        self.deleteFaceData = deleteFaceData
+        self.currentDate = currentDate
+    }
+
+    func load(
+        folderURL: URL,
+        cleanupPolicy: FaceCleanupPolicy
+    ) -> FaceDataFolderLoadResult {
+        let standardizedFolderURL = folderURL.standardizedFileURL
+        guard !Task.isCancelled else {
+            return .cancelled(CancelledFaceDataFolderLoadEvidence(
+                folderURL: standardizedFolderURL,
+                requestedThumbnailCount: 0,
+                processedThumbnailCount: 0
+            ))
+        }
+
+        guard let faceData = loadFaceData(folderURL) else {
+            let evidence = FaceDataFolderLoadEvidence(
+                folderURL: standardizedFolderURL,
+                faceData: nil,
+                thumbnailData: [:],
+                requestedThumbnailCount: 0,
+                processedThumbnailCount: 0,
+                cleanupDisposition: cleanupPolicy == .never ? .notRequested : .retained
+            )
+            return Task.isCancelled
+                ? .cancelled(CancelledFaceDataFolderLoadEvidence(
+                    folderURL: standardizedFolderURL,
+                    requestedThumbnailCount: 0,
+                    processedThumbnailCount: 0
+                ))
+                : .complete(evidence)
+        }
+
+        guard !Task.isCancelled else {
+            return .cancelled(CancelledFaceDataFolderLoadEvidence(
+                folderURL: standardizedFolderURL,
+                requestedThumbnailCount: 0,
+                processedThumbnailCount: 0
+            ))
+        }
+
+        let cleanupDisposition: FaceDataFolderLoadEvidence.CleanupDisposition
+        if let maximumAge = cleanupPolicy.timeInterval,
+           currentDate().timeIntervalSince(faceData.lastScanDate) > maximumAge {
+            do {
+                try deleteFaceData(folderURL)
+                return .complete(FaceDataFolderLoadEvidence(
+                    folderURL: standardizedFolderURL,
+                    faceData: nil,
+                    thumbnailData: [:],
+                    requestedThumbnailCount: 0,
+                    processedThumbnailCount: 0,
+                    cleanupDisposition: .deleted(
+                        cancellationRequestedAfterCommit: Task.isCancelled
+                    )
+                ))
+            } catch {
+                cleanupDisposition = .deletionFailed(error.localizedDescription)
+            }
+        } else {
+            cleanupDisposition = cleanupPolicy == .never ? .notRequested : .retained
+        }
+
+        let faceIDs = Self.orderedThumbnailFaceIDs(in: faceData)
+        var thumbnails: [UUID: Data] = [:]
+        thumbnails.reserveCapacity(faceIDs.count)
+        var processedThumbnailCount = 0
+
+        for faceID in faceIDs {
+            guard !Task.isCancelled else {
+                return .cancelled(CancelledFaceDataFolderLoadEvidence(
+                    folderURL: standardizedFolderURL,
+                    requestedThumbnailCount: faceIDs.count,
+                    processedThumbnailCount: processedThumbnailCount
+                ))
+            }
+            let data = loadThumbnail(faceID, folderURL)
+            guard !Task.isCancelled else {
+                return .cancelled(CancelledFaceDataFolderLoadEvidence(
+                    folderURL: standardizedFolderURL,
+                    requestedThumbnailCount: faceIDs.count,
+                    processedThumbnailCount: processedThumbnailCount
+                ))
+            }
+            if let data {
+                thumbnails[faceID] = data
+            }
+            processedThumbnailCount += 1
+        }
+
+        return .complete(FaceDataFolderLoadEvidence(
+            folderURL: standardizedFolderURL,
+            faceData: faceData,
+            thumbnailData: thumbnails,
+            requestedThumbnailCount: faceIDs.count,
+            processedThumbnailCount: processedThumbnailCount,
+            cleanupDisposition: cleanupDisposition
+        ))
+    }
+
+    private static func orderedThumbnailFaceIDs(in faceData: FolderFaceData) -> [UUID] {
+        var result: [UUID] = []
+        result.reserveCapacity(faceData.faces.count)
+        var seen: Set<UUID> = []
+
+        // Load visible group representatives first, then the remaining detail-view faces.
+        for faceID in faceData.groups.map(\.representativeFaceID) + faceData.faces.map(\.id) {
+            if seen.insert(faceID).inserted {
+                result.append(faceID)
+            }
+        }
+        return result
+    }
+}
