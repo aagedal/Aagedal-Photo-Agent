@@ -478,6 +478,14 @@ gate. Two new characterizations, the focused 6-test suite, adjacent 47-test sele
 unfiltered 1,910-test run passed. The audit remains 66 of 75 while Phase 3.1's other direct paths and real-volume/
 signpost/Thread Performance Checker evidence stay open.
 
+The latest [Face scan signature continuation](plan-status-face-scan-signature-continuation-2026-09-02.md) moves
+incremental scan classification and post-detection file attribute reads onto one serialized actor. Complete
+immutable path sets cross back to the face scanner; exact cancelled-prefix evidence prevents partial classification
+from discarding faces, and cancelled signature capture leaves an image eligible for a later scan. Four new
+characterizations, the focused 17-test selection, repository gate, and serial unfiltered 1,914-test run passed. The
+audit remains 66 of 75 while Phase 3.1's other direct paths and real-volume/signpost/Thread Performance Checker
+evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

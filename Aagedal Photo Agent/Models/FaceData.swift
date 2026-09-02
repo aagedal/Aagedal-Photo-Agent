@@ -195,7 +195,7 @@ nonisolated struct FaceLensState: Codable, Sendable {
 }
 
 /// Tracks a file's identity for incremental scanning
-nonisolated struct FileSignature: Codable, Equatable {
+nonisolated struct FileSignature: Codable, Equatable, Sendable {
     let modificationDate: Date
     let fileSize: Int64
 }

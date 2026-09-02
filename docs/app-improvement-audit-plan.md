@@ -947,6 +947,14 @@ gate, and serial unfiltered 1,910-test run passed. Other lower-priority direct p
 Performance Checker exit evidence remain open.
 ([validation](plan-status-browser-comparison-presentation-facts-continuation-2026-09-02.md))
 
+**Face scan signature follow-up (2026-09-02):** incremental face-scan classification and the signature captured
+after each successful detection now use one serialized `FaceScanFileSignatureService` actor. Complete immutable
+path sets cross back to the scan owner; cancellation reports an exact processed prefix and never installs partial
+classification, while cancelled or unreadable post-detection signatures keep the image eligible for a future scan.
+Four new characterizations, the focused 17-test selection, repository gate, and serial unfiltered 1,914-test run
+passed. Other lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain
+open. ([validation](plan-status-face-scan-signature-continuation-2026-09-02.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

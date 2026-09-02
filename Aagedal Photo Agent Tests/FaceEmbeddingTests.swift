@@ -823,6 +823,37 @@ private nonisolated final class FaceDataPersistenceProbe: @unchecked Sendable {
     }
 }
 
+private nonisolated final class FaceFileSignatureProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let signatures: [URL: FileSignature]
+    private var storedURLs: [URL] = []
+    private var storedRanOnMainThread = false
+
+    init(signatures: [URL: FileSignature]) {
+        self.signatures = signatures
+    }
+
+    func read(_ url: URL) -> FileSignature? {
+        lock.lock()
+        storedURLs.append(url)
+        storedRanOnMainThread = storedRanOnMainThread || Thread.isMainThread
+        lock.unlock()
+        return signatures[url]
+    }
+
+    var urls: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedURLs
+    }
+
+    var ranOnMainThread: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRanOnMainThread
+    }
+}
+
 private nonisolated func makeFaceFolderData(
     folder: URL,
     faceIDs: [UUID]
@@ -853,6 +884,117 @@ private nonisolated func makeFaceFolderData(
         lastScanDate: .distantPast,
         scanComplete: true
     )
+}
+
+@Suite("Face scan file-signature boundary")
+struct FaceScanFileSignatureServiceTests {
+    @Test @MainActor
+    func classificationReturnsOneImmutableSnapshotOffMainActor() async {
+        let root = URL(fileURLWithPath: "/faces/signatures")
+        let unchanged = root.appendingPathComponent("unchanged.jpg")
+        let modified = root.appendingPathComponent("modified.jpg")
+        let added = root.appendingPathComponent("added.jpg")
+        let removed = root.appendingPathComponent("removed.jpg")
+        let first = FileSignature(modificationDate: Date(timeIntervalSince1970: 1), fileSize: 10)
+        let second = FileSignature(modificationDate: Date(timeIntervalSince1970: 2), fileSize: 20)
+        let probe = FaceFileSignatureProbe(signatures: [
+            unchanged: first,
+            modified: second,
+            added: first,
+        ])
+        let service = FaceScanFileSignatureService(readSignature: probe.read)
+
+        let result = await service.classify(
+            imageURLs: [unchanged, modified, added],
+            existingSignatures: [
+                unchanged.path: first,
+                modified.path: first,
+                removed.path: first,
+            ]
+        )
+
+        guard case .complete(let classification) = result else {
+            Issue.record("An uncancelled classification must complete")
+            return
+        }
+        #expect(classification.imageURLsToScan == [modified, added])
+        #expect(classification.removedOrModifiedPaths == [modified.path, removed.path])
+        #expect(classification.unchangedPaths == [unchanged.path])
+        #expect(probe.urls == [unchanged, modified, added])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test
+    func cancellationAfterAttributeReadReportsExactPrefix() async {
+        let root = URL(fileURLWithPath: "/faces/signature-cancellation")
+        let first = root.appendingPathComponent("first.jpg")
+        let second = root.appendingPathComponent("second.jpg")
+        let signature = FileSignature(modificationDate: .distantPast, fileSize: 1)
+        let gate = FaceFolderLoadGate()
+        let service = FaceScanFileSignatureService { _ in
+            gate.block()
+            return signature
+        }
+        let task = Task {
+            await service.classify(imageURLs: [first, second], existingSignatures: [:])
+        }
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+        task.cancel()
+        gate.release()
+
+        #expect(await task.value == .cancelled(processedFileCount: 1, requestedFileCount: 2))
+    }
+
+    @Test
+    func actorSerializesClassificationAndCaptureReads() async {
+        let gate = FaceFolderLoadGate()
+        let url = URL(fileURLWithPath: "/faces/serialized-signature.jpg")
+        let signature = FileSignature(modificationDate: .distantPast, fileSize: 1)
+        let service = FaceScanFileSignatureService { _ in
+            gate.block()
+            return signature
+        }
+        let classification = Task {
+            await service.classify(imageURLs: [url], existingSignatures: [:])
+        }
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+        let capture = Task { await service.signature(for: url) }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(gate.maximumActiveCount == 1)
+        gate.release()
+
+        _ = await classification.value
+        #expect(await capture.value == .captured(imageURL: url, signature: signature))
+        #expect(gate.maximumActiveCount == 1)
+    }
+
+    @Test
+    func viewModelRoutesBothSignaturePathsThroughService() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/FaceRecognitionViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let scanStart = try #require(source.range(of: "func scanFolder(imageURLs:"))
+        let scanEnd = try #require(source.range(
+            of: "    /// Suspends until the scan",
+            range: scanStart.upperBound..<source.endIndex
+        ))
+        let scanSource = String(source[scanStart.lowerBound..<scanEnd.lowerBound])
+
+        #expect(scanSource.contains("await fileSignatureService.classify("))
+        #expect(scanSource.contains("await fileSignatureService.signature(for:"))
+        #expect(scanSource.contains("classificationWasCancelled"))
+        #expect(!scanSource.contains("FileManager.default.attributesOfItem"))
+        #expect(!source.contains("func getFileSignature("))
+        #expect(!source.contains("func categorizeFiles("))
+    }
 }
 
 @Suite("Face folder-load filesystem boundary")

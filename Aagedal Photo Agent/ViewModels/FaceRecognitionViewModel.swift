@@ -593,6 +593,7 @@ final class FaceRecognitionViewModel {
     @ObservationIgnored private let mergeFeaturePrintCache = FaceDetectionService.FeaturePrintCache()
     private let lensService = FaceLensService()
     @ObservationIgnored private let folderLoadService: FaceDataFolderLoadService
+    @ObservationIgnored private let fileSignatureService: FaceScanFileSignatureService
     private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
     private let sidecarService = MetadataSidecarService()
@@ -609,7 +610,8 @@ final class FaceRecognitionViewModel {
         faceModelAvailability: FaceRecognitionModelAvailability? = nil,
         fileSystemService: FileSystemService = FileSystemService(),
         imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler(),
-        folderLoadService: FaceDataFolderLoadService = .shared
+        folderLoadService: FaceDataFolderLoadService = .shared,
+        fileSignatureService: FaceScanFileSignatureService = .shared
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
@@ -618,6 +620,7 @@ final class FaceRecognitionViewModel {
         self.fileSystemService = fileSystemService
         self.imageTrashHandler = imageTrashHandler
         self.folderLoadService = folderLoadService
+        self.fileSignatureService = fileSignatureService
     }
 
     deinit {
@@ -868,6 +871,7 @@ final class FaceRecognitionViewModel {
         let config = detectionConfig
         let detectionService = self.detectionService
         let folderLoadService = self.folderLoadService
+        let fileSignatureService = self.fileSignatureService
         let pendingPersistence = faceDataPersistenceTask
 
         if forceFullScan {
@@ -922,11 +926,31 @@ final class FaceRecognitionViewModel {
                 nil
             }
 
-            // Determine which files need scanning
-            let (toScan, toRemove, unchangedFiles) = await categorizeFiles(
+            // Freeze the incremental scan plan on the serialized filesystem actor. A partial
+            // classification is never installed because it could discard faces whose files
+            // were not reached before cancellation.
+            let classificationResult = await fileSignatureService.classify(
                 imageURLs: imageURLs,
-                existingData: existingData
+                existingSignatures: existingData?.scannedFiles ?? [:]
             )
+            let toScan: [URL]
+            let toRemove: Set<String>
+            let unchangedFiles: Set<String>
+            let classificationWasCancelled: Bool
+            switch classificationResult {
+            case .complete(let classification):
+                toScan = classification.imageURLsToScan
+                toRemove = classification.removedOrModifiedPaths
+                unchangedFiles = classification.unchangedPaths
+                classificationWasCancelled = false
+            case .cancelled:
+                // Keep the complete prior snapshot intact. The cancelled worker below will
+                // persist it as an incomplete scan without trusting partial filesystem facts.
+                toScan = []
+                toRemove = []
+                unchangedFiles = Set(existingData?.scannedFiles.keys.map { $0 } ?? [])
+                classificationWasCancelled = true
+            }
 
             // Start with existing faces (excluding those from removed/modified files)
             let initialFaces: [DetectedFace] = existingData?.faces.filter { face in
@@ -974,7 +998,7 @@ final class FaceRecognitionViewModel {
                 self.scanProgress = "0/\(toScan.count)"
             }
 
-            if toScan.isEmpty {
+            if toScan.isEmpty && !classificationWasCancelled {
                 // Nothing new to scan
                 await MainActor.run {
                     self.isScanning = false
@@ -1103,8 +1127,13 @@ final class FaceRecognitionViewModel {
                     }
 
                     // A failed image must remain eligible for the next incremental scan.
-                    if !failed, let sig = getFileSignature(for: scannedURL) {
-                        scannedFiles[scannedURL.path] = sig
+                    if !failed {
+                        switch await fileSignatureService.signature(for: scannedURL) {
+                        case .captured(let imageURL, let signature?):
+                            scannedFiles[imageURL.path] = signature
+                        case .captured(_, nil), .cancelled:
+                            break
+                        }
                     }
 
                     processed += 1
@@ -3396,49 +3425,4 @@ final class FaceRecognitionViewModel {
     func thumbnailImage(for faceID: UUID) -> NSImage? {
         thumbnailCache.object(forKey: faceID as NSUUID)
     }
-}
-
-// MARK: - Incremental Scan Helpers (Non-Actor)
-
-/// Categorize files into: need scanning, removed/modified, unchanged.
-nonisolated private func categorizeFiles(imageURLs: [URL], existingData: FolderFaceData?) async -> (toScan: [URL], toRemove: Set<String>, unchanged: Set<String>) {
-    guard let existingData else {
-        return (imageURLs, [], [])
-    }
-
-    let currentPaths = Set(imageURLs.map(\.path))
-    let existingPaths = Set(existingData.scannedFiles.keys)
-
-    var toScan: [URL] = []
-    var unchanged: Set<String> = []
-
-    for url in imageURLs {
-        let path = url.path
-        if let existingSig = existingData.scannedFiles[path],
-           let currentSig = getFileSignature(for: url),
-           existingSig == currentSig {
-            // File unchanged
-            unchanged.insert(path)
-        } else {
-            // New or modified file
-            toScan.append(url)
-        }
-    }
-
-    // Files in existing data but not in current folder = deleted
-    let toRemove = existingPaths.subtracting(currentPaths).union(
-        // Also include modified files (they need faces removed before re-scanning)
-        Set(toScan.map(\.path)).intersection(existingPaths)
-    )
-
-    return (toScan, toRemove, unchanged)
-}
-
-nonisolated private func getFileSignature(for url: URL) -> FileSignature? {
-    guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-          let modDate = attrs[.modificationDate] as? Date,
-          let size = attrs[.size] as? Int64 else {
-        return nil
-    }
-    return FileSignature(modificationDate: modDate, fileSize: size)
 }

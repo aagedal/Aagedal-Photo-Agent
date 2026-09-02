@@ -224,6 +224,110 @@ nonisolated enum FaceDataDeletionResult: Sendable, Equatable {
     }
 }
 
+/// Immutable file-identity evidence used to decide which photos need another face scan.
+nonisolated struct FaceScanFileClassification: Sendable, Equatable {
+    let imageURLsToScan: [URL]
+    let removedOrModifiedPaths: Set<String>
+    let unchangedPaths: Set<String>
+}
+
+/// Classification stops at a precise URL boundary when cancellation is observed. Callers must
+/// not install a partial classification because it could incorrectly discard existing faces.
+nonisolated enum FaceScanFileClassificationResult: Sendable, Equatable {
+    case complete(FaceScanFileClassification)
+    case cancelled(processedFileCount: Int, requestedFileCount: Int)
+}
+
+/// A signature read is non-preemptible once Foundation enters the filesystem. Cancellation
+/// therefore records whether the read completed instead of publishing its value as current.
+nonisolated enum FaceScanFileSignatureResult: Sendable, Equatable {
+    case captured(imageURL: URL, signature: FileSignature?)
+    case cancelled(imageURL: URL, readCompleted: Bool)
+}
+
+/// Serializes incremental face-scan file identity reads away from the app's default MainActor.
+/// The same actor owns the initial classification transaction and the per-image signature reads
+/// performed after detection, so neither path can overlap a slow volume probe.
+actor FaceScanFileSignatureService {
+    static let shared = FaceScanFileSignatureService()
+
+    typealias SignatureReader = @Sendable (URL) -> FileSignature?
+
+    private let readSignature: SignatureReader
+
+    init(readSignature: @escaping SignatureReader = { url in
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let modificationDate = attrs[.modificationDate] as? Date else {
+            return nil
+        }
+        let fileSize: Int64?
+        if let value = attrs[.size] as? NSNumber {
+            fileSize = value.int64Value
+        } else {
+            fileSize = attrs[.size] as? Int64
+        }
+        guard let fileSize else { return nil }
+        return FileSignature(modificationDate: modificationDate, fileSize: fileSize)
+    }) {
+        self.readSignature = readSignature
+    }
+
+    func classify(
+        imageURLs: [URL],
+        existingSignatures: [String: FileSignature]
+    ) -> FaceScanFileClassificationResult {
+        let currentPaths = Set(imageURLs.map(\.path))
+        let existingPaths = Set(existingSignatures.keys)
+        var imageURLsToScan: [URL] = []
+        var unchangedPaths: Set<String> = []
+        var processedFileCount = 0
+
+        for url in imageURLs {
+            guard !Task.isCancelled else {
+                return .cancelled(
+                    processedFileCount: processedFileCount,
+                    requestedFileCount: imageURLs.count
+                )
+            }
+            let currentSignature = readSignature(url)
+            processedFileCount += 1
+            guard !Task.isCancelled else {
+                return .cancelled(
+                    processedFileCount: processedFileCount,
+                    requestedFileCount: imageURLs.count
+                )
+            }
+
+            if let existingSignature = existingSignatures[url.path],
+               currentSignature == existingSignature {
+                unchangedPaths.insert(url.path)
+            } else {
+                imageURLsToScan.append(url)
+            }
+        }
+
+        let removedOrModifiedPaths = existingPaths.subtracting(currentPaths).union(
+            Set(imageURLsToScan.map(\.path)).intersection(existingPaths)
+        )
+        return .complete(FaceScanFileClassification(
+            imageURLsToScan: imageURLsToScan,
+            removedOrModifiedPaths: removedOrModifiedPaths,
+            unchangedPaths: unchangedPaths
+        ))
+    }
+
+    func signature(for imageURL: URL) -> FaceScanFileSignatureResult {
+        guard !Task.isCancelled else {
+            return .cancelled(imageURL: imageURL, readCompleted: false)
+        }
+        let signature = readSignature(imageURL)
+        guard !Task.isCancelled else {
+            return .cancelled(imageURL: imageURL, readCompleted: true)
+        }
+        return .captured(imageURL: imageURL, signature: signature)
+    }
+}
+
 /// Serializes folder-navigation reads, scan writes, interactive mutation commits, thumbnail
 /// cleanup, and whole-folder deletion away from the app's default MainActor.
 ///
