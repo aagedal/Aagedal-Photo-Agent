@@ -84,10 +84,8 @@ protocol MetadataWriteEngine: AnyObject, Sendable {
 
     /// Write fields to files created by the render pipeline.
     ///
-    /// Rendered TIFFs can legitimately retain a Sony camera Make tag. SwiftExif's
-    /// conservative RAW guard then classifies the TIFF bytes as ARW even though the
-    /// pipeline created a normal raster TIFF. Implementations may use this explicit
-    /// trust boundary to permit that otherwise-refused metadata rewrite.
+    /// This remains a separate boundary so implementations can distinguish files created by the
+    /// render pipeline from user-owned originals without weakening RAW-container protections.
     func writeFieldsToRenderedFiles(
         _ fields: [MetadataFieldKey: String],
         to urls: [URL],
@@ -143,29 +141,6 @@ extension MetadataWriteEngine {
         to urls: [URL]
     ) async throws {
         try await writeFieldsToRenderedFiles(fields, to: urls, structuredData: .empty)
-    }
-}
-
-// MARK: - Shared Helpers
-
-/// Capture file creation dates before a write operation so they can be restored after.
-/// Direct file writes may reset the creation date.
-nonisolated func captureCreationDates(for urls: [URL]) -> [URL: Date] {
-    var result: [URL: Date] = [:]
-    for url in urls {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let creationDate = attrs[.creationDate] as? Date else {
-            continue
-        }
-        result[url] = creationDate
-    }
-    return result
-}
-
-/// Restore file creation dates after a write operation.
-nonisolated func restoreCreationDates(_ creationDates: [URL: Date]) {
-    for (url, creationDate) in creationDates {
-        try? FileManager.default.setAttributes([.creationDate: creationDate], ofItemAtPath: url.path)
     }
 }
 

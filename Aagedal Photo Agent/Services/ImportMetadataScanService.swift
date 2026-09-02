@@ -1,5 +1,5 @@
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 
 /// Serialized filesystem boundary for capture-date discovery used by the Import sheet.
 ///

@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 import os
 
 enum ImportPhase: Equatable {

@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 import Testing
-import SwiftExif
+import SwiftMediaMetadata
 @testable import Aagedal_Photo_Agent
 
 @Suite("Metadata batch list selection", .serialized)
@@ -21,7 +21,7 @@ struct MetadataBatchSelectionTests {
 
         try await write(metadata, to: imageURL)
 
-        let embedded = try SwiftExif.readMetadata(from: imageURL)
+        let embedded = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(embedded.iptc.bylines == ["First Reporter", "Second Reporter"])
         #expect(embedded.iptc.dateCreated == "20260821")
         #expect(embedded.iptc.timeCreated == "101530+0230")

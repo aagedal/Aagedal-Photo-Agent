@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-08-25
+**Last reviewed:** 2026-09-02
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -164,6 +164,9 @@ Supporting documents:
   private-sample-validated ILCE-1 v4.00 one/two-source ingest plus transactional rename/rollback;
   persistence, playback/transcription/delivery, and broader body/firmware compatibility remain
   gated.
+- [SwiftMediaMetadata 3 migration](swift-media-metadata-3-migration-validation-2026-09-02.md) — remote
+  package relink, removal of the old vendored source and app-owned compatibility workarounds, and
+  focused/full regression evidence.
 
 ## Solar overlay document set
 

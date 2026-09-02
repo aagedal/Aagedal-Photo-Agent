@@ -5,7 +5,7 @@ import Metal
 import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
-import SwiftExif
+import SwiftMediaMetadata
 @testable import Aagedal_Photo_Agent
 
 @Suite("Ordered creators and typed Date Created")
@@ -957,7 +957,7 @@ struct EditorialMetadataInteroperabilityTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let imageURL = try makeJPEG(in: directory)
 
-        var planted = try SwiftExif.readMetadata(from: imageURL)
+        var planted = try SwiftMediaMetadata.readMetadata(from: imageURL)
         planted.iptc.headline = "Old headline"
         planted.iptc.objectName = "Legacy object title"
         planted.xmp = XMPData()
@@ -967,7 +967,7 @@ struct EditorialMetadataInteroperabilityTests {
 
         try await SwiftExifWriteEngine().writeFields([.headline: "New headline"], to: [imageURL])
 
-        let written = try SwiftExif.readMetadata(from: imageURL)
+        let written = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(written.iptc.headline == "New headline")
         #expect(written.iptc.objectName == "Legacy object title")
         #expect(written.xmp?.headline == "New headline")
@@ -975,7 +975,7 @@ struct EditorialMetadataInteroperabilityTests {
 
         try await SwiftExifWriteEngine().writeFields([.headline: ""], to: [imageURL])
 
-        let cleared = try SwiftExif.readMetadata(from: imageURL)
+        let cleared = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(cleared.iptc.headline == nil)
         #expect(cleared.iptc.objectName == "Legacy object title")
         #expect(cleared.xmp?.headline == nil)
@@ -993,7 +993,7 @@ struct EditorialMetadataInteroperabilityTests {
             XMPLanguageAlternative(language: "nn", value: "Nynorsk tittel"),
         ]
 
-        var planted = try SwiftExif.readMetadata(from: imageURL)
+        var planted = try SwiftMediaMetadata.readMetadata(from: imageURL)
         planted.xmp = XMPData()
         planted.xmp?.setValue(
             .languageAlternative(expected),
@@ -1010,7 +1010,7 @@ struct EditorialMetadataInteroperabilityTests {
 
         try await SwiftExifWriteEngine().writeFields([.headline: "New headline"], to: [imageURL])
 
-        let rewritten = try SwiftExif.readMetadata(from: imageURL)
+        let rewritten = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(rewritten.xmp?.languageAlternativeValue(
             namespace: XMPNamespace.dc,
             property: "title"
@@ -1026,7 +1026,7 @@ struct EditorialMetadataInteroperabilityTests {
 
         try await SwiftExifWriteEngine().writeFields([.headline: "New headline"], to: [imageURL])
 
-        let written = try SwiftExif.readMetadata(from: imageURL)
+        let written = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(written.iptc.headline == "New headline")
         #expect(written.iptc.objectName == nil)
         #expect(written.xmp?.headline == "New headline")
@@ -1415,7 +1415,7 @@ struct EditorialMetadataInteroperabilityTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let imageURL = try makeJPEG(in: directory)
 
-        var planted = try SwiftExif.readMetadata(from: imageURL)
+        var planted = try SwiftMediaMetadata.readMetadata(from: imageURL)
         if planted.xmp == nil { planted.xmp = XMPData() }
         planted.xmp?.setValue(
             .simple("Do not remove"),
@@ -1429,7 +1429,7 @@ struct EditorialMetadataInteroperabilityTests {
             to: [imageURL]
         )
 
-        let rewritten = try SwiftExif.readMetadata(from: imageURL)
+        let rewritten = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(rewritten.xmp?.description == "A new editorial caption")
         #expect(
             rewritten.xmp?.simpleValue(
@@ -1474,7 +1474,7 @@ struct EditorialMetadataInteroperabilityTests {
             .descriptionWriter: "Night Desk",
         ], to: [imageURL])
 
-        let embedded = try SwiftExif.readMetadata(from: imageURL)
+        let embedded = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(embedded.iptc.bylineTitle == "Staff Photographer")
         #expect(embedded.iptc.writerEditor == "Night Desk")
         #expect(embedded.xmp?.simpleValue(
@@ -1516,7 +1516,7 @@ struct EditorialMetadataInteroperabilityTests {
             .creatorJobTitle: "",
             .descriptionWriter: "",
         ], to: [imageURL])
-        let cleared = try SwiftExif.readMetadata(from: imageURL)
+        let cleared = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(cleared.iptc.bylineTitle == nil)
         #expect(cleared.iptc.writerEditor == nil)
         #expect(cleared.xmp?.simpleValue(
@@ -1550,7 +1550,7 @@ struct EditorialMetadataInteroperabilityTests {
         let engine = SwiftExifWriteEngine()
         try await engine.writeFields([.countryCode: "NOR"], to: [imageURL])
 
-        let embedded = try SwiftExif.readMetadata(from: imageURL)
+        let embedded = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(embedded.iptc.countryCode == "NOR")
         #expect(embedded.xmp?.simpleValue(
             namespace: XMPNamespace.iptcCore,
@@ -1572,7 +1572,7 @@ struct EditorialMetadataInteroperabilityTests {
         #expect(iptcMetadataFromDict(iimOnly.asMetadataDict()).countryCode == "SWE")
 
         try await engine.writeFields([.countryCode: ""], to: [imageURL])
-        let cleared = try SwiftExif.readMetadata(from: imageURL)
+        let cleared = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(cleared.iptc.countryCode == nil)
         #expect(cleared.xmp?.simpleValue(
             namespace: XMPNamespace.iptcCore,
@@ -1612,7 +1612,7 @@ struct EditorialMetadataInteroperabilityTests {
             .rightsUsageTerms: expected.rightsUsageTerms!,
             .webStatementOfRights: expected.webStatementOfRights!,
         ], to: [imageURL])
-        let embedded = try SwiftExif.readMetadata(from: imageURL)
+        let embedded = try SwiftMediaMetadata.readMetadata(from: imageURL)
         let embeddedDecoded = iptcMetadataFromDict(embedded.asMetadataDict(fileURL: imageURL))
         #expect(embeddedDecoded.rightsUsageTerms == expected.rightsUsageTerms)
         #expect(embeddedDecoded.webStatementOfRights == expected.webStatementOfRights)
@@ -1621,7 +1621,7 @@ struct EditorialMetadataInteroperabilityTests {
             .rightsUsageTerms: "",
             .webStatementOfRights: "",
         ], to: [imageURL])
-        let cleared = try SwiftExif.readMetadata(from: imageURL)
+        let cleared = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(cleared.xmp?.simpleValue(
             namespace: XMPDataBuilder.xmpRightsNamespace,
             property: "UsageTerms"
@@ -1739,7 +1739,7 @@ struct EditorialMetadataInteroperabilityTests {
         let engine = SwiftExifWriteEngine()
         try await engine.writeFields([.urgency: "3"], to: [imageURL])
 
-        let embedded = try SwiftExif.readMetadata(from: imageURL)
+        let embedded = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(embedded.iptc.urgency == 3)
         #expect(embedded.xmp?.simpleValue(
             namespace: XMPNamespace.photoshop,
@@ -1761,7 +1761,7 @@ struct EditorialMetadataInteroperabilityTests {
         #expect(iptcMetadataFromDict(iimOnly.asMetadataDict()).urgency == 5)
 
         try await engine.writeFields([.urgency: ""], to: [imageURL])
-        let cleared = try SwiftExif.readMetadata(from: imageURL)
+        let cleared = try SwiftMediaMetadata.readMetadata(from: imageURL)
         #expect(cleared.iptc.urgency == nil)
         #expect(cleared.xmp?.simpleValue(
             namespace: XMPNamespace.photoshop,
@@ -1796,7 +1796,7 @@ struct EditorialMetadataInteroperabilityTests {
             )
         )
 
-        let written = try SwiftExif.readMetadata(from: imageURL)
+        let written = try SwiftMediaMetadata.readMetadata(from: imageURL)
         let decoded = iptcMetadataFromDict(written.asMetadataDict(fileURL: imageURL))
         #expect(decoded.creatorContactInfo == expected.creatorContactInfo)
         #expect(decoded.locationsCreated == expected.locationsCreated)
@@ -1804,7 +1804,7 @@ struct EditorialMetadataInteroperabilityTests {
 
         // A later scalar-only edit has merge semantics and must not clear the structures.
         try await engine.writeFields([.headline: "Updated headline"], to: [imageURL])
-        let rewritten = try SwiftExif.readMetadata(from: imageURL)
+        let rewritten = try SwiftMediaMetadata.readMetadata(from: imageURL)
         let afterScalarEdit = iptcMetadataFromDict(rewritten.asMetadataDict(fileURL: imageURL))
         #expect(afterScalarEdit.creatorContactInfo == expected.creatorContactInfo)
         #expect(afterScalarEdit.locationsCreated == expected.locationsCreated)

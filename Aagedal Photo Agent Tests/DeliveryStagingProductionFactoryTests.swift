@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 import ImageIO
-import SwiftExif
+import SwiftMediaMetadata
 import Testing
 @testable import Aagedal_Photo_Agent
 

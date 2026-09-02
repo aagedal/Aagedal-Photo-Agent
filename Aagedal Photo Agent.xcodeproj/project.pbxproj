@@ -10,7 +10,7 @@
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
 		7EA0E1000000000000000002 /* TeamRosterExportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */; };
-		8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftExif */; };
+		8ED369F42F8CF02C00FB9A33 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */; };
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
 		A02608260000000000000002 /* VoiceMemoCompanionRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */; };
 		A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */; };
@@ -51,7 +51,6 @@
 		AB2900000000000000000002 /* C2PASigningImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2900000000000000000001 /* C2PASigningImportTests.swift */; };
 		AB3000000000000000000002 /* C2PAValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3000000000000000000001 /* C2PAValidationTests.swift */; };
 		AB3100000000000000000002 /* ImportViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3100000000000000000001 /* ImportViewModelTests.swift */; };
-		F3A100000000000000000002 /* ImportMetadataScanServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */; };
 		AB3200000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3200000000000000000001 /* PresetVariableInterpolatorTests.swift */; };
 		AB3300000000000000000002 /* RejectMoveServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3300000000000000000001 /* RejectMoveServiceTests.swift */; };
 		AB3400000000000000000002 /* RecentFoldersStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3400000000000000000001 /* RecentFoldersStoreTests.swift */; };
@@ -126,6 +125,7 @@
 		EDDA71000000000000000002 /* EditorialDateCreatedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */; };
 		F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */; };
 		F2BA71000000000000000002 /* MetadataBatchSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */; };
+		F3A100000000000000000002 /* ImportMetadataScanServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -194,7 +194,6 @@
 		AB2900000000000000000001 /* C2PASigningImportTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = C2PASigningImportTests.swift; sourceTree = "<group>"; };
 		AB3000000000000000000001 /* C2PAValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = C2PAValidationTests.swift; sourceTree = "<group>"; };
 		AB3100000000000000000001 /* ImportViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportViewModelTests.swift; sourceTree = "<group>"; };
-		F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportMetadataScanServiceTests.swift; sourceTree = "<group>"; };
 		AB3200000000000000000001 /* PresetVariableInterpolatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PresetVariableInterpolatorTests.swift; sourceTree = "<group>"; };
 		AB3300000000000000000001 /* RejectMoveServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RejectMoveServiceTests.swift; sourceTree = "<group>"; };
 		AB3400000000000000000001 /* RecentFoldersStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RecentFoldersStoreTests.swift; sourceTree = "<group>"; };
@@ -268,6 +267,7 @@
 		F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoreWorkflowSmokeTests.swift; sourceTree = "<group>"; };
 		F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent UI Smoke Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataBatchSelectionTests.swift; sourceTree = "<group>"; };
+		F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportMetadataScanServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -297,7 +297,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */,
+				8ED369F42F8CF02C00FB9A33 /* SwiftMediaMetadata in Frameworks */,
 				8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -561,7 +561,7 @@
 			mainGroup = 8E0556AA2F28C3F600BCFB49;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				8ED369F22F8CF02C00FB9A33 /* XCLocalSwiftPackageReference "Vendor/SwiftExif" */,
+				8ED369F22F8CF02C00FB9A33 /* XCRemoteSwiftPackageReference "SwiftMediaMetadata" */,
 				8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -1108,14 +1108,15 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		8ED369F22F8CF02C00FB9A33 /* XCLocalSwiftPackageReference "Vendor/SwiftExif" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = Vendor/SwiftExif;
-		};
-/* End XCLocalSwiftPackageReference section */
-
 /* Begin XCRemoteSwiftPackageReference section */
+		8ED369F22F8CF02C00FB9A33 /* XCRemoteSwiftPackageReference "SwiftMediaMetadata" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/aagedal/SwiftMediaMetadata.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.0.0;
+			};
+		};
 		8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -1127,10 +1128,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		8ED369F32F8CF02C00FB9A33 /* SwiftExif */ = {
+		8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 8ED369F22F8CF02C00FB9A33 /* XCLocalSwiftPackageReference "Vendor/SwiftExif" */;
-			productName = SwiftExif;
+			package = 8ED369F22F8CF02C00FB9A33 /* XCRemoteSwiftPackageReference "SwiftMediaMetadata" */;
+			productName = SwiftMediaMetadata;
 		};
 		8ED36A032F8CF03000FB9A33 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -50,8 +50,8 @@ areas to look at:
 
 - **Untrusted file parsing.** The app reads images, video/audio metadata,
   EXIF/IPTC/XMP metadata, PDFs, and `.xmp` / JSON / face-data sidecars that may
-  originate from untrusted sources. Parsing uses the vendored pure-Swift
-  SwiftExif package, Apple ImageIO and media frameworks, the app's own sidecar
+  originate from untrusted sources. Parsing uses the pure-Swift
+  SwiftMediaMetadata package, Apple ImageIO and media frameworks, the app's own sidecar
   decoders, and bundled command-line helpers where applicable. Memory-safety,
   command-injection, path-handling, or parser-confusion issues triggered by a
   malicious file are in scope.

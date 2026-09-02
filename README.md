@@ -87,13 +87,13 @@ Non-destructive RAW development with real-time Metal GPU preview:
 - Required-metadata definitions that drive the browser's missing-field filter and the pre-upload check
 - Metadata mirrored to both IPTC and XMP for cross-tool interoperability
 - Correct IPTC `CodedCharacterSet` tagging so Nordic / non-ASCII characters round-trip through other apps
-- Pure-Swift in-process metadata engine (SwiftExif) — no external binaries, no subprocess overhead
+- Pure-Swift in-process metadata engine (SwiftMediaMetadata 3) — no external binaries, no subprocess overhead
 
 The generated [metadata field and delivery support table](docs/metadata-field-support.md) lists every
 current descriptive field ID, writer mapping, normalized read-back rule, and carrier boundary. It is
 an implementation-support statement, not a claim of completed manual round trips through Adobe
 Bridge, Photo Mechanic, or every supported browsing/export format.
-Headline and localized Dublin Core Title are independent. The checked-in SwiftExif fork preserves
+Headline and localized Dublin Core Title are independent. SwiftMediaMetadata 3 preserves
 ordered `rdf:Alt` language alternatives and exact language tags through the supported read/write paths;
 Headline writes do not create, clear, or replace `dc:title` or IIM Object Name. External Adobe Bridge,
 Photo Mechanic, and remaining licensed-container round trips are still limited to the evidence named in
@@ -265,7 +265,7 @@ MVVM with a services layer, built primarily on Apple frameworks plus a small set
 
 - **Swift 6** with strict concurrency (`@MainActor` default isolation, `Sendable` services)
 - **Metal GPU pipeline** for real-time image editing, scope rendering, and export
-- **SwiftExif** (SPM, pure Swift) for metadata read/write
+- **SwiftMediaMetadata 3** (SPM, pure Swift) for metadata read/write
 - **Image I/O** for native 8-bit and 10-bit AVIF encoding
 - **FFmpeg** (bundled, arm64) for alternative AVIF and JPEG XL encoding
 - **c2patool** (bundled) for C2PA signing
@@ -335,7 +335,7 @@ License texts ship with the app (Settings → Licenses) and live under `Aagedal 
 | [FFmpeg](https://ffmpeg.org) | AVIF / JPEG XL encoding | GPL-3.0 |
 | [c2patool](https://github.com/contentauth/c2pa-rs) | C2PA content credentials | MIT |
 | [Sparkle](https://sparkle-project.org) | Software updates | MIT |
-| [SwiftExif](https://github.com/aagedal/SwiftExif) | EXIF / IPTC metadata | GPL-3.0 |
+| [SwiftMediaMetadata](https://github.com/aagedal/SwiftMediaMetadata) | Image, audio, and video metadata | GPL-3.0 |
 | [AuraFace-v1](https://huggingface.co/fal/AuraFace-v1) | Face recognition model | Apache-2.0 |
 
 ### Source for bundled GPL components (GPLv3 §6)
@@ -355,7 +355,8 @@ architectures, and expected runtime capabilities for bundled binaries and the op
 recorded in `Aagedal Photo Agent/Resources/bundled-components.json`. The repository validator checks that
 manifest against every present artifact; the required FFmpeg and c2patool binaries must always be present.
 
-The application's own source is published under GPL-3.0. SwiftExif source and its local maintained delta
-are checked in under `Vendor/SwiftExif`; the pinned upstream revision, vendored license text, public table,
-and in-app label consistently identify GPL-3.0. See the
+The application's own source is published under GPL-3.0. SwiftMediaMetadata is resolved from its
+GPL-3.0 upstream repository at the version pinned in `Package.resolved` (currently
+[3.0.0](https://github.com/aagedal/SwiftMediaMetadata/tree/3.0.0)); the shipped license text, public
+table, and in-app label consistently identify GPL-3.0. See the
 [documentation-readiness validation](docs/documentation-readiness-validation-2026-08-25.md).

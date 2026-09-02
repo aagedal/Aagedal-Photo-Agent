@@ -1,5 +1,5 @@
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 
 /// Serialized filesystem/metadata boundary for Sony dual-card voice-memo association.
 ///

@@ -1,10 +1,10 @@
 import AppKit
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 
 extension C2PAMetadata {
     /// Build a `C2PAMetadata` from SwiftExif's typed `C2PAData`.
-    init(from c2paData: SwiftExif.C2PAData) {
+    init(from c2paData: SwiftMediaMetadata.C2PAData) {
         let parsed: [C2PAManifest] = c2paData.manifests.map { manifest in
             var actions: [String] = []
             var digitalSourceType: String?
@@ -80,7 +80,7 @@ extension C2PAMetadata {
 extension C2PAThumbnails {
     /// Walk SwiftExif's `C2PAData` for `.thumbnail` assertions, decoding the
     /// claim and ingredient thumbnails to `NSImage` when present.
-    init(from c2paData: SwiftExif.C2PAData) {
+    init(from c2paData: SwiftMediaMetadata.C2PAData) {
         var claim: NSImage?
         var ingredient: NSImage?
         for manifest in c2paData.manifests {

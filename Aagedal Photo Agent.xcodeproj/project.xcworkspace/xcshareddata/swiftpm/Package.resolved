@@ -1,5 +1,5 @@
 {
-  "originHash" : "f8fb06e442756f86283dd05917a7ae5878c34f047e27de6b36ac188d988a645b",
+  "originHash" : "3b593d9e561d4105891bfc1e1c243468737cb08b47e0aab788f2f73dd354afdb",
   "pins" : [
     {
       "identity" : "sparkle",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a",
         "version" : "2.9.6"
+      }
+    },
+    {
+      "identity" : "swiftmediametadata",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/aagedal/SwiftMediaMetadata.git",
+      "state" : {
+        "revision" : "c2d77c2dcefcb997623e52beca57bc61ce302cb9",
+        "version" : "3.0.0"
       }
     }
   ],

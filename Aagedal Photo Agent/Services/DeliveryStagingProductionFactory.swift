@@ -1,6 +1,6 @@
 import Foundation
 import ImageIO
-import SwiftExif
+import SwiftMediaMetadata
 
 /// Fail-closed reasons why a frozen plan cannot be executed by the live staging stack.
 ///

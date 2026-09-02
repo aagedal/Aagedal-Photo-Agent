@@ -1,6 +1,6 @@
 import Foundation
 import os.log
-import SwiftExif
+import SwiftMediaMetadata
 
 private let exportPipelineLog = Logger(
     subsystem: "com.aagedal.photo-agent",

@@ -1,5 +1,5 @@
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 
 nonisolated protocol RenameOriginalFilenameMetadataCodec: Sendable {
     func applying(

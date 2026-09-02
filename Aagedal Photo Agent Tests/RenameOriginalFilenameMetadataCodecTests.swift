@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
-import SwiftExif
+import SwiftMediaMetadata
 import Testing
 import UniformTypeIdentifiers
 @testable import Aagedal_Photo_Agent

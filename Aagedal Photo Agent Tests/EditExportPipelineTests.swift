@@ -3,7 +3,7 @@ import Foundation
 import AppKit
 import CoreImage
 import ImageIO
-import SwiftExif
+import SwiftMediaMetadata
 @testable import Aagedal_Photo_Agent
 
 /// Verifies the shared export pipeline both renders a file AND overlays pending IPTC
@@ -49,9 +49,8 @@ struct EditExportPipelineTests {
         return (dir, source)
     }
 
-    /// Creates a raster TIFF carrying a Sony Make tag. SwiftExif deliberately treats
-    /// any TIFF with that tag as a possible ARW, matching the archive failure this
-    /// suite guards against.
+    /// Creates a raster TIFF carrying a Sony Make tag. SwiftMediaMetadata 3 must keep the
+    /// unambiguous `.tiff` URL classified as TIFF rather than treating camera Make as proof of ARW.
     private func makeSonyTIFFWorkspace() throws -> (dir: URL, source: URL) {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("apa-export-sony-tiff-\(UUID().uuidString)", isDirectory: true)
@@ -67,7 +66,7 @@ struct EditExportPipelineTests {
         }
         try data.write(to: source)
 
-        var metadata = try SwiftExif.readMetadata(from: source)
+        var metadata = try SwiftMediaMetadata.readMetadata(from: source)
         let make = Data("SONY\0".utf8)
         metadata.exif = metadata.exif ?? ExifData(byteOrder: .littleEndian)
         metadata.exif?.ifd0 = IFD(entries: [
@@ -194,7 +193,7 @@ struct EditExportPipelineTests {
         let (dir, source) = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        var planted = try SwiftExif.readMetadata(from: source)
+        var planted = try SwiftMediaMetadata.readMetadata(from: source)
         planted.xmp = XMPData()
         planted.xmp?.setValue(
             .languageAlternative([
@@ -227,15 +226,14 @@ struct EditExportPipelineTests {
         #expect(try await SwiftExifReadService().readFullMetadata(url: rendered).localizedTitles == nil)
     }
 
-    @Test("rendered Sony TIFF accepts sidecar IPTC without weakening ordinary RAW writes")
+    @Test("Sony-authored raster TIFF accepts direct and sidecar IPTC writes")
     func renderedSonyTIFFAcceptsSidecarIPTC() async throws {
         let (dir, source) = try makeSonyTIFFWorkspace()
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let engine = SwiftExifWriteEngine()
-        await #expect(throws: (any Error).self) {
-            try await engine.writeFields([.headline: "Blocked by RAW guard"], to: [source])
-        }
+        try await engine.writeFields([.headline: "Direct TIFF write"], to: [source])
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).title == "Direct TIFF write")
 
         let rawSource = dir.appendingPathComponent("original.ARW")
         try Data([0]).write(to: rawSource)
@@ -298,7 +296,7 @@ struct EditExportPipelineTests {
         let crsNS = "http://ns.adobe.com/camera-raw-settings/1.0/"
         let xmpNS = "http://ns.adobe.com/xap/1.0/"
         let appNS = "http://aagedal.me/ns/photo/1.0/"
-        let embedded = try SwiftExif.readMetadata(from: rendered)
+        let embedded = try SwiftMediaMetadata.readMetadata(from: rendered)
         // The baked develop settings are present, but flagged as already applied.
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "AlreadyApplied") == "True")
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Exposure2012") == "+0.50")
@@ -351,7 +349,7 @@ struct EditExportPipelineTests {
         // Read the embedded crs back through the dict adapter + shared decoder.
         // (The block is AlreadyApplied="True", so the full parser intentionally
         // nils cameraRaw; decode the documented HSL directly to verify it survived.)
-        let embedded = try SwiftExif.readMetadata(from: rendered)
+        let embedded = try SwiftMediaMetadata.readMetadata(from: rendered)
         let dict = embedded.asMetadataDict()
         let hsl = try #require(decodeHSLAdjustments { parseIntValue(dict[$0]) })
 
@@ -379,7 +377,7 @@ struct EditExportPipelineTests {
 
         let crsNS = "http://ns.adobe.com/camera-raw-settings/1.0/"
         let xmpNS = "http://ns.adobe.com/xap/1.0/"
-        let embedded = try SwiftExif.readMetadata(from: rendered)
+        let embedded = try SwiftMediaMetadata.readMetadata(from: rendered)
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "AlreadyApplied") == nil)
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Exposure2012") == nil)
         #expect(embedded.xmp?.simpleValue(namespace: xmpNS, property: "CreatorTool")?
@@ -552,7 +550,7 @@ struct EditExportPipelineTests {
     func metadataRewritePreservesVisibility() throws {
         let (dir, source) = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let metadata = try SwiftExif.readMetadata(from: source)
+        let metadata = try SwiftMediaMetadata.readMetadata(from: source)
 
         var visibleValues = URLResourceValues()
         visibleValues.isHidden = false

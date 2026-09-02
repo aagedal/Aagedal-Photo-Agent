@@ -870,6 +870,14 @@ non-preemptible read; the view model publishes only a complete result carrying i
 lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-import-voice-memo-association-continuation-2026-09-01.md))
 
+**SwiftMediaMetadata 3 migration (2026-09-02):** the checklist remains 66 of 75. The app now resolves the
+renamed upstream package at version 3.0.0 instead of compiling a checked-in SwiftExif 1.9.10 snapshot.
+Imports and direct API references are migrated, the obsolete vendored tree is removed, and version-3
+behavior replaces app-owned PLUS Image Supplier, file-creation-date, and rendered-TIFF compatibility
+workarounds. Focused metadata and import validation passed 77 tests; the complete serial gate passed
+1,888 logical tests (2,015 expanded executions) with zero failures or skips.
+([validation](swift-media-metadata-3-migration-validation-2026-09-02.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

@@ -1,5 +1,5 @@
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -72,7 +72,7 @@ struct EditorialImageSupplierTests {
         #expect(EditorialImageSupplier.canonicalJSONString(for: []) == nil)
     }
 
-    @Test("PLUS Image Supplier sequence workaround preserves other PLUS properties")
+    @Test("SwiftMediaMetadata writes PLUS Image Supplier as a sequence")
     func sequenceFormAndPlusPreservation() {
         var xmp = XMPData()
         xmp.setValue(
@@ -80,7 +80,6 @@ struct EditorialImageSupplierTests {
             namespace: XMPNamespace.plus,
             property: "LicenseTransactionID"
         )
-        PLUSImageSupplierXMP.enforceSequenceForm(in: &xmp)
         xmp.setValue(
             .structuredArray([[
                 XMPNamespace.plus + "ImageSupplierID": .simple("agency-1"),

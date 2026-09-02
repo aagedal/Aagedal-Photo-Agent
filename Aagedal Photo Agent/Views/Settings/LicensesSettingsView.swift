@@ -43,11 +43,11 @@ struct LicensesSettingsView: View {
             url: URL(string: "https://sparkle-project.org")
         ),
         Component(
-            name: "SwiftExif",
-            detail: "EXIF / IPTC metadata engine (libexif, libiptcdata)",
+            name: "SwiftMediaMetadata",
+            detail: "Pure-Swift image, audio, and video metadata engine",
             licenseName: "GPL-3.0",
             licenseResource: "License-GPL-3.0",
-            url: URL(string: "https://github.com/aagedal/SwiftExif")
+            url: URL(string: "https://github.com/aagedal/SwiftMediaMetadata")
         ),
         Component(
             name: "AuraFace-v1",

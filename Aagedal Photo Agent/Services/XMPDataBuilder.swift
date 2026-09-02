@@ -1,5 +1,5 @@
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 import os
 
 /// Builds an `IPTCMetadata` value into a SwiftExif `XMPData` tree — the pure-Swift replacement
@@ -148,9 +148,8 @@ enum XMPDataBuilder {
             xmp.removeValue(namespace: XMPNamespace.iptcExt, property: "ImageSupplier")
             return
         }
-        // Capture the source structures before seeding PLUS. The seed necessarily introduces a
-        // placeholder PLUS ImageSupplier value, which must not mask a legacy IPTC Extension
-        // structure during canonical migration.
+        // Capture the source structures before replacing the managed PLUS members. SwiftMediaMetadata
+        // 3 serializes this property using the standard-required rdf:Seq container.
         let existing = xmp.structuredArrayValue(
             namespace: XMPNamespace.plus,
             property: "ImageSupplier"
@@ -158,7 +157,6 @@ enum XMPDataBuilder {
             namespace: XMPNamespace.iptcExt,
             property: "ImageSupplier"
         ) ?? []
-        PLUSImageSupplierXMP.enforceSequenceForm(in: &xmp)
         let encoded = suppliers.enumerated().map { index, supplier in
             var fields = existing.indices.contains(index) ? existing[index] : [:]
             fields.removeValue(forKey: XMPNamespace.iptcExt + "ImageSupplierID")

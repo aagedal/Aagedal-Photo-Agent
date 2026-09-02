@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import CoreLocation
 @preconcurrency import MapKit
-import SwiftExif
+import SwiftMediaMetadata
 
 struct GeocodingResult: Sendable {
     let city: String?

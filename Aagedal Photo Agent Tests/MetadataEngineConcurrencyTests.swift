@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import AppKit
-import SwiftExif
+import SwiftMediaMetadata
 @testable import Aagedal_Photo_Agent
 
 /// End-to-end concurrency tests that drive the real write engine, read service,
@@ -199,7 +199,7 @@ struct MetadataEngineConcurrencyTests {
             structuredData: StructuredWriteData(masks: [mask], layerOrder: layerOrder)
         )
 
-        let meta = try SwiftExif.readMetadata(from: url)
+        let meta = try SwiftMediaMetadata.readMetadata(from: url)
         let aaphotoNamespace = "http://aagedal.me/ns/photo/1.0/"
         #expect(meta.xmp?.simpleValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex") == "1")
         #expect(meta.xmp?.arrayValue(namespace: aaphotoNamespace, property: "LayerOrder").isEmpty ?? true)
@@ -262,7 +262,7 @@ struct MetadataEngineConcurrencyTests {
         let crs = "http://ns.adobe.com/camera-raw-settings/1.0/"
 
         // Plant settings the app doesn't model, as an ACR session would have.
-        var planted = try SwiftExif.readMetadata(from: url)
+        var planted = try SwiftMediaMetadata.readMetadata(from: url)
         if planted.xmp == nil { planted.xmp = XMPData() }
         planted.xmp?.setValue(.simple("+40"), namespace: crs, property: "Texture")
         planted.xmp?.setValue(.simple("-30"), namespace: crs, property: "PostCropVignetteAmount")
@@ -270,7 +270,7 @@ struct MetadataEngineConcurrencyTests {
 
         // Partial crs write (paste semantics): unmanaged settings survive.
         try await engine.writeFields([.crsExposure2012: "+0.50"], to: [url])
-        var meta = try SwiftExif.readMetadata(from: url)
+        var meta = try SwiftMediaMetadata.readMetadata(from: url)
         #expect(meta.xmp?.simpleValue(namespace: crs, property: "Texture") == "+40")
         #expect(meta.xmp?.simpleValue(namespace: crs, property: "Exposure2012") == "+0.50")
 
@@ -281,7 +281,7 @@ struct MetadataEngineConcurrencyTests {
             to: [url],
             structuredData: StructuredWriteData(replaceCameraRawBlock: true)
         )
-        meta = try SwiftExif.readMetadata(from: url)
+        meta = try SwiftMediaMetadata.readMetadata(from: url)
         #expect(meta.xmp?.simpleValue(namespace: crs, property: "Texture") == nil)
         #expect(meta.xmp?.simpleValue(namespace: crs, property: "PostCropVignetteAmount") == nil)
         #expect(meta.xmp?.simpleValue(namespace: crs, property: "Exposure2012") == "+0.75")
@@ -294,7 +294,7 @@ struct MetadataEngineConcurrencyTests {
             [.headline: "Hello"], to: [url],
             structuredData: StructuredWriteData(replaceCameraRawBlock: true)
         )
-        meta = try SwiftExif.readMetadata(from: url)
+        meta = try SwiftMediaMetadata.readMetadata(from: url)
         #expect(meta.xmp?.simpleValue(namespace: crs, property: "Exposure2012") == "+0.75")
     }
 

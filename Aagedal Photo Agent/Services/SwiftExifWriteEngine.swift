@@ -1,5 +1,5 @@
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 import os
 
 nonisolated private let swiftExifLog = Logger(subsystem: "com.aagedal.photo-agent", category: "SwiftExifWriteEngine")
@@ -58,8 +58,6 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         for url in urls {
             try Task.checkCancellation()
             try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
-                let creationDates = captureCreationDates(for: [url])
-                defer { restoreCreationDates(creationDates) }
                 try self.writeFieldsToFile(fields, structuredData: structuredData, url: url)
             }
         }
@@ -70,22 +68,16 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         to urls: [URL],
         structuredData: StructuredWriteData
     ) async throws {
-        // Keep the ordinary RAW-extension guard even at this explicit render boundary.
-        // The opt-in below exists only for normal raster outputs whose copied camera Make
-        // tag can make SwiftExif's byte heuristic mistake a generated TIFF for an ARW.
         let urls = embeddableURLs(urls)
         guard !urls.isEmpty, !fields.isEmpty || !structuredData.isEmpty else { return }
 
         for url in urls {
             try Task.checkCancellation()
             try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
-                let creationDates = captureCreationDates(for: [url])
-                defer { restoreCreationDates(creationDates) }
                 try self.writeFieldsToFile(
                     fields,
                     structuredData: structuredData,
-                    url: url,
-                    allowRenderedTIFFRewrite: true
+                    url: url
                 )
             }
         }
@@ -105,8 +97,6 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         for url in urls {
             try Task.checkCancellation()
             try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
-                let creationDates = captureCreationDates(for: [url])
-                defer { restoreCreationDates(creationDates) }
                 var metadata = try readMetadata(from: url)
 
                 for (key, valuesToRemove) in remove {
@@ -119,7 +109,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                     self.applyListAdd(key: key, values: valuesToAdd, metadata: &metadata)
                 }
 
-                self.syncIPTCToXMPPreservingDCTitle(&metadata)
+                metadata.synchronizeIPTCToXMP()
                 try metadata.write(to: url)
             }
         }
@@ -134,8 +124,6 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         for url in urls {
             try Task.checkCancellation()
             try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
-                let creationDates = captureCreationDates(for: [url])
-                defer { restoreCreationDates(creationDates) }
                 var metadata = try readMetadata(from: url)
                 if value.isEmpty {
                     metadata.xmp?.removeValue(namespace: XMPNamespace.xmp, property: "Rating")
@@ -157,8 +145,6 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         for url in urls {
             try Task.checkCancellation()
             try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
-                let creationDates = captureCreationDates(for: [url])
-                defer { restoreCreationDates(creationDates) }
                 var metadata = try readMetadata(from: url)
                 if value.isEmpty {
                     metadata.xmp?.removeValue(namespace: XMPNamespace.xmp, property: "Label")
@@ -178,8 +164,6 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         for url in urls {
             try Task.checkCancellation()
             try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
-                let creationDates = captureCreationDates(for: [url])
-                defer { restoreCreationDates(creationDates) }
                 var metadata = try readMetadata(from: url)
                 metadata.setOrientation(UInt16(clamping: orientation))
                 try metadata.write(to: url)
@@ -194,8 +178,6 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         for url in urls {
             try Task.checkCancellation()
             try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
-                let creationDates = captureCreationDates(for: [url])
-                defer { restoreCreationDates(creationDates) }
                 var metadata = try readMetadata(from: url)
                 metadata.iptc = IPTCData()
                 metadata.xmp = nil
@@ -233,9 +215,6 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         }
 
         try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: destination)) {
-            let creationDates = captureCreationDates(for: [destination])
-            defer { restoreCreationDates(creationDates) }
-
             var destMetadata: ImageMetadata
             do {
                 destMetadata = try readMetadata(from: destination)
@@ -323,8 +302,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     private func writeFieldsToFile(
         _ fields: [MetadataFieldKey: String],
         structuredData: StructuredWriteData,
-        url: URL,
-        allowRenderedTIFFRewrite: Bool = false
+        url: URL
     ) throws {
         var metadata = try readMetadata(from: url)
 
@@ -424,80 +402,11 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             metadata.xmp?.setValue(.simple("234881024"), namespace: crsNamespace, property: "CompatibleVersion")
         }
 
-        // Sync supported IIM fields into XMP without treating legacy Object Name as Headline.
-        // dc:title is a separate localized field and is never derived from scalar Headline.
-        syncIPTCToXMPPreservingDCTitle(&metadata)
-        normalizeEditorialRoleXMP(for: fields, metadata: &metadata)
-        normalizeDateCreatedXMP(for: fields, metadata: &metadata)
+        // Version 3 preserves dc:title, scalar editorial roles, and full Date Created precision
+        // while synchronizing the legacy IIM carrier into XMP.
+        metadata.synchronizeIPTCToXMP()
 
-        if allowRenderedTIFFRewrite,
-           ["tif", "tiff"].contains(url.pathExtension.lowercased()) {
-            try metadata.write(
-                to: url,
-                options: .init(allowUnsafeRawEmbed: true)
-            )
-        } else {
-            try metadata.write(to: url)
-        }
-    }
-
-    /// SwiftExif's general IIM→XMP synchronizer maps Object Name (2:05) to `dc:title`.
-    /// A Headline or unrelated write must neither synthesize `dc:title` nor replace any of its
-    /// language alternatives. The local SwiftExif carrier retains the complete ordered rdf:Alt.
-    private func syncIPTCToXMPPreservingDCTitle(_ metadata: inout ImageMetadata) {
-        let title = metadata.xmp?.value(namespace: XMPNamespace.dc, property: "title")
-        metadata.syncIPTCToXMP()
-        if let title {
-            metadata.xmp?.setValue(title, namespace: XMPNamespace.dc, property: "title")
-        } else {
-            metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "title")
-        }
-    }
-
-    /// SwiftExif models the legacy IIM datasets as repeatable and therefore mirrors them to
-    /// XMP arrays. IPTC Photo Metadata defines the corresponding Photoshop properties as scalar
-    /// text, so normalize only the fields touched by this write after the general IIM→XMP sync.
-    private func normalizeEditorialRoleXMP(
-        for fields: [MetadataFieldKey: String],
-        metadata: inout ImageMetadata
-    ) {
-        let mappings: [(MetadataFieldKey, String)] = [
-            (.creatorJobTitle, "AuthorsPosition"),
-            (.descriptionWriter, "CaptionWriter"),
-        ]
-
-        for (key, property) in mappings {
-            guard let value = fields[key] else { continue }
-            if value.isEmpty {
-                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: property)
-            } else {
-                if metadata.xmp == nil { metadata.xmp = XMPData() }
-                metadata.xmp?.setValue(
-                    .simple(value),
-                    namespace: XMPNamespace.photoshop,
-                    property: property
-                )
-            }
-        }
-    }
-
-    /// IIM can carry only a subset of ISO 8601 Date Created precision. The full lexical value is
-    /// authoritative in photoshop:DateCreated and must be restored after SwiftExif's IIM→XMP sync.
-    private func normalizeDateCreatedXMP(
-        for fields: [MetadataFieldKey: String],
-        metadata: inout ImageMetadata
-    ) {
-        guard let value = fields[.dateCreated] else { return }
-        if value.isEmpty {
-            metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "DateCreated")
-        } else {
-            if metadata.xmp == nil { metadata.xmp = XMPData() }
-            metadata.xmp?.setValue(
-                .simple(value),
-                namespace: XMPNamespace.photoshop,
-                property: "DateCreated"
-            )
-        }
+        try metadata.write(to: url)
     }
 
     /// Re-applies an EXIF hemisphere ref onto a coordinate magnitude. Callers split a

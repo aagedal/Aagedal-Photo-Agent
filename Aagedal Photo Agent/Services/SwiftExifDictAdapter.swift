@@ -1,5 +1,5 @@
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 
 /// XMP namespace URI for Adobe Camera Raw Settings.
 nonisolated private let crsNamespaceURI = "http://ns.adobe.com/camera-raw-settings/1.0/"

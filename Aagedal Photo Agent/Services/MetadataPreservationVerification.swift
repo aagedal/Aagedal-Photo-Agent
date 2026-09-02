@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 
 /// Metadata families whose semantic identity can be checked independently of the descriptive
 /// values resolved by a deadline profile. C2PA is deliberately not a member: carrying a manifest

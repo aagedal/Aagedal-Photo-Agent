@@ -1,5 +1,5 @@
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 
 nonisolated enum DevelopVersionPromotionStep: String, Equatable, Sendable {
     case recoveryCatalogWrite
