@@ -1,6 +1,6 @@
 # App improvement audit plan
 
-**Status:** implementation in progress — 63 of 75 checklist substeps complete
+**Status:** implementation in progress — 66 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
@@ -381,6 +381,15 @@ non-preemptible read, and let the MainActor publish only the current request. Ei
 adjacent 38-test selection, the repository gate, and the serial unfiltered 1,883-test run all passed. Other
 lower-priority direct paths and the real-volume/signpost/Thread Performance Checker evidence keep all three broad
 Phase 3.1 substeps open. ([validation](plan-status-import-metadata-scan-continuation-2026-09-01.md))
+
+**Import voice-memo association continuation (2026-09-01):** the checklist remains 66 of 75. Sony dual-card
+voice-memo EXIF and file-date reads, security-scope lifetime, and deterministic association now cross one injected
+serialized actor instead of an ad-hoc detached task. The boundary returns immutable complete reports or exact
+cancelled-prefix counts, while `ImportViewModel` cancels and identity-gates replacement, clear, reset, and teardown
+work. Five new characterizations, the adjacent 37-test selection, the repository gate, and the serial unfiltered
+1,888-logical-test/2,015-expanded-run gate passed. Other lower-priority direct paths and real-volume/signpost/Thread
+Performance Checker evidence keep all three broad Phase 3.1 substeps open.
+([validation](plan-status-import-voice-memo-association-continuation-2026-09-01.md))
 
 ## Phase 0 — Stop silent data loss and destructive surprises
 
@@ -853,6 +862,13 @@ fallbacks, actor serialization, post-read cancellation, replacement rejection, a
 adjacent five-suite selection passed 38 tests, the repository gate passed, and the serial unfiltered gate passed
 1,883 tests in 221 suites. Other lower-priority direct paths and real-volume signpost/Thread Performance Checker
 evidence remain open. ([validation](plan-status-import-metadata-scan-continuation-2026-09-01.md))
+
+**Import voice-memo association follow-up (2026-09-01):** Sony dual-card primary/companion EXIF reads and WAV
+resource-date reads now run on `ImportVoiceMemoAssociationScanService`, which also owns security-scoped access and
+final association on one serialized actor. Cancellation reports exact processed-prefix counts around every
+non-preemptible read; the view model publishes only a complete result carrying its current request identity. Other
+lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-import-voice-memo-association-continuation-2026-09-01.md))
 
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.

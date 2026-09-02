@@ -403,6 +403,13 @@ work from publishing. Eight new characterizations, the adjacent 38-test selectio
 serial unfiltered 1,883-test run passed. The audit remains 66 of 75 while Phase 3.1's remaining direct-path
 inventory and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [Import voice-memo association continuation](plan-status-import-voice-memo-association-continuation-2026-09-01.md)
+records serialized actor ownership of Sony dual-card EXIF/file-date reads, security-scoped access, and final
+association. Immutable complete or exact cancelled-prefix evidence and request-identity publication prevent stale
+work from replacing a newer report. Five new characterizations, the adjacent 37-test selection, the repository
+gate, and the serial unfiltered 1,888-logical-test/2,015-expanded-run gate passed. The audit remains 66 of 75 while
+the remaining Phase 3.1 direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 AuraFace production publication is recorded in the
 [on-demand runtime validation](auraface-on-demand-runtime-validation-2026-08-27.md#remaining-external-validation):
 the archive, descriptor, and detached-signature endpoints were live and returned HTTP 200 on 2026-09-01.

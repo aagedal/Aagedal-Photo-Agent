@@ -152,6 +152,7 @@ final class ImportViewModel {
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var voiceMemoScanTask: Task<Void, Never>?
     @ObservationIgnored private var voiceMemoAssociationTask: Task<Void, Never>?
+    @ObservationIgnored private var voiceMemoAssociationRequestID = UUID()
     @ObservationIgnored private var dateScanTask: Task<Void, Never>?
     @ObservationIgnored private var dateScanRequestID = UUID()
     @ObservationIgnored private var folderSuggestionTask: Task<Void, Never>?
@@ -165,6 +166,7 @@ final class ImportViewModel {
     @ObservationIgnored private let directoryService: ExportDirectoryService
     @ObservationIgnored private let captureDateScanService: ImportCaptureDateScanService
     @ObservationIgnored private let folderSuggestionService: ImportFolderSuggestionService
+    @ObservationIgnored private let voiceMemoAssociationScanService: ImportVoiceMemoAssociationScanService
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
     init(
@@ -174,7 +176,8 @@ final class ImportViewModel {
         preflightService: ImportPreflightService = ImportPreflightService(),
         directoryService: ExportDirectoryService = .shared,
         captureDateScanService: ImportCaptureDateScanService = ImportCaptureDateScanService(),
-        folderSuggestionService: ImportFolderSuggestionService = ImportFolderSuggestionService()
+        folderSuggestionService: ImportFolderSuggestionService = ImportFolderSuggestionService(),
+        voiceMemoAssociationScanService: ImportVoiceMemoAssociationScanService = ImportVoiceMemoAssociationScanService()
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
@@ -183,6 +186,7 @@ final class ImportViewModel {
         self.directoryService = directoryService
         self.captureDateScanService = captureDateScanService
         self.folderSuggestionService = folderSuggestionService
+        self.voiceMemoAssociationScanService = voiceMemoAssociationScanService
 
         // Restore last-used verification mode (default = .on).
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importVerificationMode),
@@ -417,6 +421,7 @@ final class ImportViewModel {
     private func scanVoiceMemoSource(url: URL) {
         voiceMemoScanTask?.cancel()
         voiceMemoAssociationTask?.cancel()
+        voiceMemoAssociationRequestID = UUID()
         voiceMemoSourceFiles = []
         voiceMemoAssociationReport = nil
         voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
@@ -462,6 +467,8 @@ final class ImportViewModel {
 
     private func refreshVoiceMemoAssociations() {
         voiceMemoAssociationTask?.cancel()
+        let requestID = UUID()
+        voiceMemoAssociationRequestID = requestID
         let hasMemoCandidates = !sourceVoiceMemoFiles.isEmpty
             || voiceMemoSourceFiles.contains {
                 $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame
@@ -478,90 +485,23 @@ final class ImportViewModel {
         let primaryMemoFiles = sourceVoiceMemoFiles
         let primaryRoot = configuration.sourceURL
         let companionRoot = configuration.voiceMemoSourceURL
-        voiceMemoAssociationTask = Task.detached(priority: .userInitiated) {
-            let didStartAccessingPrimary = primaryRoot?.startAccessingSecurityScopedResource() ?? false
-            let didStartAccessingCompanion = companionRoot?.startAccessingSecurityScopedResource() ?? false
-            defer {
-                if didStartAccessingPrimary { primaryRoot?.stopAccessingSecurityScopedResource() }
-                if didStartAccessingCompanion { companionRoot?.stopAccessingSecurityScopedResource() }
-            }
-            var primaryEvidence: [SonyVoiceMemoImageEvidence] = []
-            var companionEvidence: [SonyVoiceMemoImageEvidence] = []
-            var primaryMemoDates: [URL: Date] = [:]
-            var companionMemoDates: [URL: Date] = [:]
-
-            for file in primaryFiles {
-                guard !Task.isCancelled else { return }
-                primaryEvidence.append(Self.sonyVoiceMemoEvidence(for: file))
-            }
-            for file in primaryMemoFiles {
-                guard !Task.isCancelled else { return }
-                primaryMemoDates[file] = Self.voiceMemoFileDate(for: file)
-            }
-            for file in companionFiles {
-                guard !Task.isCancelled else { return }
-                if file.pathExtension.lowercased() == "wav" {
-                    companionMemoDates[file] = Self.voiceMemoFileDate(for: file)
-                } else {
-                    companionEvidence.append(Self.sonyVoiceMemoEvidence(for: file))
-                }
-            }
-
-            let report = SonyDualCardVoiceMemoAssociationService().associate(
-                primaryImages: primaryEvidence,
-                companionImages: companionEvidence,
-                primaryMemoFileDates: primaryMemoDates,
-                companionMemoFileDates: companionMemoDates
+        voiceMemoAssociationTask = Task(priority: .userInitiated) { [voiceMemoAssociationScanService] in
+            let result = await voiceMemoAssociationScanService.scan(
+                primaryImages: primaryFiles,
+                primaryMemos: primaryMemoFiles,
+                companionFiles: companionFiles,
+                primaryRoot: primaryRoot,
+                companionRoot: companionRoot
             )
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard !Task.isCancelled,
-                      self.sourceFiles == primaryFiles,
-                      self.sourceVoiceMemoFiles == primaryMemoFiles,
-                      self.voiceMemoSourceFiles == companionFiles else { return }
-                self.voiceMemoAssociationReport = report
+            guard self.voiceMemoAssociationRequestID == requestID else { return }
+            switch result {
+            case .complete(let evidence):
+                self.voiceMemoAssociationReport = evidence.report
+                self.isScanningVoiceMemoSource = false
+            case .cancelled:
                 self.isScanningVoiceMemoSource = false
             }
         }
-    }
-
-    nonisolated private static func voiceMemoFileDate(for url: URL) -> Date {
-        let values = try? url.resourceValues(forKeys: [
-            .creationDateKey,
-            .contentModificationDateKey,
-        ])
-        // Missing filesystem dates are not evidence that a WAV followed its image. Keeping the
-        // candidate with `.distantPast` makes the lower-bound rule fail closed and visible.
-        return values?.creationDate ?? values?.contentModificationDate ?? .distantPast
-    }
-
-    nonisolated private static func sonyVoiceMemoEvidence(for url: URL) -> SonyVoiceMemoImageEvidence {
-        guard let metadata = try? ImageMetadata.read(from: url), let exif = metadata.exif,
-              let captured = exif.dateTimeOriginal?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !captured.isEmpty else {
-            return SonyVoiceMemoImageEvidence(url: url, captureSignature: nil, capturedAt: nil)
-        }
-
-        let make = exif.make?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let model = exif.model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let software = exif.software?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let subsecond = exif.subSecTimeOriginal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let offset = exif.offsetTimeOriginal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard make.caseInsensitiveCompare("SONY") == .orderedSame,
-              !model.isEmpty, !software.isEmpty, !subsecond.isEmpty, !offset.isEmpty else {
-            return SonyVoiceMemoImageEvidence(url: url, captureSignature: nil, capturedAt: nil)
-        }
-        let signature = [make, model, software, captured, subsecond, offset].joined(separator: "|")
-
-        let parser = DateFormatter()
-        parser.locale = Locale(identifier: "en_US_POSIX")
-        parser.dateFormat = "yyyy:MM:dd HH:mm:ssXXX"
-        let capturedAt = parser.date(from: captured + offset)
-        return SonyVoiceMemoImageEvidence(
-            url: url,
-            captureSignature: signature,
-            capturedAt: capturedAt
-        )
     }
 
     // MARK: - Destination Selection
@@ -2080,6 +2020,7 @@ final class ImportViewModel {
         dateScanRequestID = UUID()
         voiceMemoScanTask?.cancel()
         voiceMemoAssociationTask?.cancel()
+        voiceMemoAssociationRequestID = UUID()
         folderSuggestionTask?.cancel()
         importRequestID = UUID()
         importTask?.cancel()

@@ -50,6 +50,205 @@ private nonisolated final class ImportMetadataScanGate: @unchecked Sendable {
     }
 }
 
+@Suite("Import voice-memo association filesystem boundary")
+struct ImportVoiceMemoAssociationScanServiceTests {
+    private let capturedAt = Date(timeIntervalSince1970: 1_788_000_000)
+
+    @Test("Association scan returns a complete immutable report")
+    func associationScanReturnsCompleteReport() async {
+        let image = URL(fileURLWithPath: "/card/TRA00001.ARW")
+        let memo = URL(fileURLWithPath: "/card/TRA00001.WAV")
+        let capturedAt = capturedAt
+        let service = ImportVoiceMemoAssociationScanService(
+            imageEvidenceReader: { url in
+                SonyVoiceMemoImageEvidence(
+                    url: url,
+                    captureSignature: "SONY|ILCE-1|4.00|capture",
+                    capturedAt: capturedAt
+                )
+            },
+            memoDateReader: { _ in capturedAt.addingTimeInterval(30) }
+        )
+
+        switch await service.scan(
+            primaryImages: [image],
+            primaryMemos: [memo],
+            companionFiles: [],
+            primaryRoot: nil,
+            companionRoot: nil
+        ) {
+        case .complete(let evidence):
+            #expect(evidence.progress.requestedFileCount == 2)
+            #expect(evidence.progress.processedFileCount == 2)
+            #expect(evidence.report.associations == [VoiceMemoAssociation(
+                profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+                imageURL: image,
+                memoURL: memo
+            )])
+        case .cancelled:
+            Issue.record("An uncancelled association scan must complete")
+        }
+    }
+
+    @Test("Cancellation after an image read returns an explicit empty prefix")
+    func associationCancellationAfterReadIsExplicit() async {
+        let gate = ImportMetadataScanGate()
+        let memoProbe = ImportMetadataScanProbe()
+        let image = URL(fileURLWithPath: "/card/TRA00001.ARW")
+        let memo = URL(fileURLWithPath: "/card/TRA00001.WAV")
+        let service = ImportVoiceMemoAssociationScanService(
+            imageEvidenceReader: { url in
+                gate.block()
+                return SonyVoiceMemoImageEvidence(
+                    url: url,
+                    captureSignature: nil,
+                    capturedAt: nil
+                )
+            },
+            memoDateReader: { _ in
+                memoProbe.recordCall()
+                return .distantPast
+            }
+        )
+        let task = Task {
+            await service.scan(
+                primaryImages: [image],
+                primaryMemos: [memo],
+                companionFiles: [],
+                primaryRoot: nil,
+                companionRoot: nil
+            )
+        }
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+        task.cancel()
+        gate.release()
+
+        switch await task.value {
+        case .complete:
+            Issue.record("A cancelled association scan must not publish complete evidence")
+        case .cancelled(let progress):
+            #expect(progress.requestedFileCount == 2)
+            #expect(progress.processedFileCount == 0)
+        }
+        #expect(memoProbe.callCount == 0)
+    }
+
+    @Test("Association actor serializes overlapping metadata reads")
+    func associationActorSerializesScans() async {
+        let gate = ImportMetadataScanGate()
+        let service = ImportVoiceMemoAssociationScanService(
+            imageEvidenceReader: { url in
+                gate.block()
+                return SonyVoiceMemoImageEvidence(
+                    url: url,
+                    captureSignature: nil,
+                    capturedAt: nil
+                )
+            },
+            memoDateReader: { _ in .distantPast }
+        )
+        let first = Task {
+            await service.scan(
+                primaryImages: [URL(fileURLWithPath: "/card/first.jpg")],
+                primaryMemos: [],
+                companionFiles: [],
+                primaryRoot: nil,
+                companionRoot: nil
+            )
+        }
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+        let second = Task {
+            await service.scan(
+                primaryImages: [URL(fileURLWithPath: "/card/second.jpg")],
+                primaryMemos: [],
+                companionFiles: [],
+                primaryRoot: nil,
+                companionRoot: nil
+            )
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(gate.maximumConcurrentCount == 1)
+        gate.release()
+
+        _ = await first.value
+        _ = await second.value
+        #expect(gate.maximumConcurrentCount == 1)
+    }
+
+    @Test("Import rejects a superseded voice-memo association result")
+    func importRejectsSupersededAssociationResult() async {
+        let gate = ImportMetadataScanGate()
+        let firstImage = URL(fileURLWithPath: "/card/first.jpg")
+        let firstMemo = URL(fileURLWithPath: "/card/first.wav")
+        let secondImage = URL(fileURLWithPath: "/card/second.jpg")
+        let secondMemo = URL(fileURLWithPath: "/card/second.wav")
+        let capturedAt = capturedAt
+        let service = ImportVoiceMemoAssociationScanService(
+            imageEvidenceReader: { url in
+                if url == firstImage { gate.block() }
+                return SonyVoiceMemoImageEvidence(
+                    url: url,
+                    captureSignature: "SONY|ILCE-1|4.00|\(url.lastPathComponent)",
+                    capturedAt: capturedAt
+                )
+            },
+            memoDateReader: { _ in capturedAt.addingTimeInterval(30) }
+        )
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            voiceMemoAssociationScanService: service
+        )
+        viewModel.sortByDate = false
+        viewModel.sourceFiles = [firstImage]
+        viewModel.sourceVoiceMemoFiles = [firstMemo]
+        viewModel.clearVoiceMemoSource()
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+
+        viewModel.sourceFiles = [secondImage]
+        viewModel.sourceVoiceMemoFiles = [secondMemo]
+        viewModel.clearVoiceMemoSource()
+        gate.release()
+        for _ in 0..<200 where viewModel.isScanningVoiceMemoSource {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(!viewModel.isScanningVoiceMemoSource)
+        #expect(viewModel.voiceMemoAssociationReport?.associations == [VoiceMemoAssociation(
+            profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+            imageURL: secondImage,
+            memoURL: secondMemo
+        )])
+    }
+
+    @Test("Import delegates voice-memo metadata work to its serialized service")
+    func viewModelDelegatesVoiceMemoAssociationScan() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = workspace
+            .appendingPathComponent("Aagedal Photo Agent", isDirectory: true)
+            .appendingPathComponent("ViewModels", isDirectory: true)
+            .appendingPathComponent("ImportViewModel.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let slice = try #require(source.range(
+            of: "private func refreshVoiceMemoAssociations()"
+        )).lowerBound..<#require(source.range(
+            of: "// MARK: - Destination Selection"
+        )).lowerBound
+        let associationSource = String(source[slice])
+
+        #expect(associationSource.contains("await voiceMemoAssociationScanService.scan("))
+        #expect(associationSource.contains("self.voiceMemoAssociationRequestID == requestID"))
+        #expect(!associationSource.contains("Task.detached"))
+        #expect(!associationSource.contains("ImageMetadata.read(from:"))
+        #expect(!associationSource.contains("resourceValues(forKeys:"))
+    }
+}
+
 private nonisolated final class ImportMetadataScanProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var storedCallCount = 0
