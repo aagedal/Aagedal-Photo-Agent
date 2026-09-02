@@ -498,7 +498,6 @@ struct FTPUploadView: View {
     /// Loads per-file face-scan facts (was it scanned, how many faces) for the Person Shown rule.
     /// Groups by parent folder so each folder's `.face_data/face_data.json` is read once.
     nonisolated private static func loadFaceInfo(for urls: [URL]) async -> [URL: FaceInfo] {
-        let storage = FaceDataStorageService()
         var byFolder: [URL: FolderFaceData?] = [:]
         var result: [URL: FaceInfo] = [:]
         for url in urls {
@@ -507,7 +506,14 @@ struct FTPUploadView: View {
             if let cached = byFolder[folder] {
                 data = cached
             } else {
-                data = storage.loadFaceData(for: folder)
+                let loadResult = await FaceDataFolderLoadService.shared.loadDocument(
+                    folderURL: folder
+                )
+                if case .complete(let evidence) = loadResult {
+                    data = evidence.faceData
+                } else {
+                    data = nil
+                }
                 byFolder[folder] = data
             }
             guard let data else { result[url] = FaceInfo(scanned: false, faceCount: 0); continue }

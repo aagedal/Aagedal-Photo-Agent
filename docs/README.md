@@ -443,6 +443,13 @@ and the adjacent 33-test selection, repository gate, and serial unfiltered 1,896
 remains 66 of 75 while remaining face mutations, other direct paths, and real-volume/signpost/Thread Performance
 Checker evidence stay open.
 
+The latest [Face persistence continuation](plan-status-face-persistence-continuation-2026-09-02.md) extends that
+actor across scan preparation/finalization, interactive document mutations, thumbnail commits and cleanup,
+whole-folder deletion, Caption, metadata-variable resolution, FTP preflight, rename reassociation, and secondary-
+lens reads. Seven new characterizations, the integrated 68-test selection, repository gate, and final serial
+unfiltered 1,903-logical-test/2,030-expanded-run gate passed. The audit remains 66 of 75 while Phase 3.1's other
+direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

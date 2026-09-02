@@ -733,6 +733,31 @@ private nonisolated final class FaceFolderLoadProbe: @unchecked Sendable {
     }
 }
 
+private nonisolated final class FaceDataPersistenceProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedEvents: [String] = []
+    private var storedRanOnMainThread = false
+
+    func record(_ event: String) {
+        lock.lock()
+        storedEvents.append(event)
+        storedRanOnMainThread = storedRanOnMainThread || Thread.isMainThread
+        lock.unlock()
+    }
+
+    var events: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedEvents
+    }
+
+    var ranOnMainThread: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRanOnMainThread
+    }
+}
+
 private nonisolated func makeFaceFolderData(
     folder: URL,
     faceIDs: [UUID]
@@ -767,6 +792,32 @@ private nonisolated func makeFaceFolderData(
 
 @Suite("Face folder-load filesystem boundary")
 struct FaceFolderLoadServiceTests {
+    @Test @MainActor
+    func documentOnlyLoadReturnsExistenceEvidenceOffMainActor() async {
+        let folder = URL(fileURLWithPath: "/faces/document-only")
+        let data = makeFaceFolderData(folder: folder, faceIDs: [UUID()])
+        let probe = FaceDataPersistenceProbe()
+        let service = FaceDataFolderLoadService(
+            loadFaceData: { _ in
+                probe.record("read")
+                return data
+            },
+            faceDataExists: { _ in
+                probe.record("exists")
+                return true
+            }
+        )
+
+        guard case .complete(let evidence) = await service.loadDocument(folderURL: folder) else {
+            Issue.record("An uncancelled document load must complete")
+            return
+        }
+        #expect(evidence.documentExisted)
+        #expect(evidence.faceData?.folderURL == folder)
+        #expect(probe.events == ["exists", "read"])
+        #expect(!probe.ranOnMainThread)
+    }
+
     @Test @MainActor
     func folderLoadReadsEveryThumbnailOffMainActor() async throws {
         let folder = URL(fileURLWithPath: "/faces/current")
@@ -951,7 +1002,7 @@ struct FaceFolderLoadServiceTests {
         let loadSlice = try #require(source.range(
             of: "func loadFaceData(for folderURL: URL, cleanupPolicy: FaceCleanupPolicy)"
         )).lowerBound..<#require(source.range(
-            of: "    private func loadThumbnails(for data: FolderFaceData)"
+            of: "    func isScanning(folderURL: URL?) -> Bool"
         )).lowerBound
         let loadSource = String(source[loadSlice])
         let thumbnailSlice = try #require(source.range(
@@ -966,6 +1017,176 @@ struct FaceFolderLoadServiceTests {
         #expect(!loadSource.contains("storageService.loadThumbnail"))
         #expect(thumbnailSource.contains("thumbnailCache.object(forKey:"))
         #expect(!thumbnailSource.contains("storageService.loadThumbnail"))
+    }
+
+    @Test @MainActor
+    func persistenceCommitsDocumentBeforeThumbnailCleanupOffMainActor() async {
+        let folder = URL(fileURLWithPath: "/faces/persisted")
+        let faceID = UUID()
+        let data = makeFaceFolderData(folder: folder, faceIDs: [])
+        let probe = FaceDataPersistenceProbe()
+        let service = FaceDataFolderLoadService(
+            saveFaceData: { _ in probe.record("document") },
+            deleteThumbnail: { deletedID, _ in
+                probe.record("thumbnail:\(deletedID.uuidString)")
+            }
+        )
+
+        let result = await service.persist(data, deletingThumbnailIDs: [faceID])
+        guard case .committed(let evidence) = result else {
+            Issue.record("An uncancelled persistence request must commit")
+            return
+        }
+
+        #expect(evidence.documentCommitted)
+        #expect(evidence.requestedThumbnailDeletionCount == 1)
+        #expect(evidence.deletedThumbnailIDs == [faceID])
+        #expect(evidence.thumbnailFailures.isEmpty)
+        #expect(!evidence.cancellationRequestedAfterCommit)
+        #expect(probe.events == ["document", "thumbnail:\(faceID.uuidString)"])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test
+    func cancellationAfterDocumentWritePreservesDurableCommitEvidence() async {
+        let folder = URL(fileURLWithPath: "/faces/cancelled-persistence")
+        let faceID = UUID()
+        let data = makeFaceFolderData(folder: folder, faceIDs: [])
+        let gate = FaceFolderLoadGate()
+        let probe = FaceDataPersistenceProbe()
+        let service = FaceDataFolderLoadService(
+            saveFaceData: { _ in
+                probe.record("document")
+                gate.block()
+            },
+            deleteThumbnail: { _, _ in probe.record("thumbnail") }
+        )
+        let task = Task {
+            await service.persist(data, deletingThumbnailIDs: [faceID])
+        }
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+        task.cancel()
+        gate.release()
+
+        guard case .committed(let evidence) = await task.value else {
+            Issue.record("Cancellation after the write must retain its durable commit")
+            return
+        }
+        #expect(evidence.documentCommitted)
+        #expect(evidence.deletedThumbnailIDs.isEmpty)
+        #expect(evidence.cancellationRequestedAfterCommit)
+        #expect(probe.events == ["document"])
+    }
+
+    @Test @MainActor
+    func viewModelMutationPublishesImmediatelyAndPersistsOffMainActor() async throws {
+        let folder = URL(fileURLWithPath: "/faces/view-model-persistence")
+        let faceID = UUID()
+        let data = makeFaceFolderData(folder: folder, faceIDs: [faceID])
+        let groupID = try #require(data.groups.first?.id)
+        let gate = FaceFolderLoadGate()
+        let probe = FaceDataPersistenceProbe()
+        let service = FaceDataFolderLoadService(
+            saveFaceData: { _ in
+                probe.record("document")
+                gate.block()
+            }
+        )
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            folderLoadService: service
+        )
+        viewModel.faceData = data
+
+        viewModel.nameGroup(groupID, name: "Immediate")
+        #expect(viewModel.faceData?.groups.first?.name == "Immediate")
+        defer { gate.release() }
+        #expect(await gate.waitUntilStarted())
+        // Reaching this assertion proves the blocked Foundation writer did not occupy MainActor.
+        #expect(viewModel.faceData?.groups.first?.name == "Immediate")
+        gate.release()
+        await viewModel.waitForCurrentFaceDataPersistence()
+
+        #expect(probe.events == ["document"])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test @MainActor
+    func rapidViewModelMutationsPersistInVisibleRevisionOrder() async throws {
+        let folder = URL(fileURLWithPath: "/faces/ordered-persistence")
+        let faceID = UUID()
+        let data = makeFaceFolderData(folder: folder, faceIDs: [faceID])
+        let groupID = try #require(data.groups.first?.id)
+        let probe = FaceDataPersistenceProbe()
+        let service = FaceDataFolderLoadService(
+            saveFaceData: { snapshot in
+                probe.record(snapshot.groups.first?.name ?? "unnamed")
+            }
+        )
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            folderLoadService: service
+        )
+        viewModel.faceData = data
+
+        viewModel.nameGroup(groupID, name: "First")
+        viewModel.nameGroup(groupID, name: "Second")
+        await viewModel.waitForCurrentFaceDataPersistence()
+
+        #expect(viewModel.faceData?.groups.first?.name == "Second")
+        #expect(probe.events == ["First", "Second"])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test
+    func viewModelSourceKeepsInteractiveMutationsBehindPersistenceBoundary() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = workspace
+            .appendingPathComponent("Aagedal Photo Agent", isDirectory: true)
+            .appendingPathComponent("ViewModels", isDirectory: true)
+            .appendingPathComponent("FaceRecognitionViewModel.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(source.contains("scheduleFaceDataPersistence("))
+        #expect(source.contains("scheduleFaceDataDeletion(for:"))
+        #expect(source.contains("await folderLoadService.persistThumbnail("))
+        #expect(source.contains("await folderLoadService.persist(folderData)"))
+        #expect(!source.contains("storageService.saveFaceData"))
+        #expect(!source.contains("storageService.saveThumbnail"))
+        #expect(!source.contains("storageService.deleteThumbnail"))
+        #expect(!source.contains("storageService.deleteFaceData"))
+        #expect(!source.contains("storageService.loadFaceData"))
+        #expect(!source.contains("storageService.loadThumbnail"))
+    }
+
+    @Test
+    func appFaceDataCallersUseSerializedServiceInsteadOfStorageDirectly() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let relativePaths = [
+            "Aagedal Photo Agent/ViewModels/FaceRecognitionViewModel.swift",
+            "Aagedal Photo Agent/ViewModels/MetadataViewModel.swift",
+            "Aagedal Photo Agent/Views/Metadata/CaptionWorkspaceView.swift",
+            "Aagedal Photo Agent/Views/FTP/FTPUploadView.swift",
+            "Aagedal Photo Agent/Services/RenameReassociationService.swift",
+            "Aagedal Photo Agent/Services/FaceLensService.swift",
+        ]
+
+        for relativePath in relativePaths {
+            let source = try String(
+                contentsOf: workspace.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            #expect(
+                !source.contains("FaceDataStorageService()"),
+                "\(relativePath) must use FaceDataFolderLoadService"
+            )
+        }
     }
 
 }

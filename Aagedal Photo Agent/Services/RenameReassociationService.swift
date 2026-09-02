@@ -41,8 +41,6 @@ nonisolated struct RenameReassociationResult: Equatable, Sendable {
 /// transaction succeeds. Hash-keyed Develop catalogs and source-identity evidence are intentionally
 /// excluded: their association already survives a rename and rewriting them would weaken identity.
 nonisolated struct RenameReassociationService: Sendable {
-    private let faceStorage = FaceDataStorageService()
-
     func reassociate(
         folderURL: URL,
         mappings: [BatchRenameExecutionPresentation.Mapping]
@@ -54,23 +52,27 @@ nonisolated struct RenameReassociationService: Sendable {
         var voiceMemoCompanionCount = 0
         var issues: [RenameReassociationIssue] = []
 
-        let hadPersistedFaceData = faceStorage.faceDataExists(for: folderURL)
-        if var faceData = faceStorage.loadFaceData(for: folderURL) {
+        let faceLoad = await FaceDataFolderLoadService.shared.loadDocument(folderURL: folderURL)
+        if case .complete(let snapshot) = faceLoad, var faceData = snapshot.faceData {
             faceReferenceCount = faceData.reassociateImageURLs(using: mappings)
             if faceReferenceCount > 0 {
-                do {
-                    try faceStorage.saveFaceData(faceData)
-                } catch {
+                let persistence = await FaceDataFolderLoadService.shared.persist(faceData)
+                if let failure = persistence.failureMessage {
                     issues.append(RenameReassociationIssue(
                         subsystem: .faceData,
-                        detail: error.localizedDescription
+                        detail: failure
                     ))
                 }
             }
-        } else if hadPersistedFaceData {
+        } else if case .complete(let snapshot) = faceLoad, snapshot.documentExisted {
             issues.append(RenameReassociationIssue(
                 subsystem: .faceData,
                 detail: "The existing face-data document could not be decoded; it was not reassociated."
+            ))
+        } else if case .cancelled = faceLoad {
+            issues.append(RenameReassociationIssue(
+                subsystem: .faceData,
+                detail: "Face-data reassociation was cancelled before the document could be read."
             ))
         }
 

@@ -917,12 +917,15 @@ struct CaptionWorkspaceView: View {
             loaded = await browserViewModel.thumbnailService.loadThumbnail(for: token.imageURL)
         }
         let folderURL = token.imageURL.deletingLastPathComponent()
-        let people = await Task.detached(priority: .utility) {
-            CaptionConfirmedPersonOrdering.people(
-                for: token.imageURL,
-                in: FaceDataStorageService().loadFaceData(for: folderURL)
-            )
-        }.value
+        let faceDataResult = await FaceDataFolderLoadService.shared.loadDocument(
+            folderURL: folderURL
+        )
+        let faceData: FolderFaceData? = if case .complete(let evidence) = faceDataResult {
+            evidence.faceData
+        } else {
+            nil
+        }
+        let people = CaptionConfirmedPersonOrdering.people(for: token.imageURL, in: faceData)
         guard !Task.isCancelled, session.accepts(load: token) else { return }
         preview = loaded
         confirmedPeople = people

@@ -162,7 +162,7 @@ final class FaceRecognitionViewModel {
             guard var data = faceData, data.currentLens != newValue else { return }
             data.activeLens = newValue
             faceData = data
-            try? storageService.saveFaceData(data)
+            scheduleFaceDataPersistence(data)
             lensDidChange(to: newValue)
         }
     }
@@ -440,11 +440,15 @@ final class FaceRecognitionViewModel {
 
         let faces = marked.faces
         let folderURL = marked.folderURL
-        let storage = storageService
+        let persistenceService = folderLoadService
         let service = lensService
 
         lensPrewarmTask = Task(priority: .utility) { [weak self] in
-            let outcome = await service.prewarm(faces: faces, folderURL: folderURL, storage: storage)
+            let outcome = await service.prewarm(
+                faces: faces,
+                folderURL: folderURL,
+                persistenceService: persistenceService
+            )
             guard !Task.isCancelled else { return }
             self?.applyLensPrewarm(outcome)
         }
@@ -490,11 +494,7 @@ final class FaceRecognitionViewModel {
 
         faceData = data
         lensPrewarmTask = nil
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Drop face IDs that no longer exist (deleted while the prewarm ran) and repair
@@ -584,6 +584,7 @@ final class FaceRecognitionViewModel {
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var lensPrewarmTask: Task<Void, Never>?
     @ObservationIgnored private var faceDataLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var faceDataPersistenceTask: Task<Void, Never>?
     @ObservationIgnored private var faceDataLoadRequestID = UUID()
     private let detectionService = FaceDetectionService()
     /// Shared across off-main merge-suggestion recomputations so each face's feature print
@@ -591,7 +592,6 @@ final class FaceRecognitionViewModel {
     /// FeaturePrintCache is thread-safe (`@unchecked Sendable`).
     @ObservationIgnored private let mergeFeaturePrintCache = FaceDetectionService.FeaturePrintCache()
     private let lensService = FaceLensService()
-    private let storageService = FaceDataStorageService()
     @ObservationIgnored private let folderLoadService: FaceDataFolderLoadService
     private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
@@ -609,7 +609,7 @@ final class FaceRecognitionViewModel {
         faceModelAvailability: FaceRecognitionModelAvailability? = nil,
         fileSystemService: FileSystemService = FileSystemService(),
         imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler(),
-        folderLoadService: FaceDataFolderLoadService = FaceDataFolderLoadService()
+        folderLoadService: FaceDataFolderLoadService = .shared
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
@@ -739,8 +739,10 @@ final class FaceRecognitionViewModel {
         scanComplete = false
         thumbnailCache.removeAllObjects()
 
+        let pendingPersistence = faceDataPersistenceTask
         let folderLoadService = self.folderLoadService
         faceDataLoadTask = Task(priority: .userInitiated) { [weak self] in
+            _ = await pendingPersistence?.value
             let result = await folderLoadService.load(
                 folderURL: folderURL,
                 cleanupPolicy: cleanupPolicy
@@ -776,21 +778,55 @@ final class FaceRecognitionViewModel {
         _ = await faceDataLoadTask?.value
     }
 
+    /// Suspends until the latest queued face-data mutation has crossed the serialized durable
+    /// boundary. Mutations remain UI-immediate, while their ordered writes never block MainActor.
+    func waitForCurrentFaceDataPersistence() async {
+        _ = await faceDataPersistenceTask?.value
+    }
+
+    @discardableResult
+    private func scheduleFaceDataPersistence(
+        _ data: FolderFaceData,
+        deletingThumbnailIDs: [UUID] = [],
+        failurePrefix: String = "Failed to save face data"
+    ) -> Task<Void, Never> {
+        let expectedRevision = faceDataRevision
+        let precedingTask = faceDataPersistenceTask
+        let service = folderLoadService
+        let task = Task(priority: .utility) { [weak self] in
+            _ = await precedingTask?.value
+            let result = await service.persist(
+                data,
+                deletingThumbnailIDs: deletingThumbnailIDs
+            )
+            guard let self, self.faceDataRevision == expectedRevision,
+                  let failure = result.failureMessage else { return }
+            self.errorMessage = "\(failurePrefix): \(failure)"
+        }
+        faceDataPersistenceTask = task
+        return task
+    }
+
+    @discardableResult
+    private func scheduleFaceDataDeletion(for folderURL: URL) -> Task<Void, Never> {
+        let expectedRevision = faceDataRevision
+        let precedingTask = faceDataPersistenceTask
+        let service = folderLoadService
+        let task = Task(priority: .utility) { [weak self] in
+            _ = await precedingTask?.value
+            let result = await service.deleteAll(for: folderURL)
+            guard let self, self.faceDataRevision == expectedRevision,
+                  let failure = result.failureMessage else { return }
+            self.errorMessage = "Failed to delete face data: \(failure)"
+        }
+        faceDataPersistenceTask = task
+        return task
+    }
+
     private func installThumbnails(_ thumbnailData: [UUID: Data]) {
         thumbnailCache.removeAllObjects()
         for (faceID, data) in thumbnailData {
             if let image = NSImage(data: data) {
-                thumbnailCache.setObject(image, forKey: faceID as NSUUID)
-            }
-        }
-    }
-
-    private func loadThumbnails(for data: FolderFaceData) {
-        thumbnailCache.removeAllObjects()
-        for group in data.groups {
-            let faceID = group.representativeFaceID
-            if let thumbData = storageService.loadThumbnail(for: faceID, folderURL: data.folderURL),
-               let image = NSImage(data: thumbData) {
                 thumbnailCache.setObject(image, forKey: faceID as NSUUID)
             }
         }
@@ -830,12 +866,13 @@ final class FaceRecognitionViewModel {
         lensPrewarmTask?.cancel()
 
         let config = detectionConfig
-        let storageService = self.storageService
         let detectionService = self.detectionService
+        let folderLoadService = self.folderLoadService
+        let pendingPersistence = faceDataPersistenceTask
 
         if forceFullScan {
-            // Full rescan: delete all existing data
-            try? storageService.deleteFaceData(for: folderURL)
+            // Clear presentation immediately; the serialized actor removes the durable snapshot
+            // before detection begins.
             faceData = nil
             thumbnailCache.removeAllObjects()
             scanComplete = false
@@ -852,9 +889,33 @@ final class FaceRecognitionViewModel {
         scanningGroups = []
 
         activeScanTask = Task(priority: .userInitiated) {
-            // Load existing data for incremental scan
-            // Discard stale data if embedding version is outdated (pre-alignment feature prints)
-            let loadedData = forceFullScan ? nil : storageService.loadFaceData(for: folderURL)
+            _ = await pendingPersistence?.value
+            let initialSnapshot: FaceDataFolderLoadEvidence?
+            if forceFullScan {
+                // Preparation is deliberately detached from later scan cancellation. Rename
+                // quiescence may cancel immediately, but the scan still needs a stable starting
+                // snapshot and must durably write its exact partial completion before returning.
+                let deletion = await Task.detached(priority: .utility) {
+                    await folderLoadService.deleteAll(for: folderURL)
+                }.value
+                if let failure = deletion.failureMessage {
+                    self.errorMessage = "Failed to remove previous face data: \(failure)"
+                }
+                initialSnapshot = nil
+            } else {
+                let preparation = await Task.detached(priority: .utility) {
+                    await folderLoadService.load(folderURL: folderURL, cleanupPolicy: .never)
+                }.value
+                switch preparation {
+                case .complete(let evidence):
+                    initialSnapshot = evidence
+                case .cancelled:
+                    initialSnapshot = nil
+                }
+            }
+
+            // Discard stale data if the embedding predates aligned feature prints.
+            let loadedData = initialSnapshot?.faceData
             let existingData: FolderFaceData? = if let loadedData, (loadedData.embeddingVersion ?? 0) >= FaceRecognitionDefaults.embeddingVersion {
                 loadedData
             } else {
@@ -929,7 +990,7 @@ final class FaceRecognitionViewModel {
                     if let existingData,
                        self.displayedFolderURL == folderURL.standardizedFileURL {
                         self.faceData = existingData
-                        self.loadThumbnails(for: existingData)
+                        self.installThumbnails(initialSnapshot?.thumbnailData ?? [:])
                         self.updateMergeSuggestions()
                     }
                 }
@@ -1021,11 +1082,18 @@ final class FaceRecognitionViewModel {
                         faceIndexByID[result.face.id] = allFaces.count
                         allFaces.append(result.face)
                         pendingFaces.append(result.face)
-                        do {
-                            try storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
+                        let thumbnailPersistence = await folderLoadService.persistThumbnail(
+                            result.thumbnail,
+                            faceID: result.face.id,
+                            folderURL: folderURL
+                        )
+                        switch thumbnailPersistence {
+                        case .committed:
                             await reportThumbnail(result.face.id, result.thumbnail)
-                        } catch {
-                            scanLogger.warning("Failed to save thumbnail for face \(result.face.id): \(error.localizedDescription)")
+                        case .cancelledBeforeCommit:
+                            break
+                        case .failed(_, let message):
+                            scanLogger.warning("Failed to save thumbnail for face \(result.face.id): \(message)")
                         }
                     }
 
@@ -1055,10 +1123,9 @@ final class FaceRecognitionViewModel {
                             embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
                             numberDetections: allNumbers
                         )
-                        do {
-                            try storageService.saveFaceData(progressData)
-                        } catch {
-                            await reportSaveError("Failed to save face data: \(error.localizedDescription)")
+                        let persistence = await folderLoadService.persist(progressData)
+                        if let failure = persistence.failureMessage {
+                            await reportSaveError("Failed to save face data: \(failure)")
                         }
                         imagesSinceLastSave = 0
 
@@ -1140,20 +1207,20 @@ final class FaceRecognitionViewModel {
                 numberDetections: result.numbers
             )
 
-            var finalPersistenceError: String?
-            do {
-                try storageService.saveFaceData(folderData)
-            } catch {
-                finalPersistenceError = error.localizedDescription
-                await MainActor.run {
-                    self.errorMessage = "Failed to save face data: \(error.localizedDescription)"
-                }
+            // A cancelled scan must still durably preserve its exact partial result. Detaching
+            // prevents the persistence service from treating the parent cancellation as a
+            // pre-commit cancellation request.
+            let finalPersistence = await Task.detached(priority: .utility) {
+                await folderLoadService.persist(folderData)
+            }.value
+            let finalPersistenceError = finalPersistence.failureMessage
+            if let finalPersistenceError {
+                self.errorMessage = "Failed to save face data: \(finalPersistenceError)"
             }
 
             // A detached child is intentional here: a cancelled scan still saves and presents
             // its exact partial result, so its just-committed thumbnails must be loaded even
             // though the parent scan task carries cancellation.
-            let folderLoadService = self.folderLoadService
             let thumbnailRefresh = await Task.detached(priority: .utility) {
                 await folderLoadService.load(folderURL: folderURL, cleanupPolicy: .never)
             }.value
@@ -1357,11 +1424,7 @@ final class FaceRecognitionViewModel {
 
         // Save updated data
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Runs Known People matching after scan completes (async wrapper for use in scan task).
@@ -1761,11 +1824,7 @@ final class FaceRecognitionViewModel {
 
         faceData = data
         mergeSuggestions.removeAll()
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
         return removedSourceIDs.count
     }
 
@@ -1850,11 +1909,7 @@ final class FaceRecognitionViewModel {
         data.groups[index].name = name.isEmpty ? nil : name
         data.groups[index].knownPersonID = knownPersonID
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Assign (or clear, with `nil`) a hand-picked jersey number for a group. Display-only —
@@ -1866,11 +1921,7 @@ final class FaceRecognitionViewModel {
 
         data.groups[index].manualNumber = number
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Reversibly exclude a referee or other non-player from Person Shown. The group stays in
@@ -1891,11 +1942,7 @@ final class FaceRecognitionViewModel {
             }
         }
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face exclusion: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data, failurePrefix: "Failed to save face exclusion")
     }
 
     func setRepresentativeFace(_ faceID: UUID, forGroup groupID: UUID) {
@@ -1906,11 +1953,7 @@ final class FaceRecognitionViewModel {
 
         data.groups[index].representativeFaceID = faceID
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     // MARK: - Sports tagging: match setup & resolution
@@ -2058,11 +2101,7 @@ final class FaceRecognitionViewModel {
         data.numberDetections = result.numbers
         faceData = data
         ambiguousNumberDetections = result.ambiguous
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save sports resolution: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data, failurePrefix: "Failed to save sports resolution")
     }
 
     /// Pure core of sports resolution: turn detected numbers into resolved, confirmation-gated
@@ -2208,7 +2247,7 @@ final class FaceRecognitionViewModel {
         }
         faceData = data
         ambiguousNumberDetections.removeAll { $0.id == detectionID }
-        try? storageService.saveFaceData(data)
+        scheduleFaceDataPersistence(data)
     }
 
     /// Mutate a single number claim's confirmation state and persist. Confirmed claims (and only
@@ -2218,7 +2257,7 @@ final class FaceRecognitionViewModel {
               let i = data.numberDetections!.firstIndex(where: { $0.id == detectionID }) else { return }
         data.numberDetections![i].claimState = state
         faceData = data
-        try? storageService.saveFaceData(data)
+        scheduleFaceDataPersistence(data)
     }
 
     /// Accept a number → player claim: its name will be written on Apply.
@@ -2251,16 +2290,16 @@ final class FaceRecognitionViewModel {
             data.numberDetections![i].resolvedPlayerName = groupName
             data.numberDetections![i].claimState = .confirmed
             faceData = data
-            try? storageService.saveFaceData(data)
+            scheduleFaceDataPersistence(data)
         } else if let resolved = data.numberDetections![i].resolvedPlayerName?.trimmingCharacters(in: .whitespacesAndNewlines), !resolved.isEmpty {
             data.numberDetections![i].claimState = .confirmed
             faceData = data
-            try? storageService.saveFaceData(data)
+            scheduleFaceDataPersistence(data)
             // Name the previously-unnamed group with the number's player (user-asserted identity).
             nameGroup(groupID, name: resolved)
         } else {
             faceData = data
-            try? storageService.saveFaceData(data)
+            scheduleFaceDataPersistence(data)
         }
         ambiguousNumberDetections.removeAll { $0.id == detectionID }
     }
@@ -2280,7 +2319,7 @@ final class FaceRecognitionViewModel {
         }
         data.numberDetections![i].associatedFaceID = nil
         faceData = data
-        try? storageService.saveFaceData(data)
+        scheduleFaceDataPersistence(data)
     }
 
     /// Correct a misread number (OCR read "1" but the shirt shows "21"). Updates the claim and its
@@ -2310,7 +2349,7 @@ final class FaceRecognitionViewModel {
         }
         data.numberDetections![i].claimState = .suggested
         faceData = data
-        try? storageService.saveFaceData(data)
+        scheduleFaceDataPersistence(data)
     }
 
     /// If a face group carries a jersey number that maps to a roster player on a
@@ -2777,11 +2816,7 @@ final class FaceRecognitionViewModel {
 
         data.groups.remove(at: sourceIndex)
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Remove a single face from its group and place it in a new solo group.
@@ -2798,8 +2833,7 @@ final class FaceRecognitionViewModel {
             guard data.groups[groupIndex].userCreated != true else { return }
             data.groups[groupIndex].userCreated = true
             faceData = data
-            do { try storageService.saveFaceData(data) }
-            catch { errorMessage = "Failed to save face data: \(error.localizedDescription)" }
+            scheduleFaceDataPersistence(data)
             return
         }
 
@@ -2824,11 +2858,7 @@ final class FaceRecognitionViewModel {
         data.faces[faceIndex].groupID = newGroup.id
 
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Merge multiple groups into the first group in the set (by sort order).
@@ -2863,11 +2893,7 @@ final class FaceRecognitionViewModel {
         data.groups.removeAll { sourceIDs.contains($0.id) }
 
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Ungroup all selected groups — split every face into its own solo group.
@@ -2905,11 +2931,7 @@ final class FaceRecognitionViewModel {
         }
 
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Move faces into the unmatched pool by splitting them into non-user-created singletons.
@@ -2948,8 +2970,7 @@ final class FaceRecognitionViewModel {
         }
 
         faceData = data
-        do { try storageService.saveFaceData(data) }
-        catch { errorMessage = "Failed to save face data: \(error.localizedDescription)" }
+        scheduleFaceDataPersistence(data)
     }
 
     // MARK: - Move Faces Between Groups
@@ -2985,11 +3006,7 @@ final class FaceRecognitionViewModel {
         data.faces[faceIndex].groupID = targetGroupID
 
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Move multiple faces to a target group (single mutation + single save).
@@ -3011,11 +3028,7 @@ final class FaceRecognitionViewModel {
         }
 
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Remove faces from their current groups and create a new group with them (single mutation + single save).
@@ -3080,11 +3093,7 @@ final class FaceRecognitionViewModel {
         }
 
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Place each given face into its own brand-new user-created group (one group per face).
@@ -3113,11 +3122,7 @@ final class FaceRecognitionViewModel {
         }
 
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Promote every unmatched (auto-generated singleton) face into its own user-created
@@ -3137,11 +3142,7 @@ final class FaceRecognitionViewModel {
         guard changed else { return }
 
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(data)
     }
 
     /// Remove faces from whatever groups they belong to, cleaning up empties and representatives.
@@ -3176,11 +3177,24 @@ final class FaceRecognitionViewModel {
 
         let targetFolder = imageURLs.first?.deletingLastPathComponent()
         if faceData == nil, let targetFolder {
-            if let loaded = storageService.loadFaceData(for: targetFolder) {
-                faceData = loaded
-                scanComplete = loaded.scanComplete
-                loadThumbnails(for: loaded)
+            faceDataLoadTask?.cancel()
+            let requestID = UUID()
+            faceDataLoadRequestID = requestID
+            let service = folderLoadService
+            let pendingPersistence = faceDataPersistenceTask
+            faceDataLoadTask = Task(priority: .utility) { [weak self] in
+                _ = await pendingPersistence?.value
+                let result = await service.load(folderURL: targetFolder, cleanupPolicy: .never)
+                guard let self, self.faceDataLoadRequestID == requestID,
+                      self.faceData == nil,
+                      case .complete(let evidence) = result,
+                      let loaded = evidence.faceData else { return }
+                self.faceData = loaded
+                self.scanComplete = loaded.scanComplete
+                self.installThumbnails(evidence.thumbnailData)
+                self.deleteFaces(forImageURLs: imageURLs)
             }
+            return
         }
 
         guard let data = faceData,
@@ -3203,18 +3217,17 @@ final class FaceRecognitionViewModel {
         // Remove from the face list
         data.faces.removeAll { faceIDs.contains($0.id) }
 
-        // Remove thumbnails from cache and disk
+        // Remove thumbnails from the presentation immediately; serialized persistence installs
+        // the updated document before cleaning up the now-unreferenced files.
         for faceID in faceIDs {
             thumbnailCache.removeObject(forKey: faceID as NSUUID)
-            storageService.deleteThumbnail(for: faceID, folderURL: data.folderURL)
         }
 
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        scheduleFaceDataPersistence(
+            data,
+            deletingThumbnailIDs: faceIDs.sorted { $0.uuidString < $1.uuidString }
+        )
     }
 
     /// Delete an entire group: removes all face data and optionally trashes the source photos.
@@ -3285,18 +3298,18 @@ final class FaceRecognitionViewModel {
         // Remove from the face list
         data.faces.removeAll { faceIDs.contains($0.id) }
 
-        // Clean up thumbnails
+        // Clean up the presentation immediately. The persistence actor commits the document
+        // first and then removes its orphaned thumbnail files.
         for faceID in faceIDs {
             thumbnailCache.removeObject(forKey: faceID as NSUUID)
-            storageService.deleteThumbnail(for: faceID, folderURL: data.folderURL)
         }
 
         faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
+        let persistence = scheduleFaceDataPersistence(
+            data,
+            deletingThumbnailIDs: faceIDs.sorted { $0.uuidString < $1.uuidString }
+        )
+        await persistence.value
         return FaceGroupDeletionResult(
             trashedPhotoURLs: trashResult.completedSourceURLs,
             failures: trashResult.failures,
@@ -3309,10 +3322,10 @@ final class FaceRecognitionViewModel {
 
     func deleteFaceData(for folderURL: URL) {
         lensPrewarmTask?.cancel()
-        try? storageService.deleteFaceData(for: folderURL)
         faceData = nil
         thumbnailCache.removeAllObjects()
         scanComplete = false
+        scheduleFaceDataDeletion(for: folderURL)
     }
 
     // MARK: - Index Helpers

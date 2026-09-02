@@ -913,6 +913,14 @@ Render-time thumbnail lookup is cache-only, including during scans. Remaining fa
 paths, and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-face-folder-load-continuation-2026-09-02.md))
 
+**Face persistence follow-up (2026-09-02):** interactive face edits, scan preparation/finalization, document and
+thumbnail commits, cleanup/deletion, Caption, metadata variables, FTP preflight, rename reassociation, and lens
+prewarming now share the serialized face-data actor. Immutable results distinguish pre-commit cancellation from
+durable document commits and exact thumbnail-cleanup outcomes; ordered view-model revisions keep UI updates
+immediate without blocking MainActor. Other lower-priority direct paths and real-volume/signpost/Thread Performance
+Checker exit evidence remain open.
+([validation](plan-status-face-persistence-continuation-2026-09-02.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

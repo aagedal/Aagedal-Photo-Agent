@@ -2164,9 +2164,14 @@ final class MetadataViewModel {
         )
         guard !Task.isCancelled,
               case .loaded(let rosterSnapshot) = rosterResult else { return "" }
+        let faceDataResult = await FaceDataFolderLoadService.shared.loadDocument(
+            folderURL: folderURL
+        )
+        guard !Task.isCancelled,
+              case .complete(let faceSnapshot) = faceDataResult else { return "" }
         return SportsCaptionNumberResolver.value(
             for: imageURL,
-            faceData: FaceDataStorageService().loadFaceData(for: folderURL),
+            faceData: faceSnapshot.faceData,
             match: rosterSnapshot.roster
         )
     }

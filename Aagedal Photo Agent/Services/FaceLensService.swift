@@ -34,9 +34,13 @@ nonisolated struct FaceLensService: Sendable {
     func prewarm(
         faces: [DetectedFace],
         folderURL: URL,
-        storage: FaceDataStorageService
+        persistenceService: FaceDataFolderLoadService
     ) async -> FaceLensPrewarmOutcome {
-        let appearance = await computeAppearancePrints(for: faces, folderURL: folderURL, storage: storage)
+        let appearance = await computeAppearancePrints(
+            for: faces,
+            folderURL: folderURL,
+            persistenceService: persistenceService
+        )
         let clothing = await computeClothingPrints(for: faces)
 
         var enriched = faces
@@ -118,12 +122,16 @@ nonisolated struct FaceLensService: Sendable {
     func computeAppearancePrints(
         for faces: [DetectedFace],
         folderURL: URL,
-        storage: FaceDataStorageService
+        persistenceService: FaceDataFolderLoadService
     ) async -> [UUID: Data] {
         var result: [UUID: Data] = [:]
         for face in faces where face.appearanceFeaturePrintData == nil {
             if Task.isCancelled { break }
-            guard let jpegData = storage.loadThumbnail(for: face.id, folderURL: folderURL),
+            guard case .complete(let loadedData) = await persistenceService.loadThumbnailData(
+                faceID: face.id,
+                folderURL: folderURL
+            ),
+                  let jpegData = loadedData,
                   let source = CGImageSourceCreateWithData(jpegData as CFData, nil),
                   let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { continue }
             if let data = try? await featurePrint(for: cgImage) {
