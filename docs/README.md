@@ -175,6 +175,9 @@ Supporting documents:
   render lookup.
 - [AuraFace component-probe continuation](plan-status-auraface-probe-continuation-2026-09-02.md) — serialized signed
   component verification and model-path resolution with explicit Checking state and stale-result rejection.
+- [Browser and Compare presentation-facts continuation](plan-status-browser-comparison-presentation-facts-continuation-2026-09-02.md) —
+  serialized XMP/header snapshots for retina pre-cache and committed comparison with cancellation and stale-selection
+  rejection.
 
 ## Solar overlay document set
 
@@ -466,6 +469,14 @@ request identity, and pre-resolved URL publication prevent partial or stale avai
 the adjacent face/Known People selection, repository gate, and serial unfiltered 1,908-logical-test/2,035-expanded-
 run gate passed. The audit remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread
 Performance Checker evidence stay open.
+
+The latest [Browser and Compare presentation-facts continuation](plan-status-browser-comparison-presentation-facts-continuation-2026-09-02.md)
+moves retina pre-cache and committed comparison XMP/header reads from MainActor orchestration onto the existing
+serialized presentation-facts actor. Browser validates request identity and the current selection after both facts
+loading and decode; Compare validates request/image identity before rendering and retains its session publication
+gate. Two new characterizations, the focused 6-test suite, adjacent 47-test selection, repository gate, and serial
+unfiltered 1,910-test run passed. The audit remains 66 of 75 while Phase 3.1's other direct paths and real-volume/
+signpost/Thread Performance Checker evidence stay open.
 
 ## File organization convention
 

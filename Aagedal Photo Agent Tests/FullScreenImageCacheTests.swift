@@ -96,6 +96,56 @@ struct FullScreenImagePresentationFactsServiceTests {
         #expect(!functionSource.contains("XMPSidecarService().loadSidecar(for: url)"))
         #expect(!functionSource.contains("CGImageSourceCreateWithURL(url as CFURL, nil)"))
     }
+
+    @Test("browser retina pre-cache awaits immutable facts and rejects stale selection work")
+    func browserRetinaPreCacheSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/BrowserViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func preCacheSelectedRetinaImage()"))
+        let functionEnd = try #require(source.range(
+            of: "    private struct ImageFilterContext",
+            range: functionStart.upperBound..<source.endIndex
+        ))
+        let functionSource = String(source[functionStart.lowerBound..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains("await presentationFactsService.load("))
+        #expect(functionSource.contains("self.retinaPreCacheRequestID == requestID"))
+        #expect(functionSource.contains("self.selectedImageIDs.contains(url)"))
+        #expect(!functionSource.contains("FullScreenImageCache.displayOrientation("))
+        #expect(!functionSource.contains("XMPSidecarService().loadSidecar("))
+    }
+
+    @Test("Compare awaits the same serialized facts boundary before committed renders")
+    func comparisonWorkspaceSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/ComparisonWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "    private func startLoading()"))
+        let functionEnd = try #require(source.range(
+            of: "    private func setLayout(",
+            range: functionStart.upperBound..<source.endIndex
+        ))
+        let functionSource = String(source[functionStart.lowerBound..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains("await FullScreenImagePresentationFactsService.shared.load("))
+        #expect(functionSource.contains("facts.requestID == requestID"))
+        #expect(functionSource.contains("facts.imageURL == image.url"))
+        #expect(functionSource.contains("try Task.checkCancellation()"))
+        #expect(!functionSource.contains("XMPSidecarService().loadSidecar("))
+    }
 }
 
 private extension FullScreenImagePresentationFactsAccess.Snapshot {

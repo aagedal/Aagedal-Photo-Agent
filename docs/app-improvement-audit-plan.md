@@ -938,6 +938,15 @@ Two new characterizations, the adjacent face/Known People selection, repository 
 Performance Checker exit evidence remain open.
 ([validation](plan-status-auraface-probe-continuation-2026-09-02.md))
 
+**Browser and Compare presentation-facts follow-up (2026-09-02):** Browser retina pre-cache and committed-source
+comparison now await the existing serialized `FullScreenImagePresentationFactsService` instead of reading XMP
+sidecars and image headers from their MainActor orchestration. Browser gates both the facts result and final decode
+by request identity plus current selection; Compare validates request/image identity and keeps its existing session
+publication gate. Two new characterizations, the focused 6-test suite, the adjacent 47-test selection, repository
+gate, and serial unfiltered 1,910-test run passed. Other lower-priority direct paths and real-volume/signpost/Thread
+Performance Checker exit evidence remain open.
+([validation](plan-status-browser-comparison-presentation-facts-continuation-2026-09-02.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

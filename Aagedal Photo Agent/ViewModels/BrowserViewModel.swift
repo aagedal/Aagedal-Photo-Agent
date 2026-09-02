@@ -168,6 +168,7 @@ final class BrowserViewModel {
     let thumbnailService: ThumbnailService
     let metadataReadService = SwiftExifReadService()
     private let xmpSidecarLoadService: BrowserXMPSidecarLoadService
+    private let presentationFactsService: FullScreenImagePresentationFactsService
     @ObservationIgnored private(set) var writeEngine: any MetadataWriteEngine = SwiftExifWriteEngine()
     /// Injected for the same reason as `thumbnailService` — sharing one IOSurface pool across
     /// panes avoids doubling full-screen-preview memory pressure.
@@ -212,6 +213,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var metadataProgressID: UUID?
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
     @ObservationIgnored private var retinaPreCacheTask: Task<Void, Never>?
+    @ObservationIgnored private var retinaPreCacheRequestID: UUID?
     @ObservationIgnored private var suppressImagesCascade = false
     @ObservationIgnored private var pendingMetadataDrainTask: Task<Void, Never>?
     @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
@@ -248,12 +250,14 @@ final class BrowserViewModel {
          fullScreenImageCache: FullScreenImageCache = FullScreenImageCache(),
          imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler(),
          fileSystemService: FileSystemService = FileSystemService(),
-         xmpSidecarLoadService: BrowserXMPSidecarLoadService = BrowserXMPSidecarLoadService()) {
+         xmpSidecarLoadService: BrowserXMPSidecarLoadService = BrowserXMPSidecarLoadService(),
+         presentationFactsService: FullScreenImagePresentationFactsService = .shared) {
         self.thumbnailService = thumbnailService
         self.fullScreenImageCache = fullScreenImageCache
         self.imageTrashHandler = imageTrashHandler
         self.fileSystemService = fileSystemService
         self.xmpSidecarLoadService = xmpSidecarLoadService
+        self.presentationFactsService = presentationFactsService
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
@@ -472,6 +476,7 @@ final class BrowserViewModel {
     private func preCacheSelectedRetinaImage() {
         retinaPreCacheTask?.cancel()
         retinaPreCacheTask = nil
+        retinaPreCacheRequestID = nil
 
         guard selectedImageIDs.count == 1,
               let url = selectedImageIDs.first,
@@ -480,26 +485,46 @@ final class BrowserViewModel {
         // pre-cache into the matching slot (an edited render must NEVER land in
         // the unedited slot, or stale edits shadow the original).
         let isEdited = !showOriginalThumbnails
+        let showsOriginal = showOriginalThumbnails
         let imageFile = images[index]
-        let orientation = FullScreenImageCache.displayOrientation(for: url, fallback: imageFile.exifOrientation)
-        let cameraRaw = showOriginalThumbnails
-            ? nil
-            : (imageFile.cameraRawSettings ?? XMPSidecarService().loadSidecar(for: url)?.cameraRaw)
-        let renderToken = FullScreenImageCache.renderToken(settings: cameraRaw, isEdited: isEdited)
-        guard fullScreenImageCache.cachedImage(
-            for: url,
-            orientation: orientation,
-            renderToken: renderToken,
-            isEdited: isEdited
-        ) == nil else { return }
-
         let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840,
                                    NSScreen.main?.frame.height ?? 2160)
         let screenMaxPx = screenLogicalPx * screenScale
+        let requestID = UUID()
+        retinaPreCacheRequestID = requestID
+        let presentationFactsService = presentationFactsService
+        let fullScreenImageCache = fullScreenImageCache
 
-        retinaPreCacheTask = Task.detached(priority: .utility) { [weak self] in
-            guard let self, !Task.isCancelled else { return }
+        retinaPreCacheTask = Task(priority: .utility) { [weak self] in
+            let factsResult = await presentationFactsService.load(
+                imageURL: url,
+                requestID: requestID
+            )
+            guard !Task.isCancelled,
+                  let self,
+                  self.retinaPreCacheRequestID == requestID,
+                  self.selectedImageIDs.count == 1,
+                  self.selectedImageIDs.contains(url),
+                  case .loaded(let facts) = factsResult,
+                  facts.requestID == requestID,
+                  facts.imageURL == url else { return }
+
+            let orientation = facts.sidecarOrientation ?? imageFile.exifOrientation
+            let cameraRaw = showsOriginal
+                ? nil
+                : (imageFile.cameraRawSettings ?? facts.sidecarCameraRaw)
+            let renderToken = FullScreenImageCache.renderToken(
+                settings: cameraRaw,
+                isEdited: isEdited
+            )
+            guard fullScreenImageCache.cachedImage(
+                for: url,
+                orientation: orientation,
+                renderToken: renderToken,
+                isEdited: isEdited
+            ) == nil else { return }
+
             // Render through the shared edited-decode path so the pre-cache is identical to
             // what prefetch/foreground produce — single source of truth. For edited RAW this
             // means CIRAWFilter demosaicing directly at screen resolution with as-shot WB +
@@ -508,8 +533,11 @@ final class BrowserViewModel {
             // With nil settings (show-originals) it degrades to a plain downsampled decode.
             guard let image = await FullScreenImageCache.decodedEditedPreview(
                 for: url, settings: cameraRaw, orientation: orientation, screenMaxPx: screenMaxPx
-            ), !Task.isCancelled else { return }
-            self.fullScreenImageCache.store(
+            ), !Task.isCancelled,
+                  self.retinaPreCacheRequestID == requestID,
+                  self.selectedImageIDs.count == 1,
+                  self.selectedImageIDs.contains(url) else { return }
+            fullScreenImageCache.store(
                 image,
                 for: url,
                 orientation: orientation,

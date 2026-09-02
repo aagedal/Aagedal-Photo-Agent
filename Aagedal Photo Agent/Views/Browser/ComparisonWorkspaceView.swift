@@ -444,6 +444,7 @@ struct ComparisonWorkspaceView: View {
         geometries = [:]
         let selectedImages = images
         let cache = fullScreenImageCache
+        let presentationFactsRequestID = UUID()
 
         loadTask = Task {
             let screenPixels = (NSScreen.main?.frame.size.width ?? 2_048)
@@ -451,15 +452,22 @@ struct ComparisonWorkspaceView: View {
             let maxPixelSize = min(max(screenPixels, 2_048), 4_096)
             let service = ComparisonRenderService()
             do {
+                let leftRepresentation = initialLeftRepresentation ?? .committedEdit
+                let leftSettings: CameraRawSettings? = if liveSource != nil
+                    || leftRepresentation == .original {
+                    nil
+                } else {
+                    try await committedSettings(
+                        for: selectedImages[0],
+                        requestID: presentationFactsRequestID
+                    )
+                }
                 let renderLeft: () async throws -> ComparisonRenderedSource = {
                     if let liveSource { return liveSource }
-                    let representation = initialLeftRepresentation ?? .committedEdit
                     return try await service.render(
                         imageFile: selectedImages[0],
-                        settings: representation == .original
-                            ? nil
-                            : committedSettings(for: selectedImages[0]),
-                        representation: representation,
+                        settings: leftSettings,
+                        representation: leftRepresentation,
                         cache: cache,
                         maxPixelSize: maxPixelSize
                     )
@@ -470,9 +478,13 @@ struct ComparisonWorkspaceView: View {
                     leftResult = try await renderLeft()
                     rightResult = initialRightSource
                 } else {
+                    let rightSettings = try await committedSettings(
+                        for: selectedImages[1],
+                        requestID: presentationFactsRequestID
+                    )
                     async let pendingRight = service.render(
                         imageFile: selectedImages[1],
-                        settings: committedSettings(for: selectedImages[1]),
+                        settings: rightSettings,
                         cache: cache,
                         maxPixelSize: maxPixelSize
                     )
@@ -500,8 +512,23 @@ struct ComparisonWorkspaceView: View {
         }
     }
 
-    private func committedSettings(for image: ImageFile) -> CameraRawSettings? {
-        image.cameraRawSettings ?? XMPSidecarService().loadSidecar(for: image.url)?.cameraRaw
+    private func committedSettings(
+        for image: ImageFile,
+        requestID: UUID
+    ) async throws -> CameraRawSettings? {
+        if let settings = image.cameraRawSettings { return settings }
+
+        let result = await FullScreenImagePresentationFactsService.shared.load(
+            imageURL: image.url,
+            requestID: requestID
+        )
+        try Task.checkCancellation()
+        guard case .loaded(let facts) = result,
+              facts.requestID == requestID,
+              facts.imageURL == image.url else {
+            throw CancellationError()
+        }
+        return facts.sidecarCameraRaw
     }
 
     private func setLayout(_ layout: ComparisonLayout) {
@@ -563,11 +590,15 @@ struct ComparisonWorkspaceView: View {
 
         let cache = fullScreenImageCache
         let expectedSessionID = session?.id
+        let presentationFactsRequestID = UUID()
         replacementTask = Task {
             do {
                 let result = try await ComparisonRenderService().render(
                     imageFile: image,
-                    settings: committedSettings(for: image),
+                    settings: try await committedSettings(
+                        for: image,
+                        requestID: presentationFactsRequestID
+                    ),
                     cache: cache,
                     maxPixelSize: comparisonMaxPixelSize
                 )
