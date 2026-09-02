@@ -929,6 +929,15 @@ unfiltered 1,906-test run passed. Other lower-priority direct paths and real-vol
 Checker exit evidence remain open.
 ([validation](plan-status-source-revision-capture-continuation-2026-09-02.md))
 
+**AuraFace component-probe follow-up (2026-09-02):** signed installed-component verification, package enumeration,
+file reads, hashing, and bundled fallback resolution now run on `AuraFaceComponentProbeService` instead of during
+MainActor manager/embedder initialization. Immutable resolution, explicit Checking state, cancellation, and request
+identity prevent partial or stale availability publication; install and removal re-enter the same fail-closed probe.
+Two new characterizations, the adjacent face/Known People selection, repository gate, and serial unfiltered
+1,908-logical-test/2,035-expanded-run gate passed. Other lower-priority direct paths and real-volume/signpost/Thread
+Performance Checker exit evidence remain open.
+([validation](plan-status-auraface-probe-continuation-2026-09-02.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

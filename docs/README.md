@@ -173,6 +173,8 @@ Supporting documents:
 - [Face folder-load continuation](plan-status-face-folder-load-continuation-2026-09-02.md) — serialized,
   cancellation-aware `.face_data` and complete thumbnail reads with request-gated publication and cache-only
   render lookup.
+- [AuraFace component-probe continuation](plan-status-auraface-probe-continuation-2026-09-02.md) — serialized signed
+  component verification and model-path resolution with explicit Checking state and stale-result rejection.
 
 ## Solar overlay document set
 
@@ -456,6 +458,14 @@ serialized, non-reentrant stat-hash-stat transaction. Three new characterization
 integrated 151-test selection, repository gate, and serial unfiltered 1,906-test run passed. The audit remains 66 of
 75 while Phase 3.1's lower-priority direct paths and real-volume/signpost/Thread Performance Checker evidence stay
 open.
+
+The latest [AuraFace component-probe continuation](plan-status-auraface-probe-continuation-2026-09-02.md) moves
+signed descriptor verification, package enumeration and hashing, and compiled/bundled model resolution out of
+MainActor manager and embedder initialization onto one serialized actor. Explicit Checking state, cancellation,
+request identity, and pre-resolved URL publication prevent partial or stale availability. Two new characterizations,
+the adjacent face/Known People selection, repository gate, and serial unfiltered 1,908-logical-test/2,035-expanded-
+run gate passed. The audit remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread
+Performance Checker evidence stay open.
 
 ## File organization convention
 

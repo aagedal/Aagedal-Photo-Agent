@@ -236,6 +236,7 @@ struct FaceEmbeddingTests {
             availableVersion: "AuraFace-v2/glintr100"
         )
         let unavailable: [FaceRecognitionModelAvailability] = [
+            .checking,
             .notInstalled,
             .downloading(progress: 0.42),
             .incompatible(requiredSystemVersion: "26.0"),
@@ -247,6 +248,7 @@ struct FaceEmbeddingTests {
         #expect(update.isAvailable)
         #expect(unavailable.allSatisfy { !$0.isAvailable })
         #expect(FaceRecognitionModelAvailability.downloading(progress: 1.5).detail.contains("100%"))
+        #expect(FaceRecognitionModelAvailability.checking.detail.contains("Checking"))
         #expect(FaceRecognitionModelAvailability.downloadExplanation.contains("125 MB"))
         #expect(FaceRecognitionModelAvailability.downloadExplanation.contains("only on this Mac"))
         #expect(FaceRecognitionModelAvailability.downloadExplanation.contains("works offline"))
@@ -500,6 +502,69 @@ struct FaceEmbeddingTests {
         #expect(!downloaded.canDownload)
         #expect(!missing.canRemove)
         #expect(missing.canDownload)
+    }
+
+    @Test
+    func auraFaceDynamicEmbedderPublishesOnlyPreResolvedModelURLs() {
+        let embedder = CoreMLFaceEmbedder(
+            modelURL: nil,
+            allowsDynamicResolution: true,
+            isResolutionPending: true
+        )
+        let resolvedURL = URL(fileURLWithPath: "/private/tmp/verified-auraface.mlmodelc")
+
+        #expect(embedder.availability == .checking)
+        embedder.publishResolvedModelURL(resolvedURL)
+        #expect(embedder.availability.isAvailable)
+        embedder.publishResolvedModelURL(nil)
+        #expect(embedder.availability == .notInstalled)
+    }
+
+    @Test @MainActor
+    func auraFaceComponentProbeRunsOffMainAndRejectsSupersededResult() async {
+        let staleURL = URL(fileURLWithPath: "/private/tmp/stale-auraface.mlmodelc")
+        let probe = AuraFaceResolutionProbe(resolutions: [
+            AuraFaceComponentResolution(
+                snapshot: AuraFaceComponentSnapshot(
+                    availability: .ready(version: "stale"),
+                    source: .downloaded
+                ),
+                modelURL: staleURL
+            ),
+            AuraFaceComponentResolution(
+                snapshot: AuraFaceComponentSnapshot(
+                    availability: .notInstalled,
+                    source: .none
+                ),
+                modelURL: nil
+            ),
+        ])
+        let published = AuraFacePublishedURLProbe()
+        let service = AuraFaceComponentProbeService(resolver: probe.resolve)
+        let manager = AuraFaceComponentManager(
+            installerFactory: { fatalError("A component probe must not invoke the installer") },
+            probeService: service,
+            modelPublisher: published.record
+        )
+
+        #expect(manager.availability == .checking)
+        #expect(await probe.waitUntilCallCount(1))
+        #expect(!probe.ranOnMainThread)
+
+        manager.refresh()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(probe.callCount == 1)
+
+        probe.releaseFirstCall()
+        #expect(await probe.waitUntilCallCount(2))
+        for _ in 0..<100 where manager.availability == .checking {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+
+        #expect(probe.maximumConcurrentCalls == 1)
+        #expect(manager.availability == .notInstalled)
+        #expect(manager.source == .none)
+        #expect(published.urls == [nil])
     }
 
     @Test @MainActor
@@ -1380,5 +1445,77 @@ nonisolated private final class FaceGroupTrashProbe: ImageTrashHandling, @unchec
 
     func release() {
         releaseSemaphore.signal()
+    }
+}
+
+nonisolated private final class AuraFaceResolutionProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let resolutions: [AuraFaceComponentResolution]
+    private var recordedCallCount = 0
+    private var activeCallCount = 0
+    private var recordedMaximumConcurrentCalls = 0
+    private var observedMainThread = false
+    private var firstCallReleased = false
+
+    init(resolutions: [AuraFaceComponentResolution]) {
+        precondition(!resolutions.isEmpty)
+        self.resolutions = resolutions
+    }
+
+    var callCount: Int {
+        condition.withLock { recordedCallCount }
+    }
+
+    var maximumConcurrentCalls: Int {
+        condition.withLock { recordedMaximumConcurrentCalls }
+    }
+
+    var ranOnMainThread: Bool {
+        condition.withLock { observedMainThread }
+    }
+
+    func resolve() -> AuraFaceComponentResolution {
+        condition.lock()
+        let index = recordedCallCount
+        recordedCallCount += 1
+        activeCallCount += 1
+        recordedMaximumConcurrentCalls = max(recordedMaximumConcurrentCalls, activeCallCount)
+        observedMainThread = observedMainThread || Thread.isMainThread
+        condition.broadcast()
+        while index == 0, !firstCallReleased {
+            condition.wait()
+        }
+        activeCallCount -= 1
+        let resolution = resolutions[min(index, resolutions.count - 1)]
+        condition.unlock()
+        return resolution
+    }
+
+    func releaseFirstCall() {
+        condition.withLock {
+            firstCallReleased = true
+            condition.broadcast()
+        }
+    }
+
+    func waitUntilCallCount(_ expected: Int) async -> Bool {
+        for _ in 0..<100 {
+            if callCount >= expected { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return false
+    }
+}
+
+nonisolated private final class AuraFacePublishedURLProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedURLs: [URL?] = []
+
+    var urls: [URL?] {
+        lock.withLock { recordedURLs }
+    }
+
+    func record(_ url: URL?) {
+        lock.withLock { recordedURLs.append(url) }
     }
 }

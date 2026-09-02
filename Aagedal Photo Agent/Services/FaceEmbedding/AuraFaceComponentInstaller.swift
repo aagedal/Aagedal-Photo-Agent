@@ -155,27 +155,6 @@ nonisolated enum AuraFaceComponentStore {
     static var current: URL { root.appendingPathComponent("current", isDirectory: true) }
     static var rollback: URL { root.appendingPathComponent("rollback", isDirectory: true) }
 
-    static func installedModelURL(
-        publicKeyData: Data? = productionPublicKeyData(),
-        io: AuraFaceComponentIO = .live
-    ) -> URL? {
-        guard let publicKeyData,
-              let descriptor = try? verifyInstalledDirectory(current, publicKeyData: publicKeyData, io: io),
-              descriptor.embeddingVersion == FaceRecognitionDefaults.embeddingVersion else {
-            return nil
-        }
-        let compiled = current.appendingPathComponent(compiledDirectory, isDirectory: true)
-        return io.fileExists(compiled) ? compiled : nil
-    }
-
-    static func installedDescriptor(
-        publicKeyData: Data? = productionPublicKeyData(),
-        io: AuraFaceComponentIO = .live
-    ) -> AuraFaceDistributionDescriptor? {
-        guard let publicKeyData else { return nil }
-        return try? verifyInstalledDirectory(current, publicKeyData: publicKeyData, io: io)
-    }
-
     static func productionPublicKeyData(bundle: Bundle = .main) -> Data? {
         guard let encoded = bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String else {
             return nil
@@ -272,7 +251,7 @@ nonisolated enum AuraFaceComponentStore {
         }
     }
 
-    private static func verifyInstalledDirectory(
+    fileprivate static func verifyInstalledDirectory(
         _ directory: URL,
         publicKeyData: Data,
         io: AuraFaceComponentIO
@@ -430,6 +409,79 @@ nonisolated struct AuraFaceComponentSnapshot: Equatable, Sendable {
     let source: AuraFaceComponentSource
 }
 
+/// One immutable answer from the model-component filesystem boundary. The model URL is
+/// published to the embedder only after the signed downloaded component (or bundled fallback)
+/// has been resolved completely.
+nonisolated struct AuraFaceComponentResolution: Equatable, Sendable {
+    let snapshot: AuraFaceComponentSnapshot
+    let modelURL: URL?
+
+    static let checking = AuraFaceComponentResolution(
+        snapshot: AuraFaceComponentSnapshot(availability: .checking, source: .none),
+        modelURL: nil
+    )
+
+    static func current(
+        bundle: Bundle = .main,
+        publicKeyData: Data? = AuraFaceComponentStore.productionPublicKeyData(),
+        io: AuraFaceComponentIO = .live
+    ) -> AuraFaceComponentResolution {
+        if let publicKeyData,
+           let descriptor = try? AuraFaceComponentStore.verifyInstalledDirectory(
+               AuraFaceComponentStore.current,
+               publicKeyData: publicKeyData,
+               io: io
+           ) {
+            let compiled = AuraFaceComponentStore.current.appendingPathComponent(
+                AuraFaceComponentStore.compiledDirectory,
+                isDirectory: true
+            )
+            if io.fileExists(compiled) {
+                return AuraFaceComponentResolution(
+                    snapshot: AuraFaceComponentSnapshot(
+                        availability: .ready(version: descriptor.modelVersion),
+                        source: .downloaded
+                    ),
+                    modelURL: compiled
+                )
+            }
+        }
+        if let bundled = CoreMLFaceEmbedder.bundledModelURL(bundle: bundle) {
+            return AuraFaceComponentResolution(
+                snapshot: AuraFaceComponentSnapshot(
+                    availability: .ready(version: CoreMLFaceEmbedder.modelVersion),
+                    source: .bundled
+                ),
+                modelURL: bundled
+            )
+        }
+        return AuraFaceComponentResolution(
+            snapshot: AuraFaceComponentSnapshot(availability: .notInstalled, source: .none),
+            modelURL: nil
+        )
+    }
+}
+
+/// Serializes potentially expensive installed-package enumeration, reads, and hashes away from
+/// MainActor callers. Cancellation is sampled around the synchronous resolver; a cancelled probe
+/// never publishes its result.
+actor AuraFaceComponentProbeService {
+    typealias Resolver = @Sendable () -> AuraFaceComponentResolution
+
+    private let resolver: Resolver
+
+    init(resolver: @escaping Resolver = { AuraFaceComponentResolution.current() }) {
+        self.resolver = resolver
+    }
+
+    func resolve() throws -> AuraFaceComponentResolution {
+        try Task.checkCancellation()
+        let resolution = resolver()
+        try Task.checkCancellation()
+        return resolution
+    }
+}
+
 @MainActor
 final class AuraFaceComponentManager: ObservableObject {
     static let shared = AuraFaceComponentManager()
@@ -439,17 +491,30 @@ final class AuraFaceComponentManager: ObservableObject {
     @Published private(set) var lastError: String?
 
     private let installerFactory: () throws -> AuraFaceComponentInstaller
+    private let probeService: AuraFaceComponentProbeService
+    private let modelPublisher: @MainActor @Sendable (URL?) -> Void
+    private var requestID = UUID()
+    private var operationTask: Task<Void, Never>?
 
     init(
         installerFactory: @escaping () throws -> AuraFaceComponentInstaller = {
             try AuraFaceComponentInstaller()
         },
-        initialSnapshot: AuraFaceComponentSnapshot? = nil
+        initialSnapshot: AuraFaceComponentSnapshot? = nil,
+        probeService: AuraFaceComponentProbeService = AuraFaceComponentProbeService(),
+        modelPublisher: @escaping @MainActor @Sendable (URL?) -> Void = {
+            CoreMLFaceEmbedder.shared.publishResolvedModelURL($0)
+        }
     ) {
         self.installerFactory = installerFactory
-        let snapshot = initialSnapshot ?? Self.currentSnapshot()
+        self.probeService = probeService
+        self.modelPublisher = modelPublisher
+        let snapshot = initialSnapshot ?? AuraFaceComponentResolution.checking.snapshot
         availability = snapshot.availability
         source = snapshot.source
+        if initialSnapshot == nil {
+            startProbe()
+        }
     }
 
     var canDownload: Bool {
@@ -457,7 +522,7 @@ final class AuraFaceComponentManager: ObservableObject {
         switch availability {
         case .notInstalled, .offline, .verificationFailed:
             return true
-        case .downloading, .ready, .updateAvailable, .incompatible:
+        case .checking, .downloading, .ready, .updateAvailable, .incompatible:
             return false
         }
     }
@@ -466,42 +531,69 @@ final class AuraFaceComponentManager: ObservableObject {
         source == .downloaded && availability.isAvailable
     }
 
-    private static func currentSnapshot() -> AuraFaceComponentSnapshot {
-        if AuraFaceComponentStore.installedModelURL() != nil,
-           let descriptor = AuraFaceComponentStore.installedDescriptor() {
-            return AuraFaceComponentSnapshot(
-                availability: .ready(version: descriptor.modelVersion),
-                source: .downloaded
-            )
+    /// Re-resolves installed state without blocking the main actor. Replacement requests cancel
+    /// and identity-invalidate older probes so a late result cannot roll back newer state.
+    func refresh() {
+        availability = .checking
+        source = .none
+        lastError = nil
+        startProbe()
+    }
+
+    private func startProbe() {
+        operationTask?.cancel()
+        let id = UUID()
+        requestID = id
+        operationTask = Task { [weak self, probeService] in
+            do {
+                let resolution = try await probeService.resolve()
+                guard let self, self.requestID == id, !Task.isCancelled else { return }
+                self.publish(resolution)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.requestID == id, !Task.isCancelled else { return }
+                self.source = .none
+                self.availability = .verificationFailed
+                self.lastError = error.localizedDescription
+            }
         }
-        if CoreMLFaceEmbedder.bundledModelURL() != nil {
-            return AuraFaceComponentSnapshot(
-                availability: .ready(version: CoreMLFaceEmbedder.modelVersion),
-                source: .bundled
-            )
-        }
-        return AuraFaceComponentSnapshot(availability: .notInstalled, source: .none)
+    }
+
+    private func publish(_ resolution: AuraFaceComponentResolution) {
+        modelPublisher(resolution.modelURL)
+        availability = resolution.snapshot.availability
+        source = resolution.snapshot.source
+        lastError = nil
     }
 
     func downloadConfirmed() {
         guard canDownload else { return }
+        operationTask?.cancel()
+        let id = UUID()
+        requestID = id
         availability = .downloading(progress: 0)
         lastError = nil
-        Task {
+        operationTask = Task { [weak self, probeService] in
             do {
-                let descriptor = try await installerFactory().downloadAndInstall()
-                CoreMLFaceEmbedder.shared.refreshAfterComponentChange()
-                source = .downloaded
-                availability = .ready(version: descriptor.modelVersion)
+                guard let self else { return }
+                _ = try await self.installerFactory().downloadAndInstall()
+                let resolution = try await probeService.resolve()
+                guard self.requestID == id, !Task.isCancelled else { return }
+                guard resolution.snapshot.source == .downloaded else {
+                    throw AuraFaceComponentError.installationFailed
+                }
+                self.publish(resolution)
                 KnownPeopleService.shared.reloadAfterStorageChange()
             } catch {
-                lastError = error.localizedDescription
+                guard let self, self.requestID == id, !Task.isCancelled else { return }
+                self.lastError = error.localizedDescription
                 if let urlError = error as? URLError,
                    [.notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost]
                     .contains(urlError.code) {
-                    availability = .offline
+                    self.availability = .offline
                 } else {
-                    availability = .verificationFailed
+                    self.availability = .verificationFailed
                 }
             }
         }
@@ -509,20 +601,19 @@ final class AuraFaceComponentManager: ObservableObject {
 
     func removeConfirmed() {
         guard canRemove else { return }
-        Task {
+        operationTask?.cancel()
+        let id = UUID()
+        requestID = id
+        operationTask = Task { [weak self, probeService] in
             do {
-                try await installerFactory().removeInstalledComponent()
-                CoreMLFaceEmbedder.shared.refreshAfterComponentChange()
-                if CoreMLFaceEmbedder.bundledModelURL() != nil {
-                    source = .bundled
-                    availability = .ready(version: CoreMLFaceEmbedder.modelVersion)
-                } else {
-                    source = .none
-                    availability = .notInstalled
-                }
-                lastError = nil
+                guard let self else { return }
+                try await self.installerFactory().removeInstalledComponent()
+                let resolution = try await probeService.resolve()
+                guard self.requestID == id, !Task.isCancelled else { return }
+                self.publish(resolution)
             } catch {
-                lastError = error.localizedDescription
+                guard let self, self.requestID == id, !Task.isCancelled else { return }
+                self.lastError = error.localizedDescription
             }
         }
     }

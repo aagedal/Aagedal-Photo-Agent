@@ -6,6 +6,7 @@ import Accelerate
 /// Installation and compatibility state for the optional AuraFace component. The associated
 /// versions are distribution versions; the persisted embedding-space version is tracked separately.
 nonisolated enum FaceRecognitionModelAvailability: Equatable, Sendable {
+    case checking
     case notInstalled
     case downloading(progress: Double)
     case ready(version: String)
@@ -21,12 +22,13 @@ nonisolated enum FaceRecognitionModelAvailability: Equatable, Sendable {
     var isAvailable: Bool {
         switch self {
         case .ready, .updateAvailable: true
-        case .notInstalled, .downloading, .incompatible, .verificationFailed, .offline: false
+        case .checking, .notInstalled, .downloading, .incompatible, .verificationFailed, .offline: false
         }
     }
 
     var title: String {
         switch self {
+        case .checking: "Checking Face Recognition"
         case .notInstalled: "Face Recognition Unavailable"
         case .downloading: "Downloading Face Model"
         case .ready: "Face Recognition Available"
@@ -39,6 +41,8 @@ nonisolated enum FaceRecognitionModelAvailability: Equatable, Sendable {
 
     var detail: String {
         switch self {
+        case .checking:
+            "Checking the verified AuraFace component on this Mac."
         case .notInstalled:
             "AuraFace is not installed. Face scanning and recognition remain unavailable until the verified model is downloaded."
         case .downloading(let progress):
@@ -95,53 +99,48 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     private let lock = NSLock()
     private var modelURL: URL?
     private let allowsDynamicResolution: Bool
+    private var isResolutionPending: Bool
     private var loadedModel: MLModel?
     private var loadError: Error?
 
     nonisolated var availability: FaceRecognitionModelAvailability {
         lock.lock(); defer { lock.unlock() }
-        return modelURL != nil ? .available : .unavailable
+        if modelURL != nil { return .available }
+        return isResolutionPending ? .checking : .unavailable
     }
 
-    nonisolated convenience init(bundle: Bundle = .main) {
-        self.init(modelURL: Self.resolvedModelURL(bundle: bundle), allowsDynamicResolution: true)
+    nonisolated convenience init() {
+        self.init(modelURL: nil, allowsDynamicResolution: true, isResolutionPending: true)
     }
 
-    /// A downloaded component wins over the bundled compatibility path. Downloaded
-    /// packages are accepted only when their persisted signed descriptor and every
-    /// source-package hash still verify.
-    nonisolated static func resolvedModelURL(bundle: Bundle = .main) -> URL? {
-        AuraFaceComponentStore.installedModelURL()
-            ?? bundledModelURL(bundle: bundle)
-    }
-
-    /// Kept separate from `resolvedModelURL` so Settings can distinguish an app-bundled
-    /// fallback from a downloaded component. Both are usable, but only the latter is
-    /// independently removable.
+    /// Kept separate from downloaded-component resolution so Settings can distinguish an
+    /// app-bundled fallback. Downloaded components are supplied only after the serialized
+    /// signed-package probe succeeds.
     nonisolated static func bundledModelURL(bundle: Bundle = .main) -> URL? {
         bundle.url(forResource: Self.modelResource, withExtension: "mlmodelc")
     }
 
-    /// Known People migration uses this as its fail-closed model boundary. A release-bundled
-    /// model is protected by the signed app; an on-demand model is independently reverified.
-    nonisolated static func hasVerifiedCurrentModel(bundle: Bundle = .main) -> Bool {
-        resolvedModelURL(bundle: bundle) != nil
-    }
-
     /// Internal injection point keeps the omitted-package state deterministic in focused tests.
-    nonisolated init(modelURL: URL?, allowsDynamicResolution: Bool = false) {
+    nonisolated init(
+        modelURL: URL?,
+        allowsDynamicResolution: Bool = false,
+        isResolutionPending: Bool = false
+    ) {
         self.modelURL = modelURL
         self.allowsDynamicResolution = allowsDynamicResolution
+        self.isResolutionPending = isResolutionPending
     }
 
-    /// Makes an installed or removed component visible without relaunching. Any cached model
-    /// or failure belongs to the previous installation and must not cross this boundary.
-    nonisolated func refreshAfterComponentChange() {
+    /// Publishes a URL that was already resolved and verified by the serialized component probe.
+    /// Any cached model or failure belongs to the previous installation and must not cross this
+    /// boundary. This lock-only publication never performs filesystem work on its caller.
+    nonisolated func publishResolvedModelURL(_ resolvedURL: URL?) {
         lock.lock(); defer { lock.unlock() }
         guard allowsDynamicResolution else { return }
         loadedModel = nil
         loadError = nil
-        modelURL = Self.resolvedModelURL()
+        modelURL = resolvedURL
+        isResolutionPending = false
     }
 
     enum EmbedError: LocalizedError {
@@ -164,9 +163,6 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
         if let m = loadedModel { return m }
         if let e = loadError { throw e }
         do {
-            if modelURL == nil, allowsDynamicResolution {
-                modelURL = Self.resolvedModelURL()
-            }
             guard let url = modelURL else {
                 throw EmbedError.modelNotFound
             }

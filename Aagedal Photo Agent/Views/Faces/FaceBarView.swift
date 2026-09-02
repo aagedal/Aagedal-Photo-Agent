@@ -277,11 +277,18 @@ struct FaceBarView: View {
     /// in the primary face workflow instead of allowing every photo to fail as an ordinary scan.
     private var unavailableModelState: some View {
         VStack(spacing: 2) {
-            Image(systemName: "person.crop.circle.badge.exclamationmark")
-                .font(.system(size: 20))
-                .foregroundStyle(.orange)
-            Text("Unavailable")
-                .font(.system(size: 9))
+            if case .checking = viewModel.faceModelAvailability {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Checking")
+                    .font(.system(size: 9))
+            } else {
+                Image(systemName: "person.crop.circle.badge.exclamationmark")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.orange)
+                Text("Unavailable")
+                    .font(.system(size: 9))
+            }
         }
         .frame(width: 64, height: 56)
         .help(viewModel.faceModelAvailability.detail)

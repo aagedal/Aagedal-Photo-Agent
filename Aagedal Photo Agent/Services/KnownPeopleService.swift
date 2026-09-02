@@ -90,7 +90,7 @@ final class KnownPeopleService {
     /// Embeddings must remain untouched until the corresponding model is present and
     /// verified. The on-demand installer re-triggers loading only after its atomic commit.
     static var embeddingMigrationModelReadiness: () -> Bool = {
-        CoreMLFaceEmbedder.hasVerifiedCurrentModel()
+        CoreMLFaceEmbedder.shared.availability.isAvailable
     }
 
     /// Injectable so focused migration tests do not mutate launch UI state.

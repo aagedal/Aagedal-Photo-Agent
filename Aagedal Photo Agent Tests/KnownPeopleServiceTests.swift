@@ -35,7 +35,7 @@ struct KnownPeopleServiceTests {
         KnownPeopleService.deletionIO = .live
         KnownPeopleService.embeddingMigrationIO = .live
         KnownPeopleService.embeddingMigrationModelReadiness = {
-            CoreMLFaceEmbedder.hasVerifiedCurrentModel()
+            CoreMLFaceEmbedder.shared.availability.isAvailable
         }
         KnownPeopleService.storageOverrideURL = nil
         try? FileManager.default.removeItem(at: dir)
@@ -57,7 +57,7 @@ struct KnownPeopleServiceTests {
             }
             KnownPeopleService.embeddingMigrationIO = .live
             KnownPeopleService.embeddingMigrationModelReadiness = {
-                CoreMLFaceEmbedder.hasVerifiedCurrentModel()
+                CoreMLFaceEmbedder.shared.availability.isAvailable
             }
             KnownPeopleService.migrationRecoveryNotices = .shared
             teardown(dir)
