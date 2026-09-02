@@ -921,6 +921,14 @@ immediate without blocking MainActor. Other lower-priority direct paths and real
 Checker exit evidence remain open.
 ([validation](plan-status-face-persistence-continuation-2026-09-02.md))
 
+**Source revision capture follow-up (2026-09-02):** canonical path resolution, both resource-value probes, and
+streamed SHA-256 hashing now run as one contiguous transaction on `SourceImageRevisionCaptureService`. Cancellation
+is sampled around every non-preemptible filesystem stage, and overlapping captures cannot interleave their stat-hash-
+stat sequences. Three new characterizations, the integrated 151-test selection, repository gate, and serial
+unfiltered 1,906-test run passed. Other lower-priority direct paths and real-volume/signpost/Thread Performance
+Checker exit evidence remain open.
+([validation](plan-status-source-revision-capture-continuation-2026-09-02.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

@@ -23,6 +23,13 @@ nonisolated struct HashStream: Sendable {
 
     /// Hash an entire file by streaming 1 MB chunks from disk.
     static func hashFile(at url: URL, chunkSize: Int = 1 << 20) async throws -> Data {
+        try hashFileSynchronously(at: url, chunkSize: chunkSize)
+    }
+
+    /// Synchronous core used by serialized filesystem actors that must keep a larger
+    /// stat-hash-stat transaction non-reentrant. Callers are responsible for entering an
+    /// executor that is not the MainActor. Cancellation is still sampled between chunks.
+    static func hashFileSynchronously(at url: URL, chunkSize: Int = 1 << 20) throws -> Data {
         precondition(chunkSize > 0)
         try Task.checkCancellation()
 

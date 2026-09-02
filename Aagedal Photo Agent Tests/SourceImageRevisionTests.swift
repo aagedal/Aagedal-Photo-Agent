@@ -112,6 +112,68 @@ struct SourceImageRevisionTests {
             _ = try await task.value
         }
     }
+
+    @Test("revision stat and hash primitives leave the main actor")
+    @MainActor
+    func capturePrimitivesRunOffMainActor() async throws {
+        let probe = SourceRevisionCaptureProbe()
+        let source = URL(fileURLWithPath: "/virtual/source.jpg")
+        let service = SourceImageRevisionCaptureService(io: probe.io)
+
+        let revision = try await service.capture(
+            at: source,
+            pixelWidth: 40,
+            pixelHeight: 30,
+            exifOrientation: 6
+        )
+
+        #expect(revision.canonicalURL == source.standardizedFileURL)
+        #expect(revision.byteCount == 12)
+        #expect(revision.pixelWidth == 40)
+        #expect(revision.pixelHeight == 30)
+        #expect(revision.exifOrientation == 6)
+        #expect(revision.sha256 == String(repeating: "ab", count: 32))
+        #expect(probe.snapshotURLs == [source.standardizedFileURL, source.standardizedFileURL])
+        #expect(probe.hashURLs == [source.standardizedFileURL])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("capture cancellation after a non-preemptible stat stops before hashing")
+    func captureCancellationAfterStat() async throws {
+        let probe = SourceRevisionCaptureProbe(blockFirstSnapshot: true)
+        let service = SourceImageRevisionCaptureService(io: probe.io)
+        let task = Task {
+            try await service.capture(at: URL(fileURLWithPath: "/virtual/cancelled.jpg"))
+        }
+        #expect(await probe.waitUntilFirstSnapshotStarts())
+        task.cancel()
+        probe.releaseFirstSnapshot()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+        #expect(probe.snapshotURLs.count == 1)
+        #expect(probe.hashURLs.isEmpty)
+    }
+
+    @Test("overlapping revision captures remain one serialized transaction")
+    func capturesAreSerialized() async throws {
+        let probe = SourceRevisionCaptureProbe(blockFirstSnapshot: true)
+        let service = SourceImageRevisionCaptureService(io: probe.io)
+        let firstURL = URL(fileURLWithPath: "/virtual/first.jpg").standardizedFileURL
+        let secondURL = URL(fileURLWithPath: "/virtual/second.jpg").standardizedFileURL
+        let first = Task { try await service.capture(at: firstURL) }
+        #expect(await probe.waitUntilFirstSnapshotStarts())
+        let second = Task { try await service.capture(at: secondURL) }
+        await Task.yield()
+        probe.releaseFirstSnapshot()
+
+        _ = try await first.value
+        _ = try await second.value
+
+        #expect(probe.snapshotURLs == [firstURL, firstURL, secondURL, secondURL])
+        #expect(probe.hashURLs == [firstURL, secondURL])
+    }
 }
 
 @Suite("File system offline availability")
@@ -638,6 +700,94 @@ private struct TemporaryFixture {
 
     func remove() {
         try? FileManager.default.removeItem(at: directoryURL)
+    }
+}
+
+nonisolated private final class SourceRevisionCaptureProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let blockFirstSnapshot: Bool
+    private var recordedSnapshotURLs: [URL] = []
+    private var recordedHashURLs: [URL] = []
+    private var observedMainThread = false
+    private var firstSnapshotStarted = false
+    private var firstSnapshotReleased = false
+
+    init(blockFirstSnapshot: Bool = false) {
+        self.blockFirstSnapshot = blockFirstSnapshot
+    }
+
+    var io: SourceImageRevisionCaptureIO {
+        SourceImageRevisionCaptureIO(
+            canonicalURL: { [self] url in
+                recordThread()
+                return url.standardizedFileURL
+            },
+            snapshot: snapshot,
+            hash: hash,
+            now: { Date(timeIntervalSince1970: 1_788_000_000) }
+        )
+    }
+
+    var snapshotURLs: [URL] {
+        condition.withLock { recordedSnapshotURLs }
+    }
+
+    var hashURLs: [URL] {
+        condition.withLock { recordedHashURLs }
+    }
+
+    var ranOnMainThread: Bool {
+        condition.withLock { observedMainThread }
+    }
+
+    func snapshot(_ url: URL) -> SourceImageRevisionFileSnapshot {
+        condition.lock()
+        recordedSnapshotURLs.append(url)
+        observedMainThread = observedMainThread || Thread.isMainThread
+        if blockFirstSnapshot && recordedSnapshotURLs.count == 1 {
+            firstSnapshotStarted = true
+            condition.broadcast()
+            while !firstSnapshotReleased {
+                condition.wait()
+            }
+        }
+        condition.unlock()
+        return SourceImageRevisionFileSnapshot(
+            isRegularFile: true,
+            byteCount: 12,
+            contentModificationDate: Date(timeIntervalSince1970: 1_700_000_000),
+            fileResourceIdentifier: nil
+        )
+    }
+
+    func hash(_ url: URL) -> Data {
+        condition.withLock {
+            recordedHashURLs.append(url)
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return Data(repeating: 0xab, count: 32)
+    }
+
+    func waitUntilFirstSnapshotStarts() async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !condition.withLock({ firstSnapshotStarted }) {
+            guard ContinuousClock.now < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return true
+    }
+
+    func releaseFirstSnapshot() {
+        condition.withLock {
+            firstSnapshotReleased = true
+            condition.broadcast()
+        }
+    }
+
+    private func recordThread() {
+        condition.withLock {
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
     }
 }
 

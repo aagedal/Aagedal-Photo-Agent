@@ -450,6 +450,13 @@ lens reads. Seven new characterizations, the integrated 68-test selection, repos
 unfiltered 1,903-logical-test/2,030-expanded-run gate passed. The audit remains 66 of 75 while Phase 3.1's other
 direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [Source revision capture continuation](plan-status-source-revision-capture-continuation-2026-09-02.md)
+moves canonical-path resolution, pre/post resource probes, and streamed hashing from MainActor callers to one
+serialized, non-reentrant stat-hash-stat transaction. Three new characterizations, the focused 10-test suite, the
+integrated 151-test selection, repository gate, and serial unfiltered 1,906-test run passed. The audit remains 66 of
+75 while Phase 3.1's lower-priority direct paths and real-volume/signpost/Thread Performance Checker evidence stay
+open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

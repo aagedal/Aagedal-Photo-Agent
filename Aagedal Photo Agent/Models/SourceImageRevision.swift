@@ -70,37 +70,11 @@ nonisolated struct SourceImageRevision: Codable, Hashable, Sendable {
         pixelHeight: Int? = nil,
         exifOrientation: Int? = nil
     ) async throws -> SourceImageRevision {
-        try Task.checkCancellation()
-
-        guard url.isFileURL else {
-            throw SourceImageRevisionError.notAFileURL
-        }
-
-        let canonicalURL = url.standardizedFileURL.resolvingSymlinksInPath()
-        let before = try FileSnapshot.capture(at: canonicalURL)
-        guard before.isRegularFile else {
-            throw SourceImageRevisionError.notARegularFile
-        }
-
-        let digest = try await HashStream.hashFile(at: canonicalURL)
-        try Task.checkCancellation()
-
-        let after = try FileSnapshot.capture(at: canonicalURL)
-        guard before.matches(after) else {
-            throw SourceImageRevisionError.sourceChangedDuringHash
-        }
-
-        return SourceImageRevision(
-            canonicalURL: canonicalURL,
-            fileResourceIdentifier: before.fileResourceIdentifier,
-            filenameAtCreation: canonicalURL.lastPathComponent,
-            byteCount: before.byteCount,
-            contentModificationDate: before.contentModificationDate,
+        try await SourceImageRevisionCaptureService.shared.capture(
+            at: url,
             pixelWidth: pixelWidth,
             pixelHeight: pixelHeight,
-            exifOrientation: exifOrientation,
-            sha256: digest.lowercaseHexString,
-            hashCompletedAt: Date()
+            exifOrientation: exifOrientation
         )
     }
 
@@ -138,6 +112,118 @@ nonisolated struct SourceImageRevision: Codable, Hashable, Sendable {
     }
 }
 
+/// Immutable file facts sampled before and after hashing. The resource identifier is only an
+/// equality hint; the streamed digest remains the authoritative revision identity.
+nonisolated struct SourceImageRevisionFileSnapshot: Sendable {
+    let isRegularFile: Bool
+    let byteCount: Int64
+    let contentModificationDate: Date
+    let fileResourceIdentifier: SourceImageRevision.FileResourceIdentifier?
+
+    func matches(_ other: SourceImageRevisionFileSnapshot) -> Bool {
+        isRegularFile == other.isRegularFile
+            && byteCount == other.byteCount
+            && contentModificationDate == other.contentModificationDate
+            && fileResourceIdentifier == other.fileResourceIdentifier
+    }
+}
+
+/// Injectable synchronous primitives kept below the actor boundary so tests can prove executor,
+/// ordering, and cancellation behavior without touching a real slow volume.
+nonisolated struct SourceImageRevisionCaptureIO: Sendable {
+    let canonicalURL: @Sendable (URL) -> URL
+    let snapshot: @Sendable (URL) throws -> SourceImageRevisionFileSnapshot
+    let hash: @Sendable (URL) throws -> Data
+    let now: @Sendable () -> Date
+
+    static let system = SourceImageRevisionCaptureIO(
+        canonicalURL: { $0.standardizedFileURL.resolvingSymlinksInPath() },
+        snapshot: { url in
+            let values = try url.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+                .fileResourceIdentifierKey
+            ])
+
+            guard values.isRegularFile == true else {
+                throw SourceImageRevisionError.notARegularFile
+            }
+            guard let fileSize = values.fileSize else {
+                throw SourceImageRevisionError.missingFileSize
+            }
+            guard let contentModificationDate = values.contentModificationDate else {
+                throw SourceImageRevisionError.missingModificationDate
+            }
+
+            return SourceImageRevisionFileSnapshot(
+                isRegularFile: true,
+                byteCount: Int64(fileSize),
+                contentModificationDate: contentModificationDate,
+                fileResourceIdentifier: SourceImageRevision.FileResourceIdentifier(
+                    foundationValue: values.fileResourceIdentifier
+                )
+            )
+        },
+        hash: { try HashStream.hashFileSynchronously(at: $0) },
+        now: Date.init
+    )
+}
+
+/// Owns the complete stat-hash-stat transaction. Keeping every synchronous filesystem primitive
+/// in one non-reentrant actor method prevents MainActor callers from performing the two resource
+/// probes and prevents overlapping captures from observing one another's partial transaction.
+actor SourceImageRevisionCaptureService {
+    static let shared = SourceImageRevisionCaptureService()
+
+    private let io: SourceImageRevisionCaptureIO
+
+    init(io: SourceImageRevisionCaptureIO = .system) {
+        self.io = io
+    }
+
+    func capture(
+        at url: URL,
+        pixelWidth: Int? = nil,
+        pixelHeight: Int? = nil,
+        exifOrientation: Int? = nil
+    ) throws -> SourceImageRevision {
+        try Task.checkCancellation()
+        guard url.isFileURL else {
+            throw SourceImageRevisionError.notAFileURL
+        }
+
+        let canonicalURL = io.canonicalURL(url)
+        try Task.checkCancellation()
+        let before = try io.snapshot(canonicalURL)
+        try Task.checkCancellation()
+        guard before.isRegularFile else {
+            throw SourceImageRevisionError.notARegularFile
+        }
+
+        let digest = try io.hash(canonicalURL)
+        try Task.checkCancellation()
+        let after = try io.snapshot(canonicalURL)
+        try Task.checkCancellation()
+        guard before.matches(after) else {
+            throw SourceImageRevisionError.sourceChangedDuringHash
+        }
+
+        return SourceImageRevision(
+            canonicalURL: canonicalURL,
+            fileResourceIdentifier: before.fileResourceIdentifier,
+            filenameAtCreation: canonicalURL.lastPathComponent,
+            byteCount: before.byteCount,
+            contentModificationDate: before.contentModificationDate,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            exifOrientation: exifOrientation,
+            sha256: digest.lowercaseHexString,
+            hashCompletedAt: io.now()
+        )
+    }
+}
+
 enum SourceImageRevisionError: Error, Equatable, LocalizedError, Sendable {
     case notAFileURL
     case notARegularFile
@@ -157,50 +243,6 @@ enum SourceImageRevisionError: Error, Equatable, LocalizedError, Sendable {
             "The source modification date could not be read."
         case .sourceChangedDuringHash:
             "The source changed while its revision was being captured. Try again when the file is stable."
-        }
-    }
-}
-
-private extension SourceImageRevision {
-    nonisolated struct FileSnapshot {
-        let isRegularFile: Bool
-        let byteCount: Int64
-        let contentModificationDate: Date
-        let fileResourceIdentifier: FileResourceIdentifier?
-
-        static func capture(at url: URL) throws -> FileSnapshot {
-            let values = try url.resourceValues(forKeys: [
-                .isRegularFileKey,
-                .fileSizeKey,
-                .contentModificationDateKey,
-                .fileResourceIdentifierKey
-            ])
-
-            guard values.isRegularFile == true else {
-                throw SourceImageRevisionError.notARegularFile
-            }
-            guard let fileSize = values.fileSize else {
-                throw SourceImageRevisionError.missingFileSize
-            }
-            guard let contentModificationDate = values.contentModificationDate else {
-                throw SourceImageRevisionError.missingModificationDate
-            }
-
-            return FileSnapshot(
-                isRegularFile: true,
-                byteCount: Int64(fileSize),
-                contentModificationDate: contentModificationDate,
-                fileResourceIdentifier: FileResourceIdentifier(
-                    foundationValue: values.fileResourceIdentifier
-                )
-            )
-        }
-
-        func matches(_ other: FileSnapshot) -> Bool {
-            isRegularFile == other.isRegularFile
-                && byteCount == other.byteCount
-                && contentModificationDate == other.contentModificationDate
-                && fileResourceIdentifier == other.fileResourceIdentifier
         }
     }
 }
