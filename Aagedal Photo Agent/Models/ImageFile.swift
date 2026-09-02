@@ -140,6 +140,42 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.keywordsLowercased = source.keywordsLowercased
     }
 
+    /// Projects an already-known image through a path-only relocation such as a successful
+    /// rename. Unlike `init(url:copyingFrom:)`, this initializer performs no filesystem reads.
+    /// A rename preserves the file and sidecar facts captured by the serialized executor, so
+    /// re-statting the destination from a MainActor presentation owner would only add a slow-
+    /// volume blocking opportunity and could produce a partially refreshed model snapshot.
+    nonisolated init(url: URL, relocating source: ImageFile) {
+        self.url = url
+        self.filename = url.lastPathComponent
+        self.filenameLowercased = url.lastPathComponent.lowercased()
+        self.fileType = UTType(filenameExtension: url.pathExtension)
+
+        self.fileSize = source.fileSize
+        self.dateModified = source.dateModified
+        self.dateAdded = source.dateAdded
+        self.isICloudDownloadPending = source.isICloudDownloadPending
+        self.sidecarModified = source.sidecarModified
+
+        self.starRating = source.starRating
+        self.colorLabel = source.colorLabel
+        self.hasC2PA = source.hasC2PA
+        self.hasDevelopEdits = source.hasDevelopEdits
+        self.hasCropEdits = source.hasCropEdits
+        self.cropRegion = source.cropRegion
+        self.cameraRawSettings = source.cameraRawSettings
+        self.exifOrientation = source.exifOrientation
+        self.hasPendingMetadataChanges = source.hasPendingMetadataChanges
+        self.pendingFieldNames = source.pendingFieldNames
+        self.isNativeHDR = source.isNativeHDR
+        self.metadata = source.metadata
+        self.metadataSearchLowercased = source.metadataSearchLowercased
+        self.personShown = source.personShown
+        self.personShownLowercased = source.personShownLowercased
+        self.keywords = source.keywords
+        self.keywordsLowercased = source.keywordsLowercased
+    }
+
     /// Lowercased, newline-joined blob of the IPTC fields the browser search filters on. Built once
     /// per metadata assignment so the per-keystroke filter is a single substring scan. `nil`/empty
     /// fields are dropped; returns "" when there's nothing searchable.

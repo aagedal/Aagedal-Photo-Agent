@@ -167,6 +167,9 @@ Supporting documents:
 - [SwiftMediaMetadata 3 migration](swift-media-metadata-3-migration-validation-2026-09-02.md) — remote
   package relink, removal of the old vendored source and app-owned compatibility workarounds, and
   focused/full regression evidence.
+- [Batch Rename relocation continuation](plan-status-batch-rename-relocation-continuation-2026-09-02.md) —
+  nonblocking immutable rename projection for Browser, Compare, and Analysis publication, while destination
+  file-fact reads for Duplicate remain on the serialized filesystem actor.
 
 ## Solar overlay document set
 
@@ -417,6 +420,16 @@ AuraFace production publication is recorded in the
 [on-demand runtime validation](auraface-on-demand-runtime-validation-2026-08-27.md#remaining-external-validation):
 the archive, descriptor, and detached-signature endpoints were live and returned HTTP 200 on 2026-09-01.
 Publication is complete; the model-omitted release candidate and supported-macOS production-server drills remain.
+
+The latest [Batch Rename relocation continuation](plan-status-batch-rename-relocation-continuation-2026-09-02.md)
+removes destination and sidecar resource probes from the three MainActor owners that publish successful rename
+results. A pure `ImageFile` relocation projection preserves the executor's already-known immutable file facts;
+the filesystem-backed copy initializer remains only in the serialized Duplicate service. Two new
+characterizations, the focused 17-test suite, the integrated 131-test selection, and the repository gate passed.
+The unchanged 10,000-file planning benchmark also passed alone after exceeding its existing tripwire once under
+full-suite host contention; a 58.697-second serial run excluding only that separately passing benchmark covered
+the rest of the suite without failures. The audit remains 66 of 75 while Phase 3.1's remaining direct paths and
+real-volume/signpost/Thread Performance Checker evidence stay open.
 
 ## File organization convention
 

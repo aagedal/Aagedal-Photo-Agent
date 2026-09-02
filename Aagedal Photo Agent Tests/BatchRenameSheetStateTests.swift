@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import Testing
+import UniformTypeIdentifiers
 @testable import Aagedal_Photo_Agent
 
 @Suite("Batch rename sheet state")
@@ -222,6 +223,79 @@ struct BatchRenameSheetStateTests {
         #expect(projected.selectedURLs == [a, b])
         #expect(projected.lastClickedURL == b)
         #expect(projected.manualOrder == [c, b, a])
+    }
+
+    @Test("Rename relocation preserves cached image facts without probing the destination")
+    func renameRelocationPreservesCachedImageFacts() throws {
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+
+        let sourceURL = fixtureRoot.appendingPathComponent("before.jpg")
+        let sourceSidecar = fixtureRoot.appendingPathComponent("before.xmp")
+        try Data(repeating: 0x41, count: 19).write(to: sourceURL)
+        try Data("sidecar".utf8).write(to: sourceSidecar)
+
+        var source = ImageFile(url: sourceURL)
+        source.starRating = .three
+        source.colorLabel = .blue
+        source.hasC2PA = true
+        source.hasDevelopEdits = true
+        source.hasPendingMetadataChanges = true
+        source.pendingFieldNames = ["headline"]
+        source.exifOrientation = 6
+        source.personShown = ["Alex"]
+        source.keywords = ["News"]
+        #expect(source.fileSize == 19)
+        #expect(source.sidecarModified != nil)
+
+        // Neither destination file exists. A filesystem-backed reconstruction would therefore
+        // lose its size, dates, and sidecar token; rename projection must remain purely in-memory.
+        let destinationURL = fixtureRoot.appendingPathComponent("after.jpeg")
+        let relocated = ImageFile(url: destinationURL, relocating: source)
+
+        #expect(relocated.url == destinationURL)
+        #expect(relocated.filename == "after.jpeg")
+        #expect(relocated.filenameLowercased == "after.jpeg")
+        #expect(relocated.fileType == UTType.jpeg)
+        #expect(relocated.fileSize == source.fileSize)
+        #expect(relocated.dateModified == source.dateModified)
+        #expect(relocated.dateAdded == source.dateAdded)
+        #expect(relocated.sidecarModified == source.sidecarModified)
+        #expect(relocated.starRating == source.starRating)
+        #expect(relocated.colorLabel == source.colorLabel)
+        #expect(relocated.hasC2PA == source.hasC2PA)
+        #expect(relocated.hasDevelopEdits == source.hasDevelopEdits)
+        #expect(relocated.hasPendingMetadataChanges == source.hasPendingMetadataChanges)
+        #expect(relocated.pendingFieldNames == source.pendingFieldNames)
+        #expect(relocated.exifOrientation == source.exifOrientation)
+        #expect(relocated.personShown == source.personShown)
+        #expect(relocated.keywords == source.keywords)
+    }
+
+    @Test("Main-actor rename owners use the nonblocking relocation projection")
+    func renameOwnersUseNonblockingRelocationProjection() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let relativePaths = [
+            "ContentView.swift",
+            "ViewModels/BrowserViewModel.swift",
+            "ViewModels/AnalysisWorkspaceModel.swift"
+        ]
+
+        for relativePath in relativePaths {
+            let sourceURL = workspace
+                .appendingPathComponent("Aagedal Photo Agent", isDirectory: true)
+                .appendingPathComponent(relativePath)
+            let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+            #expect(source.contains("ImageFile(url: destination, relocating: image)")
+                || source.contains("ImageFile(url: newURL, relocating: image)"))
+            #expect(!source.contains("ImageFile(url: destination, copyingFrom: image)"))
+            #expect(!source.contains("ImageFile(url: newURL, copyingFrom: image)"))
+        }
     }
 
     @MainActor

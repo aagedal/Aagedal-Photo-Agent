@@ -512,7 +512,7 @@ struct ContentView: View {
                             guard let destination = destinations[image.url.standardizedFileURL] else {
                                 return image
                             }
-                            return ImageFile(url: destination, copyingFrom: image)
+                            return ImageFile(url: destination, relocating: image)
                         }
                         comparisonRenameEvent = ComparisonRenameEvent(mappings: presentation.mappings)
                         browserViewModel.applySuccessfulRename(presentation)

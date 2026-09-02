@@ -3291,7 +3291,7 @@ final class BrowserViewModel {
         images = images.map { image in
             guard let destination = mapping[image.url.standardizedFileURL],
                   destination != image.url.standardizedFileURL else { return image }
-            return ImageFile(url: destination, copyingFrom: image)
+            return ImageFile(url: destination, relocating: image)
         }
         manualOrder = projectedState.manualOrder
         selectedImageIDs = projectedState.selectedURLs

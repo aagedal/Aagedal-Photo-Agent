@@ -586,7 +586,7 @@ final class AnalysisWorkspaceModel {
             sourceURL = newURL
         }
         if let image = openedImage, let newURL = destination(for: image.url) {
-            openedImage = ImageFile(url: newURL, copyingFrom: image)
+            openedImage = ImageFile(url: newURL, relocating: image)
         }
         if let revision = currentRevision,
            let newURL = destination(for: revision.canonicalURL) {

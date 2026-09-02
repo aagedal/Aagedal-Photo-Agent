@@ -391,6 +391,17 @@ work. Five new characterizations, the adjacent 37-test selection, the repository
 Performance Checker evidence keep all three broad Phase 3.1 substeps open.
 ([validation](plan-status-import-voice-memo-association-continuation-2026-09-01.md))
 
+**Batch Rename relocation continuation (2026-09-02):** the checklist remains 66 of 75. Successful rename
+publication in Browser, Compare, and Analysis now uses a pure immutable `ImageFile` relocation projection instead
+of synchronously reading destination and sidecar resource values from three MainActor owners. The filesystem-
+backed copy initializer remains only in the serialized Duplicate service, where destination facts are required.
+Two new characterizations, the focused 17-test suite, the integrated 131-test selection, and the repository gate
+passed. The unchanged 10,000-file planning benchmark passed in isolation after one full-suite contention failure.
+A follow-up 58.697-second serial run excluding only that separately passing benchmark covered the rest of the suite
+without failures. Other lower-priority direct paths and real-volume/signpost/Thread Performance Checker evidence
+keep all three broad Phase 3.1 substeps open.
+([validation](plan-status-batch-rename-relocation-continuation-2026-09-02.md))
+
 ## Phase 0 — Stop silent data loss and destructive surprises
 
 ### 0.1 Make synced deletions durable before deleting local data
@@ -877,6 +888,13 @@ behavior replaces app-owned PLUS Image Supplier, file-creation-date, and rendere
 workarounds. Focused metadata and import validation passed 77 tests; the complete serial gate passed
 1,888 logical tests (2,015 expanded executions) with zero failures or skips.
 ([validation](swift-media-metadata-3-migration-validation-2026-09-02.md))
+
+**Batch Rename relocation follow-up (2026-09-02):** successful rename publication no longer reconstructs
+`ImageFile` values by reading destination and sidecar resource values from MainActor owners. Browser, Compare,
+and Analysis use an immutable path-only relocation projection that preserves the already-captured file facts; the
+filesystem-backed copy initializer remains on `FileSystemService` for Duplicate. Other lower-priority direct paths
+and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-batch-rename-relocation-continuation-2026-09-02.md))
 
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
