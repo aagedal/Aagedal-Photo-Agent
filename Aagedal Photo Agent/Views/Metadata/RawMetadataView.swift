@@ -27,6 +27,7 @@ struct RawMetadataView: View {
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var displayedText = ""
+    @State private var xmpSidecarRequestID: UUID?
     @State private var appSidecarRequestID: UUID?
     @FocusState private var isSearchFocused: Bool
 
@@ -73,6 +74,7 @@ struct RawMetadataView: View {
             isSearchFocused = true
         }
         .onDisappear {
+            xmpSidecarRequestID = nil
             appSidecarRequestID = nil
         }
         .onChange(of: searchText) { _, _ in refreshDisplayedText() }
@@ -210,15 +212,25 @@ struct RawMetadataView: View {
 
     private func loadXMPSidecar() async {
         let imageURL = self.imageURL
-        // Parse off-main through the service so the NSXML work runs under its shared lock —
-        // libxml2 is not thread-safe and the develop editor writes sidecars concurrently.
-        let result: (exists: Bool, text: String) = await Task.detached(priority: .utility) {
-            let service = XMPSidecarService()
-            guard service.sidecarExists(for: imageURL) else { return (false, "") }
-            return (true, service.prettyPrintedSidecarXML(for: imageURL) ?? "Unable to read XMP sidecar")
-        }.value
-        hasXMPSidecar = result.exists
-        xmpText = result.text
+        let requestID = UUID()
+        xmpSidecarRequestID = requestID
+        let result = await RawMetadataXMPSidecarLoadService.shared.load(
+            imageURL: imageURL,
+            requestID: requestID
+        )
+        guard !Task.isCancelled, xmpSidecarRequestID == requestID else { return }
+        switch result {
+        case .loaded(let snapshot):
+            guard snapshot.requestID == requestID, snapshot.imageURL == imageURL else { return }
+            hasXMPSidecar = true
+            xmpText = snapshot.text
+        case .notFound(let completedRequestID, let completedImageURL):
+            guard completedRequestID == requestID, completedImageURL == imageURL else { return }
+            hasXMPSidecar = false
+            xmpText = ""
+        case .cancelledBeforeRead, .cancelledAfterRead:
+            break
+        }
     }
 
     private func loadAppSidecar() async {

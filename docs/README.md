@@ -178,6 +178,9 @@ Supporting documents:
 - [Browser and Compare presentation-facts continuation](plan-status-browser-comparison-presentation-facts-continuation-2026-09-02.md) —
   serialized XMP/header snapshots for retina pre-cache and committed comparison with cancellation and stale-selection
   rejection.
+- [Metadata inspector filesystem continuation](plan-status-metadata-inspector-filesystem-continuation-2026-09-02.md) —
+  serialized Raw Metadata XMP and technical ImageIO/file-stat snapshots with cancellation and request/image-gated
+  publication through SwiftExif enrichment.
 
 ## Solar overlay document set
 
@@ -485,6 +488,14 @@ from discarding faces, and cancelled signature capture leaves an image eligible 
 characterizations, the focused 17-test selection, repository gate, and serial unfiltered 1,914-test run passed. The
 audit remains 66 of 75 while Phase 3.1's other direct paths and real-volume/signpost/Thread Performance Checker
 evidence stay open.
+
+The latest [Metadata inspector filesystem continuation](plan-status-metadata-inspector-filesystem-continuation-2026-09-02.md)
+moves Raw Metadata XMP loading and the technical-metadata ImageIO/file-stat fast path from MainActor-owned views to
+dedicated serialized actors. Immutable request/image identities, explicit cancellation, disappearance invalidation,
+and repeated selection guards prevent stale publication through SwiftExif enrichment. Eight new characterizations,
+the focused 12-test selection, adjacent 73-test selection, repository gate, and serial unfiltered 1,922-test run
+passed. The audit remains 66 of 75 while Phase 3.1's other direct paths and real-volume/signpost/Thread Performance
+Checker evidence stay open.
 
 ## File organization convention
 

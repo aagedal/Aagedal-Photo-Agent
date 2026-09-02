@@ -176,6 +176,7 @@ struct ContentView: View {
     @State private var technicalMetadata: TechnicalMetadata?
     @State private var technicalMetadataCache: [URL: TechnicalMetadata] = [:]
     @State private var technicalMetadataTask: Task<Void, Never>?
+    @State private var technicalMetadataRequestID: UUID?
     @AppStorage(UserDefaultsKeys.scopesExpanded) private var scopesExpanded = true
     @State private var isRenderingEditedFolder = false
     @State private var renderExportCurrent = 0
@@ -2953,6 +2954,8 @@ struct ContentView: View {
     private func loadTechnicalMetadata() {
         technicalMetadataTask?.cancel()
         technicalMetadataTask = nil
+        let requestID = UUID()
+        technicalMetadataRequestID = requestID
 
         guard browserViewModel.selectedImageIDs.count == 1,
               let image = browserViewModel.selectedImages.first else {
@@ -2982,15 +2985,19 @@ struct ContentView: View {
         // Do not leave the previous image's inspector values visible while this selection loads.
         technicalMetadata = nil
         technicalMetadataTask = Task {
-            // ImageIO can synchronously touch file/container headers. Keep it off the main
-            // actor so selecting a large RAW or network-backed image never stalls interaction.
-            let fast = await Task.detached(priority: .userInitiated) {
-                TechnicalMetadata.fromImageIO(url: url, hasC2PA: hasC2PA)
-            }.value
-            guard !Task.isCancelled else { return }
-            if browserViewModel.selectedImages.first?.url == url {
-                technicalMetadata = fast
-            }
+            let fastResult = await TechnicalMetadataFastLoadService.shared.load(
+                imageURL: url,
+                hasC2PA: hasC2PA,
+                requestID: requestID
+            )
+            guard !Task.isCancelled,
+                  technicalMetadataRequestID == requestID,
+                  browserViewModel.selectedImages.first?.url == url,
+                  case .loaded(let snapshot) = fastResult,
+                  snapshot.requestID == requestID,
+                  snapshot.imageURL == url else { return }
+            let fast = snapshot.metadata
+            technicalMetadata = fast
 
             // Always enrich from SwiftExif for formats ImageIO cannot fully parse and for
             // MakerNote-only fields. The fast path already read native dimensions/profile,
@@ -2998,8 +3005,13 @@ struct ContentView: View {
             guard let exifMeta = try? await readService.readTechnicalMetadata(
                 url: url,
                 includeNativeImageInfo: false
-            ), !Task.isCancelled else {
-                technicalMetadataCache[url] = fast
+            ), !Task.isCancelled,
+                  technicalMetadataRequestID == requestID,
+                  browserViewModel.selectedImages.first?.url == url else {
+                if technicalMetadataRequestID == requestID,
+                   browserViewModel.selectedImages.first?.url == url {
+                    technicalMetadataCache[url] = fast
+                }
                 return
             }
             // When ImageIO already supplied camera fields, keep them and overlay only the
@@ -3008,10 +3020,7 @@ struct ContentView: View {
                 ? fast.mergingTechnicalExtras(from: exifMeta)
                 : fast.mergingCameraFields(from: exifMeta)
             technicalMetadataCache[url] = merged
-            // Only apply if this is still the selected image.
-            if browserViewModel.selectedImages.first?.url == url {
-                technicalMetadata = merged
-            }
+            technicalMetadata = merged
         }
     }
 

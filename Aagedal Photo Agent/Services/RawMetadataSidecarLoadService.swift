@@ -89,3 +89,60 @@ actor RawMetadataSidecarLoadService {
         ))
     }
 }
+
+nonisolated struct RawMetadataXMPSidecarSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let imageURL: URL
+    let text: String
+}
+
+nonisolated enum RawMetadataXMPSidecarLoadResult: Equatable, Sendable {
+    case loaded(RawMetadataXMPSidecarSnapshot)
+    case notFound(requestID: UUID, imageURL: URL)
+    case cancelledBeforeRead(requestID: UUID)
+    case cancelledAfterRead(requestID: UUID, imageURL: URL)
+}
+
+nonisolated struct RawMetadataXMPSidecarAccess: Sendable {
+    let readPrettyPrintedSidecar: @Sendable (URL) -> String?
+
+    static let system = RawMetadataXMPSidecarAccess { imageURL in
+        XMPSidecarService().prettyPrintedSidecarXML(for: imageURL)
+    }
+}
+
+/// Serializes XMP sidecar existence, byte reads, and presentation formatting away from
+/// MainActor for the Raw Metadata inspector. The synchronous read cannot be preempted after it
+/// starts, so cancellation on each side of the access is explicit and cancelled text is never
+/// published as current.
+actor RawMetadataXMPSidecarLoadService {
+    static let shared = RawMetadataXMPSidecarLoadService()
+
+    private let access: RawMetadataXMPSidecarAccess
+
+    init(access: RawMetadataXMPSidecarAccess = .system) {
+        self.access = access
+    }
+
+    func load(
+        imageURL: URL,
+        requestID: UUID
+    ) -> RawMetadataXMPSidecarLoadResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID)
+        }
+
+        let text = access.readPrettyPrintedSidecar(imageURL)
+        guard !Task.isCancelled else {
+            return .cancelledAfterRead(requestID: requestID, imageURL: imageURL)
+        }
+        guard let text else {
+            return .notFound(requestID: requestID, imageURL: imageURL)
+        }
+        return .loaded(RawMetadataXMPSidecarSnapshot(
+            requestID: requestID,
+            imageURL: imageURL,
+            text: text
+        ))
+    }
+}

@@ -955,6 +955,15 @@ Four new characterizations, the focused 17-test selection, repository gate, and 
 passed. Other lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain
 open. ([validation](plan-status-face-scan-signature-continuation-2026-09-02.md))
 
+**Metadata inspector filesystem follow-up (2026-09-02):** Raw Metadata XMP loading and the technical-metadata
+ImageIO/file-stat fast path now run on dedicated serialized actors rather than ad hoc detached work started by
+MainActor-owned views. Immutable request/image-keyed results, explicit before/after-read cancellation, disappearance
+invalidation, and repeated publication guards close stale A → B → A selection races through SwiftExif enrichment.
+Eight new characterizations, the focused 12-test selection, adjacent 73-test selection, repository gate, and serial
+unfiltered 1,922-test run passed. Other lower-priority direct paths and real-volume/signpost/Thread Performance
+Checker exit evidence remain open.
+([validation](plan-status-metadata-inspector-filesystem-continuation-2026-09-02.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

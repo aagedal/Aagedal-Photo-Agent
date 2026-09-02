@@ -288,3 +288,132 @@ struct TechnicalMetadataTests {
         #expect(merged.camera == "Canon EOS R5")
     }
 }
+
+@Suite("Technical metadata fast-read filesystem boundary")
+struct TechnicalMetadataFastLoadServiceTests {
+    @Test("a complete fast snapshot is read away from the main actor")
+    @MainActor
+    func completeSnapshotRunsOffMainActor() async {
+        let imageURL = URL(fileURLWithPath: "/virtual/technical.raw")
+        let requestID = UUID()
+        let expected = TechnicalMetadata(from: ["Make": "Canon"], fileURL: nil)
+        let probe = TechnicalMetadataFastAccessProbe(metadata: expected)
+        let service = TechnicalMetadataFastLoadService(access: .init(read: probe.read))
+
+        let result = await Task {
+            await service.load(
+                imageURL: imageURL,
+                hasC2PA: true,
+                requestID: requestID
+            )
+        }.value
+
+        guard case .loaded(let snapshot) = result else {
+            Issue.record("Expected a loaded technical-metadata snapshot")
+            return
+        }
+        #expect(snapshot.requestID == requestID)
+        #expect(snapshot.imageURL == imageURL)
+        #expect(snapshot.metadata.camera == "Canon")
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("pre-cancellation performs no ImageIO or attribute read")
+    func preCancellation() async {
+        let requestID = UUID()
+        let probe = TechnicalMetadataFastAccessProbe(
+            metadata: TechnicalMetadata(from: [:], fileURL: nil)
+        )
+        let service = TechnicalMetadataFastLoadService(access: .init(read: probe.read))
+        let task = Task {
+            await Task.yield()
+            return await service.load(
+                imageURL: URL(fileURLWithPath: "/virtual/cancelled.raw"),
+                hasC2PA: false,
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        let result = await task.value
+        guard case .cancelledBeforeRead(let completedRequestID) = result else {
+            Issue.record("Expected pre-read cancellation")
+            return
+        }
+        #expect(completedRequestID == requestID)
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("cancellation after a non-preemptible fast read is explicit")
+    func cancellationAfterRead() async {
+        let imageURL = URL(fileURLWithPath: "/virtual/slow.raw")
+        let requestID = UUID()
+        let service = TechnicalMetadataFastLoadService(access: .init { _, _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return TechnicalMetadata(from: [:], fileURL: nil)
+        })
+
+        let result = await Task {
+            await service.load(
+                imageURL: imageURL,
+                hasC2PA: false,
+                requestID: requestID
+            )
+        }.value
+
+        guard case .cancelledAfterRead(let completedRequestID, let completedImageURL) = result else {
+            Issue.record("Expected post-read cancellation")
+            return
+        }
+        #expect(completedRequestID == requestID)
+        #expect(completedImageURL == imageURL)
+    }
+
+    @Test("ContentView awaits serialized facts and gates both publications by request identity")
+    func contentViewSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent("Aagedal Photo Agent/ContentView.swift"),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func loadTechnicalMetadata()"))
+        let functionEnd = try #require(source.range(
+            of: "    private func loadScopeImage(",
+            range: functionStart.upperBound..<source.endIndex
+        ))
+        let functionSource = String(source[functionStart.lowerBound..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains("await TechnicalMetadataFastLoadService.shared.load("))
+        #expect(functionSource.contains("technicalMetadataRequestID == requestID"))
+        #expect(functionSource.contains("snapshot.imageURL == url"))
+        #expect(!functionSource.contains("Task.detached"))
+        #expect(!functionSource.contains("TechnicalMetadata.fromImageIO"))
+    }
+}
+
+private nonisolated final class TechnicalMetadataFastAccessProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let metadata: TechnicalMetadata
+    private var count = 0
+    private var observedMainThread = false
+
+    init(metadata: TechnicalMetadata) {
+        self.metadata = metadata
+    }
+
+    func read(imageURL: URL, hasC2PA: Bool) -> TechnicalMetadata {
+        _ = imageURL
+        _ = hasC2PA
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return metadata
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}

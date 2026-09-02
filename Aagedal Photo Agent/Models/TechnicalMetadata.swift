@@ -371,3 +371,56 @@ struct TechnicalMetadata: Sendable {
         return gamut
     }
 }
+
+nonisolated struct TechnicalMetadataFastSnapshot: Sendable {
+    let requestID: UUID
+    let imageURL: URL
+    let metadata: TechnicalMetadata
+}
+
+nonisolated enum TechnicalMetadataFastLoadResult: Sendable {
+    case loaded(TechnicalMetadataFastSnapshot)
+    case cancelledBeforeRead(requestID: UUID)
+    case cancelledAfterRead(requestID: UUID, imageURL: URL)
+}
+
+nonisolated struct TechnicalMetadataFastAccess: Sendable {
+    let read: @Sendable (URL, Bool) -> TechnicalMetadata
+
+    static let system = TechnicalMetadataFastAccess { imageURL, hasC2PA in
+        TechnicalMetadata.fromImageIO(url: imageURL, hasC2PA: hasC2PA)
+    }
+}
+
+/// Serializes ImageIO container/header reads and the adjacent file-attribute probe used by the
+/// technical inspector. These synchronous APIs can block on remote and placeholder-backed files
+/// and cannot be preempted once entered, so cancellation is made explicit on both sides of the
+/// access and the MainActor owner publishes only an identity-matching complete snapshot.
+actor TechnicalMetadataFastLoadService {
+    static let shared = TechnicalMetadataFastLoadService()
+
+    private let access: TechnicalMetadataFastAccess
+
+    init(access: TechnicalMetadataFastAccess = .system) {
+        self.access = access
+    }
+
+    func load(
+        imageURL: URL,
+        hasC2PA: Bool,
+        requestID: UUID
+    ) -> TechnicalMetadataFastLoadResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID)
+        }
+        let metadata = access.read(imageURL, hasC2PA)
+        guard !Task.isCancelled else {
+            return .cancelledAfterRead(requestID: requestID, imageURL: imageURL)
+        }
+        return .loaded(TechnicalMetadataFastSnapshot(
+            requestID: requestID,
+            imageURL: imageURL,
+            metadata: metadata
+        ))
+    }
+}

@@ -99,6 +99,91 @@ struct RawMetadataSidecarLoadServiceTests {
         #expect(functionSource.contains("guard appSidecarRequestID == requestID else { return }"))
         #expect(!functionSource.contains("MetadataSidecarService().loadSidecar"))
     }
+
+    @Test("XMP presentation is read away from the main actor")
+    @MainActor
+    func xmpSnapshotRunsOffMainActor() async {
+        let imageURL = URL(fileURLWithPath: "/virtual/xmp-photo.raw")
+        let requestID = UUID()
+        let text = "<x:xmpmeta>News</x:xmpmeta>"
+        let probe = RawMetadataXMPAccessProbe(text: text)
+        let service = RawMetadataXMPSidecarLoadService(access: .init(
+            readPrettyPrintedSidecar: probe.read
+        ))
+
+        let result = await Task {
+            await service.load(imageURL: imageURL, requestID: requestID)
+        }.value
+
+        #expect(result == .loaded(RawMetadataXMPSidecarSnapshot(
+            requestID: requestID,
+            imageURL: imageURL,
+            text: text
+        )))
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("XMP pre-cancellation performs no synchronous read")
+    func xmpPreCancellation() async {
+        let requestID = UUID()
+        let probe = RawMetadataXMPAccessProbe(text: "unused")
+        let service = RawMetadataXMPSidecarLoadService(access: .init(
+            readPrettyPrintedSidecar: probe.read
+        ))
+        let task = Task {
+            await Task.yield()
+            return await service.load(
+                imageURL: URL(fileURLWithPath: "/virtual/cancelled.raw"),
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        #expect(await task.value == .cancelledBeforeRead(requestID: requestID))
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("XMP cancellation after a non-preemptible read is explicit")
+    func xmpCancellationAfterRead() async {
+        let imageURL = URL(fileURLWithPath: "/virtual/slow.raw")
+        let requestID = UUID()
+        let service = RawMetadataXMPSidecarLoadService(access: .init { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return "<x:xmpmeta/>"
+        })
+
+        let result = await Task {
+            await service.load(imageURL: imageURL, requestID: requestID)
+        }.value
+
+        #expect(result == .cancelledAfterRead(requestID: requestID, imageURL: imageURL))
+    }
+
+    @Test("Raw Metadata XMP awaits the actor and rejects stale publication")
+    func rawMetadataXMPSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Metadata/RawMetadataView.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func loadXMPSidecar() async"))
+        let functionEnd = try #require(source.range(
+            of: "    private func loadAppSidecar() async",
+            range: functionStart.upperBound..<source.endIndex
+        ))
+        let functionSource = String(source[functionStart.lowerBound..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains("await RawMetadataXMPSidecarLoadService.shared.load("))
+        #expect(functionSource.contains("guard !Task.isCancelled, xmpSidecarRequestID == requestID else { return }"))
+        #expect(functionSource.contains("snapshot.imageURL == imageURL"))
+        #expect(!functionSource.contains("Task.detached"))
+        #expect(!functionSource.contains("XMPSidecarService()"))
+    }
 }
 
 private nonisolated final class RawMetadataSidecarAccessProbe: @unchecked Sendable {
@@ -119,6 +204,29 @@ private nonisolated final class RawMetadataSidecarAccessProbe: @unchecked Sendab
             observedMainThread = observedMainThread || Thread.isMainThread
         }
         return data
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private nonisolated final class RawMetadataXMPAccessProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let text: String?
+    private var count = 0
+    private var observedMainThread = false
+
+    init(text: String?) {
+        self.text = text
+    }
+
+    func read(imageURL: URL) -> String? {
+        _ = imageURL
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return text
     }
 
     var invocationCount: Int { lock.withLock { count } }
