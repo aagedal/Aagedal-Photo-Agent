@@ -1,6 +1,5 @@
 import Foundation
 import AppKit
-import ImageIO
 import os
 
 enum SidebarTree: Hashable {
@@ -217,6 +216,8 @@ final class BrowserViewModel {
     @ObservationIgnored private var suppressImagesCascade = false
     @ObservationIgnored private var pendingMetadataDrainTask: Task<Void, Never>?
     @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var folderOrientationLoadRequestID: UUID?
+    @ObservationIgnored private var refreshOrientationLoadRequestID: UUID?
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var batchReadTask: Task<Void, Never>?
     @ObservationIgnored private var removeIPTCPreflightTask: Task<Void, Never>?
@@ -282,6 +283,8 @@ final class BrowserViewModel {
         autoRefreshTask?.cancel()
         metadataWriteTask?.cancel()
         batchReadTask?.cancel()
+        folderOrientationLoadRequestID = nil
+        refreshOrientationLoadRequestID = nil
         imageMutationTask?.cancel()
     }
 
@@ -684,6 +687,8 @@ final class BrowserViewModel {
         autoRefreshTask?.cancel()
         metadataWriteTask?.cancel()
         batchReadTask?.cancel()
+        folderOrientationLoadRequestID = nil
+        refreshOrientationLoadRequestID = nil
         // Reset in case the cancelled task's metadata loop left this true,
         // otherwise the images.didSet below won't rebuild urlToImageIndex.
         suppressImagesCascade = false
@@ -755,7 +760,10 @@ final class BrowserViewModel {
                 // Thumbnails don't need this (QL/CGImageSource apply transforms internally).
                 // Phase 5 (metadata read) also sets it; this provides it sooner for full-screen entry.
                 var orientedFiles = files
-                await self.readOrientationsEagerly(for: &orientedFiles)
+                guard await self.readOrientationsEagerly(
+                    for: &orientedFiles,
+                    owner: .folderLoad
+                ) else { return }
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 let nonDefault = orientedFiles.filter { $0.exifOrientation != 1 }
                 if !nonDefault.isEmpty {
@@ -868,6 +876,7 @@ final class BrowserViewModel {
         guard !isLoading, !isMetadataLoading, !isAutoRefreshing else { return false }
         isAutoRefreshing = true
         autoRefreshTask?.cancel()
+        refreshOrientationLoadRequestID = nil
 
         autoRefreshTask = Task {
             var completedModifiedURLs: Set<URL> = []
@@ -958,7 +967,13 @@ final class BrowserViewModel {
             // initial-load eager read) so new thumbnails render upright immediately without
             // blocking the UI on per-file CGImageSource I/O.
             if !newURLs.isEmpty {
-                let orientations = await Self.readOrientations(for: newURLs)
+                guard let orientationSnapshot = await loadOrientationSnapshot(
+                    for: newURLs,
+                    owner: .refresh
+                ) else {
+                    return
+                }
+                let orientations = orientationSnapshot.orientations
                 if !orientations.isEmpty {
                     for index in merged.indices {
                         if let orientation = orientations[merged[index].url] {
@@ -1012,70 +1027,68 @@ final class BrowserViewModel {
     /// Read EXIF orientation via CGImageSource (metadata-only, ~0.1ms/file).
     /// Called eagerly after folder scan so exifOrientation is correct before
     /// the full batch metadata read.
-    private func readOrientationsEagerly(for images: inout [ImageFile]) async {
+    private func readOrientationsEagerly(
+        for images: inout [ImageFile],
+        owner: OrientationLoadOwner
+    ) async -> Bool {
         let urls = images.compactMap { $0.isImageFile && !$0.isICloudDownloadPending ? $0.url : nil }
-        let orientations = await Self.readOrientations(for: urls)
-        guard !orientations.isEmpty else { return }
+        guard !urls.isEmpty else { return true }
+        guard let snapshot = await loadOrientationSnapshot(for: urls, owner: owner) else { return false }
+        let orientations = snapshot.orientations
+        guard !orientations.isEmpty else { return true }
         for index in images.indices where images[index].isImageFile {
             if let orientation = orientations[images[index].url] {
                 images[index].exifOrientation = orientation
             }
         }
+        return true
     }
 
-    /// Read the display orientation for the given image URLs off the main actor, with
-    /// bounded parallelism. The XMP sidecar is authoritative when present (RAW/C2PA
-    /// rotations are sidecar-only and never touch the file), falling back to the file's embedded tag —
-    /// mirroring `ThumbnailService.orientedToSidecar` so the model, the thumbnails, and
-    /// the edit view all derive orientation from the same source. Reading only the
-    /// embedded tag here silently reverted sidecar rotations whenever this eager read
-    /// ran after the XMP-aware batch pass (edit view upside down vs. its own thumbnail).
-    /// Returns only non-default (≠1) orientations; callers leave the rest at the default
-    /// upright value. `nonisolated` so the per-file I/O runs on the global executor,
-    /// never blocking the MainActor — shared by the initial eager read and the
-    /// incremental auto-refresh path.
-    private nonisolated static func readOrientations(for urls: [URL]) async -> [URL: Int] {
-        guard !urls.isEmpty else { return [:] }
-        return await withTaskGroup(of: (URL, Int)?.self) { group in
-            var iterator = urls.makeIterator()
-            let concurrencyLimit = min(8, urls.count)
-
-            for _ in 0..<concurrencyLimit {
-                guard let url = iterator.next() else { break }
-                group.addTask {
-                    guard !Task.isCancelled else { return nil }
-                    return Self.readOrientation(for: url)
-                }
-            }
-
-            var result: [URL: Int] = [:]
-            while let pair = await group.next() {
-                if let pair { result[pair.0] = pair.1 }
-
-                guard !Task.isCancelled else {
-                    group.cancelAll()
-                    break
-                }
-                if let url = iterator.next() {
-                    group.addTask {
-                        guard !Task.isCancelled else { return nil }
-                        return Self.readOrientation(for: url)
-                    }
-                }
-            }
-            return result
-        }
+    private enum OrientationLoadOwner {
+        case folderLoad
+        case refresh
     }
 
-    private nonisolated static func readOrientation(for url: URL) -> (URL, Int)? {
-        if let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: url) {
-            return sidecarOrientation != 1 ? (url, sidecarOrientation) : nil
+    /// Requests one immutable orientation snapshot from the Browser's serialized
+    /// filesystem actor. A replacement folder load rotates the identity before it can
+    /// issue new I/O, closing the A → B → A stale-publication case in addition to
+    /// ordinary task cancellation.
+    private func loadOrientationSnapshot(
+        for urls: [URL],
+        owner: OrientationLoadOwner
+    ) async -> FileSystemService.DisplayOrientationSnapshot? {
+        let requestID = UUID()
+        switch owner {
+        case .folderLoad:
+            folderOrientationLoadRequestID = requestID
+        case .refresh:
+            refreshOrientationLoadRequestID = requestID
         }
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let orientation = props[kCGImagePropertyOrientation] as? Int,
-              orientation != 1 else { return nil }
-        return (url, orientation)
+        let snapshot = await fileSystemService.displayOrientationSnapshot(
+            for: urls,
+            requestID: requestID
+        )
+        guard !Task.isCancelled,
+              isCurrentOrientationRequest(requestID, owner: owner),
+              snapshot.requestID == requestID,
+              snapshot.requestedFileCount == urls.count,
+              snapshot.completion == .complete
+        else {
+            return nil
+        }
+        return snapshot
+    }
+
+    private func isCurrentOrientationRequest(
+        _ requestID: UUID,
+        owner: OrientationLoadOwner
+    ) -> Bool {
+        switch owner {
+        case .folderLoad:
+            folderOrientationLoadRequestID == requestID
+        case .refresh:
+            refreshOrientationLoadRequestID == requestID
+        }
     }
 
     /// Reads IPTC/XMP basic metadata for the given URLs in batches of 50 and merges

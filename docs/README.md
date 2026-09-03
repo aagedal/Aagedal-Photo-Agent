@@ -181,6 +181,9 @@ Supporting documents:
 - [Metadata inspector filesystem continuation](plan-status-metadata-inspector-filesystem-continuation-2026-09-02.md) —
   serialized Raw Metadata XMP and technical ImageIO/file-stat snapshots with cancellation and request/image-gated
   publication through SwiftExif enrichment.
+- [Browser orientation filesystem continuation](plan-status-browser-orientation-filesystem-continuation-2026-09-02.md) —
+  serialized, request-tagged Browser XMP/ImageIO orientation snapshots with exact cancellation-prefix evidence and
+  aggregate performance signposts.
 
 ## Solar overlay document set
 
@@ -214,7 +217,7 @@ The [app improvement audit plan](app-improvement-audit-plan.md) is a proposed, r
 covering data-loss prevention, release reproducibility, security/privacy, accessibility,
 responsiveness, and maintainability. It is not a fourth 3.0 portfolio initiative, and its unchecked
 items do not claim implementation or replace the release gates in the three authoritative plans
-above. The audit baseline is reconciled to the latest recorded current-source run of 1,923 passing
+above. The audit baseline is reconciled to the latest recorded current-source run of 1,927 passing
 tests; manual, external-service, hardware, legal, and credential-dependent actions
 remain explicitly gated in that document.
 
@@ -496,6 +499,14 @@ and repeated selection guards prevent stale publication through SwiftExif enrich
 the focused 12-test selection, adjacent 73-test selection, repository gate, and serial unfiltered 1,922-test run
 passed. The audit remains 66 of 75 while Phase 3.1's other direct paths and real-volume/signpost/Thread Performance
 Checker evidence stay open.
+
+The latest [Browser orientation filesystem continuation](plan-status-browser-orientation-filesystem-continuation-2026-09-02.md)
+moves eager initial-load and incremental-refresh XMP/ImageIO orientation reads from an ad hoc parallel task group to
+the Browser's existing serialized filesystem actor. Immutable request-tagged snapshots, exact cancelled-prefix
+evidence, replacement-load invalidation, and complete-result guards prevent partial or stale orientation publication;
+a privacy-safe signpost records only state and aggregate counts. Five new characterizations, the focused 24-test
+suite, adjacent 39-test selection, repository gate, and serial unfiltered 1,927-test run passed. The audit remains
+66 of 75 while Phase 3.1's other direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
 ## File organization convention
 

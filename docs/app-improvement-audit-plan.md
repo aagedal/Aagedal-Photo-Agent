@@ -964,6 +964,15 @@ unfiltered 1,922-test run passed. Other lower-priority direct paths and real-vol
 Checker exit evidence remain open.
 ([validation](plan-status-metadata-inspector-filesystem-continuation-2026-09-02.md))
 
+**Browser orientation filesystem follow-up (2026-09-02):** eager XMP/ImageIO orientation reads for initial folder
+loads and incremental refresh now run as one transaction on the Browser's existing serialized `FileSystemService`
+instead of an ad hoc parallel task group. Immutable request-tagged snapshots distinguish complete results from exact
+cancelled prefixes; replacement folder loads invalidate request identity before issuing new I/O. A privacy-safe
+signpost records only result state and aggregate counts. Five new characterizations, the focused 24-test suite,
+adjacent 39-test selection, repository gate, and serial unfiltered 1,927-test run passed. Other lower-priority direct
+paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-browser-orientation-filesystem-continuation-2026-09-02.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

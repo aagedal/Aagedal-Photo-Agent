@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import os
 
 nonisolated protocol ImageTrashHandling: Sendable {
@@ -115,12 +116,28 @@ actor FileSystemService {
         let completion: Completion
     }
 
+    /// Immutable display-orientation evidence for one Browser folder session. Only
+    /// non-default orientations are retained so callers can apply the snapshot over
+    /// the scan's upright defaults without manufacturing extra per-file state.
+    struct DisplayOrientationSnapshot: Sendable, Equatable {
+        enum Completion: Sendable, Equatable {
+            case complete
+            case cancelled(processedFileCount: Int)
+        }
+
+        let requestID: UUID
+        let orientations: [URL: Int]
+        let requestedFileCount: Int
+        let completion: Completion
+    }
+
     private let isLocallyAvailable: @Sendable (URL) -> Bool
     private let requestDownload: @Sendable (URL) -> Void
     private let rejectMove: @Sendable ([URL], URL) -> RejectMoveService.MoveResult
     private let supportedFilesContents: @Sendable (URL) throws -> [URL]
     private let classifyDropSource: @Sendable (URL) -> DropSourceKind
     private let sidecarExists: @Sendable (URL) -> Bool
+    private let displayOrientation: @Sendable (URL) -> Int?
     /// Measures volume-facing reads without recording paths or filenames. The interval names and
     /// aggregate counts are intentionally stable so the same Instruments template can compare
     /// local, network, cloud-placeholder, and large-folder runs.
@@ -155,6 +172,9 @@ actor FileSystemService {
         },
         sidecarExists: @escaping @Sendable (URL) -> Bool = { url in
             FileManager.default.fileExists(atPath: url.path)
+        },
+        displayOrientation: @escaping @Sendable (URL) -> Int? = { url in
+            FileSystemService.systemDisplayOrientation(for: url)
         }
     ) {
         self.isLocallyAvailable = isLocallyAvailable
@@ -163,6 +183,7 @@ actor FileSystemService {
         self.supportedFilesContents = supportedFilesContents
         self.classifyDropSource = classifyDropSource
         self.sidecarExists = sidecarExists
+        self.displayOrientation = displayOrientation
     }
 
     /// Scans a folder for image files on this service's serialized actor executor. Directory
@@ -370,6 +391,85 @@ actor FileSystemService {
             requestedCount: sidecarURLs.count,
             completion: .complete
         )
+    }
+
+    /// Reads the Browser's eager display orientations on the same serialized actor as
+    /// its folder scan. XMP and ImageIO access are synchronous and cannot be preempted,
+    /// so cancellation is sampled on both sides of every file and the exact completed
+    /// prefix is returned instead of allowing a partial snapshot to look complete.
+    func displayOrientationSnapshot(
+        for urls: [URL],
+        requestID: UUID
+    ) -> DisplayOrientationSnapshot {
+        let interval = signposter.beginInterval(
+            "DisplayOrientationSnapshot",
+            id: signposter.makeSignpostID()
+        )
+        var orientations: [URL: Int] = [:]
+        orientations.reserveCapacity(urls.count)
+        var processedFileCount = 0
+
+        for url in urls {
+            guard !Task.isCancelled else {
+                signposter.endInterval(
+                    "DisplayOrientationSnapshot",
+                    interval,
+                    "result=cancelled processedCount=\(processedFileCount, privacy: .private) requestedCount=\(urls.count, privacy: .private)"
+                )
+                return DisplayOrientationSnapshot(
+                    requestID: requestID,
+                    orientations: orientations,
+                    requestedFileCount: urls.count,
+                    completion: .cancelled(processedFileCount: processedFileCount)
+                )
+            }
+
+            if let orientation = displayOrientation(url), orientation != 1 {
+                orientations[url] = orientation
+            }
+            processedFileCount += 1
+
+            guard !Task.isCancelled else {
+                signposter.endInterval(
+                    "DisplayOrientationSnapshot",
+                    interval,
+                    "result=cancelled processedCount=\(processedFileCount, privacy: .private) requestedCount=\(urls.count, privacy: .private)"
+                )
+                return DisplayOrientationSnapshot(
+                    requestID: requestID,
+                    orientations: orientations,
+                    requestedFileCount: urls.count,
+                    completion: .cancelled(processedFileCount: processedFileCount)
+                )
+            }
+        }
+
+        signposter.endInterval(
+            "DisplayOrientationSnapshot",
+            interval,
+            "result=ready processedCount=\(processedFileCount, privacy: .private) requestedCount=\(urls.count, privacy: .private)"
+        )
+        return DisplayOrientationSnapshot(
+            requestID: requestID,
+            orientations: orientations,
+            requestedFileCount: urls.count,
+            completion: .complete
+        )
+    }
+
+    /// Sidecar orientation is authoritative for RAW/C2PA workflows because those
+    /// rotations can be intentionally sidecar-only. Embedded ImageIO orientation is
+    /// the fallback for files without that override.
+    private nonisolated static func systemDisplayOrientation(for url: URL) -> Int? {
+        if let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: url) {
+            return sidecarOrientation
+        }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        else {
+            return nil
+        }
+        return properties[kCGImagePropertyOrientation] as? Int
     }
 
     func listSubfolders(at url: URL) throws -> [URL] {

@@ -437,6 +437,141 @@ struct SerializedFileSystemServiceTests {
         #expect(snapshot.requestedCount == 1)
     }
 
+    @Test("Browser orientation snapshot is immutable and runs off the main actor")
+    @MainActor
+    func displayOrientationSnapshotRunsOffMainActor() async {
+        let first = URL(fileURLWithPath: "/virtual/first.raw")
+        let upright = URL(fileURLWithPath: "/virtual/upright.jpg")
+        let missing = URL(fileURLWithPath: "/virtual/missing.jpg")
+        let requestID = UUID()
+        let probe = DisplayOrientationProbe(values: [first: 6, upright: 1])
+        let service = FileSystemService(displayOrientation: probe.read)
+
+        let snapshot = await service.displayOrientationSnapshot(
+            for: [first, upright, missing],
+            requestID: requestID
+        )
+
+        #expect(snapshot == FileSystemService.DisplayOrientationSnapshot(
+            requestID: requestID,
+            orientations: [first: 6],
+            requestedFileCount: 3,
+            completion: .complete
+        ))
+        #expect(probe.urls == [first, upright, missing])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("pre-cancelled Browser orientation snapshot performs no reads")
+    func displayOrientationSnapshotHonorsPreCancellation() async {
+        let requestID = UUID()
+        let probe = DisplayOrientationProbe(values: [:])
+        let service = FileSystemService(displayOrientation: probe.read)
+        let task = Task {
+            await Task.yield()
+            return await service.displayOrientationSnapshot(
+                for: [URL(fileURLWithPath: "/virtual/cancelled.raw")],
+                requestID: requestID
+            )
+        }
+        task.cancel()
+
+        let snapshot = await task.value
+        #expect(snapshot == FileSystemService.DisplayOrientationSnapshot(
+            requestID: requestID,
+            orientations: [:],
+            requestedFileCount: 1,
+            completion: .cancelled(processedFileCount: 0)
+        ))
+        #expect(probe.urls.isEmpty)
+    }
+
+    @Test("Browser orientation snapshot reports cancellation after a blocking read")
+    func displayOrientationSnapshotReportsPostReadCancellation() async {
+        let url = URL(fileURLWithPath: "/simulated-slow-volume/photo.raw")
+        let requestID = UUID()
+        let probe = BlockingDisplayOrientationProbe(orientation: 8)
+        defer { probe.release() }
+        let service = FileSystemService(displayOrientation: probe.read)
+        let task = Task {
+            await service.displayOrientationSnapshot(for: [url], requestID: requestID)
+        }
+
+        let didBlock = await probe.waitUntilBlocked()
+        #expect(didBlock, "The simulated slow-volume orientation read did not start within 30 seconds")
+        guard didBlock else { return }
+        task.cancel()
+        probe.release()
+
+        let snapshot = await task.value
+        #expect(snapshot == FileSystemService.DisplayOrientationSnapshot(
+            requestID: requestID,
+            orientations: [url: 8],
+            requestedFileCount: 1,
+            completion: .cancelled(processedFileCount: 1)
+        ))
+    }
+
+    @Test("Browser orientation reads serialize with other folder access and keep MainActor responsive")
+    @MainActor
+    func displayOrientationSnapshotSerializesFolderAccess() async throws {
+        let orientationURL = URL(fileURLWithPath: "/simulated-slow-volume/orientation.raw")
+        let folderURL = URL(fileURLWithPath: "/simulated-slow-volume", isDirectory: true)
+        let probe = BlockingDisplayOrientationProbe(orientation: 6)
+        defer { probe.release() }
+        let service = FileSystemService(
+            supportedFilesContents: probe.contents,
+            displayOrientation: probe.read
+        )
+        let orientationTask = Task {
+            await service.displayOrientationSnapshot(
+                for: [orientationURL],
+                requestID: UUID()
+            )
+        }
+
+        let didBlock = await probe.waitUntilBlocked()
+        #expect(didBlock, "The simulated slow-volume orientation read did not start within 30 seconds")
+        guard didBlock else { return }
+        #expect(!probe.ranOnMainThread)
+
+        let queuedFolderRead = Task {
+            try await service.supportedFilesSnapshot(at: folderURL)
+        }
+        queuedFolderRead.cancel()
+        probe.release()
+
+        let orientationSnapshot = await orientationTask.value
+        #expect(orientationSnapshot.completion == .complete)
+        await #expect(throws: CancellationError.self) {
+            _ = try await queuedFolderRead.value
+        }
+        #expect(probe.directoryReadCount == 0)
+    }
+
+    @Test("Browser eager orientation loading uses request-tagged actor evidence")
+    func browserOrientationSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/BrowserViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func loadOrientationSnapshot("))
+        let functionSource = String(source[functionStart.lowerBound...])
+
+        #expect(functionSource.contains("await fileSystemService.displayOrientationSnapshot("))
+        #expect(functionSource.contains("isCurrentOrientationRequest(requestID, owner: owner)"))
+        #expect(source.contains("folderOrientationLoadRequestID = nil"))
+        #expect(source.contains("refreshOrientationLoadRequestID = nil"))
+        #expect(functionSource.contains("snapshot.completion == .complete"))
+        #expect(!source.contains("private nonisolated static func readOrientation(for url:"))
+        #expect(!source.contains("withTaskGroup(of: (URL, Int)?.self)"))
+    }
+
     @Test("Remove All IPTC preflight uses serialized sidecar evidence and rejects stale results")
     func removeIPTCPreflightSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -871,6 +1006,96 @@ nonisolated private final class SidecarPresenceProbe: @unchecked Sendable {
             recordedURLs.append(url)
             observedMainThread = observedMainThread || Thread.isMainThread
             return existingURLs.contains(url)
+        }
+    }
+}
+
+nonisolated private final class DisplayOrientationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let values: [URL: Int]
+    private var recordedURLs: [URL] = []
+    private var observedMainThread = false
+
+    init(values: [URL: Int]) {
+        self.values = values
+    }
+
+    var urls: [URL] {
+        lock.withLock { recordedURLs }
+    }
+
+    var ranOnMainThread: Bool {
+        lock.withLock { observedMainThread }
+    }
+
+    func read(_ url: URL) -> Int? {
+        lock.withLock {
+            recordedURLs.append(url)
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return values[url]
+    }
+}
+
+nonisolated private final class BlockingDisplayOrientationProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let orientation: Int?
+    private var isBlocked = false
+    private var isReleased = false
+    private var observedMainThread = false
+    private var recordedDirectoryReadCount = 0
+
+    init(orientation: Int?) {
+        self.orientation = orientation
+    }
+
+    var ranOnMainThread: Bool {
+        condition.withLock { observedMainThread }
+    }
+
+    var directoryReadCount: Int {
+        condition.withLock { recordedDirectoryReadCount }
+    }
+
+    func read(_ url: URL) -> Int? {
+        condition.lock()
+        observedMainThread = observedMainThread || Thread.isMainThread
+        isBlocked = true
+        condition.broadcast()
+        while !isReleased {
+            condition.wait()
+        }
+        condition.unlock()
+        return orientation
+    }
+
+    func contents(_ url: URL) throws -> [URL] {
+        condition.withLock {
+            recordedDirectoryReadCount += 1
+        }
+        return []
+    }
+
+    func waitUntilBlocked(timeout: TimeInterval = 30) async -> Bool {
+        await Task.detached { [self] in
+            waitUntilBlockedSynchronously(timeout: timeout)
+        }.value
+    }
+
+    private nonisolated func waitUntilBlockedSynchronously(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while !isBlocked {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    func release() {
+        condition.withLock {
+            isReleased = true
+            condition.broadcast()
         }
     }
 }
