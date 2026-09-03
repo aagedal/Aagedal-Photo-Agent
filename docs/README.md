@@ -217,7 +217,7 @@ The [app improvement audit plan](app-improvement-audit-plan.md) is a proposed, r
 covering data-loss prevention, release reproducibility, security/privacy, accessibility,
 responsiveness, and maintainability. It is not a fourth 3.0 portfolio initiative, and its unchecked
 items do not claim implementation or replace the release gates in the three authoritative plans
-above. The audit baseline is reconciled to the latest recorded current-source run of 1,927 passing
+above. The audit baseline is reconciled to the latest recorded current-source run of 1,936 passing
 tests; manual, external-service, hardware, legal, and credential-dependent actions
 remain explicitly gated in that document.
 
@@ -515,6 +515,14 @@ Develop mode, selection replacement, and view disappearance invalidate old work 
 characterizations, the adjacent 48-test selection, repository gate, and serial unfiltered 1,932-test run passed.
 The audit remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread Performance
 Checker evidence stay open.
+
+The latest [voice-memo rename-planning continuation](plan-status-voice-memo-rename-planning-continuation-2026-09-03.md)
+moves hidden companion-relationship enumeration and JSON decoding out of the MainActor Browser rename entry and
+behind a serialized actor. Immutable request-tagged snapshots expose complete, exact cancelled-prefix, or exact
+failed-prefix evidence; request, folder, and current-selection guards prevent partial or stale plans from opening
+the sheet. Four new characterizations, the adjacent 66-test selection, repository gate, and serial unfiltered
+1,936-test run passed. The audit remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/
+Thread Performance Checker evidence stay open.
 
 ## File organization convention
 

@@ -4,6 +4,89 @@ import Testing
 
 @Suite("Voice memo companion persistence")
 struct VoiceMemoCompanionRepositoryTests {
+    @Test("Rename relationship planning is serialized off the main actor")
+    @MainActor
+    func renameRelationshipPlanningIsSerializedOffMainActor() async {
+        let probe = VoiceMemoPlanningProbe()
+        let service = VoiceMemoRenamePlanningService(artifactPlanner: probe.plan)
+        let first = makePlanningRequest(filename: "one.raw")
+        let second = makePlanningRequest(filename: "two.raw")
+
+        async let firstSnapshot = service.plan(first)
+        async let secondSnapshot = service.plan(second)
+        let snapshots = await [firstSnapshot, secondSnapshot]
+
+        #expect(snapshots.allSatisfy { $0.completion == .complete })
+        #expect(probe.callCount == 2)
+        #expect(probe.maximumConcurrentCalls == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Pre-cancelled relationship planning returns an empty explicit prefix")
+    func preCancelledRelationshipPlanningSkipsReads() async {
+        let probe = VoiceMemoPlanningProbe()
+        let service = VoiceMemoRenamePlanningService(artifactPlanner: probe.plan)
+        let request = makePlanningRequest(filename: "cancelled.raw")
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.plan(request)
+        }
+
+        let snapshot = await task.value
+
+        #expect(snapshot.requestID == request.requestID)
+        #expect(snapshot.folderURL == request.folderURL)
+        #expect(snapshot.items.isEmpty)
+        #expect(snapshot.completion == .cancelled(completedItemCount: 0))
+        #expect(probe.callCount == 0)
+    }
+
+    @Test("Cancellation after a relationship read reports the exact uncommitted prefix")
+    func postReadCancellationIsExplicit() async {
+        let gate = BlockingVoiceMemoPlanningProbe()
+        defer { gate.release() }
+        let service = VoiceMemoRenamePlanningService(artifactPlanner: gate.plan)
+        let request = makePlanningRequest(filename: "cancel-during-read.raw")
+        let task = Task { await service.plan(request) }
+
+        let didStart = await gate.waitUntilBlocked()
+        #expect(didStart, "Relationship planning did not start within 30 seconds")
+        guard didStart else { return }
+        task.cancel()
+        gate.release()
+
+        let snapshot = await task.value
+        #expect(snapshot.requestID == request.requestID)
+        #expect(snapshot.items.isEmpty)
+        #expect(snapshot.completion == .cancelled(completedItemCount: 0))
+    }
+
+    @Test("Browser rejects relationship planning after selection changes")
+    @MainActor
+    func browserRejectsStaleRelationshipPlanning() async throws {
+        let gate = BlockingVoiceMemoPlanningProbe()
+        defer { gate.release() }
+        let service = VoiceMemoRenamePlanningService(artifactPlanner: gate.plan)
+        let root = URL(fileURLWithPath: "/virtual", isDirectory: true)
+        let first = root.appendingPathComponent("one.raw")
+        let second = root.appendingPathComponent("two.raw")
+        let viewModel = BrowserViewModel(voiceMemoRenamePlanningService: service)
+        viewModel.currentFolderURL = root
+        viewModel.images = [ImageFile(url: first), ImageFile(url: second)]
+        viewModel.selectedImageIDs = [first]
+        await Task.yield()
+
+        viewModel.renameSelected()
+        let didStart = await gate.waitUntilBlocked()
+        #expect(didStart, "Relationship planning did not start within 30 seconds")
+        guard didStart else { return }
+        viewModel.selectedImageIDs = [second]
+        gate.release()
+        try await Task.sleep(for: .milliseconds(30))
+
+        #expect(viewModel.batchRenameSheetRequest == nil)
+    }
+
     @Test("Browser refresh keeps WAV companions out of the photo list")
     func browserRefreshExcludesVoiceMemoAudio() async throws {
         let fixture = try Fixture()
@@ -45,6 +128,8 @@ struct VoiceMemoCompanionRepositoryTests {
 
         viewModel.renameSelected()
 
+        try await waitUntil { viewModel.batchRenameSheetRequest != nil }
+
         let item = try #require(viewModel.batchRenameSheetRequest?.items.first)
         #expect(item.associatedArtifacts.map(\.identifier) == [
             "voice-memo", "voice-memo-relationship",
@@ -71,12 +156,14 @@ struct VoiceMemoCompanionRepositoryTests {
 
         viewModel.selectedImageIDs = [fixture.image]
         viewModel.renameSelected()
+        try await waitUntil { viewModel.errorMessage != nil }
         #expect(viewModel.batchRenameSheetRequest == nil)
         #expect(viewModel.errorMessage?.contains("linked to multiple photos") == true)
 
         viewModel.errorMessage = nil
         viewModel.selectedImageIDs = [fixture.image, jpeg]
         viewModel.renameSelected()
+        try await waitUntil { viewModel.errorMessage != nil }
         #expect(viewModel.batchRenameSheetRequest == nil)
         #expect(viewModel.errorMessage?.contains("linked to multiple photos") == true)
         #expect(FileManager.default.fileExists(atPath: fixture.memo.path))
@@ -349,6 +436,31 @@ struct VoiceMemoCompanionRepositoryTests {
         )
     }
 
+    private func makePlanningRequest(filename: String) -> VoiceMemoRenamePlanningRequest {
+        let root = URL(fileURLWithPath: "/virtual", isDirectory: true)
+        return VoiceMemoRenamePlanningRequest(
+            requestID: UUID(),
+            folderURL: root,
+            items: [RenamePlanningItem(
+                sourceImageURL: root.appendingPathComponent(filename)
+            )]
+        )
+    }
+
+    @MainActor
+    private func waitUntil(
+        timeout: Duration = .seconds(5),
+        _ condition: @MainActor () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                throw VoiceMemoPlanningTestError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     private func twoRelationshipImportBatch(
         in fixture: Fixture
     ) throws -> (
@@ -450,6 +562,74 @@ struct VoiceMemoCompanionRepositoryTests {
 
         func remove() {
             try? FileManager.default.removeItem(at: root)
+        }
+    }
+}
+
+nonisolated private enum VoiceMemoPlanningTestError: Error {
+    case timedOut
+}
+
+nonisolated private final class VoiceMemoPlanningProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeCalls = 0
+    private var recordedCallCount = 0
+    private var recordedMaximumConcurrentCalls = 0
+    private var observedMainThread = false
+
+    var callCount: Int { lock.withLock { recordedCallCount } }
+    var maximumConcurrentCalls: Int { lock.withLock { recordedMaximumConcurrentCalls } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+
+    func plan(_ url: URL) throws -> [RenamePlanningAssociatedArtifact] {
+        lock.withLock {
+            activeCalls += 1
+            recordedCallCount += 1
+            recordedMaximumConcurrentCalls = max(recordedMaximumConcurrentCalls, activeCalls)
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        Thread.sleep(forTimeInterval: 0.04)
+        lock.withLock { activeCalls -= 1 }
+        return []
+    }
+}
+
+nonisolated private final class BlockingVoiceMemoPlanningProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var isBlocked = false
+    private var isReleased = false
+
+    func plan(_ url: URL) throws -> [RenamePlanningAssociatedArtifact] {
+        condition.lock()
+        isBlocked = true
+        condition.broadcast()
+        while !isReleased {
+            condition.wait()
+        }
+        condition.unlock()
+        return []
+    }
+
+    func waitUntilBlocked(timeout: TimeInterval = 30) async -> Bool {
+        await Task.detached { [self] in
+            waitUntilBlockedSynchronously(timeout: timeout)
+        }.value
+    }
+
+    private func waitUntilBlockedSynchronously(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while !isBlocked {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    func release() {
+        condition.withLock {
+            isReleased = true
+            condition.broadcast()
         }
     }
 }

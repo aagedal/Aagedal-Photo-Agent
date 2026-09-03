@@ -223,6 +223,9 @@ final class BrowserViewModel {
     @ObservationIgnored private var removeIPTCPreflightTask: Task<Void, Never>?
     @ObservationIgnored private var removeIPTCPreflightRequestID: UUID?
     @ObservationIgnored private var pendingStatusRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var renamePlanningTask: Task<Void, Never>?
+    @ObservationIgnored private var renamePlanningRequestID: UUID?
+    @ObservationIgnored private let voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService
 
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
 
@@ -252,13 +255,15 @@ final class BrowserViewModel {
          imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler(),
          fileSystemService: FileSystemService = FileSystemService(),
          xmpSidecarLoadService: BrowserXMPSidecarLoadService = BrowserXMPSidecarLoadService(),
-         presentationFactsService: FullScreenImagePresentationFactsService = .shared) {
+         presentationFactsService: FullScreenImagePresentationFactsService = .shared,
+         voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService = .shared) {
         self.thumbnailService = thumbnailService
         self.fullScreenImageCache = fullScreenImageCache
         self.imageTrashHandler = imageTrashHandler
         self.fileSystemService = fileSystemService
         self.xmpSidecarLoadService = xmpSidecarLoadService
         self.presentationFactsService = presentationFactsService
+        self.voiceMemoRenamePlanningService = voiceMemoRenamePlanningService
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
@@ -283,6 +288,7 @@ final class BrowserViewModel {
         autoRefreshTask?.cancel()
         metadataWriteTask?.cancel()
         batchReadTask?.cancel()
+        renamePlanningTask?.cancel()
         folderOrientationLoadRequestID = nil
         refreshOrientationLoadRequestID = nil
         imageMutationTask?.cancel()
@@ -683,6 +689,7 @@ final class BrowserViewModel {
 
         // Cancel any in-flight folder load to prevent stale results overwriting
         loadFolderTask?.cancel()
+        cancelRenamePlanning()
         pendingMetadataDrainTask?.cancel()
         autoRefreshTask?.cancel()
         metadataWriteTask?.cancel()
@@ -3279,31 +3286,59 @@ final class BrowserViewModel {
         let selectedInVisibleOrder = sortedImages.filter { selectedImageIDs.contains($0.url) }
         guard !selectedInVisibleOrder.isEmpty else { return }
 
-        let companionRepository = VoiceMemoCompanionRepository()
-        let items: [RenamePlanningItem]
-        do {
-            items = try selectedInVisibleOrder.map { image in
-                RenamePlanningItem(
-                    sourceImageURL: image.url,
-                    context: BatchRenameContext(
-                        originalFilename: image.filename,
-                        captureDate: Self.renameDate(from: image.metadata?.captureDate),
-                        fileCreationDate: image.dateAdded,
-                        fileModificationDate: image.dateModified,
-                        metadata: Self.renameMetadata(for: image)
-                    ),
-                    associatedArtifacts: try companionRepository.planningArtifacts(for: image.url)
+        let items = selectedInVisibleOrder.map { image in
+            RenamePlanningItem(
+                sourceImageURL: image.url,
+                context: BatchRenameContext(
+                    originalFilename: image.filename,
+                    captureDate: Self.renameDate(from: image.metadata?.captureDate),
+                    fileCreationDate: image.dateAdded,
+                    fileModificationDate: image.dateModified,
+                    metadata: Self.renameMetadata(for: image)
                 )
-            }
-        } catch {
-            errorMessage = error.localizedDescription
-            return
+            )
         }
-
-        batchRenameSheetRequest = BatchRenameSheetRequest(
+        let requestID = UUID()
+        let selectedURLs = Set(items.map(\.sourceImageURL))
+        let request = VoiceMemoRenamePlanningRequest(
+            requestID: requestID,
             folderURL: folderURL,
             items: items
         )
+        renamePlanningTask?.cancel()
+        renamePlanningRequestID = requestID
+        batchRenameSheetRequest = nil
+        let planningService = voiceMemoRenamePlanningService
+        renamePlanningTask = Task { [weak self] in
+            let snapshot = await planningService.plan(request)
+            guard let self,
+                  !Task.isCancelled,
+                  self.renamePlanningRequestID == requestID,
+                  snapshot.requestID == requestID,
+                  snapshot.folderURL == folderURL else { return }
+            self.renamePlanningTask = nil
+            self.renamePlanningRequestID = nil
+            guard self.currentFolderURL == folderURL,
+                  self.selectedImageIDs == selectedURLs else { return }
+            switch snapshot.completion {
+            case .complete:
+                guard snapshot.items.count == items.count else { return }
+                self.batchRenameSheetRequest = BatchRenameSheetRequest(
+                    folderURL: folderURL,
+                    items: snapshot.items
+                )
+            case .cancelled:
+                return
+            case .failed(_, let message):
+                self.errorMessage = message
+            }
+        }
+    }
+
+    private func cancelRenamePlanning() {
+        renamePlanningTask?.cancel()
+        renamePlanningTask = nil
+        renamePlanningRequestID = nil
     }
 
     /// Applies only the executor's successful source→destination mapping. Building a complete

@@ -1,4 +1,93 @@
 import Foundation
+import os
+
+nonisolated struct VoiceMemoRenamePlanningRequest: Sendable {
+    let requestID: UUID
+    let folderURL: URL
+    let items: [RenamePlanningItem]
+}
+
+nonisolated enum VoiceMemoRenamePlanningCompletion: Equatable, Sendable {
+    case complete
+    case cancelled(completedItemCount: Int)
+    case failed(completedItemCount: Int, message: String)
+}
+
+/// Immutable evidence from one serialized voice-memo relationship scan. A cancelled or failed
+/// prefix is diagnostic only; callers publish rename UI exclusively for `.complete` snapshots.
+nonisolated struct VoiceMemoRenamePlanningSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let folderURL: URL
+    let items: [RenamePlanningItem]
+    let completion: VoiceMemoRenamePlanningCompletion
+}
+
+/// Keeps hidden relationship enumeration and record decoding away from MainActor. Repository
+/// operations are synchronous and individually non-preemptible, so cancellation is checked on
+/// both sides of every item and the exact completed prefix is returned as immutable evidence.
+actor VoiceMemoRenamePlanningService {
+    typealias ArtifactPlanner = @Sendable (URL) throws -> [RenamePlanningAssociatedArtifact]
+
+    static let shared = VoiceMemoRenamePlanningService()
+
+    private let artifactPlanner: ArtifactPlanner
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "VoiceMemoRenamePlanning"
+    )
+
+    init(
+        artifactPlanner: @escaping ArtifactPlanner = {
+            try VoiceMemoCompanionRepository().planningArtifacts(for: $0)
+        }
+    ) {
+        self.artifactPlanner = artifactPlanner
+    }
+
+    func plan(_ request: VoiceMemoRenamePlanningRequest) -> VoiceMemoRenamePlanningSnapshot {
+        let signpostID = signposter.makeSignpostID()
+        let state = signposter.beginInterval("Plan", id: signpostID)
+        var completed: [RenamePlanningItem] = []
+        completed.reserveCapacity(request.items.count)
+
+        func snapshot(_ completion: VoiceMemoRenamePlanningCompletion) -> VoiceMemoRenamePlanningSnapshot {
+            VoiceMemoRenamePlanningSnapshot(
+                requestID: request.requestID,
+                folderURL: request.folderURL,
+                items: completed,
+                completion: completion
+            )
+        }
+
+        guard !Task.isCancelled else {
+            signposter.endInterval("Plan", state, "cancelled=preflight")
+            return snapshot(.cancelled(completedItemCount: 0))
+        }
+
+        do {
+            for var item in request.items {
+                guard !Task.isCancelled else {
+                    signposter.endInterval("Plan", state, "cancelled=prefix count=\(completed.count)")
+                    return snapshot(.cancelled(completedItemCount: completed.count))
+                }
+                item.associatedArtifacts = try artifactPlanner(item.sourceImageURL)
+                guard !Task.isCancelled else {
+                    signposter.endInterval("Plan", state, "cancelled=postread count=\(completed.count)")
+                    return snapshot(.cancelled(completedItemCount: completed.count))
+                }
+                completed.append(item)
+            }
+            signposter.endInterval("Plan", state, "result=complete count=\(completed.count)")
+            return snapshot(.complete)
+        } catch {
+            signposter.endInterval("Plan", state, "result=failed count=\(completed.count)")
+            return snapshot(.failed(
+                completedItemCount: completed.count,
+                message: error.localizedDescription
+            ))
+        }
+    }
+}
 
 nonisolated protocol VoiceMemoCompanionRecordIO: Sendable {
     func fileExists(at url: URL) -> Bool

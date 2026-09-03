@@ -982,6 +982,15 @@ adjacent 48-test selection, repository gate, and serial unfiltered 1,932-test ru
 paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-clean-feed-browse-render-continuation-2026-09-03.md))
 
+**Voice-memo rename-planning follow-up (2026-09-03):** Browser batch-rename entry now sends hidden relationship
+enumeration and record decoding through a serialized actor instead of performing that synchronous work on
+MainActor. Immutable request-tagged snapshots distinguish complete results from exact cancelled or failed prefixes;
+request, folder, and current-selection guards prevent partial or stale plans from opening the rename sheet. A
+privacy-safe signpost records only result state and aggregate counts. Four new characterizations, the adjacent
+66-test selection, repository gate, and serial unfiltered 1,936-test run passed. Other lower-priority direct paths
+and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-voice-memo-rename-planning-continuation-2026-09-03.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
