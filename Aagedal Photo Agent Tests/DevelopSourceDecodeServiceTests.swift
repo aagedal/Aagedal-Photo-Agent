@@ -6,6 +6,31 @@ import Testing
 
 @Suite("Develop source decode service")
 struct DevelopSourceDecodeServiceTests {
+    @Test("passive RAW previews share the serialized draft decoder")
+    func passiveRAWPreviewUsesSerializedDraftDecoder() async {
+        let probe = RAWDecodeProbe()
+        let service = DevelopSourceDecodeService(
+            rawDecoder: { url, draftMode, _ in probe.decode(url, draftMode: draftMode) },
+            orientationReader: { _ in 1 }
+        )
+
+        async let first = service.loadRAWPreviewSource(
+            from: URL(fileURLWithPath: "/tmp/clean-feed.arw"),
+            maxPixelSize: 2_048
+        )
+        async let second = service.loadRAWPreviewSource(
+            from: URL(fileURLWithPath: "/tmp/develop-precache.arw"),
+            maxPixelSize: 2_048
+        )
+
+        let results = await [first, second]
+
+        #expect(results.allSatisfy { $0 != nil })
+        #expect(probe.callCount == 2)
+        #expect(probe.maximumConcurrentCalls == 1)
+        #expect(probe.draftModes == [true, true])
+    }
+
     @Test("RAW source requests execute serially")
     func rawRequestsAreSerialized() async {
         let probe = RAWDecodeProbe()
@@ -110,6 +135,7 @@ nonisolated private final class RAWDecodeProbe: @unchecked Sendable {
     private var activeCalls = 0
     private var recordedMaximumConcurrentCalls = 0
     private var recordedCallCount = 0
+    private var recordedDraftModes: [Bool] = []
 
     var maximumConcurrentCalls: Int {
         lock.withLock { recordedMaximumConcurrentCalls }
@@ -119,10 +145,18 @@ nonisolated private final class RAWDecodeProbe: @unchecked Sendable {
         lock.withLock { recordedCallCount }
     }
 
-    func decode(_ url: URL) -> FullScreenImageCache.RAWDecodeResult {
+    var draftModes: [Bool] {
+        lock.withLock { recordedDraftModes }
+    }
+
+    func decode(
+        _ url: URL,
+        draftMode: Bool = false
+    ) -> FullScreenImageCache.RAWDecodeResult {
         lock.withLock {
             activeCalls += 1
             recordedCallCount += 1
+            recordedDraftModes.append(draftMode)
             recordedMaximumConcurrentCalls = max(recordedMaximumConcurrentCalls, activeCalls)
         }
         Thread.sleep(forTimeInterval: 0.04)

@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-02
+**Last reviewed:** 2026-09-03
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -507,6 +507,14 @@ evidence, replacement-load invalidation, and complete-result guards prevent part
 a privacy-safe signpost records only state and aggregate counts. Five new characterizations, the focused 24-test
 suite, adjacent 39-test selection, repository gate, and serial unfiltered 1,927-test run passed. The audit remains
 66 of 75 while Phase 3.1's other direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
+The latest [Clean Feed browse-render continuation](plan-status-clean-feed-browse-render-continuation-2026-09-03.md)
+moves passive external-display source loading, orientation resolution, and committed-edit materialization out of
+the SwiftUI view and behind a request-tagged actor. RAW previews reuse Develop's serialized draft decoder; entering
+Develop mode, selection replacement, and view disappearance invalidate old work before publication. Five new
+characterizations, the adjacent 48-test selection, repository gate, and serial unfiltered 1,932-test run passed.
+The audit remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread Performance
+Checker evidence stay open.
 
 ## File organization convention
 

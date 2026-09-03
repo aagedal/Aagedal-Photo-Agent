@@ -66,6 +66,21 @@ actor DevelopSourceDecodeService {
         return Source(image: oriented.nsImage, ciImage: oriented.ciImage)
     }
 
+    /// Produces the draft RAW pixels used by passive, screen-resolution consumers such as
+    /// Clean Feed. The caller owns the adjacent file-orientation snapshot because it must apply
+    /// crop coordinates before rotating into the in-memory display orientation. Keeping the
+    /// demosaic on this actor prevents passive output from racing Develop's foreground, zoom,
+    /// or adjacent-image RAW requests on separate CIRAWFilter executors.
+    func loadRAWPreviewSource(
+        from url: URL,
+        maxPixelSize: CGFloat
+    ) -> CIImage? {
+        guard !Task.isCancelled,
+              let result = rawDecoder(url, true, maxPixelSize),
+              !Task.isCancelled else { return nil }
+        return FullScreenImageCache.downsample(result.image, maxPixelSize: maxPixelSize)
+    }
+
     /// Serial actor isolation is intentional here. CIRAWFilter can retain hundreds of MiB while
     /// demosaicing, so the foreground decode, zoom upgrade, and adjacent-image pre-cache must not
     /// establish independent transient memory peaks.

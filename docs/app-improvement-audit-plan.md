@@ -973,6 +973,15 @@ adjacent 39-test selection, repository gate, and serial unfiltered 1,927-test ru
 paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-browser-orientation-filesystem-continuation-2026-09-02.md))
 
+**Clean Feed browse-render follow-up (2026-09-03):** passive Clean Feed rendering now crosses a request-tagged
+actor instead of owning a detached RAW/ImageIO pipeline in its SwiftUI view. Image-header facts reuse the serialized
+presentation boundary, RAW previews share Develop's serialized draft decoder, and immutable complete/cancelled
+evidence is validated against request identity, image identity, current selection, and browse-mode ownership.
+Entering Develop mode or removing the view cancels and invalidates browse work. Five new characterizations and the
+adjacent 48-test selection, repository gate, and serial unfiltered 1,932-test run passed. Other lower-priority direct
+paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-clean-feed-browse-render-continuation-2026-09-03.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

@@ -16,6 +16,7 @@ struct CleanFeedContentView: View {
     let browserViewModel: BrowserViewModel
 
     @State private var loadTask: Task<Void, Never>?
+    @State private var loadRequestID: UUID?
 
     var body: some View {
         // Reading these here registers SwiftUI observation so `updateNSView` fires
@@ -36,8 +37,13 @@ struct CleanFeedContentView: View {
         .onChange(of: browserViewModel.firstSelectedImage?.cameraRawSettings) { _, _ in reloadFromSelection() }
         .onChange(of: browserViewModel.firstSelectedImage?.exifOrientation) { _, _ in reloadFromSelection() }
         .onChange(of: controller.editModeActive) { _, active in
-            if !active { reloadFromSelection() }
+            if active {
+                cancelBrowseLoad()
+            } else {
+                reloadFromSelection()
+            }
         }
+        .onDisappear { cancelBrowseLoad() }
     }
 
     /// Browse/cull mode: load the selected image, apply its committed edits + crop,
@@ -46,8 +52,11 @@ struct CleanFeedContentView: View {
     private func reloadFromSelection() {
         guard !controller.editModeActive else { return }
         loadTask?.cancel()
+        let requestID = UUID()
+        loadRequestID = requestID
 
         guard let image = browserViewModel.firstSelectedImage else {
+            loadRequestID = nil
             controller.feedImage = nil
             controller.useEditPipeline = false
             controller.requestFeedRedraw()
@@ -61,63 +70,36 @@ struct CleanFeedContentView: View {
         let isHDR = image.isNativeHDR || settings?.hdrEditMode == 1
 
         loadTask = Task {
-            let edited: CIImage? = await Task.detached(priority: .userInitiated) {
-                // Base image (display-oriented as decoded by the cache loaders).
-                var base: CIImage?
-                var isRawDecode = false
-                if FullScreenImageCache.isRawFile(url) {
-                    let rawPreview = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: maxPixelSize, draftMode: true)
-                    isRawDecode = rawPreview != nil
-                    base = rawPreview
-                    if base == nil,
-                       let embeddedPreview = await FullScreenImageCache.extractEmbeddedPreviewOffPool(from: url) {
-                        base = CIImage(cgImage: embeddedPreview)
-                    }
-                } else {
-                    base = await FullScreenImageCache.loadHDRPreviewOffPool(from: url, maxPixelSize: maxPixelSize)
-                    if base == nil,
-                       let cgImage = await FullScreenImageCache.loadDownsampledOffPool(from: url, maxPixelSize: maxPixelSize) {
-                        base = CIImage(cgImage: cgImage)
-                    }
-                }
-                guard let base else { return nil }
+            let snapshot = await CleanFeedBrowseRenderService.shared.render(
+                CleanFeedBrowseRenderRequest(
+                    requestID: requestID,
+                    imageURL: url,
+                    settings: settings,
+                    displayOrientation: exifOrientation,
+                    maxPixelSize: maxPixelSize
+                )
+            )
 
-                // Correct for in-memory rotation that isn't baked into the file
-                // (mirrors FullScreenImageView's file-vs-memory orientation handling).
-                let fileOrientation: Int = {
-                    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
-                          let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
-                          let o = props[kCGImagePropertyOrientation] as? Int else { return exifOrientation }
-                    return o
-                }()
-
-                var processed = base
-                var effectiveSettings = settings
-                if isRawDecode {
-                    // Flat RAW decode carries full EDR headroom — mark it so the SDR
-                    // output tonemap applies when HDR edit mode is off (even unedited).
-                    var s = effectiveSettings ?? CameraRawSettings()
-                    s.sourceHasHDRHeadroom = true
-                    effectiveSettings = s
-                }
-                if let effectiveSettings {
-                    processed = CameraRawApproximation.applyWithCrop(
-                        to: base, settings: effectiveSettings, exifOrientation: fileOrientation
-                    )
-                }
-                let correction = ImageFile.orientationCorrection(from: fileOrientation, to: exifOrientation)
-                if correction != .up { processed = processed.oriented(correction) }
-                return processed
-            }.value
-
-            guard !Task.isCancelled else { return }
-            controller.feedImage = edited
+            guard !Task.isCancelled,
+                  loadRequestID == requestID,
+                  snapshot.requestID == requestID,
+                  snapshot.imageURL == url,
+                  snapshot.completion == .complete,
+                  browserViewModel.firstSelectedImage?.url == url,
+                  !controller.editModeActive else { return }
+            controller.feedImage = snapshot.image
             // HDR when the file is natively HDR or the user enabled HDR edit mode —
             // matches FullScreenImageView's browse-mode rule.
             controller.isHDR = isHDR
             controller.useEditPipeline = false
             controller.requestFeedRedraw()
         }
+    }
+
+    private func cancelBrowseLoad() {
+        loadTask?.cancel()
+        loadTask = nil
+        loadRequestID = nil
     }
 
     /// Cap the browse-mode decode to roughly the largest connected display so the
