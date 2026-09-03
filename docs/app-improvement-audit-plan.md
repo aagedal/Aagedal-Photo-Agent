@@ -1009,6 +1009,15 @@ passed. Other lower-priority direct paths and real-volume/signpost/Thread Perfor
 open.
 ([validation](plan-status-export-camera-raw-resolution-continuation-2026-09-03.md))
 
+**Browser HDR-classification follow-up (2026-09-03):** Browser metadata batches no longer inspect ImageIO headers
+and mapped JPEG/HEIF gain-map container data while merging results on MainActor. One serialized actor returns
+immutable request-tagged classifications with complete or exact cancelled-prefix evidence, and Browser publication
+requires a complete snapshot for the exact current batch. A privacy-safe signpost records only result state and
+aggregate inspected counts. Four new characterizations and the focused 9-test Browser filesystem-boundary selection
+passed; the adjacent 71-test selection, repository gate, and serial unfiltered 1,947-test run also passed. Other
+lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-browser-hdr-classification-continuation-2026-09-03.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

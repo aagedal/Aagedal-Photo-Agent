@@ -543,6 +543,14 @@ the adjacent 30-test export/FTP selection, repository gate, and serial unfiltere
 remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread Performance Checker
 evidence stay open.
 
+The latest [Browser HDR-classification continuation](plan-status-browser-hdr-classification-continuation-2026-09-03.md)
+moves ImageIO/native-HDR and mapped JPEG/HEIF gain-map inspection out of the MainActor metadata merge and behind a
+serialized actor. Immutable request-tagged results distinguish complete classification from exact cancelled prefixes;
+the Browser accepts only complete evidence for the current batch. Four new characterizations and the focused 9-test
+Browser filesystem-boundary selection, adjacent 71-test selection, repository gate, and serial unfiltered 1,947-test
+run passed. The audit remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread
+Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

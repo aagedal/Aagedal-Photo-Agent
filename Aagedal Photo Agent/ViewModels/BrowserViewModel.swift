@@ -167,6 +167,7 @@ final class BrowserViewModel {
     let thumbnailService: ThumbnailService
     let metadataReadService = SwiftExifReadService()
     private let xmpSidecarLoadService: BrowserXMPSidecarLoadService
+    private let hdrClassificationService: BrowserHDRClassificationService
     private let presentationFactsService: FullScreenImagePresentationFactsService
     private let pathContainmentService: SafePathContainmentService
     @ObservationIgnored private(set) var writeEngine: any MetadataWriteEngine = SwiftExifWriteEngine()
@@ -256,6 +257,7 @@ final class BrowserViewModel {
          imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler(),
          fileSystemService: FileSystemService = FileSystemService(),
          xmpSidecarLoadService: BrowserXMPSidecarLoadService = BrowserXMPSidecarLoadService(),
+         hdrClassificationService: BrowserHDRClassificationService = .shared,
          presentationFactsService: FullScreenImagePresentationFactsService = .shared,
          pathContainmentService: SafePathContainmentService = .shared,
          voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService = .shared) {
@@ -264,6 +266,7 @@ final class BrowserViewModel {
         self.imageTrashHandler = imageTrashHandler
         self.fileSystemService = fileSystemService
         self.xmpSidecarLoadService = xmpSidecarLoadService
+        self.hdrClassificationService = hdrClassificationService
         self.presentationFactsService = presentationFactsService
         self.pathContainmentService = pathContainmentService
         self.voiceMemoRenamePlanningService = voiceMemoRenamePlanningService
@@ -1172,13 +1175,22 @@ final class BrowserViewModel {
                     imageURLs: batchURLs,
                     requestID: requestID
                 )
+                async let hdrClassification = hdrClassificationService.classify(
+                    imageURLs: batchURLs,
+                    requestID: requestID
+                )
                 let results = try await metadataReadService.readBatchBasicMetadata(urls: batchURLs)
                 let xmpLoadResult = await xmpDataLoad
+                let hdrClassificationResult = await hdrClassification
                 guard !Task.isCancelled,
                       currentFolderURL == folderURL,
                       metadataLoadRequestID == requestID,
                       case .complete(let xmpSnapshot) = xmpLoadResult,
-                      xmpSnapshot.requestID == requestID
+                      xmpSnapshot.requestID == requestID,
+                      case .complete(let hdrSnapshot) = hdrClassificationResult,
+                      hdrSnapshot.requestID == requestID,
+                      hdrSnapshot.requestedURLs == batchURLs,
+                      hdrSnapshot.isComplete
                 else { return }
                 let imageAspects = Dictionary(uniqueKeysWithValues: results.compactMap { dict -> (URL, Double)? in
                     guard let sourcePath = dict[MetadataDictKey.sourceFile] as? String,
@@ -1200,7 +1212,8 @@ final class BrowserViewModel {
                     to: &images,
                     localIndex: urlToImageIndex,
                     cachedSidecars: cachedSidecars,
-                    xmpMetadataMap: xmpMetadataMap
+                    xmpMetadataMap: xmpMetadataMap,
+                    nativeHDRByURL: hdrSnapshot.isHDRByImageURL
                 )
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
@@ -1268,7 +1281,8 @@ final class BrowserViewModel {
         to updated: inout [ImageFile],
         localIndex: [URL: Int],
         cachedSidecars: [URL: MetadataSidecar] = [:],
-        xmpMetadataMap: [URL: IPTCMetadata] = [:]
+        xmpMetadataMap: [URL: IPTCMetadata] = [:],
+        nativeHDRByURL: [URL: Bool]
     ) {
         for dict in results {
             guard let sourcePath = dict[MetadataDictKey.sourceFile] as? String else { continue }
@@ -1289,7 +1303,7 @@ final class BrowserViewModel {
                 updated[index].hasCropEdits = hasCropEdits(in: dict)
                 let previousOrientation = updated[index].exifOrientation
                 updated[index].exifOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? 1
-                updated[index].isNativeHDR = SupportedImageFormats.isHDR(url: sourceURL)
+                updated[index].isNativeHDR = nativeHDRByURL[sourceURL] == true
                     || (UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
                 updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
                 // Preserve in-memory localAdjustments — these are set by the edit

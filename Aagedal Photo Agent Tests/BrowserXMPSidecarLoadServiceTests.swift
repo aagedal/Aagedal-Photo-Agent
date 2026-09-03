@@ -136,6 +136,141 @@ struct BrowserXMPSidecarLoadServiceTests {
     }
 }
 
+@Suite("Browser HDR classification filesystem boundary")
+struct BrowserHDRClassificationServiceTests {
+    @Test("a complete immutable batch is inspected serially away from MainActor")
+    @MainActor
+    func completeBatchRunsOffMainActor() async {
+        let firstURLs = [
+            URL(fileURLWithPath: "/virtual/one.jpg"),
+            URL(fileURLWithPath: "/virtual/two.heic"),
+            URL(fileURLWithPath: "/virtual/three.tiff")
+        ]
+        let secondURLs = [
+            URL(fileURLWithPath: "/virtual/four.avif"),
+            URL(fileURLWithPath: "/virtual/five.png")
+        ]
+        let firstRequestID = UUID()
+        let secondRequestID = UUID()
+        let probe = BrowserHDRClassificationAccessProbe(
+            hdrURLs: [firstURLs[1], secondURLs[0]],
+            inspectionDelay: 0.005
+        )
+        let service = BrowserHDRClassificationService(access: .init(isHDR: probe.isHDR))
+
+        let results = await Task {
+            async let first = service.classify(
+                imageURLs: firstURLs,
+                requestID: firstRequestID
+            )
+            async let second = service.classify(
+                imageURLs: secondURLs,
+                requestID: secondRequestID
+            )
+            return await (first, second)
+        }.value
+
+        #expect(results.0 == .complete(BrowserHDRClassificationSnapshot(
+            requestID: firstRequestID,
+            requestedURLs: firstURLs,
+            inspectedURLs: firstURLs,
+            isHDRByImageURL: [
+                firstURLs[0]: false,
+                firstURLs[1]: true,
+                firstURLs[2]: false,
+            ]
+        )))
+        #expect(results.1 == .complete(BrowserHDRClassificationSnapshot(
+            requestID: secondRequestID,
+            requestedURLs: secondURLs,
+            inspectedURLs: secondURLs,
+            isHDRByImageURL: [secondURLs[0]: true, secondURLs[1]: false]
+        )))
+        #expect(
+            probe.inspectedURLs == firstURLs + secondURLs
+                || probe.inspectedURLs == secondURLs + firstURLs
+        )
+        #expect(!probe.ranOnMainThread)
+        #expect(probe.maximumConcurrentInspections == 1)
+    }
+
+    @Test("pre-cancellation performs no container inspection")
+    func preCancellation() async {
+        let urls = [URL(fileURLWithPath: "/virtual/cancelled.jpg")]
+        let requestID = UUID()
+        let probe = BrowserHDRClassificationAccessProbe(hdrURLs: [])
+        let service = BrowserHDRClassificationService(access: .init(isHDR: probe.isHDR))
+        let task = Task {
+            await Task.yield()
+            return await service.classify(imageURLs: urls, requestID: requestID)
+        }
+        task.cancel()
+
+        #expect(await task.value == .cancelledBeforeRead(
+            requestID: requestID,
+            requestedURLs: urls
+        ))
+        #expect(probe.inspectedURLs.isEmpty)
+    }
+
+    @Test("cancellation after a synchronous inspection reports its exact prefix")
+    func partialCancellation() async {
+        let urls = [
+            URL(fileURLWithPath: "/virtual/one.jpg"),
+            URL(fileURLWithPath: "/virtual/two.heic"),
+            URL(fileURLWithPath: "/virtual/three.tiff")
+        ]
+        let requestID = UUID()
+        let probe = BrowserHDRClassificationAccessProbe(
+            hdrURLs: [urls[0]],
+            cancelAtInvocation: 2
+        )
+        let service = BrowserHDRClassificationService(access: .init(isHDR: probe.isHDR))
+
+        let result = await Task {
+            await service.classify(imageURLs: urls, requestID: requestID)
+        }.value
+        let expected = BrowserHDRClassificationSnapshot(
+            requestID: requestID,
+            requestedURLs: urls,
+            inspectedURLs: Array(urls.prefix(2)),
+            isHDRByImageURL: [urls[0]: true, urls[1]: false]
+        )
+
+        #expect(result == .cancelledAfterPartialRead(expected))
+        #expect(probe.inspectedURLs == Array(urls.prefix(2)))
+        #expect(!expected.isComplete)
+    }
+
+    @Test("Browser metadata awaits complete request-matched HDR evidence before publication")
+    func browserViewModelSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/BrowserViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "private func loadBasicMetadata("))
+        let functionEnd = try #require(source.range(
+            of: "private nonisolated static func parseXMPSidecarMetadataBatch(",
+            range: functionStart.lowerBound..<source.endIndex
+        ))
+        let functionSource = String(source[functionStart.lowerBound..<functionEnd.lowerBound])
+        let mergeStart = try #require(source.range(of: "private func applyBatchMetadataResults("))
+        let mergeSource = String(source[mergeStart.lowerBound..<source.endIndex])
+
+        #expect(functionSource.contains("async let hdrClassification = hdrClassificationService.classify("))
+        #expect(functionSource.contains("case .complete(let hdrSnapshot) = hdrClassificationResult"))
+        #expect(functionSource.contains("hdrSnapshot.requestID == requestID"))
+        #expect(functionSource.contains("hdrSnapshot.requestedURLs == batchURLs"))
+        #expect(functionSource.contains("nativeHDRByURL: hdrSnapshot.isHDRByImageURL"))
+        #expect(!mergeSource.contains("SupportedImageFormats.isHDR(url: sourceURL)"))
+    }
+}
+
 private nonisolated final class BrowserXMPSidecarAccessProbe: @unchecked Sendable {
     private let lock = NSLock()
     private let dataByURL: [URL: Data]
@@ -162,4 +297,49 @@ private nonisolated final class BrowserXMPSidecarAccessProbe: @unchecked Sendabl
 
     var readURLs: [URL] { lock.withLock { urls } }
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private nonisolated final class BrowserHDRClassificationAccessProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let hdrURLs: Set<URL>
+    private let cancelAtInvocation: Int?
+    private let inspectionDelay: TimeInterval
+    private var urls: [URL] = []
+    private var observedMainThread = false
+    private var activeInspections = 0
+    private var maximumInspections = 0
+
+    init(
+        hdrURLs: Set<URL>,
+        cancelAtInvocation: Int? = nil,
+        inspectionDelay: TimeInterval = 0
+    ) {
+        self.hdrURLs = hdrURLs
+        self.cancelAtInvocation = cancelAtInvocation
+        self.inspectionDelay = inspectionDelay
+    }
+
+    func isHDR(imageURL: URL) -> Bool {
+        let shouldCancel = lock.withLock {
+            urls.append(imageURL)
+            observedMainThread = observedMainThread || Thread.isMainThread
+            activeInspections += 1
+            maximumInspections = max(maximumInspections, activeInspections)
+            return urls.count == cancelAtInvocation
+        }
+        defer {
+            lock.withLock { activeInspections -= 1 }
+        }
+        if shouldCancel {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        if inspectionDelay > 0 {
+            Thread.sleep(forTimeInterval: inspectionDelay)
+        }
+        return hdrURLs.contains(imageURL)
+    }
+
+    var inspectedURLs: [URL] { lock.withLock { urls } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+    var maximumConcurrentInspections: Int { lock.withLock { maximumInspections } }
 }
