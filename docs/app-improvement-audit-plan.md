@@ -991,6 +991,15 @@ privacy-safe signpost records only result state and aggregate counts. Four new c
 and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-voice-memo-rename-planning-continuation-2026-09-03.md))
 
+**Path-containment and cached-identity follow-up (2026-09-03):** Import primary/voice-memo destination safety and
+Browser folder-rename containment now cross one serialized actor instead of walking existing ancestors and resolving
+symlinks on MainActor. Immutable request-tagged results distinguish complete containment or the first escape from an
+exact cancelled prefix. The voice-memo association actor also returns its canonical source map, removing repeated
+filesystem canonicalization from Import's computed UI projections. Four new characterizations, the focused 12-test
+selection, adjacent Import/Browser regressions, repository gate, and serial unfiltered 1,940-test run passed. Other
+lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-path-containment-identity-continuation-2026-09-03.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

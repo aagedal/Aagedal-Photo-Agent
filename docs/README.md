@@ -184,6 +184,9 @@ Supporting documents:
 - [Browser orientation filesystem continuation](plan-status-browser-orientation-filesystem-continuation-2026-09-02.md) —
   serialized, request-tagged Browser XMP/ImageIO orientation snapshots with exact cancellation-prefix evidence and
   aggregate performance signposts.
+- [Path-containment and cached-identity continuation](plan-status-path-containment-identity-continuation-2026-09-03.md) —
+  serialized symlink-aware Import/Browser containment plus actor-captured voice-memo source identity for cache-only
+  MainActor projection.
 
 ## Solar overlay document set
 
@@ -523,6 +526,14 @@ failed-prefix evidence; request, folder, and current-selection guards prevent pa
 the sheet. Four new characterizations, the adjacent 66-test selection, repository gate, and serial unfiltered
 1,936-test run passed. The audit remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/
 Thread Performance Checker evidence stay open.
+
+The latest [path-containment and cached-identity continuation](plan-status-path-containment-identity-continuation-2026-09-03.md)
+moves symlink-aware Import destination batches and Browser folder-rename safety checks behind one serialized actor
+with immutable complete or exact cancelled-prefix evidence. The voice-memo association actor now also returns the
+canonical source map consumed by Import's computed selection and plan projections, avoiding repeated filesystem
+canonicalization on MainActor. Four new characterizations, the focused 12-test selection, adjacent Import/Browser
+regressions, repository gate, and serial unfiltered 1,940-test run passed. The audit remains 66 of 75 while Phase
+3.1's remaining direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
 ## File organization convention
 

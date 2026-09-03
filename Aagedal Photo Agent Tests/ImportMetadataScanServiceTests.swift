@@ -85,6 +85,9 @@ struct ImportVoiceMemoAssociationScanServiceTests {
                 imageURL: image,
                 memoURL: memo
             )])
+            #expect(evidence.canonicalImageURLBySource == [
+                image: image.standardizedFileURL.resolvingSymlinksInPath(),
+            ])
         case .cancelled:
             Issue.record("An uncancelled association scan must complete")
         }

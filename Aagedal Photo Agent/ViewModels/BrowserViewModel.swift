@@ -168,6 +168,7 @@ final class BrowserViewModel {
     let metadataReadService = SwiftExifReadService()
     private let xmpSidecarLoadService: BrowserXMPSidecarLoadService
     private let presentationFactsService: FullScreenImagePresentationFactsService
+    private let pathContainmentService: SafePathContainmentService
     @ObservationIgnored private(set) var writeEngine: any MetadataWriteEngine = SwiftExifWriteEngine()
     /// Injected for the same reason as `thumbnailService` — sharing one IOSurface pool across
     /// panes avoids doubling full-screen-preview memory pressure.
@@ -256,6 +257,7 @@ final class BrowserViewModel {
          fileSystemService: FileSystemService = FileSystemService(),
          xmpSidecarLoadService: BrowserXMPSidecarLoadService = BrowserXMPSidecarLoadService(),
          presentationFactsService: FullScreenImagePresentationFactsService = .shared,
+         pathContainmentService: SafePathContainmentService = .shared,
          voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService = .shared) {
         self.thumbnailService = thumbnailService
         self.fullScreenImageCache = fullScreenImageCache
@@ -263,6 +265,7 @@ final class BrowserViewModel {
         self.fileSystemService = fileSystemService
         self.xmpSidecarLoadService = xmpSidecarLoadService
         self.presentationFactsService = presentationFactsService
+        self.pathContainmentService = pathContainmentService
         self.voiceMemoRenamePlanningService = voiceMemoRenamePlanningService
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
@@ -2607,12 +2610,29 @@ final class BrowserViewModel {
         guard trimmed != oldURL.lastPathComponent else { return }
 
         let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(trimmed, isDirectory: true)
-        guard SafePathComponent.isContained(newURL, in: oldURL.deletingLastPathComponent()) else {
-            errorMessage = "Folder name resolves outside its current parent."
-            return
-        }
         folderMutationTask?.cancel()
-        folderMutationTask = Task {
+        folderMutationTask = Task { [pathContainmentService] in
+            let containmentRequestID = UUID()
+            let containment = await pathContainmentService.inspect(
+                SafePathContainmentRequest(
+                    requestID: containmentRequestID,
+                    root: oldURL.deletingLastPathComponent(),
+                    candidates: [newURL]
+                )
+            )
+            switch containment {
+            case .complete(let evidence):
+                guard evidence.requestID == containmentRequestID,
+                      evidence.requestedCandidateCount == 1,
+                      evidence.checkedCandidateCount == 1,
+                      evidence.escapingCandidate == nil else {
+                    errorMessage = "Folder name resolves outside its current parent."
+                    return
+                }
+            case .cancelled:
+                return
+            }
+
             do {
                 _ = try await fileSystemService.renameFolder(at: oldURL, to: newURL)
             } catch is CancellationError {

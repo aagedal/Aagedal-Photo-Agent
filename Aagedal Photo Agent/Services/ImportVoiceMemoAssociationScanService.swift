@@ -30,6 +30,10 @@ actor ImportVoiceMemoAssociationScanService {
     struct Evidence: Sendable, Equatable {
         let progress: Progress
         let report: VoiceMemoAssociationReport
+        /// Canonical identity captured on the filesystem actor for every source image. UI
+        /// filtering and import-plan projection use this immutable map instead of resolving
+        /// symlinks repeatedly from computed MainActor properties.
+        let canonicalImageURLBySource: [URL: URL]
     }
 
     enum Result: Sendable, Equatable {
@@ -122,7 +126,21 @@ actor ImportVoiceMemoAssociationScanService {
             companionMemoFileDates: companionMemoDates
         )
         guard !Task.isCancelled else { return .cancelled(completedProgress) }
-        return .complete(Evidence(progress: completedProgress, report: report))
+        let sourceImages = primaryImages + companionFiles.filter {
+            $0.pathExtension.caseInsensitiveCompare("wav") != .orderedSame
+        }
+        var canonicalImageURLBySource: [URL: URL] = [:]
+        canonicalImageURLBySource.reserveCapacity(sourceImages.count)
+        for source in sourceImages {
+            guard !Task.isCancelled else { return .cancelled(completedProgress) }
+            canonicalImageURLBySource[source] = VoiceMemoAssociationService.canonicalURL(source)
+            guard !Task.isCancelled else { return .cancelled(completedProgress) }
+        }
+        return .complete(Evidence(
+            progress: completedProgress,
+            report: report,
+            canonicalImageURLBySource: canonicalImageURLBySource
+        ))
     }
 
     nonisolated private static func readMemoDate(from url: URL) -> Date {

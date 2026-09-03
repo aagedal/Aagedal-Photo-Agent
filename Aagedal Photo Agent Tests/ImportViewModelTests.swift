@@ -1406,6 +1406,172 @@ struct SafeImportPathTests {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
         #expect(!SafePathComponent.isContained(link.appendingPathComponent("photo.jpg"), in: destination))
     }
+
+    @Test("serialized containment returns immutable escape evidence off the main actor")
+    @MainActor
+    func serializedContainmentRunsOffMainActor() async {
+        let probe = SafePathContainmentProbe()
+        let service = SafePathContainmentService(contains: probe.contains)
+        let root = URL(fileURLWithPath: "/virtual/import", isDirectory: true)
+        let request = SafePathContainmentRequest(
+            requestID: UUID(),
+            root: root,
+            candidates: [
+                root.appendingPathComponent("one.jpg"),
+                root.appendingPathComponent("escape.jpg"),
+                root.appendingPathComponent("unreached.jpg"),
+            ]
+        )
+
+        let result = await service.inspect(request)
+        guard case .complete(let evidence) = result else {
+            Issue.record("Expected complete escape evidence")
+            return
+        }
+
+        #expect(evidence.requestID == request.requestID)
+        #expect(evidence.root == root)
+        #expect(evidence.requestedCandidateCount == 3)
+        #expect(evidence.checkedCandidateCount == 2)
+        #expect(evidence.escapingCandidate == request.candidates[1])
+        #expect(probe.callCount == 2)
+        #expect(!probe.observedMainThread)
+    }
+
+    @Test("pre-cancelled containment performs no filesystem projection")
+    func preCancelledContainmentPerformsNoProbe() async {
+        let probe = SafePathContainmentProbe()
+        let service = SafePathContainmentService(contains: probe.contains)
+        let request = SafePathContainmentRequest(
+            requestID: UUID(),
+            root: URL(fileURLWithPath: "/virtual/import", isDirectory: true),
+            candidates: [URL(fileURLWithPath: "/virtual/import/one.jpg")]
+        )
+
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.inspect(request)
+        }.value
+
+        guard case .cancelled(let evidence) = result else {
+            Issue.record("Expected cancelled evidence")
+            return
+        }
+        #expect(evidence.checkedCandidateCount == 0)
+        #expect(evidence.escapingCandidate == nil)
+        #expect(probe.callCount == 0)
+    }
+
+    @Test("cancellation after a non-preemptible containment probe excludes that probe")
+    func postProbeCancellationReturnsExactPrefix() async {
+        let probe = SafePathContainmentProbe(blockFirstCall: true)
+        let service = SafePathContainmentService(contains: probe.contains)
+        let root = URL(fileURLWithPath: "/virtual/import", isDirectory: true)
+        let request = SafePathContainmentRequest(
+            requestID: UUID(),
+            root: root,
+            candidates: [root.appendingPathComponent("one.jpg")]
+        )
+        let task = Task { await service.inspect(request) }
+        #expect(await probe.waitUntilBlocked())
+        task.cancel()
+        probe.release()
+
+        guard case .cancelled(let evidence) = await task.value else {
+            Issue.record("Expected cancelled evidence")
+            return
+        }
+        #expect(evidence.checkedCandidateCount == 0)
+        #expect(evidence.escapingCandidate == nil)
+        #expect(probe.callCount == 1)
+    }
+
+    @Test("Import and Browser route containment through the serialized boundary")
+    func ownerSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let importSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/ImportViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let browserSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/BrowserViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(importSource.contains("await pathContainmentService.inspect("))
+        #expect(importSource.contains("candidates: primaryDestinations"))
+        #expect(importSource.contains("candidates: memoDestinations"))
+        #expect(!importSource.contains("SafePathComponent.isContained(primaryURL"))
+        #expect(!importSource.contains("SafePathComponent.isContained(bundle.memo"))
+        #expect(importSource.contains("canonicalVoiceMemoImageURLBySource[source]"))
+        #expect(!importSource.contains("selectedSourceFiles.map(VoiceMemoAssociationService.canonicalURL)"))
+        #expect(!importSource.contains("let canonicalImage = VoiceMemoAssociationService.canonicalURL(file)"))
+
+        let renameStart = try #require(browserSource.range(of: "func renamePendingSubfolder()"))
+        let renameSuffix = browserSource[renameStart.lowerBound...]
+        let renameEnd = try #require(renameSuffix.range(of: "// MARK: - New Subfolder"))
+        let renameSource = renameSuffix[..<renameEnd.lowerBound]
+        #expect(renameSource.contains("await pathContainmentService.inspect("))
+        #expect(!renameSource.contains("SafePathComponent.isContained("))
+    }
+}
+
+private nonisolated final class SafePathContainmentProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let blockFirstCall: Bool
+    private var storedCallCount = 0
+    private var storedObservedMainThread = false
+    private var blocked = false
+    private var released = false
+
+    init(blockFirstCall: Bool = false) {
+        self.blockFirstCall = blockFirstCall
+    }
+
+    var callCount: Int {
+        condition.withLock { storedCallCount }
+    }
+
+    var observedMainThread: Bool {
+        condition.withLock { storedObservedMainThread }
+    }
+
+    func contains(_ candidate: URL, _ root: URL) -> Bool {
+        condition.lock()
+        storedCallCount += 1
+        storedObservedMainThread = storedObservedMainThread || Thread.isMainThread
+        if blockFirstCall, storedCallCount == 1 {
+            blocked = true
+            condition.broadcast()
+            while !released {
+                condition.wait()
+            }
+        }
+        condition.unlock()
+        return candidate.lastPathComponent != "escape.jpg"
+    }
+
+    func waitUntilBlocked() async -> Bool {
+        for _ in 0..<300 {
+            let isBlocked = condition.withLock { blocked }
+            if isBlocked { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    func release() {
+        condition.withLock {
+            released = true
+            condition.broadcast()
+        }
+    }
 }
 
 @Suite("Import copy transaction", .serialized)

@@ -81,6 +81,7 @@ final class ImportViewModel {
     var sourceVoiceMemoFiles: [URL] = []
     var voiceMemoSourceFiles: [URL] = []
     var voiceMemoAssociationReport: VoiceMemoAssociationReport?
+    @ObservationIgnored private var canonicalVoiceMemoImageURLBySource: [URL: URL] = [:]
     var sourceScanProgress = ImportSourceDiscoveryProgress()
     var voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
     var isDiscoveringVoiceMemoSource: Bool = false
@@ -167,6 +168,7 @@ final class ImportViewModel {
     @ObservationIgnored private let captureDateScanService: ImportCaptureDateScanService
     @ObservationIgnored private let folderSuggestionService: ImportFolderSuggestionService
     @ObservationIgnored private let voiceMemoAssociationScanService: ImportVoiceMemoAssociationScanService
+    @ObservationIgnored private let pathContainmentService: SafePathContainmentService
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
     init(
@@ -177,7 +179,8 @@ final class ImportViewModel {
         directoryService: ExportDirectoryService = .shared,
         captureDateScanService: ImportCaptureDateScanService = ImportCaptureDateScanService(),
         folderSuggestionService: ImportFolderSuggestionService = ImportFolderSuggestionService(),
-        voiceMemoAssociationScanService: ImportVoiceMemoAssociationScanService = ImportVoiceMemoAssociationScanService()
+        voiceMemoAssociationScanService: ImportVoiceMemoAssociationScanService = ImportVoiceMemoAssociationScanService(),
+        pathContainmentService: SafePathContainmentService = .shared
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
@@ -187,6 +190,7 @@ final class ImportViewModel {
         self.captureDateScanService = captureDateScanService
         self.folderSuggestionService = folderSuggestionService
         self.voiceMemoAssociationScanService = voiceMemoAssociationScanService
+        self.pathContainmentService = pathContainmentService
 
         // Restore last-used verification mode (default = .on).
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importVerificationMode),
@@ -255,7 +259,7 @@ final class ImportViewModel {
         }
         var seen = Set<URL>()
         return (sourceFiles + secondSourceImages).filter {
-            seen.insert(VoiceMemoAssociationService.canonicalURL($0)).inserted
+            seen.insert(canonicalVoiceMemoImageURL(for: $0)).inserted
         }
     }
 
@@ -278,7 +282,7 @@ final class ImportViewModel {
     }
 
     var selectedVoiceMemoAssociations: [VoiceMemoAssociation] {
-        let selected = Set(selectedSourceFiles.map(VoiceMemoAssociationService.canonicalURL))
+        let selected = Set(selectedSourceFiles.map(canonicalVoiceMemoImageURL(for:)))
         return voiceMemoAssociationReport?.associations.filter {
             selected.contains($0.imageURL)
         } ?? []
@@ -351,6 +355,8 @@ final class ImportViewModel {
         importPhase = .scanning
         sourceFiles = []
         sourceVoiceMemoFiles = []
+        voiceMemoAssociationReport = nil
+        canonicalVoiceMemoImageURLBySource = [:]
         dateGroups = []
         sourceScanProgress = ImportSourceDiscoveryProgress()
 
@@ -424,6 +430,7 @@ final class ImportViewModel {
         voiceMemoAssociationRequestID = UUID()
         voiceMemoSourceFiles = []
         voiceMemoAssociationReport = nil
+        canonicalVoiceMemoImageURLBySource = [:]
         voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
         isDiscoveringVoiceMemoSource = true
         isScanningVoiceMemoSource = true
@@ -475,6 +482,7 @@ final class ImportViewModel {
             }
         guard !allSourceImages.isEmpty, hasMemoCandidates else {
             voiceMemoAssociationReport = nil
+            canonicalVoiceMemoImageURLBySource = [:]
             isScanningVoiceMemoSource = false
             return
         }
@@ -497,6 +505,7 @@ final class ImportViewModel {
             switch result {
             case .complete(let evidence):
                 self.voiceMemoAssociationReport = evidence.report
+                self.canonicalVoiceMemoImageURLBySource = evidence.canonicalImageURLBySource
                 self.isScanningVoiceMemoSource = false
             case .cancelled:
                 self.isScanningVoiceMemoSource = false
@@ -794,6 +803,7 @@ final class ImportViewModel {
         var jobDrafts: [ImportJobDraft] = []
         var bundleRequests: [ImportPreflightService.BundleDestinationRequest] = []
         var previousImportCandidates: [PreviousImportDetector.Candidate] = []
+        var primaryDestinations: [URL] = []
         var allDestFolders: Set<URL> = []
         var allRevealFolders: Set<URL> = []
         let flatImportDate = String(destURL.lastPathComponent.prefix(10))
@@ -827,11 +837,7 @@ final class ImportViewModel {
             allDestFolders.insert(primaryFolder)
 
             let primaryURL = primaryFolder.appendingPathComponent(file.lastPathComponent)
-            guard SafePathComponent.isContained(primaryURL, in: baseURL) else {
-                importPhase = .failed("An import destination escaped the selected folder.")
-                errorMessage = "An import folder name resolves outside the selected destination."
-                return
-            }
+            primaryDestinations.append(primaryURL)
 
             // Mirror the relative path (under destinationBaseURL) into the backup destination.
             var backupURL: URL?
@@ -843,7 +849,7 @@ final class ImportViewModel {
                 }
             }
 
-            let canonicalImage = VoiceMemoAssociationService.canonicalURL(file)
+            let canonicalImage = canonicalVoiceMemoImageURL(for: file)
             let memoSource = voiceMemoByImage[canonicalImage]
             var bundleRequestID: UUID?
             if let memoSource {
@@ -895,7 +901,7 @@ final class ImportViewModel {
         let requestID = UUID()
         importRequestID = requestID
 
-        importTask = Task.detached(priority: .userInitiated) { [readService, interpolator, importLog, weak self] in
+        importTask = Task.detached(priority: .userInitiated) { [readService, interpolator, importLog, pathContainmentService, weak self] in
             guard let self else { return }
             _ = readService
             let didStartAccessingSource = primarySourceURL?.startAccessingSecurityScopedResource() ?? false
@@ -913,6 +919,26 @@ final class ImportViewModel {
             }
 
             do {
+                let primaryContainment = await pathContainmentService.inspect(
+                    SafePathContainmentRequest(
+                        requestID: requestID,
+                        root: baseURL,
+                        candidates: primaryDestinations
+                    )
+                )
+                switch primaryContainment {
+                case .complete(let evidence):
+                    guard evidence.requestID == requestID,
+                          evidence.requestedCandidateCount == primaryDestinations.count,
+                          evidence.checkedCandidateCount == primaryDestinations.count,
+                          evidence.escapingCandidate == nil else {
+                        throw ImportPlanningError.imageDestinationEscaped
+                    }
+                case .cancelled:
+                    throw CancellationError()
+                }
+                try Task.checkCancellation()
+
                 let bundlePlanning = await preflightService.resolveBundleDestinations(
                     bundleRequests,
                     policy: conflictPolicy
@@ -937,6 +963,29 @@ final class ImportViewModel {
                 let bundleDestinations = Dictionary(
                     uniqueKeysWithValues: bundleEvidence.destinations.map { ($0.id, $0) }
                 )
+                let memoDestinations = jobDrafts.compactMap { draft in
+                    draft.bundleRequestID.flatMap { bundleDestinations[$0]?.memo }
+                }
+                let memoContainment = await pathContainmentService.inspect(
+                    SafePathContainmentRequest(
+                        requestID: requestID,
+                        root: baseURL,
+                        candidates: memoDestinations
+                    )
+                )
+                switch memoContainment {
+                case .complete(let evidence):
+                    guard evidence.requestID == requestID,
+                          evidence.requestedCandidateCount == memoDestinations.count,
+                          evidence.checkedCandidateCount == memoDestinations.count,
+                          evidence.escapingCandidate == nil else {
+                        throw ImportPlanningError.voiceMemoDestinationEscaped
+                    }
+                case .cancelled:
+                    throw CancellationError()
+                }
+                try Task.checkCancellation()
+
                 var jobs: [ImportCopyService.CopyJob] = []
                 var companionParentBySource: [URL: URL] = [:]
                 var allFolders = initialFolders
@@ -956,9 +1005,6 @@ final class ImportViewModel {
                     jobs.append(imageJob)
 
                     if let memoSource = draft.memoSource, let bundle {
-                        guard SafePathComponent.isContained(bundle.memo, in: baseURL) else {
-                            throw ImportPlanningError.voiceMemoDestinationEscaped
-                        }
                         let canonicalMemoDestination = VoiceMemoAssociationService.canonicalURL(bundle.memo)
                         // RAW and JPEG can share a destination folder when format subfolders are off.
                         // In that layout one WAV represents the exposure; schedule its bytes once.
@@ -1336,14 +1382,21 @@ final class ImportViewModel {
         let bundleRequestID: UUID?
     }
 
+    private func canonicalVoiceMemoImageURL(for source: URL) -> URL {
+        canonicalVoiceMemoImageURLBySource[source] ?? source.standardizedFileURL
+    }
+
     private enum ImportPlanningError: LocalizedError {
         case incompleteBundleEvidence
+        case imageDestinationEscaped
         case voiceMemoDestinationEscaped
 
         var errorDescription: String? {
             switch self {
             case .incompleteBundleEvidence:
                 return "Voice memo destination planning did not complete. No files were imported."
+            case .imageDestinationEscaped:
+                return "An import folder name resolves outside the selected destination."
             case .voiceMemoDestinationEscaped:
                 return "A voice memo destination resolves outside the selected destination."
             }
@@ -1988,6 +2041,7 @@ final class ImportViewModel {
         sourceVoiceMemoFiles = []
         voiceMemoSourceFiles = []
         voiceMemoAssociationReport = nil
+        canonicalVoiceMemoImageURLBySource = [:]
         sourceScanProgress = ImportSourceDiscoveryProgress()
         voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
         isDiscoveringVoiceMemoSource = false

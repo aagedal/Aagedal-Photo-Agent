@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 nonisolated enum SafePathComponent {
     enum ValidationError: LocalizedError, Equatable {
@@ -51,5 +52,107 @@ nonisolated enum SafePathComponent {
         return missingComponents.reduce(existingAncestor.resolvingSymlinksInPath()) {
             $0.appendingPathComponent($1)
         }.standardizedFileURL
+    }
+}
+
+nonisolated struct SafePathContainmentRequest: Equatable, Sendable {
+    let requestID: UUID
+    let root: URL
+    let candidates: [URL]
+}
+
+nonisolated struct SafePathContainmentEvidence: Equatable, Sendable {
+    let requestID: UUID
+    let root: URL
+    let requestedCandidateCount: Int
+    let checkedCandidateCount: Int
+    let escapingCandidate: URL?
+}
+
+nonisolated enum SafePathContainmentResult: Equatable, Sendable {
+    case complete(SafePathContainmentEvidence)
+    case cancelled(SafePathContainmentEvidence)
+}
+
+/// Serializes path containment probes away from UI-isolated owners. Resolving the nearest
+/// existing ancestor can synchronously query every path component on a slow or unavailable
+/// volume, so callers receive immutable complete/cancelled evidence instead of invoking
+/// `SafePathComponent.isContained` while building SwiftUI state.
+actor SafePathContainmentService {
+    typealias Contains = @Sendable (URL, URL) -> Bool
+
+    static let shared = SafePathContainmentService()
+
+    private let contains: Contains
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "SafePathContainment"
+    )
+
+    init(
+        contains: @escaping Contains = { candidate, root in
+            SafePathComponent.isContained(candidate, in: root)
+        }
+    ) {
+        self.contains = contains
+    }
+
+    func inspect(_ request: SafePathContainmentRequest) -> SafePathContainmentResult {
+        let signpostID = signposter.makeSignpostID()
+        let interval = signposter.beginInterval("Inspect", id: signpostID)
+        var checkedCandidateCount = 0
+
+        func evidence(escapingCandidate: URL? = nil) -> SafePathContainmentEvidence {
+            SafePathContainmentEvidence(
+                requestID: request.requestID,
+                root: request.root,
+                requestedCandidateCount: request.candidates.count,
+                checkedCandidateCount: checkedCandidateCount,
+                escapingCandidate: escapingCandidate
+            )
+        }
+
+        guard !Task.isCancelled else {
+            signposter.endInterval("Inspect", interval, "result=cancelled checked=0")
+            return .cancelled(evidence())
+        }
+
+        for candidate in request.candidates {
+            guard !Task.isCancelled else {
+                signposter.endInterval(
+                    "Inspect",
+                    interval,
+                    "result=cancelled checked=\(checkedCandidateCount)"
+                )
+                return .cancelled(evidence())
+            }
+
+            let isContained = contains(candidate, request.root)
+            guard !Task.isCancelled else {
+                signposter.endInterval(
+                    "Inspect",
+                    interval,
+                    "result=cancelled checked=\(checkedCandidateCount)"
+                )
+                return .cancelled(evidence())
+            }
+
+            checkedCandidateCount += 1
+            guard isContained else {
+                signposter.endInterval(
+                    "Inspect",
+                    interval,
+                    "result=escaped checked=\(checkedCandidateCount)"
+                )
+                return .complete(evidence(escapingCandidate: candidate))
+            }
+        }
+
+        signposter.endInterval(
+            "Inspect",
+            interval,
+            "result=contained checked=\(checkedCandidateCount)"
+        )
+        return .complete(evidence())
     }
 }
