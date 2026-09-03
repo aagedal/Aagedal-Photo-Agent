@@ -396,7 +396,11 @@ struct FTPUploadView: View {
     private func detectFileInfo() async {
         let urls = activeFiles
         var metadataMap = (try? await readService.readBatchFullMetadata(urls: urls)) ?? [:]
-        EditExportPipeline.resolveCameraRaw(into: &metadataMap, urls: urls, inMemory: inMemoryCameraRaw)
+        try? await EditExportPipeline.resolveCameraRaw(
+            into: &metadataMap,
+            urls: urls,
+            inMemory: inMemoryCameraRaw
+        )
         guard !Task.isCancelled else { return }
 
         var info: [URL: UploadFileInfo] = [:]

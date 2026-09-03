@@ -631,7 +631,17 @@ final class FTPViewModel {
             } catch {
                 // Continue without camera raw — renders will use defaults
             }
-            EditExportPipeline.resolveCameraRaw(into: &metadataMap, urls: renderTargets, inMemory: inMemoryCameraRaw)
+            do {
+                try await EditExportPipeline.resolveCameraRaw(
+                    into: &metadataMap,
+                    urls: renderTargets,
+                    inMemory: inMemoryCameraRaw
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                // The production sidecar boundary is best-effort and does not throw read errors.
+            }
 
             // Render phase (0–50% of overall progress). Files not in renderURLs are interleaved
             // in source order as their originals, so the upload list preserves the user's order.

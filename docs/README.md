@@ -535,6 +535,14 @@ canonicalization on MainActor. Four new characterizations, the focused 12-test s
 regressions, repository gate, and serial unfiltered 1,940-test run passed. The audit remains 66 of 75 while Phase
 3.1's remaining direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [export Camera Raw sidecar-resolution continuation](plan-status-export-camera-raw-resolution-continuation-2026-09-03.md)
+moves the RAW XMP fallback batch used by local Save/Export/Archive and FTP render/preflight from a MainActor helper
+to one serialized actor. Live workspace values are captured before the boundary, so the actor reads only missing
+RAW fallbacks and returns immutable complete or exact cancelled-prefix evidence. Three new characterizations and
+the adjacent 30-test export/FTP selection, repository gate, and serial unfiltered 1,943-test run passed. The audit
+remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread Performance Checker
+evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

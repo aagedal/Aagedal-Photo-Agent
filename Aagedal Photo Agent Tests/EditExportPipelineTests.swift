@@ -29,6 +29,110 @@ struct EditExportPipelineTests {
         )
     }
 
+    @Test("Camera Raw resolution prefers live settings and reads only missing RAW sidecars")
+    func cameraRawResolutionUsesMinimalSidecarBatch() async throws {
+        let liveURL = URL(fileURLWithPath: "/virtual/live.ARW")
+        let sidecarURL = URL(fileURLWithPath: "/virtual/sidecar.CR3")
+        let jpegURL = URL(fileURLWithPath: "/virtual/finished.jpg")
+        var liveSettings = CameraRawSettings()
+        liveSettings.exposure2012 = 1
+        var sidecarSettings = CameraRawSettings()
+        sidecarSettings.exposure2012 = 2
+        let probe = ExportCameraRawResolutionProbe(settingsByURL: [
+            liveURL: sidecarSettings,
+            sidecarURL: sidecarSettings,
+            jpegURL: sidecarSettings,
+        ])
+        let service = ExportCameraRawResolutionService(access: probe.access)
+        let requestID = UUID()
+
+        let result = await service.resolve(ExportCameraRawResolutionRequest(
+            requestID: requestID,
+            imageURLs: [liveURL, sidecarURL, jpegURL],
+            liveSettingsByImageURL: [liveURL: liveSettings]
+        ))
+
+        guard case .complete(let snapshot) = result else {
+            Issue.record("Expected a complete Camera Raw resolution snapshot")
+            return
+        }
+        #expect(snapshot.requestID == requestID)
+        #expect(snapshot.requestedSidecarImageURLs == [sidecarURL])
+        #expect(snapshot.inspectedImageURLs == [sidecarURL])
+        #expect(snapshot.settingsByImageURL[liveURL] == liveSettings)
+        #expect(snapshot.settingsByImageURL[sidecarURL] == sidecarSettings)
+        #expect(snapshot.settingsByImageURL[jpegURL] == nil)
+        #expect(probe.loadedURLs == [sidecarURL])
+    }
+
+    @Test("Camera Raw resolution reports the exact prefix when cancellation follows a sidecar read")
+    func cameraRawResolutionReportsPostReadCancellation() async {
+        let firstURL = URL(fileURLWithPath: "/virtual/first.ARW")
+        let secondURL = URL(fileURLWithPath: "/virtual/second.ARW")
+        var settings = CameraRawSettings()
+        settings.contrast2012 = 10
+        let probe = ExportCameraRawResolutionProbe(
+            settingsByURL: [firstURL: settings, secondURL: settings],
+            cancelAtInvocation: 1
+        )
+        let service = ExportCameraRawResolutionService(access: probe.access)
+        let requestID = UUID()
+
+        let result = await Task {
+            await service.resolve(ExportCameraRawResolutionRequest(
+                requestID: requestID,
+                imageURLs: [firstURL, secondURL],
+                liveSettingsByImageURL: [:]
+            ))
+        }.value
+
+        guard case .cancelledAfterPartialRead(let snapshot) = result else {
+            Issue.record("Expected cancellation after the first non-preemptible sidecar read")
+            return
+        }
+        #expect(snapshot.requestID == requestID)
+        #expect(snapshot.requestedSidecarImageURLs == [firstURL, secondURL])
+        #expect(snapshot.inspectedImageURLs == [firstURL])
+        #expect(snapshot.settingsByImageURL[firstURL] == settings)
+        #expect(snapshot.settingsByImageURL[secondURL] == nil)
+        #expect(probe.loadedURLs == [firstURL])
+    }
+
+    @MainActor
+    @Test("Camera Raw sidecar reads leave MainActor and serialize overlapping batches")
+    func cameraRawResolutionIsOffMainAndSerialized() async {
+        let firstURL = URL(fileURLWithPath: "/virtual/first.ARW")
+        let secondURL = URL(fileURLWithPath: "/virtual/second.ARW")
+        let probe = ExportCameraRawResolutionProbe(blockFirstLoad: true)
+        let service = ExportCameraRawResolutionService(access: probe.access)
+
+        let first = Task { @MainActor in
+            await service.resolve(ExportCameraRawResolutionRequest(
+                requestID: UUID(),
+                imageURLs: [firstURL],
+                liveSettingsByImageURL: [:]
+            ))
+        }
+        await probe.waitUntilFirstLoadStarts()
+        let second = Task { @MainActor in
+            await service.resolve(ExportCameraRawResolutionRequest(
+                requestID: UUID(),
+                imageURLs: [secondURL],
+                liveSettingsByImageURL: [:]
+            ))
+        }
+        await Task.yield()
+
+        #expect(probe.loadInvocationCount == 1)
+        probe.releaseFirstLoad()
+        _ = await first.value
+        _ = await second.value
+
+        #expect(probe.maximumConcurrentLoads == 1)
+        #expect(!probe.ranOnMainThread)
+        #expect(probe.loadedURLs == [firstURL, secondURL])
+    }
+
     /// Creates a unique temp working directory with a minimal valid JPEG inside it.
     /// Generated in-process so no binary fixture lives in the repo. The caller removes
     /// `dir`.
@@ -671,6 +775,78 @@ struct EditExportPipelineTests {
         #expect(FileManager.default.fileExists(atPath: firstOutput.path))
         #expect(FileManager.default.fileExists(atPath: secondOutput.path))
         #expect(await tracker.metadataCopyFailures.isEmpty)
+    }
+}
+
+private nonisolated final class ExportCameraRawResolutionProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let settingsByURL: [URL: CameraRawSettings]
+    private let cancelAtInvocation: Int?
+    private let blockFirstLoad: Bool
+    private var didReleaseFirstLoad = false
+    private var activeLoads = 0
+    private var _maximumConcurrentLoads = 0
+    private var _loadInvocationCount = 0
+    private var _ranOnMainThread = false
+    private var _loadedURLs: [URL] = []
+
+    init(
+        settingsByURL: [URL: CameraRawSettings] = [:],
+        cancelAtInvocation: Int? = nil,
+        blockFirstLoad: Bool = false
+    ) {
+        self.settingsByURL = settingsByURL
+        self.cancelAtInvocation = cancelAtInvocation
+        self.blockFirstLoad = blockFirstLoad
+    }
+
+    var access: ExportCameraRawSidecarAccess {
+        ExportCameraRawSidecarAccess { [self] url in
+            condition.lock()
+            _loadInvocationCount += 1
+            activeLoads += 1
+            _maximumConcurrentLoads = max(_maximumConcurrentLoads, activeLoads)
+            _ranOnMainThread = _ranOnMainThread || Thread.isMainThread
+            _loadedURLs.append(url)
+            let invocation = _loadInvocationCount
+            condition.broadcast()
+            while blockFirstLoad, invocation == 1, !didReleaseFirstLoad {
+                condition.wait()
+            }
+            activeLoads -= 1
+            condition.broadcast()
+            condition.unlock()
+
+            if invocation == cancelAtInvocation {
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+            return settingsByURL[url]
+        }
+    }
+
+    var loadedURLs: [URL] { condition.withLock { _loadedURLs } }
+    var loadInvocationCount: Int { condition.withLock { _loadInvocationCount } }
+    var maximumConcurrentLoads: Int { condition.withLock { _maximumConcurrentLoads } }
+    var ranOnMainThread: Bool { condition.withLock { _ranOnMainThread } }
+
+    func releaseFirstLoad() {
+        condition.withLock {
+            didReleaseFirstLoad = true
+            condition.broadcast()
+        }
+    }
+
+    func waitUntilFirstLoadStarts() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                condition.lock()
+                while _loadInvocationCount == 0 {
+                    condition.wait()
+                }
+                condition.unlock()
+                continuation.resume()
+            }
+        }
     }
 }
 

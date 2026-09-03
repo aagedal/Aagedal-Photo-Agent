@@ -1000,6 +1000,15 @@ selection, adjacent Import/Browser regressions, repository gate, and serial unfi
 lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-path-containment-identity-continuation-2026-09-03.md))
 
+**Export Camera Raw sidecar-resolution follow-up (2026-09-03):** local Save/Export/Archive and FTP render/preflight
+no longer load RAW XMP fallback settings through a MainActor helper. One serialized actor receives the live workspace
+snapshot, reads only RAW files that lack a live value, and returns immutable complete or exact cancelled-prefix
+evidence. A privacy-safe signpost records result state and aggregate inspected counts. Three new characterizations
+and the adjacent 30-test export/FTP selection passed; the repository gate and serial unfiltered 1,943-test run also
+passed. Other lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain
+open.
+([validation](plan-status-export-camera-raw-resolution-continuation-2026-09-03.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

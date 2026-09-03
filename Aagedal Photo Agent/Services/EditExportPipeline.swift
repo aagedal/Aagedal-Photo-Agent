@@ -21,6 +21,149 @@ actor MetadataFailureTracker: Sendable {
     func recordStaleSidecar(_ filename: String) { staleSidecarWarnings.append(filename) }
 }
 
+/// Immutable input for one export Camera Raw resolution pass. Live workspace settings are
+/// captured on MainActor before this value crosses to the filesystem actor; only RAW files that
+/// lack a live value need an XMP sidecar read.
+nonisolated struct ExportCameraRawResolutionRequest: Equatable, Sendable {
+    let requestID: UUID
+    let imageURLs: [URL]
+    let liveSettingsByImageURL: [URL: CameraRawSettings]
+}
+
+/// A complete result contains both the captured live values and every usable sidecar fallback.
+/// `inspectedImageURLs` is always an exact prefix of `requestedSidecarImageURLs`, including a read
+/// that finished immediately before cancellation was observed.
+nonisolated struct ExportCameraRawResolutionSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let requestedSidecarImageURLs: [URL]
+    let inspectedImageURLs: [URL]
+    let settingsByImageURL: [URL: CameraRawSettings]
+
+    var isComplete: Bool {
+        inspectedImageURLs.count == requestedSidecarImageURLs.count
+    }
+}
+
+nonisolated enum ExportCameraRawResolutionResult: Equatable, Sendable {
+    case complete(ExportCameraRawResolutionSnapshot)
+    case cancelledBeforeRead(requestID: UUID, requestedSidecarImageURLs: [URL])
+    case cancelledAfterPartialRead(ExportCameraRawResolutionSnapshot)
+    case cancelledAfterCompleteRead(ExportCameraRawResolutionSnapshot)
+}
+
+nonisolated struct ExportCameraRawSidecarAccess: Sendable {
+    let load: @Sendable (URL) -> CameraRawSettings?
+
+    static let system = ExportCameraRawSidecarAccess { imageURL in
+        guard let settings = XMPSidecarService().loadSidecar(for: imageURL)?.cameraRaw,
+              !settings.isEmpty else {
+            return nil
+        }
+        return settings
+    }
+}
+
+/// Serializes export-side XMP fallback reads away from MainActor. This boundary is shared by
+/// local Save/Export/Archive and FTP preview/render preparation, so queued work can be cancelled
+/// before it touches a slow card, network volume, or iCloud placeholder.
+actor ExportCameraRawResolutionService {
+    static let shared = ExportCameraRawResolutionService()
+
+    private let access: ExportCameraRawSidecarAccess
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "ExportCameraRawResolution"
+    )
+
+    init(access: ExportCameraRawSidecarAccess = .system) {
+        self.access = access
+    }
+
+    func resolve(_ request: ExportCameraRawResolutionRequest) -> ExportCameraRawResolutionResult {
+        let sidecarURLs = request.imageURLs.filter {
+            request.liveSettingsByImageURL[$0] == nil && SupportedImageFormats.isRaw(url: $0)
+        }
+        let signpostID = signposter.makeSignpostID()
+        let interval = signposter.beginInterval("Resolve", id: signpostID)
+
+        guard !Task.isCancelled else {
+            signposter.endInterval("Resolve", interval, "result=cancelled inspected=0")
+            return .cancelledBeforeRead(
+                requestID: request.requestID,
+                requestedSidecarImageURLs: sidecarURLs
+            )
+        }
+
+        var inspectedURLs: [URL] = []
+        inspectedURLs.reserveCapacity(sidecarURLs.count)
+        var settingsByURL = request.liveSettingsByImageURL
+
+        for imageURL in sidecarURLs {
+            guard !Task.isCancelled else {
+                return cancelledResult(
+                    request: request,
+                    requestedSidecarImageURLs: sidecarURLs,
+                    inspectedImageURLs: inspectedURLs,
+                    settingsByImageURL: settingsByURL,
+                    interval: interval
+                )
+            }
+
+            let settings = access.load(imageURL)
+            inspectedURLs.append(imageURL)
+            if let settings {
+                settingsByURL[imageURL] = settings
+            }
+
+            guard !Task.isCancelled else {
+                return cancelledResult(
+                    request: request,
+                    requestedSidecarImageURLs: sidecarURLs,
+                    inspectedImageURLs: inspectedURLs,
+                    settingsByImageURL: settingsByURL,
+                    interval: interval
+                )
+            }
+        }
+
+        let snapshot = ExportCameraRawResolutionSnapshot(
+            requestID: request.requestID,
+            requestedSidecarImageURLs: sidecarURLs,
+            inspectedImageURLs: inspectedURLs,
+            settingsByImageURL: settingsByURL
+        )
+        signposter.endInterval(
+            "Resolve",
+            interval,
+            "result=complete inspected=\(inspectedURLs.count)"
+        )
+        return .complete(snapshot)
+    }
+
+    private func cancelledResult(
+        request: ExportCameraRawResolutionRequest,
+        requestedSidecarImageURLs: [URL],
+        inspectedImageURLs: [URL],
+        settingsByImageURL: [URL: CameraRawSettings],
+        interval: OSSignpostIntervalState
+    ) -> ExportCameraRawResolutionResult {
+        let snapshot = ExportCameraRawResolutionSnapshot(
+            requestID: request.requestID,
+            requestedSidecarImageURLs: requestedSidecarImageURLs,
+            inspectedImageURLs: inspectedImageURLs,
+            settingsByImageURL: settingsByImageURL
+        )
+        signposter.endInterval(
+            "Resolve",
+            interval,
+            "result=cancelled inspected=\(inspectedImageURLs.count)"
+        )
+        return snapshot.isComplete
+            ? .cancelledAfterCompleteRead(snapshot)
+            : .cancelledAfterPartialRead(snapshot)
+    }
+}
+
 /// Selects which `EditedImageRenderer` entry point a `renderItem` call uses.
 enum RenderKind: Sendable {
     /// Honors the configured export format + HDR settings (`EditedImageRenderer.render`).
@@ -51,20 +194,33 @@ enum EditExportPipeline {
     /// for RAW files edited in a previous session. The in-memory lookup is injected so this
     /// stays decoupled from `BrowserViewModel`.
     @MainActor
-    static func resolveCameraRaw(into map: inout [URL: IPTCMetadata], urls: [URL],
-                                 inMemory: @MainActor (URL) -> CameraRawSettings?) {
-        let xmp = XMPSidecarService()
+    static func resolveCameraRaw(
+        into map: inout [URL: IPTCMetadata],
+        urls: [URL],
+        inMemory: @MainActor (URL) -> CameraRawSettings?,
+        service: ExportCameraRawResolutionService = .shared
+    ) async throws {
+        var liveSettingsByURL: [URL: CameraRawSettings] = [:]
+        liveSettingsByURL.reserveCapacity(urls.count)
         for url in urls {
-            // Prefer in-memory CRS (kept in sync by edit workspace via syncCameraRawToImageFile)
             if let crs = inMemory(url) {
-                map[url]?.cameraRaw = crs
+                liveSettingsByURL[url] = crs
             }
-            // For RAW files without in-memory CRS, read XMP sidecar (handles previous-session edits)
-            else if SupportedImageFormats.isRaw(url: url),
-                    let meta = xmp.loadSidecar(for: url),
-                    let crs = meta.cameraRaw, !crs.isEmpty {
-                map[url]?.cameraRaw = crs
-            }
+        }
+
+        let requestID = UUID()
+        let result = await service.resolve(ExportCameraRawResolutionRequest(
+            requestID: requestID,
+            imageURLs: urls,
+            liveSettingsByImageURL: liveSettingsByURL
+        ))
+        guard case .complete(let snapshot) = result,
+              snapshot.requestID == requestID else {
+            throw CancellationError()
+        }
+
+        for (url, settings) in snapshot.settingsByImageURL where map[url] != nil {
+            map[url]?.cameraRaw = settings
         }
     }
 

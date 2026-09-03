@@ -2680,13 +2680,18 @@ struct ContentView: View {
             var metadataByURL: [URL: IPTCMetadata]
             do {
                 metadataByURL = try await browserViewModel.metadataReadService.readBatchFullMetadata(urls: urls)
+                try await EditExportPipeline.resolveCameraRaw(
+                    into: &metadataByURL,
+                    urls: urls,
+                    inMemory: browserViewModel.currentCameraRawSettings
+                )
+            } catch is CancellationError {
+                return
             } catch {
                 isRenderingEditedFolder = false
                 browserViewModel.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
                 return
             }
-            EditExportPipeline.resolveCameraRaw(into: &metadataByURL, urls: urls,
-                                                inMemory: browserViewModel.currentCameraRawSettings)
 
             var successCount = 0
             var failureCount = 0
@@ -3230,13 +3235,18 @@ struct ContentView: View {
             var metadataByURL: [URL: IPTCMetadata]
             do {
                 metadataByURL = try await browserViewModel.metadataReadService.readBatchFullMetadata(urls: urls)
+                try await EditExportPipeline.resolveCameraRaw(
+                    into: &metadataByURL,
+                    urls: urls,
+                    inMemory: browserViewModel.currentCameraRawSettings
+                )
+            } catch is CancellationError {
+                return
             } catch {
                 isRenderingEditedFolder = false
                 browserViewModel.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
                 return
             }
-            EditExportPipeline.resolveCameraRaw(into: &metadataByURL, urls: urls,
-                                                inMemory: browserViewModel.currentCameraRawSettings)
 
             var savedURLs: [URL] = []
             var saveFailedNames: [String] = []
@@ -3615,13 +3625,18 @@ struct ContentView: View {
             var metadataByURL: [URL: IPTCMetadata]
             do {
                 metadataByURL = try await browserViewModel.metadataReadService.readBatchFullMetadata(urls: urls)
+                try await EditExportPipeline.resolveCameraRaw(
+                    into: &metadataByURL,
+                    urls: urls,
+                    inMemory: browserViewModel.currentCameraRawSettings
+                )
+            } catch is CancellationError {
+                return
             } catch {
                 isRenderingEditedFolder = false
                 browserViewModel.errorMessage = "Failed to read metadata for export: \(error.localizedDescription)"
                 return
             }
-            EditExportPipeline.resolveCameraRaw(into: &metadataByURL, urls: urls,
-                                                inMemory: browserViewModel.currentCameraRawSettings)
 
             var successCount = 0
             var failureCount = 0
