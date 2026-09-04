@@ -1275,6 +1275,17 @@ focused 15-test Advanced Export suite, repository gate, and serial unfiltered 2,
 priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-advanced-export-preparation-continuation-2026-09-04.md))
 
+**FTP upload sidecar follow-up (2026-09-05):** FTP upload preflight and merge now move synchronous XMP reads and
+conditional angled-crop dimension probes out of `FTPUploadView`'s MainActor path and through one serialized actor.
+Cancellation reports the exact inspected prefix around non-preemptible reads, and the view publishes only complete
+evidence from the current ordered files, render policy, and revision while disabling upload during inspection. The
+view also rejects cancelled predecessors before they claim ownership and cancels tracked merge work on input
+replacement or dismissal. The focused 5-test suite, adjacent 35-test FTP selection, repository gate, and serial
+unfiltered 2,028-test run passed.
+The audit remains 66 of 75 while Metadata editor and Known People reads, shared rename identity work, and real-
+volume/signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-ftp-upload-sidecar-continuation-2026-09-05.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

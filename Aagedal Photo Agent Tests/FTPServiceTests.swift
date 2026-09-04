@@ -415,6 +415,241 @@ private nonisolated final class BlockingHistoryAvailabilityProbe: @unchecked Sen
     }
 }
 
+@Suite("FTP upload sidecar boundary")
+struct FTPUploadSidecarLoadServiceTests {
+    @Test("sidecar metadata returns ordered complete immutable evidence")
+    func completeSnapshot() async {
+        let first = URL(fileURLWithPath: "/first.jpg")
+        let second = URL(fileURLWithPath: "/second.jpg")
+        let requestID = UUID()
+        let probe = FTPSidecarLoadProbe(metadataByURL: [
+            first: IPTCMetadata(title: "First")
+        ])
+        let service = FTPUploadSidecarLoadService(
+            access: FTPUploadSidecarAccess(load: probe.load)
+        )
+
+        let result = await service.load(imageURLs: [first, second], requestID: requestID)
+        guard case .complete(let snapshot) = result else {
+            Issue.record("Expected a complete sidecar snapshot")
+            return
+        }
+
+        #expect(snapshot.requestID == requestID)
+        #expect(snapshot.requestedImageURLs == [first, second])
+        #expect(snapshot.inspectedImageURLs == [first, second])
+        #expect(snapshot.metadataByImageURL[first]?.title == "First")
+        #expect(snapshot.metadataByImageURL[second] == nil)
+        #expect(probe.loadedURLs == [first, second])
+    }
+
+    @Test("cancellation after a synchronous read returns the exact inspected prefix")
+    func cancellationAfterRead() async {
+        let first = URL(fileURLWithPath: "/first.jpg")
+        let second = URL(fileURLWithPath: "/second.jpg")
+        let probe = FTPSidecarLoadProbe(
+            metadataByURL: [first: IPTCMetadata(title: "First")],
+            cancelsAfterLoadCount: 1
+        )
+        let service = FTPUploadSidecarLoadService(
+            access: FTPUploadSidecarAccess(load: probe.load)
+        )
+
+        let result = await Task {
+            await service.load(imageURLs: [first, second], requestID: UUID())
+        }.value
+
+        guard case .cancelledAfterPartialRead(let snapshot) = result else {
+            Issue.record("Expected cancellation after the first sidecar read")
+            return
+        }
+        #expect(snapshot.inspectedImageURLs == [first])
+        #expect(snapshot.metadataByImageURL[first]?.title == "First")
+        #expect(probe.loadedURLs == [first])
+    }
+
+    @Test("pre-read and post-complete-read cancellation remain distinguishable")
+    func cancellationEdgeStates() async {
+        let url = URL(fileURLWithPath: "/only.jpg")
+        let preReadProbe = FTPSidecarLoadProbe()
+        let preReadService = FTPUploadSidecarLoadService(
+            access: FTPUploadSidecarAccess(load: preReadProbe.load)
+        )
+        let preReadRequestID = UUID()
+        let preRead = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await preReadService.load(
+                imageURLs: [url],
+                requestID: preReadRequestID
+            )
+        }.value
+
+        #expect(preRead == .cancelledBeforeRead(
+            requestID: preReadRequestID,
+            requestedImageURLs: [url]
+        ))
+        #expect(preReadProbe.loadedURLs.isEmpty)
+
+        let completedProbe = FTPSidecarLoadProbe(cancelsAfterLoadCount: 1)
+        let completedService = FTPUploadSidecarLoadService(
+            access: FTPUploadSidecarAccess(load: completedProbe.load)
+        )
+        let completed = await Task {
+            await completedService.load(imageURLs: [url], requestID: UUID())
+        }.value
+
+        guard case .cancelledAfterCompleteRead(let snapshot) = completed else {
+            Issue.record("Expected cancellation after the complete final read")
+            return
+        }
+        #expect(snapshot.inspectedImageURLs == [url])
+        #expect(snapshot.isComplete)
+        #expect(completedProbe.loadedURLs == [url])
+    }
+
+    @MainActor
+    @Test("blocked sidecar reads leave MainActor and serialize queued cancellation")
+    func blockedReadStaysOffMainActor() async throws {
+        let probe = FTPSidecarLoadProbe(blocksFirstLoad: true)
+        defer { probe.releaseFirstLoad() }
+        let service = FTPUploadSidecarLoadService(
+            access: FTPUploadSidecarAccess(load: probe.load)
+        )
+        let firstURL = URL(fileURLWithPath: "/first.jpg")
+        let secondURL = URL(fileURLWithPath: "/second.jpg")
+        let first = Task {
+            await service.load(imageURLs: [firstURL], requestID: UUID())
+        }
+        try await probe.waitUntilFirstLoadStarts()
+
+        #expect(probe.loadedURLs == [firstURL])
+        let second = Task {
+            await service.load(imageURLs: [secondURL], requestID: UUID())
+        }
+        second.cancel()
+        probe.releaseFirstLoad()
+
+        #expect((await first.value).completeSnapshot?.inspectedImageURLs == [firstURL])
+        guard case .cancelledBeforeRead(_, let requestedImageURLs) = await second.value else {
+            Issue.record("Expected the queued request to cancel before reading")
+            return
+        }
+        #expect(requestedImageURLs == [secondURL])
+        #expect(probe.loadedURLs == [firstURL])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("FTP preflight awaits actor sidecars and publishes only current complete inspection")
+    func uploadViewSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/FTP/FTPUploadView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(".task(id: inspectionRequestKey)"))
+        #expect(source.contains("await sidecarLoadService.load("))
+        #expect(source.contains("sidecarSnapshot.requestID == requestID"))
+        #expect(source.contains("inspectionRequestID == requestID"))
+        #expect(source.contains("isInspectingFiles"))
+        #expect(source.contains("sidecarMergeTask?.cancel()"))
+        #expect(source.contains("sidecarMergeRequestID == requestID"))
+        #expect(source.contains("inspectionRequestKey == originatingInspectionKey"))
+        #expect(source.contains(".onDisappear {\n            cancelSidecarMerge()"))
+        #expect(!source.contains("Self.loadSidecars(for:"))
+        #expect(!source.contains("XMPSidecarService().loadSidecar(for:"))
+
+        let entryGuard = try #require(source.range(
+            of: "guard !Task.isCancelled,\n              inspectionRequestKey == requestKey else { return }"
+        ))
+        let ownershipClaim = try #require(source.range(of: "inspectionRequestID = requestID"))
+        #expect(entryGuard.lowerBound < ownershipClaim.lowerBound)
+    }
+}
+
+private extension FTPUploadSidecarLoadResult {
+    var completeSnapshot: FTPUploadSidecarSnapshot? {
+        guard case .complete(let snapshot) = self else { return nil }
+        return snapshot
+    }
+}
+
+private enum FTPSidecarLoadProbeError: Error {
+    case timedOut
+}
+
+private nonisolated final class FTPSidecarLoadProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let metadataByURL: [URL: IPTCMetadata]
+    private let cancelsAfterLoadCount: Int?
+    private let blocksFirstLoad: Bool
+    private var urls: [URL] = []
+    private var firstLoadReleased = false
+    private var observedMainThread = false
+
+    init(
+        metadataByURL: [URL: IPTCMetadata] = [:],
+        cancelsAfterLoadCount: Int? = nil,
+        blocksFirstLoad: Bool = false
+    ) {
+        self.metadataByURL = metadataByURL
+        self.cancelsAfterLoadCount = cancelsAfterLoadCount
+        self.blocksFirstLoad = blocksFirstLoad
+    }
+
+    func load(_ url: URL) -> IPTCMetadata? {
+        condition.lock()
+        urls.append(url)
+        observedMainThread = observedMainThread || Thread.isMainThread
+        let loadCount = urls.count
+        condition.broadcast()
+        if blocksFirstLoad, loadCount == 1 {
+            while !firstLoadReleased {
+                condition.wait()
+            }
+        }
+        condition.unlock()
+
+        if cancelsAfterLoadCount == loadCount {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        return metadataByURL[url]
+    }
+
+    func waitUntilFirstLoadStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while loadedURLs.isEmpty {
+            guard ContinuousClock.now < deadline else {
+                throw FTPSidecarLoadProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstLoad() {
+        condition.lock()
+        firstLoadReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var loadedURLs: [URL] {
+        condition.lock()
+        defer { condition.unlock() }
+        return urls
+    }
+
+    var ranOnMainThread: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return observedMainThread
+    }
+}
+
 private struct FTPFileSystemFixture {
     let root: URL
 

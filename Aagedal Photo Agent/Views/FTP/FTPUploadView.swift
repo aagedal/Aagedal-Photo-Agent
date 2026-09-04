@@ -30,6 +30,13 @@ private struct FaceInfo {
     var faceCount: Int
 }
 
+private struct FTPUploadInspectionRequestKey: Equatable {
+    let files: [URL]
+    let alwaysRenderRAW: Bool
+    let skipRenderingEdited: Bool
+    let revision: UUID
+}
+
 struct FTPUploadView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var viewModel: FTPViewModel
@@ -39,6 +46,7 @@ struct FTPUploadView: View {
     let writeEngine: any MetadataWriteEngine
     let inMemoryCameraRaw: @MainActor (URL) -> CameraRawSettings?
     let thumbnailService: ThumbnailService
+    let sidecarLoadService: FTPUploadSidecarLoadService
     var onStartUpload: (() -> Void)?
 
     @AppStorage(UserDefaultsKeys.ftpAlwaysRenderRAW) private var alwaysRenderRAW = true
@@ -65,6 +73,11 @@ struct FTPUploadView: View {
     @State private var sidecarMergeableURLs: Set<URL> = []
     @State private var pendingInsecureUploadConnectionID: UUID?
     @State private var pendingInsecureUploadRenderURLs: Set<URL> = []
+    @State private var inspectionRevision = UUID()
+    @State private var inspectionRequestID: UUID?
+    @State private var isInspectingFiles = true
+    @State private var sidecarMergeRequestID: UUID?
+    @State private var sidecarMergeTask: Task<Void, Never>?
 
     init(
         viewModel: FTPViewModel,
@@ -74,6 +87,7 @@ struct FTPUploadView: View {
         writeEngine: any MetadataWriteEngine,
         inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?,
         thumbnailService: ThumbnailService,
+        sidecarLoadService: FTPUploadSidecarLoadService = .shared,
         onStartUpload: (() -> Void)? = nil
     ) {
         self.viewModel = viewModel
@@ -83,6 +97,7 @@ struct FTPUploadView: View {
         self.writeEngine = writeEngine
         self.inMemoryCameraRaw = inMemoryCameraRaw
         self.thumbnailService = thumbnailService
+        self.sidecarLoadService = sidecarLoadService
         self.onStartUpload = onStartUpload
         self._activeFiles = State(initialValue: files)
     }
@@ -148,19 +163,17 @@ struct FTPUploadView: View {
             viewModel.loadHistory()
             selectedServerID = viewModel.selectedConnectionID
         }
-        .task(id: activeFiles) {
-            await detectFileInfo()
+        .task(id: inspectionRequestKey) {
+            await detectFileInfo(for: inspectionRequestKey)
         }
         .task(id: expandedHistoryID) {
             await refreshExpandedHistoryAvailability()
         }
+        .onChange(of: inspectionRequestKey) {
+            cancelSidecarMerge()
+        }
         .onChange(of: files) { _, newFiles in
             activeFiles = newFiles
-        }
-        .onChange(of: skipRenderingEdited) {
-            // The render decision flips which metadata source the check evaluates
-            // (embedded-only as-is vs embedded∪sidecar when rendered), so re-evaluate.
-            Task { await detectFileInfo() }
         }
         .onChange(of: viewModel.isShowingServerForm) { _, showing in
             // When the server form closes after adding a server from this dialog, the
@@ -174,6 +187,9 @@ struct FTPUploadView: View {
         }
         .sheet(isPresented: $viewModel.isShowingServerForm) {
             FTPServerForm(viewModel: viewModel)
+        }
+        .onDisappear {
+            cancelSidecarMerge()
         }
         .confirmationDialog(
             "Upload using an insecure connection?",
@@ -331,7 +347,12 @@ struct FTPUploadView: View {
         let requiredMissing = metadataViolationCount(.error)
         let warnMissing = metadataViolationCount(.warn)
         return VStack(alignment: .trailing, spacing: 4) {
-            if requiredMissing > 0 {
+            if isInspectingFiles {
+                Label("Checking render and metadata status…", systemImage: "hourglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            } else if requiredMissing > 0 {
                 Label("\(requiredMissing) file\(requiredMissing == 1 ? "" : "s") missing required metadata", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -374,6 +395,15 @@ struct FTPUploadView: View {
 
     // MARK: - Render Decision
 
+    private var inspectionRequestKey: FTPUploadInspectionRequestKey {
+        FTPUploadInspectionRequestKey(
+            files: activeFiles,
+            alwaysRenderRAW: alwaysRenderRAW,
+            skipRenderingEdited: skipRenderingEdited,
+            revision: inspectionRevision
+        )
+    }
+
     /// A file is rendered to JPEG before upload when it's a RAW (and the always-render-RAW
     /// setting is on) or when it carries visible develop/crop edits (unless the user opted to
     /// skip rendering edited files). Already-finished JPEGs with no edits upload untouched.
@@ -393,15 +423,29 @@ struct FTPUploadView: View {
     /// the render pipeline uses (batch metadata read + in-memory override + RAW sidecar), so the
     /// dialog's badges and render decisions match exactly what an upload would produce.
     @MainActor
-    private func detectFileInfo() async {
-        let urls = activeFiles
+    private func detectFileInfo(for requestKey: FTPUploadInspectionRequestKey) async {
+        // A replaced SwiftUI `.task(id:)` can enter after it has already been cancelled. Reject
+        // that predecessor before it can claim the request ID or clear the replacement's state.
+        guard !Task.isCancelled,
+              inspectionRequestKey == requestKey else { return }
+
+        let requestID = UUID()
+        inspectionRequestID = requestID
+        isInspectingFiles = true
+        fileInfo = [:]
+        metadataStatus = [:]
+        sidecarMergeableURLs = []
+
+        let urls = requestKey.files
         var metadataMap = (try? await readService.readBatchFullMetadata(urls: urls)) ?? [:]
         try? await EditExportPipeline.resolveCameraRaw(
             into: &metadataMap,
             urls: urls,
             inMemory: inMemoryCameraRaw
         )
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              inspectionRequestID == requestID,
+              inspectionRequestKey == requestKey else { return }
 
         var info: [URL: UploadFileInfo] = [:]
         info.reserveCapacity(urls.count)
@@ -415,14 +459,22 @@ struct FTPUploadView: View {
             }
             info[url] = UploadFileInfo(isRaw: SupportedImageFormats.isRaw(url: url), hasDevelop: hasDevelop, hasCrop: hasCrop)
         }
-        fileInfo = info
-
         // Evaluate metadata requirements against the global config, with the Person Shown
         // face-scan rule. Face data and XMP sidecars are loaded off the main actor (file I/O).
         let levels = MetadataRequirements.load()
-        let faceInfo = await Self.loadFaceInfo(for: urls)
-        let sidecars = Self.loadSidecars(for: urls)
-        guard !Task.isCancelled else { return }
+        async let faceInfoRequest = Self.loadFaceInfo(for: urls)
+        async let sidecarRequest = sidecarLoadService.load(
+            imageURLs: urls,
+            requestID: requestID
+        )
+        let (faceInfo, sidecarResult) = await (faceInfoRequest, sidecarRequest)
+        guard !Task.isCancelled,
+              inspectionRequestID == requestID,
+              inspectionRequestKey == requestKey,
+              case .complete(let sidecarSnapshot) = sidecarResult,
+              sidecarSnapshot.requestID == requestID,
+              sidecarSnapshot.requestedImageURLs == urls else { return }
+        let sidecars = sidecarSnapshot.metadataByImageURL
         var status: [URL: UploadMetadataStatus] = [:]
         status.reserveCapacity(urls.count)
         var mergeable: Set<URL> = []
@@ -433,8 +485,15 @@ struct FTPUploadView: View {
             // the export overlay (SidecarIPTCOverlay), so evaluate against embedded ∪ sidecar.
             // A file uploaded as-is carries only its embedded metadata over FTP (the sidecar
             // doesn't travel), so evaluate against embedded alone.
-            let renders = Self.willRender(info: info[url] ?? UploadFileInfo(isRaw: SupportedImageFormats.isRaw(url: url), hasDevelop: false, hasCrop: false),
-                                          alwaysRenderRAW: alwaysRenderRAW, skipRenderingEdited: skipRenderingEdited)
+            let renders = Self.willRender(
+                info: info[url] ?? UploadFileInfo(
+                    isRaw: SupportedImageFormats.isRaw(url: url),
+                    hasDevelop: false,
+                    hasCrop: false
+                ),
+                alwaysRenderRAW: requestKey.alwaysRenderRAW,
+                skipRenderingEdited: requestKey.skipRenderingEdited
+            )
             status[url] = Self.evaluateRequirements(url: url, embedded: embedded, sidecar: sidecar, willRender: renders, levels: levels, face: faceInfo[url])
             // Offer a sidecar→file sync for as-is files whose sidecar holds non-optional
             // fields the embedded copy is missing (the JXL/JPEG drift case).
@@ -442,19 +501,13 @@ struct FTPUploadView: View {
                 mergeable.insert(url)
             }
         }
+        guard !Task.isCancelled,
+              inspectionRequestID == requestID,
+              inspectionRequestKey == requestKey else { return }
+        fileInfo = info
         metadataStatus = status
         sidecarMergeableURLs = mergeable
-    }
-
-    /// Loads the `.xmp` sidecar metadata for each file (descriptive IPTC + rating/label),
-    /// grouped off the main actor. Mirrors how the panel and export pipeline source sidecars.
-    private static func loadSidecars(for urls: [URL]) -> [URL: IPTCMetadata] {
-        let service = XMPSidecarService()
-        var result: [URL: IPTCMetadata] = [:]
-        for url in urls {
-            if let meta = service.loadSidecar(for: url) { result[url] = meta }
-        }
-        return result
+        isInspectingFiles = false
     }
 
     /// True when the sidecar carries a value for a non-optional field that the embedded
@@ -474,9 +527,22 @@ struct FTPUploadView: View {
     /// the export overlay (`toOverwriteFields` + rating/label), so the file ends up consistent
     /// with the sidecar rather than just gap-filled. Re-evaluates afterward.
     private func mergeSidecar(for url: URL) {
-        Task {
-            let service = XMPSidecarService()
-            guard let sidecar = service.loadSidecar(for: url),
+        cancelSidecarMerge()
+        let requestID = UUID()
+        let originatingInspectionKey = inspectionRequestKey
+        sidecarMergeRequestID = requestID
+        sidecarMergeTask = Task {
+            let result = await sidecarLoadService.load(
+                imageURLs: [url],
+                requestID: requestID
+            )
+            guard !Task.isCancelled,
+                  sidecarMergeRequestID == requestID,
+                  inspectionRequestKey == originatingInspectionKey,
+                  activeFiles.contains(url),
+                  case .complete(let sidecarSnapshot) = result,
+                  sidecarSnapshot.requestID == requestID,
+                  let sidecar = sidecarSnapshot.metadataByImageURL[url],
                   sidecar.hasDescriptiveContent || sidecar.rating != nil || sidecar.label != nil else { return }
             var fields = sidecar.hasDescriptiveContent ? sidecar.toOverwriteFields() : [:]
             if let rating = sidecar.rating { fields[.rating] = String(rating) }
@@ -493,10 +559,25 @@ struct FTPUploadView: View {
                     )
                 )
             } catch {
+                guard sidecarMergeRequestID == requestID,
+                      inspectionRequestKey == originatingInspectionKey else { return }
                 preprocessErrors.append("Failed to sync sidecar metadata into \(url.lastPathComponent): \(error.localizedDescription)")
             }
-            await detectFileInfo()
+            guard sidecarMergeRequestID == requestID,
+                  inspectionRequestKey == originatingInspectionKey else { return }
+            sidecarMergeRequestID = nil
+            sidecarMergeTask = nil
+            inspectionRevision = UUID()
         }
+    }
+
+    /// Cancels only work that has not crossed into the write engine yet. Once an atomic metadata
+    /// write has started, that engine owns its normal completion/rollback semantics; stale UI
+    /// completion is still rejected by the request identity and originating inspection key.
+    private func cancelSidecarMerge() {
+        sidecarMergeRequestID = nil
+        sidecarMergeTask?.cancel()
+        sidecarMergeTask = nil
     }
 
     /// Loads per-file face-scan facts (was it scanned, how many faces) for the Person Shown rule.
@@ -696,6 +777,7 @@ struct FTPUploadView: View {
     private var uploadDisabled: Bool {
         selectedServerID == nil || viewModel.isUploading || viewModel.isRendering
             || isProcessingVariables || isSigningC2PA || activeFiles.isEmpty
+            || isInspectingFiles
             || metadataViolationCount(.error) > 0
     }
 

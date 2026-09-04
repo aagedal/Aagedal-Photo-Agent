@@ -733,6 +733,15 @@ request or ordered-selection publication. Five new characterizations, the focuse
 repository gate, and serial unfiltered 2,023-test run passed. The audit remains 66 of 75 while other lower-priority
 direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [FTP upload sidecar continuation](plan-status-ftp-upload-sidecar-continuation-2026-09-05.md) moves
+preflight and merge XMP reads, including conditional angled-crop dimension probes, out of `FTPUploadView`'s
+MainActor path and through a serialized actor. Explicit exact-prefix cancellation evidence and request-keyed
+publication prevent partial or stale inspection results from enabling upload. Cancelled predecessors cannot claim
+new inspection ownership, and tracked merge work is cancelled on input replacement or dismissal. The focused
+5-test suite, adjacent 35-test FTP selection, repository gate, and serial unfiltered 2,028-test run passed. The
+audit remains 66 of 75 while Metadata editor and Known People reads, shared rename identity work, and real-volume/
+signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.
