@@ -700,6 +700,14 @@ characterizations, the focused 8-test suite, adjacent 45-test import selection, 
 2,004-test run passed. The audit remains 66 of 75 while other lower-priority direct/cached-model paths and real-volume/
 signpost/Thread Performance Checker evidence stay open.
 
+The latest [RAW archive security-scope continuation](plan-status-raw-archive-security-scope-continuation-2026-09-04.md)
+moves configured ingest/archive-root security-scope acquisition and release out of the MainActor-inheriting archive
+task and behind one serialized actor. Unique roots receive at most one claim, unavailable optional claims preserve
+the existing permissive behavior, and cancellation during a synchronous acquisition releases the exact successful
+prefix before returning. Four new characterizations, the focused 24-test RAW archive suite, repository gate, and
+serial unfiltered 2,008-test run passed. The audit remains 66 of 75 while other lower-priority direct/cached-model
+paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

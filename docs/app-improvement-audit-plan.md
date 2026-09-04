@@ -1232,6 +1232,16 @@ import selection, repository gate, and serial unfiltered 2,004-test run passed. 
 model paths and real-volume/signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-import-source-security-scope-continuation-2026-09-04.md))
 
+**RAW archive security-scope follow-up (2026-09-04):** mirrored RAW archive batches no longer acquire or release
+their configured ingest and archive roots from the MainActor-inheriting ContentView task. One serialized actor
+deduplicates roots, records exactly which optional claims started, retains them across the existing render pipeline,
+and releases them in reverse order. Cancellation before access starts no work; cancellation observed after a
+non-preemptible acquisition releases the complete successful prefix before returning immutable evidence. Four new
+characterizations cover unique/unavailable roots, cancellation-prefix balancing, off-main execution, and the caller
+source contract. The focused 24-test RAW archive suite, repository gate, and serial unfiltered 2,008-test run passed.
+Other lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence remain
+open. ([validation](plan-status-raw-archive-security-scope-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

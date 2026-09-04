@@ -1467,6 +1467,125 @@ struct RAWArchiveTests {
         #expect(destination == selected)
     }
 
+    @Test("RAW archive scope acquisition balances only successful unique claims")
+    func archiveScopeBalancesSuccessfulUniqueClaims() async {
+        let ingest = URL(fileURLWithPath: "/Volumes/Ingest", isDirectory: true)
+        let archive = URL(fileURLWithPath: "/Volumes/Archive", isDirectory: true)
+        let probe = RAWArchiveSecurityScopeProbe(unavailableURL: archive)
+        let service = RAWArchiveSecurityScopeService(
+            access: probe.access,
+            cancellationRequested: { false }
+        )
+        let request = RAWArchiveSecurityScopeRequest(
+            ingestRoot: ingest,
+            archiveRoot: archive
+        )
+
+        let acquisition = await service.acquire(request)
+        let claim: RAWArchiveSecurityScopeClaim
+        if case .acquired(let acquiredClaim) = acquisition {
+            claim = acquiredClaim
+        } else {
+            Issue.record("Expected a complete security-scope acquisition")
+            return
+        }
+
+        #expect(claim.roots == [ingest, archive])
+        #expect(claim.startedRoots == [ingest])
+        let release = await service.release(claim)
+        #expect(release.releasedRoots == [ingest])
+        #expect(probe.startedURLs == [ingest, archive])
+        #expect(probe.stoppedURLs == [ingest])
+
+        let duplicateRequest = RAWArchiveSecurityScopeRequest(
+            ingestRoot: ingest,
+            archiveRoot: ingest
+        )
+        #expect(duplicateRequest.roots == [ingest])
+    }
+
+    @Test("cancellation during RAW archive scope acquisition releases its successful prefix")
+    func archiveScopeCancellationBalancesSuccessfulPrefix() async {
+        let ingest = URL(fileURLWithPath: "/Volumes/Ingest", isDirectory: true)
+        let archive = URL(fileURLWithPath: "/Volumes/Archive", isDirectory: true)
+        let preCancelledProbe = RAWArchiveSecurityScopeProbe()
+        let preCancelledService = RAWArchiveSecurityScopeService(
+            access: preCancelledProbe.access,
+            cancellationRequested: { true }
+        )
+        let preCancelledRequest = RAWArchiveSecurityScopeRequest(
+            ingestRoot: ingest,
+            archiveRoot: archive
+        )
+
+        let preCancelledResult = await preCancelledService.acquire(preCancelledRequest)
+
+        #expect(preCancelledResult == .cancelledBeforeAccess(
+            requestID: preCancelledRequest.requestID
+        ))
+        #expect(preCancelledProbe.startedURLs.isEmpty)
+        #expect(preCancelledProbe.stoppedURLs.isEmpty)
+
+        let probe = RAWArchiveSecurityScopeProbe(cancelAfterFirstStart: true)
+        let service = RAWArchiveSecurityScopeService(
+            access: probe.access,
+            cancellationRequested: { probe.isCancellationRequested }
+        )
+        let request = RAWArchiveSecurityScopeRequest(
+            ingestRoot: ingest,
+            archiveRoot: archive
+        )
+
+        let result = await service.acquire(request)
+
+        #expect(result == .cancelledAfterAccess(
+            requestID: request.requestID,
+            inspectedRootCount: 1,
+            releasedStartedRoots: [ingest]
+        ))
+        #expect(probe.startedURLs == [ingest])
+        #expect(probe.stoppedURLs == [ingest])
+    }
+
+    @MainActor
+    @Test("RAW archive scope APIs leave MainActor")
+    func archiveScopeAccessLeavesMainActor() async {
+        let ingest = URL(fileURLWithPath: "/Volumes/Ingest", isDirectory: true)
+        let probe = RAWArchiveSecurityScopeProbe()
+        let service = RAWArchiveSecurityScopeService(
+            access: probe.access,
+            cancellationRequested: { false }
+        )
+
+        let result = await service.acquire(RAWArchiveSecurityScopeRequest(
+            ingestRoot: ingest,
+            archiveRoot: nil
+        ))
+        guard case .acquired(let claim) = result else {
+            Issue.record("Expected a complete security-scope acquisition")
+            return
+        }
+        _ = await service.release(claim)
+
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("ContentView delegates RAW archive scope ownership to the service")
+    func archiveScopeSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent("Aagedal Photo Agent/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("await RAWArchiveSecurityScopeService.shared.acquire("))
+        #expect(source.contains("await RAWArchiveSecurityScopeService.shared.release("))
+        #expect(!source.contains("configuredIngestRoot?.startAccessingSecurityScopedResource()"))
+        #expect(!source.contains("configuredArchiveRoot?.startAccessingSecurityScopedResource()"))
+    }
+
     @Test("archive copies the source XMP packet unchanged")
     func copiesArchiveSidecar() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -1636,6 +1755,61 @@ struct RAWArchiveTests {
         #expect(source.contains("RAWArchiveSigningFailureCleanupRequest("))
         #expect(source.contains("await RAWArchiveSigningFailureCleanupService.shared.cleanup("))
         #expect(!source.contains("try? FileManager.default.removeItem(at: convertedURL)"))
+    }
+}
+
+nonisolated private final class RAWArchiveSecurityScopeProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let unavailableURL: URL?
+    private let cancelAfterFirstStart: Bool
+    private var _startedURLs: [URL] = []
+    private var _stoppedURLs: [URL] = []
+    private var _ranOnMainThread = false
+    private var _isCancellationRequested = false
+
+    init(
+        unavailableURL: URL? = nil,
+        cancelAfterFirstStart: Bool = false
+    ) {
+        self.unavailableURL = unavailableURL
+        self.cancelAfterFirstStart = cancelAfterFirstStart
+    }
+
+    var access: RAWArchiveSecurityScopeAccess {
+        RAWArchiveSecurityScopeAccess(
+            start: { [self] url in
+                lock.withLock {
+                    _startedURLs.append(url)
+                    _ranOnMainThread = _ranOnMainThread || Thread.isMainThread
+                    if cancelAfterFirstStart, _startedURLs.count == 1 {
+                        _isCancellationRequested = true
+                    }
+                    return url != unavailableURL
+                }
+            },
+            stop: { [self] url in
+                lock.withLock {
+                    _stoppedURLs.append(url)
+                    _ranOnMainThread = _ranOnMainThread || Thread.isMainThread
+                }
+            }
+        )
+    }
+
+    var startedURLs: [URL] {
+        lock.withLock { _startedURLs }
+    }
+
+    var stoppedURLs: [URL] {
+        lock.withLock { _stoppedURLs }
+    }
+
+    var ranOnMainThread: Bool {
+        lock.withLock { _ranOnMainThread }
+    }
+
+    var isCancellationRequested: Bool {
+        lock.withLock { _isCancellationRequested }
     }
 }
 

@@ -19,6 +19,126 @@ nonisolated enum RAWArchiveLocationError: LocalizedError {
     }
 }
 
+nonisolated struct RAWArchiveSecurityScopeAccess: Sendable {
+    let start: @Sendable (URL) -> Bool
+    let stop: @Sendable (URL) -> Void
+
+    static let system = RAWArchiveSecurityScopeAccess(
+        start: { $0.startAccessingSecurityScopedResource() },
+        stop: { $0.stopAccessingSecurityScopedResource() }
+    )
+}
+
+/// Immutable roots captured before a RAW archive batch leaves the UI actor. Duplicate roots are
+/// collapsed so a configuration that points both roles at one folder owns only one access claim.
+nonisolated struct RAWArchiveSecurityScopeRequest: Equatable, Sendable {
+    let requestID: UUID
+    let roots: [URL]
+
+    init(
+        requestID: UUID = UUID(),
+        ingestRoot: URL?,
+        archiveRoot: URL?
+    ) {
+        self.requestID = requestID
+        var seenPaths: Set<String> = []
+        self.roots = [ingestRoot, archiveRoot].compactMap { root in
+            guard let root else { return nil }
+            let standardized = root.standardizedFileURL
+            guard seenPaths.insert(standardized.path).inserted else { return nil }
+            return standardized
+        }
+    }
+}
+
+nonisolated struct RAWArchiveSecurityScopeClaim: Equatable, Sendable {
+    let requestID: UUID
+    let roots: [URL]
+    let startedRoots: [URL]
+}
+
+nonisolated enum RAWArchiveSecurityScopeAcquisitionResult: Equatable, Sendable {
+    case acquired(RAWArchiveSecurityScopeClaim)
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledAfterAccess(
+        requestID: UUID,
+        inspectedRootCount: Int,
+        releasedStartedRoots: [URL]
+    )
+}
+
+nonisolated struct RAWArchiveSecurityScopeReleaseEvidence: Equatable, Sendable {
+    let requestID: UUID
+    let releasedRoots: [URL]
+}
+
+/// Serializes file-provider security-scope calls away from MainActor. Claims stay active while
+/// rendering runs on its existing executors, then an explicit release returns exact balanced-root
+/// evidence. Cancellation during a synchronous acquisition releases every successful prefix.
+actor RAWArchiveSecurityScopeService {
+    static let shared = RAWArchiveSecurityScopeService()
+
+    private let access: RAWArchiveSecurityScopeAccess
+    private let cancellationRequested: @Sendable () -> Bool
+    private var activeStartedRoots: [UUID: [URL]] = [:]
+
+    init(
+        access: RAWArchiveSecurityScopeAccess = .system,
+        cancellationRequested: @escaping @Sendable () -> Bool = { Task.isCancelled }
+    ) {
+        self.access = access
+        self.cancellationRequested = cancellationRequested
+    }
+
+    func acquire(
+        _ request: RAWArchiveSecurityScopeRequest
+    ) -> RAWArchiveSecurityScopeAcquisitionResult {
+        guard !cancellationRequested() else {
+            return .cancelledBeforeAccess(requestID: request.requestID)
+        }
+
+        var startedRoots: [URL] = []
+        for (index, root) in request.roots.enumerated() {
+            if access.start(root) {
+                startedRoots.append(root)
+            }
+            guard !cancellationRequested() else {
+                let releasedRoots = releaseStartedRoots(startedRoots)
+                return .cancelledAfterAccess(
+                    requestID: request.requestID,
+                    inspectedRootCount: index + 1,
+                    releasedStartedRoots: releasedRoots
+                )
+            }
+        }
+
+        activeStartedRoots[request.requestID] = startedRoots
+        return .acquired(RAWArchiveSecurityScopeClaim(
+            requestID: request.requestID,
+            roots: request.roots,
+            startedRoots: startedRoots
+        ))
+    }
+
+    func release(
+        _ claim: RAWArchiveSecurityScopeClaim
+    ) -> RAWArchiveSecurityScopeReleaseEvidence {
+        let startedRoots = activeStartedRoots.removeValue(forKey: claim.requestID) ?? []
+        return RAWArchiveSecurityScopeReleaseEvidence(
+            requestID: claim.requestID,
+            releasedRoots: releaseStartedRoots(startedRoots)
+        )
+    }
+
+    private func releaseStartedRoots(_ roots: [URL]) -> [URL] {
+        let releasedRoots = Array(roots.reversed())
+        for root in releasedRoots {
+            access.stop(root)
+        }
+        return releasedRoots
+    }
+}
+
 /// Immutable cleanup input captured before leaving the UI actor. Sidecar identities are resolved
 /// once so the serialized filesystem operation cannot accidentally re-evaluate which source file
 /// must be preserved after it starts.

@@ -3403,24 +3403,26 @@ struct ContentView: View {
 
         renderExportTask = Task {
             defer { renderExportTask = nil }
-            let didAccessIngestRoot =
-                configuredIngestRoot?.startAccessingSecurityScopedResource() ?? false
-            let didAccessArchiveRoot =
-                configuredArchiveRoot?.startAccessingSecurityScopedResource() ?? false
-            defer {
-                if didAccessIngestRoot {
-                    configuredIngestRoot?.stopAccessingSecurityScopedResource()
-                }
-                if didAccessArchiveRoot {
-                    configuredArchiveRoot?.stopAccessingSecurityScopedResource()
-                }
+            let securityScopeRequest = RAWArchiveSecurityScopeRequest(
+                ingestRoot: configuredIngestRoot,
+                archiveRoot: configuredArchiveRoot
+            )
+            let securityScopeAcquisition = await RAWArchiveSecurityScopeService.shared.acquire(
+                securityScopeRequest
+            )
+            let securityScopeClaim: RAWArchiveSecurityScopeClaim?
+            switch securityScopeAcquisition {
+            case .acquired(let claim):
+                securityScopeClaim = claim
+            case .cancelledBeforeAccess, .cancelledAfterAccess:
+                securityScopeClaim = nil
             }
             let failureTracker = MetadataFailureTracker()
             var createdFolders: Set<String> = []
 
             var convertedURLs: [URL] = []
             var failedNames: [String] = []
-            for (index, url) in urls.enumerated() {
+            for (index, url) in urls.enumerated() where securityScopeClaim != nil {
                 guard !Task.isCancelled else { break }
                 renderExportCurrent = index + 1
                 do {
@@ -3500,6 +3502,10 @@ struct ContentView: View {
                 } catch {
                     failedNames.append(url.lastPathComponent)
                 }
+            }
+
+            if let securityScopeClaim {
+                _ = await RAWArchiveSecurityScopeService.shared.release(securityScopeClaim)
             }
 
             isRenderingEditedFolder = false
