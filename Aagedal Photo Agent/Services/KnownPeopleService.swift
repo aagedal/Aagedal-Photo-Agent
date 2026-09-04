@@ -135,8 +135,8 @@ final class KnownPeopleService {
 
     /// Drops all in-memory state so the next access re-reads from disk. Called
     /// after the backing directory changes (iCloud sync toggled on/off).
-    func reloadAfterStorageChange() {
-        cachedDirectory = nil
+    func reloadAfterStorageChange(resolvedStorageURL: URL? = nil) {
+        cachedDirectory = resolvedStorageURL
         database = nil
         peopleIndex = [:]
         featurePrintCache.removeAllObjects()

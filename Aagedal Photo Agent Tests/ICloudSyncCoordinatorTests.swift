@@ -115,6 +115,99 @@ struct ICloudSyncCoordinatorTests {
         )))
     }
 
+    @Test("Known People iCloud routing resolves and merges off MainActor in both directions")
+    @MainActor
+    func knownPeopleRoutingRunsOffMainActor() async throws {
+        let local = URL(fileURLWithPath: "/virtual/local-known-people", isDirectory: true)
+        let cloud = URL(fileURLWithPath: "/virtual/cloud-known-people", isDirectory: true)
+        let probe = KnownPeopleICloudRoutingProbe(local: local, cloud: cloud)
+        let service = KnownPeopleICloudRoutingService(access: probe.fileAccess)
+        let enableID = UUID()
+        let disableID = UUID()
+
+        let enable = try await service.reconcile(enabled: true, requestID: enableID)
+        let disable = try await service.reconcile(enabled: false, requestID: disableID)
+
+        #expect(enable == .committed(KnownPeopleICloudRoutingCommit(
+            requestID: enableID,
+            enabled: true,
+            localRootURL: local,
+            cloudRootURL: cloud,
+            sourceURL: local,
+            destinationURL: cloud,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(disable == .committed(KnownPeopleICloudRoutingCommit(
+            requestID: disableID,
+            enabled: false,
+            localRootURL: local,
+            cloudRootURL: cloud,
+            sourceURL: cloud,
+            destinationURL: local,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(probe.merges.map(\.0) == [local, cloud])
+        #expect(probe.merges.map(\.1) == [cloud, local])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Known People routing reports unavailable before entering the recursive merger")
+    func knownPeopleRoutingUnavailable() async throws {
+        let probe = KnownPeopleICloudRoutingProbe(
+            local: URL(fileURLWithPath: "/virtual/local-known-people"),
+            cloud: nil
+        )
+        let service = KnownPeopleICloudRoutingService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.reconcile(enabled: true, requestID: requestID)
+
+        #expect(result == .unavailable(requestID: requestID, enabled: true))
+        #expect(probe.merges.isEmpty)
+    }
+
+    @Test("Known People routing distinguishes pre-commit cancellation from a durable merge")
+    func knownPeopleRoutingCancellationEvidence() async throws {
+        let local = URL(fileURLWithPath: "/virtual/local-known-people")
+        let cloud = URL(fileURLWithPath: "/virtual/cloud-known-people")
+        let beforeProbe = KnownPeopleICloudRoutingProbe(
+            local: local,
+            cloud: cloud,
+            cancelDuringResolution: true
+        )
+        let beforeService = KnownPeopleICloudRoutingService(access: beforeProbe.fileAccess)
+        let beforeID = UUID()
+
+        let before = try await Task {
+            try await beforeService.reconcile(enabled: true, requestID: beforeID)
+        }.value
+
+        #expect(before == .cancelledBeforeCommit(requestID: beforeID, enabled: true))
+        #expect(beforeProbe.merges.isEmpty)
+
+        let afterProbe = KnownPeopleICloudRoutingProbe(
+            local: local,
+            cloud: cloud,
+            cancelDuringMerge: true
+        )
+        let afterService = KnownPeopleICloudRoutingService(access: afterProbe.fileAccess)
+        let afterID = UUID()
+
+        let after = try await Task {
+            try await afterService.reconcile(enabled: false, requestID: afterID)
+        }.value
+
+        #expect(after == .committed(KnownPeopleICloudRoutingCommit(
+            requestID: afterID,
+            enabled: false,
+            localRootURL: local,
+            cloudRootURL: cloud,
+            sourceURL: cloud,
+            destinationURL: local,
+            cancellationRequestedAfterCommit: true
+        )))
+    }
+
     @Test("coordinator starts serialized routing and applies only its latest request")
     func keywordListRoutingSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -132,6 +225,21 @@ struct ICloudSyncCoordinatorTests {
         #expect(source.contains("keywordListsRoutingRequestID == requestID"))
         #expect(source.contains("KeywordListsStore.shared.applyICloudRoutingPreference(on)"))
         #expect(!source.contains("let ok = KeywordListsStore.shared.setICloudEnabled(on)"))
+        #expect(source.contains("try await knownPeopleRouting.reconcile("))
+        #expect(source.contains("knownPeopleRoutingRequestID == requestID"))
+        #expect(source.contains("resolvedStorageURL: commit.destinationURL"))
+        #expect(source.contains("await routingTask.value"))
+        #expect(!source.contains("try mergeCopy(from: KnownPeopleService.localKnownPeopleDirectory, to: cloud)"))
+
+        let watcherSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/KnownPeopleCloudCoordinator.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(watcherSource.contains("guard !Task.isCancelled, let self else { return }"))
+        #expect(watcherSource.contains("guard let root = resolvedRoot else { return }"))
+        #expect(!watcherSource.contains("AppPaths.iCloudKnownPeopleURL"))
     }
 
     @Test("keyword-list routing unions flat lists and preserves an existing structured tree")
@@ -324,11 +432,13 @@ struct ICloudSyncCoordinatorTests {
         )
 
         #expect(settingsSource.contains("knownPeopleDataSummaryTask?.cancel()"))
+        #expect(settingsSource.contains("await coordinator.knownPeopleStorageSnapshot()"))
         #expect(settingsSource.contains("await KnownPeopleDataSummaryService.shared.summarize("))
         #expect(settingsSource.contains("knownPeopleDataSummaryRequestID == requestID"))
         #expect(settingsSource.contains("if case .complete(let summary) = evidence"))
         #expect(!summarySource.contains("FileManager.default.enumerator"))
         #expect(!summarySource.contains("static func make("))
+        #expect(!settingsSource.contains("AppPaths.iCloudKnownPeopleURL ?? KnownPeopleService.localKnownPeopleDirectory"))
     }
 
     private func completeSummary(
@@ -391,6 +501,63 @@ nonisolated private final class KeywordListsRoutingProbe: @unchecked Sendable {
                 recordThread()
                 return cloud
             },
+            merge: { [self] source, destination in
+                lock.withLock {
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                    recordedMerges.append((source, destination))
+                }
+                if cancelDuringMerge {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }
+        )
+    }
+
+    var merges: [(URL, URL)] { lock.withLock { recordedMerges } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+
+    private func recordThread() {
+        lock.withLock {
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+    }
+}
+
+nonisolated private final class KnownPeopleICloudRoutingProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let local: URL
+    private let cloud: URL?
+    private let cancelDuringResolution: Bool
+    private let cancelDuringMerge: Bool
+    private var observedMainThread = false
+    private var recordedMerges: [(URL, URL)] = []
+
+    init(
+        local: URL,
+        cloud: URL?,
+        cancelDuringResolution: Bool = false,
+        cancelDuringMerge: Bool = false
+    ) {
+        self.local = local
+        self.cloud = cloud
+        self.cancelDuringResolution = cancelDuringResolution
+        self.cancelDuringMerge = cancelDuringMerge
+    }
+
+    var fileAccess: KnownPeopleICloudRoutingFileAccess {
+        KnownPeopleICloudRoutingFileAccess(
+            localRootURL: { [self] in
+                recordThread()
+                return local
+            },
+            cloudRootURL: { [self] in
+                recordThread()
+                if cancelDuringResolution {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                return cloud
+            },
+            ensureDirectory: { _ in },
             merge: { [self] source, destination in
                 lock.withLock {
                     observedMainThread = observedMainThread || Thread.isMainThread

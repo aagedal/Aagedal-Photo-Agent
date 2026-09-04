@@ -1771,11 +1771,9 @@ struct SettingsView: View {
 
     private func refreshKnownPeopleStats() {
         let statistics = KnownPeopleService.shared.getStatistics()
+        let coordinator = ICloudSyncCoordinator.shared
+        let syncEnabled = coordinator.knownPeopleEnabled
         knownPeopleStats = statistics
-        let syncEnabled = ICloudSyncCoordinator.shared.knownPeopleEnabled
-        let storageURL = syncEnabled
-            ? (AppPaths.iCloudKnownPeopleURL ?? KnownPeopleService.localKnownPeopleDirectory)
-            : KnownPeopleService.localKnownPeopleDirectory
         knownPeopleDataSummary = KnownPeopleDataSummary(
             peopleCount: statistics.peopleCount,
             sampleCount: statistics.embeddingCount,
@@ -1787,11 +1785,13 @@ struct SettingsView: View {
         let requestID = UUID()
         knownPeopleDataSummaryRequestID = requestID
         knownPeopleDataSummaryTask = Task {
+            let storage = await coordinator.knownPeopleStorageSnapshot()
+            guard knownPeopleDataSummaryRequestID == requestID, !Task.isCancelled else { return }
             let evidence = await KnownPeopleDataSummaryService.shared.summarize(
                 peopleCount: statistics.peopleCount,
                 sampleCount: statistics.embeddingCount,
-                storageURL: storageURL,
-                syncEnabled: syncEnabled
+                storageURL: storage.url,
+                syncEnabled: storage.syncEnabled
             )
             guard knownPeopleDataSummaryRequestID == requestID, !Task.isCancelled else { return }
             knownPeopleDataSummaryTask = nil

@@ -1047,6 +1047,16 @@ sidecar selection passed; the repository gate and serial unfiltered 1,958-test r
 direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-browser-monitor-setup-continuation-2026-09-04.md))
 
+**Known People iCloud-routing follow-up (2026-09-04):** enable/disable no longer resolves the ubiquity container or
+recursively reconciles the Known People database from `ICloudSyncCoordinator` on MainActor. One serialized actor
+returns immutable unavailable, pre-commit cancellation, or durable-commit evidence; request identity gates the
+preference, cache route, privacy confirmation, and cloud watcher. The watcher and Settings storage summary reuse
+actor-resolved roots instead of probing iCloud from MainActor. Three new characterizations cover direction,
+off-main execution, unavailable iCloud, and cancellation stages. The adjacent 52-test selection, repository gate,
+and serial unfiltered 1,961-test run passed. Other lower-priority direct paths and real-volume/signpost/Thread
+Performance Checker exit evidence remain open.
+([validation](plan-status-known-people-icloud-routing-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

@@ -31,6 +31,129 @@ nonisolated enum KeywordListsRoutingResult: Equatable, Sendable {
     case cancelledBeforeCommit(requestID: UUID, enabled: Bool)
 }
 
+/// Stable roots used by one Known People iCloud reconciliation. The destination is the active
+/// store only after the merge and preference commit both succeed.
+nonisolated struct KnownPeopleICloudRoutingCommit: Equatable, Sendable {
+    let requestID: UUID
+    let enabled: Bool
+    let localRootURL: URL
+    let cloudRootURL: URL
+    let sourceURL: URL
+    let destinationURL: URL
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum KnownPeopleICloudRoutingResult: Equatable, Sendable {
+    case committed(KnownPeopleICloudRoutingCommit)
+    case unavailable(requestID: UUID, enabled: Bool)
+    case cancelledBeforeResolution(requestID: UUID, enabled: Bool)
+    case cancelledBeforeCommit(requestID: UUID, enabled: Bool)
+}
+
+nonisolated struct KnownPeopleStorageSnapshot: Equatable, Sendable {
+    let url: URL
+    let syncEnabled: Bool
+}
+
+nonisolated struct KnownPeopleICloudRoutingFileAccess: Sendable {
+    let localRootURL: @Sendable () -> URL
+    let cloudRootURL: @Sendable () -> URL?
+    let ensureDirectory: @Sendable (URL) throws -> Void
+    let merge: @Sendable (URL, URL) throws -> Void
+
+    static let system = KnownPeopleICloudRoutingFileAccess(
+        localRootURL: { KnownPeopleService.localKnownPeopleDirectory },
+        cloudRootURL: { AppPaths.iCloudKnownPeopleURL },
+        ensureDirectory: CloudCoordinatedIO.ensureDirectory,
+        merge: CloudCoordinatedIO.mergeCopyPreservingNewer
+    )
+}
+
+nonisolated protocol KnownPeopleICloudRouting: Sendable {
+    func reconcile(
+        enabled: Bool,
+        requestID: UUID
+    ) async throws -> KnownPeopleICloudRoutingResult
+
+    func storageURL(syncEnabled: Bool) async -> URL
+
+    func cloudRootURL(ensuringDirectory: Bool) async -> URL?
+}
+
+/// Serializes ubiquity-container resolution and the complete recursive merge away from MainActor.
+/// Coordinated file copying is synchronous and intentionally non-preemptible once entered, so
+/// cancellation is sampled on both sides and a completed merge returns durable evidence.
+actor KnownPeopleICloudRoutingService: KnownPeopleICloudRouting {
+    static let shared = KnownPeopleICloudRoutingService()
+
+    private let access: KnownPeopleICloudRoutingFileAccess
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "KnownPeopleICloudRouting"
+    )
+
+    init(access: KnownPeopleICloudRoutingFileAccess = .system) {
+        self.access = access
+    }
+
+    func reconcile(
+        enabled: Bool,
+        requestID: UUID
+    ) async throws -> KnownPeopleICloudRoutingResult {
+        let interval = signposter.beginInterval(
+            "Reconcile",
+            id: signposter.makeSignpostID()
+        )
+        guard !Task.isCancelled else {
+            signposter.endInterval("Reconcile", interval, "result=cancelled stage=before-resolution")
+            return .cancelledBeforeResolution(requestID: requestID, enabled: enabled)
+        }
+
+        let local = access.localRootURL()
+        guard let cloud = access.cloudRootURL() else {
+            signposter.endInterval("Reconcile", interval, "result=unavailable")
+            return .unavailable(requestID: requestID, enabled: enabled)
+        }
+        guard !Task.isCancelled else {
+            signposter.endInterval("Reconcile", interval, "result=cancelled stage=before-commit")
+            return .cancelledBeforeCommit(requestID: requestID, enabled: enabled)
+        }
+
+        let source = enabled ? local : cloud
+        let destination = enabled ? cloud : local
+        try access.merge(source, destination)
+        let commit = KnownPeopleICloudRoutingCommit(
+            requestID: requestID,
+            enabled: enabled,
+            localRootURL: local,
+            cloudRootURL: cloud,
+            sourceURL: source,
+            destinationURL: destination,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        )
+        signposter.endInterval(
+            "Reconcile",
+            interval,
+            "result=committed cancelled=\(commit.cancellationRequestedAfterCommit)"
+        )
+        return .committed(commit)
+    }
+
+    func storageURL(syncEnabled: Bool) async -> URL {
+        let local = access.localRootURL()
+        guard syncEnabled else { return local }
+        return access.cloudRootURL() ?? local
+    }
+
+    func cloudRootURL(ensuringDirectory: Bool) async -> URL? {
+        guard let cloud = access.cloudRootURL() else { return nil }
+        if ensuringDirectory {
+            try? access.ensureDirectory(cloud)
+        }
+        return cloud
+    }
+}
+
 nonisolated struct KeywordListsRoutingFileAccess: Sendable {
     let localRootURL: @Sendable () -> URL
     let cloudRootURL: @Sendable () -> URL?
@@ -131,6 +254,21 @@ final class ICloudSyncCoordinator {
     private var pendingKeywordListsEnabled: Bool?
     @ObservationIgnored private var keywordListsRoutingTask: Task<Void, Never>?
     @ObservationIgnored private var keywordListsRoutingRequestID: UUID?
+    private var pendingKnownPeopleEnabled: Bool?
+    @ObservationIgnored private let knownPeopleRouting: any KnownPeopleICloudRouting
+    @ObservationIgnored private var knownPeopleRoutingTask: Task<Void, Never>?
+    @ObservationIgnored private var knownPeopleRoutingRequestID: UUID?
+
+    init(
+        knownPeopleRouting: any KnownPeopleICloudRouting = KnownPeopleICloudRoutingService.shared
+    ) {
+        self.knownPeopleRouting = knownPeopleRouting
+    }
+
+    deinit {
+        keywordListsRoutingTask?.cancel()
+        knownPeopleRoutingTask?.cancel()
+    }
 
     /// Whether iCloud Drive is reachable for this app right now.
     var iCloudAvailable: Bool {
@@ -269,11 +407,11 @@ final class ICloudSyncCoordinator {
 
     var knownPeopleEnabled: Bool {
         _ = version
-        return UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+        return pendingKnownPeopleEnabled
+            ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
     }
 
     func setKnownPeopleEnabled(_ on: Bool, confirmedFirstEnable: Bool = false) {
-        lastError = nil
         if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
             enabling: on,
             currentlyEnabled: knownPeopleEnabled
@@ -282,34 +420,70 @@ final class ICloudSyncCoordinator {
             bump()
             return
         }
-        do {
-            if on {
-                guard let cloud = AppPaths.iCloudKnownPeopleURL else {
-                    lastError = Self.unavailableMessage
-                    bump()
-                    return
-                }
-                try mergeCopy(from: KnownPeopleService.localKnownPeopleDirectory, to: cloud)
-                UserDefaults.standard.set(true, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
-                if confirmedFirstEnable {
-                    KnownPeoplePrivacyLifecycle.recordICloudTransferConfirmation()
-                }
-            } else {
-                guard let cloud = AppPaths.iCloudKnownPeopleURL else {
-                    lastError = Self.unavailableMessage
-                    bump()
-                    return
-                }
-                try mergeCopy(from: cloud, to: KnownPeopleService.localKnownPeopleDirectory)
-                UserDefaults.standard.set(false, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
-            }
-            KnownPeopleService.shared.reloadAfterStorageChange()
-        } catch {
-            lastError = "Could not reconcile the Known People database with iCloud Drive: \(error.localizedDescription)"
-        }
-        // Start/stop the remote-change watcher to match the new toggle state.
-        KnownPeopleCloudCoordinator.shared.refresh()
+        knownPeopleRoutingTask?.cancel()
+        let requestID = UUID()
+        knownPeopleRoutingRequestID = requestID
+        pendingKnownPeopleEnabled = on
+        lastError = nil
         bump()
+        knownPeopleRoutingTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await knownPeopleRouting.reconcile(
+                    enabled: on,
+                    requestID: requestID
+                )
+                guard knownPeopleRoutingRequestID == requestID else { return }
+                knownPeopleRoutingTask = nil
+                knownPeopleRoutingRequestID = nil
+                pendingKnownPeopleEnabled = nil
+                switch result {
+                case .committed(let commit):
+                    UserDefaults.standard.set(on, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+                    if confirmedFirstEnable {
+                        KnownPeoplePrivacyLifecycle.recordICloudTransferConfirmation()
+                    }
+                    KnownPeopleService.shared.reloadAfterStorageChange(
+                        resolvedStorageURL: commit.destinationURL
+                    )
+                    if on {
+                        KnownPeopleCloudCoordinator.shared.refresh(resolvedRoot: commit.cloudRootURL)
+                    } else {
+                        KnownPeopleCloudCoordinator.shared.refresh()
+                    }
+                case .unavailable:
+                    lastError = Self.unavailableMessage
+                    KnownPeopleCloudCoordinator.shared.refresh()
+                case .cancelledBeforeResolution, .cancelledBeforeCommit:
+                    break
+                }
+                bump()
+            } catch {
+                guard knownPeopleRoutingRequestID == requestID else { return }
+                knownPeopleRoutingTask = nil
+                knownPeopleRoutingRequestID = nil
+                pendingKnownPeopleEnabled = nil
+                lastError = "Could not reconcile the Known People database with iCloud Drive: \(error.localizedDescription)"
+                KnownPeopleCloudCoordinator.shared.refresh()
+                bump()
+            }
+        }
+    }
+
+    /// Returns a route that agrees with the latest observable preference. If a toggle completes
+    /// while the actor is resolving the container, repeat once rather than publishing stale
+    /// storage-location evidence in Settings.
+    func knownPeopleStorageSnapshot() async -> KnownPeopleStorageSnapshot {
+        while true {
+            if let routingTask = knownPeopleRoutingTask {
+                await routingTask.value
+                continue
+            }
+            let enabled = knownPeopleEnabled
+            let url = await knownPeopleRouting.storageURL(syncEnabled: enabled)
+            guard enabled == knownPeopleEnabled else { continue }
+            return KnownPeopleStorageSnapshot(url: url, syncEnabled: enabled)
+        }
     }
 
     // MARK: - Teams library

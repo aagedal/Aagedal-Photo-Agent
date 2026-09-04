@@ -575,6 +575,15 @@ focused 31-test monitor/sidecar selection, repository gate, and serial unfiltere
 remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread Performance Checker evidence
 stay open.
 
+The latest [Known People iCloud-routing continuation](plan-status-known-people-icloud-routing-continuation-2026-09-04.md)
+moves ubiquity-container resolution and the complete preserve-newer database reconciliation out of the MainActor
+sync coordinator and behind one serialized actor. Immutable cancellation/durable evidence plus request identity
+gate preference, cache-route, privacy-confirmation, and cloud-watcher publication. The watcher and Settings storage
+summary reuse actor-resolved roots instead of probing iCloud from MainActor. Three new characterizations cover both
+directions, off-main execution, unavailable iCloud, and cancellation stages. The adjacent 52-test selection,
+repository gate, and serial unfiltered 1,961-test run passed. The audit remains 66 of 75 while Phase 3.1's remaining
+direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

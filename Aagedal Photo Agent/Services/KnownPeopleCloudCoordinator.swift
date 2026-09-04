@@ -25,6 +25,9 @@ final class KnownPeopleCloudCoordinator {
     /// In-flight off-main resolution of the ubiquity container. Held so a second
     /// `refresh()` doesn't stack a duplicate attempt and so disabling can cancel it.
     private var pendingStart: Task<Void, Never>?
+    /// Root resolved by the serialized routing actor. Update handling reuses it instead of
+    /// repeatedly asking the ubiquity subsystem from MainActor notification callbacks.
+    private var resolvedRoot: URL?
     /// Changed person-file URLs accumulated across query updates within one
     /// debounce window, keyed by path so repeated notifications coalesce.
     private var pendingChanges: [String: (url: URL, contentChangeDate: Date?)] = [:]
@@ -38,15 +41,24 @@ final class KnownPeopleCloudCoordinator {
             stopQuery()
             return
         }
-        if AppPaths.iCloudKnownPeopleURL != nil {
-            startQueryIfNeeded()
-        } else {
-            // The ubiquity container isn't reachable yet. Early in launch the
-            // daemon may still be provisioning it, and resolving on the main
-            // thread can transiently return nil — so resolve off-main and start
-            // the query once it lands, instead of giving up for the session.
-            scheduleContainerResolution()
+        scheduleContainerResolution()
+    }
+
+    /// Installs a root already proven reachable by the routing actor after a successful enable.
+    /// This avoids a second potentially blocking ubiquity-container lookup on MainActor.
+    func refresh(resolvedRoot root: URL) {
+        let enabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+        guard enabled else {
+            stopQuery()
+            return
         }
+        pendingStart?.cancel()
+        pendingStart = nil
+        if resolvedRoot != root {
+            stopQuery()
+        }
+        resolvedRoot = root
+        startQueryIfNeeded(root: root)
     }
 
     /// Resolves the ubiquity container off the main thread (the documented
@@ -57,28 +69,22 @@ final class KnownPeopleCloudCoordinator {
     private func scheduleContainerResolution() {
         guard query == nil, pendingStart == nil else { return }
         pendingStart = Task { [weak self] in
-            let resolved = await Task.detached(priority: .utility) {
-                AppPaths.iCloudKnownPeopleURL
-            }.value
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.pendingStart = nil
-                let stillEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
-                guard stillEnabled, resolved != nil else { return }
-                self.startQueryIfNeeded()
-                // The query's gathering callback delivers the synced person files
-                // and drives the per-record refresh from there.
-            }
+            let resolved = await KnownPeopleICloudRoutingService.shared.cloudRootURL(
+                ensuringDirectory: true
+            )
+            guard !Task.isCancelled, let self else { return }
+            self.pendingStart = nil
+            let stillEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+            guard stillEnabled, let resolved else { return }
+            self.resolvedRoot = resolved
+            self.startQueryIfNeeded(root: resolved)
+            // The query's gathering callback delivers the synced person files
+            // and drives the per-record refresh from there.
         }
     }
 
-    private func startQueryIfNeeded() {
+    private func startQueryIfNeeded(root: URL) {
         guard query == nil else { return }
-        guard let root = AppPaths.iCloudKnownPeopleURL else { return }
-        // The ubiquity container must exist before the query can find anything.
-        // Coordinated so we don't fork a "KnownPeople 2" conflict folder.
-        try? CloudCoordinatedIO.ensureDirectory(root)
-
         let q = NSMetadataQuery()
         q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
         // Match database.json and the thumbnail .jpg files anywhere in the
@@ -128,6 +134,7 @@ final class KnownPeopleCloudCoordinator {
         pendingRefresh = nil
         pendingChanges.removeAll()
         query = nil
+        resolvedRoot = nil
         logger.info("Stopped iCloud metadata query")
     }
 
@@ -135,7 +142,7 @@ final class KnownPeopleCloudCoordinator {
         query.disableUpdates()
         defer { query.enableUpdates() }
 
-        guard let root = AppPaths.iCloudKnownPeopleURL else { return }
+        guard let root = resolvedRoot else { return }
         let peoplePath = root.appendingPathComponent("people", isDirectory: true).path
 
         for case let item as NSMetadataItem in query.results {
