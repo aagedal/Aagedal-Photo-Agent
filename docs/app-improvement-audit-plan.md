@@ -1110,6 +1110,18 @@ gate, and final serial unfiltered run of 1,975 tests in 229 suites passed. Other
 paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-analysis-annotation-index-continuation-2026-09-04.md))
 
+**Watermark persistence/cache follow-up (2026-09-04):** opening and remotely refreshing the Watermark library,
+reading PNG previews, renaming assets, updating defaults, and deleting assets no longer perform coordinated
+filesystem work from the MainActor store. One serialized actor owns root preparation, complete metadata/PNG loads,
+tombstone cleanup, conflict resolution, security-scoped import, metadata commits, and durable deletion. Immutable
+snapshots and explicit cancellation/commit evidence feed cache-only synchronous presentation accessors; initial
+iCloud/local root resolution also uses the routing actor. Two new characterizations and source contracts cover
+off-main snapshot loading, pre-access cancellation, serialized mutations, and cache-only presentation. The focused
+39-test Watermark/iCloud selection, repository gate, and final serial unfiltered run of 1,977 tests in 229 suites
+passed. Other lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker exit
+evidence remain open.
+([validation](plan-status-watermark-persistence-cache-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

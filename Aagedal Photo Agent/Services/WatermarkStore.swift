@@ -2,7 +2,7 @@ import Foundation
 import os.log
 import AppKit
 
-private let watermarkLog = Logger(
+nonisolated private let watermarkLog = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent",
     category: "WatermarkStore"
 )
@@ -28,6 +28,7 @@ nonisolated struct WatermarkLibraryImportCommit: Equatable, Sendable {
     let asset: WatermarkAsset
     let imageURL: URL
     let metadataURL: URL
+    let imageData: Data
     let byteCount: Int
     /// Coordinated writes are non-preemptible. Cancellation observed after both files are
     /// installed therefore describes a durable import rather than an abandoned operation.
@@ -42,31 +43,81 @@ nonisolated enum WatermarkLibraryImportResult: Equatable, Sendable {
     case cancelledBeforeCommit(requestID: UUID, sourceURL: URL, byteCount: Int)
 }
 
-nonisolated struct WatermarkLibraryImportFileAccess: Sendable {
+nonisolated struct WatermarkLibraryFileAccess: Sendable {
     let startAccessing: @Sendable (URL) -> Bool
     let stopAccessing: @Sendable (URL) -> Void
     let readData: @Sendable (URL) throws -> Data
     let writeData: @Sendable (Data, URL) throws -> Void
     let removeItem: @Sendable (URL) throws -> Void
+    let ensureDirectory: @Sendable (URL) throws -> Void
+    let contentsOfDirectory: @Sendable (URL) throws -> [URL]
+    let isDirectory: @Sendable (URL) -> Bool
 
-    static let system = WatermarkLibraryImportFileAccess(
+    static let system = WatermarkLibraryFileAccess(
         startAccessing: { $0.startAccessingSecurityScopedResource() },
         stopAccessing: { $0.stopAccessingSecurityScopedResource() },
         readData: { try Data(contentsOf: $0) },
         writeData: { try CloudCoordinatedIO.writeData($0, to: $1) },
-        removeItem: { try CloudCoordinatedIO.removeItem(at: $0) }
+        removeItem: { try CloudCoordinatedIO.removeItem(at: $0) },
+        ensureDirectory: { try CloudCoordinatedIO.ensureDirectory($0) },
+        contentsOfDirectory: { try CloudCoordinatedIO.contentsOfDirectory(at: $0) },
+        isDirectory: {
+            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
     )
 }
 
-/// Serializes the security-scoped source read and two-file library commit away from MainActor.
-/// The PNG is installed before `meta.json`, which is the record-discovery boundary. If metadata
-/// installation fails, the service compensates by removing the incomplete item directory.
-actor WatermarkLibraryImportService {
-    static let shared = WatermarkLibraryImportService()
+nonisolated struct WatermarkLibrarySnapshot: Sendable {
+    let requestID: UUID
+    let assets: [WatermarkAsset]
+    let imageDataByAssetID: [UUID: Data]
+    let inspectedEntryCount: Int
+    let cleanupCommitURLs: [URL]
+}
 
-    private let access: WatermarkLibraryImportFileAccess
+nonisolated enum WatermarkLibraryLoadResult: Sendable {
+    case loaded(WatermarkLibrarySnapshot)
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledAfterPrefix(
+        requestID: UUID,
+        inspectedEntryCount: Int,
+        cleanupCommitURLs: [URL]
+    )
+}
 
-    init(access: WatermarkLibraryImportFileAccess = .system) {
+nonisolated struct WatermarkLibraryMetadataCommit: Sendable {
+    let requestID: UUID
+    let asset: WatermarkAsset
+    let metadataURL: URL
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum WatermarkLibraryMetadataResult: Sendable {
+    case committed(WatermarkLibraryMetadataCommit)
+    case cancelledBeforeCommit(requestID: UUID)
+}
+
+nonisolated struct WatermarkLibraryDeleteCommit: Sendable {
+    let requestID: UUID
+    let assetID: UUID
+    let markerURL: URL
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum WatermarkLibraryDeleteResult: Sendable {
+    case committed(WatermarkLibraryDeleteCommit)
+    case cancelledBeforeCommit(requestID: UUID, assetID: UUID)
+}
+
+/// Owns every coordinated Watermark-library filesystem operation away from MainActor. The PNG is
+/// installed before `meta.json`, which is the record-discovery boundary. Loads publish one complete
+/// metadata-and-image snapshot, while mutations report cancellation before or after durability.
+actor WatermarkLibraryPersistenceService {
+    static let shared = WatermarkLibraryPersistenceService()
+
+    private let access: WatermarkLibraryFileAccess
+
+    init(access: WatermarkLibraryFileAccess = .system) {
         self.access = access
     }
 
@@ -136,9 +187,281 @@ actor WatermarkLibraryImportService {
             asset: asset,
             imageURL: imageURL,
             metadataURL: metadataURL,
+            imageData: data,
             byteCount: data.count,
             cancellationRequestedAfterCommit: Task.isCancelled
         ))
+    }
+
+    func load(from rootDirectory: URL, requestID: UUID) -> WatermarkLibraryLoadResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+
+        let itemsDirectory = itemsDirectory(in: rootDirectory)
+        do {
+            try access.ensureDirectory(rootDirectory)
+            try access.ensureDirectory(itemsDirectory)
+        } catch {
+            watermarkLog.error("Failed to prepare Watermark library: \(error.localizedDescription, privacy: .private)")
+            return .loaded(WatermarkLibrarySnapshot(
+                requestID: requestID,
+                assets: [],
+                imageDataByAssetID: [:],
+                inspectedEntryCount: 0,
+                cleanupCommitURLs: []
+            ))
+        }
+        guard !Task.isCancelled else {
+            return .cancelledAfterPrefix(
+                requestID: requestID,
+                inspectedEntryCount: 0,
+                cleanupCommitURLs: []
+            )
+        }
+
+        let entries: [URL]
+        do {
+            entries = try access.contentsOfDirectory(itemsDirectory)
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        } catch {
+            watermarkLog.error("Failed to enumerate Watermark library: \(error.localizedDescription, privacy: .private)")
+            return .loaded(WatermarkLibrarySnapshot(
+                requestID: requestID,
+                assets: [],
+                imageDataByAssetID: [:],
+                inspectedEntryCount: 0,
+                cleanupCommitURLs: []
+            ))
+        }
+
+        var inspected = 0
+        var cleanupCommits: [URL] = []
+        var tombstoned = Set<UUID>()
+        let decoder = JSONDecoder()
+        let now = Date()
+
+        for url in entries where url.pathExtension == "deleted" {
+            guard !Task.isCancelled else {
+                return .cancelledAfterPrefix(
+                    requestID: requestID,
+                    inspectedEntryCount: inspected,
+                    cleanupCommitURLs: cleanupCommits
+                )
+            }
+            inspected += 1
+            guard let data = try? access.readData(url),
+                  let tombstone = try? decoder.decode(WatermarkTombstone.self, from: data) else {
+                if let id = assetID(fromTombstoneURL: url) {
+                    tombstoned.insert(id)
+                } else if removeIfPresent(url) {
+                    cleanupCommits.append(url)
+                }
+                continue
+            }
+            if now.timeIntervalSince(tombstone.deletedAt) >= Self.tombstoneRetention {
+                if removeIfPresent(url) { cleanupCommits.append(url) }
+            } else {
+                tombstoned.insert(tombstone.id)
+            }
+        }
+
+        var loaded: [WatermarkAsset] = []
+        var imageDataByAssetID: [UUID: Data] = [:]
+        for directory in entries {
+            guard !Task.isCancelled else {
+                return .cancelledAfterPrefix(
+                    requestID: requestID,
+                    inspectedEntryCount: inspected,
+                    cleanupCommitURLs: cleanupCommits
+                )
+            }
+            guard access.isDirectory(directory) else { continue }
+            inspected += 1
+            guard let id = assetID(fromItemDirectory: directory) else { continue }
+            if tombstoned.contains(id) {
+                if removeIfPresent(directory) { cleanupCommits.append(directory) }
+                continue
+            }
+            guard let asset = loadAssetMeta(
+                id: id,
+                in: itemsDirectory,
+                cleanupCommitURLs: &cleanupCommits
+            ) else { continue }
+            loaded.append(asset)
+            let imageURL = imageFileURL(for: id, in: itemsDirectory)
+            if let data = try? access.readData(imageURL) {
+                imageDataByAssetID[id] = data
+            }
+        }
+
+        guard !Task.isCancelled else {
+            return .cancelledAfterPrefix(
+                requestID: requestID,
+                inspectedEntryCount: inspected,
+                cleanupCommitURLs: cleanupCommits
+            )
+        }
+        loaded.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return .loaded(WatermarkLibrarySnapshot(
+            requestID: requestID,
+            assets: loaded,
+            imageDataByAssetID: imageDataByAssetID,
+            inspectedEntryCount: inspected,
+            cleanupCommitURLs: cleanupCommits
+        ))
+    }
+
+    func upsertMetadata(
+        _ asset: WatermarkAsset,
+        in rootDirectory: URL,
+        requestID: UUID
+    ) throws -> WatermarkLibraryMetadataResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(requestID: requestID)
+        }
+        let itemsDirectory = itemsDirectory(in: rootDirectory)
+        try access.ensureDirectory(rootDirectory)
+        try access.ensureDirectory(itemsDirectory)
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(requestID: requestID)
+        }
+        let metadataURL = metadataFileURL(for: asset.id, in: itemsDirectory)
+        try writeAsset(asset, to: metadataURL)
+        return .committed(WatermarkLibraryMetadataCommit(
+            requestID: requestID,
+            asset: asset,
+            metadataURL: metadataURL,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        ))
+    }
+
+    func delete(
+        assetID: UUID,
+        in rootDirectory: URL,
+        requestID: UUID,
+        deletionIO: DurableDeletionIO
+    ) throws -> WatermarkLibraryDeleteResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(requestID: requestID, assetID: assetID)
+        }
+        let itemsDirectory = itemsDirectory(in: rootDirectory)
+        try access.ensureDirectory(rootDirectory)
+        try access.ensureDirectory(itemsDirectory)
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(requestID: requestID, assetID: assetID)
+        }
+        let marker = WatermarkTombstone(id: assetID, deletedAt: Date())
+        let markerURL = tombstoneURL(for: assetID, in: itemsDirectory)
+        try DurableDeletionTransaction.execute(
+            marker: marker,
+            markerURL: markerURL,
+            recordURL: itemDirectory(for: assetID, in: itemsDirectory),
+            markerMatches: { $0.id == assetID },
+            io: deletionIO
+        )
+        return .committed(WatermarkLibraryDeleteCommit(
+            requestID: requestID,
+            assetID: assetID,
+            markerURL: markerURL,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        ))
+    }
+
+    private static let tombstoneRetention: TimeInterval = 30 * 24 * 60 * 60
+
+    private func itemsDirectory(in rootDirectory: URL) -> URL {
+        rootDirectory.appendingPathComponent("items", isDirectory: true)
+    }
+
+    private func itemDirectory(for id: UUID, in itemsDirectory: URL) -> URL {
+        itemsDirectory.appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
+    private func metadataFileURL(for id: UUID, in itemsDirectory: URL) -> URL {
+        itemDirectory(for: id, in: itemsDirectory).appendingPathComponent("meta.json")
+    }
+
+    private func imageFileURL(for id: UUID, in itemsDirectory: URL) -> URL {
+        itemDirectory(for: id, in: itemsDirectory).appendingPathComponent("image.png")
+    }
+
+    private func tombstoneURL(for id: UUID, in itemsDirectory: URL) -> URL {
+        itemsDirectory.appendingPathComponent("\(id.uuidString).deleted")
+    }
+
+    private func assetID(fromItemDirectory url: URL) -> UUID? {
+        UUID(uuidString: url.lastPathComponent)
+    }
+
+    private func assetID(fromTombstoneURL url: URL) -> UUID? {
+        UUID(uuidString: url.deletingPathExtension().lastPathComponent)
+    }
+
+    private func removeIfPresent(_ url: URL) -> Bool {
+        do {
+            try access.removeItem(url)
+            return true
+        } catch {
+            watermarkLog.error("Failed to clean Watermark item \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+            return false
+        }
+    }
+
+    private func loadAssetMeta(
+        id: UUID,
+        in itemsDirectory: URL,
+        cleanupCommitURLs: inout [URL]
+    ) -> WatermarkAsset? {
+        let url = metadataFileURL(for: id, in: itemsDirectory)
+        if let resolved = resolveConflicts(at: url, cleanupCommitURLs: &cleanupCommitURLs) {
+            return resolved
+        }
+        do {
+            return try JSONDecoder().decode(WatermarkAsset.self, from: access.readData(url))
+        } catch {
+            watermarkLog.error("Failed to load watermark meta \(id.uuidString, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
+    }
+
+    private func writeAsset(_ asset: WatermarkAsset, to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try access.writeData(try encoder.encode(asset), url)
+    }
+
+    private func resolveConflicts(
+        at url: URL,
+        cleanupCommitURLs: inout [URL]
+    ) -> WatermarkAsset? {
+        guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
+              !conflicts.isEmpty else { return nil }
+        let decoder = JSONDecoder()
+        var records: [WatermarkAsset] = []
+        if let currentData = try? access.readData(url),
+           let current = try? decoder.decode(WatermarkAsset.self, from: currentData) {
+            records.append(current)
+        }
+        for version in conflicts {
+            if let data = try? Data(contentsOf: version.url),
+               let asset = try? decoder.decode(WatermarkAsset.self, from: data) {
+                records.append(asset)
+            }
+        }
+        guard let merged = records.max(by: { $0.updatedAt < $1.updatedAt }) else {
+            try? NSFileVersion.removeOtherVersionsOfItem(at: url)
+            return nil
+        }
+        do {
+            try writeAsset(merged, to: url)
+            cleanupCommitURLs.append(url)
+            for version in conflicts { version.isResolved = true }
+            try NSFileVersion.removeOtherVersionsOfItem(at: url)
+        } catch {
+            watermarkLog.error("Failed to resolve conflicts for \(merged.id.uuidString, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+        }
+        return merged
     }
 }
 
@@ -162,6 +485,7 @@ final class WatermarkStore {
     /// The current library, sorted by name. Source of truth is the on-disk folders; this is
     /// the in-memory listing, refreshed lazily and on remote changes.
     private(set) var assets: [WatermarkAsset] = []
+    private var imageDataByAssetID: [UUID: Data] = [:]
 
     /// Test-only seam: overrides the resolved storage root so tests can point at a temp
     /// directory. Production never sets this. `nonisolated(unsafe)` so the Metal texture
@@ -174,14 +498,19 @@ final class WatermarkStore {
     @ObservationIgnored private var didLoad = false
     @ObservationIgnored private var cachedDirectory: URL?
     @ObservationIgnored private var recentLocalWrites: [String: Date] = [:]
-    @ObservationIgnored private let importService = WatermarkLibraryImportService.shared
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var loadRequestID = UUID()
+    @ObservationIgnored private let persistence: WatermarkLibraryPersistenceService
 
     private static let selfWriteWindow: TimeInterval = 10
     private static let selfWriteTolerance: TimeInterval = 3
-    private static let tombstoneRetention: TimeInterval = 30 * 24 * 60 * 60
 
-    init(storageRoot: URL? = nil) {
+    init(
+        storageRoot: URL? = nil,
+        persistence: WatermarkLibraryPersistenceService = .shared
+    ) {
         injectedStorageRoot = storageRoot
+        self.persistence = persistence
     }
 
     // MARK: - Storage paths
@@ -191,51 +520,48 @@ final class WatermarkStore {
         AppPaths.applicationSupport.appendingPathComponent("Watermarks", isDirectory: true)
     }
 
-    private var watermarksRootDirectory: URL {
+    private func resolveWatermarksRootDirectory(requestID: UUID) async -> URL? {
         if let cached = cachedDirectory { return cached }
         let url: URL
         if let injectedStorageRoot {
             url = injectedStorageRoot
         } else if let override = Self.storageOverrideURL {
             url = override
-        } else if UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled),
-                  let cloud = AppPaths.iCloudWatermarksURL {
-            url = cloud
         } else {
-            url = Self.localWatermarksDirectory
+            let syncEnabled = UserDefaults.standard.bool(
+                forKey: UserDefaultsKeys.watermarksICloudEnabled
+            )
+            url = await LibraryICloudRoutingService.watermarks.storageURL(
+                syncEnabled: syncEnabled
+            )
         }
-        try? CloudCoordinatedIO.ensureDirectory(url)
-        try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("items", isDirectory: true))
+        guard loadRequestID == requestID, !Task.isCancelled else { return nil }
         cachedDirectory = url
         return url
     }
 
+    private var loadedRootDirectory: URL {
+        guard let cachedDirectory else {
+            preconditionFailure("Watermark storage must be resolved before use")
+        }
+        return cachedDirectory
+    }
+
     private var itemsDirectory: URL {
-        watermarksRootDirectory.appendingPathComponent("items", isDirectory: true)
-    }
-
-    private func itemDirectory(for id: UUID) -> URL {
-        itemsDirectory.appendingPathComponent(id.uuidString, isDirectory: true)
-    }
-
-    private func metaFileURL(for id: UUID) -> URL {
-        itemDirectory(for: id).appendingPathComponent("meta.json")
+        loadedRootDirectory.appendingPathComponent("items", isDirectory: true)
     }
 
     private func imageFileURL(for id: UUID) -> URL {
-        itemDirectory(for: id).appendingPathComponent("image.png")
-    }
-
-    private func tombstoneURL(for id: UUID) -> URL {
-        itemsDirectory.appendingPathComponent("\(id.uuidString).deleted")
+        itemsDirectory.appendingPathComponent(id.uuidString, isDirectory: true)
+            .appendingPathComponent("image.png")
     }
 
     /// Deterministic image-file path for an asset, independent of the singleton's cached
     /// state — used by `MetalEditPipeline`'s texture loader, which may run on the offscreen
     /// render queue (not MainActor) and so can't touch `WatermarkStore.shared`'s
     /// actor-isolated `assets` list. Recomputes the iCloud-vs-local root on every call
-    /// (a cheap UserDefaults + FileManager check), matching the cost `ensureLoaded()`'s
-    /// first access already pays.
+    /// (a UserDefaults + ubiquity-container check). Production call sites use this only on
+    /// worker/executor paths; MainActor presentation reads the store's published byte cache.
     nonisolated static func resolvedImageURL(forAssetID id: UUID) -> URL {
         let root: URL
         if let override = storageOverrideURL {
@@ -249,14 +575,6 @@ final class WatermarkStore {
         return root.appendingPathComponent("items", isDirectory: true)
             .appendingPathComponent(id.uuidString, isDirectory: true)
             .appendingPathComponent("image.png")
-    }
-
-    private func assetID(fromItemDirectory url: URL) -> UUID? {
-        UUID(uuidString: url.lastPathComponent)
-    }
-
-    private func assetID(fromTombstoneURL url: URL) -> UUID? {
-        UUID(uuidString: url.deletingPathExtension().lastPathComponent)
     }
 
     // MARK: - Self-write filtering
@@ -281,96 +599,91 @@ final class WatermarkStore {
 
     // MARK: - Load
 
-    /// Drops in-memory state and re-reads from disk. Called after the backing directory
-    /// changes (iCloud toggle).
-    func reloadAfterStorageChange(resolvedStorageURL: URL? = nil) {
+    /// Drops in-memory state and asynchronously re-reads from disk. Called after the backing
+    /// directory changes (iCloud toggle).
+    func reloadAfterStorageChange(resolvedStorageURL: URL? = nil) async {
+        invalidateStorageCache(resolvedStorageURL: resolvedStorageURL)
+        await loadIfNeeded()
+    }
+
+    /// Test and lifecycle seam that invalidates cached presentation without starting filesystem
+    /// work. Production route changes normally use ``reloadAfterStorageChange``.
+    func invalidateStorageCache(resolvedStorageURL: URL? = nil) {
         cachedDirectory = resolvedStorageURL
         didLoad = false
-        ensureLoaded()
-        NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)
+        loadTask?.cancel()
+        loadTask = nil
+        assets = []
+        imageDataByAssetID = [:]
     }
 
-    /// Loads the library from disk once. The directory listing *is* the library.
-    private func ensureLoaded() {
-        guard !didLoad else { return }
-        didLoad = true
-
-        let entries = (try? CloudCoordinatedIO.contentsOfDirectory(at: itemsDirectory)) ?? []
-        let itemDirs = entries.filter { isDirectory($0) }
-        let tombstoneFiles = entries.filter { $0.pathExtension == "deleted" }
-        let tombstoned = collectTombstones(in: tombstoneFiles)
-
-        var loaded: [WatermarkAsset] = []
-        for dir in itemDirs {
-            guard let id = assetID(fromItemDirectory: dir) else { continue }
-            if tombstoned.contains(id) {
-                try? CloudCoordinatedIO.removeItem(at: dir)
-                continue
-            }
-            guard let asset = loadAssetMeta(id: id) else { continue }
-            loaded.append(asset)
+    func loadIfNeeded() async {
+        if didLoad { return }
+        if let loadTask {
+            await loadTask.value
+            return
         }
-        assets = loaded.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+        let requestID = UUID()
+        loadRequestID = requestID
+        let task = Task { @MainActor [weak self, persistence] in
+            guard let self else { return }
+            guard let root = await self.resolveWatermarksRootDirectory(
+                requestID: requestID
+            ) else { return }
+            let result = await persistence.load(from: root, requestID: requestID)
+            guard self.loadRequestID == requestID else { return }
+            self.loadTask = nil
+            switch result {
+            case .loaded(let snapshot) where snapshot.requestID == requestID:
+                snapshot.cleanupCommitURLs.forEach(self.stampLocalWrite)
+                self.assets = snapshot.assets
+                self.imageDataByAssetID = snapshot.imageDataByAssetID
+                self.didLoad = true
+                NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)
+            case .cancelledAfterPrefix(let resultID, _, let cleanupCommitURLs)
+                where resultID == requestID:
+                cleanupCommitURLs.forEach(self.stampLocalWrite)
+            case .cancelledBeforeAccess, .cancelledAfterPrefix, .loaded:
+                break
+            }
+        }
+        loadTask = task
+        await task.value
     }
 
-    private func isDirectory(_ url: URL) -> Bool {
-        (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+    private func scheduleLoadIfNeeded() {
+        guard !didLoad, loadTask == nil else { return }
+        Task { @MainActor [weak self] in
+            await self?.loadIfNeeded()
+        }
     }
 
-    /// Public accessor that guarantees the library is loaded.
+    /// Returns the current immutable in-memory snapshot. First access schedules its disk load.
     func allAssets() -> [WatermarkAsset] {
-        ensureLoaded()
+        scheduleLoadIfNeeded()
         return assets
     }
 
     func asset(byID id: UUID) -> WatermarkAsset? {
-        ensureLoaded()
+        scheduleLoadIfNeeded()
         return assets.first { $0.id == id }
     }
 
     /// The PNG bytes for an asset — used by the Settings preview and, at render time, by
     /// the Metal texture loader.
     func imageData(forAssetID id: UUID) -> Data? {
-        try? CloudCoordinatedIO.readData(at: imageFileURL(for: id))
+        scheduleLoadIfNeeded()
+        return imageDataByAssetID[id]
     }
 
     /// Local-filesystem URL for the asset's PNG. Stable across calls (not a temp copy), so
     /// the Metal texture loader can key its cache on path + modification date. nil if the
     /// asset doesn't exist.
     func imageURL(forAssetID id: UUID) -> URL? {
-        ensureLoaded()
+        scheduleLoadIfNeeded()
         guard assets.contains(where: { $0.id == id }) else { return nil }
         return imageFileURL(for: id)
-    }
-
-    private func loadAssetMeta(id: UUID) -> WatermarkAsset? {
-        if let resolved = resolveConflicts(id: id) {
-            return resolved
-        }
-        let url = metaFileURL(for: id)
-        do {
-            let data = try CloudCoordinatedIO.readData(at: url)
-            return try JSONDecoder().decode(WatermarkAsset.self, from: data)
-        } catch {
-            watermarkLog.error("Failed to load watermark meta \(id.uuidString, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
-            return nil
-        }
-    }
-
-    // MARK: - Write
-
-    private func writeAsset(_ asset: WatermarkAsset, imageData: Data? = nil) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let metaData = try encoder.encode(asset)
-        let metaURL = metaFileURL(for: asset.id)
-        try CloudCoordinatedIO.writeData(metaData, to: metaURL)
-        stampLocalWrite(metaURL)
-        if let imageData {
-            let imageURL = imageFileURL(for: asset.id)
-            try CloudCoordinatedIO.writeData(imageData, to: imageURL)
-            stampLocalWrite(imageURL)
-        }
     }
 
     private func sortAndNotify() {
@@ -388,8 +701,8 @@ final class WatermarkStore {
         name: String,
         requestID: UUID
     ) async throws -> WatermarkLibraryImportResult {
-        ensureLoaded()
-        let result = try await importService.importPNG(
+        await loadIfNeeded()
+        let result = try await persistence.importPNG(
             from: sourceURL,
             name: name,
             into: itemsDirectory,
@@ -398,6 +711,7 @@ final class WatermarkStore {
         if case .committed(let commit) = result {
             stampLocalWrite(commit.imageURL)
             stampLocalWrite(commit.metadataURL)
+            imageDataByAssetID[commit.asset.id] = commit.imageData
             if let index = assets.firstIndex(where: { $0.id == commit.asset.id }) {
                 assets[index] = commit.asset
             } else {
@@ -424,14 +738,20 @@ final class WatermarkStore {
     }
 
     /// Renames an existing asset in place.
-    func rename(_ id: UUID, to newName: String) throws {
-        ensureLoaded()
+    func rename(_ id: UUID, to newName: String) async throws {
+        await loadIfNeeded()
         guard var asset = assets.first(where: { $0.id == id }) else { return }
         asset.name = newName
         asset.updatedAt = Date()
-        try writeAsset(asset)
+        let result = try await persistence.upsertMetadata(
+            asset,
+            in: loadedRootDirectory,
+            requestID: UUID()
+        )
+        guard case .committed(let commit) = result else { return }
+        stampLocalWrite(commit.metadataURL)
         if let index = assets.firstIndex(where: { $0.id == id }) {
-            assets[index] = asset
+            assets[index] = commit.asset
         }
         sortAndNotify()
     }
@@ -444,8 +764,8 @@ final class WatermarkStore {
         sizeValue: Double,
         marginUnit: WatermarkMarginUnit,
         marginValue: Double
-    ) throws {
-        ensureLoaded()
+    ) async throws {
+        await loadIfNeeded()
         guard var asset = assets.first(where: { $0.id == id }) else { return }
         asset.defaultSizeDimension = sizeDimension
         asset.defaultSizeUnit = sizeUnit
@@ -453,146 +773,48 @@ final class WatermarkStore {
         asset.defaultMarginUnit = marginUnit
         asset.defaultMarginValue = marginValue
         asset.updatedAt = Date()
-        try writeAsset(asset)
+        let result = try await persistence.upsertMetadata(
+            asset,
+            in: loadedRootDirectory,
+            requestID: UUID()
+        )
+        guard case .committed(let commit) = result else { return }
+        stampLocalWrite(commit.metadataURL)
         if let index = assets.firstIndex(where: { $0.id == id }) {
-            assets[index] = asset
+            assets[index] = commit.asset
         }
         sortAndNotify()
     }
 
-    func delete(id: UUID) throws {
-        ensureLoaded()
-        let marker = WatermarkTombstone(id: id, deletedAt: Date())
-        let markerURL = tombstoneURL(for: id)
-        try DurableDeletionTransaction.execute(
-            marker: marker,
-            markerURL: markerURL,
-            recordURL: itemDirectory(for: id),
-            markerMatches: { $0.id == id },
-            io: Self.deletionIO
+    func delete(id: UUID) async throws {
+        await loadIfNeeded()
+        let result = try await persistence.delete(
+            assetID: id,
+            in: loadedRootDirectory,
+            requestID: UUID(),
+            deletionIO: Self.deletionIO
         )
-        stampLocalWrite(markerURL)
+        guard case .committed(let commit) = result else { return }
+        stampLocalWrite(commit.markerURL)
         assets.removeAll { $0.id == id }
+        imageDataByAssetID[id] = nil
         NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)
-    }
-
-    // MARK: - Tombstones
-
-    private func collectTombstones(in tombstoneFiles: [URL]) -> Set<UUID> {
-        let decoder = JSONDecoder()
-        let now = Date()
-        var tombstoned = Set<UUID>()
-        for url in tombstoneFiles {
-            guard let data = try? CloudCoordinatedIO.readData(at: url),
-                  let tombstone = try? decoder.decode(WatermarkTombstone.self, from: data) else {
-                if let id = assetID(fromTombstoneURL: url) {
-                    tombstoned.insert(id)
-                } else {
-                    try? CloudCoordinatedIO.removeItem(at: url)
-                }
-                continue
-            }
-            if now.timeIntervalSince(tombstone.deletedAt) >= Self.tombstoneRetention {
-                try? CloudCoordinatedIO.removeItem(at: url)
-            } else {
-                tombstoned.insert(tombstone.id)
-            }
-        }
-        return tombstoned
-    }
-
-    // MARK: - Conflict resolution
-
-    /// Resolve iCloud conflict versions of an item's `meta.json` by keeping the record with
-    /// the newest `updatedAt`, rewriting the file and clearing the versions. The image PNG
-    /// is immutable after import (rename doesn't touch it), so unlike Teams' whole-record
-    /// merge this only needs to resolve the metadata file — a conflicting `image.png` from
-    /// a simultaneous import under the same UUID is a vanishingly unlikely edge case, not
-    /// handled here. No-op locally.
-    private func resolveConflicts(id: UUID) -> WatermarkAsset? {
-        let url = metaFileURL(for: id)
-        guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
-              !conflicts.isEmpty else {
-            return nil
-        }
-        let decoder = JSONDecoder()
-        var records: [WatermarkAsset] = []
-        if let currentData = try? CloudCoordinatedIO.readData(at: url),
-           let current = try? decoder.decode(WatermarkAsset.self, from: currentData) {
-            records.append(current)
-        }
-        for version in conflicts {
-            if let data = try? Data(contentsOf: version.url),
-               let asset = try? decoder.decode(WatermarkAsset.self, from: data) {
-                records.append(asset)
-            }
-        }
-        guard let merged = records.max(by: { $0.updatedAt < $1.updatedAt }) else {
-            try? NSFileVersion.removeOtherVersionsOfItem(at: url)
-            return nil
-        }
-        do {
-            try writeAsset(merged)
-            for version in conflicts { version.isResolved = true }
-            try NSFileVersion.removeOtherVersionsOfItem(at: url)
-        } catch {
-            watermarkLog.error("Failed to resolve conflicts for \(id.uuidString, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
-        }
-        return merged
     }
 
     // MARK: - Remote changes
 
-    /// Applies remote changes to individual item folders from the iCloud watcher. `changes`
-    /// are `meta.json`/`image.png`/`.deleted` file events; grouped by their parent item's
-    /// UUID since a single remote sync event may touch more than one file per item.
-    func applyRemoteChanges(_ changes: [(url: URL, contentChangeDate: Date?)]) {
-        ensureLoaded()
-        var didChange = false
-        var touchedIDs = Set<UUID>()
-
-        for change in changes {
-            let url = change.url
-            guard !shouldSkipRemoteReload(path: url.path, contentChangeDate: change.contentChangeDate) else { continue }
-
-            if url.pathExtension == "deleted" {
-                guard let id = assetID(fromTombstoneURL: url) else { continue }
-                if assets.contains(where: { $0.id == id }) {
-                    assets.removeAll { $0.id == id }
-                    didChange = true
-                }
-                try? CloudCoordinatedIO.removeItem(at: itemDirectory(for: id))
-                continue
-            }
-            // meta.json / image.png — parent directory name is the item's UUID.
-            guard let id = assetID(fromItemDirectory: url.deletingLastPathComponent()) else { continue }
-            touchedIDs.insert(id)
+    /// Filters remote events against recent local writes, then replaces the cache with one
+    /// complete actor-loaded snapshot so metadata and PNG bytes cannot publish from different
+    /// iCloud generations.
+    func applyRemoteChanges(_ changes: [(url: URL, contentChangeDate: Date?)]) async {
+        let hasExternalChange = changes.contains { change in
+            !shouldSkipRemoteReload(path: change.url.path, contentChangeDate: change.contentChangeDate)
         }
-
-        for id in touchedIDs {
-            if CloudCoordinatedIO.itemExists(at: tombstoneURL(for: id)) {
-                try? CloudCoordinatedIO.removeItem(at: itemDirectory(for: id))
-                if assets.contains(where: { $0.id == id }) {
-                    assets.removeAll { $0.id == id }
-                    didChange = true
-                }
-                continue
-            }
-            if let asset = loadAssetMeta(id: id) {
-                if let index = assets.firstIndex(where: { $0.id == asset.id }) {
-                    assets[index] = asset
-                } else {
-                    assets.append(asset)
-                }
-                didChange = true
-            } else if !CloudCoordinatedIO.itemExists(at: metaFileURL(for: id)) {
-                if assets.contains(where: { $0.id == id }) {
-                    assets.removeAll { $0.id == id }
-                    didChange = true
-                }
-            }
-        }
-        if didChange { sortAndNotify() }
+        guard hasExternalChange else { return }
+        didLoad = false
+        loadTask?.cancel()
+        loadTask = nil
+        await loadIfNeeded()
     }
 }
 

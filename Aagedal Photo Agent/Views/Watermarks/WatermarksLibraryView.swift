@@ -99,11 +99,13 @@ struct WatermarksLibraryContent: View {
         .alert("Delete this watermark?", isPresented: $showDeleteAlert) {
             Button("Delete", role: .destructive) {
                 if let id = selection {
-                    do {
-                        try store.delete(id: id)
-                        selection = nil
-                    } catch {
-                        deletionErrorMessage = error.localizedDescription
+                    Task { @MainActor in
+                        do {
+                            try await store.delete(id: id)
+                            selection = nil
+                        } catch {
+                            deletionErrorMessage = error.localizedDescription
+                        }
                     }
                 }
             }
@@ -135,6 +137,9 @@ struct WatermarksLibraryContent: View {
         }
         .onDisappear {
             cancelImport()
+        }
+        .task {
+            await store.loadIfNeeded()
         }
     }
 
@@ -227,10 +232,11 @@ private struct WatermarkAssetEditorView: View {
             }
             Section("Details") {
                 TextField("Name", text: $name)
-                    .onSubmit { try? store.rename(asset.id, to: name) }
+                    .onSubmit {
+                        Task { try? await store.rename(asset.id, to: name) }
+                    }
                     .onChange(of: name) { _, newValue in
-                        // Renames are cheap (small JSON write) — no debounce needed.
-                        try? store.rename(asset.id, to: newValue)
+                        Task { try? await store.rename(asset.id, to: newValue) }
                     }
                 Text("\(asset.pixelWidth) × \(asset.pixelHeight) px")
                     .foregroundStyle(.secondary)
@@ -285,14 +291,16 @@ private struct WatermarkAssetEditorView: View {
     }
 
     private func saveDefaults() {
-        try? store.updateDefaults(
-            asset.id,
-            sizeDimension: sizeDimension,
-            sizeUnit: sizeUnit,
-            sizeValue: sizeValue,
-            marginUnit: marginUnit,
-            marginValue: marginValue
-        )
+        Task {
+            try? await store.updateDefaults(
+                asset.id,
+                sizeDimension: sizeDimension,
+                sizeUnit: sizeUnit,
+                sizeValue: sizeValue,
+                marginUnit: marginUnit,
+                marginValue: marginValue
+            )
+        }
     }
 
     @ViewBuilder

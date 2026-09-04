@@ -138,7 +138,7 @@ final class WatermarkCloudCoordinator {
             self.pendingChanges.removeAll()
             guard !changes.isEmpty else { return }
             logger.info("Remote Watermark change detected — applying \(changes.count, privacy: .public) file change(s)")
-            WatermarkStore.shared.applyRemoteChanges(changes)
+            await WatermarkStore.shared.applyRemoteChanges(changes)
         }
     }
 }

@@ -292,6 +292,8 @@ nonisolated protocol LibraryICloudRouting: Sendable {
     ) async throws -> LibraryICloudRoutingResult
 
     func cloudRootURL(ensuringDirectory: Bool) async -> URL?
+
+    func storageURL(syncEnabled: Bool) async -> URL
 }
 
 /// Serializes iCloud-container resolution and recursive library reconciliation away from
@@ -360,6 +362,12 @@ actor LibraryICloudRoutingService: LibraryICloudRouting {
             try? access.ensureDirectory(cloud)
         }
         return cloud
+    }
+
+    func storageURL(syncEnabled: Bool) async -> URL {
+        let local = access.localRootURL()
+        guard syncEnabled else { return local }
+        return access.cloudRootURL() ?? local
     }
 }
 
@@ -934,7 +942,7 @@ final class ICloudSyncCoordinator {
                 switch result {
                 case .committed(let commit):
                     UserDefaults.standard.set(on, forKey: UserDefaultsKeys.watermarksICloudEnabled)
-                    WatermarkStore.shared.reloadAfterStorageChange(
+                    await WatermarkStore.shared.reloadAfterStorageChange(
                         resolvedStorageURL: commit.destinationURL
                     )
                     if on {

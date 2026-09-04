@@ -2670,6 +2670,10 @@ struct EditWorkspaceView: View {
     }
 
     private func handleEditWorkspaceAppear() {
+        Task {
+            await watermarkStore.loadIfNeeded()
+            renderPreview()
+        }
         persistenceSession.beginWorkspace()
         interactiveRender.beginWorkspace()
         exportSession.beginWorkspaceSession()

@@ -19,10 +19,10 @@ struct WatermarkStoreTests {
         return dir
     }
 
-    private func activate(_ dir: URL) -> WatermarkStore {
+    private func activate(_ dir: URL) async -> WatermarkStore {
         WatermarkStore.deletionIO = .live
         let store = WatermarkStore(storageRoot: dir)
-        store.reloadAfterStorageChange()
+        await store.reloadAfterStorageChange()
         return store
     }
 
@@ -50,7 +50,7 @@ struct WatermarkStoreTests {
     @Test("importing a PNG creates a co-located meta.json + image.png and lists the asset")
     func importCreatesItemFolder() async throws {
         let dir = makeTempDir()
-        let store = activate(dir)
+        let store = await activate(dir)
         defer { teardown(dir) }
 
         let pngURL = try makeTempPNG(width: 64, height: 32)
@@ -73,7 +73,7 @@ struct WatermarkStoreTests {
     @Test("importing a non-image file throws notAPNG")
     func importRejectsNonImage() async throws {
         let dir = makeTempDir()
-        let store = activate(dir)
+        let store = await activate(dir)
         defer { teardown(dir) }
 
         let badURL = FileManager.default.temporaryDirectory
@@ -90,25 +90,25 @@ struct WatermarkStoreTests {
     @Test("rename updates the listed name and persists it")
     func renamePersists() async throws {
         let dir = makeTempDir()
-        let store = activate(dir)
+        let store = await activate(dir)
         defer { teardown(dir) }
 
         let pngURL = try makeTempPNG()
         defer { try? FileManager.default.removeItem(at: pngURL) }
         let asset = try await store.importPNG(from: pngURL, name: "Old Name")
 
-        try store.rename(asset.id, to: "New Name")
+        try await store.rename(asset.id, to: "New Name")
         #expect(store.asset(byID: asset.id)?.name == "New Name")
 
         // Reload from disk to prove the rename was actually persisted, not just cached.
-        store.reloadAfterStorageChange()
+        await store.reloadAfterStorageChange()
         #expect(store.asset(byID: asset.id)?.name == "New Name")
     }
 
     @Test("delete removes the item folder and drops it from the listing")
     func deleteRemovesItemFolder() async throws {
         let dir = makeTempDir()
-        let store = activate(dir)
+        let store = await activate(dir)
         defer { teardown(dir) }
 
         let pngURL = try makeTempPNG()
@@ -117,7 +117,7 @@ struct WatermarkStoreTests {
         let itemDir = dir.appendingPathComponent("items/\(asset.id.uuidString)", isDirectory: true)
         #expect(FileManager.default.fileExists(atPath: itemDir.path))
 
-        try store.delete(id: asset.id)
+        try await store.delete(id: asset.id)
         #expect(store.allAssets().isEmpty)
         #expect(!FileManager.default.fileExists(atPath: itemDir.path))
 
@@ -134,7 +134,7 @@ struct WatermarkStoreTests {
         try Data(contentsOf: pngURL).write(
             to: itemDir.appendingPathComponent("image.png"), options: .atomic
         )
-        store.reloadAfterStorageChange()
+        await store.reloadAfterStorageChange()
         #expect(store.allAssets().isEmpty)
         #expect(!FileManager.default.fileExists(atPath: itemDir.path))
     }
@@ -142,7 +142,7 @@ struct WatermarkStoreTests {
     @Test("failed marker persistence preserves the watermark folder and library entry")
     func failedMarkerPersistencePreservesWatermark() async throws {
         let dir = makeTempDir()
-        let store = activate(dir)
+        let store = await activate(dir)
         defer { teardown(dir) }
 
         let pngURL = try makeTempPNG()
@@ -155,8 +155,8 @@ struct WatermarkStoreTests {
             removeItem: { try CloudCoordinatedIO.removeItem(at: $0) }
         )
 
-        #expect(throws: DurableDeletionError.self) {
-            try store.delete(id: asset.id)
+        await #expect(throws: DurableDeletionError.self) {
+            try await store.delete(id: asset.id)
         }
 
         #expect(store.asset(byID: asset.id)?.name == "Preserved")
@@ -172,9 +172,9 @@ struct WatermarkStoreTests {
     /// a missing-key decode failure would otherwise make an already-imported watermark
     /// silently vanish from the library the first time it's loaded after this update.
     @Test("a legacy meta.json without the default-placement fields still decodes, with fallback defaults")
-    func legacyMetaJSONDecodesWithDefaults() throws {
+    func legacyMetaJSONDecodesWithDefaults() async throws {
         let dir = makeTempDir()
-        let store = activate(dir)
+        let store = await activate(dir)
         defer { teardown(dir) }
 
         let id = UUID()
@@ -198,7 +198,7 @@ struct WatermarkStoreTests {
         defer { try? FileManager.default.removeItem(at: pngURL) }
         try Data(contentsOf: pngURL).write(to: itemDir.appendingPathComponent("image.png"))
 
-        store.reloadAfterStorageChange()
+        await store.reloadAfterStorageChange()
         let loaded = try #require(store.asset(byID: id))
         #expect(loaded.name == "Legacy Watermark")
         #expect(loaded.pixelWidth == 400)
@@ -210,14 +210,65 @@ struct WatermarkStoreTests {
     }
 }
 
-@Suite("Watermark library import filesystem boundary")
-struct WatermarkLibraryImportServiceTests {
+@Suite("Watermark library persistence filesystem boundary")
+struct WatermarkLibraryPersistenceServiceTests {
+    @Test("library load returns one metadata-and-image snapshot away from MainActor")
+    @MainActor
+    func libraryLoadRunsOffMainActor() async throws {
+        let asset = WatermarkAsset(name: "Published", pixelWidth: 80, pixelHeight: 20)
+        let imageData = Data("cached-png".utf8)
+        let probe = WatermarkLibraryImportAccessProbe(
+            readData: Data(),
+            libraryAsset: asset,
+            libraryImageData: imageData
+        )
+        let service = WatermarkLibraryPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = await service.load(
+            from: URL(fileURLWithPath: "/virtual/watermarks", isDirectory: true),
+            requestID: requestID
+        )
+
+        guard case .loaded(let snapshot) = result else {
+            Issue.record("Expected a complete Watermark snapshot")
+            return
+        }
+        #expect(snapshot.requestID == requestID)
+        #expect(snapshot.assets.map(\.id) == [asset.id])
+        #expect(snapshot.imageDataByAssetID[asset.id] == imageData)
+        #expect(snapshot.inspectedEntryCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("pre-cancelled library load performs no filesystem access")
+    func preCancelledLibraryLoad() async {
+        let probe = WatermarkLibraryImportAccessProbe(readData: Data())
+        let service = WatermarkLibraryPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.load(
+                from: URL(fileURLWithPath: "/virtual/watermarks", isDirectory: true),
+                requestID: requestID
+            )
+        }.value
+
+        guard case .cancelledBeforeAccess(let resultID) = result else {
+            Issue.record("Expected cancellation before Watermark library access")
+            return
+        }
+        #expect(resultID == requestID)
+        #expect(probe.filesystemCallCount == 0)
+    }
+
     @Test("source read and ordered two-file commit run away from MainActor")
     @MainActor
     func importRunsOffMainActor() async throws {
         let pngData = try makePNGData(width: 18, height: 9)
         let probe = WatermarkLibraryImportAccessProbe(readData: pngData)
-        let service = WatermarkLibraryImportService(access: probe.fileAccess)
+        let service = WatermarkLibraryPersistenceService(access: probe.fileAccess)
         let requestID = UUID()
         let source = URL(fileURLWithPath: "/virtual/source.png")
         let items = URL(fileURLWithPath: "/virtual/items", isDirectory: true)
@@ -245,7 +296,7 @@ struct WatermarkLibraryImportServiceTests {
     @Test("a pre-cancelled import performs no source or destination access")
     func preCancelledImport() async throws {
         let probe = WatermarkLibraryImportAccessProbe(readData: Data())
-        let service = WatermarkLibraryImportService(access: probe.fileAccess)
+        let service = WatermarkLibraryPersistenceService(access: probe.fileAccess)
         let requestID = UUID()
         let task = Task {
             await Task.yield()
@@ -282,6 +333,23 @@ struct WatermarkLibraryImportServiceTests {
         #expect(source.contains("importTask?.cancel()"))
         #expect(!source.contains("url.startAccessingSecurityScopedResource()"))
         #expect(!source.contains("try store.importPNG(from:"))
+
+        let storeSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/WatermarkStore.swift"
+            ),
+            encoding: .utf8
+        )
+        let ownerStart = try #require(storeSource.range(of: "final class WatermarkStore"))
+        let ownerSource = storeSource[ownerStart.lowerBound...]
+        #expect(storeSource.contains("actor WatermarkLibraryPersistenceService"))
+        #expect(ownerSource.contains("await persistence.load("))
+        #expect(ownerSource.contains("try await persistence.upsertMetadata("))
+        #expect(ownerSource.contains("try await persistence.delete("))
+        #expect(ownerSource.contains("return imageDataByAssetID[id]"))
+        #expect(!ownerSource.contains("CloudCoordinatedIO."))
+        #expect(!ownerSource.contains("Data(contentsOf:"))
+        #expect(!ownerSource.contains("NSFileVersion."))
     }
 
     @MainActor
@@ -307,45 +375,85 @@ struct WatermarkLibraryImportServiceTests {
 private nonisolated final class WatermarkLibraryImportAccessProbe: @unchecked Sendable {
     private let lock = NSLock()
     private let storedReadData: Data
+    private let libraryAsset: WatermarkAsset?
+    private let libraryImageData: Data?
     private var observedMainThread = false
     private var storedReadCount = 0
+    private var storedFilesystemCallCount = 0
     private var storedWrittenFilenames: [String] = []
 
-    init(readData: Data) {
+    init(
+        readData: Data,
+        libraryAsset: WatermarkAsset? = nil,
+        libraryImageData: Data? = nil
+    ) {
         storedReadData = readData
+        self.libraryAsset = libraryAsset
+        self.libraryImageData = libraryImageData
     }
 
-    var fileAccess: WatermarkLibraryImportFileAccess {
-        WatermarkLibraryImportFileAccess(
+    var fileAccess: WatermarkLibraryFileAccess {
+        WatermarkLibraryFileAccess(
             startAccessing: { [self] _ in
                 lock.withLock {
+                    storedFilesystemCallCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
                 }
                 return true
             },
             stopAccessing: { [self] _ in
                 lock.withLock {
+                    storedFilesystemCallCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
                 }
             },
-            readData: { [self] _ in
+            readData: { [self] url in
                 lock.withLock {
+                    storedFilesystemCallCount += 1
                     storedReadCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
+                }
+                if url.lastPathComponent == "meta.json", let libraryAsset {
+                    return try JSONEncoder().encode(libraryAsset)
+                }
+                if url.lastPathComponent == "image.png", let libraryImageData {
+                    return libraryImageData
                 }
                 return storedReadData
             },
             writeData: { [self] _, url in
                 lock.withLock {
+                    storedFilesystemCallCount += 1
                     storedWrittenFilenames.append(url.lastPathComponent)
                     observedMainThread = observedMainThread || Thread.isMainThread
                 }
             },
-            removeItem: { _ in }
+            removeItem: { [self] _ in recordFilesystemCall() },
+            ensureDirectory: { [self] _ in recordFilesystemCall() },
+            contentsOfDirectory: { [self] directory in
+                recordFilesystemCall()
+                guard let libraryAsset else { return [] }
+                return [directory.appendingPathComponent(
+                    libraryAsset.id.uuidString,
+                    isDirectory: true
+                )]
+            },
+            isDirectory: { [self] url in
+                recordFilesystemCall()
+                return url.lastPathComponent == libraryAsset?.id.uuidString
+            }
         )
+    }
+
+    private func recordFilesystemCall() {
+        lock.withLock {
+            storedFilesystemCallCount += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
     }
 
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
     var readCount: Int { lock.withLock { storedReadCount } }
+    var filesystemCallCount: Int { lock.withLock { storedFilesystemCallCount } }
     var writtenFilenames: [String] { lock.withLock { storedWrittenFilenames } }
 }

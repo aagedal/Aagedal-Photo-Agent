@@ -24,15 +24,15 @@ struct WatermarkRenderingTests {
         return dir
     }
 
-    private func activateStore(_ dir: URL) {
+    private func activateStore(_ dir: URL) async {
         WatermarkStore.storageOverrideURL = dir
-        WatermarkStore.shared.reloadAfterStorageChange()
+        await WatermarkStore.shared.reloadAfterStorageChange()
     }
 
     private func teardownStore(_ dir: URL) {
         WatermarkStore.storageOverrideURL = nil
         try? FileManager.default.removeItem(at: dir)
-        WatermarkStore.shared.reloadAfterStorageChange()
+        WatermarkStore.shared.invalidateStorageCache()
     }
 
     /// A solid opaque color PNG, `size`×`size`, encoded as real PNG bytes (not a raw bitmap)
@@ -121,7 +121,7 @@ struct WatermarkRenderingTests {
     @Test("a fully-opaque watermark layer composites its own color inside its footprint and leaves the rest of the image untouched")
     func watermarkCompositesAtItsFootprint() async throws {
         let dir = makeTempDir()
-        activateStore(dir)
+        await activateStore(dir)
         defer { teardownStore(dir) }
 
         // A 50×50 fully-opaque red PNG, imported as a library asset like a real user would.
@@ -168,7 +168,7 @@ struct WatermarkRenderingTests {
     @Test("cropped renders place watermark geometry relative to the cropped output frame")
     func croppedRenderUsesCropFrameForWatermark() async throws {
         let dir = makeTempDir()
-        activateStore(dir)
+        await activateStore(dir)
         defer { teardownStore(dir) }
 
         let pngData = try makeSolidColorPNGData(size: 20, red: 1, green: 0, blue: 0)
@@ -208,7 +208,7 @@ struct WatermarkRenderingTests {
     @Test("opacity attenuates the watermark's blend toward the background")
     func opacityAttenuatesBlend() async throws {
         let dir = makeTempDir()
-        activateStore(dir)
+        await activateStore(dir)
         defer { teardownStore(dir) }
 
         let pngData = try makeSolidColorPNGData(size: 50, red: 1, green: 0, blue: 0)
@@ -249,7 +249,7 @@ struct WatermarkRenderingTests {
     @Test("the watermark texture uploads right-side-up, matching the source PNG's own top/bottom order")
     func watermarkUploadsRightSideUp() async throws {
         let dir = makeTempDir()
-        activateStore(dir)
+        await activateStore(dir)
         defer { teardownStore(dir) }
 
         // Top half red, bottom half green — by construction, row 0 of the pixel buffer (and

@@ -628,6 +628,15 @@ new characterizations, the focused 70-test Analysis suite, repository gate, and 
 passed. The audit remains 66 of 75 while other direct/cached-model paths and real-volume/signpost/Thread Performance
 Checker evidence stay open.
 
+The latest [Watermark persistence and cache continuation](plan-status-watermark-persistence-cache-continuation-2026-09-04.md)
+moves complete metadata/PNG inventory, tombstone cleanup, conflict resolution, import, metadata mutation, deletion,
+and initial local/iCloud root resolution behind one serialized actor. The MainActor store now publishes immutable
+asset and PNG caches, and its synchronous Settings/Develop accessors are filesystem-free. Remote events replace one
+complete snapshot rather than patching individual files on MainActor. Two new characterizations and source contracts,
+the focused 39-test Watermark/iCloud selection, repository gate, and serial unfiltered 1,977-test run passed. The
+audit remains 66 of 75 while other direct/cached-model paths and real-volume/signpost/Thread Performance Checker
+evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.
