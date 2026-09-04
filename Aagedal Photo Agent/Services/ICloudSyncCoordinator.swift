@@ -55,6 +55,124 @@ nonisolated struct KnownPeopleStorageSnapshot: Equatable, Sendable {
     let syncEnabled: Bool
 }
 
+/// Immutable evidence for a Teams or Watermark library route change. These libraries share
+/// the same preserve-newer directory policy even though their in-memory stores remain distinct.
+nonisolated struct LibraryICloudRoutingCommit: Equatable, Sendable {
+    let requestID: UUID
+    let enabled: Bool
+    let localRootURL: URL
+    let cloudRootURL: URL
+    let sourceURL: URL
+    let destinationURL: URL
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum LibraryICloudRoutingResult: Equatable, Sendable {
+    case committed(LibraryICloudRoutingCommit)
+    case unavailable(requestID: UUID, enabled: Bool)
+    case cancelledBeforeResolution(requestID: UUID, enabled: Bool)
+    case cancelledBeforeCommit(requestID: UUID, enabled: Bool)
+}
+
+nonisolated struct LibraryICloudRoutingFileAccess: Sendable {
+    let localRootURL: @Sendable () -> URL
+    let cloudRootURL: @Sendable () -> URL?
+    let ensureDirectory: @Sendable (URL) throws -> Void
+    let merge: @Sendable (URL, URL) throws -> Void
+
+    static let teams = LibraryICloudRoutingFileAccess(
+        localRootURL: { RosterStore.localTeamsDirectory },
+        cloudRootURL: { AppPaths.iCloudTeamsURL },
+        ensureDirectory: CloudCoordinatedIO.ensureDirectory,
+        merge: CloudCoordinatedIO.mergeCopyPreservingNewer
+    )
+
+    static let watermarks = LibraryICloudRoutingFileAccess(
+        localRootURL: { WatermarkStore.localWatermarksDirectory },
+        cloudRootURL: { AppPaths.iCloudWatermarksURL },
+        ensureDirectory: CloudCoordinatedIO.ensureDirectory,
+        merge: CloudCoordinatedIO.mergeCopyPreservingNewer
+    )
+}
+
+nonisolated protocol LibraryICloudRouting: Sendable {
+    func reconcile(
+        enabled: Bool,
+        requestID: UUID
+    ) async throws -> LibraryICloudRoutingResult
+
+    func cloudRootURL(ensuringDirectory: Bool) async -> URL?
+}
+
+/// Serializes iCloud-container resolution and recursive library reconciliation away from
+/// MainActor. A Foundation merge is deliberately allowed to finish after cancellation so its
+/// result can report the durable destination instead of leaving the UI to guess disk state.
+actor LibraryICloudRoutingService: LibraryICloudRouting {
+    static let teams = LibraryICloudRoutingService(access: .teams)
+    static let watermarks = LibraryICloudRoutingService(access: .watermarks)
+
+    private let access: LibraryICloudRoutingFileAccess
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "LibraryICloudRouting"
+    )
+
+    init(access: LibraryICloudRoutingFileAccess) {
+        self.access = access
+    }
+
+    func reconcile(
+        enabled: Bool,
+        requestID: UUID
+    ) async throws -> LibraryICloudRoutingResult {
+        let interval = signposter.beginInterval(
+            "Reconcile",
+            id: signposter.makeSignpostID()
+        )
+        guard !Task.isCancelled else {
+            signposter.endInterval("Reconcile", interval, "result=cancelled stage=before-resolution")
+            return .cancelledBeforeResolution(requestID: requestID, enabled: enabled)
+        }
+
+        let local = access.localRootURL()
+        guard let cloud = access.cloudRootURL() else {
+            signposter.endInterval("Reconcile", interval, "result=unavailable")
+            return .unavailable(requestID: requestID, enabled: enabled)
+        }
+        guard !Task.isCancelled else {
+            signposter.endInterval("Reconcile", interval, "result=cancelled stage=before-commit")
+            return .cancelledBeforeCommit(requestID: requestID, enabled: enabled)
+        }
+
+        let source = enabled ? local : cloud
+        let destination = enabled ? cloud : local
+        try access.merge(source, destination)
+        let commit = LibraryICloudRoutingCommit(
+            requestID: requestID,
+            enabled: enabled,
+            localRootURL: local,
+            cloudRootURL: cloud,
+            sourceURL: source,
+            destinationURL: destination,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        )
+        signposter.endInterval(
+            "Reconcile",
+            interval,
+            "result=committed cancelled=\(commit.cancellationRequestedAfterCommit)"
+        )
+        return .committed(commit)
+    }
+
+    func cloudRootURL(ensuringDirectory: Bool) async -> URL? {
+        guard let cloud = access.cloudRootURL() else { return nil }
+        if ensuringDirectory {
+            try? access.ensureDirectory(cloud)
+        }
+        return cloud
+    }
+}
+
 nonisolated struct KnownPeopleICloudRoutingFileAccess: Sendable {
     let localRootURL: @Sendable () -> URL
     let cloudRootURL: @Sendable () -> URL?
@@ -258,16 +376,30 @@ final class ICloudSyncCoordinator {
     @ObservationIgnored private let knownPeopleRouting: any KnownPeopleICloudRouting
     @ObservationIgnored private var knownPeopleRoutingTask: Task<Void, Never>?
     @ObservationIgnored private var knownPeopleRoutingRequestID: UUID?
+    private var pendingTeamsEnabled: Bool?
+    @ObservationIgnored private let teamsRouting: any LibraryICloudRouting
+    @ObservationIgnored private var teamsRoutingTask: Task<Void, Never>?
+    @ObservationIgnored private var teamsRoutingRequestID: UUID?
+    private var pendingWatermarksEnabled: Bool?
+    @ObservationIgnored private let watermarksRouting: any LibraryICloudRouting
+    @ObservationIgnored private var watermarksRoutingTask: Task<Void, Never>?
+    @ObservationIgnored private var watermarksRoutingRequestID: UUID?
 
     init(
-        knownPeopleRouting: any KnownPeopleICloudRouting = KnownPeopleICloudRoutingService.shared
+        knownPeopleRouting: any KnownPeopleICloudRouting = KnownPeopleICloudRoutingService.shared,
+        teamsRouting: any LibraryICloudRouting = LibraryICloudRoutingService.teams,
+        watermarksRouting: any LibraryICloudRouting = LibraryICloudRoutingService.watermarks
     ) {
         self.knownPeopleRouting = knownPeopleRouting
+        self.teamsRouting = teamsRouting
+        self.watermarksRouting = watermarksRouting
     }
 
     deinit {
         keywordListsRoutingTask?.cancel()
         knownPeopleRoutingTask?.cancel()
+        teamsRoutingTask?.cancel()
+        watermarksRoutingTask?.cancel()
     }
 
     /// Whether iCloud Drive is reachable for this app right now.
@@ -490,72 +622,112 @@ final class ICloudSyncCoordinator {
 
     var teamsEnabled: Bool {
         _ = version
-        return UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
+        return pendingTeamsEnabled
+            ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
     }
 
     func setTeamsEnabled(_ on: Bool) {
+        teamsRoutingTask?.cancel()
+        let requestID = UUID()
+        teamsRoutingRequestID = requestID
+        pendingTeamsEnabled = on
         lastError = nil
-        do {
-            if on {
-                guard let cloud = AppPaths.iCloudTeamsURL else {
-                    lastError = Self.unavailableMessage
-                    bump()
-                    return
-                }
-                try mergeCopy(from: RosterStore.localTeamsDirectory, to: cloud)
-                UserDefaults.standard.set(true, forKey: UserDefaultsKeys.teamsICloudEnabled)
-            } else {
-                guard let cloud = AppPaths.iCloudTeamsURL else {
-                    lastError = Self.unavailableMessage
-                    bump()
-                    return
-                }
-                try mergeCopy(from: cloud, to: RosterStore.localTeamsDirectory)
-                UserDefaults.standard.set(false, forKey: UserDefaultsKeys.teamsICloudEnabled)
-            }
-            Task { @MainActor in
-                await RosterStore.shared.reloadAfterStorageChange()
-            }
-        } catch {
-            lastError = "Could not reconcile the Teams library with iCloud Drive: \(error.localizedDescription)"
-        }
-        RosterCloudCoordinator.shared.refresh()
         bump()
+        teamsRoutingTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await teamsRouting.reconcile(
+                    enabled: on,
+                    requestID: requestID
+                )
+                guard teamsRoutingRequestID == requestID else { return }
+                teamsRoutingTask = nil
+                teamsRoutingRequestID = nil
+                pendingTeamsEnabled = nil
+                switch result {
+                case .committed(let commit):
+                    UserDefaults.standard.set(on, forKey: UserDefaultsKeys.teamsICloudEnabled)
+                    await RosterStore.shared.reloadAfterStorageChange(
+                        resolvedStorageURL: commit.destinationURL
+                    )
+                    if on {
+                        RosterCloudCoordinator.shared.refresh(resolvedRoot: commit.cloudRootURL)
+                    } else {
+                        RosterCloudCoordinator.shared.refresh()
+                    }
+                case .unavailable:
+                    lastError = Self.unavailableMessage
+                    RosterCloudCoordinator.shared.refresh()
+                case .cancelledBeforeResolution, .cancelledBeforeCommit:
+                    break
+                }
+                bump()
+            } catch {
+                guard teamsRoutingRequestID == requestID else { return }
+                teamsRoutingTask = nil
+                teamsRoutingRequestID = nil
+                pendingTeamsEnabled = nil
+                lastError = "Could not reconcile the Teams library with iCloud Drive: \(error.localizedDescription)"
+                RosterCloudCoordinator.shared.refresh()
+                bump()
+            }
+        }
     }
 
     // MARK: - Watermark library
 
     var watermarksEnabled: Bool {
         _ = version
-        return UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled)
+        return pendingWatermarksEnabled
+            ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled)
     }
 
     func setWatermarksEnabled(_ on: Bool) {
+        watermarksRoutingTask?.cancel()
+        let requestID = UUID()
+        watermarksRoutingRequestID = requestID
+        pendingWatermarksEnabled = on
         lastError = nil
-        do {
-            if on {
-                guard let cloud = AppPaths.iCloudWatermarksURL else {
-                    lastError = Self.unavailableMessage
-                    bump()
-                    return
-                }
-                try mergeCopy(from: WatermarkStore.localWatermarksDirectory, to: cloud)
-                UserDefaults.standard.set(true, forKey: UserDefaultsKeys.watermarksICloudEnabled)
-            } else {
-                guard let cloud = AppPaths.iCloudWatermarksURL else {
-                    lastError = Self.unavailableMessage
-                    bump()
-                    return
-                }
-                try mergeCopy(from: cloud, to: WatermarkStore.localWatermarksDirectory)
-                UserDefaults.standard.set(false, forKey: UserDefaultsKeys.watermarksICloudEnabled)
-            }
-            WatermarkStore.shared.reloadAfterStorageChange()
-        } catch {
-            lastError = "Could not reconcile the Watermark library with iCloud Drive: \(error.localizedDescription)"
-        }
-        WatermarkCloudCoordinator.shared.refresh()
         bump()
+        watermarksRoutingTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await watermarksRouting.reconcile(
+                    enabled: on,
+                    requestID: requestID
+                )
+                guard watermarksRoutingRequestID == requestID else { return }
+                watermarksRoutingTask = nil
+                watermarksRoutingRequestID = nil
+                pendingWatermarksEnabled = nil
+                switch result {
+                case .committed(let commit):
+                    UserDefaults.standard.set(on, forKey: UserDefaultsKeys.watermarksICloudEnabled)
+                    WatermarkStore.shared.reloadAfterStorageChange(
+                        resolvedStorageURL: commit.destinationURL
+                    )
+                    if on {
+                        WatermarkCloudCoordinator.shared.refresh(resolvedRoot: commit.cloudRootURL)
+                    } else {
+                        WatermarkCloudCoordinator.shared.refresh()
+                    }
+                case .unavailable:
+                    lastError = Self.unavailableMessage
+                    WatermarkCloudCoordinator.shared.refresh()
+                case .cancelledBeforeResolution, .cancelledBeforeCommit:
+                    break
+                }
+                bump()
+            } catch {
+                guard watermarksRoutingRequestID == requestID else { return }
+                watermarksRoutingTask = nil
+                watermarksRoutingRequestID = nil
+                pendingWatermarksEnabled = nil
+                lastError = "Could not reconcile the Watermark library with iCloud Drive: \(error.localizedDescription)"
+                WatermarkCloudCoordinator.shared.refresh()
+                bump()
+            }
+        }
     }
 
     // MARK: - Helpers
@@ -594,10 +766,8 @@ final class ICloudSyncCoordinator {
 
     private func bump() { version &+= 1 }
 
-    /// Recursively copies the contents of `src` into `dst`, overwriting files
-    /// with the same name and preserving subdirectories. Missing source folders
-    /// are treated as empty (nothing to copy). Coordinated via `NSFileCoordinator`
-    /// so moving data into the ubiquity container doesn't fork conflict folders.
+    /// Templates still use this synchronous helper until their security-scoped local-root
+    /// lifetime is carried by the serialized routing boundary.
     private func mergeCopy(from src: URL, to dst: URL) throws {
         try CloudCoordinatedIO.mergeCopyPreservingNewer(from: src, to: dst)
     }

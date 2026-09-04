@@ -1057,6 +1057,17 @@ and serial unfiltered 1,961-test run passed. Other lower-priority direct paths a
 Performance Checker exit evidence remain open.
 ([validation](plan-status-known-people-icloud-routing-continuation-2026-09-04.md))
 
+**Teams and Watermark iCloud-routing follow-up (2026-09-04):** enable/disable no longer resolves the ubiquity
+container or recursively reconciles either library from `ICloudSyncCoordinator` on MainActor. Two instances of one
+serialized actor return immutable unavailable, pre-commit cancellation, or durable-commit evidence; independent
+request identities gate each preference, cache route, reload, and cloud watcher. Both watchers reuse actor-resolved
+roots for startup and notification filtering rather than probing or preparing iCloud on MainActor. Two new
+characterizations cover direction, off-main execution, unavailable iCloud, and durable cancellation. The focused
+18-test suite, adjacent 30-test selection, repository gate, and serial unfiltered 1,963-test run passed. Other lower-
+priority direct paths, the security-scoped Templates route, and real-volume/signpost/Thread Performance Checker
+exit evidence remain open.
+([validation](plan-status-library-icloud-routing-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

@@ -435,8 +435,8 @@ final class RosterStore {
     }
 
     /// Re-resolves the selected local/iCloud root and asynchronously replaces the full library.
-    func reloadAfterStorageChange() async {
-        cachedDirectory = nil
+    func reloadAfterStorageChange(resolvedStorageURL: URL? = nil) async {
+        cachedDirectory = resolvedStorageURL
         didLoad = false
         loadTask?.cancel()
         loadTask = nil

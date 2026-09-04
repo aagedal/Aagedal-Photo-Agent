@@ -283,8 +283,8 @@ final class WatermarkStore {
 
     /// Drops in-memory state and re-reads from disk. Called after the backing directory
     /// changes (iCloud toggle).
-    func reloadAfterStorageChange() {
-        cachedDirectory = nil
+    func reloadAfterStorageChange(resolvedStorageURL: URL? = nil) {
+        cachedDirectory = resolvedStorageURL
         didLoad = false
         ensureLoaded()
         NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)

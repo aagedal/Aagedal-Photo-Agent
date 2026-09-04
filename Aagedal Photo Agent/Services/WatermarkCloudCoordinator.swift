@@ -15,19 +15,20 @@ final class WatermarkCloudCoordinator {
     private var observers: [NSObjectProtocol] = []
     private var pendingRefresh: Task<Void, Never>?
     private var pendingStart: Task<Void, Never>?
+    private var monitoredRoot: URL?
     private var pendingChanges: [String: (url: URL, contentChangeDate: Date?)] = [:]
 
     private init() {}
 
     /// Idempotent. Call after app launch and whenever the iCloud toggle changes.
-    func refresh() {
+    func refresh(resolvedRoot: URL? = nil) {
         let enabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled)
         guard enabled else {
             stopQuery()
             return
         }
-        if AppPaths.iCloudWatermarksURL != nil {
-            startQueryIfNeeded()
+        if let resolvedRoot {
+            startQueryIfNeeded(root: resolvedRoot)
         } else {
             scheduleContainerResolution()
         }
@@ -36,23 +37,20 @@ final class WatermarkCloudCoordinator {
     private func scheduleContainerResolution() {
         guard query == nil, pendingStart == nil else { return }
         pendingStart = Task { [weak self] in
-            let resolved = await Task.detached(priority: .utility) {
-                AppPaths.iCloudWatermarksURL
-            }.value
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.pendingStart = nil
-                let stillEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled)
-                guard stillEnabled, resolved != nil else { return }
-                self.startQueryIfNeeded()
-            }
+            let resolvedRoot = await LibraryICloudRoutingService.watermarks.cloudRootURL(
+                ensuringDirectory: true
+            )
+            guard !Task.isCancelled, let self else { return }
+            self.pendingStart = nil
+            let stillEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled)
+            guard stillEnabled, let root = resolvedRoot else { return }
+            self.startQueryIfNeeded(root: root)
         }
     }
 
-    private func startQueryIfNeeded() {
+    private func startQueryIfNeeded(root: URL) {
         guard query == nil else { return }
-        guard let root = AppPaths.iCloudWatermarksURL else { return }
-        try? CloudCoordinatedIO.ensureDirectory(root)
+        monitoredRoot = root
 
         let q = NSMetadataQuery()
         q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
@@ -100,6 +98,7 @@ final class WatermarkCloudCoordinator {
         pendingRefresh = nil
         pendingChanges.removeAll()
         query = nil
+        monitoredRoot = nil
         logger.info("Stopped iCloud metadata query for Watermarks")
     }
 
@@ -107,7 +106,7 @@ final class WatermarkCloudCoordinator {
         query.disableUpdates()
         defer { query.enableUpdates() }
 
-        guard let root = AppPaths.iCloudWatermarksURL else { return }
+        guard let root = monitoredRoot else { return }
         let itemsPath = root.appendingPathComponent("items", isDirectory: true).path
 
         for case let item as NSMetadataItem in query.results {

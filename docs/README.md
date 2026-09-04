@@ -584,6 +584,15 @@ directions, off-main execution, unavailable iCloud, and cancellation stages. The
 repository gate, and serial unfiltered 1,961-test run passed. The audit remains 66 of 75 while Phase 3.1's remaining
 direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [Teams and Watermark iCloud-routing continuation](plan-status-library-icloud-routing-continuation-2026-09-04.md)
+moves ubiquity-container resolution and complete preserve-newer reconciliation for both libraries out of the
+MainActor sync coordinator and behind independently serialized actor instances. Per-library request identity gates
+preferences, resolved cache routes, reloads, and watchers; both watchers now reuse actor-resolved roots for startup
+and filtering. Two new characterizations cover both directions, off-main execution, unavailable iCloud, and durable
+cancellation. The focused 18-test suite, adjacent 30-test selection, repository gate, and serial unfiltered
+1,963-test run passed. The audit remains 66 of 75 while the security-scoped Templates route, other direct paths,
+and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.
