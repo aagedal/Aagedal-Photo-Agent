@@ -26,10 +26,24 @@ nonisolated enum TextFileImportError: LocalizedError, Equatable {
 
 nonisolated struct TextFileImportReader: Sendable {
     let read: @Sendable (URL) throws -> Data
+    let startAccessing: @Sendable (URL) -> Bool
+    let stopAccessing: @Sendable (URL) -> Void
 
-    static let system = TextFileImportReader { url in
-        try Data(contentsOf: url)
+    init(
+        read: @escaping @Sendable (URL) throws -> Data,
+        startAccessing: @escaping @Sendable (URL) -> Bool = { _ in false },
+        stopAccessing: @escaping @Sendable (URL) -> Void = { _ in }
+    ) {
+        self.read = read
+        self.startAccessing = startAccessing
+        self.stopAccessing = stopAccessing
     }
+
+    static let system = TextFileImportReader(
+        read: { try Data(contentsOf: $0) },
+        startAccessing: { $0.startAccessingSecurityScopedResource() },
+        stopAccessing: { $0.stopAccessingSecurityScopedResource() }
+    )
 }
 
 /// Serializes user-selected text-file reads away from MainActor. Foundation file reads cannot be
@@ -48,6 +62,16 @@ actor TextFileImportService {
         from sourceURL: URL,
         requestID: UUID
     ) throws -> TextFileImportResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID)
+        }
+
+        let didStartAccessing = reader.startAccessing(sourceURL)
+        defer {
+            if didStartAccessing {
+                reader.stopAccessing(sourceURL)
+            }
+        }
         guard !Task.isCancelled else {
             return .cancelledBeforeRead(requestID: requestID)
         }

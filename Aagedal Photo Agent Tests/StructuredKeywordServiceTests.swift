@@ -113,4 +113,201 @@ struct StructuredKeywordServiceTests {
             #expect(service.canonicalName(forNameOrSynonym: "People") == nil)
         }
     }
+
+    @Test("Settings import reads and commits away from MainActor with balanced source access")
+    func settingsImportUsesSerializedBoundaries() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("structured-service-import-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let text = "[People]\n\tAlice\n"
+            let probe = StructuredKeywordSettingsImportProbe(text: text)
+            let service = StructuredKeywordService(
+                key: .structured,
+                textImportService: TextFileImportService(reader: probe.textReader),
+                persistenceService: KeywordListEditorPersistenceService(access: probe.fileAccess)
+            )
+
+            try await service.importListURL(URL(fileURLWithPath: "/virtual/people.txt"))
+            await Task.yield()
+
+            #expect(probe.scopeStartCount == 1)
+            #expect(probe.scopeStopCount == 1)
+            #expect(probe.writeCount == 1)
+            #expect(probe.committedText == text)
+            #expect(!probe.ranOnMainThread)
+            #expect(service.rootCount == 1)
+            #expect(service.keywordCount == 1)
+        }
+    }
+
+    @Test("a replacement import prevents an older read from committing")
+    func replacementRejectsStaleRead() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("structured-service-stale-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let probe = BlockingStructuredKeywordSettingsImportProbe()
+            let service = StructuredKeywordService(
+                key: .structured,
+                textImportService: TextFileImportService(reader: probe.textReader),
+                persistenceService: KeywordListEditorPersistenceService(access: probe.fileAccess)
+            )
+            let first = Task { @MainActor in
+                try await service.importListURL(URL(fileURLWithPath: "/virtual/first.txt"))
+            }
+            try await probe.waitUntilFirstReadStarts()
+            let second = Task { @MainActor in
+                try await service.importListURL(URL(fileURLWithPath: "/virtual/second.txt"))
+            }
+            try await Task.sleep(for: .milliseconds(20))
+            probe.releaseFirstRead()
+
+            try await first.value
+            try await second.value
+            await Task.yield()
+
+            #expect(probe.writeCount == 1)
+            #expect(probe.committedText == "Second\n")
+            #expect(service.roots.map(\.name) == ["Second"])
+        }
+    }
+
+    @Test("Settings picker source owns cancellable async import tasks")
+    func settingsPickerSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/SettingsView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("try await settingsViewModel.structuredKeywords.importListURL(url)"))
+        #expect(source.contains("try await settingsViewModel.structuredPersonShown.importListURL(url)"))
+        #expect(source.contains("structuredKeywordsImportTask?.cancel()"))
+        #expect(source.contains("structuredPersonShownImportTask?.cancel()"))
+        #expect(source.contains("settingsViewModel.structuredKeywords.cancelImport()"))
+        #expect(source.contains("settingsViewModel.structuredPersonShown.cancelImport()"))
+    }
+}
+
+private nonisolated final class StructuredKeywordSettingsImportProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let text: String
+    private var starts = 0
+    private var stops = 0
+    private var writes = 0
+    private var writtenText: String?
+    private var observedMainThread = false
+
+    init(text: String) {
+        self.text = text
+    }
+
+    var textReader: TextFileImportReader {
+        TextFileImportReader(
+            read: { [self] _ in
+                lock.withLock {
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                }
+                return Data(text.utf8)
+            },
+            startAccessing: { [self] _ in
+                lock.withLock {
+                    starts += 1
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                }
+                return true
+            },
+            stopAccessing: { [self] _ in
+                lock.withLock {
+                    stops += 1
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                }
+            }
+        )
+    }
+
+    var fileAccess: KeywordListEditorFileAccess {
+        KeywordListEditorFileAccess(
+            itemExists: { _ in false },
+            readData: { _ in Data() },
+            writeData: { [self] data, _ in
+                lock.withLock {
+                    writes += 1
+                    writtenText = String(decoding: data, as: UTF8.self)
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                }
+            }
+        )
+    }
+
+    var scopeStartCount: Int { lock.withLock { starts } }
+    var scopeStopCount: Int { lock.withLock { stops } }
+    var writeCount: Int { lock.withLock { writes } }
+    var committedText: String? { lock.withLock { writtenText } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private enum StructuredKeywordSettingsImportProbeError: Error {
+    case timedOut
+}
+
+private nonisolated final class BlockingStructuredKeywordSettingsImportProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var firstReadStarted = false
+    private var firstReadReleased = false
+    private var writes = 0
+    private var writtenText: String?
+
+    var textReader: TextFileImportReader {
+        TextFileImportReader(read: { [self] url in
+            condition.lock()
+            if url.lastPathComponent == "first.txt" {
+                firstReadStarted = true
+                condition.broadcast()
+                while !firstReadReleased { condition.wait() }
+            }
+            condition.unlock()
+            return Data((url.lastPathComponent == "first.txt" ? "First\n" : "Second\n").utf8)
+        })
+    }
+
+    var fileAccess: KeywordListEditorFileAccess {
+        KeywordListEditorFileAccess(
+            itemExists: { _ in false },
+            readData: { _ in Data() },
+            writeData: { [self] data, _ in
+                condition.withLock {
+                    writes += 1
+                    writtenText = String(decoding: data, as: UTF8.self)
+                }
+            }
+        )
+    }
+
+    func waitUntilFirstReadStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition.withLock({ firstReadStarted }) {
+            guard ContinuousClock.now < deadline else {
+                throw StructuredKeywordSettingsImportProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstRead() {
+        condition.withLock {
+            firstReadReleased = true
+            condition.broadcast()
+        }
+    }
+
+    var writeCount: Int { condition.withLock { writes } }
+    var committedText: String? { condition.withLock { writtenText } }
 }

@@ -187,6 +187,35 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(probe.writtenURL == destination)
     }
 
+    @Test("structured text save preserves hierarchy and reports a durable off-main commit")
+    @MainActor
+    func structuredTextSaveCommitEvidence() async throws {
+        let destination = URL(fileURLWithPath: "/virtual/structured.txt")
+        let text = "[People]\n\tAlice\n"
+        let probe = KeywordListEditorFileAccessProbe(cancelDuringWrite: true)
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await Task {
+            try await service.saveText(
+                text,
+                to: destination,
+                requestID: requestID
+            )
+        }.value
+
+        #expect(result == .committed(KeywordListTextSaveCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            text: text,
+            byteCount: Data(text.utf8).count,
+            cancellationRequestedAfterCommit: true
+        )))
+        #expect(probe.writtenData == Data(text.utf8))
+        #expect(probe.writtenURL == destination)
+        #expect(!probe.ranOnMainThread)
+    }
+
     @Test("append merges one serialized snapshot away from MainActor")
     @MainActor
     func appendRunsOffMainActor() async throws {

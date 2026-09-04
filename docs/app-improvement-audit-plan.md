@@ -1253,6 +1253,17 @@ the focused 34-test import selection, repository gate, and serial unfiltered 2,0
 priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-import-execution-security-scope-continuation-2026-09-04.md))
 
+**Settings structured-keyword import follow-up (2026-09-04):** both Structured Keywords and Structured Person
+Shown file pickers now read selected source files, own security-scope lifetimes, and persist managed hierarchical
+text through serialized actors. Replacement requests invalidate stale completed reads, disappearing Settings views
+cancel pending imports, and only the current request can publish an error. Durable commits broadcast their in-memory
+text so structured-list observers do not synchronously re-read the managed file on MainActor. Five new
+characterizations cover actor-owned balanced access, hierarchy-preserving commit evidence, end-to-end model
+publication, stale-request rejection, and both picker source contracts. The focused 32-test selection, repository
+gate, and serial unfiltered 2,018-test run passed. Other lower-priority direct/cached-model paths and real-volume/
+signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-settings-structured-keyword-import-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

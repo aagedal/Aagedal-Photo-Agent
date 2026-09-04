@@ -27,6 +27,26 @@ struct TextFileImportServiceTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("security-scoped access is balanced on the filesystem actor")
+    @MainActor
+    func securityScopeRunsOffMainActor() async throws {
+        let source = URL(fileURLWithPath: "/virtual/security-scoped.txt")
+        let bytes = Data("People\n\tAlice\n".utf8)
+        let requestID = UUID()
+        let probe = TextFileImportReaderProbe(data: bytes)
+        let service = TextFileImportService(reader: TextFileImportReader(
+            read: probe.read,
+            startAccessing: probe.startAccessing,
+            stopAccessing: probe.stopAccessing
+        ))
+
+        _ = try await service.loadText(from: source, requestID: requestID)
+
+        #expect(probe.scopeStartCount == 1)
+        #expect(probe.scopeStopCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
     @Test("a pre-cancelled request never enters the synchronous reader")
     func preCancellation() async throws {
         let requestID = UUID()
@@ -461,6 +481,8 @@ private nonisolated final class TextFileImportReaderProbe: @unchecked Sendable {
     private let lock = NSLock()
     private let data: Data
     private var count = 0
+    private var starts = 0
+    private var stops = 0
     private var observedMainThread = false
 
     init(data: Data) {
@@ -476,7 +498,26 @@ private nonisolated final class TextFileImportReaderProbe: @unchecked Sendable {
         return data
     }
 
+    func startAccessing(_ url: URL) -> Bool {
+        _ = url
+        lock.withLock {
+            starts += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return true
+    }
+
+    func stopAccessing(_ url: URL) {
+        _ = url
+        lock.withLock {
+            stops += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+    }
+
     var invocationCount: Int { lock.withLock { count } }
+    var scopeStartCount: Int { lock.withLock { starts } }
+    var scopeStopCount: Int { lock.withLock { stops } }
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
 }
 

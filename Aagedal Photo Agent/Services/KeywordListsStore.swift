@@ -103,6 +103,7 @@ final class KeywordListsStore {
     static let shared = KeywordListsStore()
     nonisolated static let changedKeyUserInfo = "key"
     nonisolated static let changedEntriesUserInfo = "entries"
+    nonisolated static let changedTextUserInfo = "text"
     nonisolated static let changedSourceIDUserInfo = "sourceID"
 
     /// Injectable so focused migration tests do not mutate launch UI state.
@@ -241,9 +242,10 @@ final class KeywordListsStore {
     func recordExternalWrite(
         to key: KeywordListKey,
         entries: [String]? = nil,
+        text: String? = nil,
         sourceID: UUID? = nil
     ) {
-        notifyChanged(key, entries: entries, sourceID: sourceID)
+        notifyChanged(key, entries: entries, text: text, sourceID: sourceID)
     }
 
     /// Publishes a removal already committed by a serialized filesystem service.
@@ -467,12 +469,16 @@ final class KeywordListsStore {
     private func notifyChanged(
         _ key: KeywordListKey,
         entries: [String]? = nil,
+        text: String? = nil,
         sourceID: UUID? = nil
     ) {
         bumpVersion()
         var userInfo: [String: Any] = [Self.changedKeyUserInfo: key]
         if let entries {
             userInfo[Self.changedEntriesUserInfo] = entries
+        }
+        if let text {
+            userInfo[Self.changedTextUserInfo] = text
         }
         if let sourceID {
             userInfo[Self.changedSourceIDUserInfo] = sourceID

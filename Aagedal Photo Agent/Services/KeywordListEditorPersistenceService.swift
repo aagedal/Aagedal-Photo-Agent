@@ -61,6 +61,23 @@ nonisolated enum KeywordListEditorSaveResult: Equatable, Sendable {
     )
 }
 
+nonisolated struct KeywordListTextSaveCommit: Equatable, Sendable {
+    let requestID: UUID
+    let destinationURL: URL
+    let text: String
+    let byteCount: Int
+    let cancellationRequestedAfterCommit: Bool
+}
+
+nonisolated enum KeywordListTextSaveResult: Equatable, Sendable {
+    case committed(KeywordListTextSaveCommit)
+    case cancelledBeforeCommit(
+        requestID: UUID,
+        destinationURL: URL,
+        byteCount: Int
+    )
+}
+
 nonisolated struct QuickListMutationCommit: Equatable, Sendable {
     let requestID: UUID
     let destinationURL: URL
@@ -325,6 +342,33 @@ actor KeywordListEditorPersistenceService {
             requestID: requestID,
             destinationURL: destinationURL,
             entries: normalized,
+            byteCount: data.count,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        ))
+    }
+
+    /// Persists structured-list source text without flattening its tab-indented hierarchy.
+    /// The immutable commit result distinguishes cancellation before the coordinated write from
+    /// cancellation observed after the destination is already durable.
+    func saveText(
+        _ text: String,
+        to destinationURL: URL,
+        requestID: UUID
+    ) throws -> KeywordListTextSaveResult {
+        let data = Data(text.utf8)
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: requestID,
+                destinationURL: destinationURL,
+                byteCount: data.count
+            )
+        }
+
+        try access.writeData(data, destinationURL)
+        return .committed(KeywordListTextSaveCommit(
+            requestID: requestID,
+            destinationURL: destinationURL,
+            text: text,
             byteCount: data.count,
             cancellationRequestedAfterCommit: Task.isCancelled
         ))

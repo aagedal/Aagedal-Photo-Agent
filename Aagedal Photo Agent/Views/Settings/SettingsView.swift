@@ -41,10 +41,14 @@ struct SettingsView: View {
 
     // Structured Keywords state
     @State private var structuredKeywordsErrorMessage: String?
+    @State private var structuredKeywordsImportTask: Task<Void, Never>?
+    @State private var structuredKeywordsImportRequestID: UUID?
     @State private var editingStructuredKeywords = false
 
     // Structured Person Shown state
     @State private var structuredPersonShownErrorMessage: String?
+    @State private var structuredPersonShownImportTask: Task<Void, Never>?
+    @State private var structuredPersonShownImportRequestID: UUID?
     @State private var editingStructuredPersonShown = false
     @AppStorage(UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) private var structuredPersonShownCategoriesAsKeywords = false
 
@@ -204,6 +208,8 @@ struct SettingsView: View {
         }
         .onDisappear {
             cancelApprovedKeywordsImport()
+            cancelStructuredKeywordsImport()
+            cancelStructuredPersonShownImport()
         }
         .onChange(of: settingsViewModel.requestedDestination) { _, _ in
             applyRequestedDestination()
@@ -1406,13 +1412,31 @@ struct SettingsView: View {
         panel.allowedContentTypes = [.plainText]
         panel.message = "Choose a structured keywords file (.txt)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try settingsViewModel.structuredKeywords.importListURL(url)
-            structuredKeywordsErrorMessage = nil
-        } catch {
-            let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            structuredKeywordsErrorMessage = description
+        cancelStructuredKeywordsImport()
+        let requestID = UUID()
+        structuredKeywordsImportRequestID = requestID
+        structuredKeywordsErrorMessage = nil
+        structuredKeywordsImportTask = Task { @MainActor in
+            do {
+                try await settingsViewModel.structuredKeywords.importListURL(url)
+                guard structuredKeywordsImportRequestID == requestID else { return }
+                structuredKeywordsErrorMessage = nil
+            } catch {
+                guard structuredKeywordsImportRequestID == requestID else { return }
+                let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                structuredKeywordsErrorMessage = description
+            }
+            guard structuredKeywordsImportRequestID == requestID else { return }
+            structuredKeywordsImportRequestID = nil
+            structuredKeywordsImportTask = nil
         }
+    }
+
+    private func cancelStructuredKeywordsImport() {
+        structuredKeywordsImportRequestID = nil
+        structuredKeywordsImportTask?.cancel()
+        structuredKeywordsImportTask = nil
+        settingsViewModel.structuredKeywords.cancelImport()
     }
 
     // MARK: - Structured Person Shown Section
@@ -1494,13 +1518,31 @@ struct SettingsView: View {
         panel.allowedContentTypes = [.plainText]
         panel.message = "Choose a structured Person Shown file (.txt)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try settingsViewModel.structuredPersonShown.importListURL(url)
-            structuredPersonShownErrorMessage = nil
-        } catch {
-            let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            structuredPersonShownErrorMessage = description
+        cancelStructuredPersonShownImport()
+        let requestID = UUID()
+        structuredPersonShownImportRequestID = requestID
+        structuredPersonShownErrorMessage = nil
+        structuredPersonShownImportTask = Task { @MainActor in
+            do {
+                try await settingsViewModel.structuredPersonShown.importListURL(url)
+                guard structuredPersonShownImportRequestID == requestID else { return }
+                structuredPersonShownErrorMessage = nil
+            } catch {
+                guard structuredPersonShownImportRequestID == requestID else { return }
+                let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                structuredPersonShownErrorMessage = description
+            }
+            guard structuredPersonShownImportRequestID == requestID else { return }
+            structuredPersonShownImportRequestID = nil
+            structuredPersonShownImportTask = nil
         }
+    }
+
+    private func cancelStructuredPersonShownImport() {
+        structuredPersonShownImportRequestID = nil
+        structuredPersonShownImportTask?.cancel()
+        structuredPersonShownImportTask = nil
+        settingsViewModel.structuredPersonShown.cancelImport()
     }
 
     // MARK: - Keywords Tab

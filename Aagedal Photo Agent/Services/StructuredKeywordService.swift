@@ -43,6 +43,9 @@ final class StructuredKeywordService {
     /// When true (keywords), `expand` prepends keyword-kind ancestors. When false
     /// (person-shown), only the activated node's name and synonyms are returned.
     @ObservationIgnored private let includesAncestors: Bool
+    @ObservationIgnored private let textImportService: TextFileImportService
+    @ObservationIgnored private let persistenceService: KeywordListEditorPersistenceService
+    @ObservationIgnored private var importRequestID: UUID?
 
     /// Bumped on any state change so SwiftUI views re-render.
     private(set) var version: Int = 0
@@ -55,9 +58,16 @@ final class StructuredKeywordService {
 
     @ObservationIgnored nonisolated(unsafe) private var changeObserver: NSObjectProtocol?
 
-    init(key: KeywordListKey = .structured, includesAncestors: Bool = true) {
+    init(
+        key: KeywordListKey = .structured,
+        includesAncestors: Bool = true,
+        textImportService: TextFileImportService = .shared,
+        persistenceService: KeywordListEditorPersistenceService = .shared
+    ) {
         self.key = key
         self.includesAncestors = includesAncestors
+        self.textImportService = textImportService
+        self.persistenceService = persistenceService
         loadFromStore()
         changeObserver = NotificationCenter.default.addObserver(
             forName: .keywordListChanged,
@@ -72,9 +82,14 @@ final class StructuredKeywordService {
             guard
                 let changed = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey
             else { return }
+            let committedText = note.userInfo?[KeywordListsStore.changedTextUserInfo] as? String
             Task { @MainActor [weak self] in
                 guard let self, changed == self.key else { return }
-                self.loadFromStore()
+                if let committedText {
+                    self.install(text: committedText)
+                } else {
+                    self.loadFromStore()
+                }
             }
         }
     }
@@ -106,16 +121,47 @@ final class StructuredKeywordService {
     /// Imports a user-picked tab-indented file into the managed store. The
     /// file's bytes are copied into the store and parsed; the source URL is no
     /// longer referenced.
-    func importListURL(_ url: URL) throws {
-        let text = try KeywordListsStore.shared.importText(from: url, into: key)
-        let parsed = StructuredKeywordParser.parseString(text)
-        if parsed.isEmpty {
-            throw StructuredKeywordParserError.empty
+    func importListURL(_ url: URL) async throws {
+        let requestID = UUID()
+        importRequestID = requestID
+        defer {
+            if importRequestID == requestID {
+                importRequestID = nil
+            }
         }
-        roots = parsed
-        sourcePath = KeywordListsStore.shared.url(for: key).path
-        loadError = nil
-        bumpVersion()
+
+        let destinationURL = KeywordListsStore.shared.url(for: key)
+        let loadResult = try await textImportService.loadText(from: url, requestID: requestID)
+        guard importRequestID == requestID else { return }
+
+        let text: String
+        switch loadResult {
+        case .loaded(let snapshot):
+            let parsed = StructuredKeywordParser.parseString(snapshot.text)
+            guard !parsed.isEmpty else { throw StructuredKeywordParserError.empty }
+            text = snapshot.text
+        case .cancelledBeforeRead, .cancelledAfterRead:
+            return
+        }
+
+        let saveResult = try await persistenceService.saveText(
+            text,
+            to: destinationURL,
+            requestID: requestID
+        )
+        switch saveResult {
+        case .committed(let commit):
+            // A coordinated write is durable even if this request was cancelled or superseded
+            // while it was in progress. Publish its in-memory text so observers never re-read the
+            // managed file synchronously on MainActor.
+            KeywordListsStore.shared.recordExternalWrite(to: key, text: commit.text)
+        case .cancelledBeforeCommit:
+            return
+        }
+    }
+
+    func cancelImport() {
+        importRequestID = nil
     }
 
     /// Saves an edited tree back to the managed store. Re-serialises through
@@ -327,9 +373,13 @@ final class StructuredKeywordService {
             bumpVersion()
             return
         }
+        install(text: text)
+    }
+
+    private func install(text: String) {
         let parsed = StructuredKeywordParser.parseString(text)
         roots = parsed
-        sourcePath = store.url(for: key).path
+        sourcePath = KeywordListsStore.shared.url(for: key).path
         loadError = parsed.isEmpty ? "File contained no keywords." : nil
         bumpVersion()
     }

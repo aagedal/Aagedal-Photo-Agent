@@ -717,6 +717,14 @@ early-return, cancellation, or failure exit releases in reverse order. Five new 
 while other lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence
 stay open.
 
+The latest [Settings structured-keyword import continuation](plan-status-settings-structured-keyword-import-continuation-2026-09-04.md)
+moves both Structured Keywords and Structured Person Shown picker reads, security-scope lifetimes, and managed-text
+commits through serialized actors. Replacement requests reject stale reads, view disappearance cancels pending work,
+and durable commits publish their in-memory hierarchical text so observers do not synchronously re-read the managed
+file on MainActor. Five new characterizations, the focused 32-test selection, repository gate, and serial unfiltered
+2,018-test run passed. The audit remains 66 of 75 while other lower-priority direct/cached-model paths and real-volume/
+signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.
