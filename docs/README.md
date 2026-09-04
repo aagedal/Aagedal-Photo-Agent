@@ -661,6 +661,14 @@ characterizations, the focused 8-test suite, adjacent 18-test selection, reposit
 1,986-test run passed. The audit remains 66 of 75 while Favorite-folder bookmarks, other lower-priority direct/
 cached-model paths, and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [Favorite-folder bookmark continuation](plan-status-favorite-folder-bookmark-continuation-2026-09-04.md)
+moves launch resolution, Add to Favorites, and moved-favorite bookmark refresh behind a serialized actor. Favorite
+publication is request-tagged and complete-only; cancellation distinguishes no access, an inspected but unpublished
+prefix, and a completed bookmark API that observed cancellation afterward. Three new characterizations, the focused
+13-test selection, adjacent 28-test selection, repository gate, and serial unfiltered 1,989-test run passed. The
+audit remains 66 of 75 while lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance
+Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

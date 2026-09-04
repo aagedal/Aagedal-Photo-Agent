@@ -1176,6 +1176,18 @@ repository gate, and serial unfiltered run of 1,986 tests in 229 suites passed. 
 lower-priority direct/cached-model paths, and real-volume/signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-recent-folder-bookmark-continuation-2026-09-04.md))
 
+**Favorite-folder bookmark follow-up (2026-09-04):** launch-time stale-bookmark resolution, security-scope
+retention, Add to Favorites bookmark creation, and bookmark refresh after moving a favorite root no longer invoke
+the bookmark APIs on MainActor. A serialized actor returns immutable request-tagged snapshots and commits with
+explicit pre-access, inspected-prefix, and post-access cancellation evidence. The browser publishes only complete
+current loads, waits for launch resolution before scanning favorite roots, preserves an existing move-following
+bookmark if refresh produces no replacement, and persists refreshed or newly created bookmark data. Three new
+characterizations cover off-main resolution/creation, complete publication and persistence, pre-access cancellation,
+and cancellation observed after a non-preemptible bookmark API. The focused 13-test selection, adjacent 28-test
+selection, repository gate, and serial unfiltered run of 1,989 tests in 229 suites passed. Other lower-priority
+direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-favorite-folder-bookmark-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

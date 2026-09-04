@@ -1,6 +1,6 @@
 import Foundation
 
-struct FavoriteFolder: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct FavoriteFolder: Codable, Identifiable, Hashable, Sendable {
     var id: UUID
     var url: URL
     var name: String

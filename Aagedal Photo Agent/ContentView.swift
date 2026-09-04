@@ -919,9 +919,12 @@ struct ContentView: View {
                 }
             )
             .cleanFeedPresenter(controller: CleanFeedController.shared, browserViewModel: browserViewModel)
-            .onAppear {
-                sidebarViewModel.loadFavorites()
+            .task {
+                await sidebarViewModel.loadFavorites()
+                guard !Task.isCancelled else { return }
                 sidebarViewModel.loadFavoriteTopLevelSubfolders()
+            }
+            .onAppear {
                 templateViewModel.loadTemplates()
                 developTemplateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()

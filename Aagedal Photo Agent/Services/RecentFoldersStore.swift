@@ -187,6 +187,103 @@ actor RecentFolderBookmarkService {
     }
 }
 
+nonisolated struct FavoriteFolderBookmarkSnapshot: Sendable {
+    let requestID: UUID
+    let folders: [FavoriteFolder]
+    let inspectedCount: Int
+}
+
+nonisolated enum FavoriteFolderBookmarkLoadResult: Sendable {
+    case loaded(FavoriteFolderBookmarkSnapshot)
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledAfterPrefix(requestID: UUID, inspectedCount: Int)
+}
+
+nonisolated struct FavoriteFolderBookmarkCommit: Sendable {
+    let requestID: UUID
+    let bookmarkData: Data?
+    let cancellationRequestedAfterAccess: Bool
+}
+
+nonisolated enum FavoriteFolderBookmarkCommitResult: Sendable {
+    case completed(FavoriteFolderBookmarkCommit)
+    case cancelledBeforeAccess(requestID: UUID)
+}
+
+/// Serializes Favorite-folder bookmark resolution and creation away from MainActor.
+/// File-provider bookmark APIs can block even when the favorite cache itself is small.
+actor FavoriteFolderBookmarkService {
+    static let shared = FavoriteFolderBookmarkService()
+
+    private let securityScopes: BrowserFolderSecurityScopeStore
+    private let cancellationRequested: @Sendable () -> Bool
+
+    init(
+        securityScopes: BrowserFolderSecurityScopeStore = .shared,
+        cancellationRequested: @escaping @Sendable () -> Bool = { Task.isCancelled }
+    ) {
+        self.securityScopes = securityScopes
+        self.cancellationRequested = cancellationRequested
+    }
+
+    func resolve(
+        _ folders: [FavoriteFolder],
+        requestID: UUID
+    ) -> FavoriteFolderBookmarkLoadResult {
+        guard !cancellationRequested() else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+
+        var repaired: [FavoriteFolder] = []
+        repaired.reserveCapacity(folders.count)
+        for folder in folders {
+            guard !cancellationRequested() else {
+                return .cancelledAfterPrefix(
+                    requestID: requestID,
+                    inspectedCount: repaired.count
+                )
+            }
+            var resolvedFolder = folder
+            if let bookmark = folder.bookmarkData,
+               let resolution = securityScopes.resolveAndRetainAccess(bookmark) {
+                resolvedFolder = FavoriteFolder(
+                    id: folder.id,
+                    url: resolution.url,
+                    bookmarkData: resolution.bookmarkData
+                )
+            }
+            repaired.append(resolvedFolder)
+        }
+
+        guard !cancellationRequested() else {
+            return .cancelledAfterPrefix(
+                requestID: requestID,
+                inspectedCount: repaired.count
+            )
+        }
+        return .loaded(FavoriteFolderBookmarkSnapshot(
+            requestID: requestID,
+            folders: repaired,
+            inspectedCount: repaired.count
+        ))
+    }
+
+    func createBookmark(
+        for url: URL,
+        requestID: UUID
+    ) -> FavoriteFolderBookmarkCommitResult {
+        guard !cancellationRequested() else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+        let bookmarkData = securityScopes.bookmarkAndRetainAccess(for: url)
+        return .completed(FavoriteFolderBookmarkCommit(
+            requestID: requestID,
+            bookmarkData: bookmarkData,
+            cancellationRequestedAfterAccess: cancellationRequested()
+        ))
+    }
+}
+
 /// Persistent list of recently opened folders, shared between the browser
 /// (which records every folder open) and the File ▸ Open Recent menu
 /// (which displays and clears it).

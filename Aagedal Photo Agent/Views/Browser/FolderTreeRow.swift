@@ -241,7 +241,9 @@ struct FolderTreeRow: View {
             }
             Divider()
             Button {
-                viewModel.addFolderToFavorites(url)
+                Task {
+                    await viewModel.addFolderToFavorites(url)
+                }
             } label: {
                 Label("Add to Favorites", systemImage: "star")
             }

@@ -229,6 +229,12 @@ final class BrowserViewModel {
     @ObservationIgnored private var renamePlanningRequestID: UUID?
     @ObservationIgnored private let voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService
 
+    @ObservationIgnored private let favoritesDefaults: UserDefaults
+    @ObservationIgnored private let favoriteBookmarkService: FavoriteFolderBookmarkService
+    @ObservationIgnored private var favoritesDidLoad = false
+    @ObservationIgnored private var favoriteLoadRequestID = UUID()
+    @ObservationIgnored private var favoriteLoadTask: Task<Void, Never>?
+
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
 
     private(set) var sortedImages: [ImageFile] = []
@@ -260,7 +266,9 @@ final class BrowserViewModel {
          hdrClassificationService: BrowserHDRClassificationService = .shared,
          presentationFactsService: FullScreenImagePresentationFactsService = .shared,
          pathContainmentService: SafePathContainmentService = .shared,
-         voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService = .shared) {
+         voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService = .shared,
+         favoritesDefaults: UserDefaults = .standard,
+         favoriteBookmarkService: FavoriteFolderBookmarkService = .shared) {
         self.thumbnailService = thumbnailService
         self.fullScreenImageCache = fullScreenImageCache
         self.imageTrashHandler = imageTrashHandler
@@ -270,6 +278,8 @@ final class BrowserViewModel {
         self.presentationFactsService = presentationFactsService
         self.pathContainmentService = pathContainmentService
         self.voiceMemoRenamePlanningService = voiceMemoRenamePlanningService
+        self.favoritesDefaults = favoritesDefaults
+        self.favoriteBookmarkService = favoriteBookmarkService
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
@@ -295,6 +305,7 @@ final class BrowserViewModel {
         metadataWriteTask?.cancel()
         batchReadTask?.cancel()
         renamePlanningTask?.cancel()
+        favoriteLoadTask?.cancel()
         folderOrientationLoadRequestID = nil
         refreshOrientationLoadRequestID = nil
         imageMutationTask?.cancel()
@@ -2235,31 +2246,40 @@ final class BrowserViewModel {
 
     // MARK: - Favorite Folders
 
-    func loadFavorites() {
-        guard let data = UserDefaults.standard.data(forKey: favoritesKey),
-              let decoded = try? JSONDecoder().decode([FavoriteFolder].self, from: data) else {
+    func loadFavorites() async {
+        if favoritesDidLoad { return }
+        if let favoriteLoadTask {
+            await favoriteLoadTask.value
             return
         }
-        var repaired = decoded
-        for index in repaired.indices {
-            guard let bookmark = repaired[index].bookmarkData,
-                  let resolution = BrowserFolderSecurityScopeStore.shared
-                    .resolveAndRetainAccess(bookmark) else { continue }
-            repaired[index] = FavoriteFolder(
-                id: repaired[index].id,
-                url: resolution.url,
-                bookmarkData: resolution.bookmarkData
-            )
+        guard let data = favoritesDefaults.data(forKey: favoritesKey),
+              let decoded = try? JSONDecoder().decode([FavoriteFolder].self, from: data) else {
+            favoritesDidLoad = true
+            return
         }
-        favoriteFolders = repaired
-        if repaired != decoded {
-            saveFavorites()
+
+        let requestID = UUID()
+        favoriteLoadRequestID = requestID
+        let service = favoriteBookmarkService
+        let task = Task { @MainActor [weak self] in
+            let result = await service.resolve(decoded, requestID: requestID)
+            guard let self, self.favoriteLoadRequestID == requestID else { return }
+            self.favoriteLoadTask = nil
+            guard case .loaded(let snapshot) = result,
+                  snapshot.requestID == requestID else { return }
+            self.favoriteFolders = snapshot.folders
+            self.favoritesDidLoad = true
+            if snapshot.folders != decoded {
+                self.saveFavorites()
+            }
         }
+        favoriteLoadTask = task
+        await task.value
     }
 
     private func saveFavorites() {
         if let data = try? JSONEncoder().encode(favoriteFolders) {
-            UserDefaults.standard.set(data, forKey: favoritesKey)
+            favoritesDefaults.set(data, forKey: favoritesKey)
         }
     }
 
@@ -2493,19 +2513,20 @@ final class BrowserViewModel {
         }
     }
 
-    func addCurrentFolderToFavorites() {
+    func addCurrentFolderToFavorites() async {
         guard let url = currentFolderURL else { return }
-        guard !favoriteFolders.contains(where: { $0.url == url }) else { return }
-        let bookmark = BrowserFolderSecurityScopeStore.shared.bookmarkAndRetainAccess(for: url)
-        favoriteFolders.append(FavoriteFolder(url: url, bookmarkData: bookmark))
-        saveFavorites()
-        loadFavoriteTopLevelSubfolders()
+        await addFolderToFavorites(url)
     }
 
-    func addFolderToFavorites(_ url: URL) {
+    func addFolderToFavorites(_ url: URL) async {
+        await loadFavorites()
         guard !favoriteFolders.contains(where: { $0.url == url }) else { return }
-        let bookmark = BrowserFolderSecurityScopeStore.shared.bookmarkAndRetainAccess(for: url)
-        favoriteFolders.append(FavoriteFolder(url: url, bookmarkData: bookmark))
+        let requestID = UUID()
+        let result = await favoriteBookmarkService.createBookmark(for: url, requestID: requestID)
+        guard case .completed(let commit) = result,
+              commit.requestID == requestID,
+              !favoriteFolders.contains(where: { $0.url == url }) else { return }
+        favoriteFolders.append(FavoriteFolder(url: url, bookmarkData: commit.bookmarkData))
         saveFavorites()
         loadFavoriteTopLevelSubfolders()
     }
@@ -2782,11 +2803,35 @@ final class BrowserViewModel {
                 return
             }
 
-            applyFolderMoveSideEffects(sourceURL: sourceURL, destinationURL: destinationURL, newURL: newURL, sourcePath: sourcePath)
+            var favoriteBookmarkData: Data?
+            if favoriteFolders.contains(where: { $0.url == sourceURL }) {
+                let requestID = UUID()
+                let result = await favoriteBookmarkService.createBookmark(
+                    for: newURL,
+                    requestID: requestID
+                )
+                if case .completed(let commit) = result,
+                   commit.requestID == requestID {
+                    favoriteBookmarkData = commit.bookmarkData
+                }
+            }
+            applyFolderMoveSideEffects(
+                sourceURL: sourceURL,
+                destinationURL: destinationURL,
+                newURL: newURL,
+                sourcePath: sourcePath,
+                favoriteBookmarkData: favoriteBookmarkData
+            )
         }
     }
 
-    private func applyFolderMoveSideEffects(sourceURL: URL, destinationURL: URL, newURL: URL, sourcePath: String) {
+    private func applyFolderMoveSideEffects(
+        sourceURL: URL,
+        destinationURL: URL,
+        newURL: URL,
+        sourcePath: String,
+        favoriteBookmarkData: Data?
+    ) {
         // Remove source from its old parent's cache
         for (parentURL, children) in subfoldersByOpenFolder {
             if children.contains(sourceURL) {
@@ -2811,8 +2856,9 @@ final class BrowserViewModel {
         if let favIndex = favoriteFolders.firstIndex(where: { $0.url == sourceURL }) {
             favoriteFolders[favIndex].url = newURL
             favoriteFolders[favIndex].name = newURL.lastPathComponent
-            favoriteFolders[favIndex].bookmarkData = BrowserFolderSecurityScopeStore.shared
-                .bookmarkAndRetainAccess(for: newURL)
+            if let favoriteBookmarkData {
+                favoriteFolders[favIndex].bookmarkData = favoriteBookmarkData
+            }
             saveFavorites()
         }
 

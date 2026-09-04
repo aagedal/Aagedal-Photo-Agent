@@ -250,6 +250,128 @@ struct RecentFoldersStoreTests {
         #expect(resultID == requestID)
     }
 
+    @Test("Favorite bookmarks resolve and refresh off MainActor before publication")
+    func favoriteBookmarkWorkRunsOffMainActor() async throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let recorder = RecentFolderThreadRecorder()
+        let original = URL(
+            fileURLWithPath: "/tmp/photo-agent-favorites/original",
+            isDirectory: true
+        )
+        let moved = URL(
+            fileURLWithPath: "/tmp/photo-agent-favorites/moved",
+            isDirectory: true
+        )
+        let added = URL(
+            fileURLWithPath: "/tmp/photo-agent-favorites-added/session",
+            isDirectory: true
+        )
+        let staleData = Data([0x11])
+        let refreshedData = Data([0x12])
+        let addedData = Data([0x13])
+        let persisted = [FavoriteFolder(url: original, bookmarkData: staleData)]
+        defaults.set(
+            try JSONEncoder().encode(persisted),
+            forKey: UserDefaultsKeys.favoriteFolders
+        )
+        let scopes = BrowserFolderSecurityScopeStore(
+            accessStarter: { _ in
+                recorder.recordCurrentThread()
+                return true
+            },
+            bookmarkCreator: { url in
+                recorder.recordCurrentThread()
+                return url == moved ? refreshedData : addedData
+            },
+            bookmarkResolver: { data in
+                recorder.recordCurrentThread()
+                #expect(data == staleData)
+                return .init(url: moved, isStale: true)
+            }
+        )
+        let service = FavoriteFolderBookmarkService(securityScopes: scopes)
+        let viewModel = BrowserViewModel(
+            favoritesDefaults: defaults,
+            favoriteBookmarkService: service
+        )
+
+        await viewModel.loadFavorites()
+        await viewModel.addFolderToFavorites(added)
+
+        #expect(viewModel.favoriteFolders.count == 2)
+        #expect(viewModel.favoriteFolders[0].id == persisted[0].id)
+        #expect(viewModel.favoriteFolders[0].url == moved)
+        #expect(viewModel.favoriteFolders[0].bookmarkData == refreshedData)
+        #expect(viewModel.favoriteFolders[1].url == added)
+        #expect(viewModel.favoriteFolders[1].bookmarkData == addedData)
+        #expect(recorder.observedMainThread == [false, false, false, false, false])
+        let savedData = try #require(
+            defaults.data(forKey: UserDefaultsKeys.favoriteFolders)
+        )
+        let saved = try JSONDecoder().decode([FavoriteFolder].self, from: savedData)
+        #expect(saved == viewModel.favoriteFolders)
+    }
+
+    @Test("Pre-cancelled favorite resolution performs no bookmark access")
+    func preCancelledFavoriteResolutionIsExplicit() async {
+        let scopes = BrowserFolderSecurityScopeStore(
+            accessStarter: { _ in true },
+            bookmarkCreator: { _ in Data([0x01]) },
+            bookmarkResolver: { _ in
+                Issue.record("A pre-cancelled load must not resolve a favorite bookmark")
+                return nil
+            }
+        )
+        let service = FavoriteFolderBookmarkService(securityScopes: scopes)
+        let requestID = UUID()
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.resolve(
+                [FavoriteFolder(
+                    url: URL(fileURLWithPath: "/tmp/cancelled-favorite", isDirectory: true),
+                    bookmarkData: Data([0x01])
+                )],
+                requestID: requestID
+            )
+        }.value
+
+        guard case .cancelledBeforeAccess(let resultID) = result else {
+            Issue.record("Expected cancellation before favorite bookmark resolution")
+            return
+        }
+        #expect(resultID == requestID)
+    }
+
+    @Test("Favorite creation reports cancellation after bookmark access")
+    func favoriteCreationReportsPostAccessCancellation() async {
+        let cancellation = FavoriteCancellationSequence([false, true])
+        let scopes = BrowserFolderSecurityScopeStore(
+            accessStarter: { _ in true },
+            bookmarkCreator: { _ in Data([0x21]) },
+            bookmarkResolver: { _ in nil }
+        )
+        let service = FavoriteFolderBookmarkService(
+            securityScopes: scopes,
+            cancellationRequested: cancellation.next
+        )
+        let requestID = UUID()
+        let result = await Task {
+            await service.createBookmark(
+                for: URL(fileURLWithPath: "/tmp/favorite-commit", isDirectory: true),
+                requestID: requestID
+            )
+        }.value
+
+        guard case .completed(let commit) = result else {
+            Issue.record("Expected completed favorite bookmark access")
+            return
+        }
+        #expect(commit.requestID == requestID)
+        #expect(commit.bookmarkData == Data([0x21]))
+        #expect(commit.cancellationRequestedAfterAccess)
+    }
+
     @Test("Legacy recent and favorite folders decode without bookmark data")
     func legacyFolderModelsDecode() throws {
         let id = UUID()
@@ -284,5 +406,20 @@ nonisolated private final class RecentFolderThreadRecorder: @unchecked Sendable 
 
     func recordCurrentThread() {
         lock.withLock { storage.append(Thread.isMainThread) }
+    }
+}
+
+nonisolated private final class FavoriteCancellationSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Bool]
+
+    init(_ values: [Bool]) {
+        self.values = values
+    }
+
+    func next() -> Bool {
+        lock.withLock {
+            values.isEmpty ? false : values.removeFirst()
+        }
     }
 }
