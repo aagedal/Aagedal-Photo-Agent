@@ -74,6 +74,30 @@ nonisolated struct KnownPeopleArchiveImportPayload: Sendable {
     let embeddingThumbnails: [UUID: Data]
 }
 
+nonisolated struct KnownPeopleArchiveImportCommitRequest: Sendable {
+    let requestID: UUID
+    let storageRoot: URL
+    let people: [KnownPerson]
+    let personThumbnails: [UUID: Data]
+    let embeddingThumbnails: [UUID: Data]
+}
+
+nonisolated struct KnownPeopleArchiveImportCommitEvidence: Sendable {
+    let requestID: UUID
+    let storageRoot: URL
+    let requestedPersonCount: Int
+    let committedPeople: [KnownPerson]
+    let committedFileURLs: [URL]
+    let committedThumbnailURLs: [URL]
+    let failedThumbnailCount: Int
+}
+
+nonisolated enum KnownPeopleArchiveImportCommitResult: Sendable {
+    case complete(KnownPeopleArchiveImportCommitEvidence)
+    case cancelled(KnownPeopleArchiveImportCommitEvidence)
+    case failed(KnownPeopleArchiveImportCommitEvidence, message: String)
+}
+
 nonisolated struct KnownPeopleArchiveFileAccess: Sendable {
     let temporaryDirectory: URL
     let createDirectory: @Sendable (URL) throws -> Void
@@ -84,6 +108,7 @@ nonisolated struct KnownPeopleArchiveFileAccess: Sendable {
     let readData: @Sendable (URL) throws -> Data
     let readCoordinatedData: @Sendable (URL) throws -> Data
     let writeData: @Sendable (Data, URL) throws -> Void
+    let writeCoordinatedData: @Sendable (Data, URL) throws -> Void
     let runDitto: @Sendable ([String]) async throws -> Void
 
     static let system = KnownPeopleArchiveFileAccess(
@@ -102,6 +127,7 @@ nonisolated struct KnownPeopleArchiveFileAccess: Sendable {
         readData: { try Data(contentsOf: $0) },
         readCoordinatedData: { try CloudCoordinatedIO.readData(at: $0) },
         writeData: { try $0.write(to: $1) },
+        writeCoordinatedData: { try CloudCoordinatedIO.writeData($0, to: $1) },
         runDitto: { try await KnownPeopleArchiveProcess.run(arguments: $0) }
     )
 }
@@ -137,12 +163,16 @@ nonisolated private enum KnownPeopleArchiveProcess {
 
 /// Serializes ZIP preparation away from MainActor. The actor owns the temporary directory for
 /// the complete operation, samples cancellation around every synchronous Foundation/iCloud read,
-/// and returns an immutable import payload. Destination persistence remains on the Known People
-/// state owner so duplicate filtering and in-memory publication stay one MainActor transaction.
+/// and returns an immutable import payload. Destination persistence is serialized by this actor;
+/// the Known People state owner keeps duplicate filtering and in-memory publication on MainActor.
 actor KnownPeopleArchiveService {
     static let shared = KnownPeopleArchiveService()
 
     private let access: KnownPeopleArchiveFileAccess
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "KnownPeopleArchiveImportCommit"
+    )
     private var hasExclusiveAccess = false
     private var accessWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -287,6 +317,110 @@ actor KnownPeopleArchiveService {
             personThumbnails: personThumbnails,
             embeddingThumbnails: embeddingThumbnails
         )
+    }
+
+    /// Persists the filtered archive payload on the actor after preparation. Each person file is
+    /// the durable commit boundary; thumbnail failures retain the historical best-effort behavior,
+    /// while cancellation and person-write failures return the exact committed prefix.
+    func commitImport(
+        _ request: KnownPeopleArchiveImportCommitRequest
+    ) async -> KnownPeopleArchiveImportCommitResult {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        let interval = signposter.beginInterval(
+            "Commit",
+            id: signposter.makeSignpostID()
+        )
+        let peopleDirectory = request.storageRoot.appendingPathComponent("people", isDirectory: true)
+        let thumbnailsDirectory = request.storageRoot.appendingPathComponent("thumbnails", isDirectory: true)
+        let embeddingThumbnailsDirectory = request.storageRoot.appendingPathComponent(
+            "embedding_thumbnails",
+            isDirectory: true
+        )
+        var committedPeople: [KnownPerson] = []
+        var committedFileURLs: [URL] = []
+        var committedThumbnailURLs: [URL] = []
+        var failedThumbnailCount = 0
+
+        func evidence() -> KnownPeopleArchiveImportCommitEvidence {
+            KnownPeopleArchiveImportCommitEvidence(
+                requestID: request.requestID,
+                storageRoot: request.storageRoot,
+                requestedPersonCount: request.people.count,
+                committedPeople: committedPeople,
+                committedFileURLs: committedFileURLs,
+                committedThumbnailURLs: committedThumbnailURLs,
+                failedThumbnailCount: failedThumbnailCount
+            )
+        }
+
+        func cancelled() -> KnownPeopleArchiveImportCommitResult {
+            let snapshot = evidence()
+            signposter.endInterval(
+                "Commit",
+                interval,
+                "result=cancelled requested=\(snapshot.requestedPersonCount) committed=\(snapshot.committedPeople.count) thumbnails=\(snapshot.committedThumbnailURLs.count) thumbnailFailures=\(snapshot.failedThumbnailCount)"
+            )
+            return .cancelled(snapshot)
+        }
+
+        guard !Task.isCancelled else { return cancelled() }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+
+        for person in request.people {
+            guard !Task.isCancelled else { return cancelled() }
+
+            if let data = request.personThumbnails[person.id] {
+                let url = thumbnailsDirectory.appendingPathComponent("\(person.id.uuidString).jpg")
+                do {
+                    try access.writeCoordinatedData(data, url)
+                    committedThumbnailURLs.append(url)
+                } catch {
+                    failedThumbnailCount += 1
+                }
+                guard !Task.isCancelled else { return cancelled() }
+            }
+
+            for embedding in person.embeddings {
+                guard !Task.isCancelled else { return cancelled() }
+                guard let data = request.embeddingThumbnails[embedding.id] else { continue }
+                let url = embeddingThumbnailsDirectory.appendingPathComponent(
+                    "\(embedding.id.uuidString).jpg"
+                )
+                do {
+                    try access.writeCoordinatedData(data, url)
+                    committedThumbnailURLs.append(url)
+                } catch {
+                    failedThumbnailCount += 1
+                }
+                guard !Task.isCancelled else { return cancelled() }
+            }
+
+            let personURL = peopleDirectory.appendingPathComponent("\(person.id.uuidString).json")
+            do {
+                try access.writeCoordinatedData(try encoder.encode(person), personURL)
+            } catch {
+                let snapshot = evidence()
+                signposter.endInterval(
+                    "Commit",
+                    interval,
+                    "result=failed requested=\(snapshot.requestedPersonCount) committed=\(snapshot.committedPeople.count) thumbnails=\(snapshot.committedThumbnailURLs.count) thumbnailFailures=\(snapshot.failedThumbnailCount)"
+                )
+                return .failed(snapshot, message: error.localizedDescription)
+            }
+            committedPeople.append(person)
+            committedFileURLs.append(personURL)
+            guard !Task.isCancelled else { return cancelled() }
+        }
+
+        let snapshot = evidence()
+        signposter.endInterval(
+            "Commit",
+            interval,
+            "result=complete requested=\(snapshot.requestedPersonCount) committed=\(snapshot.committedPeople.count) thumbnails=\(snapshot.committedThumbnailURLs.count) thumbnailFailures=\(snapshot.failedThumbnailCount)"
+        )
+        return .complete(snapshot)
     }
 
     private func beginExclusiveAccess() async {
@@ -1752,32 +1886,59 @@ final class KnownPeopleService {
         var db = loadDatabase()
         let existingIDs = Set(db.people.map(\.id))
         let newPeople = payload.people.filter { !existingIDs.contains($0.id) }
+        let requestID = UUID()
+        let storageRoot = knownPeopleDirectory
+        let result = await archiveService.commitImport(KnownPeopleArchiveImportCommitRequest(
+            requestID: requestID,
+            storageRoot: storageRoot,
+            people: newPeople,
+            personThumbnails: payload.personThumbnails,
+            embeddingThumbnails: payload.embeddingThumbnails
+        ))
 
-        // Copy thumbnails only for newly imported people
-        for person in newPeople {
-            if let data = payload.personThumbnails[person.id] {
-                // Destination is the possibly-iCloud container, so write coordinated.
-                try? CloudCoordinatedIO.writeData(data, to: thumbnailURL(for: person.id))
-            }
-
-            // Copy embedding thumbnails
-            for embedding in person.embeddings {
-                if let data = payload.embeddingThumbnails[embedding.id] {
-                    try? CloudCoordinatedIO.writeData(data, to: embeddingThumbnailURL(for: embedding.id))
-                }
-            }
+        let evidence: KnownPeopleArchiveImportCommitEvidence
+        let completionError: (any Error)?
+        switch result {
+        case .complete(let committed):
+            evidence = committed
+            completionError = nil
+        case .cancelled(let committed):
+            evidence = committed
+            completionError = CancellationError()
+        case .failed(let committed, let message):
+            evidence = committed
+            completionError = NSError(
+                domain: "KnownPeopleService",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
         }
 
-        // Write each new person as its own file, then refresh the cache.
-        for person in newPeople {
-            try writePerson(person)
+        guard evidence.requestID == requestID,
+              evidence.storageRoot.standardizedFileURL == storageRoot.standardizedFileURL,
+              evidence.requestedPersonCount == newPeople.count else {
+            throw CancellationError()
         }
-        db.people.append(contentsOf: newPeople)
-        db.lastModified = newPeople.map(\.updatedAt).max() ?? db.lastModified
-        database = db
-        clearFeaturePrintCache()
+        guard storageRevision == expectedStorageRevision else {
+            throw CancellationError()
+        }
 
-        return newPeople.count
+        // Publish every durable person even when a later write failed or cancellation arrived.
+        // This keeps the MainActor cache consistent with the exact prefix already visible on disk.
+        for url in evidence.committedFileURLs + evidence.committedThumbnailURLs {
+            stampLocalWrite(url)
+        }
+        if !evidence.committedPeople.isEmpty {
+            let currentIDs = Set(db.people.map(\.id))
+            db.people.append(contentsOf: evidence.committedPeople.filter { !currentIDs.contains($0.id) })
+            db.lastModified = evidence.committedPeople.map(\.updatedAt).max() ?? db.lastModified
+            database = db
+            clearFeaturePrintCache()
+            NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        }
+
+        if let completionError { throw completionError }
+        return evidence.committedPeople.count
     }
 
     // MARK: - Statistics

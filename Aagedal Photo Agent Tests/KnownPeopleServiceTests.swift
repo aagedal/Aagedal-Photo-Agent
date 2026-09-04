@@ -196,6 +196,63 @@ struct KnownPeopleServiceTests {
         )) == Data([13, 14, 15]))
     }
 
+    @Test("Known People archive destination commit runs off MainActor and returns its durable prefix")
+    func archiveDestinationCommitBoundary() async throws {
+        let firstEmbedding = embedding(21)
+        let secondEmbedding = embedding(22)
+        let first = KnownPerson(name: "First", embeddings: [firstEmbedding])
+        let second = KnownPerson(name: "Second", embeddings: [secondEmbedding])
+        let probe = KnownPeopleArchiveCommitProbe(cancelAfterFirstPerson: true)
+        let service = KnownPeopleArchiveService(access: probe.fileAccess)
+        let requestID = UUID()
+        let storageRoot = URL(fileURLWithPath: "/known-people/import-store", isDirectory: true)
+
+        let operation = Task {
+            await service.commitImport(KnownPeopleArchiveImportCommitRequest(
+                requestID: requestID,
+                storageRoot: storageRoot,
+                people: [first, second],
+                personThumbnails: [first.id: Data([1])],
+                embeddingThumbnails: [firstEmbedding.id: Data([2])]
+            ))
+        }
+        let result = await operation.value
+
+        guard case .cancelled(let evidence) = result else {
+            Issue.record("Expected cancellation after the first durable person commit")
+            return
+        }
+        #expect(evidence.requestID == requestID)
+        #expect(evidence.requestedPersonCount == 2)
+        #expect(evidence.committedPeople.map(\.id) == [first.id])
+        #expect(evidence.committedFileURLs.map(\.lastPathComponent) == ["\(first.id.uuidString).json"])
+        #expect(Set(evidence.committedThumbnailURLs.map(\.lastPathComponent)) == [
+            "\(first.id.uuidString).jpg",
+            "\(firstEmbedding.id.uuidString).jpg"
+        ])
+        #expect(evidence.failedThumbnailCount == 0)
+        #expect(!probe.observedMainThread)
+        #expect(probe.personWriteCount == 1)
+
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let serviceSource = try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("Aagedal Photo Agent/Services/KnownPeopleService.swift"),
+            encoding: .utf8
+        )
+        let importStart = try #require(serviceSource.range(of: "func importFromZip(sourceURL: URL)"))
+        let statisticsStart = try #require(serviceSource.range(
+            of: "// MARK: - Statistics",
+            range: importStart.lowerBound..<serviceSource.endIndex
+        ))
+        let importFunction = serviceSource[importStart.lowerBound..<statisticsStart.lowerBound]
+        #expect(importFunction.contains("await archiveService.commitImport"))
+        #expect(!importFunction.contains("CloudCoordinatedIO.writeData"))
+        #expect(!importFunction.contains("try writePerson(person)"))
+    }
+
     @Test("Known People synchronous thumbnail presentation is cache-only")
     func thumbnailPresentationSourceContract() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
@@ -648,6 +705,7 @@ private nonisolated final class KnownPeopleArchiveReadProbe: @unchecked Sendable
             },
             readCoordinatedData: { _ in throw CancellationError() },
             writeData: { _, _ in },
+            writeCoordinatedData: { _, _ in },
             runDitto: { [weak self] arguments in
                 self?.recordDitto(arguments)
             }
@@ -677,5 +735,61 @@ private nonisolated final class KnownPeopleArchiveReadProbe: @unchecked Sendable
         lock.lock()
         defer { lock.unlock() }
         return storedObservedMainThread
+    }
+}
+
+private nonisolated final class KnownPeopleArchiveCommitProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let cancelAfterFirstPerson: Bool
+    private var storedObservedMainThread = false
+    private var storedPersonWriteCount = 0
+
+    init(cancelAfterFirstPerson: Bool) {
+        self.cancelAfterFirstPerson = cancelAfterFirstPerson
+    }
+
+    var fileAccess: KnownPeopleArchiveFileAccess {
+        KnownPeopleArchiveFileAccess(
+            temporaryDirectory: URL(fileURLWithPath: "/temporary/archive-commit-probe", isDirectory: true),
+            createDirectory: { _ in },
+            removeItem: { _ in },
+            contentsOfDirectory: { _ in [] },
+            isDirectory: { _ in false },
+            itemExists: { _ in false },
+            readData: { _ in Data() },
+            readCoordinatedData: { _ in Data() },
+            writeData: { _, _ in },
+            writeCoordinatedData: { [weak self] _, url in
+                self?.recordWrite(url)
+            },
+            runDitto: { _ in }
+        )
+    }
+
+    private func recordWrite(_ url: URL) {
+        lock.lock()
+        storedObservedMainThread = storedObservedMainThread || Thread.isMainThread
+        if url.pathExtension == "json" {
+            storedPersonWriteCount += 1
+            let shouldCancel = cancelAfterFirstPerson && storedPersonWriteCount == 1
+            lock.unlock()
+            if shouldCancel {
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+            return
+        }
+        lock.unlock()
+    }
+
+    var observedMainThread: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedObservedMainThread
+    }
+
+    var personWriteCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedPersonWriteCount
     }
 }

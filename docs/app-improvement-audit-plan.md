@@ -1143,6 +1143,17 @@ unfiltered run of 1,981 tests in 229 suites also pass. Import destination commit
 cached-model paths, and real-volume/signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-known-people-archive-continuation-2026-09-04.md))
 
+**Known People import-commit follow-up (2026-09-04):** archive import destination writes now cross the same
+serialized actor as preparation. An immutable request freezes the storage root, duplicate-filtered people, and
+thumbnail bytes; complete, cancelled, and failed results return exact durable person and thumbnail evidence.
+`KnownPeopleService` revision-gates publication, stamps every committed local write, and installs the durable
+person prefix before surfacing cancellation or a later failure, keeping its MainActor cache aligned with disk.
+A cancellation-after-first-write characterization, production source contract, and real ZIP round trip pass in
+the 16-test focused suite; the adjacent 44-test selection, repository gate, and serial unfiltered run of 1,982
+tests in 229 suites also pass. Other lower-priority direct/cached-model paths and real-volume/signpost/Thread
+Performance Checker evidence remain open.
+([validation](plan-status-known-people-import-commit-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
