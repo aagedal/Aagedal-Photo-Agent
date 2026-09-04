@@ -7,6 +7,19 @@ struct ImportSourceDiscoveryProgress: Equatable, Sendable {
     var wavFileCount: Int = 0
 }
 
+/// Security-scope operations can synchronously consult a file provider. Keeping the access
+/// injectable makes their executor and balanced lifetime directly characterizable without
+/// requiring a sandbox bookmark in tests.
+nonisolated struct ImportSourceSecurityScopeAccess: Sendable {
+    let start: @Sendable (URL) -> Bool
+    let stop: @Sendable (URL) -> Void
+
+    static let system = ImportSourceSecurityScopeAccess(
+        start: { $0.startAccessingSecurityScopedResource() },
+        stop: { $0.stopAccessingSecurityScopedResource() }
+    )
+}
+
 /// Serializes recursive import-source scans away from the main actor.
 ///
 /// Directory enumeration is synchronous Foundation I/O, so callers cross this actor boundary
@@ -14,6 +27,12 @@ struct ImportSourceDiscoveryProgress: Equatable, Sendable {
 /// cancellation is observed throughout the walk, before any result can be published.
 actor ImportSourceDiscoveryService {
     nonisolated static let defaultProgressUpdateInterval: Duration = .seconds(5)
+
+    private let securityScopeAccess: ImportSourceSecurityScopeAccess
+
+    init(securityScopeAccess: ImportSourceSecurityScopeAccess = .system) {
+        self.securityScopeAccess = securityScopeAccess
+    }
 
     enum DiscoveryError: LocalizedError, Sendable, Equatable {
         case couldNotEnumerate(URL)
@@ -42,6 +61,16 @@ actor ImportSourceDiscoveryService {
         )
 
         do {
+            try Task.checkCancellation()
+            let didStartAccessing = securityScopeAccess.start(rootURL)
+            defer {
+                if didStartAccessing {
+                    securityScopeAccess.stop(rootURL)
+                }
+            }
+            // `startAccessingSecurityScopedResource` is synchronous and cannot be pre-empted.
+            // Observe cancellation again after it returns, while the defer still guarantees a
+            // balanced stop for every successfully acquired scope.
             try Task.checkCancellation()
             guard let enumerator = FileManager.default.enumerator(
                 at: rootURL,

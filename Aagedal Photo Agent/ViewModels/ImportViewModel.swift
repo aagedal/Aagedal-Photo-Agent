@@ -575,10 +575,6 @@ final class ImportViewModel {
         isScanningVoiceMemoSource = true
 
         voiceMemoScanTask = Task(priority: .userInitiated) { [sourceDiscoveryService] in
-            let didStartAccessing = url.startAccessingSecurityScopedResource()
-            defer {
-                if didStartAccessing { url.stopAccessingSecurityScopedResource() }
-            }
             do {
                 let files = try await sourceDiscoveryService.discoverFiles(at: url) { progress in
                     await MainActor.run {

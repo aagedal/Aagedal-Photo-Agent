@@ -1222,6 +1222,16 @@ source contract. The adjacent 118-logical-test/123-expanded-run selection, repos
 signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-swiftexif-technical-snapshot-continuation-2026-09-04.md))
 
+**Import source security-scope follow-up (2026-09-04):** primary and optional voice-memo source discovery now owns
+its complete security-scope lifetime on the existing serialized discovery actor. The synchronous file-provider
+access call no longer runs in the MainActor-inheriting voice-memo scan task, both source paths use the same boundary,
+and cancellation is sampled before and after acquisition while every successfully acquired scope is balanced by an
+actor-owned stop. Four new characterizations cover executor isolation, balanced and unavailable access, cancellation
+before and during the non-preemptible API, and the caller source contract. The focused 8-test suite, adjacent 45-test
+import selection, repository gate, and serial unfiltered 2,004-test run passed. Other lower-priority direct/cached-
+model paths and real-volume/signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-import-source-security-scope-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

@@ -414,6 +414,102 @@ struct ImportSourceDiscoveryServiceTests {
         #expect(ImportSourceDiscoveryService.defaultProgressUpdateInterval == .seconds(5))
     }
 
+    @Test("Voice-memo scan delegates security-scope ownership to discovery")
+    func voiceMemoScanSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/ImportViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "    private func scanVoiceMemoSource(url: URL)"))
+        let functionEnd = try #require(source.range(
+            of: "    // MARK: - Destination Selection",
+            range: functionStart.upperBound..<source.endIndex
+        ))
+        let functionSource = String(source[functionStart.lowerBound..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains("sourceDiscoveryService.discoverFiles(at: url)"))
+        #expect(!functionSource.contains("startAccessingSecurityScopedResource"))
+        #expect(!functionSource.contains("stopAccessingSecurityScopedResource"))
+    }
+
+    @Test("Security scope is balanced and never touched on MainActor")
+    @MainActor
+    func securityScopeRunsOffMainActor() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportSourceScopeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let probe = ImportSourceSecurityScopeProbe(startResult: true)
+        let service = ImportSourceDiscoveryService(
+            securityScopeAccess: ImportSourceSecurityScopeAccess(
+                start: probe.start,
+                stop: probe.stop
+            )
+        )
+
+        _ = try await service.discoverFiles(at: root)
+
+        #expect(probe.startedURLs == [root])
+        #expect(probe.stoppedURLs == [root])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("An unavailable security scope is not stopped")
+    func unavailableSecurityScopeIsNotStopped() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportSourceUnavailableScopeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let probe = ImportSourceSecurityScopeProbe(startResult: false)
+        let service = ImportSourceDiscoveryService(
+            securityScopeAccess: ImportSourceSecurityScopeAccess(
+                start: probe.start,
+                stop: probe.stop
+            )
+        )
+
+        _ = try await service.discoverFiles(at: root)
+
+        #expect(probe.startedURLs == [root])
+        #expect(probe.stoppedURLs.isEmpty)
+    }
+
+    @Test("Cancellation during security-scope acquisition still balances access")
+    func cancellationAfterAccessIsBalanced() async {
+        let root = URL(fileURLWithPath: "/source-cancelled-during-security-scope")
+        let probe = ImportSourceBlockingSecurityScopeProbe()
+        let service = ImportSourceDiscoveryService(
+            securityScopeAccess: ImportSourceSecurityScopeAccess(
+                start: probe.start,
+                stop: probe.stop
+            )
+        )
+        let task = Task {
+            try await service.discoverFiles(at: root)
+        }
+
+        #expect(await probe.waitUntilStarted())
+        task.cancel()
+        probe.release()
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected cancellation after security-scope acquisition")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            Issue.record("Expected CancellationError, received \(error)")
+        }
+        #expect(probe.stoppedURLs == [root])
+    }
+
     @Test("Discovery recursively returns regular files while skipping hidden and package contents")
     func discoversRegularFilesOnly() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -441,7 +537,13 @@ struct ImportSourceDiscoveryServiceTests {
 
     @Test("Discovery surfaces cancellation before touching the source")
     func cancellationIsExplicit() async {
-        let service = ImportSourceDiscoveryService()
+        let probe = ImportSourceSecurityScopeProbe(startResult: true)
+        let service = ImportSourceDiscoveryService(
+            securityScopeAccess: ImportSourceSecurityScopeAccess(
+                start: probe.start,
+                stop: probe.stop
+            )
+        )
         let task = Task {
             try await service.discoverFiles(at: URL(fileURLWithPath: "/source-is-never-read"))
         }
@@ -455,6 +557,8 @@ struct ImportSourceDiscoveryServiceTests {
         } catch {
             Issue.record("Expected CancellationError, received \(error)")
         }
+        #expect(probe.startedURLs.isEmpty)
+        #expect(probe.stoppedURLs.isEmpty)
     }
 
     @Test("Discovery progress reports files, supported images, and WAV files")
@@ -484,6 +588,85 @@ struct ImportSourceDiscoveryServiceTests {
             wavFileCount: 1
         ))
     }
+}
+
+private nonisolated final class ImportSourceSecurityScopeProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let startResult: Bool
+    private var starts: [URL] = []
+    private var stops: [URL] = []
+    private var observedMainThread = false
+
+    init(startResult: Bool) {
+        self.startResult = startResult
+    }
+
+    func start(_ url: URL) -> Bool {
+        lock.withLock {
+            starts.append(url)
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return startResult
+    }
+
+    func stop(_ url: URL) {
+        lock.withLock {
+            stops.append(url)
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+    }
+
+    var startedURLs: [URL] { lock.withLock { starts } }
+    var stoppedURLs: [URL] { lock.withLock { stops } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+private nonisolated final class ImportSourceBlockingSecurityScopeProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = false
+    private var released = false
+    private var stops: [URL] = []
+
+    func start(_ url: URL) -> Bool {
+        _ = url
+        condition.lock()
+        started = true
+        condition.broadcast()
+        while !released {
+            condition.wait()
+        }
+        condition.unlock()
+        return true
+    }
+
+    func stop(_ url: URL) {
+        condition.withLock { stops.append(url) }
+    }
+
+    func waitUntilStarted(timeout: TimeInterval = 30) async -> Bool {
+        await Task.detached { [self] in
+            waitUntilStartedSynchronously(timeout: timeout)
+        }.value
+    }
+
+    private func waitUntilStartedSynchronously(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while !started {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    func release() {
+        condition.withLock {
+            released = true
+            condition.broadcast()
+        }
+    }
+
+    var stoppedURLs: [URL] { condition.withLock { stops } }
 }
 
 @Suite("ImportViewModel", .serialized)

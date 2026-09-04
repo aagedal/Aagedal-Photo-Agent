@@ -692,6 +692,14 @@ characterizations, the adjacent 118-logical-test/123-expanded-run selection, rep
 2,000-logical-test/2,127-expanded-run gate passed. The audit remains 66 of 75 while other lower-priority direct/
 cached-model paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [Import source security-scope continuation](plan-status-import-source-security-scope-continuation-2026-09-04.md)
+moves security-scope acquisition and release for both primary and optional voice-memo source scans into the existing
+serialized discovery actor. The scope now covers the recursive enumeration on the same executor, successful access
+is always balanced, and cancellation is explicit on both sides of the non-preemptible acquisition call. Four new
+characterizations, the focused 8-test suite, adjacent 45-test import selection, repository gate, and serial unfiltered
+2,004-test run passed. The audit remains 66 of 75 while other lower-priority direct/cached-model paths and real-volume/
+signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.
