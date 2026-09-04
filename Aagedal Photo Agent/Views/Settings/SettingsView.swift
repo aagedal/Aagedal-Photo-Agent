@@ -2456,9 +2456,12 @@ struct SettingsView: View {
         panel.prompt = "Choose"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        settingsViewModel.setTemplatesFolderURL(url)
-        templateViewModel.loadTemplates()
-        developTemplateViewModel.loadTemplates()
+        Task {
+            await settingsViewModel.setTemplatesFolderURL(url)
+            guard !Task.isCancelled else { return }
+            templateViewModel.loadTemplates()
+            developTemplateViewModel.loadTemplates()
+        }
     }
 
     private func exportTemplates() {

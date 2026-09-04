@@ -340,11 +340,150 @@ nonisolated enum SettingsDestination: Equatable, Sendable {
     case metadata
 }
 
+nonisolated struct TemplatesFolderBookmarkResolution: Sendable, Equatable {
+    let url: URL
+    let isStale: Bool
+}
+
+nonisolated struct TemplatesFolderBookmarkAccess: Sendable {
+    let resolve: @Sendable (Data) throws -> TemplatesFolderBookmarkResolution
+    let startAccessing: @Sendable (URL) -> Bool
+    let stopAccessing: @Sendable (URL) -> Void
+    let create: @Sendable (URL) throws -> Data
+
+    init(
+        resolve: @escaping @Sendable (Data) throws -> TemplatesFolderBookmarkResolution = { data in
+            var isStale = false
+            let url = try URL(
+                resolvingBookmarkData: data,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            return TemplatesFolderBookmarkResolution(url: url, isStale: isStale)
+        },
+        startAccessing: @escaping @Sendable (URL) -> Bool = {
+            $0.startAccessingSecurityScopedResource()
+        },
+        stopAccessing: @escaping @Sendable (URL) -> Void = {
+            $0.stopAccessingSecurityScopedResource()
+        },
+        create: @escaping @Sendable (URL) throws -> Data = { url in
+            try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+        }
+    ) {
+        self.resolve = resolve
+        self.startAccessing = startAccessing
+        self.stopAccessing = stopAccessing
+        self.create = create
+    }
+}
+
+nonisolated struct TemplatesFolderBookmarkSnapshot: Sendable, Equatable {
+    let requestID: UUID
+    let url: URL
+    let refreshedBookmarkData: Data?
+}
+
+nonisolated enum TemplatesFolderBookmarkLoadResult: Sendable, Equatable {
+    case loaded(TemplatesFolderBookmarkSnapshot)
+    case failed(requestID: UUID)
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledAfterAccess(requestID: UUID)
+}
+
+nonisolated struct TemplatesFolderBookmarkCommit: Sendable, Equatable {
+    let requestID: UUID
+    let bookmarkData: Data?
+    let cancellationRequestedAfterAccess: Bool
+}
+
+nonisolated enum TemplatesFolderBookmarkCommitResult: Sendable, Equatable {
+    case completed(TemplatesFolderBookmarkCommit)
+    case cancelledBeforeAccess(requestID: UUID)
+}
+
+/// Serializes custom Templates-folder bookmark APIs away from MainActor. Bookmark calls are
+/// synchronous and may consult a file provider, so cancellation is sampled around each access
+/// and the observable owner publishes only a complete result for its current request.
+actor TemplatesFolderBookmarkService {
+    static let shared = TemplatesFolderBookmarkService()
+
+    private let access: TemplatesFolderBookmarkAccess
+    private let cancellationRequested: @Sendable () -> Bool
+
+    init(
+        access: TemplatesFolderBookmarkAccess = TemplatesFolderBookmarkAccess(),
+        cancellationRequested: @escaping @Sendable () -> Bool = { Task.isCancelled }
+    ) {
+        self.access = access
+        self.cancellationRequested = cancellationRequested
+    }
+
+    func resolve(_ bookmarkData: Data, requestID: UUID) -> TemplatesFolderBookmarkLoadResult {
+        guard !cancellationRequested() else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+        guard let resolution = try? access.resolve(bookmarkData) else {
+            return .failed(requestID: requestID)
+        }
+        guard !cancellationRequested() else {
+            return .cancelledAfterAccess(requestID: requestID)
+        }
+
+        var refreshedBookmarkData: Data?
+        if resolution.isStale {
+            refreshedBookmarkData = createBookmark(for: resolution.url)
+            guard !cancellationRequested() else {
+                return .cancelledAfterAccess(requestID: requestID)
+            }
+        }
+        return .loaded(TemplatesFolderBookmarkSnapshot(
+            requestID: requestID,
+            url: resolution.url,
+            refreshedBookmarkData: refreshedBookmarkData
+        ))
+    }
+
+    func createBookmark(
+        for url: URL,
+        requestID: UUID
+    ) -> TemplatesFolderBookmarkCommitResult {
+        guard !cancellationRequested() else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+        let bookmarkData = createBookmark(for: url)
+        return .completed(TemplatesFolderBookmarkCommit(
+            requestID: requestID,
+            bookmarkData: bookmarkData,
+            cancellationRequestedAfterAccess: cancellationRequested()
+        ))
+    }
+
+    private func createBookmark(for url: URL) -> Data? {
+        let didStartAccessing = access.startAccessing(url)
+        defer {
+            if didStartAccessing {
+                access.stopAccessing(url)
+            }
+        }
+        return try? access.create(url)
+    }
+}
+
 @Observable
 final class SettingsViewModel {
     private let c2paConfigurationService: C2PASigningConfigurationService
     private let quickListPersistence: KeywordListEditorPersistenceService
+    private let templatesFolderDefaults: UserDefaults
+    private let templatesFolderBookmarkService: TemplatesFolderBookmarkService
     @ObservationIgnored private var c2paOperationRequestID: UUID?
+    @ObservationIgnored private var templatesFolderRequestID: UUID?
+    @ObservationIgnored nonisolated(unsafe) private var templatesFolderLoadTask: Task<Void, Never>?
     /// Ephemeral navigation request consumed by the app's Settings scene.
     var requestedDestination: SettingsDestination? = nil
     var rawRenderAsHDR: Bool {
@@ -650,44 +789,65 @@ final class SettingsViewModel {
         publishQuickListCommit(commit, type: type)
     }
 
-    func setTemplatesFolderURL(_ url: URL) {
-        saveBookmark(for: url, key: UserDefaultsKeys.templatesFolderBookmark)
+    func setTemplatesFolderURL(_ url: URL) async {
+        templatesFolderLoadTask?.cancel()
+        templatesFolderLoadTask = nil
+        let requestID = UUID()
+        templatesFolderRequestID = requestID
+        let result = await templatesFolderBookmarkService.createBookmark(
+            for: url,
+            requestID: requestID
+        )
+        guard templatesFolderRequestID == requestID,
+              case .completed(let commit) = result,
+              commit.requestID == requestID else { return }
+        templatesFolderRequestID = nil
+        if let bookmarkData = commit.bookmarkData {
+            templatesFolderDefaults.set(bookmarkData, forKey: UserDefaultsKeys.templatesFolderBookmark)
+        }
         templatesFolderPath = url.path
     }
 
     func clearTemplatesFolder() {
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.templatesFolderBookmark)
+        templatesFolderLoadTask?.cancel()
+        templatesFolderLoadTask = nil
+        templatesFolderRequestID = nil
+        templatesFolderDefaults.removeObject(forKey: UserDefaultsKeys.templatesFolderBookmark)
         templatesFolderPath = ""
     }
 
-    private func saveBookmark(for url: URL, key: String) {
-        let didStartAccessing = url.startAccessingSecurityScopedResource()
-        defer {
-            if didStartAccessing {
-                url.stopAccessingSecurityScopedResource()
-            }
+    func loadTemplatesFolderBookmark() async {
+        if let templatesFolderLoadTask {
+            await templatesFolderLoadTask.value
+            return
         }
-        do {
-            let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-            UserDefaults.standard.set(bookmarkData, forKey: key)
-        } catch {
-            // Bookmark creation failed
-        }
+        scheduleTemplatesFolderBookmarkLoad()
+        await templatesFolderLoadTask?.value
     }
 
-    private func resolveBookmark(key: String) -> URL? {
-        guard let bookmarkData = UserDefaults.standard.data(forKey: key) else { return nil }
-        var isStale = false
-        do {
-            let url = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
-            if isStale {
-                // Re-save the bookmark
-                saveBookmark(for: url, key: key)
+    private func scheduleTemplatesFolderBookmarkLoad() {
+        guard let bookmarkData = templatesFolderDefaults.data(
+            forKey: UserDefaultsKeys.templatesFolderBookmark
+        ) else { return }
+        let requestID = UUID()
+        templatesFolderRequestID = requestID
+        let service = templatesFolderBookmarkService
+        let task = Task { @MainActor [weak self] in
+            let result = await service.resolve(bookmarkData, requestID: requestID)
+            guard let self, self.templatesFolderRequestID == requestID else { return }
+            self.templatesFolderLoadTask = nil
+            self.templatesFolderRequestID = nil
+            guard case .loaded(let snapshot) = result,
+                  snapshot.requestID == requestID else { return }
+            self.templatesFolderPath = snapshot.url.path
+            if let refreshedBookmarkData = snapshot.refreshedBookmarkData {
+                self.templatesFolderDefaults.set(
+                    refreshedBookmarkData,
+                    forKey: UserDefaultsKeys.templatesFolderBookmark
+                )
             }
-            return url
-        } catch {
-            return nil
         }
+        templatesFolderLoadTask = task
     }
 
     /// Minimum detection confidence (0.5 - 0.95). Default: 0.7
@@ -936,7 +1096,9 @@ final class SettingsViewModel {
         c2paPersistence: any C2PASigningConfigurationPersisting = AppC2PASigningConfigurationPersistence(),
         pkcs12Importer: any C2PAIdentityImporting = SecurityPKCS12IdentityImporter(),
         c2paFileIO: C2PACertificateFileIO = .system,
-        quickListPersistence: KeywordListEditorPersistenceService = .shared
+        quickListPersistence: KeywordListEditorPersistenceService = .shared,
+        templatesFolderDefaults: UserDefaults = .standard,
+        templatesFolderBookmarkService: TemplatesFolderBookmarkService = .shared
     ) {
         self.c2paConfigurationService = C2PASigningConfigurationService(
             persistence: c2paPersistence,
@@ -944,6 +1106,8 @@ final class SettingsViewModel {
             fileIO: c2paFileIO
         )
         self.quickListPersistence = quickListPersistence
+        self.templatesFolderDefaults = templatesFolderDefaults
+        self.templatesFolderBookmarkService = templatesFolderBookmarkService
         self.rawRenderAsHDR = UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR)
         let decodeProfileRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile)
         self.rawDecodeProfile = RAWDecodeProfile(storedRawValue: decodeProfileRaw ?? "") ?? .camera
@@ -1078,10 +1242,7 @@ final class SettingsViewModel {
 
         self.detectedEditors = Self.detectEditors()
 
-        // Templates folder still uses a bookmark (user-selected location).
-        if let url = resolveBookmark(key: UserDefaultsKeys.templatesFolderBookmark) {
-            self.templatesFolderPath = url.path
-        }
+        scheduleTemplatesFolderBookmarkLoad()
 
         // Install exact durable payloads directly. Changes without a payload (remote refresh,
         // routing, or legacy writers) trigger one complete actor-owned reload.
@@ -1111,6 +1272,7 @@ final class SettingsViewModel {
     }
 
     nonisolated deinit {
+        templatesFolderLoadTask?.cancel()
         quickListRefreshTask?.cancel()
         if let quickListChangeObserver {
             NotificationCenter.default.removeObserver(quickListChangeObserver)

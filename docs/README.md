@@ -669,6 +669,13 @@ prefix, and a completed bookmark API that observed cancellation afterward. Three
 audit remains 66 of 75 while lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance
 Checker evidence stay open.
 
+The latest [Settings template bookmark continuation](plan-status-settings-template-bookmark-continuation-2026-09-04.md)
+moves launch resolution, stale refresh, and chooser-time creation for the custom Templates folder behind a serialized
+actor. Settings publishes only complete current results, Clear invalidates pending work, and security-scope access
+remains balanced. Four new characterizations, the focused 4-test suite, adjacent 53-test selection, repository gate,
+and serial unfiltered 1,993-test run passed. The audit remains 66 of 75 while the Import backup bookmark, other
+lower-priority direct/cached-model paths, and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

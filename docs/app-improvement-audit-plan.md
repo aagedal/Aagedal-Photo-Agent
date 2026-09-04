@@ -1188,6 +1188,18 @@ selection, repository gate, and serial unfiltered run of 1,989 tests in 229 suit
 direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-favorite-folder-bookmark-continuation-2026-09-04.md))
 
+**Settings template bookmark follow-up (2026-09-04):** launch-time custom Templates-folder bookmark resolution,
+stale refresh, and chooser-time bookmark creation no longer invoke security-scoped bookmark APIs on MainActor. A
+serialized actor returns immutable request-tagged failure, cancellation, snapshot, or creation evidence and balances
+temporary security-scope access around creation. Settings publishes only a complete current restoration or creation,
+persists refreshed data without a second bookmark call, and cancels and invalidates pending work when replacing or
+clearing the selection. Template reloads await the selected-folder request. Four new characterizations cover off-main
+execution, balanced scope access, durable publication and clearing, and both cancellation stages. The focused 4-test
+suite, adjacent 53-test selection, repository gate, and serial unfiltered run of 1,993 tests in 230 suites passed.
+The Import backup bookmark, other lower-priority direct/cached-model paths, and real-volume/signpost/Thread
+Performance Checker evidence remain open.
+([validation](plan-status-settings-template-bookmark-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
