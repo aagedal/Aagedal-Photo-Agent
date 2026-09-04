@@ -14,7 +14,11 @@ struct ApprovedListBypassTests {
             .appendingPathComponent("bypass-\(UUID().uuidString).txt")
         try "Berlin\nMunich\n".write(to: url, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: url) }
-        let service = ApprovedListService(defaults: makeDefaults())
+        let service = ApprovedListService(
+            defaults: makeDefaults(),
+            startInitialLoad: false,
+            observeChanges: false
+        )
         try await service.importListURL(url, for: .keywords)
         service.setMode(.strict, for: .keywords)
         service.setEnabled(true, for: .keywords)

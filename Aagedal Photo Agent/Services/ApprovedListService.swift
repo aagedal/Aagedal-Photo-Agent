@@ -91,46 +91,63 @@ final class ApprovedListService {
 
     @ObservationIgnored private var cache: [ApprovedListField: ParsedList] = [:]
     @ObservationIgnored private let importService: ApprovedListImportService
+    @ObservationIgnored private let persistence: KeywordListEditorPersistenceService
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let notificationSourceID = UUID()
     @ObservationIgnored private var sourceImportRequestIDs: [ApprovedListField: UUID] = [:]
+    @ObservationIgnored private var cacheLoadRequestIDs: [ApprovedListField: UUID] = [:]
+    @ObservationIgnored private var cacheLoadTasks: [
+        ApprovedListField: Task<KeywordListEditorLoadResult, Error>
+    ] = [:]
     @ObservationIgnored nonisolated(unsafe) private var changeObserver: NSObjectProtocol?
 
     init(
         importService: ApprovedListImportService = .shared,
-        defaults: UserDefaults = AppDefaults.store
+        persistence: KeywordListEditorPersistenceService = .shared,
+        defaults: UserDefaults = AppDefaults.store,
+        startInitialLoad: Bool = true,
+        observeChanges: Bool = true
     ) {
         self.importService = importService
+        self.persistence = persistence
         self.defaults = defaults
-        for field in ApprovedListField.allCases {
-            loadFromStore(for: field)
-        }
-        changeObserver = NotificationCenter.default.addObserver(
-            forName: .keywordListChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            let committedEntries = note.userInfo?[KeywordListsStore.changedEntriesUserInfo]
-                as? [String]
-            let sourceID = note.userInfo?[KeywordListsStore.changedSourceIDUserInfo] as? UUID
-            guard
-                let key = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey,
-                case .approved(let field) = key
-            else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if let sourceID, sourceID != self.notificationSourceID { return }
-                if let committedEntries {
-                    self.installParsed(
-                        committedEntries,
-                        sourcePath: KeywordListsStore.shared.url(for: key).path,
-                        for: field
-                    )
-                    self.loadError = nil
-                } else {
-                    self.loadFromStore(for: field)
+        if observeChanges {
+            changeObserver = NotificationCenter.default.addObserver(
+                forName: .keywordListChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                let committedEntries = note.userInfo?[KeywordListsStore.changedEntriesUserInfo]
+                    as? [String]
+                let sourceID = note.userInfo?[KeywordListsStore.changedSourceIDUserInfo] as? UUID
+                guard
+                    let key = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey,
+                    case .approved(let field) = key
+                else { return }
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    // Identified owners publish their own immutable committed snapshot. Anonymous
+                    // notifications represent editor, migration, or remote changes that require a
+                    // fresh serialized read.
+                    guard sourceID == nil else { return }
+                    if let committedEntries {
+                        self.cancelCacheLoad(for: field)
+                        self.installParsed(
+                            committedEntries,
+                            sourcePath: KeywordListsStore.shared.url(for: key).path,
+                            for: field
+                        )
+                        self.loadError = nil
+                        self.bumpVersion()
+                    } else {
+                        await self.reloadFromStore(for: field)
+                    }
                 }
-                self.bumpVersion()
+            }
+        }
+        if startInitialLoad {
+            for field in ApprovedListField.allCases {
+                scheduleReloadFromStore(for: field)
             }
         }
     }
@@ -196,6 +213,7 @@ final class ApprovedListService {
     /// Imports a user-picked file into the managed store. After this the file
     /// content lives in the store; the source URL is no longer referenced.
     func importListURL(_ url: URL, for field: ApprovedListField) async throws {
+        cancelCacheLoad(for: field)
         let key = KeywordListKey.approved(field)
         let destinationURL = KeywordListsStore.shared.url(for: key)
         let requestID = UUID()
@@ -232,23 +250,62 @@ final class ApprovedListService {
     }
 
     /// Writes the given entries to the managed store. Used by the editor UI.
-    func saveEntries(_ entries: [String], for field: ApprovedListField) throws {
-        try KeywordListsStore.shared.writeEntries(entries, to: .approved(field))
-        // Reload our cache from the canonical store so casing/dedup matches what
-        // future reads will return.
-        loadFromStore(for: field)
+    func saveEntries(_ entries: [String], for field: ApprovedListField) async throws {
+        cancelCacheLoad(for: field)
+        let key = KeywordListKey.approved(field)
+        let destinationURL = KeywordListsStore.shared.url(for: key)
+        let requestID = UUID()
+        let result = try await persistence.saveEntries(
+            entries,
+            to: destinationURL,
+            requestID: requestID
+        )
+        guard case let .committed(commit) = result,
+              commit.requestID == requestID else { return }
+
+        KeywordListsStore.shared.recordExternalWrite(
+            to: key,
+            entries: commit.entries,
+            sourceID: notificationSourceID
+        )
+        installParsed(commit.entries, sourcePath: destinationURL.path, for: field)
+        loadError = nil
         bumpVersion()
     }
 
-    func clearList(for field: ApprovedListField) {
+    func clearList(for field: ApprovedListField) async {
         cancelImport(for: field)
-        KeywordListsStore.shared.delete(
-            .approved(field),
-            sourceID: notificationSourceID
-        )
-        cache.removeValue(forKey: field)
-        loadError = nil
-        bumpVersion()
+        cancelCacheLoad(for: field)
+        let key = KeywordListKey.approved(field)
+        let destinationURL = KeywordListsStore.shared.url(for: key)
+        let requestID = UUID()
+        cacheLoadRequestIDs[field] = requestID
+
+        do {
+            let result = try await persistence.deleteQuickList(
+                at: destinationURL,
+                requestID: requestID
+            )
+            guard cacheLoadRequestIDs[field] == requestID else { return }
+            cacheLoadRequestIDs[field] = nil
+            switch result {
+            case .missing, .removed:
+                KeywordListsStore.shared.recordExternalDeletion(
+                    to: key,
+                    sourceID: notificationSourceID
+                )
+                cache.removeValue(forKey: field)
+                loadError = nil
+                bumpVersion()
+            case .cancelledBeforeAccess, .cancelledBeforeCommit:
+                break
+            }
+        } catch {
+            guard cacheLoadRequestIDs[field] == requestID else { return }
+            cacheLoadRequestIDs[field] = nil
+            loadError = error.localizedDescription
+            bumpVersion()
+        }
     }
 
     /// True if a list is loaded with at least one entry AND the toggle is on.
@@ -367,22 +424,59 @@ final class ApprovedListService {
 
     private func bumpVersion() { version &+= 1 }
 
-    private func loadFromStore(for field: ApprovedListField) {
-        let store = KeywordListsStore.shared
+    private func scheduleReloadFromStore(for field: ApprovedListField) {
+        Task { @MainActor [weak self] in
+            await self?.reloadFromStore(for: field)
+        }
+    }
+
+    /// Refreshes one in-memory approved-list snapshot without reading its managed file on
+    /// MainActor. Replacement requests cancel their predecessor and only the current complete
+    /// actor result may update the observable cache.
+    func reloadFromStore(for field: ApprovedListField) async {
+        cancelCacheLoad(for: field)
         let key = KeywordListKey.approved(field)
-        guard store.exists(key) else {
-            cache.removeValue(forKey: field)
-            return
+        let sourceURL = KeywordListsStore.shared.url(for: key)
+        let requestID = UUID()
+        cacheLoadRequestIDs[field] = requestID
+        let persistence = self.persistence
+        let task = Task {
+            try await persistence.loadEntries(from: sourceURL, requestID: requestID)
         }
-        let entries = store.readEntries(key)
-        if entries.isEmpty {
-            // The file exists but parsed to nothing — surface a hint but keep
-            // the entry-less cache so `hasListConfigured` returns true.
-            installParsed([], sourcePath: store.url(for: key).path, for: field)
-            return
+        cacheLoadTasks[field] = task
+
+        do {
+            let result = try await task.value
+            guard cacheLoadRequestIDs[field] == requestID else { return }
+            cacheLoadRequestIDs[field] = nil
+            cacheLoadTasks[field] = nil
+            switch result {
+            case .loaded(let snapshot):
+                guard snapshot.requestID == requestID,
+                      snapshot.sourceURL == sourceURL else { return }
+                installParsed(snapshot.entries, sourcePath: sourceURL.path, for: field)
+                loadError = nil
+                bumpVersion()
+            case .missing:
+                cache.removeValue(forKey: field)
+                loadError = nil
+                bumpVersion()
+            case .cancelledBeforeAccess, .cancelledBeforeRead, .cancelledAfterRead:
+                break
+            }
+        } catch {
+            guard cacheLoadRequestIDs[field] == requestID else { return }
+            cacheLoadRequestIDs[field] = nil
+            cacheLoadTasks[field] = nil
+            loadError = error.localizedDescription
+            bumpVersion()
         }
-        installParsed(entries, sourcePath: store.url(for: key).path, for: field)
-        loadError = nil
+    }
+
+    private func cancelCacheLoad(for field: ApprovedListField) {
+        cacheLoadTasks[field]?.cancel()
+        cacheLoadTasks[field] = nil
+        cacheLoadRequestIDs[field] = nil
     }
 
     private func installParsed(_ entries: [String], sourcePath: String, for field: ApprovedListField) {

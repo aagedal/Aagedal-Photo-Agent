@@ -7,6 +7,19 @@ private func makeApprovedListTestDefaults() -> UserDefaults {
     return UserDefaults(suiteName: suiteName)!
 }
 
+private func makeIsolatedApprovedListService(
+    importService: ApprovedListImportService = .shared,
+    persistence: KeywordListEditorPersistenceService = .shared
+) -> ApprovedListService {
+    ApprovedListService(
+        importService: importService,
+        persistence: persistence,
+        defaults: makeApprovedListTestDefaults(),
+        startInitialLoad: false,
+        observeChanges: false
+    )
+}
+
 // MARK: - Parser
 
 @Suite("ApprovedListParser")
@@ -218,10 +231,7 @@ struct ApprovedListImportServiceTests {
         try await KeywordListsStoreStorageOverride.$current.withValue(root) {
             let probe = BlockingApprovedListImportAccessProbe(persistWrites: true)
             let filesystem = ApprovedListImportService(access: probe.fileAccess)
-            let service = ApprovedListService(
-                importService: filesystem,
-                defaults: makeApprovedListTestDefaults()
-            )
+            let service = makeIsolatedApprovedListService(importService: filesystem)
             let first = Task { @MainActor in
                 try await service.importListURL(
                     URL(fileURLWithPath: "/virtual/first.txt"),
@@ -513,7 +523,7 @@ struct ApprovedListServiceTests {
     @Test("contains uses NFC + case-insensitive normalization")
     func containsCaseAndUnicode() async throws {
         let url = try tempCSV("Berlin,DE\nMünchen,DE\nParis,FR\n")
-        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        let service = makeIsolatedApprovedListService()
         try await service.importListURL(url, for: .keywords)
 
         #expect(service.contains("berlin", in: .keywords))
@@ -530,7 +540,7 @@ struct ApprovedListServiceTests {
     @Test("canonicalCasing returns file-original casing")
     func canonicalCasing() async throws {
         let url = try tempCSV("Berlin\nParis\nNew York\n")
-        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        let service = makeIsolatedApprovedListService()
         try await service.importListURL(url, for: .keywords)
 
         #expect(service.canonicalCasing(of: "berlin", in: .keywords) == "Berlin")
@@ -543,7 +553,7 @@ struct ApprovedListServiceTests {
     @Test("isActive requires both enabled toggle and a populated list")
     func isActiveContract() async throws {
         let url = try tempCSV("Berlin\nParis\n")
-        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        let service = makeIsolatedApprovedListService()
         try await service.importListURL(url, for: .keywords)
 
         #expect(service.hasListConfigured(for: .keywords))
@@ -552,25 +562,114 @@ struct ApprovedListServiceTests {
         service.setEnabled(true, for: .keywords)
         #expect(service.isActive(for: .keywords))
 
-        service.clearList(for: .keywords)
+        await service.clearList(for: .keywords)
         #expect(!service.isActive(for: .keywords))
 
         try? FileManager.default.removeItem(at: url)
     }
 
+    @Test("managed cache reload publishes only the actor-loaded snapshot")
+    @MainActor
+    func managedCacheReloadUsesSerializedBoundary() async {
+        let probe = ApprovedListCacheLoadAccessProbe(
+            data: Data(" Oslo \n# ignored\nBergen\nOslo\n".utf8)
+        )
+        let persistence = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let service = ApprovedListService(
+            persistence: persistence,
+            defaults: makeApprovedListTestDefaults(),
+            startInitialLoad: false,
+            observeChanges: false
+        )
+
+        await service.reloadFromStore(for: .keywords)
+
+        #expect(service.orderedEntries(for: .keywords) == ["Oslo", "Bergen"])
+        #expect(service.hasListConfigured(for: .keywords))
+        #expect(probe.readInvocationCount >= 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("approved-list cache source never reads or removes through the MainActor store")
+    func managedCacheSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/ApprovedListService.swift"
+            ),
+            encoding: .utf8
+        )
+        let settingsSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/SettingsView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("try await persistence.loadEntries("))
+        #expect(source.contains("try await persistence.saveEntries("))
+        #expect(source.contains("try await persistence.deleteQuickList("))
+        #expect(source.contains("guard cacheLoadRequestIDs[field] == requestID"))
+        #expect(!source.contains("private func loadFromStore"))
+        #expect(!source.contains("store.exists(key)"))
+        #expect(!source.contains("store.readEntries(key)"))
+        #expect(!source.contains("KeywordListsStore.shared.writeEntries("))
+        #expect(!source.contains("KeywordListsStore.shared.delete("))
+        #expect(settingsSource.contains("await service.clearList(for: field)"))
+    }
+
     @Test("mode defaults to .warn when unset")
     func modeDefaultsToWarn() {
-        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        let service = makeIsolatedApprovedListService()
         #expect(service.mode(for: .keywords) == .warn)
     }
 
     @Test("entryCount reflects parsed list size")
     func entryCount() async throws {
         let url = try tempCSV("Berlin\nParis\nLondon\n")
-        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        let service = makeIsolatedApprovedListService()
         try await service.importListURL(url, for: .keywords)
         #expect(service.entryCount(for: .keywords) == 3)
         try? FileManager.default.removeItem(at: url)
+    }
+}
+
+private nonisolated final class ApprovedListCacheLoadAccessProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let data: Data
+    private var storedReadInvocationCount = 0
+    private var storedRanOnMainThread = false
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    var fileAccess: KeywordListEditorFileAccess {
+        KeywordListEditorFileAccess(
+            itemExists: { [self] _ in
+                recordAccess()
+                return true
+            },
+            readData: { [self] _ in
+                recordAccess()
+                lock.withLock { storedReadInvocationCount += 1 }
+                return data
+            },
+            writeData: { _, _ in },
+            removeItem: { _ in }
+        )
+    }
+
+    var readInvocationCount: Int { lock.withLock { storedReadInvocationCount } }
+    var ranOnMainThread: Bool { lock.withLock { storedRanOnMainThread } }
+
+    private func recordAccess() {
+        let isMainThread = Thread.isMainThread
+        lock.withLock {
+            storedRanOnMainThread = storedRanOnMainThread || isMainThread
+        }
     }
 }
 
@@ -589,7 +688,7 @@ struct ApprovedListValidationTests {
 
     private func makeService(mode: ApprovedListMode, enabled: Bool = true) async throws -> (ApprovedListService, URL) {
         let url = try tempList("Berlin\nMunich\nParis\n")
-        let service = ApprovedListService(defaults: makeApprovedListTestDefaults())
+        let service = makeIsolatedApprovedListService()
         try await service.importListURL(url, for: .keywords)
         service.setMode(mode, for: .keywords)
         service.setEnabled(enabled, for: .keywords)

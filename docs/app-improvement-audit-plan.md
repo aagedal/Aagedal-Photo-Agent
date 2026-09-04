@@ -1154,6 +1154,18 @@ tests in 229 suites also pass. Other lower-priority direct/cached-model paths an
 Performance Checker evidence remain open.
 ([validation](plan-status-known-people-import-commit-continuation-2026-09-04.md))
 
+**Approved List cache follow-up (2026-09-04):** Approved Keywords initialization, anonymous-notification refresh,
+legacy save, and deletion now reuse the serialized keyword-list persistence actor instead of synchronously reading
+or mutating the managed file through the MainActor store. Loads own cancellable tasks and request identity; only a
+complete current URL snapshot is published, while imports and saves install exact durable-entry evidence without a
+second read. Identified writers own their publication, and anonymous editor, migration, routing, or remote changes
+schedule a serialized refresh. Two new characterizations and source contracts cover off-main normalized loading,
+cache-only synchronous accessors, actor-backed save/delete, and the awaited Settings removal. The focused 22-test
+selection, adjacent 56-test selection, repository gate, and serial unfiltered run of 1,984 tests in 229 suites
+passed. Other lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence
+remain open.
+([validation](plan-status-approved-list-cache-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

@@ -1230,8 +1230,10 @@ struct SettingsView: View {
                 if listConfigured {
                     Button(role: .destructive) {
                         cancelApprovedKeywordsImport()
-                        service.clearList(for: field)
-                        approvedKeywordsErrorMessage = nil
+                        Task { @MainActor in
+                            await service.clearList(for: field)
+                            approvedKeywordsErrorMessage = service.loadError
+                        }
                     } label: {
                         Image(systemName: "xmark.circle")
                     }

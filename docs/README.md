@@ -645,6 +645,14 @@ and render from memory. Two new characterizations, the focused 43-test Known Peo
 repository gate, and serial unfiltered 1,979-test run passed. The audit remains 66 of 75 while other lower-priority
 direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [Approved List cache continuation](plan-status-approved-list-cache-continuation-2026-09-04.md) moves
+Approved Keywords initialization, anonymous-notification refresh, legacy save, and deletion through the existing
+serialized keyword-list persistence actor. Synchronous Settings and validation accessors now use only the published
+parsed cache; replacement loads cancel and identity-gate publication, and durable save/delete evidence is published
+without a second MainActor read. Two new characterizations, the focused 22-test selection, adjacent 56-test
+selection, repository gate, and serial unfiltered 1,984-test run passed. The audit remains 66 of 75 while other
+lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.
