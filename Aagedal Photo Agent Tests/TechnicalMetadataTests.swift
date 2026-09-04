@@ -417,3 +417,97 @@ private nonisolated final class TechnicalMetadataFastAccessProbe: @unchecked Sen
     var invocationCount: Int { lock.withLock { count } }
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
 }
+
+@Suite("SwiftExif technical-metadata snapshot boundary")
+struct SwiftExifTechnicalMetadataSnapshotTests {
+    @Test("complete technical assembly stays off MainActor and preserves native-read intent")
+    @MainActor
+    func completeSnapshotRunsOffMainActor() async throws {
+        let expected = TechnicalMetadata(from: ["Make": "Nikon"], fileURL: nil)
+        let probe = SwiftExifTechnicalMetadataAccessProbe(metadata: expected)
+        let service = SwiftExifReadService(
+            technicalMetadataAccess: .init(makeSnapshot: probe.makeSnapshot)
+        )
+        let imageURL = URL(fileURLWithPath: "/virtual/technical-enrichment.nef")
+
+        let metadata = try await service.readTechnicalMetadata(
+            url: imageURL,
+            includeNativeImageInfo: true
+        )
+
+        #expect(metadata.camera == "Nikon")
+        #expect(probe.invocationCount == 1)
+        #expect(probe.receivedFileURLs == [imageURL])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("disabled native enrichment keeps the snapshot filesystem-free")
+    @MainActor
+    func disabledNativeReadPassesNoFileURL() async throws {
+        let expected = TechnicalMetadata(from: ["Make": "Sony"], fileURL: nil)
+        let probe = SwiftExifTechnicalMetadataAccessProbe(metadata: expected)
+        let service = SwiftExifReadService(
+            technicalMetadataAccess: .init(makeSnapshot: probe.makeSnapshot)
+        )
+
+        let metadata = try await service.readTechnicalMetadata(
+            url: URL(fileURLWithPath: "/virtual/no-native-enrichment.arw"),
+            includeNativeImageInfo: false
+        )
+
+        #expect(metadata.camera == "Sony")
+        #expect(probe.receivedFileURLs == [nil])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("read service returns a complete actor-built snapshot")
+    func readServiceSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/SwiftExifReadService.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(
+            of: "    func readTechnicalMetadata(url: URL, includeNativeImageInfo: Bool = true)"
+        ))
+        let functionEnd = try #require(source.range(
+            of: "    /// Read detailed C2PA manifest data.",
+            range: functionStart.upperBound..<source.endIndex
+        ))
+        let functionSource = String(source[functionStart.lowerBound..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains("await lockedReadTechnicalMetadata("))
+        #expect(!functionSource.contains("TechnicalMetadata(from:"))
+        #expect(!functionSource.contains("lockedReadDict"))
+    }
+}
+
+private nonisolated final class SwiftExifTechnicalMetadataAccessProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let metadata: TechnicalMetadata
+    private var count = 0
+    private var fileURLs: [URL?] = []
+    private var observedMainThread = false
+
+    init(metadata: TechnicalMetadata) {
+        self.metadata = metadata
+    }
+
+    func makeSnapshot(dictionary: [String: Any], fileURL: URL?) -> TechnicalMetadata {
+        _ = dictionary
+        lock.withLock {
+            count += 1
+            fileURLs.append(fileURL)
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return metadata
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var receivedFileURLs: [URL?] { lock.withLock { fileURLs } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}

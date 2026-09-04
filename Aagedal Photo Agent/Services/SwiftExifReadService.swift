@@ -12,10 +12,30 @@ nonisolated private let swiftExifReadPerf = Logger(
     category: "MetadataPerf"
 )
 
+/// Builds the complete immutable technical-metadata snapshot while the per-photo metadata
+/// executor still owns the operation. The production closure includes the optional ImageIO
+/// header read performed by `TechnicalMetadata.init(from:fileURL:)`; keeping it injectable lets
+/// tests prove that read never drifts back onto MainActor after the serialized metadata read.
+nonisolated struct SwiftExifTechnicalMetadataAccess: Sendable {
+    let makeSnapshot: @Sendable ([String: Any], URL?) -> TechnicalMetadata
+
+    static let system = SwiftExifTechnicalMetadataAccess { dictionary, fileURL in
+        TechnicalMetadata(from: dictionary, fileURL: fileURL)
+    }
+}
+
 /// In-process metadata reader backed by SwiftExif. There is no process
 /// lifecycle to manage, so callers no longer need to `start()`.
 @Observable
 final class SwiftExifReadService {
+    @ObservationIgnored private let technicalMetadataAccess: SwiftExifTechnicalMetadataAccess
+
+    init(
+        technicalMetadataAccess: SwiftExifTechnicalMetadataAccess = .system
+    ) {
+        self.technicalMetadataAccess = technicalMetadataAccess
+    }
+
     /// SwiftExif is always available — there is no external binary.
     var isAvailable: Bool { true }
 
@@ -101,10 +121,11 @@ final class SwiftExifReadService {
 
     /// Read camera / lens / dimension / ICC / C2PA-presence fields for the technical inspector.
     func readTechnicalMetadata(url: URL, includeNativeImageInfo: Bool = true) async throws -> TechnicalMetadata {
-        guard let dict = await lockedReadDict(for: url)?.value else {
-            return TechnicalMetadata(from: [:], fileURL: includeNativeImageInfo ? url : nil)
-        }
-        return TechnicalMetadata(from: dict, fileURL: includeNativeImageInfo ? url : nil)
+        await lockedReadTechnicalMetadata(
+            for: url,
+            includeNativeImageInfo: includeNativeImageInfo,
+            access: technicalMetadataAccess
+        )
     }
 
     /// Read detailed C2PA manifest data.
@@ -138,6 +159,23 @@ final class SwiftExifReadService {
     nonisolated private func lockedReadMetadata(for url: URL) async throws -> ImageMetadata {
         try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
             try ImageMetadata.read(from: url)
+        }
+    }
+
+    /// Keep snapshot assembly in the same off-main serialized operation as the source read.
+    /// `TechnicalMetadata` is Sendable, so unlike the generic dictionary it can cross directly
+    /// back to the observable owner without a second filesystem-capable step on MainActor.
+    nonisolated private func lockedReadTechnicalMetadata(
+        for url: URL,
+        includeNativeImageInfo: Bool,
+        access: SwiftExifTechnicalMetadataAccess
+    ) async -> TechnicalMetadata {
+        await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+            let dictionary = self.readDict(for: url) ?? [:]
+            return access.makeSnapshot(
+                dictionary,
+                includeNativeImageInfo ? url : nil
+            )
         }
     }
 

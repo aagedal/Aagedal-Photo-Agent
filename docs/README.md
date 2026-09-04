@@ -684,6 +684,14 @@ Four new characterizations, the focused 21-test suite, adjacent 41-test selectio
 unfiltered 1,997-test run passed. The audit remains 66 of 75 while other lower-priority direct/cached-model paths and
 real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [SwiftExif technical snapshot continuation](plan-status-swiftexif-technical-snapshot-continuation-2026-09-04.md)
+keeps the complete technical-metadata enrichment inside the existing per-photo metadata executor. SwiftExif parsing,
+optional ImageIO profile/bit-depth inspection, and immutable `TechnicalMetadata` construction now share one lock and
+return one Sendable value to MainActor, so an intervening metadata write cannot split the snapshot. Three new
+characterizations, the adjacent 118-logical-test/123-expanded-run selection, repository gate, and serial unfiltered
+2,000-logical-test/2,127-expanded-run gate passed. The audit remains 66 of 75 while other lower-priority direct/
+cached-model paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

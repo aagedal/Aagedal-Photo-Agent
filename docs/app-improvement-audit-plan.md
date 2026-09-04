@@ -1212,6 +1212,16 @@ The focused 21-test suite, adjacent 41-test selection, repository gate, and seri
 Checker evidence remain open.
 ([validation](plan-status-import-destination-bookmark-continuation-2026-09-04.md))
 
+**SwiftExif technical-snapshot follow-up (2026-09-04):** full technical-metadata enrichment no longer returns the
+generic SwiftExif dictionary to MainActor before optionally opening the image container for native profile and bit-
+depth facts. The existing per-photo metadata executor now retains its lock across parsing, ImageIO inspection, and
+construction of one Sendable `TechnicalMetadata` snapshot, preventing both UI blocking and a write interleaving
+between the two source reads. Three new characterizations cover off-main assembly, exact native-read intent, and the
+source contract. The adjacent 118-logical-test/123-expanded-run selection, repository gate, and serial unfiltered
+2,000-logical-test/2,127-expanded-run gate passed. Other lower-priority direct/cached-model paths and real-volume/
+signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-swiftexif-technical-snapshot-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
