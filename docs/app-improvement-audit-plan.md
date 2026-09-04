@@ -1100,6 +1100,16 @@ repository gate, and final serial unfiltered run of 1,973 tests in 229 suites pa
 paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-advanced-export-preview-cleanup-continuation-2026-09-04.md))
 
+**Analysis annotation-index follow-up (2026-09-04):** Analysis thumbnail and map annotation counts no longer
+resolve each presented image path's symlinks from a synchronous SwiftUI lookup. `AnalysisWorkspaceModel` publishes
+an in-memory URL-to-case index whenever its actor-loaded folder cases, current case, or presented source changes.
+Canonical stored identity and the known Browser folder route are both indexed, preserving security-scoped/symlinked
+presentation and rename behavior without another filesystem projection. Two new characterizations cover a removed
+presentation symlink and the filesystem-free lookup source contract. The focused 70-test Analysis suite, repository
+gate, and final serial unfiltered run of 1,975 tests in 229 suites passed. Other lower-priority direct/cached-model
+paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-analysis-annotation-index-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

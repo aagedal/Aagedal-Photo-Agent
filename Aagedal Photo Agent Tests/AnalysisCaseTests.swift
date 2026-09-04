@@ -411,6 +411,80 @@ struct AnalysisCaseTests {
         #expect(counter.count == 1)
     }
 
+    @Test("photo annotation lookup stays cached after a presented folder symlink disappears")
+    func photoAnnotationLookupUsesPublishedCaseIndex() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "apa-analysis-presentation-index-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let sourceFolder = root.appendingPathComponent("source", isDirectory: true)
+        let presentedFolder = root.appendingPathComponent("presented", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: presentedFolder,
+            withDestinationURL: sourceFolder
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let openedSource = sourceFolder.appendingPathComponent("opened.jpg")
+        let annotatedSource = sourceFolder.appendingPathComponent("annotated.jpg")
+        try Data("opened source".utf8).write(to: openedSource)
+        try Data("annotated source".utf8).write(to: annotatedSource)
+
+        let annotation = AnalysisAnnotation(
+            kind: .label,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.4, y: 0.6)),
+            text: "Cached annotation"
+        )
+        let annotatedRevision = try await SourceImageRevision.capture(at: annotatedSource)
+        var annotatedCase = AnalysisCase.create(for: annotatedRevision, appBuild: "test")
+        annotatedCase.setAnnotation(annotation)
+        let repository = AnalysisCaseRepository(sourceFolderURL: sourceFolder)
+        try await repository.save(annotatedCase)
+
+        let presentedOpened = presentedFolder.appendingPathComponent("opened.jpg")
+        let presentedAnnotated = ImageFile(
+            url: presentedFolder.appendingPathComponent("annotated.jpg")
+        )
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: presentedOpened))
+        try await waitForAnalysisState { model.loadState == .ready }
+
+        #expect(model.photoAnnotations(for: presentedAnnotated).map(\.id) == [annotation.id])
+
+        // The synchronous view lookup must use the immutable index published with the cases. If
+        // it tries to resolve the presented path again, the removed symlink can no longer match
+        // the canonical source URL stored by the repository.
+        try FileManager.default.removeItem(at: presentedFolder)
+        #expect(model.photoAnnotations(for: presentedAnnotated).map(\.id) == [annotation.id])
+    }
+
+    @Test("photo annotation source contract keeps SwiftUI lookup filesystem-free")
+    func photoAnnotationLookupSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/AnalysisWorkspaceModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let lookupStart = try #require(source.range(
+            of: "func photoAnnotations(for image: ImageFile)"
+        ))
+        let lookupEnd = try #require(source.range(
+            of: "func pastePhotoAnnotations(",
+            range: lookupStart.upperBound..<source.endIndex
+        ))
+        let lookup = source[lookupStart.lowerBound..<lookupEnd.lowerBound]
+
+        #expect(lookup.contains("photoAnnotationCasesByPresentedURL"))
+        #expect(!lookup.contains("resolvingSymlinksInPath"))
+        #expect(!lookup.contains("resourceValues("))
+        #expect(!lookup.contains("FileManager"))
+    }
+
     @Test("repository surfaces a changed source instead of silently rebinding its case")
     func detectsChangedSource() async throws {
         let fixture = try AnalysisFixture(contents: "before")

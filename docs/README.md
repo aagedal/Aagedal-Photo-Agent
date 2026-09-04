@@ -620,6 +620,14 @@ nonblocking final release. The focused 4-test suite, adjacent 26-test export sel
 unfiltered 1,973-test run passed. The audit remains 66 of 75 while other direct paths and real-volume/signpost/Thread
 Performance Checker evidence stay open.
 
+The latest [Analysis annotation-index continuation](plan-status-analysis-annotation-index-continuation-2026-09-04.md)
+removes repeated symlink resolution from synchronous SwiftUI photo-annotation count lookups. The Analysis workspace
+now publishes an in-memory case index for canonical stored URLs and the already-known Browser presentation folder,
+so security-scoped/symlinked routes and rename updates remain coherent without another filesystem projection. Two
+new characterizations, the focused 70-test Analysis suite, repository gate, and serial unfiltered 1,975-test run
+passed. The audit remains 66 of 75 while other direct/cached-model paths and real-volume/signpost/Thread Performance
+Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

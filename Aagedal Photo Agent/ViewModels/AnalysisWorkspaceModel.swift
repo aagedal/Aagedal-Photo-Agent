@@ -31,14 +31,20 @@ final class AnalysisWorkspaceModel {
     }
 
     private(set) var loadState: LoadState = .idle
-    private(set) var analysisCase: AnalysisCase?
+    private(set) var analysisCase: AnalysisCase? {
+        didSet { rebuildPhotoAnnotationCaseIndex() }
+    }
     private(set) var currentRevision: SourceImageRevision?
     private(set) var sourceChanged = false
-    private(set) var sourceURL: URL?
+    private(set) var sourceURL: URL? {
+        didSet { rebuildPhotoAnnotationCaseIndex() }
+    }
     private(set) var hasDevelopedRepresentation = false
     private(set) var developSettings: CameraRawSettings?
     private(set) var sourceOrientation = 1
-    private(set) var folderAnalysisCases: [AnalysisCase] = []
+    private(set) var folderAnalysisCases: [AnalysisCase] = [] {
+        didSet { rebuildPhotoAnnotationCaseIndex() }
+    }
     private(set) var folderMapDocument = AnalysisFolderMapDocument.create()
     private(set) var caseStorage: AnalysisCaseStorage?
     private(set) var folderMapStorage: AnalysisCaseStorage?
@@ -56,6 +62,7 @@ final class AnalysisWorkspaceModel {
     private var photoAnnotationHistory = AnalysisAnnotationUndoHistory()
     private var mapAnnotationHistory = AnalysisMapAnnotationUndoHistory()
     private var globalMapAnnotationHistory = AnalysisGlobalMapAnnotationUndoHistory()
+    private var photoAnnotationCasesByPresentedURL: [URL: AnalysisCase] = [:]
 
     init(
         analyzers: [any AnalysisAnalyzer]? = nil,
@@ -111,7 +118,7 @@ final class AnalysisWorkspaceModel {
     }
 
     func photoAnnotations(for image: ImageFile) -> [AnalysisAnnotation] {
-        analysisCase(for: image.url)?.annotations ?? []
+        photoAnnotationCasesByPresentedURL[image.url.standardizedFileURL]?.annotations ?? []
     }
 
     func pastePhotoAnnotations(
@@ -1246,11 +1253,44 @@ final class AnalysisWorkspaceModel {
         }
     }
 
-    private func analysisCase(for sourceURL: URL) -> AnalysisCase? {
-        let canonicalURL = sourceURL.standardizedFileURL.resolvingSymlinksInPath()
-        return (folderAnalysisCases + (analysisCase.map { [$0] } ?? []))
-            .filter { $0.source.canonicalURL == canonicalURL }
-            .max { $0.updatedAt < $1.updatedAt }
+    /// Builds the synchronous presentation lookup from actor-loaded case identity. Cases persist
+    /// canonical source URLs, while Browser may present the same folder through a security-scoped
+    /// symlink path. Project each canonical filename onto the already-known presented folder once
+    /// when the model changes; frequently evaluated SwiftUI annotation counts then remain pure
+    /// in-memory lookups and do not walk the filesystem.
+    private func rebuildPhotoAnnotationCaseIndex() {
+        var indexed: [URL: AnalysisCase] = [:]
+
+        func install(_ candidate: AnalysisCase, for key: URL) {
+            let normalizedKey = key.standardizedFileURL
+            if let existing = indexed[normalizedKey], existing.updatedAt >= candidate.updatedAt {
+                return
+            }
+            indexed[normalizedKey] = candidate
+        }
+
+        let presentedFolder = sourceURL?.deletingLastPathComponent().standardizedFileURL
+        for candidate in folderAnalysisCases {
+            install(candidate, for: candidate.source.canonicalURL)
+            if let presentedFolder {
+                install(
+                    candidate,
+                    for: presentedFolder.appendingPathComponent(
+                        candidate.source.canonicalURL.lastPathComponent,
+                        isDirectory: false
+                    )
+                )
+            }
+        }
+
+        if let analysisCase {
+            install(analysisCase, for: analysisCase.source.canonicalURL)
+            if let sourceURL {
+                install(analysisCase, for: sourceURL)
+            }
+        }
+
+        photoAnnotationCasesByPresentedURL = indexed
     }
 
     private static func severityRank(_ severity: AnalysisFindingSeverity) -> Int {
