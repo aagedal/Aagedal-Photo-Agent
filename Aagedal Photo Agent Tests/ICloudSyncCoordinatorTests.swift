@@ -16,6 +16,90 @@ struct ICloudSyncCoordinatorTests {
         ])
     }
 
+    @Test("iCloud availability resolution runs off MainActor and returns immutable state")
+    @MainActor
+    func iCloudAvailabilityRunsOffMainActor() async {
+        let availableProbe = ICloudAvailabilityThreadProbe(available: true)
+        let availableService = ICloudAvailabilityProbeService(
+            resolveAvailability: availableProbe.resolve
+        )
+        let unavailableProbe = ICloudAvailabilityThreadProbe(available: false)
+        let unavailableService = ICloudAvailabilityProbeService(
+            resolveAvailability: unavailableProbe.resolve
+        )
+
+        let available = await availableService.probe()
+        let unavailable = await unavailableService.probe()
+
+        #expect(available == .available)
+        #expect(unavailable == .unavailable)
+        #expect(availableProbe.callCount == 1)
+        #expect(unavailableProbe.callCount == 1)
+        #expect(!availableProbe.ranOnMainThread)
+        #expect(!unavailableProbe.ranOnMainThread)
+    }
+
+    @Test("iCloud availability distinguishes cancellation around container resolution")
+    func iCloudAvailabilityCancellationEvidence() async {
+        let preCancelledProbe = ICloudAvailabilityThreadProbe(available: true)
+        let preCancelledService = ICloudAvailabilityProbeService(
+            resolveAvailability: preCancelledProbe.resolve
+        )
+        let preCancelled = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await preCancelledService.probe()
+        }.value
+
+        #expect(preCancelled == .cancelledBeforeResolution)
+        #expect(preCancelledProbe.callCount == 0)
+
+        let postCancelledProbe = ICloudAvailabilityThreadProbe(
+            available: true,
+            cancelDuringResolution: true
+        )
+        let postCancelledService = ICloudAvailabilityProbeService(
+            resolveAvailability: postCancelledProbe.resolve
+        )
+        let postCancelled = await Task {
+            await postCancelledService.probe()
+        }.value
+
+        #expect(postCancelled == .cancelledAfterResolution(wasAvailable: true))
+        #expect(postCancelledProbe.callCount == 1)
+    }
+
+    @Test("Preferences sync commits only after current availability evidence")
+    @MainActor
+    func preferencesSyncWaitsForAvailability() async {
+        let availablePreferences = PreferencesSyncControllerProbe()
+        let availableCoordinator = ICloudSyncCoordinator(
+            availabilityProbe: ICloudAvailabilityProbeService(resolveAvailability: { true }),
+            preferencesSync: availablePreferences
+        )
+
+        availableCoordinator.setPreferencesEnabled(true)
+        await waitForAvailabilityPublication(in: availableCoordinator)
+
+        #expect(availableCoordinator.iCloudAvailability == .available)
+        #expect(availableCoordinator.preferencesEnabled)
+        #expect(availablePreferences.setValues == [true])
+        #expect(availableCoordinator.lastError == nil)
+
+        let unavailablePreferences = PreferencesSyncControllerProbe()
+        let unavailableCoordinator = ICloudSyncCoordinator(
+            availabilityProbe: ICloudAvailabilityProbeService(resolveAvailability: { false }),
+            preferencesSync: unavailablePreferences
+        )
+
+        unavailableCoordinator.setPreferencesEnabled(true)
+        await waitForAvailabilityPublication(in: unavailableCoordinator)
+
+        #expect(unavailableCoordinator.iCloudAvailability == .unavailable)
+        #expect(!unavailableCoordinator.preferencesEnabled)
+        #expect(unavailablePreferences.setValues.isEmpty)
+        #expect(unavailableCoordinator.lastError != nil)
+    }
+
     @Test("keyword-list routing resolves and merges off MainActor in both directions")
     @MainActor
     func keywordListRoutingRunsOffMainActor() async throws {
@@ -113,6 +197,118 @@ struct ICloudSyncCoordinatorTests {
             performedMerge: true,
             cancellationRequestedAfterCommit: true
         )))
+    }
+
+    @Test("Templates iCloud routing balances security scope off MainActor in both directions")
+    @MainActor
+    func templateRoutingRunsOffMainActorAndBalancesScope() async throws {
+        let local = URL(fileURLWithPath: "/virtual/local-templates", isDirectory: true)
+        let cloud = URL(fileURLWithPath: "/virtual/cloud-templates", isDirectory: true)
+        let probe = TemplateICloudRoutingProbe(local: local, cloud: cloud)
+        let service = TemplateICloudRoutingService(access: probe.fileAccess)
+        let enableID = UUID()
+        let disableID = UUID()
+
+        let enable = try await service.reconcile(enabled: true, requestID: enableID)
+        let disable = try await service.reconcile(enabled: false, requestID: disableID)
+
+        #expect(enable == .committed(TemplateICloudRoutingCommit(
+            requestID: enableID,
+            enabled: true,
+            localRootURL: local,
+            cloudRootURL: cloud,
+            sourceURL: local,
+            destinationURL: cloud,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(disable == .committed(TemplateICloudRoutingCommit(
+            requestID: disableID,
+            enabled: false,
+            localRootURL: local,
+            cloudRootURL: cloud,
+            sourceURL: cloud,
+            destinationURL: local,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(probe.merges.map(\.0) == [local, cloud])
+        #expect(probe.merges.map(\.1) == [cloud, local])
+        #expect(probe.localResolutions == 2)
+        #expect(probe.releases == 2)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Templates routing balances security scope for unavailable and cancelled work")
+    func templateRoutingBalancesScopeWithoutCommit() async throws {
+        let local = URL(fileURLWithPath: "/virtual/local-templates")
+        let unavailableProbe = TemplateICloudRoutingProbe(local: local, cloud: nil)
+        let unavailableService = TemplateICloudRoutingService(access: unavailableProbe.fileAccess)
+        let unavailableID = UUID()
+
+        let unavailable = try await unavailableService.reconcile(
+            enabled: true,
+            requestID: unavailableID
+        )
+
+        #expect(unavailable == .unavailable(requestID: unavailableID, enabled: true))
+        #expect(unavailableProbe.merges.isEmpty)
+        #expect(unavailableProbe.releases == 1)
+
+        let cloud = URL(fileURLWithPath: "/virtual/cloud-templates")
+        let cancelledProbe = TemplateICloudRoutingProbe(
+            local: local,
+            cloud: cloud,
+            cancelDuringResolution: true
+        )
+        let cancelledService = TemplateICloudRoutingService(access: cancelledProbe.fileAccess)
+        let cancelledID = UUID()
+
+        let cancelled = try await Task {
+            try await cancelledService.reconcile(enabled: false, requestID: cancelledID)
+        }.value
+
+        #expect(cancelled == .cancelledBeforeCommit(requestID: cancelledID, enabled: false))
+        #expect(cancelledProbe.merges.isEmpty)
+        #expect(cancelledProbe.releases == 1)
+    }
+
+    @Test("Templates routing releases security scope after a durable cancelled merge or error")
+    func templateRoutingBalancesScopeAfterMerge() async throws {
+        let local = URL(fileURLWithPath: "/virtual/local-templates")
+        let cloud = URL(fileURLWithPath: "/virtual/cloud-templates")
+        let cancelledProbe = TemplateICloudRoutingProbe(
+            local: local,
+            cloud: cloud,
+            cancelDuringMerge: true
+        )
+        let cancelledService = TemplateICloudRoutingService(access: cancelledProbe.fileAccess)
+        let cancelledID = UUID()
+
+        let cancelled = try await Task {
+            try await cancelledService.reconcile(enabled: true, requestID: cancelledID)
+        }.value
+
+        #expect(cancelled == .committed(TemplateICloudRoutingCommit(
+            requestID: cancelledID,
+            enabled: true,
+            localRootURL: local,
+            cloudRootURL: cloud,
+            sourceURL: local,
+            destinationURL: cloud,
+            cancellationRequestedAfterCommit: true
+        )))
+        #expect(cancelledProbe.releases == 1)
+
+        let failingProbe = TemplateICloudRoutingProbe(
+            local: local,
+            cloud: cloud,
+            mergeError: TemplateICloudRoutingProbe.ProbeError.mergeFailed
+        )
+        let failingService = TemplateICloudRoutingService(access: failingProbe.fileAccess)
+
+        await #expect(throws: TemplateICloudRoutingProbe.ProbeError.mergeFailed) {
+            try await failingService.reconcile(enabled: false, requestID: UUID())
+        }
+        #expect(failingProbe.releases == 1)
     }
 
     @Test("Known People iCloud routing resolves and merges off MainActor in both directions")
@@ -300,6 +496,11 @@ struct ICloudSyncCoordinatorTests {
         #expect(source.contains("keywordListsRoutingRequestID == requestID"))
         #expect(source.contains("KeywordListsStore.shared.applyICloudRoutingPreference(on)"))
         #expect(!source.contains("let ok = KeywordListsStore.shared.setICloudEnabled(on)"))
+        #expect(source.contains("try await templatesRouting.reconcile("))
+        #expect(source.contains("templatesRoutingRequestID == requestID"))
+        #expect(source.contains("NotificationCenter.default.post(name: .templatesStorageDidChange"))
+        #expect(!source.contains("let (current, release) = AppPaths.localTemplatesDirectory()"))
+        #expect(!source.contains("try mergeCopy(from: cloud, to: dest)"))
         #expect(source.contains("try await knownPeopleRouting.reconcile("))
         #expect(source.contains("knownPeopleRoutingRequestID == requestID"))
         #expect(source.contains("resolvedStorageURL: commit.destinationURL"))
@@ -312,6 +513,9 @@ struct ICloudSyncCoordinatorTests {
         #expect(source.contains("watermarksRoutingRequestID == requestID"))
         #expect(!source.contains("try mergeCopy(from: RosterStore.localTeamsDirectory, to: cloud)"))
         #expect(!source.contains("try mergeCopy(from: WatermarkStore.localWatermarksDirectory, to: cloud)"))
+        #expect(source.contains("let result = await availabilityProbe.probe()"))
+        #expect(source.contains("pendingPreferencesEnabled ?? preferencesSync.isEnabled"))
+        #expect(!source.contains("AppPaths.iCloudDocuments != nil"))
 
         let watcherSource = try String(
             contentsOf: workspace.appendingPathComponent(
@@ -340,6 +544,23 @@ struct ICloudSyncCoordinatorTests {
         )
         #expect(watermarkWatcherSource.contains("let root = resolvedRoot else { return }"))
         #expect(!watermarkWatcherSource.contains("AppPaths.iCloudWatermarksURL"))
+
+        let settingsSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Settings/SettingsView.swift"
+            ),
+            encoding: .utf8
+        )
+        let contentSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ContentView.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(settingsSource.contains("publisher(for: .templatesStorageDidChange)"))
+        #expect(settingsSource.contains("ICloudSyncCoordinator.shared.refreshICloudAvailability()"))
+        #expect(settingsSource.contains("coordinator.iCloudAvailability == .checking"))
+        #expect(contentSource.contains("publisher(for: .templatesStorageDidChange)"))
     }
 
     @Test("keyword-list routing unions flat lists and preserves an existing structured tree")
@@ -548,6 +769,15 @@ struct ICloudSyncCoordinatorTests {
         return summary
     }
 
+    @MainActor
+    private func waitForAvailabilityPublication(
+        in coordinator: ICloudSyncCoordinator
+    ) async {
+        for _ in 0..<100 where coordinator.iCloudAvailability == .checking {
+            await Task.yield()
+        }
+    }
+
 
     @Test("store migration preserves a newer destination and accepts a newer source")
     func migrationUsesNewestFile() throws {
@@ -575,6 +805,122 @@ struct ICloudSyncCoordinatorTests {
         try CloudCoordinatedIO.mergeCopyPreservingNewer(from: source, to: destination)
         #expect(try Data(contentsOf: destinationFile) == Data("newest-local".utf8))
     }
+}
+
+nonisolated private final class ICloudAvailabilityThreadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let available: Bool
+    private let cancelDuringResolution: Bool
+    private var observedMainThread = false
+    private var recordedCallCount = 0
+
+    init(available: Bool, cancelDuringResolution: Bool = false) {
+        self.available = available
+        self.cancelDuringResolution = cancelDuringResolution
+    }
+
+    func resolve() -> Bool {
+        lock.withLock {
+            observedMainThread = observedMainThread || Thread.isMainThread
+            recordedCallCount += 1
+        }
+        if cancelDuringResolution {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        return available
+    }
+
+    var callCount: Int { lock.withLock { recordedCallCount } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+@MainActor
+private final class PreferencesSyncControllerProbe: PreferencesSyncControlling {
+    private(set) var isEnabled = false
+    private(set) var setValues: [Bool] = []
+
+    func setEnabled(_ enabled: Bool) -> Bool {
+        setValues.append(enabled)
+        isEnabled = enabled
+        return true
+    }
+}
+
+nonisolated private final class TemplateICloudRoutingProbe: @unchecked Sendable {
+    enum ProbeError: Error, Equatable {
+        case mergeFailed
+    }
+
+    private let lock = NSLock()
+    private let local: URL
+    private let cloud: URL?
+    private let cancelDuringResolution: Bool
+    private let cancelDuringMerge: Bool
+    private let mergeError: ProbeError?
+    private var observedMainThread = false
+    private var recordedMerges: [(URL, URL)] = []
+    private var recordedLocalResolutions = 0
+    private var recordedReleases = 0
+
+    init(
+        local: URL,
+        cloud: URL?,
+        cancelDuringResolution: Bool = false,
+        cancelDuringMerge: Bool = false,
+        mergeError: ProbeError? = nil
+    ) {
+        self.local = local
+        self.cloud = cloud
+        self.cancelDuringResolution = cancelDuringResolution
+        self.cancelDuringMerge = cancelDuringMerge
+        self.mergeError = mergeError
+    }
+
+    var fileAccess: TemplateICloudRoutingFileAccess {
+        TemplateICloudRoutingFileAccess(
+            localRoot: { [self] in
+                lock.withLock {
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                    recordedLocalResolutions += 1
+                }
+                return TemplateICloudLocalRoot(
+                    url: local,
+                    release: { [self] in
+                        lock.withLock {
+                            observedMainThread = observedMainThread || Thread.isMainThread
+                            recordedReleases += 1
+                        }
+                    }
+                )
+            },
+            cloudRootURL: { [self] in
+                lock.withLock {
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                }
+                if cancelDuringResolution {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                return cloud
+            },
+            merge: { [self] source, destination in
+                lock.withLock {
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                    recordedMerges.append((source, destination))
+                }
+                if cancelDuringMerge {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                if let mergeError {
+                    throw mergeError
+                }
+            }
+        )
+    }
+
+    var merges: [(URL, URL)] { lock.withLock { recordedMerges } }
+    var localResolutions: Int { lock.withLock { recordedLocalResolutions } }
+    var releases: Int { lock.withLock { recordedReleases } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
 }
 
 nonisolated private final class KeywordListsRoutingProbe: @unchecked Sendable {

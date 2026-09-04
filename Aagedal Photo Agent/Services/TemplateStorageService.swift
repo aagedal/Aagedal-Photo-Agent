@@ -115,7 +115,7 @@ nonisolated struct TemplateStorageService: Sendable {
         return TemplateImportResult(added: added, overwritten: overwritten)
     }
 
-    private func resolvedDirectory() -> (url: URL, release: () -> Void) {
+    private func resolvedDirectory() -> (url: URL, release: @Sendable () -> Void) {
         if let directoryOverride {
             return (directoryOverride, {})
         }

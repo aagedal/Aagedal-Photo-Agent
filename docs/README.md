@@ -593,6 +593,24 @@ cancellation. The focused 18-test suite, adjacent 30-test selection, repository 
 1,963-test run passed. The audit remains 66 of 75 while the security-scoped Templates route, other direct paths,
 and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [Templates iCloud-routing continuation](plan-status-template-icloud-routing-continuation-2026-09-04.md)
+moves security-scoped bookmark resolution and lifetime, ubiquity-container resolution, and complete preserve-newer
+reconciliation out of the MainActor sync coordinator and behind one serialized actor. Request identity gates the
+preference commit, and metadata/Develop inventories reload only from a post-commit storage-change notification.
+Three characterizations cover both directions, off-main execution, balanced security-scope release for unavailable,
+cancelled, durable, and failing paths, plus current-request publication. The focused 21-test suite, adjacent 48-test
+selection, repository gate, and serial unfiltered 1,966-test run passed. The audit remains 66 of 75 while other
+direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
+The latest [iCloud availability-cache continuation](plan-status-icloud-availability-cache-continuation-2026-09-04.md)
+moves the remaining Sync-settings ubiquity-container availability lookup out of SwiftUI/MainActor evaluation and
+behind a serialized, cancellation-aware actor. Settings now presents cached unknown/checking/available/unavailable
+state, and Preferences sync commits only after the current probe reports available. Three characterizations cover
+off-main execution, both outcomes, cancellation around the non-preemptible lookup, and preference gating. The
+focused 24-test suite, adjacent 51-test selection, repository gate, and serial unfiltered 1,969-test run passed.
+The audit remains 66 of 75 while other direct paths and real-volume/signpost/Thread Performance Checker evidence
+stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

@@ -805,6 +805,10 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .importCompleted)) { notification in
                 handleImportCompleted(notification)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .templatesStorageDidChange)) { _ in
+                templateViewModel.loadTemplates()
+                developTemplateViewModel.loadTemplates()
+            }
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
                 guard let delivery else { return }
                 switch delivery.command {

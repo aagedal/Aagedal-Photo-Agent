@@ -68,7 +68,7 @@ nonisolated enum AppPaths {
     /// Resolves the user's chosen templates folder if a bookmark is set, otherwise the default.
     /// The returned `release` closure MUST be invoked once the caller is done with the URL,
     /// so security-scoped access is balanced.
-    static func templatesDirectory() -> (url: URL, release: () -> Void) {
+    static func templatesDirectory() -> (url: URL, release: @Sendable () -> Void) {
         // iCloud sync, when enabled and reachable, takes precedence over any
         // user-chosen folder so templates land in the synced container.
         if UserDefaults.standard.bool(forKey: UserDefaultsKeys.templatesICloudEnabled),
@@ -83,7 +83,7 @@ nonisolated enum AppPaths {
 
     /// Resolves the non-iCloud templates location even while iCloud sync is enabled.
     /// Migration code uses this to copy first and flip the preference only after success.
-    static func localTemplatesDirectory() -> (url: URL, release: () -> Void) {
+    static func localTemplatesDirectory() -> (url: URL, release: @Sendable () -> Void) {
         if let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.templatesFolderBookmark) {
             var stale = false
             if let url = try? URL(
@@ -103,7 +103,7 @@ nonisolated enum AppPaths {
     /// Develop presets share the configured Templates root (including iCloud
     /// and security-scoped custom folders) but live in a separate directory so
     /// their JSON cannot be mistaken for metadata templates.
-    static func developTemplatesDirectory() -> (url: URL, release: () -> Void) {
+    static func developTemplatesDirectory() -> (url: URL, release: @Sendable () -> Void) {
         let (root, release) = templatesDirectory()
         let url = root.appendingPathComponent("Develop", isDirectory: true)
         try? CloudCoordinatedIO.ensureDirectory(url)

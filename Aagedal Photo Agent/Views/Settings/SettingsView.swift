@@ -200,12 +200,17 @@ struct SettingsView: View {
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
             developTemplateViewModel.loadTemplates()
+            ICloudSyncCoordinator.shared.refreshICloudAvailability()
         }
         .onDisappear {
             cancelApprovedKeywordsImport()
         }
         .onChange(of: settingsViewModel.requestedDestination) { _, _ in
             applyRequestedDestination()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .templatesStorageDidChange)) { _ in
+            templateViewModel.loadTemplates()
+            developTemplateViewModel.loadTemplates()
         }
         .sheet(isPresented: $showKnownPeopleDisclosure) {
             KnownPeoplePrivacyDisclosureView {
@@ -1663,8 +1668,6 @@ struct SettingsView: View {
                     get: { coordinator.allEnabled },
                     set: {
                         requestAllCategoriesSync($0, coordinator: coordinator)
-                        templateViewModel.loadTemplates()
-                        developTemplateViewModel.loadTemplates()
                     }
                 ))
                 .toggleStyle(.switch)
@@ -1692,11 +1695,7 @@ struct SettingsView: View {
 
                 Toggle("Templates", isOn: Binding(
                     get: { coordinator.templatesEnabled },
-                    set: {
-                        coordinator.setTemplatesEnabled($0)
-                        templateViewModel.loadTemplates()
-                        developTemplateViewModel.loadTemplates()
-                    }
+                    set: { coordinator.setTemplatesEnabled($0) }
                 ))
                 Text("Metadata and develop templates. Overrides any custom templates folder while enabled.")
                     .font(.caption)
@@ -1732,17 +1731,31 @@ struct SettingsView: View {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                } else if !coordinator.iCloudAvailable {
+                } else if coordinator.iCloudAvailability == .checking {
+                    Label(
+                        "Checking iCloud Drive availability…",
+                        systemImage: "icloud"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                } else if coordinator.iCloudAvailability == .unavailable {
                     Label(
                         "iCloud Drive is not available. Sign in to iCloud in System Settings and enable iCloud Drive for this app.",
                         systemImage: "icloud.slash"
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                } else {
+                } else if coordinator.iCloudAvailability == .available {
                     Text("Each category is stored in this app's iCloud Drive container so it follows you to your other Macs. Passwords and signing keys stay on this device and are never synced.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else {
+                    Label(
+                        "iCloud Drive availability has not been checked yet.",
+                        systemImage: "icloud"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
         }
@@ -1839,8 +1852,6 @@ struct SettingsView: View {
             coordinator.setKnownPeopleEnabled(true, confirmedFirstEnable: true)
         case .allCategories:
             coordinator.setAllEnabled(true, confirmedKnownPeopleFirstEnable: true)
-            templateViewModel.loadTemplates()
-            developTemplateViewModel.loadTemplates()
         case nil:
             return
         }

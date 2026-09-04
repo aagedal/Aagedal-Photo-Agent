@@ -1068,6 +1068,28 @@ priority direct paths, the security-scoped Templates route, and real-volume/sign
 exit evidence remain open.
 ([validation](plan-status-library-icloud-routing-continuation-2026-09-04.md))
 
+**Templates iCloud-routing follow-up (2026-09-04):** enable/disable no longer resolves the custom-folder bookmark,
+holds its security scope, resolves the ubiquity container, or recursively reconciles metadata and Develop templates
+from `ICloudSyncCoordinator` on MainActor. One serialized actor balances the local security scope for unavailable,
+cancelled, durable, and throwing paths and returns immutable cancellation or commit evidence. Request identity gates
+preference publication; Settings and the main window reload template inventories only after a post-commit storage-
+change notification. Three new characterizations cover direction, off-main execution, exact scope-release counts,
+unavailable iCloud, both cancellation stages, and errors. The focused 21-test suite, adjacent 48-test selection,
+repository gate, and serial unfiltered 1,966-test run passed. Other lower-priority direct paths and real-volume/
+signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-template-icloud-routing-continuation-2026-09-04.md))
+
+**iCloud availability-cache follow-up (2026-09-04):** the Sync footer and Preferences toggle no longer resolve
+the app's ubiquity container on MainActor. One serialized actor returns immutable available, unavailable,
+pre-resolution-cancelled, or post-resolution-cancelled evidence and records a privacy-safe outcome signpost. The
+coordinator owns cached checking/available/unavailable presentation state, replacement task identity, and pending
+Preferences intent; it enables Preferences sync only after the current probe reports available. Three new
+characterizations cover off-main execution, both availability outcomes, both cancellation stages, and the exact
+preference-commit gate. The focused 24-test suite and adjacent 51-test selection passed. Other lower-priority
+direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open. The repository gate
+and final serial unfiltered run also passed, with 1,969 tests in 228 suites.
+([validation](plan-status-icloud-availability-cache-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
