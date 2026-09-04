@@ -211,12 +211,14 @@ struct ExpandedFaceManagementView: View {
             allowsMultipleSelection: false
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
-                do {
-                    try settingsViewModel.setPersonShownListURL(url)
-                    nameListImportMessage = nil
-                } catch {
-                    let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                    nameListImportMessage = "Name list import failed: \(description)"
+                Task {
+                    do {
+                        try await settingsViewModel.setPersonShownListURL(url)
+                        nameListImportMessage = nil
+                    } catch {
+                        let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                        nameListImportMessage = "Name list import failed: \(description)"
+                    }
                 }
             }
         }

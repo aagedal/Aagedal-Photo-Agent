@@ -90,6 +90,77 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(probe.maximumConcurrentReads == 1)
     }
 
+    @Test("Quick List cache load returns one complete immutable snapshot off MainActor")
+    @MainActor
+    func quickListCacheLoadRunsOffMainActor() async {
+        let sources = [
+            QuickListCacheSource(
+                type: .keywords,
+                url: URL(fileURLWithPath: "/virtual/keywords.txt")
+            ),
+            QuickListCacheSource(
+                type: .city,
+                url: URL(fileURLWithPath: "/virtual/city.txt")
+            )
+        ]
+        let bytes = Data("Oslo\nBergen\n".utf8)
+        let probe = KeywordListEditorFileAccessProbe(readData: bytes)
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = await service.loadQuickListCache(from: sources, requestID: requestID)
+
+        #expect(result == .complete(QuickListCacheSnapshot(
+            requestID: requestID,
+            requestedSources: sources,
+            processedSources: sources,
+            entriesByType: [
+                .keywords: ["Oslo", "Bergen"],
+                .city: ["Oslo", "Bergen"]
+            ],
+            availableTypes: [.keywords, .city],
+            failedTypes: []
+        )))
+        #expect(probe.existsInvocationCount == 2)
+        #expect(probe.readInvocationCount == 2)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Quick List cache cancellation reports the exact processed prefix")
+    func quickListCacheCancellationAfterRead() async throws {
+        let sources = [
+            QuickListCacheSource(
+                type: .keywords,
+                url: URL(fileURLWithPath: "/virtual/keywords.txt")
+            ),
+            QuickListCacheSource(
+                type: .city,
+                url: URL(fileURLWithPath: "/virtual/city.txt")
+            )
+        ]
+        let probe = BlockingKeywordListEditorFileAccessProbe()
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+        let task = Task {
+            await service.loadQuickListCache(from: sources, requestID: requestID)
+        }
+
+        try await probe.waitUntilFirstReadStarts()
+        task.cancel()
+        probe.releaseFirstRead()
+        let result = await task.value
+
+        #expect(result == .cancelledAfterPartialAccess(QuickListCacheSnapshot(
+            requestID: requestID,
+            requestedSources: sources,
+            processedSources: [sources[0]],
+            entriesByType: [.keywords: ["first"]],
+            availableTypes: [.keywords],
+            failedTypes: []
+        )))
+        #expect(probe.readInvocationCount == 1)
+    }
+
     @Test("save returns exact normalized durable-commit evidence")
     func saveCommitEvidence() async throws {
         let destination = URL(fileURLWithPath: "/virtual/event.txt")
@@ -246,6 +317,67 @@ struct KeywordListEditorPersistenceServiceTests {
         )))
     }
 
+    @Test("Quick List deletion returns durable evidence off MainActor")
+    @MainActor
+    func deletionRunsOffMainActor() async throws {
+        let destination = URL(fileURLWithPath: "/virtual/event.txt")
+        let probe = KeywordListEditorFileAccessProbe()
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.deleteQuickList(
+            at: destination,
+            requestID: requestID
+        )
+
+        #expect(result == .removed(
+            requestID: requestID,
+            destinationURL: destination,
+            cancellationRequestedAfterCommit: false
+        ))
+        #expect(probe.removedURL == destination)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Settings publishes only actor-loaded Quick List snapshots")
+    func settingsCacheSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let settingsSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/SettingsViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(settingsSource.contains("await persistence.loadQuickListCache("))
+        #expect(settingsSource.contains("case .complete(let snapshot) = result"))
+        #expect(settingsSource.contains("return quickListCache[type] ?? []"))
+        #expect(settingsSource.contains("try await quickListPersistence.appendEntries("))
+        #expect(settingsSource.contains("try await quickListPersistence.saveEntries("))
+        #expect(settingsSource.contains("try await quickListPersistence.deleteQuickList("))
+        #expect(!settingsSource.contains("KeywordListsStore.shared.readEntries("))
+        #expect(!settingsSource.contains("KeywordListsStore.shared.writeEntries("))
+        #expect(!settingsSource.contains("KeywordListsStore.shared.importEntries("))
+        #expect(!settingsSource.contains("KeywordListsStore.shared.exists("))
+
+        let metadataPanelSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Metadata/MetadataPanel.swift"
+            ),
+            encoding: .utf8
+        )
+        let faceViewSource = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Faces/ExpandedFaceManagementView.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(metadataPanelSource.contains("try await settingsViewModel.setKeywordsListURL(url)"))
+        #expect(faceViewSource.contains("try await settingsViewModel.setPersonShownListURL(url)"))
+    }
+
     @Test("SwiftUI editor awaits the owner and rejects stale load and save publication")
     func editorSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -310,6 +442,7 @@ private nonisolated final class KeywordListEditorFileAccessProbe: @unchecked Sen
     private var observedMainThread = false
     private var committedData: Data?
     private var committedURL: URL?
+    private var removedItemURL: URL?
     private var scopeStartCount = 0
     private var scopeStopCount = 0
 
@@ -349,6 +482,12 @@ private nonisolated final class KeywordListEditorFileAccessProbe: @unchecked Sen
                     withUnsafeCurrentTask { $0?.cancel() }
                 }
             },
+            removeItem: { [self] url in
+                lock.withLock {
+                    observedMainThread = observedMainThread || Thread.isMainThread
+                    removedItemURL = url
+                }
+            },
             startAccessingSecurityScopedResource: { [self] _ in
                 lock.withLock { scopeStartCount += 1 }
                 return true
@@ -364,6 +503,7 @@ private nonisolated final class KeywordListEditorFileAccessProbe: @unchecked Sen
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
     var writtenData: Data? { lock.withLock { committedData } }
     var writtenURL: URL? { lock.withLock { committedURL } }
+    var removedURL: URL? { lock.withLock { removedItemURL } }
     var securityScopeStartCount: Int { lock.withLock { scopeStartCount } }
     var securityScopeStopCount: Int { lock.withLock { scopeStopCount } }
 }

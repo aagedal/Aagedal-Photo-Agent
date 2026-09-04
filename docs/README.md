@@ -559,6 +559,14 @@ adjacent 53-test export/archive/FTP selection, repository gate, and serial unfil
 remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread Performance Checker evidence
 stay open.
 
+The latest [Settings Quick List cache continuation](plan-status-settings-quick-list-cache-continuation-2026-09-04.md)
+moves initial and replacement Settings/Metadata Quick List reads plus import, append, replace, and delete mutations
+onto the existing serialized keyword-list actor. Immutable complete or exact cancellation-prefix evidence and
+request-identity gating prevent partial or stale cache publication; SwiftUI queries are cache-only, and route changes
+invalidate cached URLs before reloading. Four new characterizations, the focused 15-test suite, adjacent 30-test
+selection, repository gate, and serial unfiltered 1,954-test run passed. The audit remains 66 of 75 while Phase 3.1's
+remaining direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

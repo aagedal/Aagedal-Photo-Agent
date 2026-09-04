@@ -1,4 +1,30 @@
 import Foundation
+import os.log
+
+nonisolated struct QuickListCacheSource: Equatable, Sendable {
+    let type: QuickListType
+    let url: URL
+}
+
+nonisolated struct QuickListCacheSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let requestedSources: [QuickListCacheSource]
+    let processedSources: [QuickListCacheSource]
+    let entriesByType: [QuickListType: [String]]
+    let availableTypes: Set<QuickListType>
+    let failedTypes: Set<QuickListType>
+
+    var isComplete: Bool {
+        processedSources.count == requestedSources.count
+    }
+}
+
+nonisolated enum QuickListCacheLoadResult: Equatable, Sendable {
+    case complete(QuickListCacheSnapshot)
+    case cancelledBeforeAccess(requestID: UUID, requestedSources: [QuickListCacheSource])
+    case cancelledAfterPartialAccess(QuickListCacheSnapshot)
+    case cancelledAfterCompleteAccess(QuickListCacheSnapshot)
+}
 
 nonisolated struct KeywordListEditorLoadSnapshot: Equatable, Sendable {
     let requestID: UUID
@@ -66,10 +92,22 @@ nonisolated enum QuickListMutationResult: Equatable, Sendable {
     )
 }
 
+nonisolated enum QuickListDeletionResult: Equatable, Sendable {
+    case missing(requestID: UUID, destinationURL: URL)
+    case removed(
+        requestID: UUID,
+        destinationURL: URL,
+        cancellationRequestedAfterCommit: Bool
+    )
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledBeforeCommit(requestID: UUID, destinationURL: URL)
+}
+
 nonisolated struct KeywordListEditorFileAccess: Sendable {
     let itemExists: @Sendable (URL) -> Bool
     let readData: @Sendable (URL) throws -> Data
     let writeData: @Sendable (Data, URL) throws -> Void
+    let removeItem: @Sendable (URL) throws -> Void
     let startAccessingSecurityScopedResource: @Sendable (URL) -> Bool
     let stopAccessingSecurityScopedResource: @Sendable (URL) -> Void
 
@@ -77,6 +115,9 @@ nonisolated struct KeywordListEditorFileAccess: Sendable {
         itemExists: @escaping @Sendable (URL) -> Bool,
         readData: @escaping @Sendable (URL) throws -> Data,
         writeData: @escaping @Sendable (Data, URL) throws -> Void,
+        removeItem: @escaping @Sendable (URL) throws -> Void = {
+            try CloudCoordinatedIO.removeItem(at: $0)
+        },
         startAccessingSecurityScopedResource: @escaping @Sendable (URL) -> Bool = {
             $0.startAccessingSecurityScopedResource()
         },
@@ -87,6 +128,7 @@ nonisolated struct KeywordListEditorFileAccess: Sendable {
         self.itemExists = itemExists
         self.readData = readData
         self.writeData = writeData
+        self.removeItem = removeItem
         self.startAccessingSecurityScopedResource = startAccessingSecurityScopedResource
         self.stopAccessingSecurityScopedResource = stopAccessingSecurityScopedResource
     }
@@ -94,7 +136,8 @@ nonisolated struct KeywordListEditorFileAccess: Sendable {
     static let system = KeywordListEditorFileAccess(
         itemExists: { CloudCoordinatedIO.itemExists(at: $0) },
         readData: { try CloudCoordinatedIO.readData(at: $0) },
-        writeData: { try CloudCoordinatedIO.writeData($0, to: $1) }
+        writeData: { try CloudCoordinatedIO.writeData($0, to: $1) },
+        removeItem: { try CloudCoordinatedIO.removeItem(at: $0) }
     )
 }
 
@@ -108,9 +151,122 @@ actor KeywordListEditorPersistenceService {
     static let shared = KeywordListEditorPersistenceService()
 
     private let access: KeywordListEditorFileAccess
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "QuickListCacheLoad"
+    )
 
     init(access: KeywordListEditorFileAccess = .system) {
         self.access = access
+    }
+
+    /// Loads the Settings/Metadata Quick List cache as one serialized transaction. Every
+    /// processed source is an exact prefix of the request, and individual read failures are
+    /// represented without discarding the other lists. MainActor callers publish only complete
+    /// snapshots, keeping SwiftUI body evaluation entirely in memory.
+    func loadQuickListCache(
+        from sources: [QuickListCacheSource],
+        requestID: UUID
+    ) -> QuickListCacheLoadResult {
+        let signpostID = signposter.makeSignpostID()
+        let interval = signposter.beginInterval("Load", id: signpostID)
+
+        guard !Task.isCancelled else {
+            signposter.endInterval("Load", interval, "result=cancelled processed=0")
+            return .cancelledBeforeAccess(requestID: requestID, requestedSources: sources)
+        }
+
+        var processed: [QuickListCacheSource] = []
+        processed.reserveCapacity(sources.count)
+        var entriesByType: [QuickListType: [String]] = [:]
+        var availableTypes: Set<QuickListType> = []
+        var failedTypes: Set<QuickListType> = []
+
+        for source in sources {
+            guard !Task.isCancelled else {
+                return cancelledQuickListCacheResult(
+                    requestID: requestID,
+                    requestedSources: sources,
+                    processedSources: processed,
+                    entriesByType: entriesByType,
+                    availableTypes: availableTypes,
+                    failedTypes: failedTypes,
+                    interval: interval
+                )
+            }
+
+            let exists = access.itemExists(source.url)
+            if exists {
+                availableTypes.insert(source.type)
+                do {
+                    let data = try access.readData(source.url)
+                    entriesByType[source.type] = ApprovedListParser.parseString(
+                        String(decoding: data, as: UTF8.self),
+                        csv: false
+                    )
+                } catch {
+                    failedTypes.insert(source.type)
+                }
+            } else {
+                entriesByType[source.type] = []
+            }
+            processed.append(source)
+
+            guard !Task.isCancelled else {
+                return cancelledQuickListCacheResult(
+                    requestID: requestID,
+                    requestedSources: sources,
+                    processedSources: processed,
+                    entriesByType: entriesByType,
+                    availableTypes: availableTypes,
+                    failedTypes: failedTypes,
+                    interval: interval
+                )
+            }
+        }
+
+        let snapshot = QuickListCacheSnapshot(
+            requestID: requestID,
+            requestedSources: sources,
+            processedSources: processed,
+            entriesByType: entriesByType,
+            availableTypes: availableTypes,
+            failedTypes: failedTypes
+        )
+        signposter.endInterval(
+            "Load",
+            interval,
+            "result=complete processed=\(processed.count) failed=\(failedTypes.count)"
+        )
+        return .complete(snapshot)
+    }
+
+    private func cancelledQuickListCacheResult(
+        requestID: UUID,
+        requestedSources: [QuickListCacheSource],
+        processedSources: [QuickListCacheSource],
+        entriesByType: [QuickListType: [String]],
+        availableTypes: Set<QuickListType>,
+        failedTypes: Set<QuickListType>,
+        interval: OSSignpostIntervalState
+    ) -> QuickListCacheLoadResult {
+        let snapshot = QuickListCacheSnapshot(
+            requestID: requestID,
+            requestedSources: requestedSources,
+            processedSources: processedSources,
+            entriesByType: entriesByType,
+            availableTypes: availableTypes,
+            failedTypes: failedTypes
+        )
+        let state = snapshot.isComplete ? "cancelled-complete" : "cancelled-partial"
+        signposter.endInterval(
+            "Load",
+            interval,
+            "result=\(state) processed=\(processedSources.count) failed=\(failedTypes.count)"
+        )
+        return snapshot.isComplete
+            ? .cancelledAfterCompleteAccess(snapshot)
+            : .cancelledAfterPartialAccess(snapshot)
     }
 
     func loadEntries(
@@ -286,6 +442,30 @@ actor KeywordListEditorPersistenceService {
             byteCount: data.count,
             cancellationRequestedAfterCommit: Task.isCancelled
         ))
+    }
+
+    func deleteQuickList(
+        at destinationURL: URL,
+        requestID: UUID
+    ) throws -> QuickListDeletionResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+        guard access.itemExists(destinationURL) else {
+            return .missing(requestID: requestID, destinationURL: destinationURL)
+        }
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: requestID,
+                destinationURL: destinationURL
+            )
+        }
+        try access.removeItem(destinationURL)
+        return .removed(
+            requestID: requestID,
+            destinationURL: destinationURL,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        )
     }
 
     private static func normalizedEntries(_ entries: [String]) -> [String] {

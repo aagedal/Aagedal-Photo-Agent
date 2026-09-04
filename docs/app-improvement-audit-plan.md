@@ -1028,6 +1028,16 @@ unfiltered 1,950-test run also passed. Other lower-priority direct paths and rea
 Checker exit evidence remain open.
 ([validation](plan-status-export-artifact-finalization-continuation-2026-09-04.md))
 
+**Settings Quick List cache follow-up (2026-09-04):** initial and replacement Settings/Metadata Quick List reads now
+cross the existing serialized keyword-list actor and publish only a complete result for the current request. SwiftUI
+entry and availability queries are cache-only; route-change notifications invalidate cached URLs before reloading.
+Import, append, replace, and delete mutations use the same actor and publish every durable commit without repeating
+file I/O on MainActor. Immutable results distinguish complete work from exact cancellation prefixes, and a privacy-
+safe signpost records only outcome state and aggregate counts. Four new characterizations and the focused 15-test
+suite passed; the adjacent 30-test selection, repository gate, and serial unfiltered 1,954-test run also passed. Other
+lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-settings-quick-list-cache-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

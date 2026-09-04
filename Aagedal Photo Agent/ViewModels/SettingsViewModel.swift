@@ -343,6 +343,7 @@ nonisolated enum SettingsDestination: Equatable, Sendable {
 @Observable
 final class SettingsViewModel {
     private let c2paConfigurationService: C2PASigningConfigurationService
+    private let quickListPersistence: KeywordListEditorPersistenceService
     @ObservationIgnored private var c2paOperationRequestID: UUID?
     /// Ephemeral navigation request consumed by the app's Settings scene.
     var requestedDestination: SettingsDestination? = nil
@@ -571,7 +572,10 @@ final class SettingsViewModel {
 
     var quickListVersion: Int = 0
     @ObservationIgnored private var quickListCache: [QuickListType: [String]] = [:]
-    @ObservationIgnored private var cachedQuickListVersion: Int = -1
+    @ObservationIgnored private var availableQuickLists: Set<QuickListType> = []
+    @ObservationIgnored private var quickListURLs: [QuickListType: URL] = [:]
+    @ObservationIgnored private var quickListRefreshRequestID: UUID?
+    @ObservationIgnored nonisolated(unsafe) private var quickListRefreshTask: Task<Void, Never>?
     @ObservationIgnored nonisolated(unsafe) private var quickListChangeObserver: NSObjectProtocol?
 
     var approvedLists: ApprovedListService { .shared }
@@ -594,46 +598,56 @@ final class SettingsViewModel {
 
     private func quickListPathIfPresent(_ type: QuickListType) -> String {
         _ = quickListVersion
-        let key = KeywordListKey.quick(type)
-        guard KeywordListsStore.shared.exists(key) else { return "" }
-        return KeywordListsStore.shared.url(for: key).path
+        guard availableQuickLists.contains(type) else { return "" }
+        return quickListURLs[type]?.path ?? ""
     }
 
-    func setKeywordsListURL(_ url: URL) throws {
-        try importQuickList(from: url, type: .keywords)
+    func setKeywordsListURL(_ url: URL) async throws {
+        try await importQuickList(from: url, type: .keywords)
     }
 
-    func setPersonShownListURL(_ url: URL) throws {
-        try importQuickList(from: url, type: .personShown)
+    func setPersonShownListURL(_ url: URL) async throws {
+        try await importQuickList(from: url, type: .personShown)
     }
 
-    func setCopyrightListURL(_ url: URL) throws {
-        try importQuickList(from: url, type: .copyright)
+    func setCopyrightListURL(_ url: URL) async throws {
+        try await importQuickList(from: url, type: .copyright)
     }
 
-    func setCreatorListURL(_ url: URL) throws {
-        try importQuickList(from: url, type: .creator)
+    func setCreatorListURL(_ url: URL) async throws {
+        try await importQuickList(from: url, type: .creator)
     }
 
-    func setCreditListURL(_ url: URL) throws {
-        try importQuickList(from: url, type: .credit)
+    func setCreditListURL(_ url: URL) async throws {
+        try await importQuickList(from: url, type: .credit)
     }
 
-    func setCityListURL(_ url: URL) throws {
-        try importQuickList(from: url, type: .city)
+    func setCityListURL(_ url: URL) async throws {
+        try await importQuickList(from: url, type: .city)
     }
 
-    func setCountryListURL(_ url: URL) throws {
-        try importQuickList(from: url, type: .country)
+    func setCountryListURL(_ url: URL) async throws {
+        try await importQuickList(from: url, type: .country)
     }
 
-    func setEventListURL(_ url: URL) throws {
-        try importQuickList(from: url, type: .event)
+    func setEventListURL(_ url: URL) async throws {
+        try await importQuickList(from: url, type: .event)
     }
 
-    private func importQuickList(from url: URL, type: QuickListType) throws {
-        try KeywordListsStore.shared.importEntries(from: url, into: .quick(type))
-        quickListVersion += 1
+    private func importQuickList(from url: URL, type: QuickListType) async throws {
+        let requestID = UUID()
+        let destinationURL = managedQuickListURL(for: type)
+        let result = try await quickListPersistence.appendEntries(
+            [],
+            to: destinationURL,
+            importing: url,
+            requestID: requestID
+        )
+        guard case .committed(let commit) = result else {
+            try Task.checkCancellation()
+            return
+        }
+        publishQuickListCommit(commit, type: type)
     }
 
     func setTemplatesFolderURL(_ url: URL) {
@@ -921,13 +935,15 @@ final class SettingsViewModel {
     init(
         c2paPersistence: any C2PASigningConfigurationPersisting = AppC2PASigningConfigurationPersistence(),
         pkcs12Importer: any C2PAIdentityImporting = SecurityPKCS12IdentityImporter(),
-        c2paFileIO: C2PACertificateFileIO = .system
+        c2paFileIO: C2PACertificateFileIO = .system,
+        quickListPersistence: KeywordListEditorPersistenceService = .shared
     ) {
         self.c2paConfigurationService = C2PASigningConfigurationService(
             persistence: c2paPersistence,
             pkcs12Importer: pkcs12Importer,
             fileIO: c2paFileIO
         )
+        self.quickListPersistence = quickListPersistence
         self.rawRenderAsHDR = UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR)
         let decodeProfileRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile)
         self.rawDecodeProfile = RAWDecodeProfile(storedRawValue: decodeProfileRaw ?? "") ?? .camera
@@ -1067,8 +1083,8 @@ final class SettingsViewModel {
             self.templatesFolderPath = url.path
         }
 
-        // Bump quickListVersion whenever the store reports a per-list change so
-        // SwiftUI views observing this ViewModel re-fetch entries.
+        // Install exact durable payloads directly. Changes without a payload (remote refresh,
+        // routing, or legacy writers) trigger one complete actor-owned reload.
         quickListChangeObserver = NotificationCenter.default.addObserver(
             forName: .keywordListChanged,
             object: nil,
@@ -1076,15 +1092,26 @@ final class SettingsViewModel {
         ) { [weak self] note in
             guard
                 let key = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey,
-                case .quick = key
+                case .quick(let type) = key
             else { return }
+            let committedEntries = note.userInfo?[KeywordListsStore.changedEntriesUserInfo] as? [String]
             Task { @MainActor [weak self] in
-                self?.quickListVersion += 1
+                guard let self else { return }
+                if let committedEntries {
+                    self.installQuickListEntries(committedEntries, for: type)
+                } else {
+                    // A no-payload notification may represent an iCloud route change. Re-resolve
+                    // every managed URL before the actor reloads rather than retaining the old root.
+                    self.quickListURLs.removeAll()
+                    self.scheduleQuickListRefresh()
+                }
             }
         }
+        scheduleQuickListRefresh()
     }
 
     nonisolated deinit {
+        quickListRefreshTask?.cancel()
         if let quickListChangeObserver {
             NotificationCenter.default.removeObserver(quickListChangeObserver)
         }
@@ -1099,19 +1126,11 @@ final class SettingsViewModel {
     func loadCountryList() -> [String] { entries(for: .country) }
     func loadEventList() -> [String] { entries(for: .event) }
 
-    /// Returns the entries of a quick list, reading from `KeywordListsStore` and
-    /// caching until the next `quickListVersion` bump (file write or import).
+    /// Returns the latest actor-loaded snapshot. This is intentionally cache-only because it is
+    /// called from SwiftUI body and metadata suggestion projection on MainActor.
     func entries(for type: QuickListType) -> [String] {
-        if cachedQuickListVersion == quickListVersion, let cached = quickListCache[type] {
-            return cached
-        }
-        if cachedQuickListVersion != quickListVersion {
-            quickListCache.removeAll()
-            cachedQuickListVersion = quickListVersion
-        }
-        let list = KeywordListsStore.shared.readEntries(.quick(type))
-        quickListCache[type] = list
-        return list
+        _ = quickListVersion
+        return quickListCache[type] ?? []
     }
 
     /// Returns the on-disk URL for a quick list when the file exists, else nil.
@@ -1119,37 +1138,36 @@ final class SettingsViewModel {
     /// file; with the managed store the file is always present after first save,
     /// so this returns nil when the list is empty.
     func quickListURL(for type: QuickListType) -> URL? {
-        let key = KeywordListKey.quick(type)
-        return KeywordListsStore.shared.exists(key)
-            ? KeywordListsStore.shared.url(for: key)
-            : nil
+        availableQuickLists.contains(type) ? quickListURLs[type] : nil
     }
 
-    func setQuickListURL(_ url: URL, for type: QuickListType) {
-        try? importQuickList(from: url, type: type)
+    func setQuickListURL(_ url: URL, for type: QuickListType) async {
+        try? await importQuickList(from: url, type: type)
     }
 
     /// Appends `values` to a quick list, deduplicated, and persists through the
     /// store. Returns true on success (false only on a write error). If the list
     /// did not previously exist it is created on-the-fly inside the store.
     @discardableResult
-    func appendToQuickList(for type: QuickListType, values: [String]) -> Bool {
+    func appendToQuickList(for type: QuickListType, values: [String]) async -> Bool {
         let sanitized = sanitizeQuickListValues(values)
         guard !sanitized.isEmpty else { return false }
-        let existing = KeywordListsStore.shared.readEntries(.quick(type))
-        var seen = Set(existing)
-        var combined = existing
-        for value in sanitized where seen.insert(value).inserted {
-            combined.append(value)
-        }
-        guard combined.count != existing.count else {
-            // Nothing new — still report success so callers don't show errors.
-            return true
-        }
         do {
-            try KeywordListsStore.shared.writeEntries(combined, to: .quick(type))
-            quickListVersion += 1
-            return true
+            let result = try await quickListPersistence.appendEntries(
+                sanitized,
+                to: managedQuickListURL(for: type),
+                createDestinationIfMissing: true,
+                requestID: UUID()
+            )
+            switch result {
+            case .committed(let commit):
+                publishQuickListCommit(commit, type: type)
+                return true
+            case .unchanged:
+                return true
+            default:
+                return false
+            }
         } catch {
             return false
         }
@@ -1157,19 +1175,104 @@ final class SettingsViewModel {
 
     /// Replaces the quick list with the given entries. Used by the in-app editor.
     @discardableResult
-    func replaceQuickList(_ entries: [String], for type: QuickListType) -> Bool {
+    func replaceQuickList(_ entries: [String], for type: QuickListType) async -> Bool {
         do {
-            try KeywordListsStore.shared.writeEntries(entries, to: .quick(type))
-            quickListVersion += 1
+            let result = try await quickListPersistence.saveEntries(
+                entries,
+                to: managedQuickListURL(for: type),
+                requestID: UUID()
+            )
+            guard case .committed(let commit) = result else { return false }
+            let mutationCommit = QuickListMutationCommit(
+                requestID: commit.requestID,
+                destinationURL: commit.destinationURL,
+                entries: commit.entries,
+                addedEntries: [],
+                byteCount: commit.byteCount,
+                cancellationRequestedAfterCommit: commit.cancellationRequestedAfterCommit
+            )
+            publishQuickListCommit(mutationCommit, type: type)
             return true
         } catch {
             return false
         }
     }
 
-    func clearQuickList(_ type: QuickListType) {
-        KeywordListsStore.shared.delete(.quick(type))
+    func clearQuickList(_ type: QuickListType) async {
+        let requestID = UUID()
+        do {
+            let result = try await quickListPersistence.deleteQuickList(
+                at: managedQuickListURL(for: type),
+                requestID: requestID
+            )
+            switch result {
+            case .missing, .removed:
+                quickListCache[type] = []
+                availableQuickLists.remove(type)
+                quickListVersion += 1
+                KeywordListsStore.shared.recordExternalDeletion(
+                    to: .quick(type),
+                    sourceID: requestID
+                )
+            case .cancelledBeforeAccess, .cancelledBeforeCommit:
+                break
+            }
+        } catch {
+            return
+        }
+    }
+
+    private func managedQuickListURL(for type: QuickListType) -> URL {
+        if let cached = quickListURLs[type] { return cached }
+        let url = KeywordListsStore.shared.url(for: .quick(type))
+        quickListURLs[type] = url
+        return url
+    }
+
+    private func publishQuickListCommit(_ commit: QuickListMutationCommit, type: QuickListType) {
+        KeywordListsStore.shared.recordExternalWrite(
+            to: .quick(type),
+            entries: commit.entries,
+            sourceID: commit.requestID
+        )
+        installQuickListEntries(commit.entries, for: type)
+    }
+
+    private func installQuickListEntries(_ entries: [String], for type: QuickListType) {
+        guard quickListCache[type] != entries || !availableQuickLists.contains(type) else { return }
+        quickListCache[type] = entries
+        availableQuickLists.insert(type)
         quickListVersion += 1
+    }
+
+    private func scheduleQuickListRefresh() {
+        quickListRefreshTask?.cancel()
+        let requestID = UUID()
+        let sources = QuickListType.allCases.map { type in
+            QuickListCacheSource(type: type, url: managedQuickListURL(for: type))
+        }
+        quickListRefreshRequestID = requestID
+        let persistence = quickListPersistence
+        quickListRefreshTask = Task { @MainActor [weak self] in
+            let result = await persistence.loadQuickListCache(
+                from: sources,
+                requestID: requestID
+            )
+            guard let self,
+                  self.quickListRefreshRequestID == requestID,
+                  !Task.isCancelled,
+                  case .complete(let snapshot) = result,
+                  snapshot.requestID == requestID,
+                  snapshot.requestedSources == sources
+            else { return }
+            self.quickListRefreshTask = nil
+            self.quickListRefreshRequestID = nil
+            for source in sources where !snapshot.failedTypes.contains(source.type) {
+                self.quickListCache[source.type] = snapshot.entriesByType[source.type] ?? []
+            }
+            self.availableQuickLists = snapshot.availableTypes
+            self.quickListVersion += 1
+        }
     }
 
     private func sanitizeQuickListValues(_ values: [String]) -> [String] {

@@ -246,6 +246,11 @@ final class KeywordListsStore {
         notifyChanged(key, entries: entries, sourceID: sourceID)
     }
 
+    /// Publishes a removal already committed by a serialized filesystem service.
+    func recordExternalDeletion(to key: KeywordListKey, sourceID: UUID? = nil) {
+        notifyChanged(key, sourceID: sourceID)
+    }
+
     /// Writes a list of entries one-per-line. Sanitizes whitespace and dedupes
     /// case-sensitively (callers can lowercase if they want a stricter rule).
     func writeEntries(_ entries: [String], to key: KeywordListKey) throws {
