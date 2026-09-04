@@ -90,7 +90,7 @@ nonisolated struct AdvancedExportConfiguration: Equatable, Sendable {
     }
 }
 
-nonisolated struct AdvancedExportItem: Identifiable, Sendable {
+nonisolated struct AdvancedExportItem: Identifiable, Equatable, Sendable {
     var id: URL { sourceURL }
 
     let sourceURL: URL
@@ -131,5 +131,159 @@ nonisolated enum AdvancedExportQueueBuilder {
         selectedIDs: Set<URL>
     ) -> [ImageFile] {
         visibleImages.filter { selectedIDs.contains($0.url) }
+    }
+}
+
+nonisolated struct AdvancedExportPreparationInput: Equatable, Sendable {
+    let sourceURL: URL
+    let filename: String
+    let liveCameraRaw: CameraRawSettings?
+    let sourceFileSize: Int64?
+    let exifOrientation: Int
+    let isICloudDownloadPending: Bool
+}
+
+nonisolated struct AdvancedExportSourcePixelSize: Equatable, Sendable {
+    let width: Int
+    let height: Int
+}
+
+nonisolated struct AdvancedExportPreparationAccess: Sendable {
+    let loadCameraRawSidecar: @Sendable (URL) -> CameraRawSettings?
+    let nativePixelSize: @Sendable (URL) -> AdvancedExportSourcePixelSize?
+
+    static let live = Self(
+        loadCameraRawSidecar: { imageURL in
+            XMPSidecarService().loadSidecar(for: imageURL)?.cameraRaw
+        },
+        nativePixelSize: { imageURL in
+            guard let size = FullScreenImageCache.nativePixelSize(of: imageURL) else {
+                return nil
+            }
+            return AdvancedExportSourcePixelSize(
+                width: Int(size.width.rounded()),
+                height: Int(size.height.rounded())
+            )
+        }
+    )
+}
+
+nonisolated struct AdvancedExportPreparationSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let requestedURLs: [URL]
+    let preparedItems: [AdvancedExportItem]
+
+    var preparedURLs: [URL] { preparedItems.map(\.sourceURL) }
+    var isComplete: Bool { preparedItems.count == requestedURLs.count }
+}
+
+nonisolated enum AdvancedExportPreparationResult: Equatable, Sendable {
+    case complete(AdvancedExportPreparationSnapshot)
+    case cancelledBeforeRead(requestID: UUID, requestedURLs: [URL])
+    case cancelledAfterPartialRead(AdvancedExportPreparationSnapshot)
+    case cancelledAfterCompleteRead(AdvancedExportPreparationSnapshot)
+}
+
+/// Serializes sidecar and ImageIO reads used to construct the Advanced Export queue. The UI
+/// receives only immutable items, while cooperative cancellation records the exact fully prepared
+/// prefix after any synchronous Foundation or ImageIO call that could not be interrupted.
+actor AdvancedExportPreparationService {
+    static let shared = AdvancedExportPreparationService()
+
+    private let access: AdvancedExportPreparationAccess
+
+    init(access: AdvancedExportPreparationAccess = .live) {
+        self.access = access
+    }
+
+    func prepare(
+        _ inputs: [AdvancedExportPreparationInput],
+        requestID: UUID
+    ) -> AdvancedExportPreparationResult {
+        let requestedURLs = inputs.map(\.sourceURL)
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID, requestedURLs: requestedURLs)
+        }
+
+        var items: [AdvancedExportItem] = []
+        items.reserveCapacity(inputs.count)
+
+        for input in inputs {
+            guard !Task.isCancelled else {
+                return cancelledResult(
+                    requestID: requestID,
+                    requestedURLs: requestedURLs,
+                    preparedItems: items
+                )
+            }
+
+            var cameraRaw = input.liveCameraRaw
+            if cameraRaw == nil, SupportedImageFormats.isRaw(url: input.sourceURL) {
+                cameraRaw = access.loadCameraRawSidecar(input.sourceURL)
+                guard !Task.isCancelled else {
+                    return cancelledResult(
+                        requestID: requestID,
+                        requestedURLs: requestedURLs,
+                        preparedItems: items
+                    )
+                }
+            }
+
+            let nativeSize: AdvancedExportSourcePixelSize?
+            if input.isICloudDownloadPending {
+                nativeSize = nil
+            } else {
+                nativeSize = access.nativePixelSize(input.sourceURL)
+            }
+
+            let sourcePixelWidth: Int?
+            let sourcePixelHeight: Int?
+            if let nativeSize, (5...8).contains(input.exifOrientation) {
+                sourcePixelWidth = nativeSize.height
+                sourcePixelHeight = nativeSize.width
+            } else {
+                sourcePixelWidth = nativeSize?.width
+                sourcePixelHeight = nativeSize?.height
+            }
+
+            items.append(AdvancedExportItem(
+                sourceURL: input.sourceURL,
+                filename: input.filename,
+                cameraRaw: cameraRaw,
+                isHDR: cameraRaw?.hdrEditMode == 1,
+                sourceFileSize: input.sourceFileSize,
+                sourcePixelWidth: sourcePixelWidth,
+                sourcePixelHeight: sourcePixelHeight
+            ))
+
+            guard !Task.isCancelled else {
+                return cancelledResult(
+                    requestID: requestID,
+                    requestedURLs: requestedURLs,
+                    preparedItems: items
+                )
+            }
+        }
+
+        return .complete(AdvancedExportPreparationSnapshot(
+            requestID: requestID,
+            requestedURLs: requestedURLs,
+            preparedItems: items
+        ))
+    }
+
+    private func cancelledResult(
+        requestID: UUID,
+        requestedURLs: [URL],
+        preparedItems: [AdvancedExportItem]
+    ) -> AdvancedExportPreparationResult {
+        let snapshot = AdvancedExportPreparationSnapshot(
+            requestID: requestID,
+            requestedURLs: requestedURLs,
+            preparedItems: preparedItems
+        )
+        return snapshot.isComplete
+            ? .cancelledAfterCompleteRead(snapshot)
+            : .cancelledAfterPartialRead(snapshot)
     }
 }

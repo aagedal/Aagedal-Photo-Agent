@@ -1264,6 +1264,17 @@ gate, and serial unfiltered 2,018-test run passed. Other lower-priority direct/c
 signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-settings-structured-keyword-import-continuation-2026-09-04.md))
 
+**Advanced Export preparation follow-up (2026-09-04):** opening Advanced Export now moves selection-scaled RAW
+XMP sidecar reads and native-dimension probes out of `ContentView`'s MainActor path and through one serialized
+actor. Immutable inputs preserve live Camera Raw precedence, skip dimension probes for pending iCloud placeholders,
+and apply the established EXIF orientation swap. Cancellation reports the exact prepared prefix around
+non-preemptible reads, overlapping batches cannot enter the access layer concurrently, and publication requires
+both the current request identity and the same ordered selection. Five new characterizations cover minimal off-main
+reads, cancellation prefixes and edge states, actor serialization, and the caller's stale-publication contract. The
+focused 15-test Advanced Export suite, repository gate, and serial unfiltered 2,023-test run passed. Other lower-
+priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-advanced-export-preparation-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

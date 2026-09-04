@@ -725,6 +725,14 @@ file on MainActor. Five new characterizations, the focused 32-test selection, re
 2,018-test run passed. The audit remains 66 of 75 while other lower-priority direct/cached-model paths and real-volume/
 signpost/Thread Performance Checker evidence stay open.
 
+The latest [Advanced Export preparation continuation](plan-status-advanced-export-preparation-continuation-2026-09-04.md)
+moves selection-scaled RAW XMP sidecar reads and native-dimension probes out of `ContentView`'s MainActor path and
+through a serialized actor. The service preserves live Camera Raw precedence, pending-iCloud and EXIF-orientation
+behavior, exact cancellation evidence, and serialized access; the caller cancels replacements and rejects stale
+request or ordered-selection publication. Five new characterizations, the focused 15-test Advanced Export suite,
+repository gate, and serial unfiltered 2,023-test run passed. The audit remains 66 of 75 while other lower-priority
+direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

@@ -121,6 +121,8 @@ struct ContentView: View {
     @State private var developTemplateViewModel = DevelopTemplateViewModel()
     @State private var ftpViewModel = FTPViewModel()
     @State private var advancedExportSession: AdvancedExportSession?
+    @State private var advancedExportPreparationTask: Task<Void, Never>?
+    @State private var advancedExportPreparationRequestID = UUID()
     @State private var pendingAdvancedExportRequest: AdvancedExportRequest?
     @State private var settingsViewModel: SettingsViewModel
     @State private var importViewModel: ImportViewModel
@@ -789,6 +791,9 @@ struct ContentView: View {
                      .restoreCaptionEditorFocus:
                     break
                 }
+            }
+            .onChange(of: browserViewModel.selectedImageIDs) {
+                cancelAdvancedExportPreparation()
             }
     }
 
@@ -2564,42 +2569,39 @@ struct ContentView: View {
             return
         }
 
-        let xmp = XMPSidecarService()
-        let items = orderedImages.map { image in
-            let liveSettings = browserViewModel.currentCameraRawSettings(for: image.url)
-            let sidecarSettings: CameraRawSettings?
-            if liveSettings == nil, SupportedImageFormats.isRaw(url: image.url) {
-                sidecarSettings = xmp.loadSidecar(for: image.url)?.cameraRaw
-            } else {
-                sidecarSettings = nil
-            }
-            let cameraRaw = liveSettings ?? sidecarSettings
-            let nativeSize = image.isICloudDownloadPending
-                ? nil
-                : FullScreenImageCache.nativePixelSize(of: image.url)
-            let sourceDimensions: (width: Int?, height: Int?)
-            if let nativeSize {
-                let width = Int(nativeSize.width.rounded())
-                let height = Int(nativeSize.height.rounded())
-                if (5...8).contains(image.exifOrientation) {
-                    sourceDimensions = (height, width)
-                } else {
-                    sourceDimensions = (width, height)
-                }
-            } else {
-                sourceDimensions = (nil, nil)
-            }
-            return AdvancedExportItem(
+        let inputs = orderedImages.map { image in
+            AdvancedExportPreparationInput(
                 sourceURL: image.url,
                 filename: image.filename,
-                cameraRaw: cameraRaw,
-                isHDR: cameraRaw?.hdrEditMode == 1,
+                liveCameraRaw: browserViewModel.currentCameraRawSettings(for: image.url),
                 sourceFileSize: image.fileSize > 0 ? image.fileSize : nil,
-                sourcePixelWidth: sourceDimensions.width,
-                sourcePixelHeight: sourceDimensions.height
+                exifOrientation: image.exifOrientation,
+                isICloudDownloadPending: image.isICloudDownloadPending
             )
         }
-        advancedExportSession = AdvancedExportSession(items: items)
+        advancedExportPreparationTask?.cancel()
+        let requestID = UUID()
+        advancedExportPreparationRequestID = requestID
+        let service = AdvancedExportPreparationService.shared
+        advancedExportPreparationTask = Task {
+            let result = await service.prepare(inputs, requestID: requestID)
+            guard advancedExportPreparationRequestID == requestID else { return }
+            advancedExportPreparationTask = nil
+            guard case .complete(let snapshot) = result else { return }
+            let currentOrderedURLs = AdvancedExportQueueBuilder.orderedSelection(
+                from: browserViewModel.visibleImages,
+                selectedIDs: browserViewModel.selectedImageIDs
+            ).map(\.url)
+            guard currentOrderedURLs == snapshot.requestedURLs else { return }
+            advancedExportSession = AdvancedExportSession(items: snapshot.preparedItems)
+        }
+    }
+
+    private func cancelAdvancedExportPreparation() {
+        guard advancedExportPreparationTask != nil else { return }
+        advancedExportPreparationTask?.cancel()
+        advancedExportPreparationTask = nil
+        advancedExportPreparationRequestID = UUID()
     }
 
     private func applyAdvancedExportConfiguration(

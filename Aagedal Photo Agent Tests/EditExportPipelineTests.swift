@@ -2593,6 +2593,298 @@ struct AdvancedExportTests {
         #expect(AdvancedExportConfiguration.minimumQuality == 0.10)
         #expect(AdvancedExportConfiguration.minimumQuality < 0.5)
     }
+
+    @MainActor
+    @Test("Advanced Export preparation leaves MainActor and reads only required source facts")
+    func advancedExportPreparationUsesMinimalOffMainReads() async {
+        let liveURL = URL(fileURLWithPath: "/virtual/live.ARW")
+        let sidecarURL = URL(fileURLWithPath: "/virtual/sidecar.CR3")
+        let jpegURL = URL(fileURLWithPath: "/virtual/finished.jpg")
+        let pendingURL = URL(fileURLWithPath: "/virtual/cloud.heic")
+        var liveSettings = CameraRawSettings()
+        liveSettings.exposure2012 = 1
+        liveSettings.hdrEditMode = 1
+        var sidecarSettings = CameraRawSettings()
+        sidecarSettings.exposure2012 = 2
+        let probe = AdvancedExportPreparationProbe(
+            sidecars: [sidecarURL: sidecarSettings],
+            sizes: [
+                liveURL: .init(width: 6_000, height: 4_000),
+                sidecarURL: .init(width: 4_000, height: 6_000),
+                jpegURL: .init(width: 3_000, height: 2_000),
+                pendingURL: .init(width: 2_000, height: 1_000),
+            ]
+        )
+        let service = AdvancedExportPreparationService(access: probe.access)
+        let requestID = UUID()
+        let inputs = [
+            AdvancedExportPreparationInput(
+                sourceURL: liveURL,
+                filename: liveURL.lastPathComponent,
+                liveCameraRaw: liveSettings,
+                sourceFileSize: 101,
+                exifOrientation: 1,
+                isICloudDownloadPending: false
+            ),
+            AdvancedExportPreparationInput(
+                sourceURL: sidecarURL,
+                filename: sidecarURL.lastPathComponent,
+                liveCameraRaw: nil,
+                sourceFileSize: 202,
+                exifOrientation: 6,
+                isICloudDownloadPending: false
+            ),
+            AdvancedExportPreparationInput(
+                sourceURL: jpegURL,
+                filename: jpegURL.lastPathComponent,
+                liveCameraRaw: nil,
+                sourceFileSize: nil,
+                exifOrientation: 1,
+                isICloudDownloadPending: false
+            ),
+            AdvancedExportPreparationInput(
+                sourceURL: pendingURL,
+                filename: pendingURL.lastPathComponent,
+                liveCameraRaw: nil,
+                sourceFileSize: 404,
+                exifOrientation: 1,
+                isICloudDownloadPending: true
+            ),
+        ]
+
+        let result = await Task { await service.prepare(inputs, requestID: requestID) }.value
+
+        guard case .complete(let snapshot) = result else {
+            Issue.record("Expected a complete Advanced Export preparation snapshot")
+            return
+        }
+        #expect(snapshot.requestID == requestID)
+        #expect(snapshot.preparedURLs == [liveURL, sidecarURL, jpegURL, pendingURL])
+        #expect(snapshot.preparedItems[0].cameraRaw == liveSettings)
+        #expect(snapshot.preparedItems[0].isHDR)
+        #expect(snapshot.preparedItems[0].sourcePixelWidth == 6_000)
+        #expect(snapshot.preparedItems[1].cameraRaw == sidecarSettings)
+        #expect(snapshot.preparedItems[1].sourcePixelWidth == 6_000)
+        #expect(snapshot.preparedItems[1].sourcePixelHeight == 4_000)
+        #expect(snapshot.preparedItems[2].cameraRaw == nil)
+        #expect(snapshot.preparedItems[3].sourcePixelWidth == nil)
+        #expect(probe.sidecarURLs == [sidecarURL])
+        #expect(probe.nativeSizeURLs == [liveURL, sidecarURL, jpegURL])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Advanced Export preparation cancellation returns the exact completed prefix")
+    func advancedExportPreparationCancellationPrefix() async {
+        let urls = [
+            URL(fileURLWithPath: "/virtual/first.jpg"),
+            URL(fileURLWithPath: "/virtual/second.jpg"),
+            URL(fileURLWithPath: "/virtual/third.jpg"),
+        ]
+        let probe = AdvancedExportPreparationProbe(
+            sizes: Dictionary(uniqueKeysWithValues: urls.map {
+                ($0, AdvancedExportSourcePixelSize(width: 100, height: 50))
+            }),
+            cancelNativeSizeAtInvocation: 2
+        )
+        let service = AdvancedExportPreparationService(access: probe.access)
+        let requestID = UUID()
+        let inputs = urls.map {
+            AdvancedExportPreparationInput(
+                sourceURL: $0,
+                filename: $0.lastPathComponent,
+                liveCameraRaw: nil,
+                sourceFileSize: nil,
+                exifOrientation: 1,
+                isICloudDownloadPending: false
+            )
+        }
+
+        let result = await Task { await service.prepare(inputs, requestID: requestID) }.value
+
+        guard case .cancelledAfterPartialRead(let snapshot) = result else {
+            Issue.record("Expected cancellation with a fully prepared prefix")
+            return
+        }
+        #expect(snapshot.preparedURLs == Array(urls.prefix(2)))
+        #expect(probe.nativeSizeURLs == Array(urls.prefix(2)))
+    }
+
+    @MainActor
+    @Test("Advanced Export preparation serializes overlapping ImageIO batches")
+    func advancedExportPreparationSerializesBatches() async {
+        let urls = [
+            URL(fileURLWithPath: "/virtual/first.jpg"),
+            URL(fileURLWithPath: "/virtual/second.jpg"),
+        ]
+        let probe = AdvancedExportPreparationProbe(
+            sizes: Dictionary(uniqueKeysWithValues: urls.map {
+                ($0, AdvancedExportSourcePixelSize(width: 100, height: 50))
+            }),
+            nativeSizeDelay: 0.01
+        )
+        let service = AdvancedExportPreparationService(access: probe.access)
+        let inputs = urls.map {
+            [AdvancedExportPreparationInput(
+                sourceURL: $0,
+                filename: $0.lastPathComponent,
+                liveCameraRaw: nil,
+                sourceFileSize: nil,
+                exifOrientation: 1,
+                isICloudDownloadPending: false
+            )]
+        }
+
+        let results = await Task { @MainActor in
+            async let first = service.prepare(inputs[0], requestID: UUID())
+            async let second = service.prepare(inputs[1], requestID: UUID())
+            return await (first, second)
+        }.value
+
+        guard case .complete = results.0, case .complete = results.1 else {
+            Issue.record("Expected both serialized preparations to complete")
+            return
+        }
+        #expect(Set(probe.nativeSizeURLs) == Set(urls))
+        #expect(probe.maximumConcurrentNativeSizeReads == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Advanced Export preparation distinguishes pre-read and post-complete cancellation")
+    func advancedExportPreparationCancellationEdges() async {
+        let url = URL(fileURLWithPath: "/virtual/final.jpg")
+        let input = AdvancedExportPreparationInput(
+            sourceURL: url,
+            filename: url.lastPathComponent,
+            liveCameraRaw: nil,
+            sourceFileSize: nil,
+            exifOrientation: 1,
+            isICloudDownloadPending: false
+        )
+        let preCancelledProbe = AdvancedExportPreparationProbe()
+        let preCancelledService = AdvancedExportPreparationService(access: preCancelledProbe.access)
+        let preCancelledID = UUID()
+        let preCancelledTask = Task {
+            await Task.yield()
+            return await preCancelledService.prepare([input], requestID: preCancelledID)
+        }
+        preCancelledTask.cancel()
+        #expect(await preCancelledTask.value == .cancelledBeforeRead(
+            requestID: preCancelledID,
+            requestedURLs: [url]
+        ))
+        #expect(preCancelledProbe.nativeSizeURLs.isEmpty)
+
+        let completedProbe = AdvancedExportPreparationProbe(
+            sizes: [url: .init(width: 100, height: 50)],
+            cancelNativeSizeAtInvocation: 1
+        )
+        let completedService = AdvancedExportPreparationService(access: completedProbe.access)
+        let completedID = UUID()
+        let completedResult = await Task {
+            await completedService.prepare([input], requestID: completedID)
+        }.value
+        guard case .cancelledAfterCompleteRead(let snapshot) = completedResult else {
+            Issue.record("Expected cancellation after the final complete source inspection")
+            return
+        }
+        #expect(snapshot.preparedURLs == [url])
+        #expect(snapshot.isComplete)
+    }
+
+    @Test("ContentView awaits request-tagged Advanced Export preparation")
+    func advancedExportContentViewSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent("Aagedal Photo Agent/ContentView.swift"),
+            encoding: .utf8
+        )
+        let start = try #require(source.range(of: "private func showAdvancedExportSelected()"))
+        let end = try #require(source.range(
+            of: "private func applyAdvancedExportConfiguration(",
+            range: start.lowerBound..<source.endIndex
+        ))
+        let functionSource = String(source[start.lowerBound..<end.lowerBound])
+
+        #expect(functionSource.contains("advancedExportPreparationTask?.cancel()"))
+        #expect(functionSource.contains("service.prepare(inputs, requestID: requestID)"))
+        #expect(functionSource.contains("advancedExportPreparationRequestID == requestID"))
+        #expect(functionSource.contains("case .complete(let snapshot) = result"))
+        #expect(functionSource.contains("currentOrderedURLs == snapshot.requestedURLs"))
+        #expect(!functionSource.contains("XMPSidecarService"))
+        #expect(!functionSource.contains("FullScreenImageCache.nativePixelSize"))
+        #expect(source.contains(".onChange(of: browserViewModel.selectedImageIDs)"))
+        #expect(source.contains("cancelAdvancedExportPreparation()"))
+    }
+}
+
+private nonisolated final class AdvancedExportPreparationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let sidecars: [URL: CameraRawSettings]
+    private let sizes: [URL: AdvancedExportSourcePixelSize]
+    private let cancelNativeSizeAtInvocation: Int?
+    private let nativeSizeDelay: TimeInterval
+    private var storedSidecarURLs: [URL] = []
+    private var storedNativeSizeURLs: [URL] = []
+    private var observedMainThread = false
+    private var activeNativeSizeReads = 0
+    private var storedMaximumConcurrentNativeSizeReads = 0
+
+    init(
+        sidecars: [URL: CameraRawSettings] = [:],
+        sizes: [URL: AdvancedExportSourcePixelSize] = [:],
+        cancelNativeSizeAtInvocation: Int? = nil,
+        nativeSizeDelay: TimeInterval = 0
+    ) {
+        self.sidecars = sidecars
+        self.sizes = sizes
+        self.cancelNativeSizeAtInvocation = cancelNativeSizeAtInvocation
+        self.nativeSizeDelay = nativeSizeDelay
+    }
+
+    var access: AdvancedExportPreparationAccess {
+        AdvancedExportPreparationAccess(
+            loadCameraRawSidecar: loadCameraRawSidecar,
+            nativePixelSize: nativePixelSize
+        )
+    }
+
+    func loadCameraRawSidecar(_ url: URL) -> CameraRawSettings? {
+        lock.withLock {
+            storedSidecarURLs.append(url)
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return sidecars[url]
+    }
+
+    func nativePixelSize(_ url: URL) -> AdvancedExportSourcePixelSize? {
+        let shouldCancel = lock.withLock {
+            storedNativeSizeURLs.append(url)
+            observedMainThread = observedMainThread || Thread.isMainThread
+            activeNativeSizeReads += 1
+            storedMaximumConcurrentNativeSizeReads = max(
+                storedMaximumConcurrentNativeSizeReads,
+                activeNativeSizeReads
+            )
+            return storedNativeSizeURLs.count == cancelNativeSizeAtInvocation
+        }
+        defer { lock.withLock { activeNativeSizeReads -= 1 } }
+        if shouldCancel {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        if nativeSizeDelay > 0 {
+            Thread.sleep(forTimeInterval: nativeSizeDelay)
+        }
+        return sizes[url]
+    }
+
+    var sidecarURLs: [URL] { lock.withLock { storedSidecarURLs } }
+    var nativeSizeURLs: [URL] { lock.withLock { storedNativeSizeURLs } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+    var maximumConcurrentNativeSizeReads: Int {
+        lock.withLock { storedMaximumConcurrentNativeSizeReads }
+    }
 }
 
 @Suite("Advanced Export preview cleanup filesystem boundary")
