@@ -676,6 +676,14 @@ remains balanced. Four new characterizations, the focused 4-test suite, adjacent
 and serial unfiltered 1,993-test run passed. The audit remains 66 of 75 while the Import backup bookmark, other
 lower-priority direct/cached-model paths, and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [Import destination bookmark continuation](plan-status-import-destination-bookmark-continuation-2026-09-04.md)
+moves launch restoration, stale refresh, and chooser-time creation for both the primary and optional backup Import
+destinations behind one serialized actor. Import publishes only complete current results, rejects superseded
+restorations and creations, and Clear invalidates pending backup work while security-scope access remains balanced.
+Four new characterizations, the focused 21-test suite, adjacent 41-test selection, repository gate, and serial
+unfiltered 1,997-test run passed. The audit remains 66 of 75 while other lower-priority direct/cached-model paths and
+real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

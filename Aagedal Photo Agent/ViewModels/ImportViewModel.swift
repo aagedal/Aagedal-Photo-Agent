@@ -46,6 +46,141 @@ struct ImportOverwritePreflight: Identifiable, Sendable, Equatable {
     var totalCollisionCount: Int { primaryCollisionCount + backupCollisionCount }
 }
 
+nonisolated struct ImportDestinationBookmarkResolution: Sendable, Equatable {
+    let url: URL
+    let isStale: Bool
+}
+
+nonisolated struct ImportDestinationBookmarkAccess: Sendable {
+    let resolve: @Sendable (Data) throws -> ImportDestinationBookmarkResolution
+    let startAccessing: @Sendable (URL) -> Bool
+    let stopAccessing: @Sendable (URL) -> Void
+    let create: @Sendable (URL) throws -> Data
+
+    init(
+        resolve: @escaping @Sendable (Data) throws -> ImportDestinationBookmarkResolution = { data in
+            var isStale = false
+            let url = try URL(
+                resolvingBookmarkData: data,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            return ImportDestinationBookmarkResolution(url: url, isStale: isStale)
+        },
+        startAccessing: @escaping @Sendable (URL) -> Bool = {
+            $0.startAccessingSecurityScopedResource()
+        },
+        stopAccessing: @escaping @Sendable (URL) -> Void = {
+            $0.stopAccessingSecurityScopedResource()
+        },
+        create: @escaping @Sendable (URL) throws -> Data = { url in
+            try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+        }
+    ) {
+        self.resolve = resolve
+        self.startAccessing = startAccessing
+        self.stopAccessing = stopAccessing
+        self.create = create
+    }
+}
+
+nonisolated struct ImportDestinationBookmarkSnapshot: Sendable, Equatable {
+    let requestID: UUID
+    let url: URL
+    let refreshedBookmarkData: Data?
+}
+
+nonisolated enum ImportDestinationBookmarkLoadResult: Sendable, Equatable {
+    case loaded(ImportDestinationBookmarkSnapshot)
+    case failed(requestID: UUID)
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledAfterAccess(requestID: UUID)
+}
+
+nonisolated struct ImportDestinationBookmarkCommit: Sendable, Equatable {
+    let requestID: UUID
+    let bookmarkData: Data?
+    let cancellationRequestedAfterAccess: Bool
+}
+
+nonisolated enum ImportDestinationBookmarkCommitResult: Sendable, Equatable {
+    case completed(ImportDestinationBookmarkCommit)
+    case cancelledBeforeAccess(requestID: UUID)
+}
+
+/// Serializes Import destination bookmark APIs away from MainActor. Security-scoped bookmark
+/// calls are synchronous and may consult a slow file provider, so callers publish only a complete
+/// result carrying the identity of their still-current request.
+actor ImportDestinationBookmarkService {
+    static let shared = ImportDestinationBookmarkService()
+
+    private let access: ImportDestinationBookmarkAccess
+    private let cancellationRequested: @Sendable () -> Bool
+
+    init(
+        access: ImportDestinationBookmarkAccess = ImportDestinationBookmarkAccess(),
+        cancellationRequested: @escaping @Sendable () -> Bool = { Task.isCancelled }
+    ) {
+        self.access = access
+        self.cancellationRequested = cancellationRequested
+    }
+
+    func resolve(_ bookmarkData: Data, requestID: UUID) -> ImportDestinationBookmarkLoadResult {
+        guard !cancellationRequested() else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+        guard let resolution = try? access.resolve(bookmarkData) else {
+            return .failed(requestID: requestID)
+        }
+        guard !cancellationRequested() else {
+            return .cancelledAfterAccess(requestID: requestID)
+        }
+
+        var refreshedBookmarkData: Data?
+        if resolution.isStale {
+            refreshedBookmarkData = createBookmark(for: resolution.url)
+            guard !cancellationRequested() else {
+                return .cancelledAfterAccess(requestID: requestID)
+            }
+        }
+        return .loaded(ImportDestinationBookmarkSnapshot(
+            requestID: requestID,
+            url: resolution.url,
+            refreshedBookmarkData: refreshedBookmarkData
+        ))
+    }
+
+    func createBookmark(
+        for url: URL,
+        requestID: UUID
+    ) -> ImportDestinationBookmarkCommitResult {
+        guard !cancellationRequested() else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+        let bookmarkData = createBookmark(for: url)
+        return .completed(ImportDestinationBookmarkCommit(
+            requestID: requestID,
+            bookmarkData: bookmarkData,
+            cancellationRequestedAfterAccess: cancellationRequested()
+        ))
+    }
+
+    private func createBookmark(for url: URL) -> Data? {
+        let didStartAccessing = access.startAccessing(url)
+        defer {
+            if didStartAccessing {
+                access.stopAccessing(url)
+            }
+        }
+        return try? access.create(url)
+    }
+}
+
 /// Per-date group for sorting source files into separate destination folders.
 struct ImportDateGroup: Identifiable {
     let id = UUID()
@@ -169,6 +304,12 @@ final class ImportViewModel {
     @ObservationIgnored private let folderSuggestionService: ImportFolderSuggestionService
     @ObservationIgnored private let voiceMemoAssociationScanService: ImportVoiceMemoAssociationScanService
     @ObservationIgnored private let pathContainmentService: SafePathContainmentService
+    @ObservationIgnored private let bookmarkDefaults: UserDefaults
+    @ObservationIgnored private let destinationBookmarkService: ImportDestinationBookmarkService
+    @ObservationIgnored private var destinationBookmarkTask: Task<Void, Never>?
+    @ObservationIgnored private var destinationBookmarkRequestID: UUID?
+    @ObservationIgnored private var backupBookmarkTask: Task<Void, Never>?
+    @ObservationIgnored private var backupBookmarkRequestID: UUID?
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
     init(
@@ -180,7 +321,9 @@ final class ImportViewModel {
         captureDateScanService: ImportCaptureDateScanService = ImportCaptureDateScanService(),
         folderSuggestionService: ImportFolderSuggestionService = ImportFolderSuggestionService(),
         voiceMemoAssociationScanService: ImportVoiceMemoAssociationScanService = ImportVoiceMemoAssociationScanService(),
-        pathContainmentService: SafePathContainmentService = .shared
+        pathContainmentService: SafePathContainmentService = .shared,
+        bookmarkDefaults: UserDefaults = .standard,
+        destinationBookmarkService: ImportDestinationBookmarkService = .shared
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
@@ -191,6 +334,8 @@ final class ImportViewModel {
         self.folderSuggestionService = folderSuggestionService
         self.voiceMemoAssociationScanService = voiceMemoAssociationScanService
         self.pathContainmentService = pathContainmentService
+        self.bookmarkDefaults = bookmarkDefaults
+        self.destinationBookmarkService = destinationBookmarkService
 
         // Restore last-used verification mode (default = .on).
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importVerificationMode),
@@ -208,12 +353,6 @@ final class ImportViewModel {
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.importCreateSubFolders) != nil {
             self.configuration.createSubFolders = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importCreateSubFolders)
         }
-        if let destinationURL = Self.resolveBookmark(
-            key: UserDefaultsKeys.importDestinationBookmark
-        ) {
-            self.configuration.destinationBaseURL = destinationURL
-        }
-
         // Restore last-used date-folder grouping. Fall back to the legacy year
         // toggle so existing installs keep their previous behavior.
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.importSortByDate) != nil {
@@ -229,10 +368,8 @@ final class ImportViewModel {
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.importSkipPreviouslyImported) != nil {
             self.configuration.skipPreviouslyImported = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importSkipPreviouslyImported)
         }
-        if let backupURL = Self.resolveBookmark(key: UserDefaultsKeys.importBackupBookmark) {
-            let verifyAfterWrite = UserDefaults.standard.object(forKey: UserDefaultsKeys.importBackupVerifyAfterWrite) as? Bool ?? true
-            self.configuration.backupDestination = BackupDestination(url: backupURL, verifyAfterWrite: verifyAfterWrite)
-        }
+        scheduleDestinationBookmarkLoad()
+        scheduleBackupBookmarkLoad()
     }
 
     deinit {
@@ -242,6 +379,8 @@ final class ImportViewModel {
         dateScanTask?.cancel()
         folderSuggestionTask?.cancel()
         importTask?.cancel()
+        destinationBookmarkTask?.cancel()
+        backupBookmarkTask?.cancel()
     }
 
     var isImporting: Bool {
@@ -523,12 +662,12 @@ final class ImportViewModel {
         panel.message = "Select the destination root folder for imports"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        configuration.destinationBaseURL = url
-        Self.saveBookmark(
-            for: url,
-            key: UserDefaultsKeys.importDestinationBookmark
-        )
-        refreshPreviousImportFolderSuggestions()
+        scheduleDestinationBookmarkCreation(for: url)
+    }
+
+    func setDestinationBaseURL(_ url: URL) async {
+        scheduleDestinationBookmarkCreation(for: url)
+        await destinationBookmarkTask?.value
     }
 
     // MARK: - Existing Date-Folder Suggestions
@@ -2091,52 +2230,142 @@ final class ImportViewModel {
         panel.message = "Select a folder for the additional import copy"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        if configuration.backupDestination == nil {
-            let verifyAfterWrite = UserDefaults.standard.object(forKey: UserDefaultsKeys.importBackupVerifyAfterWrite) as? Bool ?? true
-            configuration.backupDestination = BackupDestination(url: url, verifyAfterWrite: verifyAfterWrite)
-        } else {
-            configuration.backupDestination?.url = url
-        }
-        Self.saveBookmark(for: url, key: UserDefaultsKeys.importBackupBookmark)
+        scheduleBackupBookmarkCreation(for: url)
+    }
+
+    func setBackupDestinationURL(_ url: URL) async {
+        scheduleBackupBookmarkCreation(for: url)
+        await backupBookmarkTask?.value
     }
 
     func clearBackupDestination() {
+        backupBookmarkTask?.cancel()
+        backupBookmarkTask = nil
+        backupBookmarkRequestID = nil
         configuration.backupDestination = nil
-        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.importBackupBookmark)
+        bookmarkDefaults.removeObject(forKey: UserDefaultsKeys.importBackupBookmark)
     }
 
-    private static func saveBookmark(for url: URL, key: String) {
-        let didStartAccessing = url.startAccessingSecurityScopedResource()
-        defer {
-            if didStartAccessing {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
-        do {
-            let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-            UserDefaults.standard.set(bookmarkData, forKey: key)
-        } catch {
-            UserDefaults.standard.removeObject(forKey: key)
-        }
+    func waitForDestinationBookmarkRestoration() async {
+        await destinationBookmarkTask?.value
+        await backupBookmarkTask?.value
     }
 
-    private static func resolveBookmark(key: String) -> URL? {
-        guard let bookmarkData = UserDefaults.standard.data(forKey: key) else { return nil }
-        var isStale = false
-        do {
-            let url = try URL(
-                resolvingBookmarkData: bookmarkData,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-            if isStale {
-                saveBookmark(for: url, key: key)
+    private func scheduleDestinationBookmarkLoad() {
+        guard let bookmarkData = bookmarkDefaults.data(
+            forKey: UserDefaultsKeys.importDestinationBookmark
+        ) else { return }
+        destinationBookmarkTask?.cancel()
+        let requestID = UUID()
+        destinationBookmarkRequestID = requestID
+        let service = destinationBookmarkService
+        let defaults = bookmarkDefaults
+        let task = Task { @MainActor [weak self] in
+            let result = await service.resolve(bookmarkData, requestID: requestID)
+            guard let self, self.destinationBookmarkRequestID == requestID else { return }
+            self.destinationBookmarkTask = nil
+            self.destinationBookmarkRequestID = nil
+            switch result {
+            case .loaded(let snapshot) where snapshot.requestID == requestID:
+                self.configuration.destinationBaseURL = snapshot.url
+                if let refreshedBookmarkData = snapshot.refreshedBookmarkData {
+                    defaults.set(refreshedBookmarkData, forKey: UserDefaultsKeys.importDestinationBookmark)
+                }
+                self.refreshPreviousImportFolderSuggestions()
+            case .failed(let failedRequestID) where failedRequestID == requestID:
+                defaults.removeObject(forKey: UserDefaultsKeys.importDestinationBookmark)
+            default:
+                break
             }
-            return url
-        } catch {
-            UserDefaults.standard.removeObject(forKey: key)
-            return nil
         }
+        destinationBookmarkTask = task
+    }
+
+    private func scheduleBackupBookmarkLoad() {
+        guard let bookmarkData = bookmarkDefaults.data(
+            forKey: UserDefaultsKeys.importBackupBookmark
+        ) else { return }
+        backupBookmarkTask?.cancel()
+        let requestID = UUID()
+        backupBookmarkRequestID = requestID
+        let verifyAfterWrite = bookmarkDefaults.object(
+            forKey: UserDefaultsKeys.importBackupVerifyAfterWrite
+        ) as? Bool ?? true
+        let service = destinationBookmarkService
+        let defaults = bookmarkDefaults
+        let task = Task { @MainActor [weak self] in
+            let result = await service.resolve(bookmarkData, requestID: requestID)
+            guard let self, self.backupBookmarkRequestID == requestID else { return }
+            self.backupBookmarkTask = nil
+            self.backupBookmarkRequestID = nil
+            switch result {
+            case .loaded(let snapshot) where snapshot.requestID == requestID:
+                self.configuration.backupDestination = BackupDestination(
+                    url: snapshot.url,
+                    verifyAfterWrite: verifyAfterWrite
+                )
+                if let refreshedBookmarkData = snapshot.refreshedBookmarkData {
+                    defaults.set(refreshedBookmarkData, forKey: UserDefaultsKeys.importBackupBookmark)
+                }
+            case .failed(let failedRequestID) where failedRequestID == requestID:
+                defaults.removeObject(forKey: UserDefaultsKeys.importBackupBookmark)
+            default:
+                break
+            }
+        }
+        backupBookmarkTask = task
+    }
+
+    private func scheduleDestinationBookmarkCreation(for url: URL) {
+        destinationBookmarkTask?.cancel()
+        let requestID = UUID()
+        destinationBookmarkRequestID = requestID
+        configuration.destinationBaseURL = url
+        refreshPreviousImportFolderSuggestions()
+        let service = destinationBookmarkService
+        let defaults = bookmarkDefaults
+        let task = Task { @MainActor [weak self] in
+            let result = await service.createBookmark(for: url, requestID: requestID)
+            guard let self, self.destinationBookmarkRequestID == requestID else { return }
+            self.destinationBookmarkTask = nil
+            self.destinationBookmarkRequestID = nil
+            guard case .completed(let commit) = result,
+                  commit.requestID == requestID else { return }
+            if let bookmarkData = commit.bookmarkData {
+                defaults.set(bookmarkData, forKey: UserDefaultsKeys.importDestinationBookmark)
+            } else {
+                defaults.removeObject(forKey: UserDefaultsKeys.importDestinationBookmark)
+            }
+        }
+        destinationBookmarkTask = task
+    }
+
+    private func scheduleBackupBookmarkCreation(for url: URL) {
+        backupBookmarkTask?.cancel()
+        let requestID = UUID()
+        backupBookmarkRequestID = requestID
+        let verifyAfterWrite = configuration.backupDestination?.verifyAfterWrite
+            ?? (bookmarkDefaults.object(forKey: UserDefaultsKeys.importBackupVerifyAfterWrite) as? Bool)
+            ?? true
+        configuration.backupDestination = BackupDestination(
+            url: url,
+            verifyAfterWrite: verifyAfterWrite
+        )
+        let service = destinationBookmarkService
+        let defaults = bookmarkDefaults
+        let task = Task { @MainActor [weak self] in
+            let result = await service.createBookmark(for: url, requestID: requestID)
+            guard let self, self.backupBookmarkRequestID == requestID else { return }
+            self.backupBookmarkTask = nil
+            self.backupBookmarkRequestID = nil
+            guard case .completed(let commit) = result,
+                  commit.requestID == requestID else { return }
+            if let bookmarkData = commit.bookmarkData {
+                defaults.set(bookmarkData, forKey: UserDefaultsKeys.importBackupBookmark)
+            } else {
+                defaults.removeObject(forKey: UserDefaultsKeys.importBackupBookmark)
+            }
+        }
+        backupBookmarkTask = task
     }
 }

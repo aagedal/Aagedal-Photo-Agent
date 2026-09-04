@@ -119,6 +119,86 @@ private nonisolated final class ImportPreflightSerializationGate: @unchecked Sen
     }
 }
 
+private nonisolated enum ImportBookmarkOperation: Sendable, Equatable {
+    case resolve
+    case start
+    case stop
+    case create
+}
+
+private nonisolated final class ImportBookmarkRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var operationStorage: [ImportBookmarkOperation] = []
+    private var threadStorage: [Bool] = []
+
+    var operations: [ImportBookmarkOperation] {
+        lock.withLock { operationStorage }
+    }
+
+    var observedMainThread: [Bool] {
+        lock.withLock { threadStorage }
+    }
+
+    func record(_ operation: ImportBookmarkOperation) {
+        lock.withLock {
+            operationStorage.append(operation)
+            threadStorage.append(Thread.isMainThread)
+        }
+    }
+}
+
+private nonisolated final class ImportBookmarkGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = false
+    private var released = false
+
+    func suspend() {
+        condition.lock()
+        started = true
+        condition.broadcast()
+        while !released {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    func waitUntilStarted() async -> Bool {
+        for _ in 0..<200 {
+            if hasStarted { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private var hasStarted: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return started
+    }
+}
+
+private nonisolated final class ImportBookmarkCancellationSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Bool]
+
+    init(_ values: [Bool]) {
+        self.values = values
+    }
+
+    func next() -> Bool {
+        lock.withLock {
+            values.isEmpty ? false : values.removeFirst()
+        }
+    }
+}
+
 @Suite("Import duplicate and collision preflight")
 struct ImportPreflightServiceTests {
     @Test("Preflight freezes duplicate skips and complete collision evidence")
@@ -409,6 +489,223 @@ struct ImportSourceDiscoveryServiceTests {
 @Suite("ImportViewModel", .serialized)
 @MainActor
 struct ImportViewModelTests {
+    @Test("Destination bookmarks restore and refresh away from MainActor")
+    func destinationBookmarksRestoreOffMainActor() async throws {
+        let standardDefaults = UserDefaults.standard
+        let originalVerifyAfterWrite = standardDefaults.object(
+            forKey: UserDefaultsKeys.importBackupVerifyAfterWrite
+        )
+        defer {
+            if let originalVerifyAfterWrite {
+                standardDefaults.set(
+                    originalVerifyAfterWrite,
+                    forKey: UserDefaultsKeys.importBackupVerifyAfterWrite
+                )
+            } else {
+                standardDefaults.removeObject(forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
+            }
+        }
+        let suiteName = "ImportDestinationBookmarks.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let destinationData = Data([0x11])
+        let backupData = Data([0x12])
+        let refreshedDestinationData = Data([0x21])
+        let refreshedBackupData = Data([0x22])
+        let destinationURL = URL(fileURLWithPath: "/tmp/import-destination", isDirectory: true)
+        let backupURL = URL(fileURLWithPath: "/tmp/import-backup", isDirectory: true)
+        defaults.set(destinationData, forKey: UserDefaultsKeys.importDestinationBookmark)
+        defaults.set(backupData, forKey: UserDefaultsKeys.importBackupBookmark)
+        defaults.set(false, forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
+        let recorder = ImportBookmarkRecorder()
+        let service = ImportDestinationBookmarkService(access: ImportDestinationBookmarkAccess(
+            resolve: { data in
+                recorder.record(.resolve)
+                return ImportDestinationBookmarkResolution(
+                    url: data == destinationData ? destinationURL : backupURL,
+                    isStale: true
+                )
+            },
+            startAccessing: { _ in
+                recorder.record(.start)
+                return true
+            },
+            stopAccessing: { _ in recorder.record(.stop) },
+            create: { url in
+                recorder.record(.create)
+                return url == destinationURL ? refreshedDestinationData : refreshedBackupData
+            }
+        ))
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            bookmarkDefaults: defaults,
+            destinationBookmarkService: service
+        )
+
+        await viewModel.waitForDestinationBookmarkRestoration()
+
+        #expect(viewModel.configuration.destinationBaseURL == destinationURL)
+        #expect(viewModel.configuration.backupDestination == BackupDestination(
+            url: backupURL,
+            verifyAfterWrite: false
+        ))
+        #expect(defaults.data(forKey: UserDefaultsKeys.importDestinationBookmark) == refreshedDestinationData)
+        #expect(defaults.data(forKey: UserDefaultsKeys.importBackupBookmark) == refreshedBackupData)
+        #expect(recorder.operations.filter { $0 == .resolve }.count == 2)
+        #expect(recorder.operations.filter { $0 == .start }.count == 2)
+        #expect(recorder.operations.filter { $0 == .create }.count == 2)
+        #expect(recorder.operations.filter { $0 == .stop }.count == 2)
+        #expect(recorder.observedMainThread.allSatisfy { !$0 })
+    }
+
+    @Test("Selected destinations publish and persist complete bookmark work")
+    func selectedDestinationsPublishCompleteBookmarkWork() async throws {
+        let standardDefaults = UserDefaults.standard
+        let originalVerifyAfterWrite = standardDefaults.object(
+            forKey: UserDefaultsKeys.importBackupVerifyAfterWrite
+        )
+        defer {
+            if let originalVerifyAfterWrite {
+                standardDefaults.set(
+                    originalVerifyAfterWrite,
+                    forKey: UserDefaultsKeys.importBackupVerifyAfterWrite
+                )
+            } else {
+                standardDefaults.removeObject(forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
+            }
+        }
+        let suiteName = "ImportSelectedDestinationBookmarks.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let destinationURL = URL(fileURLWithPath: "/tmp/selected-import-destination", isDirectory: true)
+        let backupURL = URL(fileURLWithPath: "/tmp/selected-import-backup", isDirectory: true)
+        let destinationData = Data([0x31])
+        let backupData = Data([0x32])
+        let recorder = ImportBookmarkRecorder()
+        let service = ImportDestinationBookmarkService(access: ImportDestinationBookmarkAccess(
+            startAccessing: { _ in
+                recorder.record(.start)
+                return true
+            },
+            stopAccessing: { _ in recorder.record(.stop) },
+            create: { url in
+                recorder.record(.create)
+                return url == destinationURL ? destinationData : backupData
+            }
+        ))
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            bookmarkDefaults: defaults,
+            destinationBookmarkService: service
+        )
+
+        await viewModel.setDestinationBaseURL(destinationURL)
+        await viewModel.setBackupDestinationURL(backupURL)
+
+        #expect(viewModel.configuration.destinationBaseURL == destinationURL)
+        #expect(viewModel.configuration.backupDestination?.url == backupURL)
+        #expect(defaults.data(forKey: UserDefaultsKeys.importDestinationBookmark) == destinationData)
+        #expect(defaults.data(forKey: UserDefaultsKeys.importBackupBookmark) == backupData)
+        #expect(recorder.operations == [.start, .create, .stop, .start, .create, .stop])
+        #expect(recorder.observedMainThread.allSatisfy { !$0 })
+
+        viewModel.clearBackupDestination()
+        #expect(viewModel.configuration.backupDestination == nil)
+        #expect(defaults.data(forKey: UserDefaultsKeys.importBackupBookmark) == nil)
+    }
+
+    @Test("Clearing backup rejects a bookmark completion already in flight")
+    func clearingBackupRejectsLateBookmarkCompletion() async throws {
+        let standardDefaults = UserDefaults.standard
+        let originalVerifyAfterWrite = standardDefaults.object(
+            forKey: UserDefaultsKeys.importBackupVerifyAfterWrite
+        )
+        defer {
+            if let originalVerifyAfterWrite {
+                standardDefaults.set(
+                    originalVerifyAfterWrite,
+                    forKey: UserDefaultsKeys.importBackupVerifyAfterWrite
+                )
+            } else {
+                standardDefaults.removeObject(forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
+            }
+        }
+        let suiteName = "ImportClearedBackupBookmark.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let gate = ImportBookmarkGate()
+        let service = ImportDestinationBookmarkService(access: ImportDestinationBookmarkAccess(
+            create: { _ in
+                gate.suspend()
+                return Data([0x41])
+            }
+        ))
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            bookmarkDefaults: defaults,
+            destinationBookmarkService: service
+        )
+        let selectionTask = Task {
+            await viewModel.setBackupDestinationURL(
+                URL(fileURLWithPath: "/tmp/late-import-backup", isDirectory: true)
+            )
+        }
+        #expect(await gate.waitUntilStarted())
+
+        viewModel.clearBackupDestination()
+        gate.release()
+        await selectionTask.value
+
+        #expect(viewModel.configuration.backupDestination == nil)
+        #expect(defaults.data(forKey: UserDefaultsKeys.importBackupBookmark) == nil)
+    }
+
+    @Test("Destination bookmark cancellation is explicit around synchronous access")
+    func destinationBookmarkCancellationIsExplicit() async {
+        let recorder = ImportBookmarkRecorder()
+        let preAccessService = ImportDestinationBookmarkService(
+            access: ImportDestinationBookmarkAccess(resolve: { _ in
+                recorder.record(.resolve)
+                return ImportDestinationBookmarkResolution(
+                    url: URL(fileURLWithPath: "/tmp/unexpected"),
+                    isStale: false
+                )
+            }),
+            cancellationRequested: { true }
+        )
+        let preAccessRequestID = UUID()
+
+        let preAccessResult = await preAccessService.resolve(
+            Data([0x51]),
+            requestID: preAccessRequestID
+        )
+
+        #expect(preAccessResult == .cancelledBeforeAccess(requestID: preAccessRequestID))
+        #expect(recorder.operations.isEmpty)
+
+        let cancellation = ImportBookmarkCancellationSequence([false, true])
+        let postAccessURL = URL(fileURLWithPath: "/tmp/post-access-import-bookmark", isDirectory: true)
+        let postAccessService = ImportDestinationBookmarkService(
+            access: ImportDestinationBookmarkAccess(create: { _ in Data([0x52]) }),
+            cancellationRequested: cancellation.next
+        )
+        let postAccessRequestID = UUID()
+
+        let postAccessResult = await postAccessService.createBookmark(
+            for: postAccessURL,
+            requestID: postAccessRequestID
+        )
+
+        #expect(postAccessResult == .completed(ImportDestinationBookmarkCommit(
+            requestID: postAccessRequestID,
+            bookmarkData: Data([0x52]),
+            cancellationRequestedAfterAccess: true
+        )))
+    }
+
     @Test("RAW and JPEG filters include images from both selected cards")
     func fileTypeFilterSpansBothSources() {
         let defaults = UserDefaults.standard

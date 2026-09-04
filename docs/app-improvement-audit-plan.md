@@ -1200,6 +1200,18 @@ The Import backup bookmark, other lower-priority direct/cached-model paths, and 
 Performance Checker evidence remain open.
 ([validation](plan-status-settings-template-bookmark-continuation-2026-09-04.md))
 
+**Import destination bookmark follow-up (2026-09-04):** launch-time primary and backup destination bookmark
+resolution, stale refresh, and chooser-time creation no longer invoke security-scoped bookmark APIs on MainActor.
+One serialized actor returns immutable request-tagged failure, cancellation, snapshot, or creation evidence and
+balances temporary security-scope access. Import publishes only complete current restorations and creations,
+persists stale refreshes without a second bookmark call, rejects superseded results, and cancels and invalidates
+pending backup work when Clear is selected. Four new characterizations cover off-main execution, balanced scope
+access, complete publication and persistence, late-result rejection, and cancellation around non-preemptible APIs.
+The focused 21-test suite, adjacent 41-test selection, repository gate, and serial unfiltered run of 1,997 tests in
+230 suites passed. Other lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance
+Checker evidence remain open.
+([validation](plan-status-import-destination-bookmark-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
