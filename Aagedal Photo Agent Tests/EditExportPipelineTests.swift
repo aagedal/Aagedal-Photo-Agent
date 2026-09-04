@@ -2420,3 +2420,171 @@ struct AdvancedExportTests {
         #expect(AdvancedExportConfiguration.minimumQuality < 0.5)
     }
 }
+
+@Suite("Advanced Export preview cleanup filesystem boundary")
+struct AdvancedExportPreviewCleanupTests {
+    @MainActor
+    @Test("blocked cleanup stays off MainActor and queued cancellation remains explicit")
+    func blockedCleanupDoesNotBlockMainActor() async throws {
+        let probe = BlockingAdvancedExportPreviewCleanupProbe()
+        defer { probe.releaseFirstRemoval() }
+        let service = AdvancedExportPreviewCleanupService(access: .init(
+            removeItem: { try probe.removeItem(at: $0) }
+        ))
+        let firstURL = URL(fileURLWithPath: "/virtual/first-preview")
+        let secondURL = URL(fileURLWithPath: "/virtual/second-preview")
+
+        let first = Task {
+            await service.removePreviewFolder(at: firstURL)
+        }
+        try await probe.waitUntilFirstRemovalStarts()
+
+        // Reaching this assertion while the injected synchronous removal is blocked proves the
+        // recursive filesystem mutation is not occupying MainActor.
+        #expect(probe.removalCount == 1)
+        let second = Task {
+            await service.removePreviewFolder(at: secondURL)
+        }
+        second.cancel()
+        probe.releaseFirstRemoval()
+
+        let firstResult = await first.value
+        let secondResult = await second.value
+        #expect(firstResult == .removed(
+            firstURL,
+            cancellationRequestedAfterCommit: false
+        ))
+        #expect(secondResult == .cancelledBeforeRemoval(secondURL))
+        #expect(probe.removalCount == 1)
+        #expect(probe.maximumConcurrentRemovalCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("cancellation after recursive removal preserves durable cleanup evidence")
+    func cancellationAfterCleanupCommit() async {
+        let folderURL = URL(fileURLWithPath: "/virtual/committed-preview")
+        let service = AdvancedExportPreviewCleanupService(access: .init(
+            removeItem: { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        ))
+
+        let task = Task {
+            await service.removePreviewFolder(at: folderURL)
+        }
+        let result = await task.value
+
+        #expect(result == .removed(
+            folderURL,
+            cancellationRequestedAfterCommit: true
+        ))
+    }
+
+    @Test("recursive removal failure remains explicit")
+    func cleanupFailure() async {
+        let folderURL = URL(fileURLWithPath: "/virtual/failed-preview")
+        let service = AdvancedExportPreviewCleanupService(access: .init(
+            removeItem: { _ in throw AdvancedExportPreviewCleanupInjectedError.refused }
+        ))
+
+        let result = await service.removePreviewFolder(at: folderURL)
+
+        #expect(result == .failed(folderURL))
+    }
+
+    @MainActor
+    @Test("releasing preview storage schedules cleanup without synchronous filesystem work")
+    func storageDeinitSchedulesActorCleanup() async throws {
+        let probe = BlockingAdvancedExportPreviewCleanupProbe()
+        defer { probe.releaseFirstRemoval() }
+        let service = AdvancedExportPreviewCleanupService(access: .init(
+            removeItem: { try probe.removeItem(at: $0) }
+        ))
+        let folderURL = URL(fileURLWithPath: "/virtual/released-preview")
+        var storage: AdvancedExportPreviewStorage? = AdvancedExportPreviewStorage(
+            folderURL: folderURL,
+            outputURL: folderURL.appendingPathComponent("preview.jpg"),
+            cleanupService: service
+        )
+
+        #expect(storage != nil)
+        storage = nil
+        try await probe.waitUntilFirstRemovalStarts()
+
+        // The actor removal is still blocked, but MainActor completed the final release.
+        #expect(probe.removalCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+}
+
+private enum AdvancedExportPreviewCleanupProbeError: Error {
+    case timedOut
+}
+
+private enum AdvancedExportPreviewCleanupInjectedError: Error {
+    case refused
+}
+
+private nonisolated final class BlockingAdvancedExportPreviewCleanupProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var storedRemovalCount = 0
+    private var activeRemovalCount = 0
+    private var storedMaximumConcurrentRemovalCount = 0
+    private var firstRemovalReleased = false
+    private var observedMainThread = false
+
+    func removeItem(at url: URL) throws {
+        _ = url
+        condition.lock()
+        storedRemovalCount += 1
+        activeRemovalCount += 1
+        storedMaximumConcurrentRemovalCount = max(
+            storedMaximumConcurrentRemovalCount,
+            activeRemovalCount
+        )
+        observedMainThread = observedMainThread || Thread.isMainThread
+        condition.broadcast()
+        if storedRemovalCount == 1 {
+            while !firstRemovalReleased {
+                condition.wait()
+            }
+        }
+        activeRemovalCount -= 1
+        condition.unlock()
+    }
+
+    func waitUntilFirstRemovalStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while removalCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw AdvancedExportPreviewCleanupProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseFirstRemoval() {
+        condition.lock()
+        firstRemovalReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var removalCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return storedRemovalCount
+    }
+
+    var maximumConcurrentRemovalCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return storedMaximumConcurrentRemovalCount
+    }
+
+    var ranOnMainThread: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return observedMainThread
+    }
+}

@@ -1,18 +1,100 @@
 import CoreGraphics
 import CoreImage
 import Foundation
+import os
+
+nonisolated struct AdvancedExportPreviewCleanupFileAccess: Sendable {
+    let removeItem: @Sendable (URL) throws -> Void
+
+    static let system = AdvancedExportPreviewCleanupFileAccess(
+        removeItem: { try FileManager.default.removeItem(at: $0) }
+    )
+}
+
+nonisolated enum AdvancedExportPreviewCleanupResult: Equatable, Sendable {
+    case cancelledBeforeRemoval(URL)
+    case removed(URL, cancellationRequestedAfterCommit: Bool)
+    case failed(URL)
+}
+
+/// Serializes best-effort removal of full-resolution Advanced Export preview artifacts.
+///
+/// Preview storage is retained by SwiftUI state, so its final release commonly occurs on
+/// MainActor. The synchronous Foundation removal can recursively delete a large artifact folder
+/// and must therefore never run from `deinit`. Cancellation is sampled before the non-preemptible
+/// removal and after its durable commit so explicit callers can reconcile the actual disk state.
+actor AdvancedExportPreviewCleanupService {
+    static let shared = AdvancedExportPreviewCleanupService()
+
+    private let access: AdvancedExportPreviewCleanupFileAccess
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "AdvancedExportPreviewCleanup"
+    )
+
+    init(access: AdvancedExportPreviewCleanupFileAccess = .system) {
+        self.access = access
+    }
+
+    func removePreviewFolder(at folderURL: URL) -> AdvancedExportPreviewCleanupResult {
+        let interval = signposter.beginInterval(
+            "RemovePreviewFolder",
+            id: signposter.makeSignpostID()
+        )
+        guard !Task.isCancelled else {
+            signposter.endInterval(
+                "RemovePreviewFolder",
+                interval,
+                "result=cancelled stage=before-removal"
+            )
+            return .cancelledBeforeRemoval(folderURL)
+        }
+
+        do {
+            try access.removeItem(folderURL)
+            let cancellationRequestedAfterCommit = Task.isCancelled
+            signposter.endInterval(
+                "RemovePreviewFolder",
+                interval,
+                "result=removed cancelledAfterCommit=\(cancellationRequestedAfterCommit)"
+            )
+            return .removed(
+                folderURL,
+                cancellationRequestedAfterCommit: cancellationRequestedAfterCommit
+            )
+        } catch {
+            signposter.endInterval("RemovePreviewFolder", interval, "result=failed")
+            return .failed(folderURL)
+        }
+    }
+
+    /// `deinit` cannot await actor cleanup. This nonisolated handoff is intentionally
+    /// non-cancellable: once a preview loses its final owner, its private artifacts are no longer
+    /// useful and should be reclaimed even if the UI task that released them was cancelled.
+    nonisolated func removeEventually(_ folderURL: URL) {
+        Task {
+            _ = await self.removePreviewFolder(at: folderURL)
+        }
+    }
+}
 
 nonisolated final class AdvancedExportPreviewStorage: @unchecked Sendable {
     let folderURL: URL
     let outputURL: URL
+    private let cleanupService: AdvancedExportPreviewCleanupService
 
-    init(folderURL: URL, outputURL: URL) {
+    init(
+        folderURL: URL,
+        outputURL: URL,
+        cleanupService: AdvancedExportPreviewCleanupService = .shared
+    ) {
         self.folderURL = folderURL
         self.outputURL = outputURL
+        self.cleanupService = cleanupService
     }
 
     deinit {
-        try? FileManager.default.removeItem(at: folderURL)
+        cleanupService.removeEventually(folderURL)
     }
 }
 

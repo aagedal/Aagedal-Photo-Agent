@@ -611,6 +611,15 @@ focused 24-test suite, adjacent 51-test selection, repository gate, and serial u
 The audit remains 66 of 75 while other direct paths and real-volume/signpost/Thread Performance Checker evidence
 stay open.
 
+The latest [Advanced Export preview cleanup continuation](plan-status-advanced-export-preview-cleanup-continuation-2026-09-04.md)
+moves recursive removal of full-resolution comparison-preview artifacts out of SwiftUI-owned storage `deinit` and
+behind a serialized actor. Final release performs only a non-cancellable asynchronous handoff, while explicit actor
+results distinguish pre-removal cancellation, durable removal with post-commit cancellation, and failure. Four
+characterizations cover off-main execution, serialization, both cancellation stages, injected failure evidence, and
+nonblocking final release. The focused 4-test suite, adjacent 26-test export selection, repository gate, and serial
+unfiltered 1,973-test run passed. The audit remains 66 of 75 while other direct paths and real-volume/signpost/Thread
+Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

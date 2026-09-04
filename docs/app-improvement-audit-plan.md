@@ -1090,6 +1090,16 @@ direct paths and real-volume/signpost/Thread Performance Checker exit evidence r
 and final serial unfiltered run also passed, with 1,969 tests in 228 suites.
 ([validation](plan-status-icloud-availability-cache-continuation-2026-09-04.md))
 
+**Advanced Export preview-cleanup follow-up (2026-09-04):** releasing a comparison preview no longer recursively
+removes its full-resolution private artifact folder from a SwiftUI-owned storage object's `deinit`. One serialized
+actor returns immutable pre-removal cancellation, durable removal with post-commit cancellation, or failure evidence;
+the lifetime fallback performs only a non-cancellable asynchronous handoff, and a privacy-safe signpost records the
+outcome. Four new characterizations prove off-main execution, serialization, both cancellation stages, injected
+failure evidence, and nonblocking final release. The focused 4-test suite, adjacent 26-test export selection,
+repository gate, and final serial unfiltered run of 1,973 tests in 229 suites passed. Other lower-priority direct
+paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-advanced-export-preview-cleanup-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
