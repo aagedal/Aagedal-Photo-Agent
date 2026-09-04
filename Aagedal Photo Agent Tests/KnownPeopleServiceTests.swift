@@ -123,6 +123,79 @@ struct KnownPeopleServiceTests {
         #expect(probe.urls == [fileURL])
     }
 
+    @Test("Known People archive preparation runs off MainActor and returns immutable thumbnail bytes")
+    func archivePreparationBoundary() async throws {
+        let sample = embedding(4)
+        let person = KnownPerson(
+            name: "Archive Person",
+            embeddings: [sample],
+            representativeThumbnailID: sample.id
+        )
+        let personThumbnail = Data([1, 2, 3])
+        let embeddingThumbnail = Data([4, 5, 6])
+        let probe = try KnownPeopleArchiveReadProbe(
+            person: person,
+            personThumbnail: personThumbnail,
+            embeddingThumbnail: embeddingThumbnail
+        )
+        let service = KnownPeopleArchiveService(access: probe.fileAccess)
+        let sourceURL = URL(fileURLWithPath: "/imports/known-people.zip")
+
+        let payload = try await service.prepareImport(sourceURL: sourceURL)
+
+        #expect(payload.people.map(\.id) == [person.id])
+        #expect(payload.personThumbnails[person.id] == personThumbnail)
+        #expect(payload.embeddingThumbnails[sample.id] == embeddingThumbnail)
+        let dittoArguments = try #require(probe.dittoArguments.first)
+        #expect(Array(dittoArguments.prefix(3)) == ["-x", "-k", sourceURL.path])
+        #expect(dittoArguments.last?.hasPrefix(probe.temporaryDirectory.path) == true)
+        #expect(!probe.observedMainThread)
+
+        let cancelled = Task {
+            try await service.prepareImport(sourceURL: sourceURL)
+        }
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) {
+            _ = try await cancelled.value
+        }
+        #expect(probe.dittoArguments.count == 1)
+    }
+
+    @Test("Known People archive export/import round-trips people and thumbnails")
+    func archiveRoundTrip() async throws {
+        let exportStore = makeTempDir()
+        let importStore = makeTempDir()
+        let archiveURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("KnownPeopleRoundTrip-\(UUID().uuidString).zip")
+        defer {
+            try? FileManager.default.removeItem(at: exportStore)
+            try? FileManager.default.removeItem(at: archiveURL)
+            teardown(importStore)
+        }
+
+        activate(exportStore)
+        let sample = embedding(9)
+        let person = try KnownPeopleService.shared.addPerson(
+            name: "Round-trip Person",
+            embeddings: [sample],
+            thumbnailData: Data([10, 11, 12]),
+            embeddingThumbnails: [sample.id: Data([13, 14, 15])]
+        )
+        try await KnownPeopleService.shared.exportToZip(destinationURL: archiveURL)
+
+        activate(importStore)
+        let importedCount = try await KnownPeopleService.shared.importFromZip(sourceURL: archiveURL)
+
+        #expect(importedCount == 1)
+        #expect(KnownPeopleService.shared.person(byID: person.id)?.name == "Round-trip Person")
+        #expect(try Data(contentsOf: importStore.appendingPathComponent(
+            "thumbnails/\(person.id.uuidString).jpg"
+        )) == Data([10, 11, 12]))
+        #expect(try Data(contentsOf: importStore.appendingPathComponent(
+            "embedding_thumbnails/\(sample.id.uuidString).jpg"
+        )) == Data([13, 14, 15]))
+    }
+
     @Test("Known People synchronous thumbnail presentation is cache-only")
     func thumbnailPresentationSourceContract() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
@@ -513,6 +586,91 @@ private nonisolated final class KnownPeopleThumbnailReadProbe: @unchecked Sendab
         lock.lock()
         defer { lock.unlock() }
         return storedURLs
+    }
+
+    var observedMainThread: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedObservedMainThread
+    }
+}
+
+private nonisolated final class KnownPeopleArchiveReadProbe: @unchecked Sendable {
+    let temporaryDirectory = URL(fileURLWithPath: "/temporary/archive-probe", isDirectory: true)
+
+    private let lock = NSLock()
+    private let person: KnownPerson
+    private let peopleData: Data
+    private let personThumbnail: Data
+    private let embeddingThumbnail: Data
+    private var storedDittoArguments: [[String]] = []
+    private var storedObservedMainThread = false
+
+    init(
+        person: KnownPerson,
+        personThumbnail: Data,
+        embeddingThumbnail: Data
+    ) throws {
+        self.person = person
+        self.personThumbnail = personThumbnail
+        self.embeddingThumbnail = embeddingThumbnail
+        peopleData = try JSONEncoder().encode([person])
+    }
+
+    var fileAccess: KnownPeopleArchiveFileAccess {
+        let extractedDirectory = temporaryDirectory.appendingPathComponent("extracted", isDirectory: true)
+        return KnownPeopleArchiveFileAccess(
+            temporaryDirectory: temporaryDirectory,
+            createDirectory: { [weak self] _ in self?.recordAccess() },
+            removeItem: { [weak self] _ in self?.recordAccess() },
+            contentsOfDirectory: { [weak self] _ in
+                self?.recordAccess()
+                return [extractedDirectory]
+            },
+            isDirectory: { [weak self] _ in
+                self?.recordAccess()
+                return true
+            },
+            itemExists: { [weak self] _ in
+                self?.recordAccess()
+                return true
+            },
+            readData: { [weak self] url in
+                guard let self else { throw CancellationError() }
+                self.recordAccess()
+                if url.lastPathComponent == "people.json" {
+                    return self.peopleData
+                }
+                if url.deletingLastPathComponent().lastPathComponent == "thumbnails" {
+                    return self.personThumbnail
+                }
+                return self.embeddingThumbnail
+            },
+            readCoordinatedData: { _ in throw CancellationError() },
+            writeData: { _, _ in },
+            runDitto: { [weak self] arguments in
+                self?.recordDitto(arguments)
+            }
+        )
+    }
+
+    private func recordAccess() {
+        lock.lock()
+        storedObservedMainThread = storedObservedMainThread || Thread.isMainThread
+        lock.unlock()
+    }
+
+    private func recordDitto(_ arguments: [String]) {
+        lock.lock()
+        storedDittoArguments.append(arguments)
+        storedObservedMainThread = storedObservedMainThread || Thread.isMainThread
+        lock.unlock()
+    }
+
+    var dittoArguments: [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedDittoArguments
     }
 
     var observedMainThread: Bool {

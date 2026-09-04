@@ -1132,6 +1132,17 @@ repository gate, and final serial unfiltered run of 1,979 tests in 229 suites pa
 cached-model paths and real-volume/signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-known-people-thumbnail-cache-continuation-2026-09-04.md))
 
+**Known People archive-preparation follow-up (2026-09-04):** Known People ZIP export no longer creates and
+populates its temporary tree, reads coordinated person/embedding thumbnails, or launches `ditto` from MainActor.
+ZIP import extraction, directory discovery, `people.json` decoding, and thumbnail reads now use the same
+exclusive serialized actor and return one immutable payload. Cancellation is sampled around every synchronous
+read and archive command, and a storage-revision guard prevents a payload prepared before a local/iCloud switch
+from committing into the newly selected store. An off-main/cancellation characterization and a real ZIP
+people/thumbnail round trip pass with the focused Known People suite; the repository gate and final serial
+unfiltered run of 1,981 tests in 229 suites also pass. Import destination commits, other lower-priority direct/
+cached-model paths, and real-volume/signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-known-people-archive-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

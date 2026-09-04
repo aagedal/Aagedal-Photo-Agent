@@ -68,6 +68,246 @@ actor KnownPeopleThumbnailLoadService {
     }
 }
 
+nonisolated struct KnownPeopleArchiveImportPayload: Sendable {
+    let people: [KnownPerson]
+    let personThumbnails: [UUID: Data]
+    let embeddingThumbnails: [UUID: Data]
+}
+
+nonisolated struct KnownPeopleArchiveFileAccess: Sendable {
+    let temporaryDirectory: URL
+    let createDirectory: @Sendable (URL) throws -> Void
+    let removeItem: @Sendable (URL) throws -> Void
+    let contentsOfDirectory: @Sendable (URL) throws -> [URL]
+    let isDirectory: @Sendable (URL) -> Bool
+    let itemExists: @Sendable (URL) -> Bool
+    let readData: @Sendable (URL) throws -> Data
+    let readCoordinatedData: @Sendable (URL) throws -> Data
+    let writeData: @Sendable (Data, URL) throws -> Void
+    let runDitto: @Sendable ([String]) async throws -> Void
+
+    static let system = KnownPeopleArchiveFileAccess(
+        temporaryDirectory: FileManager.default.temporaryDirectory,
+        createDirectory: {
+            try FileManager.default.createDirectory(at: $0, withIntermediateDirectories: true)
+        },
+        removeItem: { try FileManager.default.removeItem(at: $0) },
+        contentsOfDirectory: {
+            try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil)
+        },
+        isDirectory: {
+            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        },
+        itemExists: { FileManager.default.fileExists(atPath: $0.path) },
+        readData: { try Data(contentsOf: $0) },
+        readCoordinatedData: { try CloudCoordinatedIO.readData(at: $0) },
+        writeData: { try $0.write(to: $1) },
+        runDitto: { try await KnownPeopleArchiveProcess.run(arguments: $0) }
+    )
+}
+
+nonisolated private enum KnownPeopleArchiveProcess {
+    static func run(arguments: [String]) async throws {
+        try Task.checkCancellation()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = arguments
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            process.terminationHandler = { process in
+                if process.terminationStatus == 0 {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: NSError(
+                        domain: "KnownPeopleService",
+                        code: Int(process.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: "The Known People archive command failed."]
+                    ))
+                }
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+        try Task.checkCancellation()
+    }
+}
+
+/// Serializes ZIP preparation away from MainActor. The actor owns the temporary directory for
+/// the complete operation, samples cancellation around every synchronous Foundation/iCloud read,
+/// and returns an immutable import payload. Destination persistence remains on the Known People
+/// state owner so duplicate filtering and in-memory publication stay one MainActor transaction.
+actor KnownPeopleArchiveService {
+    static let shared = KnownPeopleArchiveService()
+
+    private let access: KnownPeopleArchiveFileAccess
+    private var hasExclusiveAccess = false
+    private var accessWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(access: KnownPeopleArchiveFileAccess = .system) {
+        self.access = access
+    }
+
+    func export(
+        people: [KnownPerson],
+        thumbnailsDirectory: URL,
+        embeddingThumbnailsDirectory: URL,
+        destinationURL: URL,
+        exportedBy: String?
+    ) async throws {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        try Task.checkCancellation()
+        let tempDirectory = access.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString,
+            isDirectory: true
+        )
+        defer { try? access.removeItem(tempDirectory) }
+
+        let temporaryThumbnails = tempDirectory.appendingPathComponent("thumbnails", isDirectory: true)
+        let temporaryEmbeddingThumbnails = tempDirectory.appendingPathComponent(
+            "embedding_thumbnails",
+            isDirectory: true
+        )
+        try access.createDirectory(temporaryThumbnails)
+        try access.createDirectory(temporaryEmbeddingThumbnails)
+
+        let embeddingCount = people.reduce(0) { $0 + $1.embeddings.count }
+        let manifest = KnownPeopleManifest(
+            exportedBy: exportedBy,
+            peopleCount: people.count,
+            embeddingCount: embeddingCount
+        )
+        try access.writeData(
+            JSONEncoder().encode(manifest),
+            tempDirectory.appendingPathComponent("manifest.json")
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try access.writeData(
+            encoder.encode(people),
+            tempDirectory.appendingPathComponent("people.json")
+        )
+
+        for person in people {
+            try Task.checkCancellation()
+            let thumbnail = thumbnailsDirectory.appendingPathComponent("\(person.id.uuidString).jpg")
+            if access.itemExists(thumbnail),
+               let data = try? access.readCoordinatedData(thumbnail) {
+                try access.writeData(
+                    data,
+                    temporaryThumbnails.appendingPathComponent("\(person.id.uuidString).jpg")
+                )
+            }
+            try Task.checkCancellation()
+
+            for embedding in person.embeddings {
+                try Task.checkCancellation()
+                let thumbnail = embeddingThumbnailsDirectory.appendingPathComponent(
+                    "\(embedding.id.uuidString).jpg"
+                )
+                if access.itemExists(thumbnail),
+                   let data = try? access.readCoordinatedData(thumbnail) {
+                    try access.writeData(
+                        data,
+                        temporaryEmbeddingThumbnails.appendingPathComponent(
+                            "\(embedding.id.uuidString).jpg"
+                        )
+                    )
+                }
+                try Task.checkCancellation()
+            }
+        }
+
+        try await access.runDitto([
+            "-c", "-k", "--keepParent", tempDirectory.path, destinationURL.path
+        ])
+        try Task.checkCancellation()
+    }
+
+    func prepareImport(sourceURL: URL) async throws -> KnownPeopleArchiveImportPayload {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        try Task.checkCancellation()
+        let tempDirectory = access.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString,
+            isDirectory: true
+        )
+        defer { try? access.removeItem(tempDirectory) }
+        try access.createDirectory(tempDirectory)
+
+        try await access.runDitto(["-x", "-k", sourceURL.path, tempDirectory.path])
+        try Task.checkCancellation()
+
+        let contents = try access.contentsOfDirectory(tempDirectory)
+        let extractedDirectory = contents.first(where: access.isDirectory) ?? tempDirectory
+        let peopleURL = extractedDirectory.appendingPathComponent("people.json")
+        guard access.itemExists(peopleURL) else {
+            throw NSError(domain: "KnownPeopleService", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Invalid archive: missing people.json"
+            ])
+        }
+
+        let peopleData = try access.readData(peopleURL)
+        try Task.checkCancellation()
+        let people = try JSONDecoder().decode([KnownPerson].self, from: peopleData)
+        let thumbnailsDirectory = extractedDirectory.appendingPathComponent("thumbnails", isDirectory: true)
+        let embeddingThumbnailsDirectory = extractedDirectory.appendingPathComponent(
+            "embedding_thumbnails",
+            isDirectory: true
+        )
+        var personThumbnails: [UUID: Data] = [:]
+        var embeddingThumbnails: [UUID: Data] = [:]
+
+        for person in people {
+            try Task.checkCancellation()
+            let thumbnail = thumbnailsDirectory.appendingPathComponent("\(person.id.uuidString).jpg")
+            if access.itemExists(thumbnail), let data = try? access.readData(thumbnail) {
+                personThumbnails[person.id] = data
+            }
+            try Task.checkCancellation()
+
+            for embedding in person.embeddings {
+                try Task.checkCancellation()
+                let thumbnail = embeddingThumbnailsDirectory.appendingPathComponent(
+                    "\(embedding.id.uuidString).jpg"
+                )
+                if access.itemExists(thumbnail), let data = try? access.readData(thumbnail) {
+                    embeddingThumbnails[embedding.id] = data
+                }
+                try Task.checkCancellation()
+            }
+        }
+
+        return KnownPeopleArchiveImportPayload(
+            people: people,
+            personThumbnails: personThumbnails,
+            embeddingThumbnails: embeddingThumbnails
+        )
+    }
+
+    private func beginExclusiveAccess() async {
+        if !hasExclusiveAccess {
+            hasExclusiveAccess = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            accessWaiters.append(continuation)
+        }
+    }
+
+    private func endExclusiveAccess() {
+        guard !accessWaiters.isEmpty else {
+            hasExclusiveAccess = false
+            return
+        }
+        accessWaiters.removeFirst().resume()
+    }
+}
+
 /// File operations used by the one-shot embedding-space migration. Keeping the
 /// whole transaction behind one seam lets tests prove that backup verification
 /// and reset failures never advance the migration stamp.
@@ -170,9 +410,14 @@ final class KnownPeopleService {
     private var cachedDirectory: URL?
     private var storageRevision: UInt64 = 0
     private let thumbnailLoader: KnownPeopleThumbnailLoadService
+    private let archiveService: KnownPeopleArchiveService
 
-    init(thumbnailLoader: KnownPeopleThumbnailLoadService = .shared) {
+    init(
+        thumbnailLoader: KnownPeopleThumbnailLoadService = .shared,
+        archiveService: KnownPeopleArchiveService = .shared
+    ) {
         self.thumbnailLoader = thumbnailLoader
+        self.archiveService = archiveService
     }
 
     private var knownPeopleDirectory: URL {
@@ -1484,160 +1729,40 @@ final class KnownPeopleService {
 
     func exportToZip(destinationURL: URL, exportedBy: String? = nil) async throws {
         let db = loadDatabase()
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-
-        defer {
-            do {
-                try FileManager.default.removeItem(at: tempDir)
-            } catch {
-                knownPeopleLog.warning("Failed to clean up export temp dir: \(error.localizedDescription, privacy: .private)")
-            }
-        }
-
-        // Create temp directory structure
-        let tempThumbnailsDir = tempDir.appendingPathComponent("thumbnails")
-        let tempEmbeddingThumbnailsDir = tempDir.appendingPathComponent("embedding_thumbnails")
-        try FileManager.default.createDirectory(at: tempThumbnailsDir, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: tempEmbeddingThumbnailsDir, withIntermediateDirectories: true)
-
-        // Write manifest
-        let embeddingCount = db.people.reduce(0) { $0 + $1.embeddings.count }
-        let manifest = KnownPeopleManifest(
-            exportedBy: exportedBy,
-            peopleCount: db.people.count,
-            embeddingCount: embeddingCount
+        try await archiveService.export(
+            people: db.people,
+            thumbnailsDirectory: thumbnailsDirectory,
+            embeddingThumbnailsDirectory: embeddingThumbnailsDirectory,
+            destinationURL: destinationURL,
+            exportedBy: exportedBy
         )
-        let manifestData = try JSONEncoder().encode(manifest)
-        try manifestData.write(to: tempDir.appendingPathComponent("manifest.json"))
-
-        // Write people data
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let peopleData = try encoder.encode(db.people)
-        try peopleData.write(to: tempDir.appendingPathComponent("people.json"))
-
-        // Copy thumbnails (reads come from the possibly-iCloud container, so they
-        // go through the coordinator; the temp destination is a plain local write).
-        for person in db.people {
-            let sourceURL = thumbnailURL(for: person.id)
-            if CloudCoordinatedIO.itemExists(at: sourceURL),
-               let data = try? CloudCoordinatedIO.readData(at: sourceURL) {
-                let destURL = tempThumbnailsDir.appendingPathComponent("\(person.id.uuidString).jpg")
-                try data.write(to: destURL)
-            }
-
-            // Copy embedding thumbnails
-            for embedding in person.embeddings {
-                let embSource = embeddingThumbnailURL(for: embedding.id)
-                if CloudCoordinatedIO.itemExists(at: embSource),
-                   let data = try? CloudCoordinatedIO.readData(at: embSource) {
-                    let embDest = tempEmbeddingThumbnailsDir.appendingPathComponent("\(embedding.id.uuidString).jpg")
-                    try data.write(to: embDest)
-                }
-            }
-        }
-
-        // Create zip using ditto
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = ["-c", "-k", "--keepParent", tempDir.path, destinationURL.path]
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            process.terminationHandler = { proc in
-                if proc.terminationStatus == 0 {
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: NSError(
-                        domain: "KnownPeopleService", code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "Failed to create zip archive"]
-                    ))
-                }
-            }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
     }
 
     // MARK: - Import
 
     func importFromZip(sourceURL: URL) async throws -> Int {
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-
-        defer {
-            do {
-                try FileManager.default.removeItem(at: tempDir)
-            } catch {
-                knownPeopleLog.warning("Failed to clean up import temp dir: \(error.localizedDescription, privacy: .private)")
-            }
+        let expectedStorageRevision = storageRevision
+        let payload = try await archiveService.prepareImport(sourceURL: sourceURL)
+        try Task.checkCancellation()
+        guard storageRevision == expectedStorageRevision else {
+            throw CancellationError()
         }
-
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
-        // Unzip using ditto
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = ["-x", "-k", sourceURL.path, tempDir.path]
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            process.terminationHandler = { proc in
-                if proc.terminationStatus == 0 {
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: NSError(
-                        domain: "KnownPeopleService", code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "Failed to extract zip archive"]
-                    ))
-                }
-            }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
-
-        // Find the extracted directory (ditto with --keepParent creates a subdirectory)
-        let contents = try FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil)
-        let extractedDir = contents.first { url in
-            var isDir: ObjCBool = false
-            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
-        } ?? tempDir
-
-        // Read people.json
-        let peopleURL = extractedDir.appendingPathComponent("people.json")
-        guard FileManager.default.fileExists(atPath: peopleURL.path) else {
-            throw NSError(domain: "KnownPeopleService", code: 3, userInfo: [
-                NSLocalizedDescriptionKey: "Invalid archive: missing people.json"
-            ])
-        }
-
-        let peopleData = try Data(contentsOf: peopleURL)
-        let importedPeople = try JSONDecoder().decode([KnownPerson].self, from: peopleData)
 
         // Filter out people whose UUIDs already exist to prevent duplicates on re-import
         var db = loadDatabase()
         let existingIDs = Set(db.people.map(\.id))
-        let newPeople = importedPeople.filter { !existingIDs.contains($0.id) }
+        let newPeople = payload.people.filter { !existingIDs.contains($0.id) }
 
         // Copy thumbnails only for newly imported people
-        let importedThumbnailsDir = extractedDir.appendingPathComponent("thumbnails")
-        let importedEmbeddingThumbnailsDir = extractedDir.appendingPathComponent("embedding_thumbnails")
         for person in newPeople {
-            let sourceThumb = importedThumbnailsDir.appendingPathComponent("\(person.id.uuidString).jpg")
-            if FileManager.default.fileExists(atPath: sourceThumb.path),
-               let data = try? Data(contentsOf: sourceThumb) {
+            if let data = payload.personThumbnails[person.id] {
                 // Destination is the possibly-iCloud container, so write coordinated.
                 try? CloudCoordinatedIO.writeData(data, to: thumbnailURL(for: person.id))
             }
 
             // Copy embedding thumbnails
             for embedding in person.embeddings {
-                let embSource = importedEmbeddingThumbnailsDir.appendingPathComponent("\(embedding.id.uuidString).jpg")
-                if FileManager.default.fileExists(atPath: embSource.path),
-                   let data = try? Data(contentsOf: embSource) {
+                if let data = payload.embeddingThumbnails[embedding.id] {
                     try? CloudCoordinatedIO.writeData(data, to: embeddingThumbnailURL(for: embedding.id))
                 }
             }
