@@ -1018,6 +1018,16 @@ passed; the adjacent 71-test selection, repository gate, and serial unfiltered 1
 lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-browser-hdr-classification-continuation-2026-09-03.md))
 
+**Export artifact-finalization follow-up (2026-09-04):** post-render RAW sidecar copying, compensation that removes
+an incomplete archive when its authoritative sidecar cannot be finalized, and the Finder-visibility postcondition now
+run on one serialized actor rather than returning to the caller's actor after rendering. Immutable durable evidence
+records sidecar finalization, visibility repair, and cancellation observed before or after the intentionally
+non-preemptible transaction. A privacy-safe signpost records only outcome flags. Three new characterizations and the
+focused 22-test export suite passed; the adjacent 53-test export/archive/FTP selection, repository gate, and serial
+unfiltered 1,950-test run also passed. Other lower-priority direct paths and real-volume/signpost/Thread Performance
+Checker exit evidence remain open.
+([validation](plan-status-export-artifact-finalization-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

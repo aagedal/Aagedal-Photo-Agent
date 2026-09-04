@@ -51,6 +51,124 @@ nonisolated enum ExportCameraRawResolutionResult: Equatable, Sendable {
     case cancelledAfterCompleteRead(ExportCameraRawResolutionSnapshot)
 }
 
+/// Immutable input for the filesystem work that must finish after rendered pixels and metadata
+/// have been committed. RAW archives additionally carry the source XMP sidecar unchanged.
+nonisolated struct ExportArtifactFinalizationRequest: Equatable, Sendable {
+    let requestID: UUID
+    let sourceURL: URL
+    let renderedURL: URL
+    let copiesRAWArchiveSidecar: Bool
+}
+
+/// Durable evidence returned after the rendered artifact is safe to publish to the UI. Finalization
+/// is deliberately non-preemptible once submitted: cancellation must not leave a RAW archive without
+/// its authoritative edit sidecar or skip the user-visible-file postcondition.
+nonisolated struct ExportArtifactFinalizationEvidence: Equatable, Sendable {
+    let requestID: UUID
+    let renderedURL: URL
+    let finalizedRAWArchiveSidecar: Bool
+    let madeArtifactVisible: Bool
+    let cancellationObservedBeforeFinalization: Bool
+    let cancellationObservedAfterFinalization: Bool
+}
+
+nonisolated struct ExportArtifactFinalizationIO: Sendable {
+    let copyRAWArchiveSidecar: @Sendable (URL, URL) throws -> Void
+    let removeRenderedArtifact: @Sendable (URL) throws -> Void
+    let isHidden: @Sendable (URL) throws -> Bool
+    let makeVisible: @Sendable (URL) throws -> Void
+
+    static let system = ExportArtifactFinalizationIO(
+        copyRAWArchiveSidecar: { sourceURL, renderedURL in
+            try RAWArchiveService.copySidecarIfPresent(from: sourceURL, to: renderedURL)
+        },
+        removeRenderedArtifact: { try FileManager.default.removeItem(at: $0) },
+        isHidden: {
+            try $0.resourceValues(forKeys: [.isHiddenKey]).isHidden == true
+        },
+        makeVisible: { url in
+            var values = URLResourceValues()
+            values.isHidden = false
+            var mutableURL = url
+            try mutableURL.setResourceValues(values)
+        }
+    )
+}
+
+/// Serializes post-render filesystem work away from MainActor. There is no suspension point inside
+/// `finalize`, so one artifact reaches a truthful durable outcome before the next begins.
+actor ExportArtifactFinalizationService {
+    static let shared = ExportArtifactFinalizationService()
+
+    private let io: ExportArtifactFinalizationIO
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "ExportArtifactFinalization"
+    )
+
+    init(io: ExportArtifactFinalizationIO = .system) {
+        self.io = io
+    }
+
+    func finalize(
+        _ request: ExportArtifactFinalizationRequest
+    ) throws -> ExportArtifactFinalizationEvidence {
+        let cancellationObservedBeforeFinalization = Task.isCancelled
+        let signpostID = signposter.makeSignpostID()
+        let interval = signposter.beginInterval("Finalize", id: signpostID)
+        var finalizedRAWArchiveSidecar = false
+
+        if request.copiesRAWArchiveSidecar {
+            do {
+                try io.copyRAWArchiveSidecar(request.sourceURL, request.renderedURL)
+                finalizedRAWArchiveSidecar = true
+            } catch {
+                // Preserve the existing fail-closed archive contract: pixels without their
+                // authoritative sidecar are not a completed archive. The cleanup remains
+                // best effort so the original sidecar error is what the caller receives.
+                try? io.removeRenderedArtifact(request.renderedURL)
+                signposter.endInterval(
+                    "Finalize",
+                    interval,
+                    "result=sidecar-failed archive=true"
+                )
+                throw error
+            }
+        }
+
+        let madeArtifactVisible: Bool
+        do {
+            if try io.isHidden(request.renderedURL) {
+                try io.makeVisible(request.renderedURL)
+                madeArtifactVisible = true
+            } else {
+                madeArtifactVisible = false
+            }
+        } catch {
+            signposter.endInterval(
+                "Finalize",
+                interval,
+                "result=visibility-failed archive=\(request.copiesRAWArchiveSidecar)"
+            )
+            throw error
+        }
+
+        signposter.endInterval(
+            "Finalize",
+            interval,
+            "result=complete archive=\(request.copiesRAWArchiveSidecar) visible=\(madeArtifactVisible)"
+        )
+        return ExportArtifactFinalizationEvidence(
+            requestID: request.requestID,
+            renderedURL: request.renderedURL,
+            finalizedRAWArchiveSidecar: finalizedRAWArchiveSidecar,
+            madeArtifactVisible: madeArtifactVisible,
+            cancellationObservedBeforeFinalization: cancellationObservedBeforeFinalization,
+            cancellationObservedAfterFinalization: Task.isCancelled
+        )
+    }
+}
+
 nonisolated struct ExportCameraRawSidecarAccess: Sendable {
     let load: @Sendable (URL) -> CameraRawSettings?
 
@@ -237,7 +355,8 @@ enum EditExportPipeline {
                            failureTracker: MetadataFailureTracker,
                            configuration: AdvancedExportConfiguration? = nil,
                            outputFilenameSuffix: String = "",
-                           collisionPolicy: EditedImageRenderer.OutputCollisionPolicy = .replaceExisting) async throws -> URL {
+                           collisionPolicy: EditedImageRenderer.OutputCollisionPolicy = .replaceExisting,
+                           finalizationService: ExportArtifactFinalizationService = .shared) async throws -> URL {
         if case .rawDNG(let compression, let executableURL) = kind {
             // A DNG is still a camera RAW, not a rendered output. Do not run the
             // rendered-metadata copier or sidecar overlay; the converter preserves
@@ -250,7 +369,12 @@ enum EditExportPipeline {
                     executableURL: executableURL
                 )
             }.value
-            try ensureExportArtifactIsVisible(at: renderedURL)
+            _ = try await finalizationService.finalize(ExportArtifactFinalizationRequest(
+                requestID: UUID(),
+                sourceURL: sourceURL,
+                renderedURL: renderedURL,
+                copiesRAWArchiveSidecar: false
+            ))
             return renderedURL
         }
 
@@ -319,25 +443,19 @@ enum EditExportPipeline {
             break
         }
 
+        let copiesRAWArchiveSidecar: Bool
         switch kind {
         case .rawJXL16, .rawTIFF16:
-            do {
-                try RAWArchiveService.copySidecarIfPresent(
-                    from: sourceURL,
-                    to: renderedURL
-                )
-            } catch {
-                // The pixels were written without edits, but the archive contract also
-                // carries the authoritative edit sidecar. Remove this newly created,
-                // incomplete rendered file and report the archive as failed. Do not
-                // remove a destination sidecar here: a concurrent writer may own it.
-                try? FileManager.default.removeItem(at: renderedURL)
-                throw error
-            }
+            copiesRAWArchiveSidecar = true
         case .format, .saveAs, .rawDNG, .jpeg:
-            break
+            copiesRAWArchiveSidecar = false
         }
-        try ensureExportArtifactIsVisible(at: renderedURL)
+        _ = try await finalizationService.finalize(ExportArtifactFinalizationRequest(
+            requestID: UUID(),
+            sourceURL: sourceURL,
+            renderedURL: renderedURL,
+            copiesRAWArchiveSidecar: copiesRAWArchiveSidecar
+        ))
         return renderedURL
     }
 
@@ -345,14 +463,16 @@ enum EditExportPipeline {
     /// Metadata writers normally preserve the destination's visibility, but this final
     /// postcondition also protects formats handled by external encoders and filesystem
     /// providers that retain a hidden staging-file flag during an atomic replacement.
-    static func ensureExportArtifactIsVisible(at url: URL) throws {
-        let values = try url.resourceValues(forKeys: [.isHiddenKey])
-        guard values.isHidden == true else { return }
-
-        var visibleValues = URLResourceValues()
-        visibleValues.isHidden = false
-        var mutableURL = url
-        try mutableURL.setResourceValues(visibleValues)
+    static func ensureExportArtifactIsVisible(
+        at url: URL,
+        service: ExportArtifactFinalizationService = .shared
+    ) async throws {
+        _ = try await service.finalize(ExportArtifactFinalizationRequest(
+            requestID: UUID(),
+            sourceURL: url,
+            renderedURL: url,
+            copiesRAWArchiveSidecar: false
+        ))
     }
 }
 

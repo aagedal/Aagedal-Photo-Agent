@@ -672,7 +672,7 @@ struct EditExportPipelineTests {
     }
 
     @Test("export visibility postcondition clears a hidden filesystem flag")
-    func exportArtifactIsMadeVisible() throws {
+    func exportArtifactIsMadeVisible() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("apa-export-visibility-\(UUID().uuidString)", isDirectory: true)
         let artifact = directory.appendingPathComponent("rendered.jpg")
@@ -689,10 +689,100 @@ struct EditExportPipelineTests {
         try mutableArtifact.setResourceValues(hiddenValues)
         #expect(try artifact.resourceValues(forKeys: [.isHiddenKey]).isHidden == true)
 
-        try EditExportPipeline.ensureExportArtifactIsVisible(at: artifact)
+        try await EditExportPipeline.ensureExportArtifactIsVisible(at: artifact)
 
         #expect(try artifact.resourceValues(forKeys: [.isHiddenKey]).isHidden == false)
         #expect(try Data(contentsOf: artifact) == Data("rendered".utf8))
+    }
+
+    @MainActor
+    @Test("artifact finalization leaves MainActor and serializes overlapping requests")
+    func artifactFinalizationIsOffMainAndSerialized() async throws {
+        let firstURL = URL(fileURLWithPath: "/virtual/first.jpg")
+        let secondURL = URL(fileURLWithPath: "/virtual/second.jpg")
+        let probe = ExportArtifactFinalizationProbe(blockFirstVisibilityRead: true)
+        let service = ExportArtifactFinalizationService(io: probe.io)
+
+        let first = Task { @MainActor in
+            try await service.finalize(ExportArtifactFinalizationRequest(
+                requestID: UUID(),
+                sourceURL: firstURL,
+                renderedURL: firstURL,
+                copiesRAWArchiveSidecar: false
+            ))
+        }
+        await probe.waitUntilFirstVisibilityReadStarts()
+        let second = Task { @MainActor in
+            try await service.finalize(ExportArtifactFinalizationRequest(
+                requestID: UUID(),
+                sourceURL: secondURL,
+                renderedURL: secondURL,
+                copiesRAWArchiveSidecar: false
+            ))
+        }
+        await Task.yield()
+
+        #expect(probe.visibilityReadInvocationCount == 1)
+        probe.releaseFirstVisibilityRead()
+        _ = try await first.value
+        _ = try await second.value
+
+        #expect(probe.maximumConcurrentOperations == 1)
+        #expect(!probe.ranOnMainThread)
+        #expect(probe.visibilityReadURLs == [firstURL, secondURL])
+    }
+
+    @Test("RAW finalization removes incomplete pixels when sidecar copying fails")
+    func artifactFinalizationCompensatesForSidecarFailure() async {
+        let sourceURL = URL(fileURLWithPath: "/virtual/source.ARW")
+        let renderedURL = URL(fileURLWithPath: "/virtual/archive.tiff")
+        let probe = ExportArtifactFinalizationProbe(sidecarCopyFails: true)
+        let service = ExportArtifactFinalizationService(io: probe.io)
+
+        do {
+            _ = try await service.finalize(ExportArtifactFinalizationRequest(
+                requestID: UUID(),
+                sourceURL: sourceURL,
+                renderedURL: renderedURL,
+                copiesRAWArchiveSidecar: true
+            ))
+            Issue.record("Expected sidecar finalization to fail")
+        } catch {
+            #expect(probe.sidecarCopies == [ExportArtifactFinalizationProbe.Copy(
+                sourceURL: sourceURL,
+                renderedURL: renderedURL
+            )])
+            #expect(probe.removedURLs == [renderedURL])
+            #expect(probe.visibilityReadURLs.isEmpty)
+        }
+    }
+
+    @Test("artifact finalization records cancellation without skipping durable postconditions")
+    func artifactFinalizationRecordsCancellationAfterCommit() async throws {
+        let sourceURL = URL(fileURLWithPath: "/virtual/source.ARW")
+        let renderedURL = URL(fileURLWithPath: "/virtual/archive.tiff")
+        let probe = ExportArtifactFinalizationProbe(
+            hiddenURLs: [renderedURL],
+            cancelDuringSidecarCopy: true
+        )
+        let service = ExportArtifactFinalizationService(io: probe.io)
+        let requestID = UUID()
+
+        let evidence = try await Task {
+            try await service.finalize(ExportArtifactFinalizationRequest(
+                requestID: requestID,
+                sourceURL: sourceURL,
+                renderedURL: renderedURL,
+                copiesRAWArchiveSidecar: true
+            ))
+        }.value
+
+        #expect(evidence.requestID == requestID)
+        #expect(evidence.finalizedRAWArchiveSidecar)
+        #expect(evidence.madeArtifactVisible)
+        #expect(!evidence.cancellationObservedBeforeFinalization)
+        #expect(evidence.cancellationObservedAfterFinalization)
+        #expect(probe.visibleURLs == [renderedURL])
     }
 
     /// Command-S can target the current source folder. A JPEG-to-JPEG export used to
@@ -847,6 +937,131 @@ private nonisolated final class ExportCameraRawResolutionProbe: @unchecked Senda
                 continuation.resume()
             }
         }
+    }
+}
+
+private nonisolated final class ExportArtifactFinalizationProbe: @unchecked Sendable {
+    struct Copy: Equatable {
+        let sourceURL: URL
+        let renderedURL: URL
+    }
+
+    private let condition = NSCondition()
+    private let hiddenURLs: Set<URL>
+    private let blockFirstVisibilityRead: Bool
+    private let sidecarCopyFails: Bool
+    private let cancelDuringSidecarCopy: Bool
+    private var didReleaseFirstVisibilityRead = false
+    private var activeOperations = 0
+    private var _maximumConcurrentOperations = 0
+    private var _visibilityReadInvocationCount = 0
+    private var _ranOnMainThread = false
+    private var _sidecarCopies: [Copy] = []
+    private var _removedURLs: [URL] = []
+    private var _visibilityReadURLs: [URL] = []
+    private var _visibleURLs: [URL] = []
+
+    init(
+        hiddenURLs: Set<URL> = [],
+        blockFirstVisibilityRead: Bool = false,
+        sidecarCopyFails: Bool = false,
+        cancelDuringSidecarCopy: Bool = false
+    ) {
+        self.hiddenURLs = hiddenURLs
+        self.blockFirstVisibilityRead = blockFirstVisibilityRead
+        self.sidecarCopyFails = sidecarCopyFails
+        self.cancelDuringSidecarCopy = cancelDuringSidecarCopy
+    }
+
+    var io: ExportArtifactFinalizationIO {
+        ExportArtifactFinalizationIO(
+            copyRAWArchiveSidecar: { [self] sourceURL, renderedURL in
+                beginOperation()
+                condition.withLock {
+                    _sidecarCopies.append(Copy(
+                        sourceURL: sourceURL,
+                        renderedURL: renderedURL
+                    ))
+                }
+                if cancelDuringSidecarCopy {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                endOperation()
+                if sidecarCopyFails {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+            },
+            removeRenderedArtifact: { [self] url in
+                beginOperation()
+                condition.withLock { _removedURLs.append(url) }
+                endOperation()
+            },
+            isHidden: { [self] url in
+                beginOperation()
+                condition.lock()
+                _visibilityReadInvocationCount += 1
+                _visibilityReadURLs.append(url)
+                let invocation = _visibilityReadInvocationCount
+                condition.broadcast()
+                while blockFirstVisibilityRead,
+                      invocation == 1,
+                      !didReleaseFirstVisibilityRead {
+                    condition.wait()
+                }
+                condition.unlock()
+                endOperation()
+                return hiddenURLs.contains(url)
+            },
+            makeVisible: { [self] url in
+                beginOperation()
+                condition.withLock { _visibleURLs.append(url) }
+                endOperation()
+            }
+        )
+    }
+
+    var sidecarCopies: [Copy] { condition.withLock { _sidecarCopies } }
+    var removedURLs: [URL] { condition.withLock { _removedURLs } }
+    var visibilityReadURLs: [URL] { condition.withLock { _visibilityReadURLs } }
+    var visibleURLs: [URL] { condition.withLock { _visibleURLs } }
+    var visibilityReadInvocationCount: Int {
+        condition.withLock { _visibilityReadInvocationCount }
+    }
+    var maximumConcurrentOperations: Int {
+        condition.withLock { _maximumConcurrentOperations }
+    }
+    var ranOnMainThread: Bool { condition.withLock { _ranOnMainThread } }
+
+    func releaseFirstVisibilityRead() {
+        condition.withLock {
+            didReleaseFirstVisibilityRead = true
+            condition.broadcast()
+        }
+    }
+
+    func waitUntilFirstVisibilityReadStarts() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                condition.lock()
+                while _visibilityReadInvocationCount == 0 {
+                    condition.wait()
+                }
+                condition.unlock()
+                continuation.resume()
+            }
+        }
+    }
+
+    private func beginOperation() {
+        condition.withLock {
+            activeOperations += 1
+            _maximumConcurrentOperations = max(_maximumConcurrentOperations, activeOperations)
+            _ranOnMainThread = _ranOnMainThread || Thread.isMainThread
+        }
+    }
+
+    private func endOperation() {
+        condition.withLock { activeOperations -= 1 }
     }
 }
 

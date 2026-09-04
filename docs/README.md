@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-03
+**Last reviewed:** 2026-09-04
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -550,6 +550,14 @@ the Browser accepts only complete evidence for the current batch. Four new chara
 Browser filesystem-boundary selection, adjacent 71-test selection, repository gate, and serial unfiltered 1,947-test
 run passed. The audit remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread
 Performance Checker evidence stay open.
+
+The latest [export artifact-finalization continuation](plan-status-export-artifact-finalization-continuation-2026-09-04.md)
+moves post-render RAW sidecar copying, fail-closed incomplete-archive cleanup, and Finder-visibility repair onto one
+serialized actor. Immutable evidence records the durable sidecar/visibility outcome and cancellation observed around
+the intentionally non-preemptible finalization. Three new characterizations, the focused 22-test export suite,
+adjacent 53-test export/archive/FTP selection, repository gate, and serial unfiltered 1,950-test run passed. The audit
+remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread Performance Checker evidence
+stay open.
 
 ## File organization convention
 
