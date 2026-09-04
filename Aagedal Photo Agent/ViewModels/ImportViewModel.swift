@@ -181,6 +181,146 @@ actor ImportDestinationBookmarkService {
     }
 }
 
+nonisolated struct ImportExecutionSecurityScopeAccess: Sendable {
+    let start: @Sendable (URL) -> Bool
+    let stop: @Sendable (URL) -> Void
+
+    init(
+        start: @escaping @Sendable (URL) -> Bool = {
+            $0.startAccessingSecurityScopedResource()
+        },
+        stop: @escaping @Sendable (URL) -> Void = {
+            $0.stopAccessingSecurityScopedResource()
+        }
+    ) {
+        self.start = start
+        self.stop = stop
+    }
+}
+
+nonisolated struct ImportExecutionSecurityScopeRequest: Equatable, Sendable {
+    let requestID: UUID
+    let roots: [URL]
+
+    init(requestID: UUID = UUID(), roots: [URL?]) {
+        self.requestID = requestID
+        var seenPaths: Set<String> = []
+        self.roots = roots.compactMap { root in
+            guard let root else { return nil }
+            let standardized = root.standardizedFileURL
+            guard seenPaths.insert(standardized.path).inserted else { return nil }
+            return standardized
+        }
+    }
+}
+
+nonisolated struct ImportExecutionSecurityScopeClaim: Equatable, Sendable {
+    let requestID: UUID
+    let roots: [URL]
+    let startedRoots: [URL]
+}
+
+nonisolated enum ImportExecutionSecurityScopeAcquisition: Equatable, Sendable {
+    case acquired(ImportExecutionSecurityScopeClaim)
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledAfterAccess(
+        requestID: UUID,
+        inspectedRootCount: Int,
+        releasedStartedRoots: [URL]
+    )
+}
+
+nonisolated struct ImportExecutionSecurityScopeRelease: Equatable, Sendable {
+    let requestID: UUID
+    let releasedRoots: [URL]
+}
+
+/// Owns the synchronous file-provider access calls for an import lease. The operation may
+/// suspend while the process-wide claims remain active; acquisition and release themselves stay
+/// serialized on this actor, and every exit releases only the roots that actually started.
+actor ImportExecutionSecurityScopeService {
+    static let shared = ImportExecutionSecurityScopeService()
+
+    private let access: ImportExecutionSecurityScopeAccess
+    private let cancellationRequested: @Sendable () -> Bool
+    private var activeStartedRoots: [UUID: [URL]] = [:]
+
+    init(
+        access: ImportExecutionSecurityScopeAccess = ImportExecutionSecurityScopeAccess(),
+        cancellationRequested: @escaping @Sendable () -> Bool = { Task.isCancelled }
+    ) {
+        self.access = access
+        self.cancellationRequested = cancellationRequested
+    }
+
+    func acquire(
+        _ request: ImportExecutionSecurityScopeRequest
+    ) -> ImportExecutionSecurityScopeAcquisition {
+        guard !cancellationRequested() else {
+            return .cancelledBeforeAccess(requestID: request.requestID)
+        }
+
+        var startedRoots: [URL] = []
+        for (index, root) in request.roots.enumerated() {
+            if access.start(root) {
+                startedRoots.append(root)
+            }
+            guard !cancellationRequested() else {
+                let releasedRoots = releaseStartedRoots(startedRoots)
+                return .cancelledAfterAccess(
+                    requestID: request.requestID,
+                    inspectedRootCount: index + 1,
+                    releasedStartedRoots: releasedRoots
+                )
+            }
+        }
+
+        activeStartedRoots[request.requestID] = startedRoots
+        return .acquired(ImportExecutionSecurityScopeClaim(
+            requestID: request.requestID,
+            roots: request.roots,
+            startedRoots: startedRoots
+        ))
+    }
+
+    func release(
+        _ claim: ImportExecutionSecurityScopeClaim
+    ) -> ImportExecutionSecurityScopeRelease {
+        let startedRoots = activeStartedRoots.removeValue(forKey: claim.requestID) ?? []
+        return ImportExecutionSecurityScopeRelease(
+            requestID: claim.requestID,
+            releasedRoots: releaseStartedRoots(startedRoots)
+        )
+    }
+
+    func withAccess<T: Sendable>(
+        _ request: ImportExecutionSecurityScopeRequest,
+        operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        let acquisition = acquire(request)
+        guard case .acquired(let claim) = acquisition else {
+            throw CancellationError()
+        }
+
+        do {
+            let result = try await operation()
+            _ = release(claim)
+            return result
+        } catch {
+            _ = release(claim)
+            throw error
+        }
+    }
+
+    private func releaseStartedRoots(_ roots: [URL]) -> [URL] {
+        let releasedRoots = Array(roots.reversed())
+        for root in releasedRoots {
+            access.stop(root)
+        }
+        return releasedRoots
+    }
+}
+
 /// Per-date group for sorting source files into separate destination folders.
 struct ImportDateGroup: Identifiable {
     let id = UUID()
@@ -304,6 +444,7 @@ final class ImportViewModel {
     @ObservationIgnored private let folderSuggestionService: ImportFolderSuggestionService
     @ObservationIgnored private let voiceMemoAssociationScanService: ImportVoiceMemoAssociationScanService
     @ObservationIgnored private let pathContainmentService: SafePathContainmentService
+    @ObservationIgnored private let executionSecurityScopeService: ImportExecutionSecurityScopeService
     @ObservationIgnored private let bookmarkDefaults: UserDefaults
     @ObservationIgnored private let destinationBookmarkService: ImportDestinationBookmarkService
     @ObservationIgnored private var destinationBookmarkTask: Task<Void, Never>?
@@ -322,6 +463,7 @@ final class ImportViewModel {
         folderSuggestionService: ImportFolderSuggestionService = ImportFolderSuggestionService(),
         voiceMemoAssociationScanService: ImportVoiceMemoAssociationScanService = ImportVoiceMemoAssociationScanService(),
         pathContainmentService: SafePathContainmentService = .shared,
+        executionSecurityScopeService: ImportExecutionSecurityScopeService = .shared,
         bookmarkDefaults: UserDefaults = .standard,
         destinationBookmarkService: ImportDestinationBookmarkService = .shared
     ) {
@@ -334,6 +476,7 @@ final class ImportViewModel {
         self.folderSuggestionService = folderSuggestionService
         self.voiceMemoAssociationScanService = voiceMemoAssociationScanService
         self.pathContainmentService = pathContainmentService
+        self.executionSecurityScopeService = executionSecurityScopeService
         self.bookmarkDefaults = bookmarkDefaults
         self.destinationBookmarkService = destinationBookmarkService
 
@@ -1033,312 +1176,309 @@ final class ImportViewModel {
         let voiceMemoAssociationsToPersist = selectedVoiceMemoAssociations
         let primarySourceURL = configuration.sourceURL
         let voiceMemoSourceURL = configuration.voiceMemoSourceURL
+        let plannedPrimaryDestinations = primaryDestinations
+        let plannedBundleRequests = bundleRequests
+        let plannedJobDrafts = jobDrafts
+        let plannedPreviousImportCandidates = previousImportCandidates
         let requestID = UUID()
+        let executionSecurityScopeService = self.executionSecurityScopeService
+        let initialSecurityScopeRequest = ImportExecutionSecurityScopeRequest(
+            requestID: requestID,
+            roots: [primarySourceURL, voiceMemoSourceURL, baseURL]
+        )
         importRequestID = requestID
 
         importTask = Task.detached(priority: .userInitiated) { [readService, interpolator, importLog, pathContainmentService, weak self] in
             guard let self else { return }
             _ = readService
-            let didStartAccessingSource = primarySourceURL?.startAccessingSecurityScopedResource() ?? false
-            let didStartAccessingVoiceMemos = voiceMemoSourceURL?.startAccessingSecurityScopedResource() ?? false
-            defer {
-                if didStartAccessingSource { primarySourceURL?.stopAccessingSecurityScopedResource() }
-                if didStartAccessingVoiceMemos { voiceMemoSourceURL?.stopAccessingSecurityScopedResource() }
-            }
-            let didStartAccessingDestination =
-                baseURL.startAccessingSecurityScopedResource()
-            defer {
-                if didStartAccessingDestination {
-                    baseURL.stopAccessingSecurityScopedResource()
-                }
-            }
 
             do {
-                let primaryContainment = await pathContainmentService.inspect(
-                    SafePathContainmentRequest(
-                        requestID: requestID,
-                        root: baseURL,
-                        candidates: primaryDestinations
+                try await executionSecurityScopeService.withAccess(initialSecurityScopeRequest) {
+                    let primaryContainment = await pathContainmentService.inspect(
+                        SafePathContainmentRequest(
+                            requestID: requestID,
+                            root: baseURL,
+                            candidates: plannedPrimaryDestinations
+                        )
                     )
-                )
-                switch primaryContainment {
-                case .complete(let evidence):
-                    guard evidence.requestID == requestID,
-                          evidence.requestedCandidateCount == primaryDestinations.count,
-                          evidence.checkedCandidateCount == primaryDestinations.count,
-                          evidence.escapingCandidate == nil else {
-                        throw ImportPlanningError.imageDestinationEscaped
+                    switch primaryContainment {
+                    case .complete(let evidence):
+                        guard evidence.requestID == requestID,
+                              evidence.requestedCandidateCount == plannedPrimaryDestinations.count,
+                              evidence.checkedCandidateCount == plannedPrimaryDestinations.count,
+                              evidence.escapingCandidate == nil else {
+                            throw ImportPlanningError.imageDestinationEscaped
+                        }
+                    case .cancelled:
+                        throw CancellationError()
                     }
-                case .cancelled:
-                    throw CancellationError()
-                }
-                try Task.checkCancellation()
-
-                let bundlePlanning = await preflightService.resolveBundleDestinations(
-                    bundleRequests,
-                    policy: conflictPolicy
-                )
-                let bundleEvidence: ImportPreflightService.BundlePlanningEvidence
-                switch bundlePlanning {
-                case .complete(let evidence):
-                    bundleEvidence = evidence
-                case .cancelled:
-                    throw CancellationError()
-                }
-                try Task.checkCancellation()
-                let isCurrentPlanningOperation = await MainActor.run {
-                    self.importRequestID == requestID
-                }
-                guard isCurrentPlanningOperation else { return }
-                guard bundleEvidence.requestedBundleCount == bundleRequests.count,
-                      bundleEvidence.completedBundleCount == bundleRequests.count else {
-                    throw ImportPlanningError.incompleteBundleEvidence
-                }
-
-                let bundleDestinations = Dictionary(
-                    uniqueKeysWithValues: bundleEvidence.destinations.map { ($0.id, $0) }
-                )
-                let memoDestinations = jobDrafts.compactMap { draft in
-                    draft.bundleRequestID.flatMap { bundleDestinations[$0]?.memo }
-                }
-                let memoContainment = await pathContainmentService.inspect(
-                    SafePathContainmentRequest(
-                        requestID: requestID,
-                        root: baseURL,
-                        candidates: memoDestinations
-                    )
-                )
-                switch memoContainment {
-                case .complete(let evidence):
-                    guard evidence.requestID == requestID,
-                          evidence.requestedCandidateCount == memoDestinations.count,
-                          evidence.checkedCandidateCount == memoDestinations.count,
-                          evidence.escapingCandidate == nil else {
-                        throw ImportPlanningError.voiceMemoDestinationEscaped
-                    }
-                case .cancelled:
-                    throw CancellationError()
-                }
-                try Task.checkCancellation()
-
-                var jobs: [ImportCopyService.CopyJob] = []
-                var companionParentBySource: [URL: URL] = [:]
-                var allFolders = initialFolders
-                var plannedMemoDestinations = Set<URL>()
-                for draft in jobDrafts {
                     try Task.checkCancellation()
-                    let bundle = draft.bundleRequestID.flatMap { bundleDestinations[$0] }
-                    if draft.bundleRequestID != nil, bundle == nil {
+
+                    let bundlePlanning = await preflightService.resolveBundleDestinations(
+                        plannedBundleRequests,
+                        policy: conflictPolicy
+                    )
+                    let bundleEvidence: ImportPreflightService.BundlePlanningEvidence
+                    switch bundlePlanning {
+                    case .complete(let evidence):
+                        bundleEvidence = evidence
+                    case .cancelled:
+                        throw CancellationError()
+                    }
+                    try Task.checkCancellation()
+                    let isCurrentPlanningOperation = await MainActor.run {
+                        self.importRequestID == requestID
+                    }
+                    guard isCurrentPlanningOperation else { return }
+                    guard bundleEvidence.requestedBundleCount == plannedBundleRequests.count,
+                          bundleEvidence.completedBundleCount == plannedBundleRequests.count else {
                         throw ImportPlanningError.incompleteBundleEvidence
                     }
-                    let imageJob = ImportCopyService.CopyJob(
-                        source: draft.source,
-                        desiredPrimaryDest: bundle?.image ?? draft.imageDestination,
-                        desiredBackupDest: bundle?.imageBackup ?? draft.imageBackupDestination,
-                        preflightSkipReason: bundle?.skipReason
-                    )
-                    jobs.append(imageJob)
 
-                    if let memoSource = draft.memoSource, let bundle {
-                        let canonicalMemoDestination = VoiceMemoAssociationService.canonicalURL(bundle.memo)
-                        // RAW and JPEG can share a destination folder when format subfolders are off.
-                        // In that layout one WAV represents the exposure; schedule its bytes once.
-                        if plannedMemoDestinations.insert(canonicalMemoDestination).inserted {
-                            jobs.append(ImportCopyService.CopyJob(
-                                source: memoSource,
-                                desiredPrimaryDest: bundle.memo,
-                                desiredBackupDest: bundle.memoBackup,
-                                preflightSkipReason: bundle.skipReason,
-                                prerequisiteJobID: imageJob.id
-                            ))
-                            companionParentBySource[memoSource] = draft.source
-                            allFolders.insert(bundle.memo.deletingLastPathComponent())
-                            if let memoBackup = bundle.memoBackup {
-                                allFolders.insert(memoBackup.deletingLastPathComponent())
+                    let bundleDestinations = Dictionary(
+                        uniqueKeysWithValues: bundleEvidence.destinations.map { ($0.id, $0) }
+                    )
+                    let memoDestinations = plannedJobDrafts.compactMap { draft in
+                        draft.bundleRequestID.flatMap { bundleDestinations[$0]?.memo }
+                    }
+                    let memoContainment = await pathContainmentService.inspect(
+                        SafePathContainmentRequest(
+                            requestID: requestID,
+                            root: baseURL,
+                            candidates: memoDestinations
+                        )
+                    )
+                    switch memoContainment {
+                    case .complete(let evidence):
+                        guard evidence.requestID == requestID,
+                              evidence.requestedCandidateCount == memoDestinations.count,
+                              evidence.checkedCandidateCount == memoDestinations.count,
+                              evidence.escapingCandidate == nil else {
+                            throw ImportPlanningError.voiceMemoDestinationEscaped
+                        }
+                    case .cancelled:
+                        throw CancellationError()
+                    }
+                    try Task.checkCancellation()
+
+                    var jobs: [ImportCopyService.CopyJob] = []
+                    var companionParentBySource: [URL: URL] = [:]
+                    var allFolders = initialFolders
+                    var plannedMemoDestinations = Set<URL>()
+                    for draft in plannedJobDrafts {
+                        try Task.checkCancellation()
+                        let bundle = draft.bundleRequestID.flatMap { bundleDestinations[$0] }
+                        if draft.bundleRequestID != nil, bundle == nil {
+                            throw ImportPlanningError.incompleteBundleEvidence
+                        }
+                        let imageJob = ImportCopyService.CopyJob(
+                            source: draft.source,
+                            desiredPrimaryDest: bundle?.image ?? draft.imageDestination,
+                            desiredBackupDest: bundle?.imageBackup ?? draft.imageBackupDestination,
+                            preflightSkipReason: bundle?.skipReason
+                        )
+                        jobs.append(imageJob)
+
+                        if let memoSource = draft.memoSource, let bundle {
+                            let canonicalMemoDestination = VoiceMemoAssociationService.canonicalURL(bundle.memo)
+                            // RAW and JPEG can share a destination folder when format subfolders are off.
+                            // In that layout one WAV represents the exposure; schedule its bytes once.
+                            if plannedMemoDestinations.insert(canonicalMemoDestination).inserted {
+                                jobs.append(ImportCopyService.CopyJob(
+                                    source: memoSource,
+                                    desiredPrimaryDest: bundle.memo,
+                                    desiredBackupDest: bundle.memoBackup,
+                                    preflightSkipReason: bundle.skipReason,
+                                    prerequisiteJobID: imageJob.id
+                                ))
+                                companionParentBySource[memoSource] = draft.source
+                                allFolders.insert(bundle.memo.deletingLastPathComponent())
+                                if let memoBackup = bundle.memoBackup {
+                                    allFolders.insert(memoBackup.deletingLastPathComponent())
+                                }
                             }
                         }
                     }
-                }
-                let preflightRequest = ImportPreflightService.Request(
-                    jobs: jobs,
-                    previousImportCandidates: previousImportCandidates,
-                    companionParentBySource: companionParentBySource,
-                    destinationBaseURL: baseURL,
-                    skipPreviouslyImported: skipPreviouslyImported,
-                    freezeOverwriteCollisions: conflictPolicy == .overwrite
-                )
-                if skipPreviouslyImported {
-                    await MainActor.run {
-                        guard self.importRequestID == requestID else { return }
-                        self.currentFile = "Checking same-date folders for duplicates…"
-                    }
-                }
-                let preflightResult = try await preflightService.prepare(preflightRequest)
-                let shouldBeginCopy = await MainActor.run {
-                    guard self.importRequestID == requestID else { return false }
-                    self.totalFiles = preflightResult.jobs.count
-
-                    if let overwrite = preflightResult.overwrite {
-                        guard self.confirmedOverwriteSignature == overwrite.signature else {
-                            self.confirmedOverwriteSignature = nil
-                            self.importPhase = .idle
-                            self.overwritePreflight = ImportOverwritePreflight(
-                                primaryCollisionCount: overwrite.primaryCollisionCount,
-                                backupCollisionCount: overwrite.backupCollisionCount,
-                                primaryRoot: baseURL,
-                                backupRoot: backupDestination?.url,
-                                signature: overwrite.signature
-                            )
-                            return false
-                        }
-                        // A confirmation is single-use and belongs to this exact collision set.
-                        self.confirmedOverwriteSignature = nil
-                        self.overwritePreflight = nil
-                    } else {
-                        self.confirmedOverwriteSignature = nil
-                        self.overwritePreflight = nil
-                    }
-
-                    return true
-                }
-                guard shouldBeginCopy else { return }
-                let jobsToRun = preflightResult.jobs
-
-                let didStartAccessingBackup = backupDestination?.url.startAccessingSecurityScopedResource() ?? false
-                defer {
-                    if didStartAccessingBackup {
-                        backupDestination?.url.stopAccessingSecurityScopedResource()
-                    }
-                }
-
-                if conflictPolicy == .overwrite {
-                    try ImportCopyService.validateOverwritePreflight(jobs: jobsToRun)
-                }
-
-                // The browser must never receive a folder URL before that folder exists.
-                // Freeze a deterministic directory batch and publish only after its
-                // serialized commit reports complete evidence. Cancellation or failure
-                // retains the exact durable prefix instead of implying a rollback.
-                var directoriesToPrepare = allFolders.sorted { $0.path < $1.path }
-                if !directoriesToPrepare.contains(folderToOpen) {
-                    directoriesToPrepare.append(folderToOpen)
-                }
-                let directoryResult = await directoryService.ensureDirectories(
-                    at: directoriesToPrepare
-                )
-                switch directoryResult {
-                case .complete(let committedDirectoryURLs):
-                    guard committedDirectoryURLs.count == directoriesToPrepare.count else {
-                        throw ImportDirectoryPreparationError.incompleteEvidence
-                    }
-                case .cancelled:
-                    throw CancellationError()
-                case .failed(_, let message):
-                    throw ImportDirectoryPreparationError.failed(message)
-                }
-                try Task.checkCancellation()
-                await MainActor.run {
-                    guard self.importRequestID == requestID else { return }
-                    NotificationCenter.default.post(name: .importStarted, object: folderToOpen)
-                }
-
-                let results = try await copyService.run(
-                    jobs: jobsToRun,
-                    conflictPolicy: conflictPolicy,
-                    verificationMode: verificationMode,
-                    verifyBackup: verifyBackup,
-                    progress: { [weak self] result in
+                    let preflightRequest = ImportPreflightService.Request(
+                        jobs: jobs,
+                        previousImportCandidates: plannedPreviousImportCandidates,
+                        companionParentBySource: companionParentBySource,
+                        destinationBaseURL: baseURL,
+                        skipPreviouslyImported: skipPreviouslyImported,
+                        freezeOverwriteCollisions: conflictPolicy == .overwrite
+                    )
+                    if skipPreviouslyImported {
                         await MainActor.run {
-                            guard self?.importRequestID == requestID else { return }
-                            self?.applyProgress(result)
+                            guard self.importRequestID == requestID else { return }
+                            self.currentFile = "Checking same-date folders for duplicates…"
                         }
                     }
-                )
-                try Task.checkCancellation()
-                // Persist only relationships whose image and memo both survived the primary copy
-                // and verification boundary. A missing or ambiguous destination is surfaced as an
-                // import failure rather than reconstructing a relationship from filenames later.
-                try VoiceMemoCompanionRepository().saveImportedAssociations(
-                    voiceMemoAssociationsToPersist,
-                    results: results
-                )
-                // Pull successful primary URLs (verified or verification disabled) for metadata pass.
-                let copiedURLs = results.compactMap { result in
-                    imageSources.contains(result.source) ? result.primaryURL : nil
-                }
-
-                if copiedURLs.isEmpty {
-                    await MainActor.run {
-                        guard self.importRequestID == requestID else { return }
-                        if self.skippedFiles > 0 {
-                            self.importPhase = .complete
-                            self.importSummary = self.buildImportSummary()
-                            self.recordCompletion(cancelled: false)
-                        } else if self.failedFiles > 0 || self.mismatchedFiles > 0 {
-                            self.importPhase = .complete
-                            self.importSummary = self.buildImportSummary()
-                            self.recordCompletion(cancelled: false)
-                        } else {
-                            self.importPhase = .failed("No files were imported.")
-                            self.errorMessage = "No files were imported."
-                        }
-                    }
-                    return
-                }
-
-                // Apply metadata if configured
-                if applyMetadata {
-                    let shouldApplyMetadata = await MainActor.run {
+                    let preflightResult = try await preflightService.prepare(preflightRequest)
+                    let shouldBeginCopy = await MainActor.run {
                         guard self.importRequestID == requestID else { return false }
-                        self.importPhase = .applyingMetadata
+                        self.totalFiles = preflightResult.jobs.count
+
+                        if let overwrite = preflightResult.overwrite {
+                            guard self.confirmedOverwriteSignature == overwrite.signature else {
+                                self.confirmedOverwriteSignature = nil
+                                self.importPhase = .idle
+                                self.overwritePreflight = ImportOverwritePreflight(
+                                    primaryCollisionCount: overwrite.primaryCollisionCount,
+                                    backupCollisionCount: overwrite.backupCollisionCount,
+                                    primaryRoot: baseURL,
+                                    backupRoot: backupDestination?.url,
+                                    signature: overwrite.signature
+                                )
+                                return false
+                            }
+                            // A confirmation is single-use and belongs to this exact collision set.
+                            self.confirmedOverwriteSignature = nil
+                            self.overwritePreflight = nil
+                        } else {
+                            self.confirmedOverwriteSignature = nil
+                            self.overwritePreflight = nil
+                        }
+
                         return true
                     }
-                    guard shouldApplyMetadata else { return }
+                    guard shouldBeginCopy else { return }
+                    let jobsToRun = preflightResult.jobs
 
-                    if processVariables {
-                        var sequenceNumber = 1
-                        for url in copiedURLs {
-                            try Task.checkCancellation()
-                            let resolved = await self.resolveMetadataForFile(url, metadata: metadata, interpolator: interpolator, sequenceIndex: sequenceNumber)
-                            sequenceNumber += 1
-                            let fields = await Self.buildMetadataFields(from: resolved)
-                            if !fields.isEmpty {
-                                try await self.writeEngine.writeFields(
-                                    fields,
-                                    to: [url],
-                                    structuredData: StructuredWriteData(
-                                        editorial: EditorialStructuredWriteData(metadata: resolved)
-                                    )
-                                )
+                    let backupSecurityScopeRequest = ImportExecutionSecurityScopeRequest(
+                        roots: [backupDestination?.url]
+                    )
+                    let plannedFolders = allFolders
+                    try await executionSecurityScopeService.withAccess(backupSecurityScopeRequest) {
+                        if conflictPolicy == .overwrite {
+                            try ImportCopyService.validateOverwritePreflight(jobs: jobsToRun)
+                        }
+
+                        // The browser must never receive a folder URL before that folder exists.
+                        // Freeze a deterministic directory batch and publish only after its
+                        // serialized commit reports complete evidence. Cancellation or failure
+                        // retains the exact durable prefix instead of implying a rollback.
+                        var directoriesToPrepare = plannedFolders.sorted { $0.path < $1.path }
+                        if !directoriesToPrepare.contains(folderToOpen) {
+                            directoriesToPrepare.append(folderToOpen)
+                        }
+                        let directoryResult = await directoryService.ensureDirectories(
+                            at: directoriesToPrepare
+                        )
+                        switch directoryResult {
+                        case .complete(let committedDirectoryURLs):
+                            guard committedDirectoryURLs.count == directoriesToPrepare.count else {
+                                throw ImportDirectoryPreparationError.incompleteEvidence
+                            }
+                        case .cancelled:
+                            throw CancellationError()
+                        case .failed(_, let message):
+                            throw ImportDirectoryPreparationError.failed(message)
+                        }
+                        try Task.checkCancellation()
+                        await MainActor.run {
+                            guard self.importRequestID == requestID else { return }
+                            NotificationCenter.default.post(name: .importStarted, object: folderToOpen)
+                        }
+
+                        let results = try await copyService.run(
+                            jobs: jobsToRun,
+                            conflictPolicy: conflictPolicy,
+                            verificationMode: verificationMode,
+                            verifyBackup: verifyBackup,
+                            progress: { [weak self] result in
+                                await MainActor.run {
+                                    guard self?.importRequestID == requestID else { return }
+                                    self?.applyProgress(result)
+                                }
+                            }
+                        )
+                        try Task.checkCancellation()
+                        // Persist only relationships whose image and memo both survived the primary copy
+                        // and verification boundary. A missing or ambiguous destination is surfaced as an
+                        // import failure rather than reconstructing a relationship from filenames later.
+                        try VoiceMemoCompanionRepository().saveImportedAssociations(
+                            voiceMemoAssociationsToPersist,
+                            results: results
+                        )
+                        // Pull successful primary URLs (verified or verification disabled) for metadata pass.
+                        let copiedURLs = results.compactMap { result in
+                            imageSources.contains(result.source) ? result.primaryURL : nil
+                        }
+
+                        if copiedURLs.isEmpty {
+                            await MainActor.run {
+                                guard self.importRequestID == requestID else { return }
+                                if self.skippedFiles > 0 {
+                                    self.importPhase = .complete
+                                    self.importSummary = self.buildImportSummary()
+                                    self.recordCompletion(cancelled: false)
+                                } else if self.failedFiles > 0 || self.mismatchedFiles > 0 {
+                                    self.importPhase = .complete
+                                    self.importSummary = self.buildImportSummary()
+                                    self.recordCompletion(cancelled: false)
+                                } else {
+                                    self.importPhase = .failed("No files were imported.")
+                                    self.errorMessage = "No files were imported."
+                                }
+                            }
+                            return
+                        }
+
+                        // Apply metadata if configured
+                        if applyMetadata {
+                            let shouldApplyMetadata = await MainActor.run {
+                                guard self.importRequestID == requestID else { return false }
+                                self.importPhase = .applyingMetadata
+                                return true
+                            }
+                            guard shouldApplyMetadata else { return }
+
+                            if processVariables {
+                                var sequenceNumber = 1
+                                for url in copiedURLs {
+                                    try Task.checkCancellation()
+                                    let resolved = await self.resolveMetadataForFile(url, metadata: metadata, interpolator: interpolator, sequenceIndex: sequenceNumber)
+                                    sequenceNumber += 1
+                                    let fields = await Self.buildMetadataFields(from: resolved)
+                                    if !fields.isEmpty {
+                                        try await self.writeEngine.writeFields(
+                                            fields,
+                                            to: [url],
+                                            structuredData: StructuredWriteData(
+                                                editorial: EditorialStructuredWriteData(metadata: resolved)
+                                            )
+                                        )
+                                    }
+                                }
+                            } else {
+                                let fields = await Self.buildMetadataFields(from: metadata)
+                                if !fields.isEmpty {
+                                    let batchSize = 20
+                                    for batchStart in stride(from: 0, to: copiedURLs.count, by: batchSize) {
+                                        try Task.checkCancellation()
+                                        let batchEnd = min(batchStart + batchSize, copiedURLs.count)
+                                        let batch = Array(copiedURLs[batchStart..<batchEnd])
+                                        try await self.writeEngine.writeFields(
+                                            fields,
+                                            to: batch,
+                                            structuredData: StructuredWriteData(
+                                                editorial: EditorialStructuredWriteData(metadata: metadata)
+                                            )
+                                        )
+                                    }
+                                }
                             }
                         }
-                    } else {
-                        let fields = await Self.buildMetadataFields(from: metadata)
-                        if !fields.isEmpty {
-                            let batchSize = 20
-                            for batchStart in stride(from: 0, to: copiedURLs.count, by: batchSize) {
-                                try Task.checkCancellation()
-                                let batchEnd = min(batchStart + batchSize, copiedURLs.count)
-                                let batch = Array(copiedURLs[batchStart..<batchEnd])
-                                try await self.writeEngine.writeFields(
-                                    fields,
-                                    to: batch,
-                                    structuredData: StructuredWriteData(
-                                        editorial: EditorialStructuredWriteData(metadata: metadata)
-                                    )
-                                )
-                            }
+
+                        await MainActor.run {
+                            guard self.importRequestID == requestID else { return }
+                            self.importPhase = .complete
+                            self.importSummary = self.buildImportSummary()
+                            importLog.info("Import complete: \(self.importSummary)")
+                            self.recordCompletion(cancelled: false)
+                            NotificationCenter.default.post(name: .importCompleted, object: destURL)
                         }
                     }
-                }
-
-                await MainActor.run {
-                    guard self.importRequestID == requestID else { return }
-                    self.importPhase = .complete
-                    self.importSummary = self.buildImportSummary()
-                    importLog.info("Import complete: \(self.importSummary)")
-                    self.recordCompletion(cancelled: false)
-                    NotificationCenter.default.post(name: .importCompleted, object: destURL)
                 }
             } catch is CancellationError {
                 await MainActor.run {

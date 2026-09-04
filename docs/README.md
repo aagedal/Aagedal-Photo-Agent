@@ -708,6 +708,15 @@ prefix before returning. Four new characterizations, the focused 24-test RAW arc
 serial unfiltered 2,008-test run passed. The audit remains 66 of 75 while other lower-priority direct/cached-model
 paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [import execution security-scope continuation](plan-status-import-execution-security-scope-continuation-2026-09-04.md)
+moves primary source, optional voice-memo source, destination, and optional backup access lifetimes behind a
+serialized actor-owned lease. Roots are standardized and deduplicated per phase, only successful optional claims are
+released, cancellation during a non-preemptible access releases the exact successful prefix, and every normal,
+early-return, cancellation, or failure exit releases in reverse order. Five new characterizations, the focused
+34-test import selection, repository gate, and serial unfiltered 2,013-test run passed. The audit remains 66 of 75
+while other lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence
+stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

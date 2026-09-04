@@ -1242,6 +1242,17 @@ source contract. The focused 24-test RAW archive suite, repository gate, and ser
 Other lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence remain
 open. ([validation](plan-status-raw-archive-security-scope-continuation-2026-09-04.md))
 
+**Import execution security-scope follow-up (2026-09-04):** primary-source, optional voice-memo-source,
+destination, and optional backup access lifetimes now cross one serialized actor-owned lease instead of being
+managed directly by the detached import orchestration. Immutable requests standardize and deduplicate roots per
+phase, unavailable optional claims preserve the existing permissive behavior, and cancellation during a synchronous
+access call releases the exact successful prefix before any import work runs. The initial lease spans planning
+through optional metadata writes; the backup lease still begins only after overwrite confirmation. Every normal,
+early-return, cancellation, or failure exit releases successful claims in reverse order. Five new characterizations,
+the focused 34-test import selection, repository gate, and serial unfiltered 2,013-test run passed. Other lower-
+priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-import-execution-security-scope-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

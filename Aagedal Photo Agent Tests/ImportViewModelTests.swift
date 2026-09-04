@@ -407,6 +407,192 @@ struct ImportPreflightServiceTests {
     }
 }
 
+@Suite("Import execution security scopes")
+struct ImportExecutionSecurityScopeServiceTests {
+    @MainActor
+    @Test("Import execution scopes are deduplicated, balanced, and off MainActor")
+    func scopesAreBalancedOffMainActor() async throws {
+        let source = URL(fileURLWithPath: "/Volumes/Source", isDirectory: true)
+        let destination = URL(fileURLWithPath: "/Volumes/Destination", isDirectory: true)
+        let probe = ImportExecutionSecurityScopeProbe(unavailableURL: destination)
+        let service = ImportExecutionSecurityScopeService(
+            access: ImportExecutionSecurityScopeAccess(
+                start: probe.start,
+                stop: probe.stop
+            ),
+            cancellationRequested: { false }
+        )
+        let request = ImportExecutionSecurityScopeRequest(
+            roots: [source, destination, source]
+        )
+
+        let acquisition = await service.acquire(request)
+        let claim: ImportExecutionSecurityScopeClaim
+        if case .acquired(let acquiredClaim) = acquisition {
+            claim = acquiredClaim
+        } else {
+            Issue.record("Expected a complete import security-scope acquisition")
+            return
+        }
+
+        #expect(claim.roots == [source, destination])
+        #expect(claim.startedRoots == [source])
+        let release = await service.release(claim)
+        #expect(release.releasedRoots == [source])
+        #expect(probe.startedURLs == [source, destination])
+        #expect(probe.stoppedURLs == [source])
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Cancellation during import scope acquisition releases the successful prefix")
+    func cancellationReleasesSuccessfulPrefix() async {
+        let source = URL(fileURLWithPath: "/Volumes/Source", isDirectory: true)
+        let voiceMemos = URL(fileURLWithPath: "/Volumes/VoiceMemos", isDirectory: true)
+        let destination = URL(fileURLWithPath: "/Volumes/Destination", isDirectory: true)
+        let probe = ImportExecutionSecurityScopeProbe(cancelAfterFirstStart: true)
+        let service = ImportExecutionSecurityScopeService(
+            access: ImportExecutionSecurityScopeAccess(
+                start: probe.start,
+                stop: probe.stop
+            ),
+            cancellationRequested: { probe.isCancellationRequested }
+        )
+        let request = ImportExecutionSecurityScopeRequest(
+            roots: [source, voiceMemos, destination]
+        )
+
+        let result = await service.acquire(request)
+
+        #expect(result == .cancelledAfterAccess(
+            requestID: request.requestID,
+            inspectedRootCount: 1,
+            releasedStartedRoots: [source]
+        ))
+        #expect(probe.startedURLs == [source])
+        #expect(probe.stoppedURLs == [source])
+    }
+
+    @Test("Import scope operation releases successful claims in reverse order")
+    func operationReleasesInReverseOrder() async throws {
+        let source = URL(fileURLWithPath: "/Volumes/Source", isDirectory: true)
+        let voiceMemos = URL(fileURLWithPath: "/Volumes/VoiceMemos", isDirectory: true)
+        let destination = URL(fileURLWithPath: "/Volumes/Destination", isDirectory: true)
+        let probe = ImportExecutionSecurityScopeProbe()
+        let service = ImportExecutionSecurityScopeService(
+            access: ImportExecutionSecurityScopeAccess(
+                start: probe.start,
+                stop: probe.stop
+            ),
+            cancellationRequested: { false }
+        )
+
+        let value = try await service.withAccess(ImportExecutionSecurityScopeRequest(
+            roots: [source, voiceMemos, destination]
+        )) {
+            42
+        }
+
+        #expect(value == 42)
+        #expect(probe.startedURLs == [source, voiceMemos, destination])
+        #expect(probe.stoppedURLs == [destination, voiceMemos, source])
+    }
+
+    @Test("Import scope operation releases claims when its work throws")
+    func operationFailureStillReleases() async {
+        let source = URL(fileURLWithPath: "/Volumes/Source", isDirectory: true)
+        let destination = URL(fileURLWithPath: "/Volumes/Destination", isDirectory: true)
+        let probe = ImportExecutionSecurityScopeProbe()
+        let service = ImportExecutionSecurityScopeService(
+            access: ImportExecutionSecurityScopeAccess(
+                start: probe.start,
+                stop: probe.stop
+            ),
+            cancellationRequested: { false }
+        )
+
+        do {
+            let _: Int = try await service.withAccess(ImportExecutionSecurityScopeRequest(
+                roots: [source, destination]
+            )) {
+                throw CancellationError()
+            }
+            Issue.record("Expected the import operation to throw")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            Issue.record("Expected CancellationError, received \(error)")
+        }
+
+        #expect(probe.stoppedURLs == [destination, source])
+    }
+
+    @Test("Import execution delegates all security-scope ownership to the actor")
+    func sourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/ImportViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        let functionStart = try #require(source.range(of: "    func startImport()"))
+        let functionEnd = try #require(source.range(
+            of: "    /// Cancel a running import.",
+            range: functionStart.upperBound..<source.endIndex
+        ))
+        let functionSource = String(source[functionStart.lowerBound..<functionEnd.lowerBound])
+
+        #expect(functionSource.contains(
+            "executionSecurityScopeService.withAccess(initialSecurityScopeRequest)"
+        ))
+        #expect(functionSource.contains(
+            "executionSecurityScopeService.withAccess(backupSecurityScopeRequest)"
+        ))
+        #expect(!functionSource.contains("startAccessingSecurityScopedResource"))
+        #expect(!functionSource.contains("stopAccessingSecurityScopedResource"))
+    }
+}
+
+private nonisolated final class ImportExecutionSecurityScopeProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let unavailableURL: URL?
+    private let cancelAfterFirstStart: Bool
+    private var starts: [URL] = []
+    private var stops: [URL] = []
+    private var observedMainThread = false
+    private var cancellationRequested = false
+
+    init(unavailableURL: URL? = nil, cancelAfterFirstStart: Bool = false) {
+        self.unavailableURL = unavailableURL
+        self.cancelAfterFirstStart = cancelAfterFirstStart
+    }
+
+    func start(_ url: URL) -> Bool {
+        lock.withLock {
+            starts.append(url)
+            observedMainThread = observedMainThread || Thread.isMainThread
+            if cancelAfterFirstStart, starts.count == 1 {
+                cancellationRequested = true
+            }
+        }
+        return url != unavailableURL
+    }
+
+    func stop(_ url: URL) {
+        lock.withLock {
+            stops.append(url)
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+    }
+
+    var startedURLs: [URL] { lock.withLock { starts } }
+    var stoppedURLs: [URL] { lock.withLock { stops } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+    var isCancellationRequested: Bool { lock.withLock { cancellationRequested } }
+}
+
 @Suite("Import source discovery")
 struct ImportSourceDiscoveryServiceTests {
     @Test("Discovery progress uses a five-second production cadence")
@@ -1985,7 +2171,8 @@ struct SafeImportPathTests {
         )
 
         #expect(importSource.contains("await pathContainmentService.inspect("))
-        #expect(importSource.contains("candidates: primaryDestinations"))
+        #expect(importSource.contains("let plannedPrimaryDestinations = primaryDestinations"))
+        #expect(importSource.contains("candidates: plannedPrimaryDestinations"))
         #expect(importSource.contains("candidates: memoDestinations"))
         #expect(!importSource.contains("SafePathComponent.isContained(primaryURL"))
         #expect(!importSource.contains("SafePathComponent.isContained(bundle.memo"))
