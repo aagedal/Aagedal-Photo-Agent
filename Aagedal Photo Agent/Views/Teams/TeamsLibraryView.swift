@@ -509,10 +509,19 @@ private struct TeamEditorView: View {
         panel.title = "Export Roster PDF"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        let pdf = RosterPDFExporter.makePDF(for: team, exportedOn: Date()) { id in
-            KnownPeopleService.shared.loadThumbnail(for: id)
+        Task {
+            var thumbnails: [UUID: NSImage] = [:]
+            for personID in Set(team.roster.compactMap(\.knownPersonID)) {
+                try Task.checkCancellation()
+                if let image = await KnownPeopleService.shared.loadThumbnail(for: personID) {
+                    thumbnails[personID] = image
+                }
+            }
+            let pdf = RosterPDFExporter.makePDF(for: team, exportedOn: Date()) { id in
+                thumbnails[id]
+            }
+            startExport(data: pdf, to: url)
         }
-        startExport(data: pdf, to: url)
     }
 
     /// Export the roster as a plain-text list, one "<number> <name>" per line —
@@ -623,7 +632,7 @@ private struct LinkedFaceThumbnail: View {
         .background(RoundedRectangle(cornerRadius: 7).fill(.quaternary))
         .help("Linked known person's face")
         .task(id: personID) {
-            image = KnownPeopleService.shared.loadThumbnail(for: personID)
+            image = await KnownPeopleService.shared.loadThumbnail(for: personID)
         }
     }
 }

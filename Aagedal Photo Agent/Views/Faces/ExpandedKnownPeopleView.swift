@@ -520,13 +520,14 @@ struct PersonListRow: View {
         .padding(.vertical, 6)
         .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
         .contentShape(Rectangle())
-        .onAppear {
-            loadThumbnail()
-        }
+        .task(id: person.id) { await loadThumbnail() }
     }
 
-    private func loadThumbnail() {
-        thumbnail = KnownPeopleService.shared.loadThumbnail(for: person.id)
+    private func loadThumbnail() async {
+        let personID = person.id
+        let loaded = await KnownPeopleService.shared.loadThumbnail(for: personID)
+        guard person.id == personID, !Task.isCancelled else { return }
+        thumbnail = loaded
     }
 }
 
@@ -629,12 +630,7 @@ struct PersonContactCard: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 24)
         }
-        .onAppear {
-            loadThumbnail()
-        }
-        .onChange(of: person.id) {
-            loadThumbnail()
-        }
+        .task(id: person.id) { await loadThumbnail() }
     }
 
     private var sourceFilesCount: String {
@@ -642,32 +638,54 @@ struct PersonContactCard: View {
         return "\(uniqueSources.count)"
     }
 
-    private func loadThumbnail() {
-        thumbnail = KnownPeopleService.shared.loadThumbnail(for: person.id)
+    private func loadThumbnail() async {
+        let personID = person.id
+        let loaded = await KnownPeopleService.shared.loadThumbnail(for: personID)
+        guard person.id == personID, !Task.isCancelled else { return }
+        thumbnail = loaded
     }
 
     private func deleteEmbedding(_ embeddingID: UUID) {
-        do {
-            try KnownPeopleService.shared.removeEmbedding(embeddingID, fromPersonID: person.id)
-        } catch {
-            knownPeopleViewLog.error("Failed to delete embedding: \(error.localizedDescription, privacy: .private)")
+        let personID = person.id
+        Task {
+            do {
+                try await KnownPeopleService.shared.removeEmbedding(
+                    embeddingID,
+                    fromPersonID: personID
+                )
+            } catch {
+                knownPeopleViewLog.error("Failed to delete embedding: \(error.localizedDescription, privacy: .private)")
+            }
         }
     }
 
     private func setRepresentative(_ embeddingID: UUID) {
-        do {
-            var updated = person
-            updated.representativeThumbnailID = embeddingID
-            // Update person thumbnail from embedding thumbnail
-            if let embThumb = KnownPeopleService.shared.loadEmbeddingThumbnail(for: embeddingID),
-               let tiffData = embThumb.tiffRepresentation,
-               let bitmap = NSBitmapImageRep(data: tiffData),
-               let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
-                try KnownPeopleService.shared.replaceThumbnail(for: person.id, newThumbnailData: jpegData)
+        let personID = person.id
+        Task {
+            do {
+                let embeddingThumbnail = await KnownPeopleService.shared.loadEmbeddingThumbnail(
+                    for: embeddingID
+                )
+                guard person.id == personID, !Task.isCancelled else { return }
+                var updated = person
+                updated.representativeThumbnailID = embeddingID
+                if let embeddingThumbnail,
+                   let tiffData = embeddingThumbnail.tiffRepresentation,
+                   let bitmap = NSBitmapImageRep(data: tiffData),
+                   let jpegData = bitmap.representation(
+                    using: .jpeg,
+                    properties: [.compressionFactor: 0.85]
+                   ) {
+                    try KnownPeopleService.shared.replaceThumbnail(
+                        for: personID,
+                        newThumbnailData: jpegData
+                    )
+                }
+                try KnownPeopleService.shared.updatePerson(updated)
+                await loadThumbnail()
+            } catch {
+                knownPeopleViewLog.error("Failed to set representative: \(error.localizedDescription, privacy: .private)")
             }
-            try KnownPeopleService.shared.updatePerson(updated)
-        } catch {
-            knownPeopleViewLog.error("Failed to set representative: \(error.localizedDescription, privacy: .private)")
         }
     }
 }

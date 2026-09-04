@@ -237,16 +237,14 @@ struct KnownPersonRow: View {
             Spacer()
         }
         .padding(.vertical, 4)
-        .onAppear {
-            loadThumbnail()
-        }
-        .onChange(of: person.updatedAt) { _, _ in
-            loadThumbnail()
-        }
+        .task(id: person.updatedAt) { await loadThumbnail() }
     }
 
-    private func loadThumbnail() {
-        thumbnail = KnownPeopleService.shared.loadThumbnail(for: person.id)
+    private func loadThumbnail() async {
+        let personID = person.id
+        let loaded = await KnownPeopleService.shared.loadThumbnail(for: personID)
+        guard person.id == personID, !Task.isCancelled else { return }
+        thumbnail = loaded
     }
 }
 
@@ -366,23 +364,22 @@ struct KnownPersonDetailView: View {
             .background(.bar)
         }
         .onAppear {
-            loadThumbnail()
             resetFields()
         }
         .onChange(of: person.id) {
-            loadThumbnail()
             resetFields()
         }
-        .onChange(of: person.updatedAt) { _, _ in
-            loadThumbnail()
-        }
+        .task(id: person.updatedAt) { await loadThumbnail() }
         .onChange(of: editedName) { checkForChanges() }
         .onChange(of: editedRole) { checkForChanges() }
         .onChange(of: editedNotes) { checkForChanges() }
     }
 
-    private func loadThumbnail() {
-        thumbnail = KnownPeopleService.shared.loadThumbnail(for: person.id)
+    private func loadThumbnail() async {
+        let personID = person.id
+        let loaded = await KnownPeopleService.shared.loadThumbnail(for: personID)
+        guard person.id == personID, !Task.isCancelled else { return }
+        thumbnail = loaded
     }
 
     private func resetFields() {

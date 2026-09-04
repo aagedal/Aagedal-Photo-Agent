@@ -637,6 +637,14 @@ the focused 39-test Watermark/iCloud selection, repository gate, and serial unfi
 audit remains 66 of 75 while other direct/cached-model paths and real-volume/signpost/Thread Performance Checker
 evidence stay open.
 
+The latest [Known People thumbnail cache continuation](plan-status-known-people-thumbnail-cache-continuation-2026-09-04.md)
+moves person and embedding JPEG reads out of synchronous SwiftUI/MainActor presentation and behind one serialized,
+cancellation-aware actor. Bounded caches, storage revision, and request identity prevent obsolete local/iCloud or
+remote content from publishing; the affected Known People screens and roster PDF export now await immutable data
+and render from memory. Two new characterizations, the focused 43-test Known People/iCloud/roster selection,
+repository gate, and serial unfiltered 1,979-test run passed. The audit remains 66 of 75 while other lower-priority
+direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

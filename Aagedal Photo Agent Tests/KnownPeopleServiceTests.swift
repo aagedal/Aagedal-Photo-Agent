@@ -92,6 +92,74 @@ struct KnownPeopleServiceTests {
         dir.appendingPathComponent("people/\(id.uuidString).deleted")
     }
 
+    @Test("Known People thumbnail reads run off MainActor with explicit cancellation evidence")
+    func thumbnailReadBoundary() async throws {
+        let fileURL = URL(fileURLWithPath: "/known-people/thumbnails/person.jpg")
+        let expected = Data("thumbnail".utf8)
+        let probe = KnownPeopleThumbnailReadProbe(data: expected)
+        let service = KnownPeopleThumbnailLoadService(access: KnownPeopleThumbnailFileAccess(
+            readData: { probe.read($0) }
+        ))
+        let requestID = UUID()
+
+        let result = await service.load(fileURL: fileURL, requestID: requestID)
+        #expect(result == .loaded(KnownPeopleThumbnailLoadSnapshot(
+            requestID: requestID,
+            fileURL: fileURL,
+            data: expected
+        )))
+        #expect(probe.urls == [fileURL])
+        #expect(!probe.observedMainThread)
+
+        let cancelledID = UUID()
+        let cancelled = Task {
+            await service.load(fileURL: fileURL, requestID: cancelledID)
+        }
+        cancelled.cancel()
+        #expect(await cancelled.value == .cancelledBeforeRead(
+            requestID: cancelledID,
+            fileURL: fileURL
+        ))
+        #expect(probe.urls == [fileURL])
+    }
+
+    @Test("Known People synchronous thumbnail presentation is cache-only")
+    func thumbnailPresentationSourceContract() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let serviceSource = try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("Aagedal Photo Agent/Services/KnownPeopleService.swift"),
+            encoding: .utf8
+        )
+        let cacheStart = try #require(serviceSource.range(of: "func cachedThumbnail(for personID: UUID)"))
+        let asyncStart = try #require(serviceSource.range(
+            of: "func loadThumbnail(for personID: UUID) async",
+            range: cacheStart.lowerBound..<serviceSource.endIndex
+        ))
+        let cachedFunction = serviceSource[cacheStart.lowerBound..<asyncStart.lowerBound]
+        #expect(!cachedFunction.contains("CloudCoordinatedIO"))
+        #expect(!cachedFunction.contains("Data(contentsOf:"))
+
+        for relativePath in [
+            "Aagedal Photo Agent/Views/Faces/PersonEditSidebar.swift",
+            "Aagedal Photo Agent/Views/Faces/KnownPeopleListView.swift",
+            "Aagedal Photo Agent/Views/Faces/ExpandedKnownPeopleView.swift",
+            "Aagedal Photo Agent/Views/Faces/ExpandedFaceManagementView.swift",
+            "Aagedal Photo Agent/Views/Faces/EmbeddingGridView.swift",
+            "Aagedal Photo Agent/Views/Teams/TeamsLibraryView.swift"
+        ] {
+            let source = try String(
+                contentsOf: repositoryRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            #expect(!source.contains("= KnownPeopleService.shared.loadThumbnail(for:"))
+            #expect(!source.contains("if let thumbnail = KnownPeopleService.shared.loadThumbnail(for:"))
+            #expect(!source.contains("if let image = KnownPeopleService.shared.loadEmbeddingThumbnail(for:"))
+        }
+    }
+
     // MARK: - 1. Migration idempotency
 
     @Test("Legacy database.json migrates to per-person files, idempotently")
@@ -420,5 +488,36 @@ struct KnownPeopleServiceTests {
         #expect(decoded.notes == original.notes)
         #expect(decoded.embeddings.map(\.id) == original.embeddings.map(\.id))
         #expect(decoded.embeddings.map(\.featurePrintData) == original.embeddings.map(\.featurePrintData))
+    }
+}
+
+private nonisolated final class KnownPeopleThumbnailReadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let data: Data
+    private var storedURLs: [URL] = []
+    private var storedObservedMainThread = false
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func read(_ url: URL) -> Data? {
+        lock.lock()
+        storedURLs.append(url)
+        storedObservedMainThread = storedObservedMainThread || Thread.isMainThread
+        lock.unlock()
+        return data
+    }
+
+    var urls: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedURLs
+    }
+
+    var observedMainThread: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedObservedMainThread
     }
 }

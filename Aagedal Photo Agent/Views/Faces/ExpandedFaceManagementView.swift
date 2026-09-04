@@ -1683,18 +1683,7 @@ struct ReplaceThumbnailCard: View {
             }
             .padding()
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-            .onAppear {
-                loadThumbnails()
-            }
-            .onChange(of: viewModel.selectedThumbnailReplacementFaceID) { _, _ in
-                loadThumbnails()
-            }
-            .onChange(of: groupID) { _, _ in
-                loadThumbnails()
-            }
-            .onChange(of: personID) { _, _ in
-                loadThumbnails()
-            }
+            .task(id: thumbnailRequestIdentity) { await loadThumbnails() }
         }
     }
 
@@ -1718,16 +1707,22 @@ struct ReplaceThumbnailCard: View {
         )
     }
 
-    private func loadThumbnails() {
-        // Load current thumbnail from Known People database
-        currentThumbnail = KnownPeopleService.shared.loadThumbnail(for: personID)
+    private var thumbnailRequestIdentity: String {
+        "\(personID.uuidString)#\(groupID.uuidString)#\(viewModel.selectedThumbnailReplacementFaceID?.uuidString ?? "default")"
+    }
 
+    private func loadThumbnails() async {
+        let requestedPersonID = personID
+        let requestedIdentity = thumbnailRequestIdentity
         // Load new thumbnail from current scan
         if let faceID = viewModel.selectedThumbnailReplacementFaceID ?? group?.representativeFaceID {
             newThumbnail = viewModel.thumbnailImage(for: faceID)
         } else {
             newThumbnail = nil
         }
+        let loaded = await KnownPeopleService.shared.loadThumbnail(for: requestedPersonID)
+        guard requestedIdentity == thumbnailRequestIdentity, !Task.isCancelled else { return }
+        currentThumbnail = loaded
     }
 
     private func replaceThumbnail() {
@@ -1844,6 +1839,7 @@ struct SuggestionRow: View {
 struct KnownPersonSuggestionRow: View {
     let suggestion: KnownPersonSuggestion
     @Bindable var viewModel: FaceRecognitionViewModel
+    @State private var knownPersonThumbnail: NSImage?
 
     private var group: FaceGroup? {
         viewModel.group(byID: suggestion.groupID)
@@ -1898,6 +1894,11 @@ struct KnownPersonSuggestionRow: View {
         }
         .padding(8)
         .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+        .task(id: suggestion.personID) {
+            knownPersonThumbnail = await KnownPeopleService.shared.loadThumbnail(
+                for: suggestion.personID
+            )
+        }
     }
 
     @ViewBuilder
@@ -1925,7 +1926,7 @@ struct KnownPersonSuggestionRow: View {
     @ViewBuilder
     private var knownPersonPreview: some View {
         VStack(spacing: 4) {
-            if let thumbnail = KnownPeopleService.shared.loadThumbnail(for: suggestion.personID) {
+            if let thumbnail = knownPersonThumbnail {
                 Image(nsImage: thumbnail)
                     .resizable()
                     .aspectRatio(contentMode: .fill)

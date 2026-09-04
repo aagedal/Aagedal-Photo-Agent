@@ -1,12 +1,72 @@
 import Foundation
 import Vision
 import AppKit
+import os
 import os.log
 
 private let knownPeopleLog = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent",
     category: "KnownPeopleService"
 )
+
+nonisolated struct KnownPeopleThumbnailLoadSnapshot: Sendable, Equatable {
+    let requestID: UUID
+    let fileURL: URL
+    let data: Data?
+}
+
+nonisolated enum KnownPeopleThumbnailLoadResult: Sendable, Equatable {
+    case loaded(KnownPeopleThumbnailLoadSnapshot)
+    case cancelledBeforeRead(requestID: UUID, fileURL: URL)
+    case cancelledAfterRead(requestID: UUID, fileURL: URL)
+}
+
+nonisolated struct KnownPeopleThumbnailFileAccess: Sendable {
+    let readData: @Sendable (URL) -> Data?
+
+    static let system = KnownPeopleThumbnailFileAccess { url in
+        try? CloudCoordinatedIO.readData(at: url)
+    }
+}
+
+/// Serializes coordinated Known People thumbnail reads away from MainActor. The underlying
+/// Foundation/iCloud read cannot be interrupted once entered, so cancellation is sampled on both
+/// sides and callers publish only a complete snapshot for their current storage revision.
+actor KnownPeopleThumbnailLoadService {
+    static let shared = KnownPeopleThumbnailLoadService()
+
+    private let access: KnownPeopleThumbnailFileAccess
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "KnownPeopleThumbnailLoad"
+    )
+
+    init(access: KnownPeopleThumbnailFileAccess = .system) {
+        self.access = access
+    }
+
+    func load(fileURL: URL, requestID: UUID) -> KnownPeopleThumbnailLoadResult {
+        let interval = signposter.beginInterval(
+            "Read",
+            id: signposter.makeSignpostID()
+        )
+        guard !Task.isCancelled else {
+            signposter.endInterval("Read", interval, "result=cancelled stage=before-read")
+            return .cancelledBeforeRead(requestID: requestID, fileURL: fileURL)
+        }
+        let data = access.readData(fileURL)
+        guard !Task.isCancelled else {
+            signposter.endInterval("Read", interval, "result=cancelled stage=after-read")
+            return .cancelledAfterRead(requestID: requestID, fileURL: fileURL)
+        }
+        signposter.endInterval("Read", interval, "result=complete found=\(data != nil)")
+        return .loaded(KnownPeopleThumbnailLoadSnapshot(
+            requestID: requestID,
+            fileURL: fileURL,
+            data: data
+        ))
+    }
+}
 
 /// File operations used by the one-shot embedding-space migration. Keeping the
 /// whole transaction behind one seam lets tests prove that backup verification
@@ -108,6 +168,12 @@ final class KnownPeopleService {
     /// on every access — and these accessors are hit per-cell in the face grids.
     /// Cleared by `reloadAfterStorageChange()` when the backing store toggles.
     private var cachedDirectory: URL?
+    private var storageRevision: UInt64 = 0
+    private let thumbnailLoader: KnownPeopleThumbnailLoadService
+
+    init(thumbnailLoader: KnownPeopleThumbnailLoadService = .shared) {
+        self.thumbnailLoader = thumbnailLoader
+    }
 
     private var knownPeopleDirectory: URL {
         if let cached = cachedDirectory { return cached }
@@ -136,10 +202,12 @@ final class KnownPeopleService {
     /// Drops all in-memory state so the next access re-reads from disk. Called
     /// after the backing directory changes (iCloud sync toggled on/off).
     func reloadAfterStorageChange(resolvedStorageURL: URL? = nil) {
+        storageRevision &+= 1
         cachedDirectory = resolvedStorageURL
         database = nil
         peopleIndex = [:]
         featurePrintCache.removeAllObjects()
+        personThumbnailCache.removeAllObjects()
         embeddingThumbnailCache.removeAllObjects()
         _ = loadDatabase()
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
@@ -237,6 +305,13 @@ final class KnownPeopleService {
         let cache = NSCache<NSUUID, NSImage>()
         cache.countLimit = 500
         cache.totalCostLimit = 5 * 1024 * 1024 // 5 MB
+        return cache
+    }()
+
+    private let personThumbnailCache: NSCache<NSUUID, NSImage> = {
+        let cache = NSCache<NSUUID, NSImage>()
+        cache.countLimit = 500
+        cache.totalCostLimit = 20 * 1024 * 1024
         return cache
     }()
 
@@ -527,6 +602,21 @@ final class KnownPeopleService {
             guard !shouldSkipRemoteReload(path: url.path, contentChangeDate: change.contentChangeDate) else { continue }
             guard let personID = personID(fromFileURL: url) else { continue }
 
+            if url.pathExtension.lowercased() == "jpg" {
+                switch url.deletingLastPathComponent().lastPathComponent {
+                case "thumbnails":
+                    personThumbnailCache.removeObject(forKey: personID as NSUUID)
+                case "embedding_thumbnails":
+                    embeddingThumbnailCache.removeObject(forKey: personID as NSUUID)
+                default:
+                    continue
+                }
+                // Reject a read that began against the previous thumbnail contents.
+                storageRevision &+= 1
+                didChange = true
+                continue
+            }
+
             if url.pathExtension == "deleted" {
                 // A peer deleted this person — drop it and clean its file.
                 if db.people.contains(where: { $0.id == personID }) {
@@ -576,18 +666,40 @@ final class KnownPeopleService {
 
     // MARK: - Thumbnails
 
-    func loadThumbnail(for personID: UUID) -> NSImage? {
-        let url = thumbnailURL(for: personID)
-        guard let data = try? CloudCoordinatedIO.readData(at: url) else { return nil }
-        return NSImage(data: data)
+    func cachedThumbnail(for personID: UUID) -> NSImage? {
+        personThumbnailCache.object(forKey: personID as NSUUID)
+    }
+
+    func loadThumbnail(for personID: UUID) async -> NSImage? {
+        if let cached = cachedThumbnail(for: personID) { return cached }
+        guard let request = await thumbnailReadRequest(
+            itemID: personID,
+            directoryName: "thumbnails"
+        ) else { return nil }
+        guard case .loaded(let snapshot) = await thumbnailLoader.load(
+            fileURL: request.fileURL,
+            requestID: request.requestID
+        ), request.storageRevision == storageRevision,
+           snapshot.requestID == request.requestID,
+           snapshot.fileURL == request.fileURL,
+           let data = snapshot.data,
+           let image = NSImage(data: data) else { return nil }
+        personThumbnailCache.setObject(image, forKey: personID as NSUUID, cost: data.count)
+        return image
     }
 
     func saveThumbnail(_ imageData: Data, for personID: UUID) throws {
         let url = thumbnailURL(for: personID)
         try CloudCoordinatedIO.writeData(imageData, to: url)
+        if let image = NSImage(data: imageData) {
+            personThumbnailCache.setObject(image, forKey: personID as NSUUID, cost: imageData.count)
+        } else {
+            personThumbnailCache.removeObject(forKey: personID as NSUUID)
+        }
     }
 
     private func deleteThumbnail(for personID: UUID) {
+        personThumbnailCache.removeObject(forKey: personID as NSUUID)
         let url = thumbnailURL(for: personID)
         do {
             try CloudCoordinatedIO.removeItem(at: url)
@@ -601,6 +713,11 @@ final class KnownPeopleService {
     func saveEmbeddingThumbnail(_ imageData: Data, for embeddingID: UUID) throws {
         let url = embeddingThumbnailURL(for: embeddingID)
         try CloudCoordinatedIO.writeData(imageData, to: url)
+        if let image = NSImage(data: imageData) {
+            embeddingThumbnailCache.setObject(image, forKey: embeddingID as NSUUID, cost: imageData.count)
+        } else {
+            embeddingThumbnailCache.removeObject(forKey: embeddingID as NSUUID)
+        }
     }
 
     func saveEmbeddingThumbnails(_ thumbnails: [UUID: Data]) throws {
@@ -609,18 +726,66 @@ final class KnownPeopleService {
         }
     }
 
-    func loadEmbeddingThumbnail(for embeddingID: UUID) -> NSImage? {
+    func cachedEmbeddingThumbnail(for embeddingID: UUID) -> NSImage? {
         let key = embeddingID as NSUUID
-        if let cached = embeddingThumbnailCache.object(forKey: key) {
-            return cached
-        }
+        return embeddingThumbnailCache.object(forKey: key)
+    }
 
-        let url = embeddingThumbnailURL(for: embeddingID)
-        guard let data = try? CloudCoordinatedIO.readData(at: url),
-              let image = NSImage(data: data) else { return nil }
-
+    func loadEmbeddingThumbnail(for embeddingID: UUID) async -> NSImage? {
+        let key = embeddingID as NSUUID
+        if let cached = embeddingThumbnailCache.object(forKey: key) { return cached }
+        guard let request = await thumbnailReadRequest(
+            itemID: embeddingID,
+            directoryName: "embedding_thumbnails"
+        ) else { return nil }
+        guard case .loaded(let snapshot) = await thumbnailLoader.load(
+            fileURL: request.fileURL,
+            requestID: request.requestID
+        ), request.storageRevision == storageRevision,
+           snapshot.requestID == request.requestID,
+           snapshot.fileURL == request.fileURL,
+           let data = snapshot.data,
+           let image = NSImage(data: data) else { return nil }
         embeddingThumbnailCache.setObject(image, forKey: key, cost: data.count)
         return image
+    }
+
+    private struct ThumbnailReadRequest {
+        let requestID: UUID
+        let fileURL: URL
+        let storageRevision: UInt64
+    }
+
+    private func thumbnailReadRequest(
+        itemID: UUID,
+        directoryName: String
+    ) async -> ThumbnailReadRequest? {
+        let revision = storageRevision
+        let root: URL
+        if let cachedDirectory {
+            root = cachedDirectory
+        } else if let override = Self.storageOverrideURL {
+            root = override
+        } else if let testFallback = Self.testProcessFallbackDirectory {
+            root = testFallback
+        } else {
+            let syncEnabled = UserDefaults.standard.bool(
+                forKey: UserDefaultsKeys.knownPeopleICloudEnabled
+            )
+            root = await KnownPeopleICloudRoutingService.shared.storageURL(
+                syncEnabled: syncEnabled
+            )
+        }
+        guard revision == storageRevision, !Task.isCancelled else { return nil }
+        cachedDirectory = root
+        let fileURL = root
+            .appendingPathComponent(directoryName, isDirectory: true)
+            .appendingPathComponent("\(itemID.uuidString).jpg")
+        return ThumbnailReadRequest(
+            requestID: UUID(),
+            fileURL: fileURL,
+            storageRevision: revision
+        )
     }
 
     func deleteEmbeddingThumbnail(for embeddingID: UUID) {
@@ -902,7 +1067,18 @@ final class KnownPeopleService {
     }
 
     /// Delete a single embedding from a person
-    func removeEmbedding(_ embeddingID: UUID, fromPersonID personID: UUID) throws {
+    func removeEmbedding(_ embeddingID: UUID, fromPersonID personID: UUID) async throws {
+        guard let currentPerson = person(byID: personID) else { return }
+        let replacementThumbnail: (id: UUID, image: NSImage)?
+        if currentPerson.representativeThumbnailID == embeddingID,
+           let replacementID = currentPerson.embeddings.first(where: { $0.id != embeddingID })?.id {
+            replacementThumbnail = await loadEmbeddingThumbnail(for: replacementID).map {
+                (id: replacementID, image: $0)
+            }
+            try Task.checkCancellation()
+        } else {
+            replacementThumbnail = nil
+        }
         guard peopleIndex[personID] != nil else { return }
 
         var wasRepresentative = false
@@ -920,10 +1096,9 @@ final class KnownPeopleService {
         deleteEmbeddingThumbnail(for: embeddingID)
 
         // If deleted embedding was the representative, update person thumbnail to new representative's
-        if wasRepresentative, let updatedPerson = person(byID: personID),
-           let newRepID = updatedPerson.representativeThumbnailID,
-           let newRepThumb = loadEmbeddingThumbnail(for: newRepID),
-           let tiffData = newRepThumb.tiffRepresentation,
+        if wasRepresentative, let replacementThumbnail,
+           person(byID: personID)?.representativeThumbnailID == replacementThumbnail.id,
+           let tiffData = replacementThumbnail.image.tiffRepresentation,
            let bitmap = NSBitmapImageRep(data: tiffData),
            let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
             try? saveThumbnail(jpegData, for: personID)
@@ -1031,6 +1206,7 @@ final class KnownPeopleService {
         try io.ensureDirectory(embeddingThumbnailsDirectory)
 
         featurePrintCache.removeAllObjects()
+        personThumbnailCache.removeAllObjects()
         embeddingThumbnailCache.removeAllObjects()
         recentLocalWrites.removeAll()
         database = KnownPeopleDatabase()
@@ -1040,6 +1216,7 @@ final class KnownPeopleService {
     func clearDatabase() throws {
         let emptyDB = KnownPeopleDatabase()
         featurePrintCache.removeAllObjects()
+        personThumbnailCache.removeAllObjects()
         embeddingThumbnailCache.removeAllObjects()
         recentLocalWrites.removeAll()
 

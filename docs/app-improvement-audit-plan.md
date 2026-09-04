@@ -1122,6 +1122,16 @@ passed. Other lower-priority direct/cached-model paths and real-volume/signpost/
 evidence remain open.
 ([validation](plan-status-watermark-persistence-cache-continuation-2026-09-04.md))
 
+**Known People thumbnail-cache follow-up (2026-09-04):** person and embedding thumbnail JPEG reads no longer
+run synchronously from SwiftUI or the MainActor service. One serialized actor returns immutable data with explicit
+pre/post-read cancellation evidence and privacy-safe signposts; storage revision and request identity reject stale
+publication. Bounded person/embedding caches serve synchronous presentation and are invalidated by storage changes,
+resets, deletes, and remote events. Known People views and team roster export now await the actor boundary and use
+in-memory rendering inputs. Two new characterizations, the focused 43-test Known People/iCloud/roster selection,
+repository gate, and final serial unfiltered run of 1,979 tests in 229 suites passed. Other lower-priority direct/
+cached-model paths and real-volume/signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-known-people-thumbnail-cache-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

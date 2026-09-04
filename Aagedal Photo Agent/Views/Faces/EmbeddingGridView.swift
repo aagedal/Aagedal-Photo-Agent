@@ -50,7 +50,7 @@ struct EmbeddingGridView: View {
             }
         } label: {
             ZStack(alignment: .topTrailing) {
-                embeddingThumbnailImage(for: embedding.id)
+                KnownPersonEmbeddingThumbnailView(embeddingID: embedding.id)
                     .frame(width: 56, height: 56)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(
@@ -130,24 +130,6 @@ struct EmbeddingGridView: View {
         }
     }
 
-    // MARK: - Helpers
-
-    @ViewBuilder
-    private func embeddingThumbnailImage(for embeddingID: UUID) -> some View {
-        if let image = KnownPeopleService.shared.loadEmbeddingThumbnail(for: embeddingID) {
-            Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-        } else {
-            ZStack {
-                Color(.controlBackgroundColor)
-                Image(systemName: "person.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
-
     @ViewBuilder
     private func detailRow(_ label: String, value: String) -> some View {
         HStack {
@@ -159,6 +141,31 @@ struct EmbeddingGridView: View {
                 .font(.caption)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
+        }
+    }
+}
+
+private struct KnownPersonEmbeddingThumbnailView: View {
+    let embeddingID: UUID
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                ZStack {
+                    Color(.controlBackgroundColor)
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .task(id: embeddingID) {
+            image = await KnownPeopleService.shared.loadEmbeddingThumbnail(for: embeddingID)
         }
     }
 }
