@@ -4,7 +4,7 @@ import Foundation
 /// the security scope must remain active while thumbnails, metadata, exports, and folder monitors
 /// use descendants asynchronously. Keeping one balanced access claim per normalized root avoids
 /// both repeated permission prompts and unbounded `startAccessing...` calls during folder reloads.
-final class BrowserFolderSecurityScopeStore: @unchecked Sendable {
+nonisolated final class BrowserFolderSecurityScopeStore: @unchecked Sendable {
     static let shared = BrowserFolderSecurityScopeStore()
 
     struct Resolution {
@@ -94,9 +94,103 @@ final class BrowserFolderSecurityScopeStore: @unchecked Sendable {
     }
 }
 
+nonisolated struct RecentFolderBookmarkSnapshot: Sendable {
+    let requestID: UUID
+    let folders: [RecentFolder]
+    let inspectedCount: Int
+}
+
+nonisolated enum RecentFolderBookmarkLoadResult: Sendable {
+    case loaded(RecentFolderBookmarkSnapshot)
+    case cancelledBeforeAccess(requestID: UUID)
+    case cancelledAfterPrefix(requestID: UUID, inspectedCount: Int)
+}
+
+nonisolated struct RecentFolderBookmarkCommit: Sendable {
+    let requestID: UUID
+    let bookmarkData: Data?
+    let cancellationRequestedAfterAccess: Bool
+}
+
+nonisolated enum RecentFolderBookmarkCommitResult: Sendable {
+    case completed(RecentFolderBookmarkCommit)
+    case cancelledBeforeAccess(requestID: UUID)
+}
+
+/// Serializes security-scoped bookmark creation and resolution away from MainActor.
+/// Bookmark APIs can synchronously contact file providers, so even the small Open Recent
+/// cache must not invoke them while SwiftUI is evaluating commands or opening a folder.
+actor RecentFolderBookmarkService {
+    static let shared = RecentFolderBookmarkService()
+
+    private let securityScopes: BrowserFolderSecurityScopeStore
+
+    init(securityScopes: BrowserFolderSecurityScopeStore = .shared) {
+        self.securityScopes = securityScopes
+    }
+
+    func resolve(
+        _ folders: [RecentFolder],
+        requestID: UUID
+    ) -> RecentFolderBookmarkLoadResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+
+        var repaired: [RecentFolder] = []
+        repaired.reserveCapacity(folders.count)
+        for folder in folders {
+            guard !Task.isCancelled else {
+                return .cancelledAfterPrefix(
+                    requestID: requestID,
+                    inspectedCount: repaired.count
+                )
+            }
+            var resolvedFolder = folder
+            if let bookmark = folder.bookmarkData,
+               let resolution = securityScopes.resolveAndRetainAccess(bookmark) {
+                resolvedFolder = RecentFolder(
+                    id: folder.id,
+                    url: resolution.url,
+                    bookmarkData: resolution.bookmarkData
+                )
+            }
+            repaired.append(resolvedFolder)
+        }
+
+        guard !Task.isCancelled else {
+            return .cancelledAfterPrefix(
+                requestID: requestID,
+                inspectedCount: repaired.count
+            )
+        }
+        return .loaded(RecentFolderBookmarkSnapshot(
+            requestID: requestID,
+            folders: repaired,
+            inspectedCount: repaired.count
+        ))
+    }
+
+    func createBookmark(
+        for url: URL,
+        requestID: UUID
+    ) -> RecentFolderBookmarkCommitResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+        let bookmarkData = securityScopes.bookmarkAndRetainAccess(for: url)
+        return .completed(RecentFolderBookmarkCommit(
+            requestID: requestID,
+            bookmarkData: bookmarkData,
+            cancellationRequestedAfterAccess: Task.isCancelled
+        ))
+    }
+}
+
 /// Persistent list of recently opened folders, shared between the browser
 /// (which records every folder open) and the File ▸ Open Recent menu
 /// (which displays and clears it).
+@MainActor
 @Observable
 final class RecentFoldersStore {
     static let shared = RecentFoldersStore(defaults: .standard)
@@ -105,24 +199,35 @@ final class RecentFoldersStore {
 
     private static let maxCount = 10
     private let defaults: UserDefaults
-    private let securityScopes: BrowserFolderSecurityScopeStore
+    private let bookmarkService: RecentFolderBookmarkService
+    @ObservationIgnored private var didLoad = false
+    @ObservationIgnored private var loadRequestID = UUID()
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var cacheGeneration = UUID()
 
     init(
         defaults: UserDefaults,
         securityScopes: BrowserFolderSecurityScopeStore = .shared
     ) {
         self.defaults = defaults
-        self.securityScopes = securityScopes
-        load()
+        bookmarkService = RecentFolderBookmarkService(securityScopes: securityScopes)
+        scheduleLoadIfNeeded()
     }
 
-    func track(_ url: URL) {
+    func track(_ url: URL) async {
+        await loadIfNeeded()
+        guard !Task.isCancelled else { return }
         let normalizedURL = Self.normalizedFolderURL(url)
         let existingBookmark = folders.first {
             Self.normalizedFolderURL($0.url) == normalizedURL
         }?.bookmarkData
-        let bookmark = securityScopes
-            .bookmarkAndRetainAccess(for: url) ?? existingBookmark
+        let requestID = UUID()
+        let generation = cacheGeneration
+        let result = await bookmarkService.createBookmark(for: url, requestID: requestID)
+        guard case .completed(let commit) = result,
+              commit.requestID == requestID,
+              cacheGeneration == generation else { return }
+        let bookmark = commit.bookmarkData ?? existingBookmark
         folders.removeAll { Self.normalizedFolderURL($0.url) == normalizedURL }
         folders.insert(RecentFolder(url: normalizedURL, bookmarkData: bookmark), at: 0)
         if folders.count > Self.maxCount {
@@ -132,18 +237,51 @@ final class RecentFoldersStore {
     }
 
     func clear() {
+        loadTask?.cancel()
+        loadTask = nil
+        loadRequestID = UUID()
+        cacheGeneration = UUID()
+        didLoad = true
         folders = []
         save()
     }
 
-    private func load() {
-        guard let data = defaults.data(forKey: UserDefaultsKeys.recentFolders),
-              let decoded = try? JSONDecoder().decode([RecentFolder].self, from: data) else {
+    func loadIfNeeded() async {
+        if didLoad { return }
+        if let loadTask {
+            await loadTask.value
             return
         }
-        folders = sanitized(decoded)
-        if folders != decoded {
-            save()
+        guard let data = defaults.data(forKey: UserDefaultsKeys.recentFolders),
+              let decoded = try? JSONDecoder().decode([RecentFolder].self, from: data) else {
+            didLoad = true
+            return
+        }
+
+        let requestID = UUID()
+        loadRequestID = requestID
+        let service = bookmarkService
+        let task = Task { @MainActor [weak self] in
+            let result = await service.resolve(decoded, requestID: requestID)
+            guard let self, self.loadRequestID == requestID else { return }
+            self.loadTask = nil
+            guard case .loaded(let snapshot) = result,
+                  snapshot.requestID == requestID else { return }
+            let repaired = self.sanitized(snapshot.folders)
+            self.folders = repaired
+            self.didLoad = true
+            if repaired != decoded {
+                self.save()
+            }
+        }
+        loadTask = task
+        await task.value
+    }
+
+    private func scheduleLoadIfNeeded() {
+        guard !didLoad, loadTask == nil else { return }
+        Task { @MainActor [weak self] in
+            await self?.loadIfNeeded()
         }
     }
 
@@ -170,19 +308,12 @@ final class RecentFoldersStore {
         result.reserveCapacity(min(decoded.count, Self.maxCount))
 
         for folder in decoded {
-            var repaired = folder
-            if let bookmark = folder.bookmarkData,
-               let resolution = securityScopes
-                .resolveAndRetainAccess(bookmark) {
-                repaired.url = resolution.url
-                repaired.bookmarkData = resolution.bookmarkData
-            }
-            let normalizedURL = Self.normalizedFolderURL(repaired.url)
+            let normalizedURL = Self.normalizedFolderURL(folder.url)
             guard seen.insert(normalizedURL).inserted else { continue }
             result.append(RecentFolder(
-                id: repaired.id,
+                id: folder.id,
                 url: normalizedURL,
-                bookmarkData: repaired.bookmarkData
+                bookmarkData: folder.bookmarkData
             ))
             if result.count == Self.maxCount { break }
         }

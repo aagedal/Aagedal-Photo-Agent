@@ -653,6 +653,14 @@ without a second MainActor read. Two new characterizations, the focused 22-test 
 selection, repository gate, and serial unfiltered 1,984-test run passed. The audit remains 66 of 75 while other
 lower-priority direct/cached-model paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [Open Recent bookmark continuation](plan-status-recent-folder-bookmark-continuation-2026-09-04.md) moves
+launch-time stale-bookmark resolution, security-scope retention, and per-folder bookmark creation behind one
+serialized actor. The MainActor store publishes only complete current snapshots, cancellation carries exact prefix
+evidence, folder scanning waits until scope retention completes, and Clear Menu rejects late results. Two new
+characterizations, the focused 8-test suite, adjacent 18-test selection, repository gate, and serial unfiltered
+1,986-test run passed. The audit remains 66 of 75 while Favorite-folder bookmarks, other lower-priority direct/
+cached-model paths, and real-volume/signpost/Thread Performance Checker evidence stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

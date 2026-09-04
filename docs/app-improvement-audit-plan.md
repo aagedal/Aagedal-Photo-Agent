@@ -1166,6 +1166,16 @@ passed. Other lower-priority direct/cached-model paths and real-volume/signpost/
 remain open.
 ([validation](plan-status-approved-list-cache-continuation-2026-09-04.md))
 
+**Open Recent bookmark follow-up (2026-09-04):** launch-time stale-bookmark resolution, security-scope retention,
+and bookmark creation when opening a folder no longer run synchronously on MainActor. One serialized actor returns
+an immutable complete snapshot or exact cancellation-prefix evidence; the observable store publishes only current
+complete loads, and Clear Menu invalidates late load or creation results. Folder scanning awaits the actor so access
+is retained before descendant work starts without blocking the UI executor. Two new characterizations cover
+off-main resolution/creation and pre-access cancellation. The focused 8-test suite, adjacent 18-test selection,
+repository gate, and serial unfiltered run of 1,986 tests in 229 suites passed. Favorite-folder bookmarks, other
+lower-priority direct/cached-model paths, and real-volume/signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-recent-folder-bookmark-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

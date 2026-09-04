@@ -710,7 +710,6 @@ final class BrowserViewModel {
 
         currentFolderURL = url
         currentFolderName = url.lastPathComponent
-        RecentFoldersStore.shared.track(url)
         isLoading = true
         errorMessage = nil
         folderLoadErrorMessage = nil
@@ -745,6 +744,10 @@ final class BrowserViewModel {
 
         loadFolderTask = Task {
             do {
+                // Security-scoped bookmark creation may synchronously contact a file
+                // provider. Keep it ahead of the scan, but behind its serialized actor.
+                await RecentFoldersStore.shared.track(url)
+                try Task.checkCancellation()
                 // Phase 1: Scan folder and show grid immediately
                 let scanResult = try await fileSystemService.scanFolderWithStatus(at: url, includeAllFiles: showAllFiles)
                 var files = scanResult.files
