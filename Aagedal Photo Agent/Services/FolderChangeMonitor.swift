@@ -75,9 +75,72 @@ nonisolated struct HiddenFolderStoreChange: Sendable {
     let changedPaths: Set<URL>
 }
 
+/// One requested monitor setup. The callback is value-captured before the request crosses the
+/// actor boundary, so monitor construction never needs to reach back into MainActor state.
+nonisolated struct FolderChangeMonitorRequest: Sendable {
+    let folderURL: URL
+    let onChange: @Sendable (FolderChangeBatch) -> Void
+}
+
+/// Immutable setup evidence returned to the MainActor coordinator.
+nonisolated enum FolderChangeMonitorCreationResult: Sendable {
+    case created(FolderChangeMonitor)
+    case unavailable
+    case cancelledBeforeSetup
+    case cancelledAfterSetup
+}
+
 extension Notification.Name {
     static let analysisStoreDidChange = Notification.Name("analysisStoreDidChange")
     static let versionStoreDidChange = Notification.Name("versionStoreDidChange")
+}
+
+/// Serializes the directory probe and FSEvents setup away from MainActor. Foundation and
+/// FSEventStream creation are synchronous and cannot be interrupted once entered, so cancellation
+/// is sampled on both sides and a monitor created by stale work is stopped before returning.
+actor FolderChangeMonitorService {
+    static let shared = FolderChangeMonitorService()
+
+    typealias Factory = @Sendable (FolderChangeMonitorRequest) -> FolderChangeMonitor?
+
+    private let factory: Factory
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "FolderChangeMonitorSetup"
+    )
+
+    init(factory: @escaping Factory = { request in
+        FolderChangeMonitor(url: request.folderURL, onChange: request.onChange)
+    }) {
+        self.factory = factory
+    }
+
+    func createMonitor(
+        _ request: FolderChangeMonitorRequest
+    ) -> FolderChangeMonitorCreationResult {
+        let interval = signposter.beginInterval(
+            "Create",
+            id: signposter.makeSignpostID()
+        )
+        guard !Task.isCancelled else {
+            signposter.endInterval("Create", interval, "result=cancelled stage=before")
+            return .cancelledBeforeSetup
+        }
+
+        let monitor = factory(request)
+        guard !Task.isCancelled else {
+            monitor?.cancel()
+            signposter.endInterval("Create", interval, "result=cancelled stage=after")
+            return .cancelledAfterSetup
+        }
+        guard let monitor else {
+            signposter.endInterval("Create", interval, "result=unavailable")
+            return .unavailable
+        }
+
+        signposter.endInterval("Create", interval, "result=created")
+        return .created(monitor)
+    }
 }
 
 /// Watches one folder tree for file changes. FSEvents is used instead of a vnode

@@ -8,6 +8,7 @@ import os
 final class BrowserAutoRefreshCoordinator {
     private let panes: BrowserPanesModel
     private let metadataViewModel: MetadataViewModel
+    private let monitorService: FolderChangeMonitorService
     private let logger = Logger(
         subsystem: "com.aagedal.photo-agent",
         category: "BrowserAutoRefresh"
@@ -15,6 +16,8 @@ final class BrowserAutoRefreshCoordinator {
 
     private var monitors: [ObjectIdentifier: FolderChangeMonitor] = [:]
     private var monitoredURLs: [ObjectIdentifier: URL] = [:]
+    private var monitorRequestIDs: [ObjectIdentifier: UUID] = [:]
+    private var monitorSetupTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var refreshTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var fallbackTask: Task<Void, Never>?
 
@@ -22,14 +25,20 @@ final class BrowserAutoRefreshCoordinator {
     private let deferredRetryDuration = Duration.seconds(1)
     private let fallbackInterval = Duration.seconds(30)
 
-    init(panes: BrowserPanesModel, metadataViewModel: MetadataViewModel) {
+    init(
+        panes: BrowserPanesModel,
+        metadataViewModel: MetadataViewModel,
+        monitorService: FolderChangeMonitorService = .shared
+    ) {
         self.panes = panes
         self.metadataViewModel = metadataViewModel
+        self.monitorService = monitorService
     }
 
     deinit {
         fallbackTask?.cancel()
         for task in refreshTasks.values { task.cancel() }
+        for task in monitorSetupTasks.values { task.cancel() }
         for monitor in monitors.values { monitor.cancel() }
     }
 
@@ -62,6 +71,9 @@ final class BrowserAutoRefreshCoordinator {
         fallbackTask = nil
         for task in refreshTasks.values { task.cancel() }
         refreshTasks.removeAll()
+        for task in monitorSetupTasks.values { task.cancel() }
+        monitorSetupTasks.removeAll()
+        monitorRequestIDs.removeAll()
         for monitor in monitors.values { monitor.cancel() }
         monitors.removeAll()
         monitoredURLs.removeAll()
@@ -74,6 +86,8 @@ final class BrowserAutoRefreshCoordinator {
 
         let obsoleteIDs = monitoredURLs.keys.filter { desired[$0] != monitoredURLs[$0] }
         for paneID in obsoleteIDs {
+            monitorRequestIDs.removeValue(forKey: paneID)
+            monitorSetupTasks.removeValue(forKey: paneID)?.cancel()
             monitors.removeValue(forKey: paneID)?.cancel()
             monitoredURLs.removeValue(forKey: paneID)
             refreshTasks.removeValue(forKey: paneID)?.cancel()
@@ -81,7 +95,9 @@ final class BrowserAutoRefreshCoordinator {
 
         for (paneID, folderURL) in desired where monitoredURLs[paneID] != folderURL {
             monitoredURLs[paneID] = folderURL
-            monitors[paneID] = FolderChangeMonitor(url: folderURL) { [weak self] batch in
+            let requestID = UUID()
+            monitorRequestIDs[paneID] = requestID
+            let request = FolderChangeMonitorRequest(folderURL: folderURL) { [weak self] batch in
                 Task { @MainActor [weak self] in
                     self?.filesystemDidChange(
                         batch,
@@ -90,8 +106,26 @@ final class BrowserAutoRefreshCoordinator {
                     )
                 }
             }
-            if monitors[paneID] == nil {
-                logger.warning("FSEvents unavailable for \(folderURL.path, privacy: .private(mask: .hash)); using fallback polling")
+            monitorSetupTasks[paneID] = Task { [weak self] in
+                guard let self else { return }
+                let result = await monitorService.createMonitor(request)
+                guard monitorRequestIDs[paneID] == requestID,
+                      monitoredURLs[paneID] == folderURL else {
+                    if case let .created(monitor) = result {
+                        monitor.cancel()
+                    }
+                    return
+                }
+                monitorSetupTasks[paneID] = nil
+                switch result {
+                case let .created(monitor):
+                    monitors[paneID]?.cancel()
+                    monitors[paneID] = monitor
+                case .unavailable:
+                    logger.warning("FSEvents unavailable for \(folderURL.path, privacy: .private(mask: .hash)); using fallback polling")
+                case .cancelledBeforeSetup, .cancelledAfterSetup:
+                    break
+                }
             }
         }
     }

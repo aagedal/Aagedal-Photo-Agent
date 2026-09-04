@@ -567,6 +567,14 @@ invalidate cached URLs before reloading. Four new characterizations, the focused
 selection, repository gate, and serial unfiltered 1,954-test run passed. The audit remains 66 of 75 while Phase 3.1's
 remaining direct paths and real-volume/signpost/Thread Performance Checker evidence stay open.
 
+The latest [Browser monitor-setup continuation](plan-status-browser-monitor-setup-continuation-2026-09-04.md) moves
+the directory probe and FSEvents construction used for pane auto-refresh off MainActor and behind a serialized actor.
+Immutable setup outcomes, per-pane task cancellation, and request/folder identity prevent obsolete streams from being
+installed after navigation or teardown; cancelled work stops any monitor it created. Four new characterizations, the
+focused 31-test monitor/sidecar selection, repository gate, and serial unfiltered 1,958-test run passed. The audit
+remains 66 of 75 while Phase 3.1's remaining direct paths and real-volume/signpost/Thread Performance Checker evidence
+stay open.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

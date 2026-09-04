@@ -249,6 +249,106 @@ private actor FolderEventProbe {
     }
 }
 
+@Suite("Folder change monitor setup boundary")
+struct FolderChangeMonitorServiceTests {
+    @Test("monitor setup runs away from the main actor")
+    @MainActor
+    func setupRunsOffMainActor() async {
+        let probe = FolderChangeMonitorFactoryProbe()
+        let service = FolderChangeMonitorService(factory: probe.makeUnavailableMonitor)
+
+        let result = await service.createMonitor(FolderChangeMonitorRequest(
+            folderURL: URL(fileURLWithPath: "/virtual/slow-volume", isDirectory: true),
+            onChange: { _ in }
+        ))
+
+        guard case .unavailable = result else {
+            Issue.record("Expected an unavailable monitor result")
+            return
+        }
+        #expect(probe.invocationCount == 1)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("pre-cancellation skips synchronous monitor setup")
+    func preCancellationSkipsSetup() async {
+        let probe = FolderChangeMonitorFactoryProbe()
+        let service = FolderChangeMonitorService(factory: probe.makeUnavailableMonitor)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.createMonitor(FolderChangeMonitorRequest(
+                folderURL: URL(fileURLWithPath: "/virtual/cancelled", isDirectory: true),
+                onChange: { _ in }
+            ))
+        }
+
+        let result = await task.value
+        guard case .cancelledBeforeSetup = result else {
+            Issue.record("Expected cancellation before monitor setup")
+            return
+        }
+        #expect(probe.invocationCount == 0)
+    }
+
+    @Test("cancellation observed after synchronous setup is explicit")
+    func postSetupCancellationIsExplicit() async {
+        let service = FolderChangeMonitorService { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return nil
+        }
+
+        let task = Task {
+            await service.createMonitor(FolderChangeMonitorRequest(
+                folderURL: URL(fileURLWithPath: "/virtual/post-cancelled", isDirectory: true),
+                onChange: { _ in }
+            ))
+        }
+        let result = await task.value
+
+        guard case .cancelledAfterSetup = result else {
+            Issue.record("Expected cancellation after synchronous monitor setup")
+            return
+        }
+    }
+
+    @Test("Browser monitor installation awaits the actor and identity-gates publication")
+    func browserCoordinatorSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Services/BrowserAutoRefreshCoordinator.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("await monitorService.createMonitor(request)"))
+        #expect(source.contains("monitorRequestIDs[paneID] == requestID"))
+        #expect(source.contains("monitoredURLs[paneID] == folderURL"))
+        #expect(source.contains("monitorSetupTasks.removeValue(forKey: paneID)?.cancel()"))
+        #expect(!source.contains("FolderChangeMonitor(url: folderURL)"))
+    }
+}
+
+private nonisolated final class FolderChangeMonitorFactoryProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var observedMainThread = false
+
+    func makeUnavailableMonitor(_ request: FolderChangeMonitorRequest) -> FolderChangeMonitor? {
+        _ = request
+        lock.withLock {
+            count += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+        return nil
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
 @Suite("MetadataSidecarService")
 struct MetadataSidecarServiceTests {
 

@@ -1038,6 +1038,15 @@ suite passed; the adjacent 30-test selection, repository gate, and serial unfilt
 lower-priority direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
 ([validation](plan-status-settings-quick-list-cache-continuation-2026-09-04.md))
 
+**Browser monitor-setup follow-up (2026-09-04):** Browser pane synchronization no longer performs the synchronous
+directory probe and FSEvents construction on MainActor. A serialized actor returns immutable created, unavailable,
+pre-setup-cancelled, or post-setup-cancelled evidence and stops a stream created by cancelled work. Per-pane setup
+tasks plus request/folder identity reject stale monitor publication after navigation, pane removal, stop, or teardown.
+A privacy-safe signpost records only setup outcome. Four new characterizations and the focused 31-test monitor/
+sidecar selection passed; the repository gate and serial unfiltered 1,958-test run also passed. Other lower-priority
+direct paths and real-volume/signpost/Thread Performance Checker exit evidence remain open.
+([validation](plan-status-browser-monitor-setup-continuation-2026-09-04.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
