@@ -52,7 +52,13 @@ in Xcode DerivedData. Full log: `/private/tmp/aagedal-rename-people-full.log`.
 Repository validation log: `/private/tmp/aagedal-rename-people-repository.log`.
 Automated results do not substitute for the manual checks below.
 
-## Manual testing requested
+## Manual testing status
+
+**User-reported pass (2026-09-05):** annotations survived renaming an image inside Analysis
+and renaming an image outside Analysis. In both cases the user switched between Analysis and
+Single view and observed that the annotation remained. This validates those two interaction paths;
+it does not establish persistence across app relaunch or the additional volume/concurrency checks.
+
 
 The Compare portion of this check failed in manual testing. The reported race and the corrected,
 focused-pane test procedure are recorded in the [regression follow-up](comparison-rename-regression-validation-2026-09-05.md).
@@ -67,7 +73,8 @@ Test Compare and Analysis separately using copied photos:
 3. Repeat through a symlinked folder and, when available, a network or iCloud-backed test folder.
    Report macOS version, volume type, operation, and any pause, stale image, missing image or error.
 
-These checks are requested, not recorded as passed. Thread Performance Checker and Instruments
+The two Analysis annotation checks above are recorded as passed. Compare, rapid-rename and
+volume-specific checks remain open. Thread Performance Checker and Instruments
 measurements still need the broader existing performance protocol and representative large libraries.
 
 ## Remaining implementation and release gates

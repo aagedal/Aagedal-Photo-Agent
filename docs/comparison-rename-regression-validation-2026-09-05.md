@@ -67,6 +67,12 @@ Focused log: `/private/tmp/aagedal-compare-rename-focused-final.log`.
 Repository log: `/private/tmp/aagedal-compare-rename-fix-repository.log`.
 These automated checks do not claim the visual manual retest below.
 
+## Analysis annotation manual result
+
+**User-reported pass (2026-09-05):** renaming inside Analysis and outside Analysis both retained
+the annotation when switching between Analysis and Single view. This report does not cover the
+Compare source/layout regression or Batch Rename presentation changes below.
+
 ## Requested manual retest
 
 Use two copied photos in the latest development build:

@@ -46,6 +46,11 @@ arrive. The missing-pane layout and Batch Rename preview/sequence labels were al
 [Validation and focused retest](../comparison-rename-regression-validation-2026-09-05.md) keep the
 interaction gate explicitly open pending manual confirmation.
 
+**Analysis rename manual validation (2026-09-05):** the user reports that annotations survived
+renaming both inside and outside Analysis, including switching between Analysis and Single view.
+Those two paths passed; Compare/layout, rapid-rename and real-volume checks remain open.
+[Recorded result](../plan-status-rename-identity-known-people-cache-continuation-2026-09-05.md#manual-testing-status).
+
 ## Phase 0 — research, decisions, and fixtures
 
 **Exit gate:** the project can make evidence claims and distribute every required dependency/fixture
