@@ -7,6 +7,44 @@ import SwiftMediaMetadata
 @Suite("Metadata batch list selection", .serialized)
 @MainActor
 struct MetadataBatchSelectionTests {
+    @Test("batch JSON and XMP saves preserve explicit supplier append and clear intent")
+    func batchSupplierSaveIntent() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = [try makeJPEG(in: folder, name: "first.jpg"),
+                    try makeJPEG(in: folder, name: "second.jpg")]
+        let first = EditorialImageSupplier(identifier: "first", name: "First Agency")
+        let second = EditorialImageSupplier(identifier: "second", name: "Second Agency")
+        let appended = EditorialImageSupplier(identifier: "desk", name: "Desk")
+        for (url, supplier) in zip(urls, [first, second]) {
+            var metadata = IPTCMetadata()
+            metadata.imageSuppliers = [supplier]
+            try await write(metadata, to: url)
+        }
+        let model = MetadataViewModel(
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine()
+        )
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        try model.setBatchImageSupplierMutation(.append([appended]))
+        model.saveToSidecar()
+        try await waitForSave(model)
+        for (url, supplier) in zip(urls, [first, second]) {
+            let sidecar = try #require(MetadataSidecarService().loadSidecar(for: url, in: folder))
+            #expect(sidecar.metadata.imageSuppliers == [supplier, appended])
+            #expect(XMPSidecarService().loadSidecar(for: url)?.imageSuppliers == [supplier, appended])
+        }
+        try model.setBatchImageSupplierMutation(.clear)
+        model.saveToSidecar()
+        try await waitForSave(model)
+        for url in urls {
+            let sidecar = try #require(MetadataSidecarService().loadSidecar(for: url, in: folder))
+            #expect(sidecar.metadata.imageSuppliers.isEmpty)
+            #expect(XMPSidecarService().loadSidecar(for: url)?.imageSuppliers.isEmpty == true)
+        }
+    }
+
     @Test("embedded writer persists ordered creators and exact XMP date with representable IIM")
     func embeddedOrderedCreatorAndDateWrite() async throws {
         let folder = FileManager.default.temporaryDirectory

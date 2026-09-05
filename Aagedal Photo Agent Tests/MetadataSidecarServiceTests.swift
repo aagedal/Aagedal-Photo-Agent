@@ -379,6 +379,55 @@ struct MetadataSidecarServiceTests {
         )
     }
 
+    @Test("explicit discard removes current and legacy pending sidecars off MainActor")
+    @MainActor
+    func explicitDiscard() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        try service.saveSidecar(makeSidecar(pendingChanges: true), for: image, in: folder)
+        let directory = folder.appendingPathComponent(".photo_metadata")
+        let current = directory.appendingPathComponent("photo.jpg.meta.json")
+        let legacy = directory.appendingPathComponent("photo.meta.json")
+        try FileManager.default.copyItem(at: current, to: legacy)
+        let unrelated = directory.appendingPathComponent("other.jpg.meta.json")
+        try Data("keep".utf8).write(to: unrelated)
+        try await service.deleteSidecarSerialized(for: image, in: folder) {
+            #expect(!Thread.isMainThread)
+        }
+        #expect(!FileManager.default.fileExists(atPath: current.path))
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
+        #expect(try Data(contentsOf: unrelated) == Data("keep".utf8))
+        try await service.deleteSidecarSerialized(for: image, in: folder)
+    }
+
+    @Test("explicit discard cancellation and failures retain pending data")
+    func explicitDiscardFailure() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        try service.saveSidecar(makeSidecar(pendingChanges: true), for: image, in: folder)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await service.deleteSidecarSerialized(for: image, in: folder) {
+                Issue.record("Cancelled discard entered transaction")
+            }
+        }
+        do {
+            try await task.value
+            Issue.record("Expected cancellation")
+        } catch { #expect(error is CancellationError) }
+        do {
+            try await service.deleteSidecarSerialized(for: image, in: folder) {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            Issue.record("Expected deletion failure")
+        } catch { #expect((error as NSError).code == CocoaError.fileWriteNoPermission.rawValue) }
+        #expect(service.loadSidecar(for: image, in: folder)?.pendingChanges == true)
+    }
+
     @Test("refresh cleanup deletes only empty committed sidecars off MainActor")
     @MainActor
     func cleanupEmptySidecar() async throws {
@@ -1186,5 +1235,123 @@ struct MetadataSidecarMirrorTests {
         )
         #expect(!installed)
         #expect(!service.sidecarExists(for: source))
+    }
+}
+
+@Suite("Batch metadata baseline transactions")
+struct BatchMetadataBaselineTransactionTests {
+    @Test("Pre-cancelled batch transactions neither mutate nor create sidecars")
+    func preCancelledTransactions() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("cancelled.raw")
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await XMPSidecarService().updateSidecarSerialized(
+                    for: source, fallback: IPTCMetadata(),
+                    mutation: { _ in Issue.record("Cancelled XMP mutation ran") }
+                )
+                Issue.record("Cancelled XMP transaction succeeded")
+            } catch is CancellationError {
+            } catch {
+                Issue.record("Unexpected XMP error: \(error)")
+            }
+            do {
+                _ = try await MetadataSidecarService().updateMetadataSerialized(
+                    for: source, in: directory, fallback: IPTCMetadata(), pendingChanges: true,
+                    mutation: { _ in Issue.record("Cancelled JSON mutation ran") }
+                )
+                Issue.record("Cancelled JSON transaction succeeded")
+            } catch is CancellationError {
+            } catch {
+                Issue.record("Unexpected JSON error: \(error)")
+            }
+        }
+        await task.value
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    @Test("XMP retry reapplies only the requested edit to latest metadata and Develop settings")
+    @MainActor
+    func xmpRevisionRetry() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("batch.raw")
+        let service = XMPSidecarService()
+        try service.saveSidecar(metadata: IPTCMetadata(title: "Before"), for: source)
+        let installed = try await service.updateSidecarSerialized(
+            for: source, fallback: IPTCMetadata(title: "Stale UI"),
+            beforeRevisionCheck: { attempt in
+                #expect(!Thread.isMainThread)
+                guard attempt == 0 else { return }
+                var replacement = IPTCMetadata(title: "External")
+                replacement.keywords = ["External keyword"]
+                var settings = CameraRawSettings()
+                settings.exposure2012 = 1.5
+                replacement.cameraRaw = settings
+                try? service.saveSidecar(metadata: replacement, for: source)
+            },
+            mutation: { $0.keywords.append("Batch keyword") }
+        )
+        #expect(installed.title == "External")
+        #expect(installed.keywords == ["External keyword", "Batch keyword"])
+        #expect(installed.cameraRaw?.exposure2012 == 1.5)
+        #expect(service.loadSidecar(for: source)?.keywords == installed.keywords)
+    }
+
+    @Test("JSON retry derives history and preserved snapshot from the latest record")
+    @MainActor
+    func jsonRevisionRetry() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("batch.raw")
+        let service = MetadataSidecarService()
+        let initial = MetadataSidecar(sourceFile: "batch.raw", metadata: IPTCMetadata(title: "Before"))
+        try service.saveSidecar(initial, for: source, in: directory)
+        let installed = try await service.updateMetadataSerialized(
+            for: source, in: directory, fallback: IPTCMetadata(title: "Stale UI"),
+            pendingChanges: true,
+            beforeRevisionCheck: { attempt in
+                #expect(!Thread.isMainThread)
+                guard attempt == 0 else { return }
+                let replacement = MetadataSidecar(
+                    sourceFile: "batch.raw",
+                    metadata: IPTCMetadata(title: "External"),
+                    imageMetadataSnapshot: IPTCMetadata(title: "Embedded"),
+                    history: [MetadataHistoryEntry(timestamp: Date(timeIntervalSince1970: 1),
+                        fieldName: "Headline", oldValue: "Before", newValue: "External")]
+                )
+                try? service.saveSidecar(replacement, for: source, in: directory)
+            },
+            mutation: { $0.title = "Batch" }
+        )
+        #expect(installed.metadata.title == "Batch")
+        #expect(installed.imageMetadataSnapshot?.title == "Embedded")
+        #expect(installed.history.count == 2)
+        #expect(installed.history.last?.oldValue == "External")
+        #expect(installed.history.last?.newValue == "Batch")
+    }
+
+    @Test("JSON without a sidecar uses resolved per-photo fallback and commits its new snapshot")
+    func missingJSONBaseline() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("batch.raw")
+        let service = MetadataSidecarService()
+        var fallback = IPTCMetadata(title: "Unique title")
+        fallback.keywords = ["Unique keyword"]
+        let installed = try await service.updateMetadataSerialized(
+            for: source, in: directory, fallback: fallback, pendingChanges: false,
+            mutation: { $0.keywords.append("Batch keyword") }
+        )
+        #expect(installed.metadata.title == "Unique title")
+        #expect(installed.metadata.keywords == ["Unique keyword", "Batch keyword"])
+        #expect(installed.imageMetadataSnapshot?.keywords == installed.metadata.keywords)
+        #expect(!installed.pendingChanges)
     }
 }

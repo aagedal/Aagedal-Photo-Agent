@@ -144,6 +144,7 @@ final class MetadataViewModel {
     private let writeEngine: any MetadataWriteEngine
     private let descriptiveWriteBoundary: DescriptiveMetadataWriteBoundary
     private let editorReadService: MetadataEditorReadService
+    private let discardSidecar: @Sendable (URL, URL) async throws -> Void
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
     private let sidecarPersistenceService = MetadataSidecarPersistenceService()
@@ -154,6 +155,8 @@ final class MetadataViewModel {
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
     @ObservationIgnored private var metadataLoadRequestID: UUID?
     @ObservationIgnored private var writeTask: Task<Void, Never>?
+    @ObservationIgnored private var discardTask: Task<Void, Never>?
+    @ObservationIgnored private var discardRequestID: UUID?
     @ObservationIgnored private var batchProcessTask: Task<Void, Never>?
     @ObservationIgnored private var geocodingTask: Task<Void, Never>?
     @ObservationIgnored private var batchMetadataByURL: [URL: IPTCMetadata] = [:]
@@ -161,18 +164,23 @@ final class MetadataViewModel {
     init(
         readService: SwiftExifReadService,
         writeEngine: any MetadataWriteEngine,
-        editorReadService: MetadataEditorReadService = .shared
+        editorReadService: MetadataEditorReadService = .shared,
+        discardSidecar: @escaping @Sendable (URL, URL) async throws -> Void = { imageURL, folderURL in
+            try await MetadataSidecarService().deleteSidecarSerialized(for: imageURL, in: folderURL)
+        }
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
         self.descriptiveWriteBoundary = DescriptiveMetadataWriteBoundary(writeEngine: writeEngine)
         self.editorReadService = editorReadService
+        self.discardSidecar = discardSidecar
     }
 
     deinit {
         metadataLoadTask?.cancel()
         writeTask?.cancel()
         batchProcessTask?.cancel()
+        discardTask?.cancel()
         geocodingTask?.cancel()
     }
 
@@ -1536,13 +1544,14 @@ final class MetadataViewModel {
         guard !selectedURLs.isEmpty else { return }
 
         if selectedCount == 1, let imageURL = selectedURLs.first {
+            let edited = editingMetadata
             do {
                 try await xmpSidecarService.saveSidecarSerialized(
-                    metadata: editingMetadata,
+                    metadata: edited,
                     for: imageURL
                 )
                 if selectedCount == 1, selectedURLs.first == imageURL {
-                    xmpMetadata = editingMetadata
+                    xmpMetadata = edited
                 }
             } catch {
                 saveError = "Failed to write XMP sidecar: \(error.localizedDescription)"
@@ -1550,19 +1559,20 @@ final class MetadataViewModel {
             return
         }
 
-        let batchMeta = editingMetadata
-        let prevCommon = previousEditingMetadata
-        for imageURL in selectedURLs {
-            var existing = xmpSidecarService.loadSidecar(for: imageURL)
-                ?? batchMetadataByURL[imageURL]
-                ?? IPTCMetadata()
-            applyBatchEdits(batchMeta, to: &existing, previousCommon: prevCommon)
+        let mutation = capturedBatchMutation()
+        let urls = selectedURLs
+        let baselines = batchMetadataByURL
+        for imageURL in urls {
+            guard !Task.isCancelled else { return }
             do {
-                try await xmpSidecarService.saveSidecarSerialized(
-                    metadata: existing,
-                    for: imageURL
+                let installed = try await xmpSidecarService.updateSidecarSerialized(
+                    for: imageURL,
+                    fallback: baselines[imageURL] ?? IPTCMetadata(),
+                    mutation: mutation
                 )
-                batchMetadataByURL[imageURL] = existing
+                if selectedURLs == urls {
+                    batchMetadataByURL[imageURL] = installed
+                }
             } catch {
                 saveError = "Failed to save XMP sidecar: \(error.localizedDescription)"
             }
@@ -3044,61 +3054,36 @@ final class MetadataViewModel {
         updateState: Bool = true
     ) async {
         let now = Date()
-        let batchMeta = editingMetadata
-        let prevCommon = previousEditingMetadata
+        let mutation = capturedBatchMutation()
+        let overridesSuppliers = batchImageSupplierMutation != .untouched
         let urls = targetURLs ?? selectedURLs
+        let selectedAtStart = selectedURLs
+        let baselines = batchMetadataByURL
 
         for imageURL in urls {
-            // Load existing sidecar or create base metadata
-            var existingMeta: IPTCMetadata
-            var existingHistory: [MetadataHistoryEntry] = []
-            var snapshot: IPTCMetadata? = nil
-
-            if let existing = sidecarService.loadSidecar(for: imageURL, in: folderURL) {
-                existingMeta = existing.metadata
-                existingHistory = existing.history
-                snapshot = existing.imageMetadataSnapshot
-            } else {
-                // Start from the resolved per-image record captured during batch loading. Starting
-                // from an empty record loses values that are partial across the selection.
-                existingMeta = batchMetadataByURL[imageURL] ?? IPTCMetadata()
-                snapshot = batchMetadataByURL[imageURL]
-            }
-
-            let previousMeta = existingMeta
-            applyBatchEdits(batchMeta, to: &existingMeta, previousCommon: prevCommon)
-            let history = buildHistory(
-                previous: previousMeta,
-                edited: existingMeta,
-                timestamp: now,
-                existing: existingHistory
-            )
-
-            let sidecar = MetadataSidecar(
-                sourceFile: imageURL.lastPathComponent,
-                lastModified: now,
-                pendingChanges: pendingChanges,
-                metadata: existingMeta,
-                imageMetadataSnapshot: pendingChanges ? snapshot : existingMeta,
-                history: history
-            )
-
+            guard !Task.isCancelled else { return }
             do {
-                let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
-                    sidecar,
+                let installed = try await sidecarService.updateMetadataSerialized(
                     for: imageURL,
-                    in: folderURL
+                    in: folderURL,
+                    fallback: baselines[imageURL] ?? IPTCMetadata(),
+                    pendingChanges: pendingChanges,
+                    timestamp: now,
+                    mutation: mutation
                 )
-                batchMetadataByURL[imageURL] = installed.metadata
+                if selectedURLs == selectedAtStart {
+                    batchMetadataByURL[imageURL] = installed.metadata
+                }
                 if pendingChanges {
                     // C2PA: save full metadata to XMP sidecar for render+sign overlay.
-                    // `existingMeta` is JSON-sourced (no crs) — preserve any develop
+                    // Installed metadata is JSON-sourced (no crs) — preserve any develop
                     // edits already in the .xmp so a batch rating/keyword edit on a
                     // C2PA RAW doesn't wipe them.
                     try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
                         metadata: installed.metadata,
                         for: imageURL,
-                        mergeWithExisting: true
+                        mergeWithExisting: true,
+                        imageSuppliersOverride: overridesSuppliers ? installed.metadata.imageSuppliers : nil
                     )
                 }
             } catch {
@@ -3106,7 +3091,7 @@ final class MetadataViewModel {
             }
         }
 
-        if updateState {
+        if updateState, selectedURLs == selectedAtStart {
             hasChanges = pendingChanges
             if !pendingChanges {
                 selectedHavePendingSidecars = false
@@ -3114,18 +3099,43 @@ final class MetadataViewModel {
         }
     }
 
-    private func applyBatchEdits(
+    private func capturedBatchMutation() -> @Sendable (inout IPTCMetadata) -> Void {
+        let batchMeta = editingMetadata
+        let previousCommon = previousEditingMetadata
+        let fields = batchFieldMutations
+        let locations = batchLocationsShownMutation
+        let suppliers = batchImageSupplierMutation
+        let keywordsMode = multiSelectMode(for: "keywords")
+        let personMode = multiSelectMode(for: "personShown")
+        return { metadata in
+            Self.applyBatchEdits(
+                batchMeta, to: &metadata, previousCommon: previousCommon,
+                batchFieldMutations: fields, batchLocationsShownMutation: locations,
+                batchImageSupplierMutation: suppliers,
+                keywordsMode: keywordsMode, personMode: personMode
+            )
+        }
+    }
+
+    private nonisolated static func applyBatchEdits(
         _ batchMeta: IPTCMetadata,
         to metadata: inout IPTCMetadata,
-        previousCommon: IPTCMetadata? = nil
+        previousCommon: IPTCMetadata? = nil,
+        batchFieldMutations: [MetadataFieldID: MetadataFieldMutation],
+        batchLocationsShownMutation: BatchLocationsShownMutation,
+        batchImageSupplierMutation: EditorialImageSupplierMutation,
+        keywordsMode: MultiSelectFieldMode,
+        personMode: MultiSelectFieldMode
     ) {
         // Explicit intent wins over every legacy inference path below. These operations were
         // validated when recorded, so a failure here can only mean an internal contract drift;
         // fail closed by leaving the per-image record unchanged.
-        if !batchFieldMutations.isEmpty || batchLocationsShownMutation != .untouched {
+        if !batchFieldMutations.isEmpty || batchLocationsShownMutation != .untouched
+            || batchImageSupplierMutation != .untouched {
             guard let explicitlyMutated = try? Self.applyingBatchListMutations(
                 batchFieldMutations,
                 locationsShown: batchLocationsShownMutation,
+                imageSuppliers: batchImageSupplierMutation,
                 to: metadata
             ) else { return }
             metadata = explicitlyMutated
@@ -3143,7 +3153,7 @@ final class MetadataViewModel {
 
         // Keywords — add vs overwrite
         if batchFieldMutations[.keywords] == nil {
-            if multiSelectMode(for: "keywords") == .add, let prev = previousCommon {
+            if keywordsMode == .add, let prev = previousCommon {
                 let previous = Set(Self.normalizedRepeatableValues(prev.keywords, field: .keywords))
                 let edited = Self.normalizedRepeatableValues(batchMeta.keywords, field: .keywords)
                 let editedSet = Set(edited)
@@ -3163,7 +3173,7 @@ final class MetadataViewModel {
 
         // Person Shown — add vs overwrite
         if batchFieldMutations[.personShown] == nil {
-            if multiSelectMode(for: "personShown") == .add, let prev = previousCommon {
+            if personMode == .add, let prev = previousCommon {
                 let previous = Set(Self.normalizedRepeatableValues(prev.personShown, field: .personShown))
                 let edited = Self.normalizedRepeatableValues(batchMeta.personShown, field: .personShown)
                 let editedSet = Set(edited)
@@ -3291,7 +3301,7 @@ final class MetadataViewModel {
         }
     }
 
-    private func applyImplicitAdditiveEdit(
+    private nonisolated static func applyImplicitAdditiveEdit(
         previous: [String],
         edited: [String],
         field: MetadataFieldID,
@@ -3582,26 +3592,67 @@ final class MetadataViewModel {
         showDiscardAllConfirmation = true
     }
 
-    func discardPendingChanges() {
-        guard let folderURL = currentFolderURL else { return }
-
-        // Single image: restore from original and delete sidecar
-        if selectedURLs.count == 1, let original = originalImageMetadata {
-            editingMetadata = original
-            hasChanges = false
-            sidecarHistory = []
-            previousEditingMetadata = original
-            try? sidecarService.deleteSidecar(for: selectedURLs[0], in: folderURL)
-        } else {
-            // Multiple images: delete sidecars for all selected
-            for imageURL in selectedURLs {
-                try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+    @discardableResult
+    func discardPendingChanges() -> Task<Void, Never>? {
+        guard let folderURL = currentFolderURL, !selectedURLs.isEmpty else { return nil }
+        let urls = selectedURLs
+        let original = originalImageMetadata
+        let edited = editingMetadata
+        let fieldMutations = batchFieldMutations
+        let locationsMutation = batchLocationsShownMutation
+        let supplierMutation = batchImageSupplierMutation
+        let precedingWrite = writeTask
+        let loadID = metadataLoadRequestID
+        let requestID = UUID()
+        discardRequestID = requestID
+        discardTask?.cancel()
+        saveError = nil
+        discardTask = Task {
+            await precedingWrite?.value
+            var failures = 0
+            for imageURL in urls {
+                do {
+                    try Task.checkCancellation()
+                    try await discardSidecar(imageURL, folderURL)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    failures += 1
+                }
             }
-            // Reset state since we're in batch mode
+            // A completion for an older selection or draft must not reset current edits.
+            guard discardRequestID == requestID,
+                  metadataLoadRequestID == loadID,
+                  currentFolderURL == folderURL, selectedURLs == urls,
+                  editingMetadata == edited,
+                  batchFieldMutations == fieldMutations,
+                  batchLocationsShownMutation == locationsMutation,
+                  batchImageSupplierMutation == supplierMutation else { return }
+            guard failures == 0 else {
+                saveError = "Failed to discard metadata sidecars for \(failures) image(s)."
+                return
+            }
+            if urls.count == 1, let original {
+                editingMetadata = original
+                previousEditingMetadata = original
+            } else {
+                editingMetadata = IPTCMetadata()
+                previousEditingMetadata = nil
+                batchCommonMetadata = nil
+                batchDifferingFields = []
+                batchPartialKeywords = []
+                batchPartialPersonShown = []
+                batchListSelectionSummary = .empty
+                batchFieldMutations = [:]
+                batchLocationsShownMutation = .untouched
+                batchImageSupplierMutation = .untouched
+                batchMetadataByURL = [:]
+            }
             hasChanges = false
             selectedHavePendingSidecars = false
-            editingMetadata = IPTCMetadata()
+            sidecarHistory = []
         }
+        return discardTask
     }
 
     func discardAllPendingInFolder() {

@@ -235,6 +235,7 @@ struct XMPSidecarService: Sendable {
         metadata: IPTCMetadata,
         for imageURL: URL,
         mergeWithExisting: Bool = false,
+        imageSuppliersOverride: [EditorialImageSupplier]? = nil,
         onlyIfExisting: Bool = false,
         preserveExistingOrientationIfMissing: Bool = false,
         expectedSnapshot: XMPSidecarWriteSnapshot? = nil,
@@ -253,6 +254,10 @@ struct XMPSidecarService: Sendable {
                     record = existing.merged(preferring: metadata)
                 } else {
                     record = metadata
+                }
+                // Explicit batch clear/replace intent must survive the nonempty-value merge.
+                if let imageSuppliersOverride {
+                    record.imageSuppliers = imageSuppliersOverride
                 }
                 if preserveExistingOrientationIfMissing, record.exifOrientation == nil {
                     let raw = xmp.tiffOrientation
@@ -276,6 +281,58 @@ struct XMPSidecarService: Sendable {
                 }
                 xmp.creatorTool = SwiftExifWriteEngine.creatorTool
             }
+        }
+    }
+
+    /// Reads the batch baseline inside the per-photo transaction and replays the captured
+    /// mutation after an external revision change. A queued edit cannot replace newer fields
+    /// or Develop settings with the UI's stale batch record.
+    nonisolated func updateSidecarSerialized(
+        for imageURL: URL,
+        fallback: IPTCMetadata,
+        beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in },
+        mutation: @escaping @Sendable (inout IPTCMetadata) -> Void
+    ) async throws -> IPTCMetadata {
+        try Task.checkCancellation()
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            let url = self.sidecarURL(for: imageURL)
+            for attempt in 0..<Self.transactionRetryLimit {
+                let sourceData = try Self.currentData(at: url)
+                var xmp = try sourceData.map { try XMPReader.readFromXML($0) } ?? XMPData()
+                var metadata = sourceData == nil ? fallback : self.parseMetadata(
+                    from: xmp, imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
+                )
+                mutation(&metadata)
+                XMPDataBuilder.applyDescriptive(metadata, into: &xmp)
+                if let titles = metadata.localizedTitles {
+                    if titles.isEmpty {
+                        xmp.setValue(.simple("True"), namespace: XMPDataBuilder.aaphotoNamespace,
+                                     property: localizedTitleClearedProperty)
+                    } else {
+                        xmp.removeValue(namespace: XMPDataBuilder.aaphotoNamespace,
+                                        property: localizedTitleClearedProperty)
+                    }
+                }
+                XMPDataBuilder.applyCameraRaw(
+                    metadata.cameraRaw,
+                    imageAspect: self.imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop),
+                    into: &xmp
+                )
+                xmp.creatorTool = SwiftExifWriteEngine.creatorTool
+                let staged = Data(XMPWriter.generateXML(xmp).utf8)
+                _ = try XMPReader.readFromXML(staged)
+                beforeRevisionCheck(attempt)
+                await Task.yield()
+                guard try Self.currentData(at: url) == sourceData else { continue }
+                try staged.write(to: url, options: .atomic)
+                let installed = try Data(contentsOf: url)
+                guard installed == staged else { throw CocoaError(.fileWriteUnknown) }
+                return self.parseMetadata(
+                    from: try XMPReader.readFromXML(installed),
+                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
+                )
+            }
+            throw DescriptiveMetadataWriteError.staleXMPSidecar(url)
         }
     }
 

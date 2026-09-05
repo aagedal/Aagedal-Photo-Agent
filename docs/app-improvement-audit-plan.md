@@ -1314,6 +1314,15 @@ retries protect observed external changes. Ten new regressions, repository valid
 transactions, explicit deletion, identity, and real-volume gates remain open at 66 of 75.
 ([validation](plan-status-batch-mirror-cleanup-continuation-2026-09-05.md))
 
+**Batch baseline and selected discard follow-up (2026-09-05):** full-record Metadata batch XMP and
+JSON reads, mutation replay, history construction, revision checks, and installation now run inside
+asynchronous per-photo transactions. Explicit selected-image discard also uses the photo lock,
+waits for preceding saves, reports deletion failures, and rejects stale editor publication.
+Folder-wide and post-write deletion, Known People database reads, rename identity preparation, and
+real-volume gates remain open at 66 of 75.
+([validation](plan-status-batch-baseline-discard-continuation-2026-09-05.md))
+
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

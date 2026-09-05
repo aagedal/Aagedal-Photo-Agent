@@ -297,6 +297,55 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
+    /// Builds batch metadata and its history from the same revision under the photo lock.
+    /// The fallback is used only when no current or legacy record exists.
+    nonisolated func updateMetadataSerialized(
+        for imageURL: URL,
+        in folderURL: URL,
+        fallback: IPTCMetadata,
+        pendingChanges: Bool,
+        timestamp: Date = Date(),
+        beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in },
+        mutation: @escaping @Sendable (inout IPTCMetadata) -> Void
+    ) async throws -> MetadataSidecar {
+        try Task.checkCancellation()
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            for attempt in 0..<4 {
+                let tokens = try self.contentTokens(for: imageURL, in: folderURL)
+                let current = self.loadSidecar(for: imageURL, in: folderURL)
+                let previous = current?.metadata ?? fallback
+                var metadata = previous
+                mutation(&metadata)
+                var history = current?.history ?? []
+                history.append(contentsOf: MetadataHistoryEntry.changes(
+                    from: previous, to: metadata, timestamp: timestamp
+                ))
+                history.trimToHistoryLimit()
+                let sidecar = MetadataSidecar(
+                    sourceFile: imageURL.lastPathComponent,
+                    lastModified: timestamp,
+                    pendingChanges: pendingChanges,
+                    metadata: metadata,
+                    imageMetadataSnapshot: pendingChanges
+                        ? (current == nil ? fallback : current?.imageMetadataSnapshot) : metadata,
+                    history: history
+                )
+                beforeRevisionCheck(attempt)
+                await Task.yield()
+                guard try self.contentTokens(for: imageURL, in: folderURL) == tokens else { continue }
+                try self.saveSidecar(sidecar, for: imageURL, in: folderURL)
+                guard let installed = self.loadSidecar(for: imageURL, in: folderURL),
+                      Self.samePersistedRecord(installed, sidecar) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                return installed
+            }
+            throw CocoaError(.fileWriteFileExists, userInfo: [
+                NSLocalizedDescriptionKey: "The metadata sidecar kept changing while the batch edit was being saved."
+            ])
+        }
+    }
+
     /// Serializes the complete JSON history transaction for one photo. History entries captured
     /// by Caption/Metadata/face workflows are treated as field mutations and replayed onto the
     /// latest on-disk record. This prevents a complete-but-stale draft from erasing an unrelated
@@ -399,6 +448,20 @@ struct MetadataSidecarService: Sendable {
             throw CocoaError(.fileWriteFileExists, userInfo: [
                 NSLocalizedDescriptionKey: "The metadata sidecar kept changing while cleanup was being prepared."
             ])
+        }
+    }
+
+    /// Explicit user discard is serialized with photo writes. Unlike refresh cleanup it
+    /// intentionally removes pending edits/history. Cancellation prevents admission only.
+    nonisolated func deleteSidecarSerialized(
+        for imageURL: URL,
+        in folderURL: URL,
+        beforeDelete: @escaping @Sendable () throws -> Void = {}
+    ) async throws {
+        try Task.checkCancellation()
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            try beforeDelete()
+            try self.deleteSidecar(for: imageURL, in: folderURL)
         }
     }
 

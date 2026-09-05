@@ -238,6 +238,143 @@ struct MetadataEditorReadServiceTests {
         #expect(probe.readURLs == [imageURL, imageURL])
     }
 
+    @Test("failed selected discard retains the draft and history")
+    @MainActor
+    func failedDiscardRetainsEditor() async throws {
+        let model = makeDiscardModel { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        let draft = model.editingMetadata
+        let history = model.sidecarHistory
+
+        let task = try #require(model.discardPendingChanges())
+        await task.value
+
+        #expect(model.editingMetadata == draft)
+        #expect(model.sidecarHistory.map(\.id) == history.map(\.id))
+        #expect(model.hasChanges)
+        #expect(model.saveError?.contains("1 image(s)") == true)
+    }
+
+    @Test("selected discard completion preserves newer draft, selection, or batch intent", arguments: ["draft", "selection", "batch intent"])
+    @MainActor
+    func staleDiscardPreservesEditor(change: String) async throws {
+        let gate = MetadataDiscardGate()
+        let model = makeDiscardModel { _, _ in await gate.enter() }
+        if change == "batch intent" {
+            model.selectedCount = 2
+            model.selectedURLs.append(URL(fileURLWithPath: "/virtual/second.jpg"))
+            // Clearing an already empty common list changes intent without changing its preview.
+            model.batchCommonMetadata = model.editingMetadata
+        }
+        let task = try #require(model.discardPendingChanges())
+        await gate.waitUntilStarted()
+        if change == "draft" {
+            model.editingMetadata.title = "Newer draft"
+        } else if change == "selection" {
+            model.selectedURLs = [URL(fileURLWithPath: "/virtual/new-selection.jpg")]
+        } else {
+            try model.setBatchMutation(.clear, for: .keywords)
+        }
+        let expectedDraft = model.editingMetadata
+        let expectedHistory = model.sidecarHistory
+        await gate.release()
+        await task.value
+
+        #expect(model.editingMetadata == expectedDraft)
+        #expect(model.sidecarHistory.map(\.id) == expectedHistory.map(\.id))
+        #expect(model.hasChanges)
+        if change == "batch intent" {
+            #expect(model.batchFieldMutations[.keywords] == .clear)
+        }
+    }
+
+    @Test("successful batch discard clears explicit intent and cached common values")
+    @MainActor
+    func batchDiscardClearsIntent() async throws {
+        let model = makeDiscardModel { _, _ in }
+        model.selectedCount = 2
+        model.selectedURLs.append(URL(fileURLWithPath: "/virtual/second.jpg"))
+        model.batchCommonMetadata = IPTCMetadata(keywords: ["common"])
+        model.batchPartialKeywords = ["partial"]
+        model.batchPartialPersonShown = ["Person"]
+        model.batchDifferingFields = ["keywords"]
+        try model.setBatchMutation(.append(["discarded"]), for: .keywords)
+        try model.setBatchLocationsShownMutation(.clear)
+        try model.setBatchImageSupplierMutation(.clear)
+
+        let task = try #require(model.discardPendingChanges())
+        await task.value
+
+        #expect(!model.hasChanges)
+        #expect(model.editingMetadata == IPTCMetadata())
+        #expect(model.sidecarHistory.isEmpty)
+        #expect(model.batchFieldMutations.isEmpty)
+        #expect(model.batchLocationsShownMutation == .untouched)
+        #expect(model.batchImageSupplierMutation == .untouched)
+        #expect(model.batchCommonMetadata == nil)
+        #expect(model.batchPartialKeywords.isEmpty)
+        #expect(model.batchPartialPersonShown.isEmpty)
+        #expect(model.batchDifferingFields.isEmpty)
+        // A subsequent intent must not bring back the discarded keyword append.
+        try model.setBatchMutation(.append(["fresh"]), for: .keywords)
+        #expect(model.editingMetadata.keywords == ["fresh"])
+    }
+
+    @Test("cancelling admitted selected discard allows deletion to finish")
+    func admittedDiscardCancellation() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let imageURL = folder.appendingPathComponent("draft.jpg")
+        let service = MetadataSidecarService()
+        try service.saveSidecar(MetadataSidecar(
+            sourceFile: imageURL.lastPathComponent,
+            lastModified: Date(),
+            pendingChanges: true,
+            metadata: IPTCMetadata(title: "Draft"),
+            imageMetadataSnapshot: IPTCMetadata(title: "Original"),
+            history: []
+        ), for: imageURL, in: folder)
+        let gate = MetadataDiscardAdmissionGate()
+        defer { gate.release() }
+        let task = Task {
+            try await service.deleteSidecarSerialized(for: imageURL, in: folder) {
+                gate.blockAfterAdmission()
+            }
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.hasEntered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(gate.hasEntered)
+        task.cancel()
+        gate.release()
+        try await task.value
+        #expect(service.loadSidecar(for: imageURL, in: folder) == nil)
+    }
+
+    @MainActor
+    private func makeDiscardModel(
+        discard: @escaping @Sendable (URL, URL) async throws -> Void
+    ) -> MetadataViewModel {
+        let model = MetadataViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            discardSidecar: discard
+        )
+        model.currentFolderURL = URL(fileURLWithPath: "/virtual")
+        model.selectedURLs = [URL(fileURLWithPath: "/virtual/draft.jpg")]
+        model.selectedCount = 1
+        model.originalImageMetadata = IPTCMetadata(title: "Original")
+        model.editingMetadata = IPTCMetadata(title: "Draft")
+        model.hasChanges = true
+        model.sidecarHistory = MetadataHistoryEntry.changes(
+            from: IPTCMetadata(title: "Original"),
+            to: model.editingMetadata,
+            timestamp: Date()
+        )
+        return model
+    }
+
     @Test("passive Metadata callers await complete request-owned facts")
     func metadataViewModelSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -352,4 +489,46 @@ private nonisolated final class MetadataEditorReadAccessProbe: @unchecked Sendab
     var readURLs: [URL] { lock.withLock { urls } }
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
     var maximumConcurrentReads: Int { lock.withLock { maximumReads } }
+}
+
+/// Suspends the injected discard without blocking MainActor or relying on scheduling delays.
+private actor MetadataDiscardGate {
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var completionWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func enter() async {
+        started = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        guard !released else { return }
+        await withCheckedContinuation { completionWaiters.append($0) }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        completionWaiters.forEach { $0.resume() }
+        completionWaiters.removeAll()
+    }
+}
+
+private nonisolated final class MetadataDiscardAdmissionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var entered = false
+
+    var hasEntered: Bool { lock.withLock { entered } }
+
+    func blockAfterAdmission() {
+        lock.withLock { entered = true }
+        semaphore.wait()
+    }
+
+    func release() { semaphore.signal() }
 }
