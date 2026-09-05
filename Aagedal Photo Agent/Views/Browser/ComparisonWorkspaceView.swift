@@ -320,7 +320,7 @@ struct ComparisonWorkspaceView: View {
         if isLoading {
             VStack(spacing: 12) {
                 ProgressView()
-                Text("Preparing exact source revisions and comparison previews…")
+                Text("Preparing comparison previews…")
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

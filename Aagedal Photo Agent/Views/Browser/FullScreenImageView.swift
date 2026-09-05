@@ -1338,92 +1338,10 @@ struct FullScreenImageView: View {
             renderToken: renderToken,
             isEdited: isEdited
         ) {
-            imageLogger.info("\(filename): Phase 0 display preview cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: displayPreview)
             lastLoadedOrientation = imageOrientation
-            isLoading = false
-            // Skip Phase 0.5, go directly to Phase 2 for retina upgrade
-            let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
-            let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160)
-            let screenMaxPx = screenLogicalPx * screenScale
-            let isRAWFile = SupportedImageFormats.isRaw(url: url)
-            let fullStart = CFAbsoluteTimeGetCurrent()
-            fullLoadTask = Task.detached(priority: .medium) {
-                guard !Task.isCancelled else { return }
-                // Reuse an in-flight prefetch decode rather than decoding this exact
-                // image a second time concurrently (fast navigation).
-                var image: CGImage? = await cache.awaitPrefetchedImage(
-                    for: url,
-                    orientation: imageOrientation,
-                    renderToken: renderToken,
-                    isEdited: isEdited
-                )
-                if image == nil, needsHDRLoad {
-                    if isRAWFile {
-                        // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
-                        // Decode straight to screen resolution (not full sensor then shrink) — the
-                        // wasted full-sensor demosaic was the multi-second culling stall on RAW.
-                        let rawFileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
-                        if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
-                            guard !Task.isCancelled else { return }
-                            var settings = cameraRaw
-                            settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
-                            settings?.asShotNeutralTint = Double(rawResult.neutralTint)
-                            settings?.sourceHasHDRHeadroom = true
-                            let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
-                            image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: rawFileOrientation)
-                        }
-                    } else {
-                        if let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) {
-                            guard !Task.isCancelled else { return }
-                            image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
-                        }
-                    }
-                }
-                guard !Task.isCancelled else { return }
-                if image == nil {
-                    guard let result = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
-                        imageLogger.error("\(filename, privacy: .private): Phase 2 failed — could not upgrade cached preview")
-                        await MainActor.run {
-                            if expectedGeneration == renderGeneration,
-                               currentImageFile?.url == url {
-                                loadFailure = FullScreenLoadFailure(
-                                    url: url,
-                                    isRenderingEdits: isEdited
-                                )
-                            }
-                        }
-                        return
-                    }
-                    guard !Task.isCancelled else { return }
-                    let loaded = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
-                    image = loaded
-                }
-                guard let image, !Task.isCancelled else { return }
-                let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
-                await MainActor.run {
-                    guard expectedGeneration == renderGeneration,
-                          currentImageFile?.url == url else { return }
-                    imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
-                    currentImage = makeLoadedImage(from: image)
-                    hiResApplied = true
-                    lastLoadedOrientation = imageOrientation
-                    imageCache.store(
-                        image,
-                        for: url,
-                        orientation: imageOrientation,
-                        renderToken: renderToken,
-                        isEdited: isEdited
-                    )
-                    triggerPrefetch(for: url)
-                }
-            }
-            return
-        }
-
-        // Cache miss — show thumbnail instantly (zero I/O) to avoid blank screen
-        if let thumb = viewModel.thumbnailService.thumbnail(for: url),
-           let thumbImage = makeLoadedImage(from: thumb) {
+        } else if let thumb = viewModel.thumbnailService.thumbnail(for: url),
+                  let thumbImage = makeLoadedImage(from: thumb) {
             imageLogger.info("\(filename): Phase 0 thumbnail placeholder")
             currentImage = thumbImage
             lastLoadedOrientation = imageOrientation
@@ -1435,6 +1353,19 @@ struct FullScreenImageView: View {
         let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160)
         let screenMaxPx = screenLogicalPx * screenScale
+        let nativeSize: CGSize?
+        if let width = presentationFacts.pixelWidth, let height = presentationFacts.pixelHeight {
+            nativeSize = CGSize(width: width, height: height)
+        } else {
+            nativeSize = nil
+        }
+        let sourceDecodeMaxPx = FullScreenImageCache.cropAwareSourceMaxPixelSize(
+            outputMaxPixelSize: screenMaxPx,
+            settings: cameraRaw,
+            exifOrientation: fileOrientation,
+            sourcePixelSize: nativeSize
+        )
+
         imageLogger.info("\(filename): isRAW=\(isRAW)")
 
         // Launch Phase 2 immediately (fire-and-forget) so it runs in parallel with Phase 0.5.
@@ -1456,17 +1387,17 @@ struct FullScreenImageView: View {
                     // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
                     // Decode straight to screen resolution (not full sensor then shrink).
                     let rawFileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
-                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
+                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, maxPixelSize: sourceDecodeMaxPx) {
                         guard !Task.isCancelled else { return }
                         var settings = cameraRaw
                         settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                         settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                         settings?.sourceHasHDRHeadroom = true
-                        let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
+                        let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: sourceDecodeMaxPx)
                         image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: rawFileOrientation)
                     }
                 } else {
-                    if let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) {
+                    if let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(from: url, maxPixelSize: sourceDecodeMaxPx) {
                         guard !Task.isCancelled else { return }
                         image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                     }
@@ -1474,7 +1405,7 @@ struct FullScreenImageView: View {
             }
             guard !Task.isCancelled else { return }
             if image == nil {
-                guard let result = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
+                guard let result = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: sourceDecodeMaxPx) else {
                     imageLogger.error("\(filename, privacy: .private): Phase 2 failed — could not decode image")
                     await MainActor.run {
                         if expectedGeneration == renderGeneration,
@@ -1524,7 +1455,7 @@ struct FullScreenImageView: View {
             }
         }
 
-        // Phase 0.5: Quick 960px preview (<5ms non-RAW) — runs in parallel with Phase 2.
+        // Phase 0.5: Screen-sized ImageIO preview, independent of speculative/HDR work.
         // Stored so it can be cancelled when the user toggles edit mode or navigates,
         // preventing orphaned tasks from exhausting the cooperative thread pool.
         let previewStart = CFAbsoluteTimeGetCurrent()
@@ -1545,17 +1476,11 @@ struct FullScreenImageView: View {
                 guard !Task.isCancelled else { return nil }
                 return Self.applyCameraRaw(to: raw.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: raw.orientation)
             }
-            // Try HDR CIImage path first; fall through to CGImage if crop/render fails
-            if needsHDRLoad,
-               let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(from: url, maxPixelSize: 960) {
-                guard !Task.isCancelled else { return nil }
-                if let image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation) {
-                    return image
-                }
-            }
-            // CGImage fallback — applyCameraRaw(to: CGImage) always returns a valid image
+            // ImageIO can downsample JPEGs before applying edits. Opening them through
+            // Core Image first leaves a full source/gain-map decode in the render graph.
+            // Use the fast SDR bitmap here; Phase 2 preserves HDR for the final image.
             guard !Task.isCancelled else { return nil }
-            guard let raw = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: 960) else { return nil }
+            guard let raw = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: sourceDecodeMaxPx) else { return nil }
             guard !Task.isCancelled else { return nil }
             return Self.applyCameraRaw(to: raw.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: raw.orientation)
         }

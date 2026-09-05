@@ -101,6 +101,28 @@ struct ComparisonCoordinatorTests {
         #expect(ComparisonRenderPolicy.maximumResidentOutputBytes == 256 * 1_024 * 1_024)
     }
 
+    @Test("comparison reuses oversized cached pixels within its output budget")
+    func comparisonDownsamplesCachedRender() throws {
+        // Default CIColor uses bounded sRGB and clamps 2 to 1 before rendering.
+        // Explicit extended-linear color creates actual HDR pixels to exercise the resize.
+        let color = try #require(CIColor(
+            red: 2, green: 0.25, blue: 0.125, alpha: 1,
+            colorSpace: CameraRawApproximation.workingColorSpace
+        ))
+        let source = CIImage(color: color)
+            .cropped(to: CGRect(x: 0, y: 0, width: 512, height: 256))
+        let image = try #require(CameraRawApproximation.createDisplayCGImage(source, from: source.extent))
+        #expect(CameraRawApproximation.contentHeadroom(of: CIImage(cgImage: image), extent: source.extent) > 1.9)
+        let bounded = try #require(ComparisonRenderService.boundedCachedImage(image, maximumLongEdge: 128))
+        #expect(bounded.width == 128)
+        #expect(bounded.height == 64)
+        #expect(CameraRawApproximation.contentHeadroom(of: CIImage(cgImage: bounded),
+                                                       extent: CGRect(x: 0, y: 0, width: 128, height: 64)) > 1.9)
+        // Reuse must leave the full-screen bitmap intact and avoid reallocating a small hit.
+        #expect(image.width == 512)
+        #expect(ComparisonRenderService.boundedCachedImage(bounded, maximumLongEdge: 128) === bounded)
+    }
+
     @Test("comparison representation chooses the matching pixel cache")
     func comparisonRepresentationPixelRouting() {
         #expect(!ComparisonRenderPolicy.usesEditedPixels(for: .original))

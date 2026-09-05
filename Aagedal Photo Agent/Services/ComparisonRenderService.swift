@@ -122,6 +122,7 @@ actor ComparisonDecodeGate {
 nonisolated struct ComparisonRenderService: Sendable {
     private static let rawDecodeGate = ComparisonDecodeGate(limit: 1)
 
+    @concurrent
     func render(
         imageFile: ImageFile,
         settings: CameraRawSettings?,
@@ -168,11 +169,11 @@ nonisolated struct ComparisonRenderService: Sendable {
             orientation: orientation,
             renderToken: renderToken,
             isEdited: isEdited
-        ), ComparisonRenderPolicy.acceptsCachedImage(
+        ), let boundedCached = Self.boundedCachedImage(
             cached,
             maximumLongEdge: boundedMaxPixelSize
         ) {
-            rendered = cached
+            rendered = boundedCached
         } else {
             let decoded = try await decode(
                 imageFile: imageFile,
@@ -208,6 +209,7 @@ nonisolated struct ComparisonRenderService: Sendable {
     /// Produces a bounded snapshot of the current in-memory Develop buffer. This deliberately
     /// uses the same Metal edit graph as the live editor instead of exporting or reading the XMP
     /// sidecar, so uncommitted adjustments are represented honestly as `Live Edit`.
+    @concurrent
     func renderLiveEdit(
         imageFile: ImageFile,
         sourceImage: CIImage,
@@ -290,6 +292,18 @@ nonisolated struct ComparisonRenderService: Sendable {
             ),
             image: image
         )
+    }
+
+    /// A full-screen render can be larger than Compare's two-pane budget. Reuse those
+    /// already-decoded, edit-matched pixels instead of opening and rendering the source again.
+    /// Keep the larger entry in the shared cache for a later return to full screen.
+    static func boundedCachedImage(_ image: CGImage, maximumLongEdge: CGFloat) -> CGImage? {
+        let limit = ComparisonRenderPolicy.boundedLongEdge(maximumLongEdge)
+        if ComparisonRenderPolicy.acceptsCachedImage(image, maximumLongEdge: limit) {
+            return image
+        }
+        let source = boundedSource(CIImage(cgImage: image), maximumLongEdge: limit)
+        return CameraRawApproximation.createDisplayCGImage(source, from: source.extent)
     }
 
     private static func boundedSource(

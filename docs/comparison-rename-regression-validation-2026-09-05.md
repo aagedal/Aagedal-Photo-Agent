@@ -139,3 +139,53 @@ Use two copied photos in the latest development build:
 Visual/manual checks above remain unverified until the user reports the result. Broader real-volume,
 Thread Performance Checker, Instruments, accessibility and release gates remain open; the audit
 checklist remains at 66 of 75 completed substeps.
+
+## Full-screen and Compare preview latency follow-up
+
+The user reported a persistent pixelated full-screen view of an edited JPEG and slow initial
+Compare preparation. Live samples taken after the reports did not capture an active image decode
+or a blocked main thread; they do not establish the duration or exact bottleneck of those loads.
+
+Implemented:
+
+- Full-screen interim non-RAW previews now use a screen-sized ImageIO downsample, with edits and
+  orientation applied, instead of a fixed 960-pixel Core Image/HDR-first preview. The separate final
+  render retains HDR. The interim SDR image may change tonality when final HDR becomes available.
+- Both foreground stages request enough source pixels for the displayed crop to reach the screen
+  target. Previously a crop could reduce even the final screen-sized decode below that target.
+- Cached display previews use the same progressive upgrade path, removing a duplicated final-load
+  implementation and retaining generation, navigation, and cancellation checks.
+- Compare downsamples an oversized, matching full-screen cache entry within its memory budget
+  instead of discarding it and decoding the source again. The larger shared entry stays intact.
+- Compare source and live-edit rendering explicitly execute away from MainActor under approachable
+  concurrency. Exact source-revision capture is retained.
+- A regression test covers Compare cached-image dimensions, HDR headroom, and reuse of an already
+  bounded bitmap.
+
+Manual retest after rebuilding:
+
+1. Stop the current Xcode run, choose the app scheme, and press Command-R.
+2. Select the same edited JPEG in Single view and press Space. Note approximately how long it
+   takes to become sharp enough to inspect at fit-to-screen. The initial thumbnail should be
+   replaced by a screen-sized preview; final HDR may refine its appearance afterward.
+3. Exit full screen, select another photo, and repeat. Include a cropped photo if available.
+4. Open Compare with those two photos, then close and reopen it. Check first-load and repeat-load
+   times separately, and verify both images, edits, orientation, zoom, and pan remain correct.
+5. Report approximate seconds to a useful preview and whether image quality eventually finishes
+   improving. Report the filename/format of any consistently slow example.
+
+Real-folder timing remains unverified. Cold Compare still waits for both completed renders and
+exact revisions. RAW interim-preview orientation restrictions and final-prefetch reuse remain as
+before; these changes do not claim to eliminate every source of decode latency.
+
+Validation: **2,083 tests in 237 suites passed**, 66.612 seconds, in an isolated full run.
+Repository validation and whitespace checks passed. Earlier shared-build runs encountered a stale
+unsigned/missing test bundle and a test-host restart; isolated build products avoided those issues.
+The initial HDR assertion also caught an SDR test fixture, corrected to explicit extended linear
+sRGB with input and output highlight assertions above 1.9.
+
+- Full log: `/private/tmp/aagedal-preview-isolated-tests.log`
+- Isolated DerivedData: `/private/tmp/aagedal-preview-validation`
+- Repository checks: `/private/tmp/aagedal-preview-repository.log`
+- Live samples: `/private/tmp/aagedal-fullscreen-sample.txt`,
+  `/private/tmp/aagedal-compare-latency-sample.txt`
