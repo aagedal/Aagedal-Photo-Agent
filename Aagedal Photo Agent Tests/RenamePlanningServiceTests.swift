@@ -8,6 +8,24 @@ struct RenamePlanningServiceTests {
     private let service = RenamePlanningService()
     private let root = URL(fileURLWithPath: "/rename-tests", isDirectory: true)
 
+    @Test("Missing or unrecognized image extensions warn before rename", arguments: ["renamed", "renamedjpg", "renamed.txt", "renamed.JPG", "renamed.heic"])
+    func imageExtensionWarning(filename: String) throws {
+        let plan = service.makePlan(
+            items: [RenamePlanningItem(sourceImageURL: root.appendingPathComponent("old.jpg"))],
+            recipe: BatchRenameRecipe(name: "Extension check", components: [.literal(filename)]),
+            environment: RenamePlanningEnvironment(caseSensitivity: .caseSensitive)
+        )
+        let entry = try #require(plan.entries.first)
+        let warnings = entry.issues.filter { $0.kind == .unrecognizedImageExtension }
+        let shouldWarn = ["renamed", "renamedjpg", "renamed.txt"].contains(filename)
+        #expect(warnings.count == (shouldWarn ? 1 : 0))
+        #expect(warnings.allSatisfy { $0.severity == .warning })
+        #expect(entry.plannedDestinationImageURL?.lastPathComponent == filename)
+        if shouldWarn {
+            #expect(BatchRenamePreviewRow(entry: entry).issueText.contains("Compare"))
+        }
+    }
+
     @Test("Original-filename XMP work is explicit and frozen onto the correct artifact")
     func originalFilenameMetadataActions() throws {
         let jpeg = root.appendingPathComponent("camera.JPG")

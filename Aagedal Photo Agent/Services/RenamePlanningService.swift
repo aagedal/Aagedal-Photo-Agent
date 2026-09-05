@@ -167,6 +167,17 @@ nonisolated struct RenamePlanningService: Sendable {
                 continue
             }
 
+            if SupportedImageFormats.isSupported(url: item.sourceImageURL),
+               !SupportedImageFormats.isSupported(url: requestedImageURL) {
+                itemIssues.append(RenamePlanIssue(
+                    severity: .warning,
+                    itemIndex: itemIndex,
+                    artifactIdentifier: "image",
+                    url: requestedImageURL,
+                    code: .unrecognizedImageExtension
+                ))
+            }
+
             let requestedActions = artifactActions(
                 for: item.sourceImageURL,
                 destinationFilename: requestedName,

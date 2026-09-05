@@ -279,6 +279,8 @@ nonisolated struct BatchRenamePreviewRow: Identifiable, Equatable, Sendable {
             return "Already exists: \(existingURL.lastPathComponent)"
         case .caseInsensitiveCollision(let existingURL):
             return "Case-insensitive conflict: \(existingURL.lastPathComponent)"
+        case .unrecognizedImageExtension:
+            return "No recognized image extension. This file will disappear from image views, including Compare. Keep a dot followed by an image extension, such as .jpg."
         case .caseOnlyRename:
             return "Case-only rename"
         case .deterministicSuffixApplied(_, let requestedName, let resolvedName):

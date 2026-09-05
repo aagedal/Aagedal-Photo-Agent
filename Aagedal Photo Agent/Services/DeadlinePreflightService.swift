@@ -1147,6 +1147,8 @@ nonisolated struct DeadlinePreflightService: Sendable {
         case .duplicateTarget: return "Multiple planned artifacts have the same destination."
         case .existingDestination: return "A planned rename destination already exists."
         case .caseInsensitiveCollision: return "A planned rename conflicts on a case-insensitive filesystem."
+        case .unrecognizedImageExtension:
+            return "The rename removes the recognized image extension. The file will no longer appear in image views."
         case .caseOnlyRename: return "The rename changes only filename capitalization."
         case .deterministicSuffixApplied: return "A deterministic suffix will resolve a rename conflict."
         case .deterministicSuffixExhausted: return "No available deterministic rename suffix was found."

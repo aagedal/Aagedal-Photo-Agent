@@ -189,3 +189,25 @@ sRGB with input and output highlight assertions above 1.9.
 - Repository checks: `/private/tmp/aagedal-preview-repository.log`
 - Live samples: `/private/tmp/aagedal-fullscreen-sample.txt`,
   `/private/tmp/aagedal-compare-latency-sample.txt`
+
+## Compare rename confirmation and extension warning
+
+User-reported pass: renaming in Compare now works when a recognized image extension is retained.
+The user also renamed an image without a recognized extension; it disappeared from Compare.
+This is distinct from the earlier failure where another valid image lost its renamed identity.
+
+The planner now adds a visible warning when renaming a supported image to a name without a
+recognized image extension (including accidentally producing `namejpg` without a dot). It explains
+that the image will disappear from image views, including Compare. This is a warning, so deliberate
+extension removal remains possible. Uppercase and other supported image extensions remain accepted.
+The Extension component now explains that it outputs `jpg`, not `.jpg`, and the recipe footer
+explains how to include the dot. Existing saved-recipe token semantics remain unchanged.
+
+Manual retest: open Rename for a copied JPEG and enter `testjpg` without a dot. Confirm the preview
+warns before execution. Change it to `test.jpg` and confirm the warning disappears. No file rename
+is needed for this check. Inspect the Extension component's guidance in a batch recipe as well.
+
+Validation: **2,085 tests in 237 suites passed**, 61.441 seconds. The extension test covers no
+extension, a missing separator, an unsupported suffix, uppercase JPG, and another supported format.
+Repository validation and whitespace checks passed. Logs: `/private/tmp/aagedal-extension-warning-tests.log`
+and `/private/tmp/aagedal-extension-warning-repository.log`.

@@ -276,6 +276,7 @@ nonisolated struct RenamePlanIssue: Codable, Equatable, Sendable {
         case deterministicSuffixApplied(attempt: Int, requestedName: String, resolvedName: String)
         case deterministicSuffixExhausted(maximumAttempts: Int)
         case originalFilenameXMPSidecarMissing
+        case unrecognizedImageExtension
     }
 
     /// Stable, presentation-independent categories for grouping and filtering preview issues.
@@ -290,6 +291,7 @@ nonisolated struct RenamePlanIssue: Codable, Equatable, Sendable {
         case deterministicSuffixApplied
         case deterministicSuffixExhausted
         case originalFilenameXMPSidecarMissing
+        case unrecognizedImageExtension
     }
 
     let severity: Severity
@@ -309,6 +311,7 @@ nonisolated struct RenamePlanIssue: Codable, Equatable, Sendable {
         case .caseOnlyRename: return .caseOnlyRename
         case .deterministicSuffixApplied: return .deterministicSuffixApplied
         case .deterministicSuffixExhausted: return .deterministicSuffixExhausted
+        case .unrecognizedImageExtension: return .unrecognizedImageExtension
         case .originalFilenameXMPSidecarMissing: return .originalFilenameXMPSidecarMissing
         }
     }

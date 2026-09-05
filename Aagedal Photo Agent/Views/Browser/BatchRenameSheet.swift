@@ -645,7 +645,7 @@ struct BatchRenameSheet: View {
                 }
             }
 
-            Text("The extension is part of the recipe. Add the Extension token when you want to preserve it.")
+            Text("To preserve the file extension, include a Text component containing a dot (.) followed by Extension.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -710,7 +710,12 @@ struct BatchRenameSheet: View {
                         Text(metadataFieldName(field)).tag(field)
                     }
                 }
-            case .originalFilename, .originalStem, .originalExtension, .jobTitle, .importTitle:
+            case .originalExtension:
+                Text("Outputs the extension without its dot, for example jpg. Place a Text component containing . immediately before this component.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .originalFilename, .originalStem, .jobTitle, .importTitle:
                 EmptyView()
             }
         }
