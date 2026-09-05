@@ -164,6 +164,7 @@ struct ComparisonWorkspaceView: View {
                     .tag(ComparisonLayout.wipe)
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .frame(maxWidth: 350)
             .disabled(session == nil)
 
