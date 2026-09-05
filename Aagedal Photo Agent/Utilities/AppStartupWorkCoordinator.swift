@@ -29,7 +29,7 @@ struct AppStartupWorkDependencies {
     static func production() -> AppStartupWorkDependencies {
         AppStartupWorkDependencies(
             migrateKeywordLists: {
-                KeywordListsStore.shared.migrateLegacyBookmarksIfNeeded()
+                await KeywordListsStore.shared.migrateLegacyBookmarksIfNeeded()
             },
             migrateKnownPeople: {
                 KnownPeopleService.shared.migrateLegacyDatabaseIfNeeded()

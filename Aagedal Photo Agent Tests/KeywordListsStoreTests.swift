@@ -602,3 +602,154 @@ private nonisolated final class BlockingKeywordListBackupPreviewReaderProbe: @un
         return maximumActiveReads
     }
 }
+
+@Suite("Keyword list legacy migration filesystem boundary")
+struct KeywordListsLegacyMigrationServiceTests {
+    private func source(_ id: String, bookmark: Data? = Data([1])) -> KeywordListsLegacyMigrationSource {
+        KeywordListsLegacyMigrationSource(
+            id: id, bookmarkKey: id, bookmarkData: bookmark, key: .structured,
+            destinationURL: URL(fileURLWithPath: "/unused/\(id).txt"), format: .structured
+        )
+    }
+
+    @Test("Cancellation before execution never resolves or opens legacy files")
+    func cancellationBeforeAccess() async {
+        let service = KeywordListsLegacyMigrationService(access: .init(
+            readSource: { _, _ in Issue.record("Unexpected source read"); return "" },
+            writeTextIfMissing: { _, _ in Issue.record("Unexpected write"); return false },
+            readDestination: { _ in Issue.record("Unexpected verification"); return "" }
+        ))
+        let sources = [source("first")]
+        let id = UUID()
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.migrate(sources: sources, requestID: id) { _ in
+                Issue.record("Unexpected bookmark resolution")
+                return nil
+            }
+        }.value
+        #expect(result == KeywordListsLegacyMigrationResult(
+            requestID: id, completedIDs: [], writtenIDs: [], failedIDs: [], cancelled: true
+        ))
+    }
+
+    @Test("Cancellation during source read leaves destination untouched")
+    func cancellationDuringRead() async {
+        let service = KeywordListsLegacyMigrationService(access: .init(
+            readSource: { _, _ in
+                #expect(!Thread.isMainThread)
+                withUnsafeCurrentTask { $0?.cancel() }
+                return "legacy"
+            },
+            writeTextIfMissing: { _, _ in Issue.record("Cancelled read must not write"); return false },
+            readDestination: { _ in Issue.record("Cancelled read must not verify"); return "" }
+        ))
+        let sources = [source("first")]
+        let result = await Task {
+            await service.migrate(sources: sources, requestID: UUID()) { _ in
+                URL(fileURLWithPath: "/unused/source.txt")
+            }
+        }.value
+        #expect(result.cancelled)
+        #expect(result.completedIDs.isEmpty)
+        #expect(result.writtenIDs.isEmpty)
+        #expect(result.failedIDs.isEmpty)
+    }
+
+    @Test("Cancellation during write preserves verified commit and skips subsequent sources")
+    func cancellationDuringWrite() async {
+        let service = KeywordListsLegacyMigrationService(access: .init(
+            readSource: { _, _ in "legacy" },
+            writeTextIfMissing: { _, url in
+                #expect(!Thread.isMainThread)
+                #expect(url.lastPathComponent == "first.txt")
+                withUnsafeCurrentTask { $0?.cancel() }
+                return true
+            },
+            readDestination: { _ in "legacy" }
+        ))
+        let sources = [source("first"), source("second")]
+        let result = await Task {
+            await service.migrate(sources: sources, requestID: UUID()) { _ in
+                URL(fileURLWithPath: "/unused/source.txt")
+            }
+        }.value
+        #expect(result.cancelled)
+        #expect(result.writtenIDs == ["first"])
+        #expect(result.completedIDs == ["first"])
+        #expect(result.failedIDs.isEmpty)
+    }
+
+    @Test("Read-back failure preserves durable evidence and permits later source migration")
+    func verificationFailureContinues() async {
+        let service = KeywordListsLegacyMigrationService(access: .init(
+            readSource: { _, _ in "legacy" },
+            writeTextIfMissing: { _, _ in true },
+            readDestination: { url in url.lastPathComponent == "first.txt" ? "corrupt" : "legacy" }
+        ))
+        let result = await service.migrate(
+            sources: [source("first"), source("second"), source("absent", bookmark: nil)],
+            requestID: UUID()
+        ) { _ in URL(fileURLWithPath: "/unused/source.txt") }
+        #expect(!result.cancelled)
+        #expect(result.writtenIDs == ["first", "second"])
+        #expect(result.completedIDs == ["second", "absent"])
+        #expect(result.failedIDs == ["first"])
+    }
+
+    @Test("Managed list created during source read wins over legacy migration")
+    func concurrentManagedWriteIsPreserved() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LegacySeed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("managed.txt")
+        let source = KeywordListsLegacyMigrationSource(
+            id: "structured", bookmarkKey: "unused", bookmarkData: Data([1]),
+            key: .structured, destinationURL: destination, format: .structured
+        )
+        let service = KeywordListsLegacyMigrationService(access: .init(
+            readSource: { _, _ in
+                try CloudCoordinatedIO.writeText("User's newer list", to: destination)
+                return "Legacy list"
+            },
+            writeTextIfMissing: KeywordListsLegacyMigrationFileAccess.system.writeTextIfMissing,
+            readDestination: { _ in Issue.record("Preserved destination needs no verification"); return "" }
+        ))
+        let result = await service.migrate(sources: [source], requestID: UUID()) { _ in
+            root.appendingPathComponent("legacy.txt")
+        }
+        #expect(result.completedIDs == ["structured"])
+        #expect(result.writtenIDs.isEmpty)
+        #expect(result.failedIDs.isEmpty)
+        #expect(try String(contentsOf: destination, encoding: .utf8) == "User's newer list")
+    }
+
+    @Test("An undownloaded cloud placeholder is preserved during migration")
+    func placeholderIsPreserved() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LegacyPlaceholder-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("managed.txt")
+        let placeholder = root.appendingPathComponent(".managed.txt.icloud")
+        try Data().write(to: placeholder)
+        #expect(try !CloudCoordinatedIO.writeTextIfMissing("Legacy list", to: destination))
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(FileManager.default.fileExists(atPath: placeholder.path))
+    }
+
+    @Test("Unresolvable bookmark remains retryable without touching files")
+    func unresolvedBookmark() async {
+        let service = KeywordListsLegacyMigrationService(access: .init(
+            readSource: { _, _ in Issue.record("Unexpected source read"); return "" },
+            writeTextIfMissing: { _, _ in Issue.record("Unexpected write"); return false },
+            readDestination: { _ in Issue.record("Unexpected verification"); return "" }
+        ))
+        let result = await service.migrate(sources: [source("first")], requestID: UUID()) { _ in nil }
+        #expect(result.failedIDs == ["first"])
+        #expect(result.completedIDs.isEmpty)
+        #expect(result.writtenIDs.isEmpty)
+        #expect(!result.cancelled)
+    }
+}

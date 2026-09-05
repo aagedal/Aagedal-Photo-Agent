@@ -723,9 +723,13 @@ final class ICloudSyncCoordinator {
                 keywordListsRoutingRequestID = nil
                 pendingKeywordListsEnabled = nil
                 switch result {
-                case .committed:
+                case .committed(let commit):
                     KeywordListsStore.shared.applyICloudRoutingPreference(on)
-                    KeywordListsCloudCoordinator.shared.refresh()
+                    if on {
+                        KeywordListsCloudCoordinator.shared.refresh(resolvedRoot: commit.destinationURL)
+                    } else {
+                        KeywordListsCloudCoordinator.shared.refresh()
+                    }
                 case .unavailable:
                     lastError = Self.unavailableMessage
                 case .cancelledBeforeResolution, .cancelledBeforeCommit:

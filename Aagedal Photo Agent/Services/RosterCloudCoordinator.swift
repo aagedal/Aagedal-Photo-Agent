@@ -67,19 +67,44 @@ final class RosterCloudCoordinator {
     private var pendingStart: Task<Void, Never>?
     private let downloadService = CloudDownloadService()
     private var pendingDownloads: [UUID: Task<Void, Never>] = [:]
-    private var monitoredRoot: URL?
+    private(set) var monitoredRoot: URL?
+    private var queryGeneration = UUID()
+    private let makeMetadataQuery: () -> NSMetadataQuery
+    private let isEnabled: () -> Bool
+    private let resolveRoot: @Sendable () async -> URL?
+    private let startMetadataQuery: (NSMetadataQuery) -> Void
+    private let stopMetadataQuery: (NSMetadataQuery) -> Void
     private var pendingChanges: [String: (url: URL, contentChangeDate: Date?)] = [:]
 
-    private init() {}
+    init(
+        isEnabled: @escaping () -> Bool = {
+            UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
+        },
+        resolveRoot: @escaping @Sendable () async -> URL? = {
+            await LibraryICloudRoutingService.teams.cloudRootURL(ensuringDirectory: true)
+        },
+        makeMetadataQuery: @escaping () -> NSMetadataQuery = { NSMetadataQuery() },
+        startMetadataQuery: @escaping (NSMetadataQuery) -> Void = { _ = $0.start() },
+        stopMetadataQuery: @escaping (NSMetadataQuery) -> Void = { $0.stop() }
+    ) {
+        self.makeMetadataQuery = makeMetadataQuery
+        self.isEnabled = isEnabled
+        self.resolveRoot = resolveRoot
+        self.startMetadataQuery = startMetadataQuery
+        self.stopMetadataQuery = stopMetadataQuery
+    }
 
     /// Idempotent. Call after app launch and whenever the iCloud toggle changes.
     func refresh(resolvedRoot: URL? = nil) {
-        let enabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
-        guard enabled else {
+        guard isEnabled() else {
             stopQuery()
             return
         }
         if let resolvedRoot {
+            // A proven root supersedes any older, still-resolving container lookup.
+            pendingStart?.cancel()
+            pendingStart = nil
+            if monitoredRoot != resolvedRoot { stopQuery() }
             startQueryIfNeeded(root: resolvedRoot)
         } else {
             scheduleContainerResolution()
@@ -88,14 +113,12 @@ final class RosterCloudCoordinator {
 
     private func scheduleContainerResolution() {
         guard query == nil, pendingStart == nil else { return }
+        let resolveRoot = resolveRoot
         pendingStart = Task { [weak self] in
-            let resolvedRoot = await LibraryICloudRoutingService.teams.cloudRootURL(
-                ensuringDirectory: true
-            )
+            let resolvedRoot = await resolveRoot()
             guard !Task.isCancelled, let self else { return }
             self.pendingStart = nil
-            let stillEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
-            guard stillEnabled, let root = resolvedRoot else { return }
+            guard self.isEnabled(), let root = resolvedRoot else { return }
             self.startQueryIfNeeded(root: root)
         }
     }
@@ -103,8 +126,10 @@ final class RosterCloudCoordinator {
     private func startQueryIfNeeded(root: URL) {
         guard query == nil else { return }
         monitoredRoot = root
+        let generation = UUID()
+        queryGeneration = generation
 
-        let q = NSMetadataQuery()
+        let q = makeMetadataQuery()
         q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
         q.predicate = NSPredicate(
             format: "%K ENDSWITH %@ OR %K ENDSWITH %@",
@@ -121,28 +146,28 @@ final class RosterCloudCoordinator {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.handleUpdateFromStoredQuery()
+                    self?.handleUpdateFromStoredQuery(generation: generation)
                 }
             })
         }
 
-        q.start()
         query = q
+        startMetadataQuery(q)
         logger.info("Started iCloud metadata query for Teams")
     }
 
-    private func handleUpdateFromStoredQuery() {
-        guard let q = query else { return }
+    private func handleUpdateFromStoredQuery(generation: UUID) {
+        guard generation == queryGeneration, let q = query else { return }
         handleUpdate(query: q)
     }
 
     private func stopQuery() {
+        queryGeneration = UUID()
         pendingStart?.cancel()
         pendingStart = nil
         for task in pendingDownloads.values { task.cancel() }
         pendingDownloads.removeAll()
-        guard let q = query else { return }
-        q.stop()
+        if let q = query { stopMetadataQuery(q) }
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
         }

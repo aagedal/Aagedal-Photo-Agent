@@ -15,6 +15,12 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Cloud lifecycle and legacy migration continuation (2026-09-06):** query generations reject stale
+cloud callbacks, changed Teams/Watermark roots replace their queries, and keyword monitoring reuses its
+prepared route. Legacy keyword migration runs on a serialized actor and seeds only missing managed files,
+preserving newer edits and returning durable/cancelled evidence. Phase 12 storage and manual/device gates
+remain open. ([validation](../plan-status-cloud-lifecycle-keyword-migration-continuation-2026-09-06.md))
+
 **Metadata filesystem continuation (2026-09-05):** batch embedded-write XMP mirroring and
 post-processing empty-history cleanup now cross asynchronous, transaction-owned boundaries, with
 existing-only mirroring and revision-checked deletion eligibility. This advances the Phase 12

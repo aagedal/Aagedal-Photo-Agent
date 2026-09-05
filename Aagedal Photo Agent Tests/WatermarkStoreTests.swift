@@ -457,3 +457,190 @@ private nonisolated final class WatermarkLibraryImportAccessProbe: @unchecked Se
     var filesystemCallCount: Int { lock.withLock { storedFilesystemCallCount } }
     var writtenFilenames: [String] { lock.withLock { storedWrittenFilenames } }
 }
+
+@Suite("Teams and Watermark cloud watcher lifecycle", .serialized)
+@MainActor
+struct LibraryCloudWatcherLifecycleTests {
+    @Test("A changed root replaces the query; the same root preserves it", arguments: [false, true])
+    func replacesChangedRoot(watermarks: Bool) {
+        var enabled = true
+        var started: [NSMetadataQuery] = []
+        var stopped: [NSMetadataQuery] = []
+        let watcher = makeWatcher(
+            watermarks: watermarks,
+            isEnabled: { enabled },
+            resolveRoot: { nil },
+            start: { started.append($0) },
+            stop: { stopped.append($0) }
+        )
+        let first = URL(fileURLWithPath: "/test/cloud-first")
+        let second = URL(fileURLWithPath: "/test/cloud-second")
+        watcher.refresh(first)
+        watcher.refresh(first)
+        #expect(started.count == 1)
+        #expect(stopped.isEmpty)
+        #expect(watcher.root() == first)
+
+        watcher.refresh(second)
+        #expect(started.count == 2)
+        #expect(stopped.count == 1)
+        #expect(stopped.first === started.first)
+        #expect(watcher.root() == second)
+
+        enabled = false
+        watcher.refresh(nil)
+        #expect(stopped.count == 2)
+        #expect(watcher.root() == nil)
+    }
+
+    @Test("A supplied root cancels a suspended older lookup", arguments: [false, true])
+    func suppliedRootSupersedesLookup(watermarks: Bool) async {
+        var enabled = true
+        var starts = 0
+        let gate = LibraryCloudWatcherResolutionGate()
+        let watcher = makeWatcher(
+            watermarks: watermarks,
+            isEnabled: { enabled },
+            resolveRoot: { await gate.resolve() },
+            start: { _ in starts += 1 },
+            stop: { _ in }
+        )
+        watcher.refresh(nil)
+        await gate.waitUntilRequested()
+        let replacement = URL(fileURLWithPath: "/test/replacement")
+        watcher.refresh(replacement)
+        await gate.release(URL(fileURLWithPath: "/test/stale"))
+        let wasCancelled = await gate.waitForCancellationEvidence()
+        #expect(wasCancelled)
+        #expect(watcher.root() == replacement)
+        #expect(starts == 1)
+        enabled = false
+        watcher.refresh(nil)
+    }
+
+    @Test("Disabling cancels a suspended lookup without starting a query", arguments: [false, true])
+    func disableCancelsLookup(watermarks: Bool) async {
+        var enabled = true
+        var starts = 0
+        let gate = LibraryCloudWatcherResolutionGate()
+        let watcher = makeWatcher(
+            watermarks: watermarks,
+            isEnabled: { enabled },
+            resolveRoot: { await gate.resolve() },
+            start: { _ in starts += 1 },
+            stop: { _ in }
+        )
+        watcher.refresh(nil)
+        await gate.waitUntilRequested()
+        enabled = false
+        watcher.refresh(nil)
+        await gate.release(URL(fileURLWithPath: "/test/stale"))
+        let wasCancelled = await gate.waitForCancellationEvidence()
+        #expect(wasCancelled)
+        #expect(starts == 0)
+        #expect(watcher.root() == nil)
+    }
+
+    @Test("Queued old-query callbacks are discarded after replacement and disable", arguments: [false, true])
+    func staleCallbacksAreDiscarded(watermarks: Bool) async {
+        var enabled = true
+        var queries: [LibraryCloudCallbackCountingQuery] = []
+        let watcher = makeWatcher(
+            watermarks: watermarks,
+            isEnabled: { enabled },
+            resolveRoot: { nil },
+            makeQuery: {
+                let query = LibraryCloudCallbackCountingQuery()
+                queries.append(query)
+                return query
+            },
+            start: { _ in },
+            stop: { _ in }
+        )
+        watcher.refresh(URL(fileURLWithPath: "/test/first"))
+        NotificationCenter.default.post(name: .NSMetadataQueryDidUpdate, object: queries[0])
+        watcher.refresh(URL(fileURLWithPath: "/test/replacement"))
+        // Let the previously enqueued MainActor observer callback finish.
+        await Task { @MainActor in }.value
+        #expect(queries[0].readCount == 0)
+        #expect(queries[1].readCount == 0)
+
+        NotificationCenter.default.post(name: .NSMetadataQueryDidFinishGathering, object: queries[1])
+        await Task { @MainActor in }.value
+        #expect(queries[1].readCount == 1)
+
+        NotificationCenter.default.post(name: .NSMetadataQueryDidUpdate, object: queries[1])
+        enabled = false
+        watcher.refresh(nil)
+        await Task { @MainActor in }.value
+        #expect(queries[1].readCount == 1)
+    }
+
+    private func makeWatcher(
+        watermarks: Bool,
+        isEnabled: @escaping () -> Bool,
+        resolveRoot: @escaping @Sendable () async -> URL?,
+        makeQuery: @escaping () -> NSMetadataQuery = { NSMetadataQuery() },
+        start: @escaping (NSMetadataQuery) -> Void,
+        stop: @escaping (NSMetadataQuery) -> Void
+    ) -> (refresh: (URL?) -> Void, root: () -> URL?) {
+        if watermarks {
+            let watcher = WatermarkCloudCoordinator(
+                isEnabled: isEnabled, resolveRoot: resolveRoot, makeMetadataQuery: makeQuery,
+                startMetadataQuery: start, stopMetadataQuery: stop
+            )
+            return ({ watcher.refresh(resolvedRoot: $0) }, { watcher.monitoredRoot })
+        }
+        let watcher = RosterCloudCoordinator(
+            isEnabled: isEnabled, resolveRoot: resolveRoot, makeMetadataQuery: makeQuery,
+            startMetadataQuery: start, stopMetadataQuery: stop
+        )
+        return ({ watcher.refresh(resolvedRoot: $0) }, { watcher.monitoredRoot })
+    }
+}
+
+private actor LibraryCloudWatcherResolutionGate {
+    private var rootContinuation: CheckedContinuation<URL?, Never>?
+    private var requestedContinuation: CheckedContinuation<Void, Never>?
+    private var cancellationContinuation: CheckedContinuation<Bool, Never>?
+    private var cancellationEvidence: Bool?
+
+    func resolve() async -> URL? {
+        let result: URL? = await withCheckedContinuation { continuation in
+            rootContinuation = continuation
+            requestedContinuation?.resume()
+            requestedContinuation = nil
+        }
+        let cancelled = Task.isCancelled
+        cancellationEvidence = cancelled
+        cancellationContinuation?.resume(returning: cancelled)
+        cancellationContinuation = nil
+        return result
+    }
+
+    func waitUntilRequested() async {
+        if rootContinuation != nil { return }
+        await withCheckedContinuation { requestedContinuation = $0 }
+    }
+
+    func release(_ root: URL) {
+        rootContinuation?.resume(returning: root)
+        rootContinuation = nil
+    }
+
+    func waitForCancellationEvidence() async -> Bool {
+        if let cancellationEvidence { return cancellationEvidence }
+        return await withCheckedContinuation { cancellationContinuation = $0 }
+    }
+}
+
+/// Count actual observer admissions without querying an iCloud provider.
+nonisolated private final class LibraryCloudCallbackCountingQuery: NSMetadataQuery {
+    private let lock = NSLock()
+    private var storedReadCount = 0
+    var readCount: Int { lock.withLock { storedReadCount } }
+    override var results: [Any] {
+        lock.withLock { storedReadCount += 1 }
+        return []
+    }
+}

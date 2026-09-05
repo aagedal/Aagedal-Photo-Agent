@@ -20,6 +20,7 @@ final class KnownPeopleCloudCoordinator {
     static let shared = KnownPeopleCloudCoordinator()
 
     private var query: NSMetadataQuery?
+    private var queryGeneration = UUID()
     private var observers: [NSObjectProtocol] = []
     private var pendingRefresh: Task<Void, Never>?
     /// In-flight off-main resolution of the ubiquity container. Held so a second
@@ -34,11 +35,26 @@ final class KnownPeopleCloudCoordinator {
     /// debounce window, keyed by path so repeated notifications coalesce.
     private var pendingChanges: [String: (url: URL, contentChangeDate: Date?)] = [:]
 
-    private init() {}
+    private let makeMetadataQuery: () -> NSMetadataQuery
+    private let isEnabled: () -> Bool
+    private let startMetadataQuery: (NSMetadataQuery) -> Void
+    private let stopMetadataQuery: (NSMetadataQuery) -> Void
+
+    init(
+        isEnabled: @escaping () -> Bool = { UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled) },
+        makeMetadataQuery: @escaping () -> NSMetadataQuery = { NSMetadataQuery() },
+        startMetadataQuery: @escaping (NSMetadataQuery) -> Void = { $0.start() },
+        stopMetadataQuery: @escaping (NSMetadataQuery) -> Void = { $0.stop() }
+    ) {
+        self.makeMetadataQuery = makeMetadataQuery
+        self.isEnabled = isEnabled
+        self.startMetadataQuery = startMetadataQuery
+        self.stopMetadataQuery = stopMetadataQuery
+    }
 
     /// Idempotent. Call after app launch and whenever the iCloud toggle changes.
     func refresh() {
-        let enabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+        let enabled = isEnabled()
         guard enabled else {
             stopQuery()
             return
@@ -49,7 +65,7 @@ final class KnownPeopleCloudCoordinator {
     /// Installs a root already proven reachable by the routing actor after a successful enable.
     /// This avoids a second potentially blocking ubiquity-container lookup on MainActor.
     func refresh(resolvedRoot root: URL) {
-        let enabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+        let enabled = isEnabled()
         guard enabled else {
             stopQuery()
             return
@@ -76,7 +92,7 @@ final class KnownPeopleCloudCoordinator {
             )
             guard !Task.isCancelled, let self else { return }
             self.pendingStart = nil
-            let stillEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+            let stillEnabled = self.isEnabled()
             guard stillEnabled, let resolved else { return }
             self.resolvedRoot = resolved
             self.startQueryIfNeeded(root: resolved)
@@ -87,7 +103,9 @@ final class KnownPeopleCloudCoordinator {
 
     private func startQueryIfNeeded(root: URL) {
         guard query == nil else { return }
-        let q = NSMetadataQuery()
+        let generation = UUID()
+        queryGeneration = generation
+        let q = makeMetadataQuery()
         q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
         // Match database.json and the thumbnail .jpg files anywhere in the
         // ubiquitous documents scope; `handleUpdate` narrows to the KnownPeople
@@ -108,37 +126,38 @@ final class KnownPeopleCloudCoordinator {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.handleUpdateFromStoredQuery()
+                    self?.handleUpdateFromStoredQuery(generation: generation)
                 }
             })
         }
 
-        q.start()
         query = q
+        startMetadataQuery(q)
         logger.info("Started iCloud metadata query for Known People")
     }
 
-    private func handleUpdateFromStoredQuery() {
-        guard let q = query else { return }
+    private func handleUpdateFromStoredQuery(generation: UUID) {
+        guard generation == queryGeneration, let q = query else { return }
         handleUpdate(query: q)
     }
 
     private func stopQuery() {
+        queryGeneration = UUID()
         pendingStart?.cancel()
         pendingStart = nil
         for task in pendingDownloads.values { task.cancel() }
         pendingDownloads.removeAll()
+        pendingRefresh?.cancel()
+        pendingRefresh = nil
+        pendingChanges.removeAll()
+        resolvedRoot = nil
         guard let q = query else { return }
-        q.stop()
+        stopMetadataQuery(q)
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
         }
         observers.removeAll()
-        pendingRefresh?.cancel()
-        pendingRefresh = nil
-        pendingChanges.removeAll()
         query = nil
-        resolvedRoot = nil
         logger.info("Stopped iCloud metadata query")
     }
 

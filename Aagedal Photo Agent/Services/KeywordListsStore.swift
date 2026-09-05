@@ -111,7 +111,7 @@ final class KeywordListsStore {
 
     /// Test seam for stale, unavailable, and subsequently recovered legacy
     /// bookmarks. Production uses security-scoped bookmark resolution.
-    static var legacyBookmarkResolver: (Data) -> URL? = { data in
+    static var legacyBookmarkResolver: @Sendable (Data) -> URL? = { data in
         var isStale = false
         return try? URL(
             resolvingBookmarkData: data,
@@ -325,129 +325,66 @@ final class KeywordListsStore {
 
     // MARK: - Migration
 
-    /// One-shot import of legacy bookmark-pointed files into the managed store.
-    /// Idempotent and retryable: every source records completion separately,
-    /// and the global stamp advances only when no configured source failed.
-    /// Legacy bookmark bytes are intentionally retained as recovery evidence.
-    func migrateLegacyBookmarksIfNeeded() {
-        let stamp = UserDefaults.standard.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion)
-        if stamp >= 1 {
+    @ObservationIgnored private var activeMigrationID: UUID?
+
+    /// Captures preferences on MainActor, then resolves and imports legacy files on a serialized
+    /// filesystem actor. Each verified source is retained even if cancellation interrupts later work.
+    func migrateLegacyBookmarksIfNeeded() async {
+        guard activeMigrationID == nil else { return }
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion) < 1 else {
             Self.migrationRecoveryNotices.clear(.keywordLists)
             return
         }
+        guard !Task.isCancelled else { return }
 
-        var completed = Set(
-            UserDefaults.standard.stringArray(
-                forKey: UserDefaultsKeys.keywordListsMigrationCompletedKeys
-            ) ?? []
-        )
-        var hadFailure = false
-
-        // Approved list (single field today: .keywords)
-        for field in ApprovedListField.allCases {
-            let migrationID = "approved:\(field.rawValue)"
-            guard !completed.contains(migrationID) else { continue }
-            migrateLegacySource(
-                id: migrationID,
-                bookmarkKey: field.bookmarkKey,
-                completed: &completed,
-                hadFailure: &hadFailure
-            ) { url in
-                let entries = try ApprovedListParser.parse(url)
-                let expected = normalizedEntries(entries)
-                try writeEntries(entries, to: .approved(field))
-                guard readEntries(.approved(field)) == expected else {
-                    throw CocoaError(.fileWriteUnknown)
-                }
-            }
-        }
-
-        // Structured keywords
-        migrateLegacySource(
-            id: "structured",
-            bookmarkKey: UserDefaultsKeys.structuredKeywordsBookmark,
-            completed: &completed,
-            hadFailure: &hadFailure
-        ) { url in
-            let data = try Data(contentsOf: url)
-            guard let text = String(data: data, encoding: .utf8) else {
-                throw CocoaError(.fileReadInapplicableStringEncoding)
-            }
-            try writeText(text, to: .structured)
-            guard readText(.structured) == text else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-        }
-
-        // Quick lists (8)
-        for type in QuickListType.allCases {
-            let migrationID = "quick:\(type.rawValue)"
-            guard !completed.contains(migrationID) else { continue }
-            migrateLegacySource(
-                id: migrationID,
-                bookmarkKey: type.bookmarkKey,
-                completed: &completed,
-                hadFailure: &hadFailure
-            ) { url in
-                let text = try String(contentsOf: url, encoding: .utf8)
-                let lines = text
-                    .components(separatedBy: .newlines)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                let expected = normalizedEntries(lines)
-                try writeEntries(lines, to: .quick(type))
-                guard readEntries(.quick(type)) == expected else {
-                    throw CocoaError(.fileWriteUnknown)
-                }
-            }
-        }
-
-        UserDefaults.standard.set(
-            completed.sorted(),
+        let requestID = UUID()
+        activeMigrationID = requestID
+        defer { activeMigrationID = nil }
+        let capturedRoot = rootURL
+        let capturedVersion = version
+        let completed = Set(defaults.stringArray(
             forKey: UserDefaultsKeys.keywordListsMigrationCompletedKeys
+        ) ?? [])
+        var sources: [KeywordListsLegacyMigrationSource] = []
+        func append(_ id: String, _ bookmarkKey: String, _ key: KeywordListKey,
+                    _ format: KeywordListsLegacyMigrationSource.Format) {
+            guard !completed.contains(id) else { return }
+            sources.append(KeywordListsLegacyMigrationSource(
+                id: id, bookmarkKey: bookmarkKey, bookmarkData: defaults.data(forKey: bookmarkKey),
+                key: key, destinationURL: capturedRoot.appendingPathComponent(key.relativePath),
+                format: format
+            ))
+        }
+        for field in ApprovedListField.allCases {
+            append("approved:\(field.rawValue)", field.bookmarkKey, .approved(field), .approved)
+        }
+        append("structured", UserDefaultsKeys.structuredKeywordsBookmark, .structured, .structured)
+        for type in QuickListType.allCases {
+            append("quick:\(type.rawValue)", type.bookmarkKey, .quick(type), .quick)
+        }
+        let result = await KeywordListsLegacyMigrationService.shared.migrate(
+            sources: sources, requestID: requestID, resolveBookmark: Self.legacyBookmarkResolver
         )
-        if !hadFailure {
-            UserDefaults.standard.set(1, forKey: UserDefaultsKeys.keywordListsMigratedVersion)
+        // Durable writes invalidate the active route even if another edit or bookmark change made
+        // completion stamps stale. Notifications carry no stale contents; readers reload the file.
+        let unchangedVersion = version == capturedVersion
+        guard activeMigrationID == result.requestID, rootURL == capturedRoot else { return }
+        for source in sources where result.writtenIDs.contains(source.id) {
+            notifyChanged(source.key)
+        }
+        guard unchangedVersion else { return }
+        let unchangedSources = sources.filter {
+            defaults.data(forKey: $0.bookmarkKey) == $0.bookmarkData
+        }
+        let unchangedIDs = Set(unchangedSources.map(\.id))
+        let verified = completed.union(result.completedIDs.filter { unchangedIDs.contains($0) })
+        defaults.set(verified.sorted(), forKey: UserDefaultsKeys.keywordListsMigrationCompletedKeys)
+        if !Task.isCancelled, !result.cancelled, result.failedIDs.isEmpty, unchangedSources.count == sources.count {
+            defaults.set(1, forKey: UserDefaultsKeys.keywordListsMigratedVersion)
             Self.migrationRecoveryNotices.clear(.keywordLists)
-        } else {
+        } else if !result.failedIDs.isEmpty {
             Self.migrationRecoveryNotices.recordFailure(in: .keywordLists)
-        }
-    }
-
-    private func migrateLegacySource(
-        id: String,
-        bookmarkKey: String,
-        completed: inout Set<String>,
-        hadFailure: inout Bool,
-        importAndVerify: (URL) throws -> Void
-    ) {
-        guard let bookmarkData = UserDefaults.standard.data(forKey: bookmarkKey) else {
-            completed.insert(id)
-            return
-        }
-        guard let url = Self.legacyBookmarkResolver(bookmarkData) else {
-            hadFailure = true
-            logger.error("Legacy list migration could not resolve \(id, privacy: .private(mask: .hash)); it will retry")
-            return
-        }
-
-        let didStart = url.startAccessingSecurityScopedResource()
-        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-        do {
-            try importAndVerify(url)
-            completed.insert(id)
-        } catch {
-            hadFailure = true
-            logger.error("Legacy list migration failed for \(id, privacy: .private(mask: .hash)); it will retry: \(error.localizedDescription, privacy: .private)")
-        }
-    }
-
-    private func normalizedEntries(_ entries: [String]) -> [String] {
-        var seen = Set<String>()
-        return entries.compactMap { entry in
-            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
-            return trimmed
         }
     }
 
@@ -546,5 +483,116 @@ final class KeywordListsStore {
         guard CloudCoordinatedIO.itemExists(at: url),
               let data = try? CloudCoordinatedIO.readData(at: url) else { return [] }
         return ApprovedListParser.parseString(String(decoding: data, as: UTF8.self), csv: false)
+    }
+}
+
+// MARK: - Legacy migration filesystem boundary
+
+nonisolated struct KeywordListsLegacyMigrationSource: Sendable {
+    nonisolated enum Format: Sendable { case approved, quick, structured }
+    let id: String
+    let bookmarkKey: String
+    let bookmarkData: Data?
+    let key: KeywordListKey
+    let destinationURL: URL
+    let format: Format
+}
+
+/// Written IDs record durable writes even when their subsequent verification fails. Completed IDs
+/// include verified imports, preserved managed destinations, and absent legacy sources. Cancellation never erases this evidence.
+nonisolated struct KeywordListsLegacyMigrationResult: Equatable, Sendable {
+    let requestID: UUID
+    let completedIDs: [String]
+    let writtenIDs: [String]
+    let failedIDs: [String]
+    let cancelled: Bool
+}
+
+nonisolated struct KeywordListsLegacyMigrationFileAccess: Sendable {
+    let readSource: @Sendable (URL, KeywordListsLegacyMigrationSource.Format) throws -> String
+    let writeTextIfMissing: @Sendable (String, URL) throws -> Bool
+    let readDestination: @Sendable (URL) throws -> String
+
+    static let system = Self(
+        readSource: { url, format in
+            switch format {
+            case .structured:
+                return try String(contentsOf: url, encoding: .utf8)
+            case .approved, .quick:
+                let entries: [String]
+                if case .approved = format {
+                    entries = try ApprovedListParser.parse(url)
+                } else {
+                    entries = try String(contentsOf: url, encoding: .utf8)
+                        .components(separatedBy: .newlines)
+                }
+                var seen = Set<String>()
+                let normalized = entries.compactMap { entry -> String? in
+                    let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return !trimmed.isEmpty && seen.insert(trimmed).inserted ? trimmed : nil
+                }
+                return normalized.joined(separator: "\n") + (normalized.isEmpty ? "" : "\n")
+            }
+        },
+        writeTextIfMissing: { try CloudCoordinatedIO.writeTextIfMissing($0, to: $1) },
+        readDestination: { String(decoding: try CloudCoordinatedIO.readData(at: $0), as: UTF8.self) }
+    )
+}
+
+/// No suspension occurs within a migration batch, keeping each read/write/verification transaction
+/// serialized. Blocking security-scoped and coordinated operations are sampled for cancellation at
+/// stable boundaries; a write already entered is verified before its durable evidence is returned.
+actor KeywordListsLegacyMigrationService {
+    static let shared = KeywordListsLegacyMigrationService()
+    private let access: KeywordListsLegacyMigrationFileAccess
+
+    init(access: KeywordListsLegacyMigrationFileAccess = .system) {
+        self.access = access
+    }
+
+    func migrate(
+        sources: [KeywordListsLegacyMigrationSource],
+        requestID: UUID,
+        resolveBookmark: @Sendable (Data) -> URL?
+    ) -> KeywordListsLegacyMigrationResult {
+        var completed: [String] = []
+        var written: [String] = []
+        var failed: [String] = []
+        for source in sources {
+            guard !Task.isCancelled else { break }
+            guard let bookmark = source.bookmarkData else {
+                completed.append(source.id)
+                continue
+            }
+            guard let url = resolveBookmark(bookmark) else {
+                if !Task.isCancelled { failed.append(source.id) }
+                continue
+            }
+            guard !Task.isCancelled else { break }
+            let didStart = url.startAccessingSecurityScopedResource()
+            defer { if didStart { url.stopAccessingSecurityScopedResource() } }
+            do {
+                guard !Task.isCancelled else { break }
+                let text = try access.readSource(url, source.format)
+                guard !Task.isCancelled else { break }
+                guard try access.writeTextIfMissing(text, source.destinationURL) else {
+                    // Managed content takes precedence over legacy data, including an edit that
+                    // committed while source parsing was in progress. Keep the bookmark for recovery.
+                    completed.append(source.id)
+                    continue
+                }
+                written.append(source.id)
+                guard try access.readDestination(source.destinationURL) == text else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                completed.append(source.id)
+            } catch {
+                failed.append(source.id)
+            }
+        }
+        return KeywordListsLegacyMigrationResult(
+            requestID: requestID, completedIDs: completed, writtenIDs: written,
+            failedIDs: failed, cancelled: Task.isCancelled
+        )
     }
 }

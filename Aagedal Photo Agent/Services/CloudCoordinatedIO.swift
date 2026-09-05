@@ -38,6 +38,20 @@ nonisolated enum CloudCoordinatedIO {
         try writeData(Data(text.utf8), to: url)
     }
 
+    /// Seeds a missing destination under the same coordination lock as the existence check.
+    /// Legacy migration must never replace a managed list created or edited while its source was
+    /// being read. Undownloaded iCloud placeholders also count as an existing destination.
+    static func writeTextIfMissing(_ text: String, to url: URL) throws -> Bool {
+        try ensureDirectory(url.deletingLastPathComponent())
+        var written = false
+        try coordinateWrite(url, options: .forReplacing) { dest in
+            guard !itemExists(at: dest) else { return }
+            try Data(text.utf8).write(to: dest, options: .atomic)
+            written = true
+        }
+        return written
+    }
+
     /// Coordinated read. Requests a download first if the item is an
     /// not-yet-materialised iCloud placeholder.
     static func readData(at url: URL) throws -> Data {

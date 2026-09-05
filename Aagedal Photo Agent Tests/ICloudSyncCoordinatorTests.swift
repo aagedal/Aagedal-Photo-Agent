@@ -4,6 +4,53 @@ import Testing
 
 @Suite("iCloud sync coordinator")
 struct ICloudSyncCoordinatorTests {
+    @Test("keyword and people watcher root replacement discards queued old-query callbacks", arguments: [false, true])
+    @MainActor
+    func watcherRootReplacement(knownPeople: Bool) async {
+        var enabled = true
+        var started: [CloudCallbackCountingQuery] = []
+        var stopped: [NSMetadataQuery] = []
+        let first = URL(fileURLWithPath: "/virtual/first")
+        let second = URL(fileURLWithPath: "/virtual/second")
+        let makeQuery: () -> NSMetadataQuery = {
+            let query = CloudCallbackCountingQuery()
+            started.append(query)
+            return query
+        }
+        let people = KnownPeopleCloudCoordinator(
+            isEnabled: { enabled }, makeMetadataQuery: makeQuery,
+            startMetadataQuery: { _ in }, stopMetadataQuery: { stopped.append($0) }
+        )
+        let keywords = KeywordListsCloudCoordinator(
+            isEnabled: { enabled }, makeMetadataQuery: makeQuery,
+            startMetadataQuery: { _ in }, stopMetadataQuery: { stopped.append($0) }
+        )
+        let refresh: (URL) -> Void = { root in
+            if knownPeople { people.refresh(resolvedRoot: root) }
+            else { keywords.refresh(resolvedRoot: root) }
+        }
+        refresh(first)
+        refresh(first)
+        #expect(started.count == 1)
+        NotificationCenter.default.post(name: .NSMetadataQueryDidUpdate, object: started[0])
+        refresh(second)
+        #expect(started.count == 2)
+        #expect(stopped.count == 1)
+        // FIFO MainActor jobs posted by the observer precede this sentinel.
+        await Task { @MainActor in }.value
+        #expect(started[0].readCount == 0)
+        #expect(started[1].readCount == 0)
+        NotificationCenter.default.post(name: .NSMetadataQueryDidUpdate, object: started[1])
+        await Task { @MainActor in }.value
+        #expect(started[1].readCount == 1)
+        NotificationCenter.default.post(name: .NSMetadataQueryDidUpdate, object: started[1])
+        enabled = false
+        if knownPeople { people.refresh() } else { keywords.refresh() }
+        await Task { @MainActor in }.value
+        #expect(started[1].readCount == 1)
+        #expect(stopped.count == 2)
+    }
+
     @Test("keyword-list monitoring resolves and creates its root off MainActor")
     @MainActor
     func keywordMonitoringRootPreparation() async throws {
@@ -1250,5 +1297,16 @@ nonisolated private final class BlockingKnownPeopleDataSummaryProbe: @unchecked 
             isReleased = true
             condition.broadcast()
         }
+    }
+}
+
+/// No provider access; counting results detects callback admission on the actual observer path.
+nonisolated private final class CloudCallbackCountingQuery: NSMetadataQuery {
+    private let lock = NSLock()
+    private var storedReadCount = 0
+    var readCount: Int { lock.withLock { storedReadCount } }
+    override var results: [Any] {
+        lock.withLock { storedReadCount += 1 }
+        return []
     }
 }

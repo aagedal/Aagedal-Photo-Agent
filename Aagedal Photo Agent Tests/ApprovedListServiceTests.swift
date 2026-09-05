@@ -789,7 +789,7 @@ struct ApprovedListValidationTests {
 @MainActor
 struct KeywordListLegacyMigrationTests {
     @Test("Completed sources stay complete while a failed source retries and bookmarks remain")
-    func migrationRetriesPerSourceAfterReadBackVerifiedImports() throws {
+    func migrationRetriesPerSourceAfterReadBackVerifiedImports() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("KeywordMigrationTests-\(UUID().uuidString)", isDirectory: true)
         let approvedSource = root.appendingPathComponent("legacy-approved.txt")
@@ -847,9 +847,9 @@ struct KeywordListLegacyMigrationTests {
             }
         }
 
-        try KeywordListsStoreStorageOverride.$current.withValue(root.appendingPathComponent("store")) {
-            let store = KeywordListsStore.shared
-            store.migrateLegacyBookmarksIfNeeded()
+        try await KeywordListsStoreStorageOverride.$current.withValue(root.appendingPathComponent("store")) {
+            let store = KeywordListsStore()
+            await store.migrateLegacyBookmarksIfNeeded()
 
             #expect(defaults.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion) == 0)
             #expect(store.readEntries(.approved(.keywords)) == ["Berlin", "Paris"])
@@ -864,7 +864,7 @@ struct KeywordListLegacyMigrationTests {
             // A completed source must not be re-imported while the failed source retries.
             try "Changed\n".write(to: approvedSource, atomically: true, encoding: .utf8)
             try "Fast One\nFast Two\n".write(to: quickSource, atomically: true, encoding: .utf8)
-            store.migrateLegacyBookmarksIfNeeded()
+            await store.migrateLegacyBookmarksIfNeeded()
 
             #expect(store.readEntries(.approved(.keywords)) == ["Berlin", "Paris"])
             #expect(store.readEntries(.quick(.keywords)) == ["Fast One", "Fast Two"])
