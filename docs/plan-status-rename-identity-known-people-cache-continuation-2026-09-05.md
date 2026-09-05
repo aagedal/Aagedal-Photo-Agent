@@ -54,9 +54,12 @@ Automated results do not substitute for the manual checks below.
 
 ## Manual testing requested
 
-Use a copied photo folder with both Compare and Analysis open:
+The Compare portion of this check failed in manual testing. The reported race and the corrected,
+focused-pane test procedure are recorded in the [regression follow-up](comparison-rename-regression-validation-2026-09-05.md).
+Test Compare and Analysis separately using copied photos:
 
-1. Batch rename the displayed images. Verify that both workspaces show the new names without
+1. In Compare, focus and rename each pane separately with File → Rename. Test the selected image
+   separately in Analysis. Verify that the workspaces show the new names without
    missing-image placeholders, retain Compare zoom/pan, and retain Analysis annotations after reopening.
 2. Repeat quick successive renames, including swapping names. During processing, change Compare zoom
    or replace a pane; switch or close Analysis. Verify that late work does not restore an old selection,

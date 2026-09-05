@@ -450,11 +450,13 @@ struct ContentView: View {
                     request: request,
                     executionQuiescence: BatchRenameExecutionQuiescence(
                         prepare: {
+                            browserViewModel.beginRenameQuiescence()
                             do {
                                 try await faceRecognitionViewModel.quiesceScanForRename(
                                     in: request.folderURL
                                 )
                             } catch {
+                                browserViewModel.endRenameQuiescence()
                                 throw BatchRenameExecutionQuiescenceError.faceScan(
                                     error.localizedDescription
                                 )
@@ -464,6 +466,7 @@ struct ContentView: View {
                                     in: request.folderURL
                                 )
                             } catch {
+                                browserViewModel.endRenameQuiescence()
                                 faceRecognitionViewModel.endRenameQuiescence(
                                     in: request.folderURL
                                 )
@@ -490,6 +493,7 @@ struct ContentView: View {
                                     )
                                 }
                             case .abortedBeforeExecution:
+                                defer { browserViewModel.endRenameQuiescence() }
                                 do {
                                     try await analysisWorkspaceModel
                                         .cancelRenameQuiescenceBeforeExecution()
@@ -1032,6 +1036,7 @@ struct ContentView: View {
                     allowsSourceReplacement: true,
                     allowsDeletion: true,
                     renameEvent: comparisonRenameEvent,
+                    isRenaming: browserViewModel.batchRenameSheetRequest != nil,
                     onFocusedImageChange: { image in
                         browserViewModel.selectedImageIDs = [image.url]
                         browserViewModel.lastClickedImageURL = image.url

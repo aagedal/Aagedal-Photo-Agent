@@ -668,12 +668,15 @@ struct BatchRenameSheet: View {
                 TextField("Text", text: component.literal)
                     .textFieldStyle(.roundedBorder)
             case .sequence:
-                HStack {
-                    TextField("Start", value: component.sequenceStart, format: .number)
-                    TextField("Step", value: component.sequenceStep, format: .number)
-                    TextField("Padding", value: component.sequencePadding, format: .number)
+                HStack(alignment: .top) {
+                    sequenceField("Start", value: component.sequenceStart)
+                    sequenceField("Step", value: component.sequenceStep)
+                    sequenceField("Minimum digits", value: component.sequencePadding)
                 }
-                .textFieldStyle(.roundedBorder)
+                Text("Start is the first number; Step is added for each file. Minimum digits adds leading zeros: 3 makes 7 → 007. Values 0 and 1 both leave 7 as 7; longer numbers are never shortened.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             case .captureDate:
                 TextField("Date format", text: component.dateFormat)
                     .textFieldStyle(.roundedBorder)
@@ -697,6 +700,18 @@ struct BatchRenameSheet: View {
         }
         .padding(10)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func sequenceField(_ title: String, value: Binding<Int>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField(title, value: value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel(title)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var preview: some View {
@@ -737,18 +752,7 @@ struct BatchRenameSheet: View {
                 }
                 Spacer()
             } else {
-                Table(session.previewRows) {
-                    TableColumn("Old name", value: \.oldName)
-                    TableColumn("Requested", value: \.requestedName)
-                    TableColumn("Planned", value: \.plannedName)
-                    TableColumn("Status") { row in
-                        Text(statusText(row))
-                            .foregroundStyle(row.blockingIssueCount > 0 ? .red : (row.warningIssueCount > 0 ? .orange : .secondary))
-                    }
-                    .width(min: 90, ideal: 120)
-                    TableColumn("Issues", value: \.issueText)
-                        .width(min: 160, ideal: 260)
-                }
+                previewList
 
                 planSummary
             }
@@ -770,10 +774,64 @@ struct BatchRenameSheet: View {
         .padding(18)
     }
 
+    private var previewList: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                Text("Current name")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("New name")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Status")
+                    .frame(width: 92, alignment: .leading)
+            }
+            .font(.caption.weight(.semibold))
+            .padding(10)
+            .background(.quaternary.opacity(0.45))
+
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(session.previewRows) { row in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .top, spacing: 12) {
+                                Text(row.oldName)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Text(row.plannedName)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Text(statusText(row))
+                                    .foregroundStyle(row.blockingIssueCount > 0 ? .red : (row.warningIssueCount > 0 ? .orange : .secondary))
+                                    .frame(width: 92, alignment: .leading)
+                            }
+                            // The planner can adjust a recipe result to resolve a name conflict.
+                            // Keep the actual destination primary and disclose that adjustment only
+                            // when needed, rather than dedicating a column to duplicate filenames.
+                            if row.requestedName != row.plannedName {
+                                Text("Recipe result: \(row.requestedName)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if !row.issueText.isEmpty {
+                                Text(row.issueText)
+                                    .font(.caption)
+                                    .foregroundStyle(row.blockingIssueCount > 0 ? .red : .secondary)
+                            }
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(row.id.isMultiple(of: 2) ? Color.primary.opacity(0.035) : .clear)
+                        Divider()
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var planSummary: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let summary = session.issueSummary {
-                HStack(spacing: 14) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), alignment: .leading)], alignment: .leading, spacing: 6) {
                     summaryBadge("\(summary.blockingCount) blockers", color: summary.blockingCount > 0 ? .red : .secondary)
                     summaryBadge("\(summary.warningCount) warnings", color: summary.warningCount > 0 ? .orange : .secondary)
                     summaryBadge("\(summary.conflictCount) conflicts", color: .secondary)

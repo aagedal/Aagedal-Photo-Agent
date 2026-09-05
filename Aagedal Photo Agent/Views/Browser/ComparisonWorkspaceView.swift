@@ -5,6 +5,7 @@ import SwiftUI
 private struct ComparisonWorkspaceSourceInput: Equatable {
     let availableURLs: [URL]
     let renameEvent: ComparisonRenameEvent?
+    let isRenaming: Bool
 }
 
 struct ComparisonWorkspaceView: View {
@@ -19,6 +20,7 @@ struct ComparisonWorkspaceView: View {
     let allowsSourceReplacement: Bool
     let allowsDeletion: Bool
     var renameEvent: ComparisonRenameEvent?
+    var isRenaming = false
     let onFocusedImageChange: (ImageFile) -> Void
     let onRequestDelete: (ImageFile) -> Void
     let onClose: (Set<URL>, URL?) -> Void
@@ -48,6 +50,7 @@ struct ComparisonWorkspaceView: View {
             Divider()
             content
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .focusable()
         .focused($workspaceFocused)
@@ -109,7 +112,8 @@ struct ComparisonWorkspaceView: View {
     private var sourceInput: ComparisonWorkspaceSourceInput {
         ComparisonWorkspaceSourceInput(
             availableURLs: availableImages.map(\.url),
-            renameEvent: renameEvent
+            renameEvent: renameEvent,
+            isRenaming: isRenaming
         )
     }
 
@@ -331,6 +335,7 @@ struct ComparisonWorkspaceView: View {
             }
         } else if let session {
             comparisonLayout(session)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .bottom) {
                     if let interactionError {
                         Text(interactionError)
@@ -350,16 +355,16 @@ struct ComparisonWorkspaceView: View {
         case .sideBySide:
             HSplitView {
                 pane(.left, session: session)
-                    .frame(minWidth: 180)
+                    .frame(minWidth: 180, maxWidth: .infinity, maxHeight: .infinity)
                 pane(.right, session: session)
-                    .frame(minWidth: 180)
+                    .frame(minWidth: 180, maxWidth: .infinity, maxHeight: .infinity)
             }
         case .stacked:
             VSplitView {
                 pane(.left, session: session)
-                    .frame(minHeight: 140)
+                    .frame(maxWidth: .infinity, minHeight: 140, maxHeight: .infinity)
                 pane(.right, session: session)
-                    .frame(minHeight: 140)
+                    .frame(maxWidth: .infinity, minHeight: 140, maxHeight: .infinity)
             }
         case .wipe:
             wipePane(session)
@@ -421,6 +426,7 @@ struct ComparisonWorkspaceView: View {
                 }
                 Button(origin == .develop ? "Back to Develop" : "Back to Browser", action: { closeComparison() })
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -661,6 +667,10 @@ struct ComparisonWorkspaceView: View {
         reconciliationTask?.cancel()
         let requestID = UUID()
         reconciliationRequestID = requestID
+        // A folder watcher can observe temporary or destination filenames before the
+        // rename result reaches this view. Retain both sources and queued mappings until
+        // the sheet closes and Browser has projected the committed paths.
+        guard !isRenaming else { return }
         guard let coordinator else {
             previousAvailableOrder = availableImages.map(\.url)
             return

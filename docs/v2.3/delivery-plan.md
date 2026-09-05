@@ -40,6 +40,12 @@ edits. Phase 12 manual/device gates and the complete Known People asynchronous s
 remain open. See the
 [dated validation and manual test request](../plan-status-rename-identity-known-people-cache-continuation-2026-09-05.md).
 
+**Manual Compare rename regression (2026-09-05):** a user-reported rename failure now has
+URL-aware sorted-cache invalidation, refresh request guards and rename quiescence; Compare retains its sources until committed filenames
+arrive. The missing-pane layout and Batch Rename preview/sequence labels were also corrected.
+[Validation and focused retest](../comparison-rename-regression-validation-2026-09-05.md) keep the
+interaction gate explicitly open pending manual confirmation.
+
 ## Phase 0 — research, decisions, and fixtures
 
 **Exit gate:** the project can make evidence claims and distribute every required dependency/fixture

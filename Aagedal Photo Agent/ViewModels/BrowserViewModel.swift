@@ -29,8 +29,11 @@ final class BrowserViewModel {
             guard !suppressImagesCascade else { return }
             urlToImageIndex = Dictionary(uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) })
             guard !isBatchUpdating else { return }
-            let sameSet = images.count == oldValue.count
-            setNeedsSortRebuild(forceSort: !sameSet)
+            // Equal counts do not imply equal identities: rename/replacement keeps the
+            // count but changes URL keys. Reusing the old sorted list would drop those rows.
+            let sameURLs = images.count == oldValue.count
+                && zip(images, oldValue).allSatisfy { $0.url == $1.url }
+            setNeedsSortRebuild(forceSort: !sameURLs)
         }
     }
     var selectedImageIDs: Set<URL> = [] {
@@ -209,6 +212,9 @@ final class BrowserViewModel {
         lastRefreshModifiedURLs = []
     }
     @ObservationIgnored private var isAutoRefreshing = false
+    @ObservationIgnored private let refreshSidecarLoader: @Sendable (URL) async -> [URL: MetadataSidecar]
+    @ObservationIgnored private var autoRefreshRequestID: UUID?
+    @ObservationIgnored private var isRenameQuiesced = false
     @ObservationIgnored private var isMetadataLoading = false
     @ObservationIgnored private var metadataLoadRequestID: UUID?
     @ObservationIgnored private var metadataProgressID: UUID?
@@ -268,7 +274,11 @@ final class BrowserViewModel {
          pathContainmentService: SafePathContainmentService = .shared,
          voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService = .shared,
          favoritesDefaults: UserDefaults = .standard,
-         favoriteBookmarkService: FavoriteFolderBookmarkService = .shared) {
+         favoriteBookmarkService: FavoriteFolderBookmarkService = .shared,
+         refreshSidecarLoader: @escaping @Sendable (URL) async -> [URL: MetadataSidecar] = {
+             await MetadataSidecarService().loadAllSidecars(in: $0)
+         }) {
+        self.refreshSidecarLoader = refreshSidecarLoader
         self.thumbnailService = thumbnailService
         self.fullScreenImageCache = fullScreenImageCache
         self.imageTrashHandler = imageTrashHandler
@@ -709,6 +719,8 @@ final class BrowserViewModel {
         cancelRenamePlanning()
         pendingMetadataDrainTask?.cancel()
         autoRefreshTask?.cancel()
+        autoRefreshRequestID = nil
+        isAutoRefreshing = false
         metadataWriteTask?.cancel()
         batchReadTask?.cancel()
         folderOrientationLoadRequestID = nil
@@ -900,24 +912,31 @@ final class BrowserViewModel {
     @discardableResult
     func refreshCurrentFolderIfNeeded(onComplete: ((Set<URL>) -> Void)? = nil) -> Bool {
         guard let folderURL = currentFolderURL else { return false }
-        guard !isLoading, !isMetadataLoading, !isAutoRefreshing else { return false }
+        guard !isLoading, !isMetadataLoading, !isAutoRefreshing, !isRenameQuiesced else { return false }
         isAutoRefreshing = true
         autoRefreshTask?.cancel()
         refreshOrientationLoadRequestID = nil
 
+        let requestID = UUID()
+        autoRefreshRequestID = requestID
         autoRefreshTask = Task {
             var completedModifiedURLs: Set<URL> = []
             defer {
-                self.isAutoRefreshing = false
+                if self.autoRefreshRequestID == requestID {
+                    self.autoRefreshRequestID = nil
+                    self.isAutoRefreshing = false
+                }
                 onComplete?(completedModifiedURLs)
             }
 
+            guard self.canPublishRefresh(requestID, in: folderURL) else { return }
             let scanResult: FileSystemService.FolderScanResult
             do {
                 scanResult = try await fileSystemService.scanFolderWithStatus(at: folderURL, includeAllFiles: showAllFiles)
             } catch {
                 return
             }
+            guard self.canPublishRefresh(requestID, in: folderURL) else { return }
             self.iCloudDownloadNotice = scanResult.hasDeferredICloudItems
                 ? Self.iCloudDownloadMessage(for: scanResult.deferredICloudItemCount)
                 : nil
@@ -1000,6 +1019,7 @@ final class BrowserViewModel {
                 ) else {
                     return
                 }
+                guard self.canPublishRefresh(requestID, in: folderURL) else { return }
                 let orientations = orientationSnapshot.orientations
                 if !orientations.isEmpty {
                     for index in merged.indices {
@@ -1013,7 +1033,8 @@ final class BrowserViewModel {
                 }
             }
 
-            let allSidecars = await sidecarService.loadAllSidecars(in: folderURL)
+            let allSidecars = await refreshSidecarLoader(folderURL)
+            guard self.canPublishRefresh(requestID, in: folderURL) else { return }
             for index in merged.indices {
                 let url = merged[index].url
                 if let sidecar = allSidecars[url], sidecar.pendingChanges {
@@ -1049,6 +1070,26 @@ final class BrowserViewModel {
             }
         }
         return true
+    }
+
+    private func canPublishRefresh(_ requestID: UUID, in folderURL: URL) -> Bool {
+        !Task.isCancelled && autoRefreshRequestID == requestID
+            && !isRenameQuiesced && currentFolderURL == folderURL
+    }
+
+    /// Freeze the browser snapshot before the executor starts moving files. A cancelled scan
+    /// may finish its filesystem work, but its request identity can no longer publish results.
+    func beginRenameQuiescence() {
+        isRenameQuiesced = true
+        autoRefreshRequestID = nil
+        autoRefreshTask?.cancel()
+        autoRefreshTask = nil
+        refreshOrientationLoadRequestID = nil
+        isAutoRefreshing = false
+    }
+
+    func endRenameQuiescence() {
+        isRenameQuiesced = false
     }
 
     /// Read EXIF orientation via CGImageSource (metadata-only, ~0.1ms/file).
@@ -3428,6 +3469,7 @@ final class BrowserViewModel {
     /// replacement array first makes cycles (A↔B) safe and avoids transient duplicate URL keys.
     func applySuccessfulRename(_ presentation: BatchRenameExecutionPresentation) {
         guard presentation.status == .succeeded else { return }
+        defer { endRenameQuiescence() }
         let mapping = Dictionary(uniqueKeysWithValues: presentation.mappings.map {
             ($0.sourceURL.standardizedFileURL, $0.destinationURL.standardizedFileURL)
         })
@@ -3473,6 +3515,7 @@ final class BrowserViewModel {
         _ result: RenameExecutionResult,
         request: BatchRenameSheetRequest
     ) {
+        defer { endRenameQuiescence() }
         var affectedURLs = Set(request.items.map { $0.sourceImageURL.standardizedFileURL })
         for bundle in result.bundles {
             if let destination = bundle.destinationImageURL {

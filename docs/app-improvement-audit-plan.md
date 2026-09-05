@@ -1340,6 +1340,14 @@ and filters duplicate archive UUIDs. The complete Known People storage/mutation 
 manual rename interaction checks and real-volume gates remain open at 66 of 75.
 ([validation](plan-status-rename-identity-known-people-cache-continuation-2026-09-05.md))
 
+**Manual rename regression follow-up (2026-09-05):** the user found that successive focused-pane
+renames in Compare could lose the other source and compress the workspace. The browser now compares
+URL identities, rather than file counts, before reusing cached sorted rows. Browser watcher refresh
+is now paused across rename commits, cancelled snapshots cannot publish, and Compare defers source
+reconciliation while the rename sheet is active. Flexible layout sizing and a simplified, wrapping
+Batch Rename preview address the reported display issues; sequence inputs retain descriptive labels.
+The manual retest remains open. ([validation](comparison-rename-regression-validation-2026-09-05.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

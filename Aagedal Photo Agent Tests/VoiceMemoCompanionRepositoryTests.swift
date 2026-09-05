@@ -87,6 +87,157 @@ struct VoiceMemoCompanionRepositoryTests {
         #expect(viewModel.batchRenameSheetRequest == nil)
     }
 
+    @Test("Successive focused-image renames retain both browser rows and selection")
+    @MainActor
+    func successiveRenamesKeepSortedIdentities() {
+        let root = URL(fileURLWithPath: "/comparison-rename-test")
+        let left = root.appendingPathComponent("left.jpg")
+        let right = root.appendingPathComponent("right.jpg")
+        let renamedLeft = root.appendingPathComponent("z-left.jpg")
+        let renamedRight = root.appendingPathComponent("a-right.jpg")
+        let browser = BrowserViewModel()
+        browser.currentFolderURL = root
+        browser.images = [ImageFile(url: left), ImageFile(url: right)]
+        browser.batchUpdate { browser.sortOrder = .name; browser.sortReversed = false }
+        #expect(browser.sortedImages.map(\.url) == [left, right])
+
+        for (source, destination) in [(left, renamedLeft), (right, renamedRight)] {
+            browser.selectedImageIDs = [source]
+            browser.applySuccessfulRename(BatchRenameExecutionPresentation(result: RenameExecutionResult(
+                status: .succeeded, rollbackStatus: .notNeeded,
+                bundles: [RenameExecutionBundleResult(
+                    itemIndex: 0, sourceImageURL: source, destinationImageURL: destination,
+                    artifactIdentifiers: ["image"], completedArtifactIdentifiers: ["image"]
+                )], moves: [], issues: [], residuals: []
+            )))
+            #expect(browser.sortedImages.count == 2)
+            #expect(browser.visibleImages.count == 2)
+            #expect(browser.selectedImageIDs == [destination])
+        }
+        #expect(browser.sortedImages.map(\.url) == [renamedRight, renamedLeft])
+        #expect(Set(browser.visibleImages.map(\.url)) == [renamedLeft, renamedRight])
+    }
+
+    @Test("A refresh queued before rename cannot erase the projected destination")
+    @MainActor
+    func queuedRefreshCannotOverwriteRename() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("old.jpg")
+        let destination = folder.appendingPathComponent("new.jpg")
+        let browser = BrowserViewModel()
+        browser.currentFolderURL = folder
+        browser.images = [ImageFile(url: source)]
+        browser.selectedImageIDs = [source]
+        let presentation = BatchRenameExecutionPresentation(result: RenameExecutionResult(
+            status: .succeeded,
+            rollbackStatus: .notNeeded,
+            bundles: [RenameExecutionBundleResult(
+                itemIndex: 0,
+                sourceImageURL: source,
+                destinationImageURL: destination,
+                artifactIdentifiers: ["image"],
+                completedArtifactIdentifiers: ["image"]
+            )],
+            moves: [], issues: [], residuals: []
+        ))
+
+        // All three operations run in one MainActor turn: the old refresh is queued,
+        // then invalidated by rename before it can return its empty folder snapshot.
+        await withCheckedContinuation { continuation in
+            let started = browser.refreshCurrentFolderIfNeeded { changed in
+                #expect(changed.isEmpty)
+                continuation.resume()
+            }
+            #expect(started)
+            guard started else { continuation.resume(); return }
+            browser.beginRenameQuiescence()
+            #expect(!browser.refreshCurrentFolderIfNeeded())
+            browser.applySuccessfulRename(presentation)
+        }
+        #expect(browser.images.map(\.url) == [destination])
+        #expect(browser.selectedImageIDs == [destination])
+
+        // Success released the guard: a subsequent authoritative scan can publish normally.
+        await withCheckedContinuation { continuation in
+            let started = browser.refreshCurrentFolderIfNeeded { _ in continuation.resume() }
+            #expect(started)
+            if !started { continuation.resume() }
+        }
+        #expect(browser.images.isEmpty)
+    }
+
+    @Test("A refresh suspended after merging cannot restore the old URL after rename")
+    @MainActor
+    func mergedRefreshCannotOverwriteRename() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try Data([0]).write(to: folder.appendingPathComponent("old.jpg"))
+        // Use the same URL spelling as the real folder loader, including macOS temp aliases.
+        let initialFiles = try await FileSystemService().scanFolder(at: folder)
+        let source = try #require(initialFiles.first).url
+        let destination = source.deletingLastPathComponent().appendingPathComponent("new.jpg")
+        let gate = RenameRefreshSidecarGate()
+        defer { Task { await gate.release() } }
+        let browser = BrowserViewModel(refreshSidecarLoader: { _ in await gate.load() })
+        browser.currentFolderURL = folder
+        browser.images = initialFiles
+        browser.selectedImageIDs = [source]
+        // Force a content diff so refresh reaches the final sidecar read after its merge.
+        try Data([0, 1]).write(to: source)
+        let refresh = Task { @MainActor in
+            await withCheckedContinuation { continuation in
+                let started = browser.refreshCurrentFolderIfNeeded { _ in continuation.resume() }
+                #expect(started)
+                if !started { continuation.resume() }
+            }
+        }
+        try await gate.waitUntilBlocked()
+        browser.beginRenameQuiescence()
+        try FileManager.default.moveItem(at: source, to: destination)
+        browser.applySuccessfulRename(BatchRenameExecutionPresentation(result: RenameExecutionResult(
+            status: .succeeded,
+            rollbackStatus: .notNeeded,
+            bundles: [RenameExecutionBundleResult(
+                itemIndex: 0, sourceImageURL: source, destinationImageURL: destination,
+                artifactIdentifiers: ["image"], completedArtifactIdentifiers: ["image"]
+            )],
+            moves: [], issues: [], residuals: []
+        )))
+        // The deliberately cancellation-insensitive read now returns the pre-rename merge.
+        await gate.release()
+        await refresh.value
+        #expect(browser.images.map { $0.url.standardizedFileURL } == [destination.standardizedFileURL])
+        #expect(Set(browser.selectedImageIDs.map(\.standardizedFileURL)) == [destination.standardizedFileURL])
+        await withCheckedContinuation { continuation in
+            let started = browser.refreshCurrentFolderIfNeeded { _ in continuation.resume() }
+            #expect(started)
+            if !started { continuation.resume() }
+        }
+        #expect(browser.images.map { $0.url.standardizedFileURL } == [destination.standardizedFileURL])
+        #expect(browser.images.first?.fileSize == 2)
+    }
+
+    @Test("Aborting rename preparation releases browser refresh suppression")
+    @MainActor
+    func abortedRenameAllowsRefresh() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let browser = BrowserViewModel()
+        browser.currentFolderURL = folder
+        browser.beginRenameQuiescence()
+        #expect(!browser.refreshCurrentFolderIfNeeded())
+        browser.endRenameQuiescence()
+        await withCheckedContinuation { continuation in
+            let started = browser.refreshCurrentFolderIfNeeded { _ in continuation.resume() }
+            #expect(started)
+            if !started { continuation.resume() }
+        }
+    }
+
     @Test("Browser refresh keeps WAV companions out of the photo list")
     func browserRefreshExcludesVoiceMemoAudio() async throws {
         let fixture = try Fixture()
@@ -631,5 +782,36 @@ nonisolated private final class BlockingVoiceMemoPlanningProbe: @unchecked Senda
             isReleased = true
             condition.broadcast()
         }
+    }
+}
+
+private actor RenameRefreshSidecarGate {
+    private var blocked = false
+    private var released = false
+    private var pendingLoad: CheckedContinuation<Void, Never>?
+
+    func load() async -> [URL: MetadataSidecar] {
+        if released { return [:] }
+        blocked = true
+        await withCheckedContinuation { pendingLoad = $0 }
+        return [:]
+    }
+
+    func waitUntilBlocked() async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !blocked {
+            guard ContinuousClock.now < deadline else {
+                throw CocoaError(.fileReadUnknown, userInfo: [
+                    NSLocalizedDescriptionKey: "Refresh did not reach the suspended sidecar read."
+                ])
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func release() {
+        released = true
+        pendingLoad?.resume()
+        pendingLoad = nil
     }
 }
