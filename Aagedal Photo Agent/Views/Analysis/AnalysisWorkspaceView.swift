@@ -4417,24 +4417,16 @@ private struct PixelInspectionLoupeReticle: View {
     var body: some View {
         ZStack {
             Circle()
-                .strokeBorder(.black.opacity(0.9), lineWidth: 3)
-            Circle()
-                .strokeBorder(.yellow, lineWidth: 1)
+                .strokeBorder(.white.opacity(0.75), lineWidth: 0.75)
             Rectangle()
-                .fill(.black.opacity(0.9))
-                .frame(width: 1, height: 15)
+                .fill(.white.opacity(0.75))
+                .frame(width: 0.75, height: 7)
             Rectangle()
-                .fill(.black.opacity(0.9))
-                .frame(width: 15, height: 1)
-            Rectangle()
-                .fill(.yellow)
-                .frame(width: 1, height: 11)
-            Rectangle()
-                .fill(.yellow)
-                .frame(width: 11, height: 1)
+                .fill(.white.opacity(0.75))
+                .frame(width: 7, height: 0.75)
         }
-        .frame(width: 17, height: 17)
-        .shadow(color: .black.opacity(0.4), radius: 1)
+        .frame(width: 9, height: 9)
+        .shadow(color: .black.opacity(0.25), radius: 0.5)
     }
 }
 
