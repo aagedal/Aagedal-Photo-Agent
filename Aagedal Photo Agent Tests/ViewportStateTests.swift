@@ -340,6 +340,52 @@ struct ImageInspectionGeometryTests {
         }
     }
 
+    @Test("loupe retains its corner through center jitter and moves only deep into its quadrant")
+    func loupePlacementHysteresis() {
+        typealias Corner = ImageInspectionLoupePlacement.Corner
+        let cases: [(Corner, CGPoint, Corner)] = [
+            (.topLeading, CGPoint(x: 0.39, y: 0.39), .bottomTrailing),
+            (.topTrailing, CGPoint(x: 0.61, y: 0.39), .bottomLeading),
+            (.bottomLeading, CGPoint(x: 0.39, y: 0.61), .topTrailing),
+            (.bottomTrailing, CGPoint(x: 0.61, y: 0.61), .topLeading)
+        ]
+        for size in [CGSize(width: 800, height: 600), CGSize(width: 360, height: 300)] {
+            for (initial, entry, expected) in cases {
+                var current = initial
+                for point in [CGPoint(x: 0.49, y: 0.49), CGPoint(x: 0.51, y: 0.51),
+                              CGPoint(x: entry.x, y: 0.5), CGPoint(x: 0.5, y: entry.y)] {
+                    current = ImageInspectionLoupePlacement.corner(
+                        avoiding: CGPoint(x: point.x * size.width, y: point.y * size.height),
+                        in: size, retaining: current
+                    )
+                    #expect(current == initial)
+                }
+                let pointer = CGPoint(x: entry.x * size.width, y: entry.y * size.height)
+                current = ImageInspectionLoupePlacement.corner(avoiding: pointer, in: size, retaining: current)
+                #expect(current == expected)
+                #expect(ImageInspectionLoupePlacement.corner(
+                    avoiding: pointer, in: size, retaining: current
+                ) == expected)
+                #expect(ImageInspectionLoupePlacement.corner(
+                    avoiding: CGPoint(x: size.width / 2, y: size.height / 2),
+                    in: size, retaining: current
+                ) == expected)
+            }
+        }
+    }
+
+    @Test("loupe keeps its corner at buffer boundaries and in an empty viewport")
+    func loupePlacementBufferEdges() {
+        for point in [CGPoint(x: 600, y: 100), CGPoint(x: 900, y: 400)] {
+            #expect(ImageInspectionLoupePlacement.corner(
+                avoiding: point, in: CGSize(width: 1000, height: 1000), retaining: .topTrailing
+            ) == .topTrailing)
+        }
+        #expect(ImageInspectionLoupePlacement.corner(
+            avoiding: .zero, in: .zero, retaining: .bottomLeading
+        ) == .bottomLeading)
+    }
+
     @Test("loupe crops preserve raster pixels and clamp at display edges")
     func loupeCrop() throws {
         let colorSpace = CGColorSpaceCreateDeviceRGB()

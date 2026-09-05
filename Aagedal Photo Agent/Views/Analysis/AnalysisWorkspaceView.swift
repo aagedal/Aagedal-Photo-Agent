@@ -3255,11 +3255,12 @@ private struct AnalysisSourceThumbnail: View {
     @State private var panDragStartOffset: CGSize?
     @State private var viewportSize: CGSize = .zero
     @State private var pointerLocationInViewport: CGPoint?
+    @State private var loupeCorner: ImageInspectionLoupePlacement.Corner = .topTrailing
     @State private var scrollEventMonitor: Any?
     @State private var keyEventMonitor: Any?
     @State private var isSpaceHandToolActive = false
 
-    private let loupeDisplaySize: CGFloat = 132
+    private let loupeDisplaySize: CGFloat = 198
 
     var body: some View {
         GeometryReader { geometry in
@@ -3495,7 +3496,7 @@ private struct AnalysisSourceThumbnail: View {
                         displaySize: loupeDisplaySize
                     )
                     .padding(12)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: loupeAlignment(in: geometry.size))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: loupeAlignment)
                     .allowsHitTesting(false)
                     .accessibilityHidden(false)
                 }
@@ -3551,6 +3552,9 @@ private struct AnalysisSourceThumbnail: View {
                     switch phase {
                     case .active(let location):
                         pointerLocationInViewport = location
+                        loupeCorner = ImageInspectionLoupePlacement.corner(
+                            avoiding: location, in: geometry.size, retaining: loupeCorner
+                        )
                     case .ended:
                         pointerLocationInViewport = nil
                     }
@@ -3877,10 +3881,8 @@ private struct AnalysisSourceThumbnail: View {
         return nil
     }
 
-    private func loupeAlignment(in size: CGSize) -> Alignment {
-        guard let pointer = pointerLocationInViewport else { return .topTrailing }
-        let corner = ImageInspectionLoupePlacement.corner(avoiding: pointer, in: size)
-        switch corner {
+    private var loupeAlignment: Alignment {
+        switch loupeCorner {
         case .topLeading: return .topLeading
         case .topTrailing: return .topTrailing
         case .bottomLeading: return .bottomLeading

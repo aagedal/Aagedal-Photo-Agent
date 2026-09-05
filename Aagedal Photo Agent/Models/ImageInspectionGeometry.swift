@@ -310,7 +310,25 @@ nonisolated enum ImageInspectionLoupePlacement {
         case topLeading, topTrailing, bottomLeading, bottomTrailing
     }
 
-    static func corner(avoiding pointer: CGPoint, in viewport: CGSize) -> Corner {
+    /// Keep the current corner until the pointer enters its quadrant by more than 10% of
+    /// each viewport dimension. Crossing either center line alone must not move the loupe.
+    static func corner(
+        avoiding pointer: CGPoint,
+        in viewport: CGSize,
+        retaining current: Corner? = nil
+    ) -> Corner {
+        if let current {
+            guard viewport.width > 0, viewport.height > 0 else { return current }
+            let isLeading = current == .topLeading || current == .bottomLeading
+            let isTop = current == .topLeading || current == .topTrailing
+            let insideHorizontal = isLeading
+                ? pointer.x < viewport.width * 0.4
+                : pointer.x > viewport.width * 0.6
+            let insideVertical = isTop
+                ? pointer.y < viewport.height * 0.4
+                : pointer.y > viewport.height * 0.6
+            guard insideHorizontal && insideVertical else { return current }
+        }
         if pointer.y < viewport.height / 2 {
             return pointer.x < viewport.width / 2 ? .bottomTrailing : .bottomLeading
         }
