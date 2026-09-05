@@ -29,6 +29,7 @@ struct AnalysisWorkspaceView: View {
     let onOpenImportedProject: (URL) -> Void
     let onClose: () -> Void
     @State private var selectedFindingID: String?
+    @State private var isLoupeEnabled = true
     @State private var pixelInspectionSample: ImageInspectionSample?
     @State private var displayedScopeImage: CGImage?
     @State private var scopeSourceMode: AnalysisScopeSourceMode = .fullImage
@@ -323,6 +324,13 @@ struct AnalysisWorkspaceView: View {
                     "Choose a geometry-preserving channel, alpha, edge, or compression view"
                 )
             }
+
+            Toggle(isOn: $isLoupeEnabled) {
+                Label("Loupe", systemImage: "magnifyingglass")
+            }
+            .toggleStyle(.button)
+            .help("Show or hide true-pixel detail (Z while the pointer is over the image)")
+            .accessibilityHint("Press Z while pointing at the image to toggle the loupe")
 
             Spacer()
 
@@ -1176,6 +1184,7 @@ struct AnalysisWorkspaceView: View {
                 displayTransform: model.displayTransform,
                 annotationTransform: model.annotationTransform,
                 inspectionSample: $pixelInspectionSample,
+                isLoupeEnabled: $isLoupeEnabled,
                 scopeSourceMode: scopeSourceMode,
                 selectedScopeRegion: $selectedScopeRegion,
                 annotations: model.annotations,
@@ -3209,6 +3218,7 @@ private struct AnalysisSourceThumbnail: View {
     let displayTransform: DisplayImageTransform?
     let annotationTransform: DisplayImageTransform?
     @Binding var inspectionSample: ImageInspectionSample?
+    @Binding var isLoupeEnabled: Bool
     let scopeSourceMode: AnalysisScopeSourceMode
     @Binding var selectedScopeRegion: CGRect?
     let annotations: [AnalysisAnnotation]
@@ -3473,7 +3483,7 @@ private struct AnalysisSourceThumbnail: View {
                 .scaleEffect(zoomScale)
                 .offset(panOffset)
 
-                if let inspectionSample {
+                if isLoupeEnabled, let inspectionSample {
                     AnalysisTruePixelLoupe(
                         sourceImage: loupeSourceIdentity == loupeLoadIdentity
                             ? loupeSourceCGImage
@@ -3485,7 +3495,7 @@ private struct AnalysisSourceThumbnail: View {
                         displaySize: loupeDisplaySize
                     )
                     .padding(12)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: loupeAlignment(in: geometry.size))
                     .allowsHitTesting(false)
                     .accessibilityHidden(false)
                 }
@@ -3845,6 +3855,11 @@ private struct AnalysisSourceThumbnail: View {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard modifiers.isDisjoint(with: [.command, .control, .option]) else { return event }
 
+        if isKeyDown, event.charactersIgnoringModifiers?.lowercased() == "z" {
+            if !event.isARepeat { isLoupeEnabled.toggle() }
+            return nil
+        }
+
         if event.keyCode == 49, isKeyDown {
             isSpaceHandToolActive = true
             NSCursor.openHand.set()
@@ -3860,6 +3875,17 @@ private struct AnalysisSourceThumbnail: View {
         }
         annotationTool = tool
         return nil
+    }
+
+    private func loupeAlignment(in size: CGSize) -> Alignment {
+        guard let pointer = pointerLocationInViewport else { return .topTrailing }
+        let corner = ImageInspectionLoupePlacement.corner(avoiding: pointer, in: size)
+        switch corner {
+        case .topLeading: return .topLeading
+        case .topTrailing: return .topTrailing
+        case .bottomLeading: return .bottomLeading
+        case .bottomTrailing: return .bottomTrailing
+        }
     }
 
     private func resetZoom() {
@@ -4293,6 +4319,8 @@ private struct AnalysisTruePixelLoupe: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
+        // Bound the header Spacer to the two pixel panes instead of the entire viewport.
+        .frame(width: displaySize * 2 + 8)
         .padding(10)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
         .overlay {

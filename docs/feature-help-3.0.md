@@ -30,6 +30,8 @@ Use the view/layout menu above the browser to open one of these workspaces:
 3. In Pixel Analysis, choose Normal, channel/luminance, Alpha, Edges, or Compression / Residual. The
    residual result is a visualization with fixed disclosed parameters, not proof of manipulation.
 4. Use the linked hover sample, source-pixel readout, and true-pixel loupe to inspect corresponding areas.
+   Toggle the loupe with **Z** while pointing at the image, or use the **Loupe** button. Its compact
+   panel moves to the corner opposite the pointer to keep the inspected area visible.
 5. Open finding details to read the observation, technical basis, alternatives, limitation, analyzer
    version, and report-inclusion state.
 

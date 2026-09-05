@@ -303,3 +303,17 @@ nonisolated struct ImageInspectionSample: Hashable, Sendable {
         min(count - 1, max(0, Int(floor(value))))
     }
 }
+
+/// Places detail opposite the pointer in viewport coordinates, independent of image zoom and pan.
+nonisolated enum ImageInspectionLoupePlacement {
+    enum Corner: Equatable {
+        case topLeading, topTrailing, bottomLeading, bottomTrailing
+    }
+
+    static func corner(avoiding pointer: CGPoint, in viewport: CGSize) -> Corner {
+        if pointer.y < viewport.height / 2 {
+            return pointer.x < viewport.width / 2 ? .bottomTrailing : .bottomLeading
+        }
+        return pointer.x < viewport.width / 2 ? .topTrailing : .topLeading
+    }
+}

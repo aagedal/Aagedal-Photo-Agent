@@ -322,6 +322,24 @@ struct ImageInspectionGeometryTests {
         )
     }
 
+    @Test("loupe stays opposite the pointer after viewport resizing")
+    func loupePlacement() {
+        for size in [CGSize(width: 800, height: 600), CGSize(width: 360, height: 300)] {
+            #expect(ImageInspectionLoupePlacement.corner(
+                avoiding: CGPoint(x: 1, y: 1), in: size
+            ) == .bottomTrailing)
+            #expect(ImageInspectionLoupePlacement.corner(
+                avoiding: CGPoint(x: size.width - 1, y: 1), in: size
+            ) == .bottomLeading)
+            #expect(ImageInspectionLoupePlacement.corner(
+                avoiding: CGPoint(x: 1, y: size.height - 1), in: size
+            ) == .topTrailing)
+            #expect(ImageInspectionLoupePlacement.corner(
+                avoiding: CGPoint(x: size.width - 1, y: size.height - 1), in: size
+            ) == .topLeading)
+        }
+    }
+
     @Test("loupe crops preserve raster pixels and clamp at display edges")
     func loupeCrop() throws {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
