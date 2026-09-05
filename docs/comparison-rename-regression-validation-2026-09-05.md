@@ -73,6 +73,53 @@ These automated checks do not claim the visual manual retest below.
 the annotation when switching between Analysis and Single view. This report does not cover the
 Compare source/layout regression or Batch Rename presentation changes below.
 
+## Browser selection freeze follow-up
+
+The next user run froze before entering Compare. A five-second live stack sample of build 738
+(`/private/tmp/aagedal-freeze-sample.txt`) showed the main thread waiting inside Apple's RAW
+initialization from `ThumbnailService.orientedToSidecar` → `fileEXIFOrientation`. A background
+HDR classification held that initialization's once lock while `NSUserDefaults.registerDefaults`
+posted a notification and waited for an operation to finish. This establishes a decoder /
+main-thread notification wait cycle, independent of the earlier rename identity failure.
+
+Changes:
+
+- Explicit `@concurrent` boundaries keep original thumbnail generation, edited thumbnail
+  rendering, cloud availability checks, and shared edited preview decoding off MainActor.
+  Under this project's approachable concurrency settings, `nonisolated async` alone inherits
+  caller execution and did not provide the previously documented off-main guarantee.
+- Preferences sync observers receive on the posting thread and asynchronously deliver background
+  events to MainActor. Main-thread events remain inline to preserve remote-update echo suppression.
+  NotificationCenter's synchronous main OperationQueue wait is removed.
+- Browser and Metadata Review defaults subscriptions schedule their UI updates on the main queue,
+  addressing the background-publication warning triggered by decoder defaults registration.
+- Regression tests cover off-main thumbnail generation, nonblocking background preference delivery,
+  and synchronous main-thread preference delivery.
+
+Validation: **2,082 tests in 237 suites passed**, 70.517 seconds, in the full serial run.
+`scripts/ci/validate_repository.sh` and `git diff --check` passed. The initial validation
+builds caught a missing Combine import and a test-only synchronous-wait restriction; both
+were corrected before the passing run.
+
+- Full log: `/private/tmp/aagedal-freeze-tests-complete.log`
+- Result bundle: `Test-Aagedal Photo Agent Tests-2026.09.05_23-08-26-+0200.xcresult`
+- Repository checks: `/private/tmp/aagedal-freeze-repository.log`
+
+### First retest: browser responsiveness
+
+1. In Xcode, click Stop (the square button) to end the frozen run.
+2. Select the **Aagedal Photo Agent** app scheme and choose Product → Run (Command-R) to rebuild.
+3. Open the same **TestImages copy** folder. As thumbnails appear, click one photo, then hold
+   Command and click a second photo, reproducing the selection that froze the app.
+4. Before opening Compare, scroll the grid and click another photo. The selection should change
+   immediately and the app should remain responsive while metadata finishes loading.
+5. Quit the app and run it again, then repeat steps 3–4 once. This matters because RAW initialization
+   happens once per process. Report any freeze or repeated background-publication warning.
+6. If this passes, continue the Compare and Batch Rename checks below.
+
+This real-folder retest remains pending. The stack sample is retained outside the repository;
+no user photo files were changed during diagnosis.
+
 ## Requested manual retest
 
 Use two copied photos in the latest development build:

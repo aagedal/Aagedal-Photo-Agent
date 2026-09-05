@@ -4,6 +4,41 @@ import Testing
 
 @Suite("iCloud sync coordinator")
 struct ICloudSyncCoordinatorTests {
+    @Test("background preferences notifications return while MainActor is occupied")
+    @MainActor
+    func backgroundPreferenceNotificationDoesNotWaitForMainActor() async {
+        let returned = DispatchSemaphore(value: 0)
+        let handled = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            PreferencesSyncService.deliverNotification {
+                MainActor.assertIsolated()
+                handled.signal()
+            }
+            returned.signal()
+        }
+        // Model ImageIO holding its RAW initialization lock while posting defaults.
+        // The poster must return even when this actor cannot execute its callback.
+        #expect(Self.waitForNotificationSignal(returned))
+        let delivered = await Task.detached {
+            Self.waitForNotificationSignal(handled)
+        }.value
+        #expect(delivered)
+    }
+
+    // Deliberately occupy the actor to reproduce the decoder lock/notification cycle.
+    // Keep this synchronous helper bounded so a regression fails instead of hanging tests.
+    nonisolated private static func waitForNotificationSignal(_ signal: DispatchSemaphore) -> Bool {
+        signal.wait(timeout: .now() + 2) == .success
+    }
+
+    @Test("main-thread preferences notifications preserve synchronous echo suppression")
+    @MainActor
+    func mainPreferenceNotificationStaysInline() {
+        let handled = DispatchSemaphore(value: 0)
+        PreferencesSyncService.deliverNotification { handled.signal() }
+        #expect(handled.wait(timeout: .now()) == .success)
+    }
+
     @Test("master sync includes every user-facing category")
     func masterCategoryCoverage() {
         #expect(ICloudSyncCoordinator.masterCategories == [

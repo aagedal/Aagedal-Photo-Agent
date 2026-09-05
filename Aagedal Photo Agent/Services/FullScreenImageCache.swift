@@ -588,6 +588,9 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// result engages EDR on display (matches the foreground render path). Returns nil if the
     /// decode fails or the task is cancelled. Shared by `startPrefetch` and `warmEditedPreviews`
     /// so both render edited previews identically — keep this the single edited-decode path.
+    // This is also called by MainActor thumbnail requests. Explicitly leave that
+    // actor before ImageIO initializes RAW support or reads source orientation.
+    @concurrent
     nonisolated static func decodedEditedPreview(
         for url: URL,
         settings: CameraRawSettings?,

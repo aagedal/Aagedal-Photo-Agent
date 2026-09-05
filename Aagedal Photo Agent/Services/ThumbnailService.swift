@@ -93,19 +93,8 @@ final class ThumbnailService {
             request = existing
         } else {
             let requestID = UUID()
-            let originalThumbnailLoader = originalThumbnailLoader
             let task = Task<NSImage?, Never> {
                 guard !Task.isCancelled else { return nil }
-                if let originalThumbnailLoader {
-                    guard let loaded = await originalThumbnailLoader(url),
-                          !Task.isCancelled else { return nil }
-                    cache.setObject(
-                        loaded,
-                        forKey: url as NSURL,
-                        cost: Self.decodedCost(of: loaded)
-                    )
-                    return loaded
-                }
                 if let oriented = await self.generateOrientedThumbnail(for: url) {
                     guard !Task.isCancelled else { return nil }
                     cache.setObject(oriented, forKey: url as NSURL, cost: Self.decodedCost(of: oriented))
@@ -139,11 +128,15 @@ final class ThumbnailService {
     /// `loadCGImageSourceThumbnail`) was already off-main, but `loadThumbnail`'s enclosing `Task`
     /// is MainActor-isolated, so the orientation finalize used to run on the main thread — for a
     /// RAW folder, where every file carries a sidecar, that meant a sidecar read plus a full
-    /// `CIImage` rotation on the main thread per thumbnail, hitching grid scrolling. `nonisolated
-    /// async` keeps the whole finalize on the cooperative pool. `XMPReader` (SwiftExif) is a
-    /// pure-Swift parser, so the sidecar read is safe off-main.
+    /// `CIImage` rotation on the main thread per thumbnail. With approachable concurrency,
+    /// `nonisolated async` inherits the caller's executor; `@concurrent` explicitly moves
+    /// this entire pipeline off MainActor, including ImageIO's lazy RAW initialization.
+    @concurrent
     nonisolated private func generateOrientedThumbnail(for url: URL) async -> NSImage? {
-        guard Self.isLocallyAvailableForThumbnail(url) else { return nil }
+        if let originalThumbnailLoader {
+            return await originalThumbnailLoader(url)
+        }
+        guard await Self.isLocallyAvailableForThumbnail(url) else { return nil }
         guard await decodeGate.acquire() else { return nil }
         if Task.isCancelled {
             await decodeGate.release()
@@ -214,7 +207,7 @@ final class ThumbnailService {
             let needsSourceDecode = SupportedImageFormats.isRaw(url: url)
                 || settings.crop?.isEffectiveCrop == true
             if needsSourceDecode {
-                guard Self.isLocallyAvailableForThumbnail(url) else { return nil }
+                guard await Self.isLocallyAvailableForThumbnail(url) else { return nil }
                 guard await decodeGate.acquire() else { return nil }
                 if Task.isCancelled {
                     await decodeGate.release()
@@ -407,9 +400,9 @@ final class ThumbnailService {
     /// because their QL preview is the camera-baked JPEG and diverges from the RAW
     /// decode the edit/export renders use.)
     ///
-    /// `nonisolated static async` so the CoreImage render runs on the cooperative
-    /// pool, off the MainActor. Takes/returns `CGImage` (Sendable) to cross the
-    /// isolation boundary cleanly.
+    /// Explicitly leave the caller's actor for CoreImage rendering, including the
+    /// synchronous final image creation after the awaited develop pipeline.
+    @concurrent
     nonisolated private static func renderEditedThumbnail(
         cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int
     ) async -> CGImage? {
@@ -536,7 +529,8 @@ final class ThumbnailService {
     /// enter the shared decode gate, thumbnails for unrelated local folders stall.
     /// Kick the download and let a later visible or prefetch request retry
     /// after iCloud has materialized the file.
-    nonisolated private static func isLocallyAvailableForThumbnail(_ url: URL) -> Bool {
+    @concurrent
+    nonisolated private static func isLocallyAvailableForThumbnail(_ url: URL) async -> Bool {
         let fileManager = FileManager.default
         guard fileManager.isUbiquitousItem(at: url) else { return true }
 

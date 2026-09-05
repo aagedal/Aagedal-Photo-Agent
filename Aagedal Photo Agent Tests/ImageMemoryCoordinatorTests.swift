@@ -134,6 +134,23 @@ struct ImageMemoryCoordinatorTests {
         ])
     }
 
+    @Test("thumbnail generation leaves MainActor before decoding")
+    @MainActor
+    func thumbnailGenerationRunsOffMainActor() async throws {
+        let service = ThumbnailService(originalThumbnailLoader: { _ in
+            Self.makeThumbnailAwayFromMainThread()
+        })
+        let url = URL(fileURLWithPath: "/virtual/off-main-thumbnail.jpg")
+
+        let result = try #require(await service.loadThumbnail(for: url))
+        #expect(service.thumbnail(for: url) === result)
+    }
+
+    nonisolated private static func makeThumbnailAwayFromMainThread() -> NSImage {
+        #expect(!Thread.isMainThread)
+        return NSImage(size: NSSize(width: 32, height: 32))
+    }
+
     @Test("warning pressure cancels thumbnail producers before they can populate the cache")
     @MainActor
     func thumbnailPressureCancellation() async {

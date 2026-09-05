@@ -1,3 +1,4 @@
+import Combine
 import AppKit
 import CoreImage
 import os.log
@@ -275,7 +276,7 @@ struct ContentView: View {
                 }
                 await deadlineLiveSnapshot.refresh(request)
             }
-            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: DispatchQueue.main)) { _ in
                 deadlineLiveSnapshot.refreshValidationPreferences()
             }
             .sheet(isPresented: $isShowingDeadlineProfileManager) {

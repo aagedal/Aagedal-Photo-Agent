@@ -117,30 +117,39 @@ final class PreferencesSyncService {
         guard !observersInstalled else { return }
         observersInstalled = true
         let center = NotificationCenter.default
-        // Block-based observers pinned to the main queue. Both handlers touch
-        // `@MainActor` state, and `UserDefaults.didChangeNotification` (as well
-        // as the KVS notification) can be posted from a background thread — e.g.
-        // `registerDefaults:` invoked off-main. The old target/selector form ran
-        // the handler synchronously on the posting thread, which tripped the
-        // Swift MainActor executor check (SIGTRAP). Forcing main-queue delivery
-        // and asserting isolation keeps the handlers on the main actor.
+        // NotificationCenter's main OperationQueue delivery can synchronously block
+        // a background poster. RAW decoder initialization posts defaults changes
+        // while holding its once lock; waiting for MainActor here can deadlock a
+        // main-thread ImageIO reader. Receive inline, then enqueue background posts.
+        // Preserve inline main-thread handling so isApplyingRemote still prevents
+        // local notifications from echoing a remote preference update.
         observerTokens.append(center.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
             object: kvs,
-            queue: .main
+            queue: nil
         ) { [weak self] note in
             // Extract the Sendable key list before hopping — `Notification`
             // itself is not Sendable and can't cross into the actor closure.
             let changed = note.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]
-            MainActor.assumeIsolated { self?.remoteStoreChanged(changedKeys: changed) }
+            Self.deliverNotification { [weak self] in self?.remoteStoreChanged(changedKeys: changed) }
         })
         observerTokens.append(center.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: nil,
-            queue: .main
+            queue: nil
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.localDefaultsChanged() }
+            Self.deliverNotification { [weak self] in self?.localDefaultsChanged() }
         })
+    }
+
+    /// Never make a background notification poster wait for the main actor.
+    /// Main-thread delivery stays synchronous to preserve the remote-update echo guard.
+    nonisolated static func deliverNotification(_ action: @escaping @MainActor @Sendable () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { action() }
+        } else {
+            Task { @MainActor in action() }
+        }
     }
 
     private func removeObservers() {
