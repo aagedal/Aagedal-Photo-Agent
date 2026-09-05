@@ -12,6 +12,61 @@ import Foundation
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Adding to a cold Known People cache preserves existing records without duplicating the new person")
+    func addPersonWithColdCache() throws {
+        try withIsolatedEmbeddingMigration { dir in
+            let existing = KnownPerson(name: "Existing", embeddings: [embedding(1)])
+            try writePersonFile(existing, into: dir)
+            let service = KnownPeopleService()
+
+            let added = try service.addPerson(name: "Added", embeddings: [embedding(2)])
+
+            #expect(service.getAllPeople().count == 2)
+            #expect(Set(service.getAllPeople().map(\.id)) == [existing.id, added.id])
+            #expect(service.person(byID: added.id)?.name == "Added")
+            service.reloadAfterStorageChange()
+            #expect(service.getAllPeople().count == 2)
+            #expect(Set(service.getAllPeople().map(\.id)) == [existing.id, added.id])
+        }
+    }
+
+    @Test("Adding to a cold cache completes embedding migration before writing the new person and thumbnails")
+    func addPersonAfterColdCacheEmbeddingMigration() throws {
+        try withIsolatedEmbeddingMigration { dir in
+            let backup = dir.deletingLastPathComponent()
+                .appendingPathComponent("KnownPeople-ColdAddBackup-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: backup) }
+            var io = KnownPeopleEmbeddingMigrationIO.live
+            io.backupURL = { _, _, _, _ in backup }
+            KnownPeopleService.embeddingMigrationIO = io
+            let legacy = KnownPerson(name: "Old embedding space", embeddings: [embedding(3)])
+            try writePersonFile(legacy, into: dir)
+            UserDefaults.standard.set(
+                FaceRecognitionDefaults.embeddingVersion - 1,
+                forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion
+            )
+            let service = KnownPeopleService()
+            let sample = embedding(4)
+            let thumbnail = Data([5, 6, 7])
+            let embeddingThumbnail = Data([8, 9, 10])
+
+            let added = try service.addPerson(
+                name: "Current embedding space",
+                embeddings: [sample],
+                thumbnailData: thumbnail,
+                embeddingThumbnails: [sample.id: embeddingThumbnail]
+            )
+
+            #expect(service.getAllPeople().map(\.id) == [added.id])
+            #expect(FileManager.default.fileExists(atPath: personFileURL(legacy.id, in: backup).path))
+            #expect(FileManager.default.fileExists(atPath: personFileURL(added.id, in: dir).path))
+            #expect(try Data(contentsOf: dir.appendingPathComponent("thumbnails/\(added.id.uuidString).jpg")) == thumbnail)
+            #expect(try Data(contentsOf: dir.appendingPathComponent("embedding_thumbnails/\(sample.id.uuidString).jpg")) == embeddingThumbnail)
+            service.reloadAfterStorageChange()
+            #expect(service.getAllPeople().map(\.id) == [added.id])
+        }
+    }
+
     // MARK: - Fixtures
 
     private func makeTempDir() -> URL {
@@ -159,6 +214,61 @@ struct KnownPeopleServiceTests {
             _ = try await cancelled.value
         }
         #expect(probe.dittoArguments.count == 1)
+    }
+
+    @Test("late import publication retains concurrent additions edits and deletions", arguments: [0, 1, 2])
+    func importPreservesConcurrentCacheChanges(completion: Int) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let first = KnownPerson(name: "Imported first", embeddings: [])
+        let second = KnownPerson(name: "Imported second", embeddings: [])
+        let gate = KnownPeopleImportPublicationGate(failSecondWrite: completion == 1)
+        defer { gate.resume() }
+        let peopleData = try encode([first, first, second])
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: { _ in }, removeItem: { _ in },
+            contentsOfDirectory: { _ in [] }, isDirectory: { _ in false },
+            itemExists: { $0.lastPathComponent == "people.json" },
+            readData: { _ in peopleData }, readCoordinatedData: { _ in peopleData },
+            writeData: { _, _ in },
+            writeCoordinatedData: { data, url in try gate.write(data, to: url) },
+            runDitto: { _ in }
+        )
+        let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        _ = service.loadDatabase()
+        var edited = try service.addPerson(name: "Before edit", embeddings: [])
+        let deleted = try service.addPerson(name: "Delete during import", embeddings: [])
+        let task = Task { try await service.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip")) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(gate.entered)
+        edited.name = "Edited during import"
+        try service.updatePerson(edited)
+        try service.removePerson(id: deleted.id)
+        let added = try service.addPerson(name: "Added during import", embeddings: [])
+        if completion == 2 { task.cancel() }
+        gate.resume()
+        do {
+            let count = try await task.value
+            #expect(completion == 0)
+            #expect(count == 2)
+        } catch {
+            #expect(completion != 0)
+            if completion == 2 { #expect(error is CancellationError) }
+        }
+        let people = service.getAllPeople()
+        #expect(people.first { $0.id == edited.id }?.name == "Edited during import")
+        #expect(people.contains { $0.id == added.id })
+        #expect(!people.contains { $0.id == deleted.id })
+        #expect(people.contains { $0.id == first.id })
+        #expect(people.contains { $0.id == second.id } == (completion == 0))
+        #expect(Set(people.map(\.id)).count == people.count)
+        service.reloadAfterStorageChange(resolvedStorageURL: directory)
+        #expect(Set(service.getAllPeople().map(\.id)) == Set(people.map(\.id)))
     }
 
     @Test("Known People archive export/import round-trips people and thumbnails")
@@ -791,5 +901,31 @@ private nonisolated final class KnownPeopleArchiveCommitProbe: @unchecked Sendab
         lock.lock()
         defer { lock.unlock() }
         return storedPersonWriteCount
+    }
+}
+
+/// The first durable archive write is paused to interleave MainActor CRUD deterministically.
+private nonisolated final class KnownPeopleImportPublicationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var didEnter = false
+    private var writeCount = 0
+    private let failSecondWrite: Bool
+
+    init(failSecondWrite: Bool) { self.failSecondWrite = failSecondWrite }
+
+    var entered: Bool { lock.withLock { didEnter } }
+    func resume() { semaphore.signal() }
+
+    func write(_ data: Data, to url: URL) throws {
+        let count = lock.withLock { writeCount += 1; return writeCount }
+        if count == 2, failSecondWrite { throw CocoaError(.fileWriteNoPermission) }
+        try CloudCoordinatedIO.writeData(data, to: url)
+        if count == 1 {
+            lock.withLock { didEnter = true }
+            guard semaphore.wait(timeout: .now() + 5) == .success else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
     }
 }

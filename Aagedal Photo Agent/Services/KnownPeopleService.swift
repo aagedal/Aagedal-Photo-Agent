@@ -1188,6 +1188,10 @@ final class KnownPeopleService {
         thumbnailData: Data? = nil,
         embeddingThumbnails: [UUID: Data] = [:]
     ) throws -> KnownPerson {
+        // Finish cold-cache assembly and any storage migrations before writing
+        // new data. Loading after the write would discover this person on disk
+        // and append it twice, or migrate away its newly written thumbnails.
+        var db = loadDatabase()
         let person = KnownPerson(
             name: name,
             role: role,
@@ -1204,7 +1208,6 @@ final class KnownPeopleService {
         }
 
         try writePerson(person)
-        var db = loadDatabase()
         db.people.append(person)
         db.lastModified = person.updatedAt
         database = db
@@ -1883,9 +1886,9 @@ final class KnownPeopleService {
         }
 
         // Filter out people whose UUIDs already exist to prevent duplicates on re-import
-        var db = loadDatabase()
-        let existingIDs = Set(db.people.map(\.id))
-        let newPeople = payload.people.filter { !existingIDs.contains($0.id) }
+        let db = loadDatabase()
+        var admittedIDs = Set(db.people.map(\.id))
+        let newPeople = payload.people.filter { admittedIDs.insert($0.id).inserted }
         let requestID = UUID()
         let storageRoot = knownPeopleDirectory
         let result = await archiveService.commitImport(KnownPeopleArchiveImportCommitRequest(
@@ -1923,16 +1926,21 @@ final class KnownPeopleService {
             throw CancellationError()
         }
 
-        // Publish every durable person even when a later write failed or cancellation arrived.
-        // This keeps the MainActor cache consistent with the exact prefix already visible on disk.
+        // Publish the durable import prefix into the latest cache. Local CRUD can run while
+        // commitImport is suspended; its additions, edits and removals must not be replaced by
+        // the pre-import snapshot. Existing IDs remain authoritative in the current cache.
         for url in evidence.committedFileURLs + evidence.committedThumbnailURLs {
             stampLocalWrite(url)
         }
         if !evidence.committedPeople.isEmpty {
-            let currentIDs = Set(db.people.map(\.id))
-            db.people.append(contentsOf: evidence.committedPeople.filter { !currentIDs.contains($0.id) })
-            db.lastModified = evidence.committedPeople.map(\.updatedAt).max() ?? db.lastModified
-            database = db
+            var current = loadDatabase()
+            let currentIDs = Set(current.people.map(\.id))
+            current.people.append(contentsOf: evidence.committedPeople.filter { !currentIDs.contains($0.id) })
+            current.lastModified = max(
+                current.lastModified,
+                evidence.committedPeople.map(\.updatedAt).max() ?? current.lastModified
+            )
+            database = current
             clearFeaturePrintCache()
             NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
         }
