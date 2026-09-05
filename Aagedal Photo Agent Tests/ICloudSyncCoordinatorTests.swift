@@ -4,6 +4,88 @@ import Testing
 
 @Suite("iCloud sync coordinator")
 struct ICloudSyncCoordinatorTests {
+    @Test("keyword-list monitoring resolves and creates its root off MainActor")
+    @MainActor
+    func keywordMonitoringRootPreparation() async throws {
+        let root = URL(fileURLWithPath: "/virtual/Lists")
+        let service = KeywordListsRoutingService(access: KeywordListsRoutingFileAccess(
+            localRootURL: { URL(fileURLWithPath: "/virtual/local") },
+            cloudRootURL: {
+                #expect(!Thread.isMainThread)
+                return root
+            },
+            merge: { _, _ in Issue.record("monitoring must not merge storage") }
+        ), ensureDirectory: { url in
+            #expect(!Thread.isMainThread)
+            #expect(url == root)
+        })
+        #expect(try await service.prepareMonitoringRoot() == root)
+    }
+
+    @Test("keyword-list monitoring handles unavailable roots and directory failure")
+    func keywordMonitoringRootFailures() async throws {
+        let unavailable = KeywordListsRoutingService(access: KeywordListsRoutingFileAccess(
+            localRootURL: { URL(fileURLWithPath: "/virtual/local") },
+            cloudRootURL: { nil },
+            merge: { _, _ in Issue.record("unexpected merge") }
+        ), ensureDirectory: { _ in Issue.record("unavailable root must not be created") })
+        #expect(try await unavailable.prepareMonitoringRoot() == nil)
+        let failure = KeywordListsRoutingService(access: KeywordListsRoutingFileAccess(
+            localRootURL: { URL(fileURLWithPath: "/virtual/local") },
+            cloudRootURL: { URL(fileURLWithPath: "/virtual/Lists") },
+            merge: { _, _ in Issue.record("unexpected merge") }
+        ), ensureDirectory: { _ in throw CocoaError(.fileWriteNoPermission) })
+        do {
+            _ = try await failure.prepareMonitoringRoot()
+            Issue.record("directory failure must propagate")
+        } catch {
+            #expect((error as? CocoaError)?.code == .fileWriteNoPermission)
+        }
+    }
+
+    @Test("cancelled keyword monitoring cannot access or publish a root")
+    func keywordMonitoringCancellation() async {
+        let preCancelled = KeywordListsRoutingService(access: KeywordListsRoutingFileAccess(
+            localRootURL: { URL(fileURLWithPath: "/virtual/local") },
+            cloudRootURL: { Issue.record("cancelled setup must not resolve"); return nil },
+            merge: { _, _ in Issue.record("unexpected merge") }
+        ), ensureDirectory: { _ in Issue.record("cancelled setup must not create") })
+        let cancelledBefore = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do { _ = try await preCancelled.prepareMonitoringRoot(); return false }
+            catch is CancellationError { return true }
+            catch { return false }
+        }.value
+        #expect(cancelledBefore)
+
+        let cancelledDuring = KeywordListsRoutingService(access: KeywordListsRoutingFileAccess(
+            localRootURL: { URL(fileURLWithPath: "/virtual/local") },
+            cloudRootURL: { URL(fileURLWithPath: "/virtual/Lists") },
+            merge: { _, _ in Issue.record("unexpected merge") }
+        ), ensureDirectory: { _ in withUnsafeCurrentTask { $0?.cancel() } })
+        let rejected = await Task {
+            do { _ = try await cancelledDuring.prepareMonitoringRoot(); return false }
+            catch is CancellationError { return true }
+            catch { return false }
+        }.value
+        #expect(rejected)
+    }
+
+    @Test("keyword watcher caches its prepared root and rejects cancelled setup")
+    func keywordWatcherPreparationContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: workspace.appendingPathComponent(
+            "Aagedal Photo Agent/Services/KeywordListsCloudCoordinator.swift"
+        ), encoding: .utf8)
+        #expect(source.contains("try await KeywordListsRoutingService.shared.prepareMonitoringRoot()"))
+        #expect(source.contains("guard !Task.isCancelled, let self else { return }"))
+        #expect(source.contains("guard let root = resolvedRoot else { return }"))
+        #expect(!source.contains("iCloudContainerListsURL"))
+        #expect(!source.contains("CloudCoordinatedIO.ensureDirectory"))
+        #expect(!source.contains("FileManager.default"))
+        #expect(!source.contains("break"))
+    }
+
     @Test("background preferences notifications return while MainActor is occupied")
     @MainActor
     func backgroundPreferenceNotificationDoesNotWaitForMainActor() async {

@@ -4,7 +4,7 @@ import os
 private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "RosterCloudCoordinator")
 
 /// Evidence preserves requests that reached Foundation even if cancellation arrived during that call.
-nonisolated struct RosterCloudDownloadResult: Equatable, Sendable {
+nonisolated struct CloudDownloadResult: Equatable, Sendable {
     let attemptedURLs: [URL]
     let failedURLs: [URL]
     let wasCancelled: Bool
@@ -12,11 +12,12 @@ nonisolated struct RosterCloudDownloadResult: Equatable, Sendable {
 
 /// Cloud download initiation may synchronously contact the file provider. Keep complete batches on
 /// one executor; no suspension inside the loop allows overlapping updates to interleave access.
-actor RosterCloudDownloadService {
+/// Each coordinator owns a service so independent libraries can initiate downloads independently.
+actor CloudDownloadService {
     private let startDownloading: @Sendable (URL) throws -> Void
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
-        category: "RosterCloudDownload"
+        category: "CloudDownload"
     )
 
     init(startDownloading: @escaping @Sendable (URL) throws -> Void = {
@@ -25,7 +26,7 @@ actor RosterCloudDownloadService {
         self.startDownloading = startDownloading
     }
 
-    func requestDownloads(for urls: [URL]) -> RosterCloudDownloadResult {
+    func requestDownloads(for urls: [URL]) -> CloudDownloadResult {
         let interval = signposter.beginInterval("RequestDownloads", id: signposter.makeSignpostID())
         var seen: Set<URL> = []
         var attemptedURLs: [URL] = []
@@ -44,7 +45,7 @@ actor RosterCloudDownloadService {
             "RequestDownloads", interval,
             "attempted=\(attemptedURLs.count) failed=\(failedURLs.count) cancelled=\(Task.isCancelled)"
         )
-        return RosterCloudDownloadResult(
+        return CloudDownloadResult(
             attemptedURLs: attemptedURLs,
             failedURLs: failedURLs,
             wasCancelled: Task.isCancelled
@@ -64,7 +65,7 @@ final class RosterCloudCoordinator {
     private var observers: [NSObjectProtocol] = []
     private var pendingRefresh: Task<Void, Never>?
     private var pendingStart: Task<Void, Never>?
-    private let downloadService = RosterCloudDownloadService()
+    private let downloadService = CloudDownloadService()
     private var pendingDownloads: [UUID: Task<Void, Never>] = [:]
     private var monitoredRoot: URL?
     private var pendingChanges: [String: (url: URL, contentChangeDate: Date?)] = [:]
@@ -159,7 +160,7 @@ final class RosterCloudCoordinator {
         defer { query.enableUpdates() }
 
         guard let root = monitoredRoot else { return }
-        let teamsPath = root.appendingPathComponent("teams", isDirectory: true).path
+        let teamsPath = root.appendingPathComponent("teams", isDirectory: true).path + "/"
 
         var downloadURLs: [URL] = []
         for case let item as NSMetadataItem in query.results {

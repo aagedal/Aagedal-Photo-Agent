@@ -498,9 +498,25 @@ actor KeywordListsRoutingService {
     static let shared = KeywordListsRoutingService()
 
     private let access: KeywordListsRoutingFileAccess
+    private let ensureDirectory: @Sendable (URL) throws -> Void
 
-    init(access: KeywordListsRoutingFileAccess = .system) {
+    init(
+        access: KeywordListsRoutingFileAccess = .system,
+        ensureDirectory: @escaping @Sendable (URL) throws -> Void = CloudCoordinatedIO.ensureDirectory
+    ) {
         self.access = access
+        self.ensureDirectory = ensureDirectory
+    }
+
+    /// Uses the routing executor so monitoring setup cannot overlap a route merge.
+    /// Cancellation prevents publication; a directory creation already entered may finish.
+    func prepareMonitoringRoot() throws -> URL? {
+        try Task.checkCancellation()
+        guard let root = access.cloudRootURL() else { return nil }
+        try Task.checkCancellation()
+        try ensureDirectory(root)
+        try Task.checkCancellation()
+        return root
     }
 
     func reconcile(enabled: Bool, requestID: UUID) throws -> KeywordListsRoutingResult {

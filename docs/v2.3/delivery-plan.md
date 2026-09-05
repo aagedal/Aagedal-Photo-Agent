@@ -21,6 +21,14 @@ existing-only mirroring and revision-checked deletion eligibility. This advances
 responsiveness/recovery work without closing its manual or device gates; see the
 [dated validation](../plan-status-batch-mirror-cleanup-continuation-2026-09-05.md).
 
+**Cloud monitoring and download continuation (2026-09-06):** Known People, Watermarks,
+keyword lists, and Teams use a shared download service implementation with per-library serialized
+batches, cancellation evidence, and privacy-safe signposts. Keyword-list query setup resolves and
+creates its directory on the routing actor, rejects cancelled setup, and requests every matching
+placeholder. Directory filtering excludes similarly named sibling folders. The full storage
+migration and manual/device gates remain open.
+([validation](../plan-status-cloud-monitor-download-continuation-2026-09-06.md))
+
 **Import admission and Teams cloud download continuation (2026-09-05):** overlapping Known
 People imports now stay ordered through duplicate filtering, durable commit, and cache publication;
 cancelled or rerouted queued requests are rejected before preparation. Teams cloud download initiation

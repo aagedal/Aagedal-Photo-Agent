@@ -16,6 +16,10 @@ final class KeywordListsCloudCoordinator {
     /// `refresh()` doesn't stack a duplicate attempt and so disabling can cancel it.
     private var pendingStart: Task<Void, Never>?
 
+    private let downloadService = CloudDownloadService()
+    private var pendingDownloads: [UUID: Task<Void, Never>] = [:]
+    private var resolvedRoot: URL?
+
     private init() {}
 
     /// Idempotent. Call after app launch and whenever the iCloud toggle changes.
@@ -25,49 +29,31 @@ final class KeywordListsCloudCoordinator {
             stopQuery()
             return
         }
-        if store.iCloudContainerListsURL != nil {
-            startQueryIfNeeded()
-        } else {
-            // The ubiquity container isn't reachable yet. Early in launch the
-            // daemon may still be provisioning it, and resolving on the main
-            // thread can transiently return nil — so resolve off-main and start
-            // the query once it lands, instead of giving up for the session.
-            scheduleContainerResolution()
-        }
+        scheduleContainerResolution()
     }
 
-    /// Resolves the ubiquity container off the main thread (the documented
-    /// pattern: the call provisions and blocks, then returns the URL), then
-    /// starts the metadata query back on the main actor. A single attempt
-    /// suffices — the call blocks until provisioning finishes; a nil result
-    /// means iCloud is genuinely unavailable (signed out / Drive off).
+    /// Resolve and prepare the directory on the same executor used for route reconciliation.
     private func scheduleContainerResolution() {
         guard query == nil, pendingStart == nil else { return }
         pendingStart = Task { [weak self] in
-            let resolved = await Task.detached(priority: .utility) {
-                // AppPaths.iCloudContainerID is nonisolated and matches
-                // KeywordListsStore.iCloudContainerID (same entitlement).
-                FileManager.default.url(forUbiquityContainerIdentifier: AppPaths.iCloudContainerID)
-            }.value
-            await MainActor.run { [weak self] in
-                guard let self else { return }
+            do {
+                let root = try await KeywordListsRoutingService.shared.prepareMonitoringRoot()
+                guard !Task.isCancelled, let self else { return }
                 self.pendingStart = nil
-                guard KeywordListsStore.shared.iCloudEnabled, resolved != nil else { return }
-                self.startQueryIfNeeded()
-                // Re-read now that the cloud root resolves so the in-memory tree
-                // reflects the synced file immediately, without waiting on the
-                // query's first gathering callback.
+                guard KeywordListsStore.shared.iCloudEnabled, let root else { return }
+                self.startQueryIfNeeded(root: root)
                 KeywordListsStore.shared.notifyRemoteUpdate()
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.pendingStart = nil
+                logger.error("Could not prepare keyword-list cloud monitoring directory")
             }
         }
     }
 
-    private func startQueryIfNeeded() {
+    private func startQueryIfNeeded(root: URL) {
         guard query == nil else { return }
-        guard let root = KeywordListsStore.shared.iCloudContainerListsURL else { return }
-        // The ubiquity container must exist before the query can find anything.
-        // Coordinated so we don't fork a "Lists 2" conflict folder.
-        try? CloudCoordinatedIO.ensureDirectory(root)
+        resolvedRoot = root
 
         let q = NSMetadataQuery()
         q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
@@ -108,6 +94,9 @@ final class KeywordListsCloudCoordinator {
     private func stopQuery() {
         pendingStart?.cancel()
         pendingStart = nil
+        for task in pendingDownloads.values { task.cancel() }
+        pendingDownloads.removeAll()
+        resolvedRoot = nil
         guard let q = query else { return }
         q.stop()
         for observer in observers {
@@ -122,10 +111,11 @@ final class KeywordListsCloudCoordinator {
         query.disableUpdates()
         defer { query.enableUpdates() }
 
-        guard let root = KeywordListsStore.shared.iCloudContainerListsURL else { return }
-        let rootPath = root.path
+        guard let root = resolvedRoot else { return }
+        let rootPath = root.path + "/"
 
         var touched = false
+        var downloadURLs: [URL] = []
         for case let item as NSMetadataItem in query.results {
             guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String else { continue }
             if path.hasPrefix(rootPath) {
@@ -137,15 +127,25 @@ final class KeywordListsCloudCoordinator {
                    isDownloadedNumber != NSMetadataUbiquitousItemDownloadingStatusCurrent
                 {
                     if let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL {
-                        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                        downloadURLs.append(url)
                     }
                 }
-                break
             }
         }
 
+        if !downloadURLs.isEmpty { requestDownloads(for: downloadURLs) }
         if touched {
             KeywordListsStore.shared.notifyRemoteUpdate()
+        }
+    }
+
+    private func requestDownloads(for urls: [URL]) {
+        let requestID = UUID()
+        let downloadService = downloadService
+        pendingDownloads[requestID] = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            _ = await downloadService.requestDownloads(for: urls)
+            self?.pendingDownloads.removeValue(forKey: requestID)
         }
     }
 }

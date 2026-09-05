@@ -25,6 +25,8 @@ final class KnownPeopleCloudCoordinator {
     /// In-flight off-main resolution of the ubiquity container. Held so a second
     /// `refresh()` doesn't stack a duplicate attempt and so disabling can cancel it.
     private var pendingStart: Task<Void, Never>?
+    private let downloadService = CloudDownloadService()
+    private var pendingDownloads: [UUID: Task<Void, Never>] = [:]
     /// Root resolved by the serialized routing actor. Update handling reuses it instead of
     /// repeatedly asking the ubiquity subsystem from MainActor notification callbacks.
     private var resolvedRoot: URL?
@@ -124,6 +126,8 @@ final class KnownPeopleCloudCoordinator {
     private func stopQuery() {
         pendingStart?.cancel()
         pendingStart = nil
+        for task in pendingDownloads.values { task.cancel() }
+        pendingDownloads.removeAll()
         guard let q = query else { return }
         q.stop()
         for observer in observers {
@@ -143,8 +147,9 @@ final class KnownPeopleCloudCoordinator {
         defer { query.enableUpdates() }
 
         guard let root = resolvedRoot else { return }
-        let peoplePath = root.appendingPathComponent("people", isDirectory: true).path
+        let peoplePath = root.appendingPathComponent("people", isDirectory: true).path + "/"
 
+        var downloadURLs: [URL] = []
         for case let item as NSMetadataItem in query.results {
             guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String,
                   let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL else { continue }
@@ -158,14 +163,25 @@ final class KnownPeopleCloudCoordinator {
             // the placeholder.
             if let status = item.value(forAttribute: NSMetadataUbiquitousItemDownloadingStatusKey) as? String,
                status != NSMetadataUbiquitousItemDownloadingStatusCurrent {
-                try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                downloadURLs.append(url)
             }
 
             let changeDate = item.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date
             pendingChanges[path] = (url: url, contentChangeDate: changeDate)
         }
 
+        if !downloadURLs.isEmpty { requestDownloads(for: downloadURLs) }
         if !pendingChanges.isEmpty { scheduleRefresh() }
+    }
+
+    private func requestDownloads(for urls: [URL]) {
+        let requestID = UUID()
+        let downloadService = downloadService
+        pendingDownloads[requestID] = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            _ = await downloadService.requestDownloads(for: urls)
+            self?.pendingDownloads.removeValue(forKey: requestID)
+        }
     }
 
     /// Coalesce bursts of update notifications (one sync pulls many files) into a

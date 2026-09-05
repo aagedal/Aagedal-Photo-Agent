@@ -15,6 +15,8 @@ final class WatermarkCloudCoordinator {
     private var observers: [NSObjectProtocol] = []
     private var pendingRefresh: Task<Void, Never>?
     private var pendingStart: Task<Void, Never>?
+    private let downloadService = CloudDownloadService()
+    private var pendingDownloads: [UUID: Task<Void, Never>] = [:]
     private var monitoredRoot: URL?
     private var pendingChanges: [String: (url: URL, contentChangeDate: Date?)] = [:]
 
@@ -88,6 +90,8 @@ final class WatermarkCloudCoordinator {
     private func stopQuery() {
         pendingStart?.cancel()
         pendingStart = nil
+        for task in pendingDownloads.values { task.cancel() }
+        pendingDownloads.removeAll()
         guard let q = query else { return }
         q.stop()
         for observer in observers {
@@ -107,8 +111,9 @@ final class WatermarkCloudCoordinator {
         defer { query.enableUpdates() }
 
         guard let root = monitoredRoot else { return }
-        let itemsPath = root.appendingPathComponent("items", isDirectory: true).path
+        let itemsPath = root.appendingPathComponent("items", isDirectory: true).path + "/"
 
+        var downloadURLs: [URL] = []
         for case let item as NSMetadataItem in query.results {
             guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String,
                   let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL else { continue }
@@ -118,14 +123,25 @@ final class WatermarkCloudCoordinator {
 
             if let status = item.value(forAttribute: NSMetadataUbiquitousItemDownloadingStatusKey) as? String,
                status != NSMetadataUbiquitousItemDownloadingStatusCurrent {
-                try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                downloadURLs.append(url)
             }
 
             let changeDate = item.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date
             pendingChanges[path] = (url: url, contentChangeDate: changeDate)
         }
 
+        if !downloadURLs.isEmpty { requestDownloads(for: downloadURLs) }
         if !pendingChanges.isEmpty { scheduleRefresh() }
+    }
+
+    private func requestDownloads(for urls: [URL]) {
+        let requestID = UUID()
+        let downloadService = downloadService
+        pendingDownloads[requestID] = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            _ = await downloadService.requestDownloads(for: urls)
+            self?.pendingDownloads.removeValue(forKey: requestID)
+        }
     }
 
     private func scheduleRefresh() {

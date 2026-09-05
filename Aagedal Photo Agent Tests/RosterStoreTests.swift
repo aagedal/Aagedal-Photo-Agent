@@ -253,14 +253,14 @@ private nonisolated final class RosterLibraryFileAccessProbe: @unchecked Sendabl
     var writtenURLs: [URL] { lock.withLock { committedURLs } }
 }
 
-@Suite("Roster cloud download filesystem boundary")
-struct RosterCloudDownloadServiceTests {
+@Suite("Shared cloud download filesystem boundary")
+struct CloudDownloadServiceTests {
     @Test("download requests are ordered, deduplicated and run off MainActor despite failures")
     @MainActor
     func orderedDownloadRequests() async {
         let urls = [URL(fileURLWithPath: "/virtual/one.json"), URL(fileURLWithPath: "/virtual/two.json")]
-        let probe = RosterCloudDownloadProbe(failedURL: urls[0])
-        let service = RosterCloudDownloadService(startDownloading: probe.start)
+        let probe = CloudDownloadProbe(failedURL: urls[0])
+        let service = CloudDownloadService(startDownloading: probe.start)
         let result = await service.requestDownloads(for: [urls[0], urls[0], urls[1]])
         #expect(result.attemptedURLs == urls)
         #expect(result.failedURLs == [urls[0]])
@@ -271,8 +271,8 @@ struct RosterCloudDownloadServiceTests {
 
     @Test("pre-cancellation touches no cloud files")
     func preCancellation() async {
-        let probe = RosterCloudDownloadProbe()
-        let service = RosterCloudDownloadService(startDownloading: probe.start)
+        let probe = CloudDownloadProbe()
+        let service = CloudDownloadService(startDownloading: probe.start)
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
             return await service.requestDownloads(for: [URL(fileURLWithPath: "/virtual/one.json")])
@@ -286,18 +286,42 @@ struct RosterCloudDownloadServiceTests {
     @Test("cancellation during a non-preemptible request preserves its exact attempted prefix")
     func partialCancellation() async {
         let urls = [URL(fileURLWithPath: "/virtual/one.json"), URL(fileURLWithPath: "/virtual/two.json")]
-        let probe = RosterCloudDownloadProbe(cancelAtInvocation: 1)
-        let service = RosterCloudDownloadService(startDownloading: probe.start)
+        let probe = CloudDownloadProbe(cancelAtInvocation: 1)
+        let service = CloudDownloadService(startDownloading: probe.start)
         let result = await Task { await service.requestDownloads(for: urls) }.value
         #expect(result.wasCancelled)
         #expect(result.attemptedURLs == [urls[0]])
         #expect(probe.urls == [urls[0]])
     }
 
+    @Test("shared download boundary accepts all library file types without filtering")
+    func libraryFileTypes() async {
+        let urls = ["people/person.json", "teams/team.deleted", "items/watermark/image.png", "keywords.json"]
+            .map { URL(fileURLWithPath: "/virtual/" + $0) }
+        let probe = CloudDownloadProbe()
+        let service = CloudDownloadService(startDownloading: probe.start)
+        let result = await service.requestDownloads(for: urls)
+        #expect(result.attemptedURLs == urls)
+        #expect(result.failedURLs.isEmpty)
+        #expect(probe.urls == urls)
+    }
+
+    @Test("cancellation during a failed request preserves both attempt and failure evidence")
+    func failedRequestCancellation() async {
+        let urls = [URL(fileURLWithPath: "/virtual/one.json"), URL(fileURLWithPath: "/virtual/two.json")]
+        let probe = CloudDownloadProbe(failedURL: urls[0], cancelAtInvocation: 1)
+        let service = CloudDownloadService(startDownloading: probe.start)
+        let result = await Task { await service.requestDownloads(for: urls) }.value
+        #expect(result.wasCancelled)
+        #expect(result.attemptedURLs == [urls[0]])
+        #expect(result.failedURLs == [urls[0]])
+        #expect(probe.urls == [urls[0]])
+    }
+
     @Test("overlapping cloud batches never enter filesystem access concurrently")
     func serializedBatches() async {
-        let probe = RosterCloudDownloadProbe(delay: 0.01)
-        let service = RosterCloudDownloadService(startDownloading: probe.start)
+        let probe = CloudDownloadProbe(delay: 0.01)
+        let service = CloudDownloadService(startDownloading: probe.start)
         await withTaskGroup(of: Void.self) { group in
             for index in 0..<8 {
                 group.addTask {
@@ -309,13 +333,14 @@ struct RosterCloudDownloadServiceTests {
         #expect(probe.maximumConcurrentCalls == 1)
     }
 
-    @Test("cloud coordinator owns cancellation and submits immutable URL batches")
-    func coordinatorSourceContract() throws {
+    @Test("cloud coordinators own cancellation and submit immutable URL batches",
+          arguments: ["Roster", "KnownPeople", "Watermark", "KeywordLists"])
+    func coordinatorSourceContract(library: String) throws {
         let workspace = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(contentsOf: workspace.appendingPathComponent(
-            "Aagedal Photo Agent/Services/RosterCloudCoordinator.swift"
+            "Aagedal Photo Agent/Services/\(library)CloudCoordinator.swift"
         ), encoding: .utf8)
-        let start = try #require(source.range(of: "@MainActor\nfinal class RosterCloudCoordinator"))
+        let start = try #require(source.range(of: "@MainActor\nfinal class \(library)CloudCoordinator"))
         let coordinator = String(source[start.lowerBound...])
         #expect(!coordinator.contains("FileManager.default.startDownloadingUbiquitousItem"))
         #expect(coordinator.contains("await downloadService.requestDownloads(for: urls)"))
@@ -324,7 +349,7 @@ struct RosterCloudDownloadServiceTests {
 }
 
 /// Every mutable probe field is protected by `lock`; injected work may run on any actor executor.
-private nonisolated final class RosterCloudDownloadProbe: @unchecked Sendable {
+private nonisolated final class CloudDownloadProbe: @unchecked Sendable {
     private let lock = NSLock()
     private let failedURL: URL?
     private let cancelAtInvocation: Int?
