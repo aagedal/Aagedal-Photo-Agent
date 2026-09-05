@@ -212,6 +212,61 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(installed.description == "Caption edit")
     }
 
+    @Test("Existing-only descriptive writes skip absent sidecars while explicit writes create them")
+    func existingOnlySidecarPolicy() async throws {
+        let (directory, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = XMPSidecarService()
+        let skipped = try await service.saveSidecarPreservingDevelopSettingsSerialized(
+            metadata: IPTCMetadata(title: "Caption"), for: source, onlyIfExisting: true
+        )
+        #expect(!skipped)
+        #expect(!service.sidecarExists(for: source))
+        let created = try await service.saveSidecarPreservingDevelopSettingsSerialized(
+            metadata: IPTCMetadata(title: "Caption"), for: source
+        )
+        #expect(created)
+        #expect(service.loadSidecar(for: source)?.title == "Caption")
+    }
+
+    @Test("Existing-only descriptive writes preserve Develop settings off MainActor")
+    @MainActor
+    func existingOnlyPreservesDevelop() async throws {
+        let (directory, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = XMPSidecarService()
+        var baseline = IPTCMetadata(title: "Before")
+        var develop = CameraRawSettings()
+        develop.exposure2012 = 1.25
+        baseline.cameraRaw = develop
+        try service.saveSidecar(metadata: baseline, for: source)
+        let installed = try await service.saveSidecarPreservingDevelopSettingsSerialized(
+            metadata: IPTCMetadata(title: "After"), for: source, onlyIfExisting: true,
+            beforeRevisionCheck: { _ in #expect(!Thread.isMainThread) }
+        )
+        #expect(installed)
+        let result = try #require(service.loadSidecar(for: source))
+        #expect(result.title == "After")
+        #expect(result.cameraRaw?.exposure2012 == 1.25)
+    }
+
+    @Test("Existing-only retries do not recreate an externally deleted sidecar")
+    func existingOnlyExternalDeletion() async throws {
+        let (directory, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = XMPSidecarService()
+        try service.saveSidecar(metadata: IPTCMetadata(title: "Before"), for: source)
+        let installed = try await service.saveSidecarPreservingDevelopSettingsSerialized(
+            metadata: IPTCMetadata(title: "After"), for: source, onlyIfExisting: true,
+            beforeRevisionCheck: { attempt in
+                guard attempt == 0 else { return }
+                try? FileManager.default.removeItem(at: service.sidecarURL(for: source))
+            }
+        )
+        #expect(!installed)
+        #expect(!service.sidecarExists(for: source))
+    }
+
     @Test("Cancellation before the boundary does not create an XMP sidecar")
     func cancellationBeforeWrite() async throws {
         let (directory, source) = try makeWorkspace(extension: "dng")

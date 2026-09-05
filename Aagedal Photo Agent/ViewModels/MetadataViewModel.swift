@@ -1888,16 +1888,16 @@ final class MetadataViewModel {
                     )
                     : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited))
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
-                var sidecarMirrored = false
-                if alsoWriteXMPSidecar || xmpSidecarService.sidecarExists(for: imageURL) {
+                let sidecarMirrored = try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                    metadata: edited,
+                    for: imageURL,
+                    onlyIfExisting: !alsoWriteXMPSidecar
+                )
+                if sidecarMirrored {
                     // Dual-write keeps a matching full .xmp record. In PM-style
                     // writeToFile mode the file is the record, but any .xmp already on
                     // disk must mirror it — otherwise its stale descriptive values (or a
                     // develop-sync mtime bump) shadow the file on read and export.
-                    try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
-                        metadata: edited,
-                        for: imageURL
-                    )
                     if developChanged {
                         try await xmpSidecarService.saveCameraRawOnlySerialized(
                             edited.cameraRaw,
@@ -1905,7 +1905,6 @@ final class MetadataViewModel {
                             for: imageURL
                         )
                     }
-                    sidecarMirrored = true
                 } else {
                     // No sidecar yet: keep develop settings ACR-readable without
                     // creating a descriptive IPTC record next to an embedded-mode file.
@@ -2414,12 +2413,11 @@ final class MetadataViewModel {
             // Dual-write keeps a matching full .xmp record. In PM-style writeToFile
             // mode any existing .xmp must mirror the file (full resolved record), or
             // its stale values shadow the freshly embedded ones on read and export.
-            if mode.writesXMPSidecar || xmpSidecarService.sidecarExists(for: url) {
-                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
-                    metadata: resolved,
-                    for: url
-                )
-            }
+            try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
+                metadata: resolved,
+                for: url,
+                onlyIfExisting: !mode.writesXMPSidecar
+            )
             let note = mode.writesXMPSidecar ? "Written to image file + XMP sidecar" : "Written to image file"
             let sidecar = buildSidecar(pendingChanges: false, historyNote: note)
             _ = try await sidecarService.saveSidecarMergingHistorySerialized(

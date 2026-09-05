@@ -666,9 +666,10 @@ struct ComparisonWorkspaceView: View {
         self.coordinator = result.coordinator
         for pane in ComparisonPane.allCases {
             missingReplacement[pane] = result.replacementURLs[pane].flatMap { replacementURL in
+                // The reconciler returns the URL of an entry in this exact availability
+                // snapshot. Comparing that value needs no filesystem canonicalization.
                 availableImages.first {
-                    renameReassociationLookupURL($0.url)
-                        == renameReassociationLookupURL(replacementURL)
+                    $0.url == replacementURL
                 }
             }
             if result.missingPanes.contains(pane) {

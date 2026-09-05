@@ -742,7 +742,7 @@ new inspection ownership, and tracked merge work is cancelled on input replaceme
 audit remains 66 of 75 while Metadata editor and Known People reads, shared rename identity work, and real-volume/
 signpost/Thread Performance Checker evidence stay open.
 
-The latest [Metadata editor read continuation](plan-status-metadata-editor-read-continuation-2026-09-05.md) moves
+The [Metadata editor read continuation](plan-status-metadata-editor-read-continuation-2026-09-05.md) moves
 passive XMP, app JSON-history, and timestamp-reconciliation reads for single/batch loading, Copy Previous, variable
 processing, and post-processing refresh out of `MetadataViewModel`'s MainActor path and through a serialized actor.
 Request, folder, and ordered-selection identity reject stale same-image publication; explicit cancellation preserves
@@ -750,6 +750,12 @@ the exact inspected prefix; and batch pending-sidecar state reuses the same immu
 suite, adjacent 83-test selection, repository gate, and serial unfiltered 2,035-test run passed. The audit remains
 66 of 75 while transaction-owned read-before-write paths, Known People cache misses, shared Compare/Analysis rename
 identity, and real-volume/signpost/Thread Performance Checker evidence stay open.
+
+The latest [existing-XMP transaction continuation](plan-status-xmp-existing-transaction-continuation-2026-09-05.md)
+moves single-image and variable-processing embedded-write existence checks inside their serialized XMP
+transaction, including retry handling after external deletion. Compare replacement lookup also avoids
+redundant filesystem canonicalization. Three new regressions and the focused 45-test selection passed;
+the broad transaction, identity, real-volume and release gates remain open at 66 of 75 audit substeps.
 
 ## File organization convention
 

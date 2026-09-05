@@ -226,17 +226,22 @@ struct XMPSidecarService: Sendable {
     /// after this photo's URL boundary has been acquired, so Develop/face/caption writes cannot
     /// interleave their read/merge/install phases. A content comparison immediately before the
     /// atomic install catches out-of-process edits and restarts the merge.
+    /// `onlyIfExisting` checks existence inside that same transaction, including retries, and
+    /// returns false without creating a sidecar when none exists. True means a record was installed.
+    @discardableResult
     nonisolated func saveSidecarPreservingDevelopSettingsSerialized(
         metadata: IPTCMetadata,
         for imageURL: URL,
         mergeWithExisting: Bool = false,
+        onlyIfExisting: Bool = false,
         expectedSnapshot: XMPSidecarWriteSnapshot? = nil,
         beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
-    ) async throws {
-        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+    ) async throws -> Bool {
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
             try await self.updateXMPTransaction(
                 for: imageURL,
                 expectedSnapshot: expectedSnapshot,
+                onlyIfExisting: onlyIfExisting,
                 beforeRevisionCheck: beforeRevisionCheck
             ) { xmp in
                 let record: IPTCMetadata
@@ -273,7 +278,7 @@ struct XMPSidecarService: Sendable {
         for imageURL: URL
     ) async throws {
         try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
-            try await self.updateXMPTransaction(for: imageURL) { xmp in
+            _ = try await self.updateXMPTransaction(for: imageURL) { xmp in
                 XMPDataBuilder.applyDescriptive(metadata, into: &xmp)
                 if let localizedTitles = metadata.localizedTitles {
                     if localizedTitles.isEmpty {
@@ -310,7 +315,7 @@ struct XMPSidecarService: Sendable {
         for imageURL: URL
     ) async throws {
         try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
-            try await self.updateXMPTransaction(for: imageURL) { xmp in
+            _ = try await self.updateXMPTransaction(for: imageURL) { xmp in
                 if let settings, !settings.isEmpty {
                     XMPDataBuilder.applyCameraRaw(
                         settings,
@@ -468,18 +473,22 @@ struct XMPSidecarService: Sendable {
     /// Read/merge/revision-check/stage/install/read-back loop used by every new asynchronous XMP
     /// entry point. `Task.yield()` is intentional: it gives file presenters and external editors a
     /// chance to publish a pending replacement before the content-token check.
+    @discardableResult
     nonisolated private func updateXMPTransaction(
         for imageURL: URL,
         expectedSnapshot: XMPSidecarWriteSnapshot? = nil,
+        onlyIfExisting: Bool = false,
         beforeRevisionCheck: @Sendable (Int) -> Void = { _ in },
         mutation: @Sendable (inout XMPData) -> Void
-    ) async throws {
+    ) async throws -> Bool {
         let url = sidecarURL(for: imageURL)
         for attempt in 0..<Self.transactionRetryLimit {
             let sourceData = try Self.currentData(at: url)
             if let expectedSnapshot, sourceData != expectedSnapshot.data {
                 throw DescriptiveMetadataWriteError.staleXMPSidecar(url)
             }
+            // Re-evaluate on every retry: an external deletion must not recreate the sidecar.
+            guard !onlyIfExisting || sourceData != nil else { return false }
             var xmp: XMPData
             if let sourceData {
                 xmp = try XMPReader.readFromXML(sourceData)
@@ -505,7 +514,7 @@ struct XMPSidecarService: Sendable {
                 throw CocoaError(.fileWriteUnknown)
             }
             _ = try XMPReader.readFromXML(installedData)
-            return
+            return true
         }
         throw DescriptiveMetadataWriteError.staleXMPSidecar(url)
     }

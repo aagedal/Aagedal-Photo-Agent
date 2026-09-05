@@ -1297,6 +1297,14 @@ of 75 while transaction-coupled read-before-write paths, Known People cache miss
 identity, and real-volume/signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-metadata-editor-read-continuation-2026-09-05.md))
 
+**Existing-XMP transaction follow-up (2026-09-05):** single-image and variable-processing embedded
+writes now decide whether to mirror an existing XMP inside the serialized transaction, including each
+revision retry. The returned installation result drives the existing Camera Raw fallback; explicit dual
+writes still create sidecars. Compare replacement lookup also avoids redundant filesystem canonicalization.
+Three new regressions, the focused 45-test selection, and the full 2,038-test suite passed. The broader transaction, identity and
+real-volume gates remain open; the audit stays at 66 of 75.
+([validation](plan-status-xmp-existing-transaction-continuation-2026-09-05.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
