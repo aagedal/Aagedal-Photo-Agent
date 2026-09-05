@@ -4416,8 +4416,6 @@ private struct AnalysisTruePixelLoupe: View {
 private struct PixelInspectionLoupeReticle: View {
     var body: some View {
         ZStack {
-            Circle()
-                .strokeBorder(.white.opacity(0.75), lineWidth: 0.75)
             Rectangle()
                 .fill(.white.opacity(0.75))
                 .frame(width: 0.75, height: 7)
