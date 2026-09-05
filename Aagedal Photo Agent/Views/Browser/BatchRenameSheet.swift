@@ -236,6 +236,10 @@ final class BatchRenameSheetSession {
         editor.components.append(BatchRenameEditorComponent(kind: kind))
     }
 
+    func moveComponents(from offsets: IndexSet, to destination: Int) {
+        editor.components.move(fromOffsets: offsets, toOffset: destination)
+    }
+
     func removeComponent(id: UUID) {
         editor.components.removeAll { $0.id == id }
     }
@@ -600,13 +604,20 @@ struct BatchRenameSheet: View {
                     .foregroundStyle(.secondary)
             }
 
-            ScrollView {
-                VStack(spacing: 8) {
-                    ForEach($editableSession.editor.components) { $component in
-                        componentRow(component: $component)
-                    }
+            List {
+                ForEach($editableSession.editor.components) { $component in
+                    componentRow(component: $component)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                }
+                .onMove { offsets, destination in
+                    session.moveComponents(from: offsets, to: destination)
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .accessibilityLabel("Filename recipe components")
 
             Menu {
                 ForEach(BatchRenameEditorComponentKind.allCases, id: \.self) { kind in
@@ -644,6 +655,11 @@ struct BatchRenameSheet: View {
     private func componentRow(component: Binding<BatchRenameEditorComponent>) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
+                Image(systemName: "line.3.horizontal")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 24)
+                    .help("Drag to reorder component")
+                    .accessibilityLabel("Drag to reorder component")
                 Picker("Component", selection: component.kind) {
                     ForEach(BatchRenameEditorComponentKind.allCases, id: \.self) { kind in
                         Text(kind.displayName).tag(kind)

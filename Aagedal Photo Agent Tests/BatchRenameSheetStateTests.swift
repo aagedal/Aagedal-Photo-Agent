@@ -8,6 +8,38 @@ import UniformTypeIdentifiers
 struct BatchRenameSheetStateTests {
     private let root = URL(fileURLWithPath: "/rename-sheet", isDirectory: true)
 
+    @MainActor
+    @Test("Moving recipe components preserves values and rebuilds the filename preview")
+    func reorderComponentsUpdatesPreview() async {
+        let source = root.appendingPathComponent("old.jpg")
+        let session = BatchRenameSheetSession(
+            request: BatchRenameSheetRequest(folderURL: root, items: [RenamePlanningItem(sourceImageURL: source)]),
+            environment: RenamePlanningEnvironment(caseSensitivity: .caseSensitive),
+            planningDebounce: .zero
+        )
+        var prefix = BatchRenameEditorComponent(kind: .literal)
+        prefix.literal = "photo-"
+        var sequence = BatchRenameEditorComponent(kind: .sequence)
+        sequence.sequenceStart = 7
+        sequence.sequenceStep = 2
+        sequence.sequencePadding = 3
+        var suffix = BatchRenameEditorComponent(kind: .literal)
+        suffix.literal = ".jpg"
+        session.editor.components = [prefix, sequence, suffix]
+        await session.waitForPlanning()
+        #expect(session.sampleName == "photo-007.jpg")
+
+        session.moveComponents(from: IndexSet(integer: 1), to: 0)
+        await session.waitForPlanning()
+        #expect(session.editor.components == [sequence, prefix, suffix])
+        #expect(session.sampleName == "007photo-.jpg")
+
+        session.moveComponents(from: IndexSet(integer: 0), to: 2)
+        await session.waitForPlanning()
+        #expect(session.editor.components == [prefix, sequence, suffix])
+        #expect(session.sampleName == "photo-007.jpg")
+    }
+
     @Test("Single-file sheet starts with one directly editable full filename")
     func singleFileDefault() {
         let state = BatchRenameEditorState(sourceFilenames: ["press.NEF"])
