@@ -610,7 +610,7 @@ struct ComparisonCoordinatorTests {
     }
 
     @Test("workspace reconciliation applies rename before a stale availability observation")
-    func atomicWorkspaceRenameReconciliation() throws {
+    func atomicWorkspaceRenameReconciliation() async throws {
         let left = makeSource(name: "left.jpg")
         let right = makeSource(name: "right.jpg")
         let renamedLeft = URL(fileURLWithPath: "/tmp/renamed-left.jpg")
@@ -633,6 +633,10 @@ struct ComparisonCoordinatorTests {
 
         // SwiftUI can publish the rename event one render before Browser's replacement images.
         // The destinations are provisionally available for that atomic reconciliation pass.
+        let identities = try await RenameIdentityPreparationService.shared.prepare(
+            urls: [left.revision.canonicalURL, right.revision.canonicalURL],
+            destinations: [renamedLeft, renamedRight]
+        )
         let eventFirst = ComparisonWorkspaceSourceReconciler.reconcile(
             coordinator: coordinator,
             previousAvailableOrder: [left.revision.canonicalURL, right.revision.canonicalURL],
@@ -640,7 +644,8 @@ struct ComparisonCoordinatorTests {
                 ImageFile(url: left.revision.canonicalURL),
                 ImageFile(url: right.revision.canonicalURL),
             ],
-            renameMappings: mappings
+            renameMappings: mappings,
+            identities: identities
         )
         #expect(eventFirst.missingPanes.isEmpty)
         #expect(eventFirst.coordinator.session.left.source?.revision.canonicalURL == renamedLeft)
@@ -702,11 +707,16 @@ struct ComparisonCoordinatorTests {
         #expect(persistentResult.succeeded)
         #expect(persistentResult.analysisCaseCount == 1)
 
+        let prepared = try await RenameIdentityPreparationService.shared.prepare(
+            urls: [linkedLeft, linkedRight, leftRevision.canonicalURL, rightRevision.canonicalURL],
+            destinations: [linkedRenamed]
+        )
         let result = ComparisonWorkspaceSourceReconciler.reconcile(
             coordinator: coordinator,
             previousAvailableOrder: [linkedLeft, linkedRight],
             availableImages: [ImageFile(url: linkedRenamed), ImageFile(url: linkedRight)],
-            renameMappings: mappings
+            renameMappings: mappings,
+            identities: prepared
         )
 
         #expect(result.missingPanes.isEmpty)
@@ -998,5 +1008,73 @@ private nonisolated final class MetalStressCounter: @unchecked Sendable {
 
     func increment() {
         lock.withLock { count += 1 }
+    }
+}
+
+
+@Suite("Rename identity preparation filesystem boundary")
+struct RenameIdentityPreparationServiceTests {
+    @Test("lookup and destination resolution run away from MainActor")
+    @MainActor
+    func preparesImmutableIdentitiesOffMainActor() async throws {
+        let source = URL(fileURLWithPath: "/virtual/old.jpg")
+        let destination = URL(fileURLWithPath: "/virtual/new.jpg")
+        let canonical = URL(fileURLWithPath: "/canonical/new.jpg")
+        let service = RenameIdentityPreparationService(
+            lookup: { url in
+                #expect(!Thread.isMainThread)
+                return url
+            },
+            canonical: { _ in
+                #expect(!Thread.isMainThread)
+                return canonical
+            }
+        )
+        let prepared = try await service.prepare(
+            urls: [source, source], destinations: [destination]
+        )
+        #expect(prepared.lookup(source) == source)
+        #expect(prepared.canonical(destination) == canonical)
+        #expect(prepared.contains([source, destination, canonical]))
+        #expect(!prepared.contains([URL(fileURLWithPath: "/unknown.jpg")]))
+    }
+
+    @Test("cancellation during resolution never returns a partial identity snapshot")
+    func cancelledResolution() async {
+        let service = RenameIdentityPreparationService(lookup: { url in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return url
+        })
+        let task = Task {
+            try await service.prepare(
+                urls: [URL(fileURLWithPath: "/virtual/old.jpg")], destinations: []
+            )
+        }
+        do {
+            _ = try await task.value
+            Issue.record("Cancelled preparation published a snapshot")
+        } catch {
+            #expect(error is CancellationError)
+        }
+    }
+
+    @Test("a pre-cancelled request performs no resolution")
+    func preCancelledPreparation() async {
+        let service = RenameIdentityPreparationService(lookup: { url in
+            Issue.record("Pre-cancelled request performed filesystem lookup")
+            return url
+        })
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await service.prepare(
+                urls: [URL(fileURLWithPath: "/virtual/old.jpg")], destinations: []
+            )
+        }
+        do {
+            _ = try await task.value
+            Issue.record("Pre-cancelled preparation published a snapshot")
+        } catch {
+            #expect(error is CancellationError)
+        }
     }
 }

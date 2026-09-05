@@ -96,8 +96,12 @@ nonisolated struct SourceImageRevision: Codable, Hashable, Sendable {
     /// relocated byte-for-byte copy. The content hash and analysis-time file facts remain intact;
     /// filesystem identity is deliberately cleared because it is not portable across volumes.
     func relocated(to url: URL) -> SourceImageRevision {
-        let canonicalURL = url.standardizedFileURL.resolvingSymlinksInPath()
-        return SourceImageRevision(
+        relocated(toPreparedCanonicalURL: url.standardizedFileURL.resolvingSymlinksInPath())
+    }
+
+    /// Uses canonical identity already resolved by a filesystem service.
+    func relocated(toPreparedCanonicalURL canonicalURL: URL) -> SourceImageRevision {
+        SourceImageRevision(
             canonicalURL: canonicalURL,
             fileResourceIdentifier: nil,
             filenameAtCreation: canonicalURL.lastPathComponent,

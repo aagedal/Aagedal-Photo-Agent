@@ -225,9 +225,10 @@ nonisolated struct ComparisonCoordinator: Sendable {
     }
 
     mutating func reassociateSources(
-        using mappings: [BatchRenameExecutionPresentation.Mapping]
+        using mappings: [BatchRenameExecutionPresentation.Mapping],
+        identities: PreparedRenameIdentities? = nil
     ) {
-        session.reassociateSources(using: mappings)
+        session.reassociateSources(using: mappings, identities: identities)
     }
 
     mutating func markSourceMissing(in pane: ComparisonPane) {
@@ -354,33 +355,39 @@ nonisolated enum ComparisonWorkspaceSourceReconciler {
         coordinator: ComparisonCoordinator,
         previousAvailableOrder: [URL],
         availableImages: [ImageFile],
-        renameMappings: [BatchRenameExecutionPresentation.Mapping]
+        renameMappings: [BatchRenameExecutionPresentation.Mapping],
+        identities: PreparedRenameIdentities? = nil,
+        provisionalURLs: [URL] = []
     ) -> ComparisonWorkspaceSourceReconciliationResult {
+        let lookup = identities.map { prepared in { prepared.lookup($0) } }
+            ?? renameReassociationLookupURL
         var updated = coordinator
-        updated.reassociateSources(using: renameMappings)
+        updated.reassociateSources(using: renameMappings, identities: identities)
 
         let destinations = Dictionary(uniqueKeysWithValues: renameMappings.map {
-            (renameReassociationLookupURL($0.sourceURL), $0.destinationURL.standardizedFileURL)
+            (lookup($0.sourceURL), $0.destinationURL.standardizedFileURL)
         })
         let mappedPreviousOrder = previousAvailableOrder.map { oldURL in
-            destinations[renameReassociationLookupURL(oldURL)] ?? oldURL
+            destinations[lookup(oldURL)] ?? oldURL
         }
-        let availableKeys = Set(availableImages.map { renameReassociationLookupURL($0.url) })
-            .union(renameMappings.map { renameReassociationLookupURL($0.destinationURL) })
+        let availableKeys = Set(availableImages.map { lookup($0.url) })
+            .union(renameMappings.map { lookup($0.destinationURL) })
+            .union(provisionalURLs.map(lookup))
 
         var missingPanes = Set<ComparisonPane>()
         var replacementURLs: [ComparisonPane: URL] = [:]
         for pane in ComparisonPane.allCases {
             guard let source = updated.session[pane].source,
                   !availableKeys.contains(
-                    renameReassociationLookupURL(source.revision.canonicalURL)
+                    lookup(source.revision.canonicalURL)
                   ) else { continue }
             let otherURL = updated.session[pane.other].source?.revision.canonicalURL
             if let replacement = closestReplacement(
                 in: availableImages,
                 previousOrder: mappedPreviousOrder,
                 missingURL: source.revision.canonicalURL,
-                excluding: otherURL
+                excluding: otherURL,
+                lookup: lookup
             ) {
                 replacementURLs[pane] = replacement.url
             }
@@ -400,12 +407,13 @@ nonisolated enum ComparisonWorkspaceSourceReconciler {
         in availableImages: [ImageFile],
         previousOrder: [URL],
         missingURL: URL,
-        excluding excludedURL: URL?
+        excluding excludedURL: URL?,
+        lookup: (URL) -> URL
     ) -> ImageFile? {
-        let excludedKey = excludedURL.map(renameReassociationLookupURL)
+        let excludedKey = excludedURL.map(lookup)
         let availableByKey = Dictionary(
             uniqueKeysWithValues: availableImages.compactMap { image -> (URL, ImageFile)? in
-                let key = renameReassociationLookupURL(image.url)
+                let key = lookup(image.url)
                 guard SupportedImageFormats.isSupported(url: image.url),
                       key != excludedKey else { return nil }
                 return (key, image)
@@ -413,12 +421,12 @@ nonisolated enum ComparisonWorkspaceSourceReconciler {
         )
         guard !availableByKey.isEmpty else { return nil }
 
-        let missingKey = renameReassociationLookupURL(missingURL)
+        let missingKey = lookup(missingURL)
         guard let missingIndex = previousOrder.firstIndex(where: {
-            renameReassociationLookupURL($0) == missingKey
+            lookup($0) == missingKey
         }) else {
             return availableImages.first {
-                availableByKey[renameReassociationLookupURL($0.url)] != nil
+                availableByKey[lookup($0.url)] != nil
             }
         }
 
@@ -426,14 +434,14 @@ nonisolated enum ComparisonWorkspaceSourceReconciler {
             let nextIndex = missingIndex + distance
             if previousOrder.indices.contains(nextIndex),
                let image = availableByKey[
-                renameReassociationLookupURL(previousOrder[nextIndex])
+                lookup(previousOrder[nextIndex])
                ] {
                 return image
             }
             let priorIndex = missingIndex - distance
             if previousOrder.indices.contains(priorIndex),
                let image = availableByKey[
-                renameReassociationLookupURL(previousOrder[priorIndex])
+                lookup(previousOrder[priorIndex])
                ] {
                 return image
             }

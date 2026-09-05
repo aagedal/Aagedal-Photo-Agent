@@ -55,6 +55,7 @@ final class AnalysisWorkspaceModel {
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var folderMapSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var workspaceGeneration = UUID()
     @ObservationIgnored private var renameQuiescenceFolderURL: URL?
     @ObservationIgnored private var renameQuiescenceNeedsCaseSave = false
     @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
@@ -292,8 +293,8 @@ final class AnalysisWorkspaceModel {
     func finishRenameQuiescence(
         using mappings: [BatchRenameExecutionPresentation.Mapping]
     ) async throws {
-        reassociateRenamedSources(using: mappings)
         do {
+            try await reassociateRenamedSources(using: mappings)
             try await drainRenameQuiescenceChanges()
             renameQuiescenceFolderURL = nil
         } catch {
@@ -316,6 +317,7 @@ final class AnalysisWorkspaceModel {
     /// A failed transaction may leave paths in an indeterminate state. Stop every producer and
     /// close the live workspace rather than allowing an old in-memory hint to be saved later.
     func invalidateAfterRenameExecutionFailure() async {
+        workspaceGeneration = UUID()
         analysisRunner.configure(existingRuns: [])
         let pendingLoad = loadTask
         let pendingSave = saveTask
@@ -466,6 +468,7 @@ final class AnalysisWorkspaceModel {
         _ image: ImageFile,
         preferredWorkspaceMode: AnalysisWorkspaceMode? = nil
     ) {
+        workspaceGeneration = UUID()
         let pendingFolderMapSaveTask = folderMapSaveTask
         loadTask?.cancel()
         saveTask?.cancel()
@@ -580,14 +583,29 @@ final class AnalysisWorkspaceModel {
     /// browser rename. Persistent path hints are updated by `RenameReassociationService`.
     func reassociateRenamedSources(
         using mappings: [BatchRenameExecutionPresentation.Mapping]
-    ) {
+    ) async throws {
+        guard !mappings.isEmpty else { return }
+        let generation = workspaceGeneration
+        let urls = [sourceURL, openedImage?.url, currentRevision?.canonicalURL,
+                    analysisCase?.source.canonicalURL].compactMap { $0 }
+            + folderAnalysisCases.map { $0.source.canonicalURL }
+            + mappings.map(\.sourceURL)
+        // This is post-commit bookkeeping. Caller cancellation must not reopen the save gate
+        // with old hints after the filesystem has already moved the source bytes.
+        let identities = try await Task.detached {
+            try await RenameIdentityPreparationService.shared.prepare(
+                urls: urls, destinations: mappings.map(\.destinationURL)
+            )
+        }.value
+        guard workspaceGeneration == generation else { return }
+        // Merge the prepared hints into current values so analyzer results and annotations
+        // delivered during preparation survive the update.
         let destinations = Dictionary(uniqueKeysWithValues: mappings.map {
-            (renameReassociationLookupURL($0.sourceURL), $0.destinationURL.standardizedFileURL)
+            (identities.lookup($0.sourceURL), $0.destinationURL.standardizedFileURL)
         })
-        guard !destinations.isEmpty else { return }
-
         func destination(for url: URL) -> URL? {
-            destinations[renameReassociationLookupURL(url)]
+            guard identities.contains([url]) else { return nil }
+            return destinations[identities.lookup(url)]
         }
         if let oldURL = sourceURL, let newURL = destination(for: oldURL) {
             sourceURL = newURL
@@ -597,11 +615,11 @@ final class AnalysisWorkspaceModel {
         }
         if let revision = currentRevision,
            let newURL = destination(for: revision.canonicalURL) {
-            currentRevision = revision.relocated(to: newURL)
+            currentRevision = revision.relocated(toPreparedCanonicalURL: identities.canonical(newURL))
         }
         if var currentCase = analysisCase,
            let newURL = destination(for: currentCase.source.canonicalURL) {
-            currentCase.relocateSource(to: newURL)
+            currentCase.relocateSource(toPreparedCanonicalURL: identities.canonical(newURL))
             analysisCase = currentCase
         }
         folderAnalysisCases = folderAnalysisCases.map { storedCase in
@@ -609,7 +627,7 @@ final class AnalysisWorkspaceModel {
                 return storedCase
             }
             var relocated = storedCase
-            relocated.relocateSource(to: newURL)
+            relocated.relocateSource(toPreparedCanonicalURL: identities.canonical(newURL))
             return relocated
         }
     }

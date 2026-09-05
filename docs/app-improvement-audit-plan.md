@@ -1332,6 +1332,14 @@ external revisions survive. Batch preflight also rejects stale pending records. 
 database reads, shared rename identity preparation, and real-volume gates remain open at 66 of 75.
 ([validation](plan-status-folder-discard-post-write-continuation-2026-09-05.md))
 
+**Rename identity and Known People cache follow-up (2026-09-05):** Compare and Analysis now
+prepare rename lookup/canonical identities on a shared serialized actor and merge them into current
+workspace state, with cancellation and stale-generation handling. Known People cold-cache addition
+runs migration before new writes, while late import publication preserves concurrent cache edits
+and filters duplicate archive UUIDs. The complete Known People storage/mutation async migration,
+manual rename interaction checks and real-volume gates remain open at 66 of 75.
+([validation](plan-status-rename-identity-known-people-cache-continuation-2026-09-05.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

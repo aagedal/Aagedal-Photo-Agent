@@ -259,9 +259,10 @@ nonisolated struct ComparisonSource: Hashable, Sendable {
     var filename: String { revision.filenameAtCreation }
     var representationLabel: String { representation.displayName }
 
-    func relocated(to url: URL) -> ComparisonSource {
+    func relocated(to url: URL, identities: PreparedRenameIdentities? = nil) -> ComparisonSource {
         ComparisonSource(
-            revision: revision.relocated(to: url),
+            revision: identities.map { revision.relocated(toPreparedCanonicalURL: $0.canonical(url)) }
+                ?? revision.relocated(to: url),
             representation: representation,
             dynamicRange: dynamicRange
         )
@@ -379,18 +380,21 @@ nonisolated struct ComparisonSession: Hashable, Sendable {
     /// representation, layout, focus, alignment, and viewport state. The lookup is simultaneous,
     /// which keeps A↔B swaps and longer cycles unambiguous.
     mutating func reassociateSources(
-        using mappings: [BatchRenameExecutionPresentation.Mapping]
+        using mappings: [BatchRenameExecutionPresentation.Mapping],
+        identities: PreparedRenameIdentities? = nil
     ) {
+        let lookup = identities.map { prepared in { prepared.lookup($0) } }
+            ?? renameReassociationLookupURL
         let destinations = Dictionary(uniqueKeysWithValues: mappings.map {
-            (renameReassociationLookupURL($0.sourceURL), $0.destinationURL.standardizedFileURL)
+            (lookup($0.sourceURL), $0.destinationURL.standardizedFileURL)
         })
         for pane in ComparisonPane.allCases {
             guard let source = self[pane].source,
                   let destination = destinations[
-                    renameReassociationLookupURL(source.revision.canonicalURL)
+                    lookup(source.revision.canonicalURL)
                   ]
             else { continue }
-            self[pane].source = source.relocated(to: destination)
+            self[pane].source = source.relocated(to: destination, identities: identities)
         }
     }
 }

@@ -33,6 +33,13 @@ that changed before or during a write. Stale UI completions and cancellation are
 advances Phase 12 responsiveness/recovery; manual/device gates remain open. See the
 [dated validation](../plan-status-folder-discard-post-write-continuation-2026-09-05.md).
 
+**Rename identity and Known People cache continuation (2026-09-05):** Compare/Analysis rename
+identity preparation now runs off MainActor while preserving newer workspace state. Known People
+cold-cache creation and late import publication preserve records through migration and concurrent
+edits. Phase 12 manual/device gates and the complete Known People asynchronous storage migration
+remain open. See the
+[dated validation and manual test request](../plan-status-rename-identity-known-people-cache-continuation-2026-09-05.md).
+
 ## Phase 0 — research, decisions, and fixtures
 
 **Exit gate:** the project can make evidence claims and distribute every required dependency/fixture

@@ -105,6 +105,10 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         source = source.relocated(to: url)
     }
 
+    mutating func relocateSource(toPreparedCanonicalURL url: URL) {
+        source = source.relocated(toPreparedCanonicalURL: url)
+    }
+
     mutating func setWorkspaceMode(_ mode: AnalysisWorkspaceMode, now: Date = Date()) {
         workspaceMode = mode
         updatedAt = max(now, createdAt)

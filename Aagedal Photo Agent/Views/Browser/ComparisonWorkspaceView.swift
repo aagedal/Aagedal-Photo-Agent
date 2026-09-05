@@ -31,6 +31,9 @@ struct ComparisonWorkspaceView: View {
     @State private var isLoading = true
     @State private var exactLockWasPossible = true
     @State private var loadTask: Task<Void, Never>?
+    @State private var reconciliationTask: Task<Void, Never>?
+    @State private var reconciliationRequestID = UUID()
+    @State private var pendingRenameBatches: [[BatchRenameExecutionPresentation.Mapping]] = []
     @State private var replacementTask: Task<Void, Never>?
     @State private var replacingPane: ComparisonPane?
     @State private var previousAvailableOrder: [URL] = []
@@ -56,6 +59,8 @@ struct ComparisonWorkspaceView: View {
         .onDisappear {
             loadTask?.cancel()
             replacementTask?.cancel()
+            reconciliationTask?.cancel()
+            reconciliationRequestID = UUID()
             if let publishedCleanFeedSessionID {
                 CleanFeedController.shared.clearComparison(
                     sessionID: publishedCleanFeedSessionID
@@ -652,17 +657,67 @@ struct ComparisonWorkspaceView: View {
     private func reconcileAvailableSources(
         renameMappings: [BatchRenameExecutionPresentation.Mapping] = []
     ) {
-        guard coordinator != nil else {
+        if !renameMappings.isEmpty { pendingRenameBatches.append(renameMappings) }
+        reconciliationTask?.cancel()
+        let requestID = UUID()
+        reconciliationRequestID = requestID
+        guard let coordinator else {
             previousAvailableOrder = availableImages.map(\.url)
             return
         }
-        guard let coordinator else { return }
-        let result = ComparisonWorkspaceSourceReconciler.reconcile(
-            coordinator: coordinator,
-            previousAvailableOrder: previousAvailableOrder,
-            availableImages: availableImages,
-            renameMappings: renameMappings
-        )
+        let batches = pendingRenameBatches
+        let destinations = batches.flatMap { $0.map(\.destinationURL) }
+        let sourceURLs = ComparisonPane.allCases.compactMap {
+            coordinator.session[$0].source?.revision.canonicalURL
+        }
+        let urls = sourceURLs + previousAvailableOrder + availableImages.map(\.url)
+            + batches.flatMap { $0.map(\.sourceURL) }
+        reconciliationTask = Task {
+            do {
+                let identities = try await RenameIdentityPreparationService.shared.prepare(
+                    urls: urls, destinations: destinations
+                )
+                try Task.checkCancellation()
+                guard reconciliationRequestID == requestID, var current = self.coordinator else {
+                    return
+                }
+                let currentURLs = ComparisonPane.allCases.compactMap {
+                    current.session[$0].source?.revision.canonicalURL
+                }
+                guard identities.contains(currentURLs) else {
+                    // A pane was replaced while filesystem preparation was suspended.
+                    reconcileAvailableSources()
+                    return
+                }
+                var order = previousAvailableOrder
+                for batch in batches {
+                    current.reassociateSources(using: batch, identities: identities)
+                    let mapped = Dictionary(uniqueKeysWithValues: batch.map {
+                        (identities.lookup($0.sourceURL), $0.destinationURL.standardizedFileURL)
+                    })
+                    order = order.map { mapped[identities.lookup($0)] ?? $0 }
+                }
+                let result = ComparisonWorkspaceSourceReconciler.reconcile(
+                    coordinator: current,
+                    previousAvailableOrder: order,
+                    availableImages: availableImages,
+                    renameMappings: [],
+                    identities: identities,
+                    provisionalURLs: destinations
+                )
+                pendingRenameBatches.removeFirst(batches.count)
+                publishSourceReconciliation(result)
+            } catch is CancellationError {
+                return
+            } catch {
+                interactionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func publishSourceReconciliation(
+        _ result: ComparisonWorkspaceSourceReconciliationResult
+    ) {
         self.coordinator = result.coordinator
         for pane in ComparisonPane.allCases {
             missingReplacement[pane] = result.replacementURLs[pane].flatMap { replacementURL in
