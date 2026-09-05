@@ -757,6 +757,13 @@ transaction, including retry handling after external deletion. Compare replaceme
 redundant filesystem canonicalization. Three new regressions and the focused 45-test selection passed;
 the broad transaction, identity, real-volume and release gates remain open at 66 of 75 audit substeps.
 
+The [batch mirror and refresh cleanup continuation](plan-status-batch-mirror-cleanup-continuation-2026-09-05.md)
+moves batch XMP existence preflight off MainActor, preserves orientation from the current serialized
+revision, and conditionally deletes empty app history only after rechecking current and legacy records
+under the photo lock. Ten added regressions cover cancellation, preservation, and observed revision races.
+The full suite passed 2,048 tests in 235 suites, and repository validation passed.
+The broader filesystem and release gates remain open at 66 of 75 audit substeps.
+
 ## File organization convention
 
 - `docs/README.md` — master planning index.

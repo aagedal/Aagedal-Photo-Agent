@@ -379,6 +379,91 @@ struct MetadataSidecarServiceTests {
         )
     }
 
+    @Test("refresh cleanup deletes only empty committed sidecars off MainActor")
+    @MainActor
+    func cleanupEmptySidecar() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        try service.saveSidecar(makeSidecar(), for: image, in: folder)
+        let deleted = try await service.deleteUnneededSidecarSerialized(
+            for: image, in: folder,
+            beforeRevisionCheck: { _ in #expect(!Thread.isMainThread) }
+        )
+        #expect(deleted)
+        #expect(service.loadSidecar(for: image, in: folder) == nil)
+        #expect(try await !service.deleteUnneededSidecarSerialized(for: image, in: folder))
+    }
+
+    @Test("refresh cleanup preserves pending edits and history that arrived after its snapshot")
+    func cleanupPreservesNewEdits() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        for pending in [false, true] {
+            try service.saveSidecar(makeSidecar(), for: image, in: folder)
+            var changed = makeSidecar(metadata: IPTCMetadata(title: "New edit"), pendingChanges: pending)
+            if !pending {
+                changed.history = [.init(timestamp: Date(), fieldName: "Title", oldValue: nil, newValue: "New edit")]
+            }
+            let newerRecord = changed
+            let deleted = try await service.deleteUnneededSidecarSerialized(
+                for: image, in: folder,
+                beforeRevisionCheck: { attempt in
+                    if attempt == 0 {
+                        do { try service.saveSidecar(newerRecord, for: image, in: folder) }
+                        catch { Issue.record(error) }
+                    }
+                }
+            )
+            #expect(!deleted)
+            #expect(service.loadSidecar(for: image, in: folder)?.metadata.title == "New edit")
+        }
+    }
+
+    @Test("refresh cleanup preserves unreadable, newer-schema, and meaningful legacy sidecars")
+    func cleanupProtectsLegacyAndUnreadableRecords() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        try service.saveSidecar(makeSidecar(), for: image, in: folder)
+        let directory = folder.appendingPathComponent(".photo_metadata")
+        let legacy = directory.appendingPathComponent("photo.meta.json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var future = try #require(JSONSerialization.jsonObject(with: encoder.encode(makeSidecar())) as? [String: Any])
+        future["schemaVersion"] = MetadataSidecar.currentSchemaVersion + 1
+        let protectedRecords = [
+            Data("broken JSON".utf8),
+            try JSONSerialization.data(withJSONObject: future),
+            try encoder.encode(makeSidecar(pendingChanges: true))
+        ]
+        for bytes in protectedRecords {
+            try bytes.write(to: legacy)
+            #expect(try await !service.deleteUnneededSidecarSerialized(for: image, in: folder))
+            #expect(try Data(contentsOf: legacy) == bytes)
+            #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("photo.jpg.meta.json").path))
+        }
+    }
+
+    @Test("pre-cancelled refresh cleanup leaves the sidecar intact")
+    func cleanupCancellation() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        try service.saveSidecar(makeSidecar(), for: image, in: folder)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await service.deleteUnneededSidecarSerialized(for: image, in: folder)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(service.loadSidecar(for: image, in: folder) != nil)
+    }
+
     // MARK: - Save & Load
 
     @Test("save then load returns equivalent sidecar")
@@ -974,5 +1059,132 @@ struct MetadataSidecarServiceTests {
         #expect(loaded.metadata.description == "Bøkenøst i Östersund")
         #expect(loaded.metadata.creator == "Ingvild Ström")
         #expect(loaded.metadata.city == "Tromsø")
+    }
+}
+
+@Suite("Embedded metadata existing-sidecar mirror")
+struct MetadataSidecarMirrorTests {
+    @Test("Existence preflight preserves ordering and runs off MainActor")
+    @MainActor
+    func preflight() async throws {
+        let urls = ["one", "absent", "two"].map { URL(fileURLWithPath: "/virtual/\($0).jpg") }
+        let service = MetadataSidecarMirrorPreflight { url in
+            #expect(!Thread.isMainThread)
+            return url != urls[1]
+        }
+        let result = try await service.existingImageURLs(urls)
+        #expect(result == [urls[0], urls[2]])
+    }
+
+    @Test("Cancelled preflight performs no existence probes")
+    func cancelledPreflight() async {
+        let service = MetadataSidecarMirrorPreflight { _ in
+            Issue.record("Cancelled preflight touched storage")
+            return true
+        }
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await service.existingImageURLs([URL(fileURLWithPath: "/virtual/photo.jpg")])
+        }
+        do {
+            _ = try await task.value
+            Issue.record("Expected cancellation")
+        } catch {
+            #expect(error is CancellationError)
+        }
+    }
+
+    @Test("Cancellation during a probe does not return a partial preflight")
+    func cancellationDuringPreflight() async {
+        let service = MetadataSidecarMirrorPreflight { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return true
+        }
+        let task = Task {
+            try await service.existingImageURLs([URL(fileURLWithPath: "/virtual/photo.jpg")])
+        }
+        do {
+            _ = try await task.value
+            Issue.record("Expected cancellation instead of a usable partial result")
+        } catch {
+            #expect(error is CancellationError)
+        }
+    }
+
+    @Test("Mirror preserves sidecar edits and uses its orientation only when embedded orientation is absent")
+    func preservesDevelopAndOrientation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        let service = XMPSidecarService()
+        var baseline = IPTCMetadata(title: "Old")
+        baseline.exifOrientation = 6
+        var edits = CameraRawSettings()
+        edits.exposure2012 = 1.25
+        baseline.cameraRaw = edits
+        try service.saveSidecar(metadata: baseline, for: source)
+        var embedded = IPTCMetadata(title: "Read back")
+        var embeddedEdits = CameraRawSettings()
+        embeddedEdits.exposure2012 = -2
+        embedded.cameraRaw = embeddedEdits
+        try await service.saveSidecarPreservingDevelopSettingsSerialized(
+            metadata: embedded, for: source, onlyIfExisting: true,
+            preserveExistingOrientationIfMissing: true
+        )
+        let first = try #require(service.loadSidecar(for: source))
+        #expect(first.title == "Read back")
+        #expect(first.exifOrientation == 6)
+        #expect(first.cameraRaw?.exposure2012 == 1.25)
+        embedded.exifOrientation = 3
+        try await service.saveSidecarPreservingDevelopSettingsSerialized(
+            metadata: embedded, for: source, onlyIfExisting: true,
+            preserveExistingOrientationIfMissing: true
+        )
+        #expect(service.loadSidecar(for: source)?.exifOrientation == 3)
+    }
+
+    @Test("Mirror retry obtains fallback orientation from the latest sidecar revision")
+    func retryUsesCurrentOrientation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        let service = XMPSidecarService()
+        var baseline = IPTCMetadata(title: "Old")
+        baseline.exifOrientation = 6
+        try service.saveSidecar(metadata: baseline, for: source)
+        try await service.saveSidecarPreservingDevelopSettingsSerialized(
+            metadata: IPTCMetadata(title: "Read back"), for: source, onlyIfExisting: true,
+            preserveExistingOrientationIfMissing: true,
+            beforeRevisionCheck: { attempt in
+                guard attempt == 0 else { return }
+                var replacement = IPTCMetadata(title: "External")
+                replacement.exifOrientation = 8
+                try? service.saveSidecar(metadata: replacement, for: source)
+            }
+        )
+        let result = try #require(service.loadSidecar(for: source))
+        #expect(result.exifOrientation == 8)
+        #expect(result.title == "Read back")
+    }
+
+    @Test("Sidecars deleted after preflight are not recreated")
+    func deletionAfterPreflight() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        let service = XMPSidecarService()
+        try service.saveSidecar(metadata: IPTCMetadata(title: "Old"), for: source)
+        let candidates = try await MetadataSidecarMirrorPreflight.shared.existingImageURLs([source])
+        #expect(candidates == [source])
+        try FileManager.default.removeItem(at: service.sidecarURL(for: source))
+        let installed = try await service.saveSidecarPreservingDevelopSettingsSerialized(
+            metadata: IPTCMetadata(title: "Read back"), for: source, onlyIfExisting: true,
+            preserveExistingOrientationIfMissing: true
+        )
+        #expect(!installed)
+        #expect(!service.sidecarExists(for: source))
     }
 }

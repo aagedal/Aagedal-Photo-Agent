@@ -228,12 +228,15 @@ struct XMPSidecarService: Sendable {
     /// atomic install catches out-of-process edits and restarts the merge.
     /// `onlyIfExisting` checks existence inside that same transaction, including retries, and
     /// returns false without creating a sidecar when none exists. True means a record was installed.
+    /// Embedded read-back mirrors may retain missing orientation from the current source revision;
+    /// explicit embedded orientation still wins. Camera Raw properties always remain untouched.
     @discardableResult
     nonisolated func saveSidecarPreservingDevelopSettingsSerialized(
         metadata: IPTCMetadata,
         for imageURL: URL,
         mergeWithExisting: Bool = false,
         onlyIfExisting: Bool = false,
+        preserveExistingOrientationIfMissing: Bool = false,
         expectedSnapshot: XMPSidecarWriteSnapshot? = nil,
         beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
     ) async throws -> Bool {
@@ -244,12 +247,17 @@ struct XMPSidecarService: Sendable {
                 onlyIfExisting: onlyIfExisting,
                 beforeRevisionCheck: beforeRevisionCheck
             ) { xmp in
-                let record: IPTCMetadata
+                var record: IPTCMetadata
                 if mergeWithExisting {
                     let existing = self.parseMetadata(from: xmp, imageAspect: { nil })
                     record = existing.merged(preferring: metadata)
                 } else {
                     record = metadata
+                }
+                if preserveExistingOrientationIfMissing, record.exifOrientation == nil {
+                    let raw = xmp.tiffOrientation
+                        ?? xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
+                    record.exifOrientation = raw.flatMap(Int.init)
                 }
                 XMPDataBuilder.applyDescriptive(record, into: &xmp)
                 if let localizedTitles = record.localizedTitles {

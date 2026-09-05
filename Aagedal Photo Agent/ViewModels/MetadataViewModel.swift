@@ -1509,26 +1509,22 @@ final class MetadataViewModel {
     /// sidecar. The sidecar's Camera Raw settings and orientation are preserved —
     /// develop edits (RAW especially) live in the sidecar, not the embedded read-back.
     private func mirrorEmbeddedStateToExistingSidecars(for urls: [URL]) async {
-        let sidecarURLs = urls.filter { xmpSidecarService.sidecarExists(for: $0) }
+        guard let sidecarURLs = try? await MetadataSidecarMirrorPreflight.shared.existingImageURLs(urls) else {
+            return
+        }
         guard !sidecarURLs.isEmpty else { return }
         guard let postWrite = try? await readService.readBatchFullMetadata(urls: sidecarURLs) else {
             logger.error("Sidecar mirror: post-write metadata read-back failed; existing .xmp sidecars left untouched")
             return
         }
         for url in sidecarURLs {
-            guard var record = postWrite[url] else { continue }
-            if let existingSidecar = xmpSidecarService.loadSidecar(for: url) {
-                if let crs = existingSidecar.cameraRaw, !crs.isEmpty {
-                    record.cameraRaw = crs
-                }
-                if record.exifOrientation == nil {
-                    record.exifOrientation = existingSidecar.exifOrientation
-                }
-            }
+            guard let record = postWrite[url] else { continue }
             do {
                 try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
                     metadata: record,
-                    for: url
+                    for: url,
+                    onlyIfExisting: true,
+                    preserveExistingOrientationIfMissing: true
                 )
             } catch {
                 logger.error("Sidecar mirror failed for \(url.lastPathComponent): \(error.localizedDescription)")
@@ -2760,7 +2756,9 @@ final class MetadataViewModel {
                 if let folderSnapshot,
                    let sidecar = sourceFacts.appSidecar,
                    sidecar.history.isEmpty {
-                    try? sidecarService.deleteSidecar(for: url, in: folderSnapshot)
+                    _ = try? await sidecarService.deleteUnneededSidecarSerialized(
+                        for: url, in: folderSnapshot
+                    )
                 }
             }
         } catch {

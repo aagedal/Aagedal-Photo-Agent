@@ -15,6 +15,12 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Metadata filesystem continuation (2026-09-05):** batch embedded-write XMP mirroring and
+post-processing empty-history cleanup now cross asynchronous, transaction-owned boundaries, with
+existing-only mirroring and revision-checked deletion eligibility. This advances the Phase 12
+responsiveness/recovery work without closing its manual or device gates; see the
+[dated validation](../plan-status-batch-mirror-cleanup-continuation-2026-09-05.md).
+
 ## Phase 0 — research, decisions, and fixtures
 
 **Exit gate:** the project can make evidence claims and distribute every required dependency/fixture

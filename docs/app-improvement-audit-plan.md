@@ -1305,6 +1305,15 @@ Three new regressions, the focused 45-test selection, and the full 2,038-test su
 real-volume gates remain open; the audit stays at 66 of 75.
 ([validation](plan-status-xmp-existing-transaction-continuation-2026-09-05.md))
 
+**Batch mirror and refresh cleanup follow-up (2026-09-05):** batch embedded-write mirror preflight
+now runs on an actor, while existing-only eligibility and missing-orientation fallback use the current
+serialized XMP revision. Refresh cleanup rechecks both JSON naming generations and refuses to remove
+pending edits, history, unreadable/newer-schema records, or mismatched source associations. Revision
+retries protect observed external changes. Ten new regressions, repository validation, and the full
+2,048-test suite passed. Broader batch
+transactions, explicit deletion, identity, and real-volume gates remain open at 66 of 75.
+([validation](plan-status-batch-mirror-cleanup-continuation-2026-09-05.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

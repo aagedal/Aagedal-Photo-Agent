@@ -367,7 +367,42 @@ struct MetadataSidecarService: Sendable {
 
     // MARK: - Delete
 
-    func deleteSidecar(for imageURL: URL, in folderURL: URL) throws {
+    /// Refresh cleanup must recheck eligibility under the same photo lock as history saves.
+    /// Inspect both naming generations before removing either, and leave unreadable/newer-schema
+    /// documents in place. Once admitted, the transaction follows the coordinator's existing
+    /// run-to-completion contract; cancellation can only prevent entry.
+    nonisolated func deleteUnneededSidecarSerialized(
+        for imageURL: URL,
+        in folderURL: URL,
+        beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
+    ) async throws -> Bool {
+        try Task.checkCancellation()
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            for attempt in 0..<4 {
+                let tokens = try self.contentTokens(for: imageURL, in: folderURL)
+                guard tokens.contains(where: { $0 != nil }) else { return false }
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                for data in tokens.compactMap({ $0 }) {
+                    guard let record = try? decoder.decode(MetadataSidecar.self, from: data),
+                          !record.pendingChanges, record.history.isEmpty,
+                          record.sourceFile == imageURL.lastPathComponent else { return false }
+                }
+                beforeRevisionCheck(attempt)
+                await Task.yield()
+                guard try self.contentTokens(for: imageURL, in: folderURL) == tokens else {
+                    continue
+                }
+                try self.deleteSidecar(for: imageURL, in: folderURL)
+                return true
+            }
+            throw CocoaError(.fileWriteFileExists, userInfo: [
+                NSLocalizedDescriptionKey: "The metadata sidecar kept changing while cleanup was being prepared."
+            ])
+        }
+    }
+
+    nonisolated func deleteSidecar(for imageURL: URL, in folderURL: URL) throws {
         for fileURL in sidecarCandidateURLs(for: imageURL, in: folderURL) {
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 try FileManager.default.removeItem(at: fileURL)
