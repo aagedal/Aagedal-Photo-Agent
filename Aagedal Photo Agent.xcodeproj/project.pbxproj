@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A80400000000000000000002 /* TemplatesFolderBookmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80400000000000000000001 /* TemplatesFolderBookmarkTests.swift */; };
+		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
 		7EA0E1000000000000000002 /* TeamRosterExportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */; };
@@ -149,6 +150,7 @@
 
 /* Begin PBXFileReference section */
 		A80400000000000000000001 /* TemplatesFolderBookmarkTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemplatesFolderBookmarkTests.swift; sourceTree = "<group>"; };
+		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageMemoryCoordinatorTests.swift; sourceTree = "<group>"; };
 		38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataTests.swift; sourceTree = "<group>"; };
@@ -326,6 +328,7 @@
 		025F811ED39BE1D910E68E81 /* Aagedal Photo Agent Tests */ = {
 			isa = PBXGroup;
 			children = (
+				F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */,
 				A80400000000000000000001 /* TemplatesFolderBookmarkTests.swift */,
 				AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */,
 				7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */,
@@ -632,6 +635,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */,
 				A80400000000000000000002 /* TemplatesFolderBookmarkTests.swift in Sources */,
 				AE3A10000000000000000002 /* AnalysisExportFileServiceTests.swift in Sources */,
 				7EA0E1000000000000000002 /* TeamRosterExportServiceTests.swift in Sources */,

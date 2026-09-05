@@ -143,6 +143,7 @@ final class MetadataViewModel {
     private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
     private let descriptiveWriteBoundary: DescriptiveMetadataWriteBoundary
+    private let editorReadService: MetadataEditorReadService
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
     private let sidecarPersistenceService = MetadataSidecarPersistenceService()
@@ -151,15 +152,21 @@ final class MetadataViewModel {
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
     private var previousEditingMetadata: IPTCMetadata?
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var metadataLoadRequestID: UUID?
     @ObservationIgnored private var writeTask: Task<Void, Never>?
     @ObservationIgnored private var batchProcessTask: Task<Void, Never>?
     @ObservationIgnored private var geocodingTask: Task<Void, Never>?
     @ObservationIgnored private var batchMetadataByURL: [URL: IPTCMetadata] = [:]
 
-    init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine) {
+    init(
+        readService: SwiftExifReadService,
+        writeEngine: any MetadataWriteEngine,
+        editorReadService: MetadataEditorReadService = .shared
+    ) {
         self.readService = readService
         self.writeEngine = writeEngine
         self.descriptiveWriteBoundary = DescriptiveMetadataWriteBoundary(writeEngine: writeEngine)
+        self.editorReadService = editorReadService
     }
 
     deinit {
@@ -253,25 +260,30 @@ final class MetadataViewModel {
 
     private(set) var selectedHavePendingSidecars = false
 
-    private func loadXMPMetadata(for imageURL: URL) -> IPTCMetadata? {
-        xmpSidecarService.loadSidecar(for: imageURL)
-    }
-
     /// Reads a Copy Previous source without changing the current selection or editing buffer.
     /// Pending app sidecars win, followed by a current descriptive XMP record, then embedded
     /// metadata. This mirrors the normal single-image read path while remaining read-only.
     func loadCaptionCopyPreviousMetadata(for imageURL: URL) async throws -> IPTCMetadata {
+        let folderURL = currentFolderURL ?? imageURL.deletingLastPathComponent()
         let embedded = try await readService.readFullMetadata(url: imageURL)
-        let xmp = loadXMPMetadata(for: imageURL)
+        let requestID = UUID()
+        let result = await editorReadService.load(MetadataEditorReadRequest(
+            id: requestID,
+            imageURLs: [imageURL],
+            folderURL: folderURL,
+            embeddedMetadataByImageURL: [imageURL: embedded]
+        ))
+        guard !Task.isCancelled,
+              case .complete(let snapshot) = result,
+              snapshot.request.id == requestID,
+              let facts = snapshot.factsByImageURL[imageURL] else {
+            throw CancellationError()
+        }
+        let xmp = facts.xmpMetadata
 
         var resolved = embedded
         if let xmp {
-            let sidecarIsStale = SidecarReconciliation.verdict(
-                imageURL: imageURL,
-                sidecarURL: xmpSidecarService.sidecarURL(for: imageURL),
-                embedded: embedded,
-                sidecar: xmp
-            ) == .fileNewerConflict
+            let sidecarIsStale = facts.reconciliationVerdict == .fileNewerConflict
             if !sidecarIsStale {
                 resolved = xmp.hasDescriptiveContent
                     ? embedded.replacingDescriptiveFields(from: xmp)
@@ -279,8 +291,7 @@ final class MetadataViewModel {
             }
         }
 
-        let folderURL = currentFolderURL ?? imageURL.deletingLastPathComponent()
-        if let sidecar = sidecarService.loadSidecar(for: imageURL, in: folderURL),
+        if let sidecar = facts.appSidecar,
            sidecar.pendingChanges {
             let bestCameraRaw = resolved.cameraRaw ?? sidecar.metadata.cameraRaw
             let bestOrientation = resolved.exifOrientation
@@ -294,6 +305,8 @@ final class MetadataViewModel {
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
         metadataLoadTask?.cancel()
         metadataLoadTask = nil
+        let requestID = UUID()
+        metadataLoadRequestID = requestID
 
         // Snapshot BEFORE overwriting: the "reloading the same image/batch" checks below
         // must compare the new selection against what was previously loaded. Comparing
@@ -338,6 +351,7 @@ final class MetadataViewModel {
         if let folderURL {
             currentFolderURL = folderURL
         }
+        let folderSnapshot = currentFolderURL
 
         guard !images.isEmpty else {
             metadata = nil
@@ -373,18 +387,24 @@ final class MetadataViewModel {
                     let exifMs = loadStart.elapsedMilliseconds()
                     self.perfLog.info("[MetadataVM] metadata read returned — \(exifMs)ms for \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
                     guard !Task.isCancelled else { return }
-                    let xmpMeta = self.loadXMPMetadata(for: imageURL)
+                    let sidecarResult = await self.editorReadService.load(MetadataEditorReadRequest(
+                        id: requestID,
+                        imageURLs: [imageURL],
+                        folderURL: folderSnapshot,
+                        embeddedMetadataByImageURL: [imageURL: embedded]
+                    ))
+                    guard !Task.isCancelled,
+                          case .complete(let sidecarSnapshot) = sidecarResult,
+                          sidecarSnapshot.request.id == requestID,
+                          self.metadataLoadRequestID == requestID,
+                          self.currentFolderURL == folderSnapshot,
+                          let sourceFacts = sidecarSnapshot.factsByImageURL[imageURL] else { return }
+                    let xmpMeta = sourceFacts.xmpMetadata
                     // Reconcile embedded vs sidecar: the sidecar is master unless the image
                     // file was modified more recently and they disagree (e.g. Adobe Bridge
                     // wrote into the file after the sidecar), in which case the file is the
                     // trustworthy source. See SidecarReconciliation.
-                    let sidecarIsStale: Bool = {
-                        guard let xmp = xmpMeta else { return false }
-                        return SidecarReconciliation.verdict(
-                            imageURL: imageURL,
-                            sidecarURL: XMPSidecarService().sidecarURL(for: imageURL),
-                            embedded: embedded, sidecar: xmp) == .fileNewerConflict
-                    }()
+                    let sidecarIsStale = sourceFacts.reconciliationVerdict == .fileNewerConflict
                     // Preserve the user's manual reference source selection when
                     // reloading the same image (e.g. auto-refresh, post-save).
                     // Only fall back to the default on first load or if the
@@ -407,7 +427,9 @@ final class MetadataViewModel {
                         imageURL: imageURL
                     ) ?? embedded
                     guard !Task.isCancelled else { return }
-                    guard self.selectedURLs.count == 1,
+                    guard self.metadataLoadRequestID == requestID,
+                          self.currentFolderURL == folderSnapshot,
+                          self.selectedURLs.count == 1,
                           self.selectedURLs.first == imageURL else { return }
                     self.embeddedMetadata = embedded
                     self.descriptionConflict = conflict
@@ -417,8 +439,7 @@ final class MetadataViewModel {
                     self.originalImageMetadata = baseMeta
 
                     var newEditingMetadata = baseMeta
-                    if let folder = self.currentFolderURL,
-                       let sidecar = sidecarService.loadSidecar(for: imageURL, in: folder) {
+                    if let sidecar = sourceFacts.appSidecar {
                         self.sidecarHistory = sidecar.history
                         self.sidecarHistory.trimToHistoryLimit()
                         if sidecar.pendingChanges {
@@ -445,6 +466,9 @@ final class MetadataViewModel {
                         self.metadataReferenceSource = .embedded
                     }
                 } catch {
+                    guard self.metadataLoadRequestID == requestID,
+                          self.currentFolderURL == folderSnapshot,
+                          self.selectedURLs == [imageURL] else { return }
                     self.metadata = nil
                     self.editingMetadata = IPTCMetadata()
                     self.previousEditingMetadata = nil
@@ -452,6 +476,9 @@ final class MetadataViewModel {
                     self.logger.error("[\(imageURL.lastPathComponent, privacy: .private(mask: .hash))] loadMetadata FAILED: \(error.localizedDescription, privacy: .private)")
                 }
                 guard !Task.isCancelled else { return }
+                guard self.metadataLoadRequestID == requestID,
+                      self.currentFolderURL == folderSnapshot,
+                      self.selectedURLs == [imageURL] else { return }
                 self.isLoading = false
             }
         } else {
@@ -476,11 +503,15 @@ final class MetadataViewModel {
                 await loadBatchMetadata(
                     for: images,
                     selectionSnapshot: selectionSnapshot,
-                    isReload: isReloadingSameBatch
+                    isReload: isReloadingSameBatch,
+                    requestID: requestID,
+                    folderURL: folderSnapshot
                 )
                 guard !Task.isCancelled else { return }
+                guard self.metadataLoadRequestID == requestID,
+                      self.currentFolderURL == folderSnapshot,
+                      self.selectedURLs == images.map(\.url) else { return }
                 self.isLoadingBatchMetadata = false
-                self.refreshPendingSidecarsFlag(for: selectionSnapshot)
             }
         }
     }
@@ -508,18 +539,37 @@ final class MetadataViewModel {
     }
 
     /// Load metadata for all selected images and compute common values
-    private func loadBatchMetadata(for images: [ImageFile], selectionSnapshot: Set<URL>, isReload: Bool = false) async {
+    private func loadBatchMetadata(
+        for images: [ImageFile],
+        selectionSnapshot: Set<URL>,
+        isReload: Bool = false,
+        requestID: UUID,
+        folderURL: URL?
+    ) async {
         let urls = images.map(\.url)
         var allMetadata: [IPTCMetadata] = []
         var metadataByURL: [URL: IPTCMetadata] = [:]
+        var hasPendingSidecar = false
 
         do {
             let batchResults = try await readService.readBatchFullMetadata(urls: urls)
             if Task.isCancelled { return }
 
+            let sidecarResult = await editorReadService.load(MetadataEditorReadRequest(
+                id: requestID,
+                imageURLs: urls,
+                folderURL: folderURL,
+                embeddedMetadataByImageURL: batchResults,
+                reconcilesSidecarTimestamps: false
+            ))
+            guard !Task.isCancelled,
+                  case .complete(let sidecarSnapshot) = sidecarResult,
+                  sidecarSnapshot.request.id == requestID else { return }
+
             for image in images {
                 guard var meta = batchResults[image.url] else { continue }
-                if let xmpMeta = loadXMPMetadata(for: image.url) {
+                let sourceFacts = sidecarSnapshot.factsByImageURL[image.url]
+                if let xmpMeta = sourceFacts?.xmpMetadata {
                     // Same record semantics as the single-image reference read: a
                     // descriptive sidecar IS the IPTC record (clears stick); a
                     // develop-only sidecar is overlaid additively.
@@ -527,9 +577,9 @@ final class MetadataViewModel {
                         ? meta.replacingDescriptiveFields(from: xmpMeta)
                         : meta.merged(preferring: xmpMeta)
                 }
-                if let folder = currentFolderURL,
-                   let sidecar = sidecarService.loadSidecar(for: image.url, in: folder),
+                if let sidecar = sourceFacts?.appSidecar,
                    sidecar.pendingChanges {
+                    hasPendingSidecar = true
                     let bestCameraRaw = meta.cameraRaw ?? sidecar.metadata.cameraRaw
                     let bestOrientation = meta.exifOrientation
                     meta = sidecar.metadata
@@ -545,7 +595,11 @@ final class MetadataViewModel {
 
         guard !allMetadata.isEmpty else { return }
         guard !Task.isCancelled else { return }
-        guard Set(selectedURLs) == selectionSnapshot else { return }
+        guard metadataLoadRequestID == requestID,
+              currentFolderURL == folderURL,
+              selectedURLs == urls,
+              Set(selectedURLs) == selectionSnapshot else { return }
+        selectedHavePendingSidecars = hasPendingSidecar
 
         // Compute common values and differing fields
         var common = IPTCMetadata()
@@ -939,19 +993,6 @@ final class MetadataViewModel {
         }
         batchPartialPersonShown.removeAll { $0 == person }
         hasChanges = true
-    }
-
-    /// Check for pending sidecars once after batch loading, instead of on every UI access.
-    private func refreshPendingSidecarsFlag(for selectionSnapshot: Set<URL>) {
-        guard let folderURL = currentFolderURL else { return }
-        guard Set(selectedURLs) == selectionSnapshot else { return }
-        for url in selectedURLs {
-            if let sidecar = sidecarService.loadSidecar(for: url, in: folderURL),
-               sidecar.pendingChanges {
-                selectedHavePendingSidecars = true
-                return
-            }
-        }
     }
 
     /// Returns the placeholder text for a batch field that has differing values
@@ -2434,6 +2475,7 @@ final class MetadataViewModel {
     private func processVariablesBatch(_ images: [ImageFile]) async {
         let interpolator = PresetVariableInterpolator()
         let initials = UserDefaults.standard.string(forKey: UserDefaultsKeys.creatorInitials) ?? ""
+        let folderSnapshot = currentFolderURL
         var processed = 0
         var writtenToFile = 0
         var writtenToXMP = 0
@@ -2465,6 +2507,19 @@ final class MetadataViewModel {
             }
             self.folderProcessProgress = "Reading metadata: \(min(chunkEnd, urlsToRead.count))/\(urlsToRead.count)"
         }
+
+        let sidecarRequestID = UUID()
+        let sidecarResult = await editorReadService.load(MetadataEditorReadRequest(
+            id: sidecarRequestID,
+            imageURLs: urlsToRead,
+            folderURL: folderSnapshot,
+            embeddedMetadataByImageURL: batchMetadata,
+            reconcilesSidecarTimestamps: false
+        ))
+        guard !Task.isCancelled,
+              currentFolderURL == folderSnapshot,
+              case .complete(let sidecarSnapshot) = sidecarResult,
+              sidecarSnapshot.request.id == sidecarRequestID else { return }
 
         var sequenceNumber = 1
         for image in images {
@@ -2513,18 +2568,14 @@ final class MetadataViewModel {
             do {
                 // Load XMP sidecar if policy allows, matching the normal
                 // metadata loading path that merges embedded + XMP
-                let xmpMeta = self.loadXMPMetadata(for: url)
+                let sourceFacts = sidecarSnapshot.factsByImageURL[url]
+                let xmpMeta = sourceFacts?.xmpMetadata
                 let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
                 let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta, imageURL: url) ?? embedded
 
                 // For images with sidecar pending changes (C2PA or historyOnly mode),
                 // resolve variables from the sidecar metadata instead of embedded
-                let existingSidecar: MetadataSidecar?
-                if let folder = self.currentFolderURL {
-                    existingSidecar = sidecarService.loadSidecar(for: url, in: folder)
-                } else {
-                    existingSidecar = nil
-                }
+                let existingSidecar = sourceFacts?.appSidecar
                 let unresolvedMeta: IPTCMetadata
                 if let sidecar = existingSidecar, sidecar.pendingChanges {
                     unresolvedMeta = sidecar.metadata
@@ -2641,13 +2692,19 @@ final class MetadataViewModel {
             let selectedProcessedImages = processedImages.filter { selectionSnapshot.contains($0.url) }
             guard Set(selectedProcessedImages.map(\.url)) == selectionSnapshot else { return }
 
+            let requestID = UUID()
+            let folderSnapshot = currentFolderURL
+            metadataLoadRequestID = requestID
             await loadBatchMetadata(
                 for: selectedProcessedImages,
                 selectionSnapshot: selectionSnapshot,
-                isReload: false
+                isReload: false,
+                requestID: requestID,
+                folderURL: folderSnapshot
             )
-            selectedHavePendingSidecars = false
-            refreshPendingSidecarsFlag(for: selectionSnapshot)
+            guard metadataLoadRequestID == requestID,
+                  currentFolderURL == folderSnapshot,
+                  selectedURLs == selectedProcessedImages.map(\.url) else { return }
             hasChanges = false
             return
         }
@@ -2657,8 +2714,24 @@ final class MetadataViewModel {
               updatedURLs.contains(url) else { return }
 
         do {
+            let requestID = UUID()
+            let folderSnapshot = currentFolderURL
+            metadataLoadRequestID = requestID
             let (embedded, conflict) = try await readService.readFullMetadataWithConflictCheck(url: url)
-            let xmpMeta = loadXMPMetadata(for: url)
+            let sidecarResult = await editorReadService.load(MetadataEditorReadRequest(
+                id: requestID,
+                imageURLs: [url],
+                folderURL: folderSnapshot,
+                embeddedMetadataByImageURL: [url: embedded]
+            ))
+            guard !Task.isCancelled,
+                  metadataLoadRequestID == requestID,
+                  currentFolderURL == folderSnapshot,
+                  selectedURLs == [url],
+                  case .complete(let sidecarSnapshot) = sidecarResult,
+                  sidecarSnapshot.request.id == requestID,
+                  let sourceFacts = sidecarSnapshot.factsByImageURL[url] else { return }
+            let xmpMeta = sourceFacts.xmpMetadata
             // Preserve the user's current reference source selection after processing
             let refSource: MetadataReferenceSource
             if metadataReferenceSource == .xmp, xmpMeta == nil {
@@ -2676,8 +2749,7 @@ final class MetadataViewModel {
             self.originalImageMetadata = baseMeta
 
             // Load sidecar for images with pending changes (C2PA, historyOnly, etc.)
-            if let folder = currentFolderURL,
-               let sidecar = sidecarService.loadSidecar(for: url, in: folder),
+            if let sidecar = sourceFacts.appSidecar,
                sidecar.pendingChanges {
                 self.editingMetadata = sidecar.metadata
                 self.previousEditingMetadata = sidecar.metadata
@@ -2687,10 +2759,10 @@ final class MetadataViewModel {
                 self.previousEditingMetadata = baseMeta
                 self.hasChanges = false
                 // Only delete sidecar if it has no history entries worth preserving
-                if let folder = currentFolderURL,
-                   let sidecar = sidecarService.loadSidecar(for: url, in: folder),
+                if let folderSnapshot,
+                   let sidecar = sourceFacts.appSidecar,
                    sidecar.history.isEmpty {
-                    try? sidecarService.deleteSidecar(for: url, in: folder)
+                    try? sidecarService.deleteSidecar(for: url, in: folderSnapshot)
                 }
             }
         } catch {

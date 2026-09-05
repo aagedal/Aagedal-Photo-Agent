@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-04
+**Last reviewed:** 2026-09-05
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -741,6 +741,15 @@ new inspection ownership, and tracked merge work is cancelled on input replaceme
 5-test suite, adjacent 35-test FTP selection, repository gate, and serial unfiltered 2,028-test run passed. The
 audit remains 66 of 75 while Metadata editor and Known People reads, shared rename identity work, and real-volume/
 signpost/Thread Performance Checker evidence stay open.
+
+The latest [Metadata editor read continuation](plan-status-metadata-editor-read-continuation-2026-09-05.md) moves
+passive XMP, app JSON-history, and timestamp-reconciliation reads for single/batch loading, Copy Previous, variable
+processing, and post-processing refresh out of `MetadataViewModel`'s MainActor path and through a serialized actor.
+Request, folder, and ordered-selection identity reject stale same-image publication; explicit cancellation preserves
+the exact inspected prefix; and batch pending-sidecar state reuses the same immutable facts. The focused 7-test
+suite, adjacent 83-test selection, repository gate, and serial unfiltered 2,035-test run passed. The audit remains
+66 of 75 while transaction-owned read-before-write paths, Known People cache misses, shared Compare/Analysis rename
+identity, and real-volume/signpost/Thread Performance Checker evidence stay open.
 
 ## File organization convention
 

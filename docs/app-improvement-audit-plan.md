@@ -1286,6 +1286,17 @@ The audit remains 66 of 75 while Metadata editor and Known People reads, shared 
 volume/signpost/Thread Performance Checker evidence remain open.
 ([validation](plan-status-ftp-upload-sidecar-continuation-2026-09-05.md))
 
+**Metadata editor read follow-up (2026-09-05):** passive single/batch loading, Copy Previous, variable processing,
+and post-processing refresh now move XMP, app JSON-history, and timestamp-reconciliation reads out of
+`MetadataViewModel`'s MainActor path and through one serialized actor. Immutable requests freeze the explicit UUID,
+ordered selection, folder, and embedded metadata; publication requires complete current evidence, including for
+same-image A→B→A-style reloads. Exact-prefix cancellation distinguishes pre-read, partial, and post-complete states,
+and batch pending-sidecar state comes from the same snapshot instead of a second read. Seven new characterizations,
+the adjacent 83-test selection, repository gate, and serial unfiltered 2,035-test run passed. The audit remains 66
+of 75 while transaction-coupled read-before-write paths, Known People cache misses, shared Compare/Analysis rename
+identity, and real-volume/signpost/Thread Performance Checker evidence remain open.
+([validation](plan-status-metadata-editor-read-continuation-2026-09-05.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 
