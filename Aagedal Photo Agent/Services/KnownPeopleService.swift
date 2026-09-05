@@ -545,6 +545,10 @@ final class KnownPeopleService {
     private var storageRevision: UInt64 = 0
     private let thumbnailLoader: KnownPeopleThumbnailLoadService
     private let archiveService: KnownPeopleArchiveService
+    // Keep admission, duplicate filtering, durable commit and cache publication ordered.
+    // The archive actor serializes file work but yields back to MainActor between these stages.
+    private var importInProgress = false
+    private var importWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         thumbnailLoader: KnownPeopleThumbnailLoadService = .shared,
@@ -1879,6 +1883,10 @@ final class KnownPeopleService {
 
     func importFromZip(sourceURL: URL) async throws -> Int {
         let expectedStorageRevision = storageRevision
+        await beginImport()
+        defer { endImport() }
+        try Task.checkCancellation()
+        guard storageRevision == expectedStorageRevision else { throw CancellationError() }
         let payload = try await archiveService.prepareImport(sourceURL: sourceURL)
         try Task.checkCancellation()
         guard storageRevision == expectedStorageRevision else {
@@ -1947,6 +1955,22 @@ final class KnownPeopleService {
 
         if let completionError { throw completionError }
         return evidence.committedPeople.count
+    }
+
+    private func beginImport() async {
+        if !importInProgress {
+            importInProgress = true
+            return
+        }
+        await withCheckedContinuation { importWaiters.append($0) }
+    }
+
+    private func endImport() {
+        if importWaiters.isEmpty {
+            importInProgress = false
+        } else {
+            importWaiters.removeFirst().resume()
+        }
     }
 
     // MARK: - Statistics

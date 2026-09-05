@@ -3,6 +3,55 @@ import os
 
 private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "RosterCloudCoordinator")
 
+/// Evidence preserves requests that reached Foundation even if cancellation arrived during that call.
+nonisolated struct RosterCloudDownloadResult: Equatable, Sendable {
+    let attemptedURLs: [URL]
+    let failedURLs: [URL]
+    let wasCancelled: Bool
+}
+
+/// Cloud download initiation may synchronously contact the file provider. Keep complete batches on
+/// one executor; no suspension inside the loop allows overlapping updates to interleave access.
+actor RosterCloudDownloadService {
+    private let startDownloading: @Sendable (URL) throws -> Void
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent",
+        category: "RosterCloudDownload"
+    )
+
+    init(startDownloading: @escaping @Sendable (URL) throws -> Void = {
+        try FileManager.default.startDownloadingUbiquitousItem(at: $0)
+    }) {
+        self.startDownloading = startDownloading
+    }
+
+    func requestDownloads(for urls: [URL]) -> RosterCloudDownloadResult {
+        let interval = signposter.beginInterval("RequestDownloads", id: signposter.makeSignpostID())
+        var seen: Set<URL> = []
+        var attemptedURLs: [URL] = []
+        var failedURLs: [URL] = []
+        for url in urls {
+            guard !Task.isCancelled else { break }
+            guard seen.insert(url).inserted else { continue }
+            do {
+                try startDownloading(url)
+            } catch {
+                failedURLs.append(url)
+            }
+            attemptedURLs.append(url)
+        }
+        signposter.endInterval(
+            "RequestDownloads", interval,
+            "attempted=\(attemptedURLs.count) failed=\(failedURLs.count) cancelled=\(Task.isCancelled)"
+        )
+        return RosterCloudDownloadResult(
+            attemptedURLs: attemptedURLs,
+            failedURLs: failedURLs,
+            wasCancelled: Task.isCancelled
+        )
+    }
+}
+
 /// Watches the iCloud ubiquity container for changes to the Teams library files
 /// made on *other* devices and refreshes `RosterStore`. Mirrors
 /// `KnownPeopleCloudCoordinator`. Active only while Teams iCloud sync is enabled
@@ -15,6 +64,8 @@ final class RosterCloudCoordinator {
     private var observers: [NSObjectProtocol] = []
     private var pendingRefresh: Task<Void, Never>?
     private var pendingStart: Task<Void, Never>?
+    private let downloadService = RosterCloudDownloadService()
+    private var pendingDownloads: [UUID: Task<Void, Never>] = [:]
     private var monitoredRoot: URL?
     private var pendingChanges: [String: (url: URL, contentChangeDate: Date?)] = [:]
 
@@ -87,6 +138,8 @@ final class RosterCloudCoordinator {
     private func stopQuery() {
         pendingStart?.cancel()
         pendingStart = nil
+        for task in pendingDownloads.values { task.cancel() }
+        pendingDownloads.removeAll()
         guard let q = query else { return }
         q.stop()
         for observer in observers {
@@ -108,6 +161,7 @@ final class RosterCloudCoordinator {
         guard let root = monitoredRoot else { return }
         let teamsPath = root.appendingPathComponent("teams", isDirectory: true).path
 
+        var downloadURLs: [URL] = []
         for case let item as NSMetadataItem in query.results {
             guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String,
                   let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL else { continue }
@@ -116,14 +170,25 @@ final class RosterCloudCoordinator {
 
             if let status = item.value(forAttribute: NSMetadataUbiquitousItemDownloadingStatusKey) as? String,
                status != NSMetadataUbiquitousItemDownloadingStatusCurrent {
-                try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                downloadURLs.append(url)
             }
 
             let changeDate = item.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date
             pendingChanges[path] = (url: url, contentChangeDate: changeDate)
         }
 
+        if !downloadURLs.isEmpty { requestDownloads(for: downloadURLs) }
         if !pendingChanges.isEmpty { scheduleRefresh() }
+    }
+
+    private func requestDownloads(for urls: [URL]) {
+        let requestID = UUID()
+        let downloadService = downloadService
+        pendingDownloads[requestID] = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            _ = await downloadService.requestDownloads(for: urls)
+            self?.pendingDownloads.removeValue(forKey: requestID)
+        }
     }
 
     private func scheduleRefresh() {

@@ -21,6 +21,13 @@ existing-only mirroring and revision-checked deletion eligibility. This advances
 responsiveness/recovery work without closing its manual or device gates; see the
 [dated validation](../plan-status-batch-mirror-cleanup-continuation-2026-09-05.md).
 
+**Import admission and Teams cloud download continuation (2026-09-05):** overlapping Known
+People imports now stay ordered through duplicate filtering, durable commit, and cache publication;
+cancelled or rerouted queued requests are rejected before preparation. Teams cloud download initiation
+runs off MainActor with serialized batches, cancellation evidence, and privacy-safe signposts.
+The complete Known People storage migration and manual/real-volume gates remain open.
+([validation](../plan-status-import-admission-roster-download-continuation-2026-09-05.md))
+
 **Batch baseline and discard continuation (2026-09-05):** Metadata batch XMP/JSON transactions
 now own baseline reads and revision-aware mutations. Selected-image discard moves deletion off
 MainActor with error and stale-publication handling. This advances the Phase 12 filesystem work;

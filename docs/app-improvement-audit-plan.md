@@ -708,6 +708,13 @@ result is announced once; CI runs the smoke suite; dated manual evidence covers 
 - [ ] Add signposts and benchmarks for local SSD, network volume, iCloud placeholder, read-only volume, and
   large folder cases.
 
+**Import admission and Teams cloud download continuation (2026-09-05):** overlapping Known
+People imports now stay ordered through duplicate filtering, durable commit, and cache publication;
+cancelled or rerouted queued requests are rejected before preparation. Teams cloud download initiation
+runs off MainActor with serialized batches, cancellation evidence, and privacy-safe signposts.
+The complete Known People storage migration and manual/real-volume gates remain open.
+([validation](plan-status-import-admission-roster-download-continuation-2026-09-05.md))
+
 **Async-boundary follow-up (2026-08-27):** Browser folder scans and mutations, batch trash/move/duplicate
 operations, the audited Metadata JSON-history/XMP save, FTP upload inventory/staging, and Delivery Receipt
 summary export now cross serialized actor boundaries and return immutable results with explicit cancellation

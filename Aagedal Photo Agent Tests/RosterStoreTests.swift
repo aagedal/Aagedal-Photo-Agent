@@ -252,3 +252,109 @@ private nonisolated final class RosterLibraryFileAccessProbe: @unchecked Sendabl
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
     var writtenURLs: [URL] { lock.withLock { committedURLs } }
 }
+
+@Suite("Roster cloud download filesystem boundary")
+struct RosterCloudDownloadServiceTests {
+    @Test("download requests are ordered, deduplicated and run off MainActor despite failures")
+    @MainActor
+    func orderedDownloadRequests() async {
+        let urls = [URL(fileURLWithPath: "/virtual/one.json"), URL(fileURLWithPath: "/virtual/two.json")]
+        let probe = RosterCloudDownloadProbe(failedURL: urls[0])
+        let service = RosterCloudDownloadService(startDownloading: probe.start)
+        let result = await service.requestDownloads(for: [urls[0], urls[0], urls[1]])
+        #expect(result.attemptedURLs == urls)
+        #expect(result.failedURLs == [urls[0]])
+        #expect(!result.wasCancelled)
+        #expect(probe.urls == urls)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("pre-cancellation touches no cloud files")
+    func preCancellation() async {
+        let probe = RosterCloudDownloadProbe()
+        let service = RosterCloudDownloadService(startDownloading: probe.start)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.requestDownloads(for: [URL(fileURLWithPath: "/virtual/one.json")])
+        }
+        let result = await task.value
+        #expect(result.wasCancelled)
+        #expect(result.attemptedURLs.isEmpty)
+        #expect(probe.urls.isEmpty)
+    }
+
+    @Test("cancellation during a non-preemptible request preserves its exact attempted prefix")
+    func partialCancellation() async {
+        let urls = [URL(fileURLWithPath: "/virtual/one.json"), URL(fileURLWithPath: "/virtual/two.json")]
+        let probe = RosterCloudDownloadProbe(cancelAtInvocation: 1)
+        let service = RosterCloudDownloadService(startDownloading: probe.start)
+        let result = await Task { await service.requestDownloads(for: urls) }.value
+        #expect(result.wasCancelled)
+        #expect(result.attemptedURLs == [urls[0]])
+        #expect(probe.urls == [urls[0]])
+    }
+
+    @Test("overlapping cloud batches never enter filesystem access concurrently")
+    func serializedBatches() async {
+        let probe = RosterCloudDownloadProbe(delay: 0.01)
+        let service = RosterCloudDownloadService(startDownloading: probe.start)
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<8 {
+                group.addTask {
+                    _ = await service.requestDownloads(for: [URL(fileURLWithPath: "/virtual/\(index).json")])
+                }
+            }
+        }
+        #expect(probe.urls.count == 8)
+        #expect(probe.maximumConcurrentCalls == 1)
+    }
+
+    @Test("cloud coordinator owns cancellation and submits immutable URL batches")
+    func coordinatorSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: workspace.appendingPathComponent(
+            "Aagedal Photo Agent/Services/RosterCloudCoordinator.swift"
+        ), encoding: .utf8)
+        let start = try #require(source.range(of: "@MainActor\nfinal class RosterCloudCoordinator"))
+        let coordinator = String(source[start.lowerBound...])
+        #expect(!coordinator.contains("FileManager.default.startDownloadingUbiquitousItem"))
+        #expect(coordinator.contains("await downloadService.requestDownloads(for: urls)"))
+        #expect(coordinator.contains("for task in pendingDownloads.values { task.cancel() }"))
+    }
+}
+
+/// Every mutable probe field is protected by `lock`; injected work may run on any actor executor.
+private nonisolated final class RosterCloudDownloadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let failedURL: URL?
+    private let cancelAtInvocation: Int?
+    private let delay: TimeInterval
+    private var recordedURLs: [URL] = []
+    private var observedMainThread = false
+    private var activeCalls = 0
+    private var maximumCalls = 0
+
+    init(failedURL: URL? = nil, cancelAtInvocation: Int? = nil, delay: TimeInterval = 0) {
+        self.failedURL = failedURL
+        self.cancelAtInvocation = cancelAtInvocation
+        self.delay = delay
+    }
+
+    func start(_ url: URL) throws {
+        let shouldCancel = lock.withLock {
+            recordedURLs.append(url)
+            observedMainThread = observedMainThread || Thread.isMainThread
+            activeCalls += 1
+            maximumCalls = max(maximumCalls, activeCalls)
+            return recordedURLs.count == cancelAtInvocation
+        }
+        defer { lock.withLock { activeCalls -= 1 } }
+        if shouldCancel { withUnsafeCurrentTask { $0?.cancel() } }
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        if url == failedURL { throw CocoaError(.fileReadUnknown) }
+    }
+
+    var urls: [URL] { lock.withLock { recordedURLs } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+    var maximumConcurrentCalls: Int { lock.withLock { maximumCalls } }
+}

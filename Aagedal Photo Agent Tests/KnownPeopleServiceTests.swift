@@ -271,6 +271,67 @@ struct KnownPeopleServiceTests {
         #expect(Set(service.getAllPeople().map(\.id)) == Set(people.map(\.id)))
     }
 
+    @Test("overlapping imports publish before readmission and reject cancelled or rerouted waiters", arguments: [0, 1, 2])
+    func overlappingImportAdmission(outcome: Int) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let person = KnownPerson(name: "Imported once", embeddings: [])
+        let data = try encode([person])
+        let gate = KnownPeopleImportPublicationGate(failSecondWrite: false)
+        defer { gate.resume() }
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: { _ in }, removeItem: { _ in },
+            contentsOfDirectory: { _ in [] }, isDirectory: { _ in false },
+            itemExists: { $0.lastPathComponent == "people.json" },
+            readData: { _ in gate.recordRead(); return data },
+            readCoordinatedData: { _ in data },
+            writeData: { _, _ in },
+            writeCoordinatedData: { data, url in try gate.write(data, to: url) },
+            runDitto: { _ in }
+        )
+        let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        _ = service.loadDatabase()
+        let source = directory.appendingPathComponent("archive.zip")
+        let first = Task { try await service.importFromZip(sourceURL: source) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(gate.entered)
+        // This continuation resumes only once the second task has started on MainActor.
+        var second: Task<Int, any Error>!
+        await withCheckedContinuation { (started: CheckedContinuation<Void, Never>) in
+            second = Task {
+                started.resume()
+                return try await service.importFromZip(sourceURL: source)
+            }
+        }
+        if outcome == 1 { second.cancel() }
+        if outcome == 2 { service.reloadAfterStorageChange(resolvedStorageURL: directory) }
+        gate.resume()
+        do {
+            #expect(try await first.value == 1)
+            #expect(outcome != 2)
+        } catch {
+            #expect(outcome == 2 && error is CancellationError)
+        }
+        do {
+            #expect(try await second.value == 0)
+            #expect(outcome == 0)
+        } catch {
+            #expect(outcome != 0 && error is CancellationError)
+        }
+        #expect(gate.reads == (outcome == 0 ? 2 : 1))
+        #expect(gate.writes == 1)
+        #expect(service.getAllPeople().map(\.id) == [person.id])
+        // Releasing a cancelled/rerouted waiter must not strand later requests.
+        #expect(try await service.importFromZip(sourceURL: source) == 0)
+        service.reloadAfterStorageChange(resolvedStorageURL: directory)
+        #expect(service.getAllPeople().map(\.id) == [person.id])
+    }
+
     @Test("Known People archive export/import round-trips people and thumbnails")
     func archiveRoundTrip() async throws {
         let exportStore = makeTempDir()
@@ -910,11 +971,15 @@ private nonisolated final class KnownPeopleImportPublicationGate: @unchecked Sen
     private let semaphore = DispatchSemaphore(value: 0)
     private var didEnter = false
     private var writeCount = 0
+    private var readCount = 0
     private let failSecondWrite: Bool
 
     init(failSecondWrite: Bool) { self.failSecondWrite = failSecondWrite }
 
     var entered: Bool { lock.withLock { didEnter } }
+    var reads: Int { lock.withLock { readCount } }
+    var writes: Int { lock.withLock { writeCount } }
+    func recordRead() { lock.withLock { readCount += 1 } }
     func resume() { semaphore.signal() }
 
     func write(_ data: Data, to url: URL) throws {
