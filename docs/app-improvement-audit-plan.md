@@ -1323,6 +1323,15 @@ real-volume gates remain open at 66 of 75.
 ([validation](plan-status-batch-baseline-discard-continuation-2026-09-05.md))
 
 
+**Folder discard and post-write cleanup follow-up (2026-09-05):** folder-wide app-sidecar
+removal now crosses an asynchronous folder barrier that orders preceding and subsequent photo
+transactions. Folder discard reports failures and rejects stale selection/draft/batch-intent
+publication. Post-write cleanup captures both sidecar naming generations before writing and
+conditionally deletes the same bytes under the photo lock; newer editor metadata/history and
+external revisions survive. Batch preflight also rejects stale pending records. Known People
+database reads, shared rename identity preparation, and real-volume gates remain open at 66 of 75.
+([validation](plan-status-folder-discard-post-write-continuation-2026-09-05.md))
+
 **Exit gate:** Thread Performance Checker finds no blocking file/sidecar work on the main thread in core
 workflows; UI remains responsive during slow-volume simulations.
 

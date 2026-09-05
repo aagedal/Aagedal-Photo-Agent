@@ -414,6 +414,75 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
+    /// Exact bytes captured before a file write. Cleanup consumes this evidence under the
+    /// photo lock, so a sidecar saved while the image writer was running survives.
+    nonisolated struct WriteCleanupSnapshot: Sendable {
+        let imageURL: URL
+        let folderURL: URL
+        fileprivate let tokens: [Data?]
+        fileprivate let matchesEditor: Bool
+    }
+
+    nonisolated func captureWriteCleanupSnapshot(
+        for imageURL: URL,
+        in folderURL: URL,
+        expected: MetadataSidecar? = nil,
+        editorRecord: MetadataSidecar? = nil,
+        requiresEditorMatch: Bool = false,
+        beforeRead: @escaping @Sendable () throws -> Void = {}
+    ) async throws -> WriteCleanupSnapshot {
+        try Task.checkCancellation()
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+            try beforeRead()
+            let tokens = try self.contentTokens(for: imageURL, in: folderURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let records = try tokens.compactMap { data -> MetadataSidecar? in
+                guard let data else { return nil }
+                let record = try decoder.decode(MetadataSidecar.self, from: data)
+                guard record.sourceFile == imageURL.lastPathComponent else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                return record
+            }
+            if let expected {
+                guard let current = records.first, Self.samePersistedRecord(current, expected) else {
+                    throw CocoaError(.fileWriteFileExists, userInfo: [
+                        NSLocalizedDescriptionKey: "Pending metadata changed before the file write. Try again."
+                    ])
+                }
+            }
+            let matchesEditor = records.allSatisfy { current in
+                guard let editorRecord else { return !requiresEditorMatch }
+                var intended = current
+                intended.metadata = editorRecord.metadata
+                intended.history = editorRecord.history
+                return Self.samePersistedRecord(current, intended)
+            }
+            return WriteCleanupSnapshot(
+                imageURL: imageURL, folderURL: folderURL, tokens: tokens, matchesEditor: matchesEditor
+            )
+        }
+    }
+
+    /// Returns false when a later sidecar revision must be retained. No retry may adopt
+    /// that revision: the image write only committed the originally captured metadata.
+    nonisolated func deleteSidecarAfterWriteSerialized(
+        _ snapshot: WriteCleanupSnapshot,
+        beforeRevisionCheck: @escaping @Sendable () throws -> Void = {}
+    ) async throws -> Bool {
+        try Task.checkCancellation()
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: snapshot.imageURL)) {
+            try beforeRevisionCheck()
+            guard snapshot.matchesEditor,
+                  try self.contentTokens(for: snapshot.imageURL, in: snapshot.folderURL) == snapshot.tokens else {
+                return false
+            }
+            try self.deleteSidecar(for: snapshot.imageURL, in: snapshot.folderURL)
+            return true
+        }
+    }
+
     // MARK: - Delete
 
     /// Refresh cleanup must recheck eligibility under the same photo lock as history saves.
@@ -473,7 +542,19 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
-    func deleteAllSidecars(in folderURL: URL) throws {
+    nonisolated func deleteAllSidecarsSerialized(
+        in folderURL: URL,
+        beforeDelete: @escaping @Sendable () throws -> Void = {}
+    ) async throws {
+        try Task.checkCancellation()
+        let folderKey = folderURL.resolvingSymlinksInPath().path.lowercased()
+        try await MetadataIOCoordinator.shared.withFolderLock(folderKey) {
+            try beforeDelete()
+            try self.deleteAllSidecars(in: folderURL)
+        }
+    }
+
+    nonisolated func deleteAllSidecars(in folderURL: URL) throws {
         let dir = sidecarDirectory(for: folderURL)
         if FileManager.default.fileExists(atPath: dir.path) {
             try FileManager.default.removeItem(at: dir)

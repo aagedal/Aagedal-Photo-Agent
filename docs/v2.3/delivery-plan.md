@@ -27,6 +27,12 @@ MainActor with error and stale-publication handling. This advances the Phase 12 
 manual/device gates remain open. See the
 [dated validation](../plan-status-batch-baseline-discard-continuation-2026-09-05.md).
 
+**Folder discard and post-write cleanup continuation (2026-09-05):** folder-wide deletion is
+ordered with photo transactions off MainActor, and post-write sidecar cleanup preserves records
+that changed before or during a write. Stale UI completions and cancellation are guarded. This
+advances Phase 12 responsiveness/recovery; manual/device gates remain open. See the
+[dated validation](../plan-status-folder-discard-post-write-continuation-2026-09-05.md).
+
 ## Phase 0 — research, decisions, and fixtures
 
 **Exit gate:** the project can make evidence claims and distribute every required dependency/fixture

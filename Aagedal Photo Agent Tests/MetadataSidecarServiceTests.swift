@@ -379,6 +379,118 @@ struct MetadataSidecarServiceTests {
         )
     }
 
+    @Test("post-write cleanup captures and removes unchanged sidecars off MainActor")
+    @MainActor
+    func postWriteCleanup() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        try service.saveSidecar(makeSidecar(pendingChanges: true), for: image, in: folder)
+        let snapshot = try await service.captureWriteCleanupSnapshot(for: image, in: folder) {
+            #expect(!Thread.isMainThread)
+        }
+        let cleared = try await service.deleteSidecarAfterWriteSerialized(snapshot) {
+            #expect(!Thread.isMainThread)
+        }
+        #expect(cleared)
+        #expect(service.loadSidecar(for: image, in: folder) == nil)
+    }
+
+    @Test("post-write cleanup retains changed current or legacy bytes and newly created records")
+    func postWriteCleanupRetainsNewerData() async throws {
+        for candidate in ["photo.jpg.meta.json", "photo.meta.json"] {
+            let folder = try makeTempFolder()
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let image = makeImageURL(in: folder)
+            let service = MetadataSidecarService()
+            try service.saveSidecar(makeSidecar(pendingChanges: true), for: image, in: folder)
+            let snapshot = try await service.captureWriteCleanupSnapshot(for: image, in: folder)
+            let changed = folder.appendingPathComponent(".photo_metadata").appendingPathComponent(candidate)
+            let bytes = Data("new external data".utf8)
+            #expect(try await !service.deleteSidecarAfterWriteSerialized(snapshot) {
+                try bytes.write(to: changed)
+            })
+            #expect(try Data(contentsOf: changed) == bytes)
+        }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        let snapshot = try await service.captureWriteCleanupSnapshot(for: image, in: folder)
+        try service.saveSidecar(makeSidecar(pendingChanges: true), for: image, in: folder)
+        #expect(try await !service.deleteSidecarAfterWriteSerialized(snapshot))
+        #expect(service.loadSidecar(for: image, in: folder)?.pendingChanges == true)
+    }
+
+    @Test("batch write preflight rejects stale records and unreadable sidecars without moving them")
+    func postWritePreflightValidation() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        let expected = makeSidecar(pendingChanges: true)
+        try service.saveSidecar(expected, for: image, in: folder)
+        _ = try await service.captureWriteCleanupSnapshot(for: image, in: folder, expected: expected)
+        var changed = expected
+        changed.metadata.title = "Newer pending title"
+        try service.saveSidecar(changed, for: image, in: folder)
+        do {
+            _ = try await service.captureWriteCleanupSnapshot(for: image, in: folder, expected: expected)
+            Issue.record("Stale batch snapshot was accepted")
+        } catch { #expect((error as NSError).code == CocoaError.fileWriteFileExists.rawValue) }
+        let current = folder.appendingPathComponent(".photo_metadata/photo.jpg.meta.json")
+        let corrupt = Data("invalid JSON".utf8)
+        try corrupt.write(to: current)
+        do {
+            _ = try await service.captureWriteCleanupSnapshot(for: image, in: folder)
+            Issue.record("Unreadable sidecar was accepted")
+        } catch { }
+        #expect(try Data(contentsOf: current) == corrupt)
+    }
+
+    @Test("single-write cleanup never adopts a newer sidecar already present at preflight")
+    func postWritePreflightRetainsNewerEditorRecord() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        let editor = makeSidecar(pendingChanges: true)
+        var newer = editor
+        newer.metadata.title = "Saved elsewhere before preflight"
+        try service.saveSidecar(newer, for: image, in: folder)
+        let snapshot = try await service.captureWriteCleanupSnapshot(
+            for: image, in: folder, editorRecord: editor
+        )
+        #expect(try await !service.deleteSidecarAfterWriteSerialized(snapshot))
+        #expect(service.loadSidecar(for: image, in: folder)?.metadata.title == newer.metadata.title)
+    }
+
+    @Test("post-write cleanup cancellation and storage failure retain the record")
+    func postWriteCleanupFailure() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = makeImageURL(in: folder)
+        let service = MetadataSidecarService()
+        try service.saveSidecar(makeSidecar(pendingChanges: true), for: image, in: folder)
+        let snapshot = try await service.captureWriteCleanupSnapshot(for: image, in: folder)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await service.deleteSidecarAfterWriteSerialized(snapshot) {
+                Issue.record("Cancelled cleanup entered storage")
+            }
+        }
+        do { _ = try await task.value; Issue.record("Expected cancellation") }
+        catch { #expect(error is CancellationError) }
+        do {
+            _ = try await service.deleteSidecarAfterWriteSerialized(snapshot) {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            Issue.record("Expected storage failure")
+        } catch { #expect((error as NSError).code == CocoaError.fileWriteNoPermission.rawValue) }
+        #expect(service.loadSidecar(for: image, in: folder)?.pendingChanges == true)
+    }
+
     @Test("explicit discard removes current and legacy pending sidecars off MainActor")
     @MainActor
     func explicitDiscard() async throws {

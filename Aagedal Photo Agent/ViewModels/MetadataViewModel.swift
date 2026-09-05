@@ -94,6 +94,7 @@ final class MetadataViewModel {
     var originalImageMetadata: IPTCMetadata?
     var embeddedMetadata: IPTCMetadata?
     var xmpMetadata: IPTCMetadata?
+    @ObservationIgnored private var cleanupBaseline: (imageURL: URL, folderURL: URL?, record: MetadataSidecar?)?
     var sidecarHistory: [MetadataHistoryEntry] = []
     var currentFolderURL: URL?
     var metadataReferenceSource: MetadataReferenceSource = .embedded
@@ -145,6 +146,7 @@ final class MetadataViewModel {
     private let descriptiveWriteBoundary: DescriptiveMetadataWriteBoundary
     private let editorReadService: MetadataEditorReadService
     private let discardSidecar: @Sendable (URL, URL) async throws -> Void
+    private let discardFolderSidecars: @Sendable (URL) async throws -> Void
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
     private let sidecarPersistenceService = MetadataSidecarPersistenceService()
@@ -167,6 +169,9 @@ final class MetadataViewModel {
         editorReadService: MetadataEditorReadService = .shared,
         discardSidecar: @escaping @Sendable (URL, URL) async throws -> Void = { imageURL, folderURL in
             try await MetadataSidecarService().deleteSidecarSerialized(for: imageURL, in: folderURL)
+        },
+        discardFolderSidecars: @escaping @Sendable (URL) async throws -> Void = { folderURL in
+            try await MetadataSidecarService().deleteAllSidecarsSerialized(in: folderURL)
         }
     ) {
         self.readService = readService
@@ -174,6 +179,7 @@ final class MetadataViewModel {
         self.descriptiveWriteBoundary = DescriptiveMetadataWriteBoundary(writeEngine: writeEngine)
         self.editorReadService = editorReadService
         self.discardSidecar = discardSidecar
+        self.discardFolderSidecars = discardFolderSidecars
     }
 
     deinit {
@@ -446,6 +452,7 @@ final class MetadataViewModel {
                     self.metadata = baseMeta
                     self.originalImageMetadata = baseMeta
 
+                    self.cleanupBaseline = (imageURL, folderSnapshot, sourceFacts.appSidecar)
                     var newEditingMetadata = baseMeta
                     if let sidecar = sourceFacts.appSidecar {
                         self.sidecarHistory = sidecar.history
@@ -1652,12 +1659,14 @@ final class MetadataViewModel {
                 // JSON may already be durable when cancellation or an XMP failure occurs. Advance
                 // the history baseline so Retry mirrors the existing record instead of appending
                 // duplicate deltas, while leaving `hasChanges` set until both artifacts commit.
+                self.cleanupBaseline = (imageURL, folderURL, installed)
                 self.sidecarHistory = installed.history
                 self.previousEditingMetadata = installed.metadata
             }
 
             if result.completed {
                 if isStillSelected, let installed = result.installedSidecar {
+                    self.cleanupBaseline = (imageURL, folderURL, installed)
                     self.sidecarHistory = installed.history
                     self.previousEditingMetadata = installed.metadata
                     self.xmpMetadata = installed.metadata
@@ -1940,6 +1949,7 @@ final class MetadataViewModel {
 
                 let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
                 if isStillSelected {
+                    self.cleanupBaseline = (imageURL, folderURL, installed)
                     self.sidecarHistory = installed.history
                     self.previousEditingMetadata = installed.metadata
                     self.metadata = edited
@@ -1960,12 +1970,6 @@ final class MetadataViewModel {
             }
             self.isSaving = false
             onComplete(commitResult)
-        }
-    }
-
-    private func removeSidecars(for urls: Set<URL>, in folderURL: URL) {
-        for url in urls {
-            try? sidecarService.deleteSidecar(for: url, in: folderURL)
         }
     }
 
@@ -2752,6 +2756,7 @@ final class MetadataViewModel {
             self.metadata = baseMeta
             self.originalImageMetadata = baseMeta
 
+            self.cleanupBaseline = (url, folderSnapshot, sourceFacts.appSidecar)
             // Load sidecar for images with pending changes (C2PA, historyOnly, etc.)
             if let sidecar = sourceFacts.appSidecar,
                sidecar.pendingChanges {
@@ -3022,6 +3027,7 @@ final class MetadataViewModel {
             } else {
                 await syncCameraRawToXMPSidecar(for: imageURL, metadata: installed.metadata)
             }
+            cleanupBaseline = (imageURL, folderURL, installed)
             sidecarHistory = installed.history
             previousEditingMetadata = installed.metadata
             hasChanges = pendingChanges
@@ -3327,14 +3333,22 @@ final class MetadataViewModel {
         isSaving = true
         saveError = nil
 
+        let edited = editingMetadata
+        let original = originalImageMetadata
+        let loadID = metadataLoadRequestID
+        let editorRecord = cleanupBaseline.flatMap { baseline in
+            baseline.imageURL == imageURL && baseline.folderURL == folderURL ? baseline.record : nil
+        }
         writeTask?.cancel()
         writeTask = Task {
             do {
-                let edited = editingMetadata
+                let cleanup = try await sidecarService.captureWriteCleanupSnapshot(
+                    for: imageURL, in: folderURL, editorRecord: editorRecord, requiresEditorMatch: true
+                )
                 // See writeMetadataAndPreserveHistory — leave the crs block alone
                 // unless develop settings actually changed.
                 let developChanged = Self.developSettingsChanged(
-                    edited.cameraRaw, self.originalImageMetadata?.cameraRaw
+                    edited.cameraRaw, original?.cameraRaw
                 )
                 let fields = overwriteFields(
                     from: edited,
@@ -3366,10 +3380,17 @@ final class MetadataViewModel {
                     try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
                 }
 
-                do {
-                    try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
-                } catch {
-                    logger.warning("Failed to delete sidecar for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+                let cleared = try await sidecarService.deleteSidecarAfterWriteSerialized(cleanup)
+                guard !Task.isCancelled else { return }
+                guard metadataLoadRequestID == loadID, currentFolderURL == folderURL,
+                      selectedURLs == [imageURL], editingMetadata == edited else {
+                    self.isSaving = false
+                    return
+                }
+                guard cleared else {
+                    self.saveError = "Metadata was written, but newer pending sidecar changes were retained."
+                    self.isSaving = false
+                    return
                 }
                 self.metadata = edited
                 self.originalImageMetadata = edited
@@ -3379,10 +3400,16 @@ final class MetadataViewModel {
                     self.embeddedMetadata = edited
                 }
                 self.sidecarHistory = []
+                self.selectedHavePendingSidecars = false
+                self.cleanupBaseline = (imageURL, folderURL, nil)
                 self.hasChanges = false
                 self.previousEditingMetadata = edited
             } catch {
-                self.saveError = error.localizedDescription
+                guard !Task.isCancelled else { return }
+                if metadataLoadRequestID == loadID, currentFolderURL == folderURL,
+                   selectedURLs == [imageURL], editingMetadata == edited {
+                    self.saveError = error.localizedDescription
+                }
             }
             self.isSaving = false
         }
@@ -3395,14 +3422,19 @@ final class MetadataViewModel {
         folderProcessProgress = "0/?"
         saveError = nil
 
+        let loadID = metadataLoadRequestID
+        let urls = selectedURLs
         batchProcessTask?.cancel()
         batchProcessTask = Task {
             defer {
-                self.isProcessingFolder = false
-                self.folderProcessProgress = ""
+                if !Task.isCancelled {
+                    self.isProcessingFolder = false
+                    self.folderProcessProgress = ""
+                }
             }
 
             let sidecars = await sidecarService.loadAllSidecars(in: folderURL)
+            guard !Task.isCancelled else { return }
             let pendingSidecars = sidecars.filter { $0.value.pendingChanges }
 
             var processed = 0
@@ -3415,6 +3447,7 @@ final class MetadataViewModel {
             let imagesByURL = Dictionary(images.map { ($0.url, $0) }, uniquingKeysWith: { _, last in last })
 
             for (imageURL, sidecar) in pendingSidecars {
+                guard !Task.isCancelled else { return }
                 if skipC2PA {
                     if let image = imagesByURL[imageURL], image.hasC2PA {
                         skippedCount += 1
@@ -3450,24 +3483,32 @@ final class MetadataViewModel {
                     : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited))
 
                 do {
+                    let cleanup = try await sidecarService.captureWriteCleanupSnapshot(
+                        for: imageURL, in: folderURL, expected: sidecar
+                    )
                     try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
-                    do {
-                        try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
-                    } catch {
-                        logger.warning("Failed to delete sidecar for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+                    guard try await sidecarService.deleteSidecarAfterWriteSerialized(cleanup) else {
+                        throw CocoaError(.fileWriteFileExists, userInfo: [
+                            NSLocalizedDescriptionKey: "Metadata was written, but newer pending sidecar changes were retained."
+                        ])
                     }
                     writtenCount += 1
+                } catch is CancellationError {
+                    return
                 } catch {
                     failedCount += 1
                     logger.warning("Failed to write metadata for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                 }
 
+                guard !Task.isCancelled else { return }
                 processed += 1
                 self.folderProcessProgress = "\(processed)/\(total)"
             }
 
             let remainingPending = await sidecarService.imagesWithPendingChanges(in: folderURL)
-            self.selectedHavePendingSidecars = !remainingPending.isEmpty
+            guard !Task.isCancelled, currentFolderURL == folderURL,
+                  metadataLoadRequestID == loadID, selectedURLs == urls else { return }
+            self.selectedHavePendingSidecars = !remainingPending.isDisjoint(with: urls)
             if failedCount > 0 || skippedCount > 0 {
                 self.saveError = "Wrote \(writtenCount), skipped \(skippedCount), failed \(failedCount)."
             }
@@ -3655,21 +3696,67 @@ final class MetadataViewModel {
         return discardTask
     }
 
-    func discardAllPendingInFolder() {
-        guard let folderURL = currentFolderURL else { return }
-
-        try? sidecarService.deleteAllSidecars(in: folderURL)
-
-        // Reset current editing state
-        if let original = originalImageMetadata {
-            editingMetadata = original
-            previousEditingMetadata = original
-        } else {
-            editingMetadata = IPTCMetadata()
+    @discardableResult
+    func discardAllPendingInFolder() -> Task<Void, Never>? {
+        guard let folderURL = currentFolderURL else { return nil }
+        let urls = selectedURLs
+        let original = originalImageMetadata
+        let edited = editingMetadata
+        let fieldMutations = batchFieldMutations
+        let locationsMutation = batchLocationsShownMutation
+        let supplierMutation = batchImageSupplierMutation
+        let precedingWrite = writeTask
+        let loadID = metadataLoadRequestID
+        let requestID = UUID()
+        discardRequestID = requestID
+        discardTask?.cancel()
+        saveError = nil
+        discardTask = Task {
+            await precedingWrite?.value
+            do {
+                try Task.checkCancellation()
+                try await discardFolderSidecars(folderURL)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard discardRequestID == requestID,
+                      currentFolderURL == folderURL, selectedURLs == urls,
+                      metadataLoadRequestID == loadID,
+                      editingMetadata == edited,
+                      batchFieldMutations == fieldMutations,
+                      batchLocationsShownMutation == locationsMutation,
+                      batchImageSupplierMutation == supplierMutation else { return }
+                saveError = "Failed to discard folder metadata sidecars: \(error.localizedDescription)"
+                return
+            }
+            guard discardRequestID == requestID,
+                  metadataLoadRequestID == loadID,
+                  currentFolderURL == folderURL, selectedURLs == urls,
+                  editingMetadata == edited,
+                  batchFieldMutations == fieldMutations,
+                  batchLocationsShownMutation == locationsMutation,
+                  batchImageSupplierMutation == supplierMutation else { return }
+            if urls.count == 1, let original {
+                editingMetadata = original
+                previousEditingMetadata = original
+            } else {
+                editingMetadata = IPTCMetadata()
+                previousEditingMetadata = nil
+                batchCommonMetadata = nil
+                batchDifferingFields = []
+                batchPartialKeywords = []
+                batchPartialPersonShown = []
+                batchListSelectionSummary = .empty
+                batchFieldMutations = [:]
+                batchLocationsShownMutation = .untouched
+                batchImageSupplierMutation = .untouched
+                batchMetadataByURL = [:]
+            }
+            hasChanges = false
+            selectedHavePendingSidecars = false
+            sidecarHistory = []
         }
-        hasChanges = false
-        selectedHavePendingSidecars = false
-        sidecarHistory = []
+        return discardTask
     }
 
     func clearHistory() {
@@ -3689,11 +3776,14 @@ final class MetadataViewModel {
         writeTask?.cancel()
         writeTask = Task {
             do {
-                _ = try await sidecarService.saveSidecarReplacingHistorySerialized(
+                let installed = try await sidecarService.saveSidecarReplacingHistorySerialized(
                     sidecar,
                     for: imageURL,
                     in: folderURL
                 )
+                if selectedURLs == [imageURL], currentFolderURL == folderURL {
+                    cleanupBaseline = (imageURL, folderURL, installed)
+                }
             } catch {
                 saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
             }
@@ -3725,6 +3815,7 @@ final class MetadataViewModel {
                         for: imageURL,
                         in: folderURL
                     )
+                    cleanupBaseline = (imageURL, folderURL, installed)
                     sidecarHistory = installed.history
                 } catch {
                     saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
@@ -3776,6 +3867,7 @@ final class MetadataViewModel {
                         for: imageURL,
                         in: folderURL
                     )
+                    cleanupBaseline = (imageURL, folderURL, installed)
                     sidecarHistory = installed.history
                 } catch {
                     saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"

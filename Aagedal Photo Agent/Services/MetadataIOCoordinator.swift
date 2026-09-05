@@ -21,6 +21,7 @@ actor MetadataIOCoordinator {
     /// and cancellation are funneled to the caller via the continuation, never out of the chain
     /// itself — so a failing op never breaks serialization for later ops on the same key.
     private var tails: [String: Task<Void, Never>] = [:]
+    private var folderTails: [String: Task<Void, Never>] = [:]
 
     /// Run `body` with exclusive access to `key`. Ops with the same key run one at a time in the
     /// order they call `withLock`; ops with different keys run concurrently. `body`'s result,
@@ -30,6 +31,7 @@ actor MetadataIOCoordinator {
         _ body: @Sendable @escaping () async throws -> T
     ) async rethrows -> T {
         let previous = tails[key]
+        let folderBarrier = folderTails[Self.folderKey(forPhotoKey: key)]
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
@@ -37,6 +39,7 @@ actor MetadataIOCoordinator {
                     // Wait for the previous op on this key. Its result/error is irrelevant here;
                     // we only need it to have finished touching the file.
                     await previous?.value
+                    await folderBarrier?.value
                     do {
                         continuation.resume(returning: try await body())
                     } catch {
@@ -59,6 +62,43 @@ actor MetadataIOCoordinator {
             // the lock). Wrapping in `withTaskCancellationHandler` (which is `rethrows`) also lets
             // this function stay `rethrows`, so non-throwing call sites need no `try`.
         }
+    }
+
+    /// A folder barrier waits for all admitted photo operations in that folder. Later
+    /// photo operations wait for this barrier, preserving directory-wide delete ownership.
+    /// Like photo locks, admitted barriers run to completion despite caller cancellation.
+    func withFolderLock<T: Sendable>(
+        _ folderKey: String,
+        _ body: @Sendable @escaping () async throws -> T
+    ) async rethrows -> T {
+        let previous = tails.filter { Self.folderKey(forPhotoKey: $0.key) == folderKey }.map(\.value)
+        let previousBarrier = folderTails[folderKey]
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+                let op = Task {
+                    await previousBarrier?.value
+                    for task in previous { await task.value }
+                    do {
+                        continuation.resume(returning: try await body())
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+                folderTails[folderKey] = op
+                Task { [weak self] in
+                    await op.value
+                    await self?.releaseFolderIfTail(folderKey, op)
+                }
+            }
+        } onCancel: {}
+    }
+
+    private static func folderKey(forPhotoKey key: String) -> String {
+        URL(fileURLWithPath: key).deletingLastPathComponent().path
+    }
+
+    private func releaseFolderIfTail(_ key: String, _ op: Task<Void, Never>) {
+        if folderTails[key] == op { folderTails[key] = nil }
     }
 
     private func releaseIfTail(_ key: String, _ op: Task<Void, Never>) {

@@ -238,6 +238,58 @@ struct MetadataEditorReadServiceTests {
         #expect(probe.readURLs == [imageURL, imageURL])
     }
 
+    @Test("write cleanup uses persisted sidecar baseline despite editor source overlays")
+    @MainActor
+    func writeCleanupUsesPersistedBaseline() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("EditorCleanup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let imageURL = folder.appendingPathComponent("draft.jpg")
+        let pending = IPTCMetadata(title: "Pending title")
+        let service = MetadataSidecarService()
+        try service.saveSidecar(
+            MetadataSidecar(sourceFile: imageURL.lastPathComponent, pendingChanges: true, metadata: pending),
+            for: imageURL, in: folder
+        )
+        let persisted = try #require(service.loadSidecar(for: imageURL, in: folder))
+        var xmp = IPTCMetadata(title: "Reference title")
+        var cameraRaw = CameraRawSettings()
+        cameraRaw.exposure2012 = 0.5
+        xmp.cameraRaw = cameraRaw
+        let reference = xmp
+        let readBoundary = MetadataEditorReadService(access: .init(read: { url, _, _, _ in
+            MetadataEditorSourceFacts(
+                imageURL: url, xmpMetadata: reference,
+                appSidecar: persisted, reconciliationVerdict: nil
+            )
+        }))
+        let model = MetadataViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: MetadataCleanupSuccessfulWriter(),
+            editorReadService: readBoundary
+        )
+        model.loadMetadata(for: [ImageFile(url: imageURL)], folderURL: folder)
+        let loadDeadline = ContinuousClock.now + .seconds(5)
+        while model.isLoading, ContinuousClock.now < loadDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.isLoading)
+        #expect(model.editingMetadata.title == "Pending title")
+        #expect(model.editingMetadata.cameraRaw?.exposure2012 == 0.5)
+        #expect(model.editingMetadata.cameraRaw != persisted.metadata.cameraRaw)
+
+        model.writeMetadataAndClearSidecar()
+        let writeDeadline = ContinuousClock.now + .seconds(5)
+        while model.isSaving, ContinuousClock.now < writeDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.isSaving)
+        #expect(model.saveError == nil)
+        #expect(!model.hasChanges)
+        #expect(service.loadSidecar(for: imageURL, in: folder) == nil)
+    }
+
     @Test("failed selected discard retains the draft and history")
     @MainActor
     func failedDiscardRetainsEditor() async throws {
@@ -319,8 +371,8 @@ struct MetadataEditorReadServiceTests {
         #expect(model.editingMetadata.keywords == ["fresh"])
     }
 
-    @Test("cancelling admitted selected discard allows deletion to finish")
-    func admittedDiscardCancellation() async throws {
+    @Test("cancelling admitted selected or folder discard allows deletion to finish", arguments: [false, true])
+    func admittedDiscardCancellation(folderWide: Bool) async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -337,8 +389,14 @@ struct MetadataEditorReadServiceTests {
         let gate = MetadataDiscardAdmissionGate()
         defer { gate.release() }
         let task = Task {
-            try await service.deleteSidecarSerialized(for: imageURL, in: folder) {
-                gate.blockAfterAdmission()
+            if folderWide {
+                try await service.deleteAllSidecarsSerialized(in: folder) {
+                    gate.blockAfterAdmission()
+                }
+            } else {
+                try await service.deleteSidecarSerialized(for: imageURL, in: folder) {
+                    gate.blockAfterAdmission()
+                }
             }
         }
         let deadline = ContinuousClock.now + .seconds(5)
@@ -352,14 +410,137 @@ struct MetadataEditorReadServiceTests {
         #expect(service.loadSidecar(for: imageURL, in: folder) == nil)
     }
 
+    @Test("folder discard preserves a newer draft, folder, or batch intent", arguments: ["draft", "folder", "batch intent"])
+    @MainActor
+    func staleFolderDiscard(change: String) async throws {
+        let gate = MetadataDiscardGate()
+        let model = makeDiscardModel(folderDiscard: { _ in await gate.enter() }, discard: { _, _ in })
+        if change == "batch intent" {
+            model.selectedCount = 2
+            model.selectedURLs.append(URL(fileURLWithPath: "/virtual/second.jpg"))
+            model.batchCommonMetadata = model.editingMetadata
+        }
+        let task = try #require(model.discardAllPendingInFolder())
+        await gate.waitUntilStarted()
+        if change == "draft" {
+            model.editingMetadata.title = "New draft"
+        } else if change == "folder" {
+            model.currentFolderURL = URL(fileURLWithPath: "/other")
+        } else {
+            try model.setBatchMutation(.clear, for: .keywords)
+        }
+        let draft = model.editingMetadata
+        await gate.release()
+        await task.value
+        #expect(model.editingMetadata == draft)
+        #expect(model.hasChanges)
+        #expect(!model.sidecarHistory.isEmpty)
+    }
+
+    @Test("folder discard failure retains editor; success clears batch intent")
+    @MainActor
+    func folderDiscardResult() async throws {
+        let failed = makeDiscardModel(folderDiscard: { _ in
+            throw CocoaError(.fileWriteNoPermission)
+        }, discard: { _, _ in })
+        await failed.discardAllPendingInFolder()?.value
+        #expect(failed.editingMetadata.title == "Draft")
+        #expect(failed.hasChanges)
+        #expect(failed.saveError != nil)
+
+        let model = makeDiscardModel(folderDiscard: { _ in }, discard: { _, _ in })
+        model.selectedURLs.append(URL(fileURLWithPath: "/virtual/second.jpg"))
+        model.selectedCount = 2
+        model.batchCommonMetadata = model.editingMetadata
+        try model.setBatchMutation(.append(["old"]), for: .keywords)
+        try model.setBatchImageSupplierMutation(.clear)
+        await model.discardAllPendingInFolder()?.value
+        #expect(model.editingMetadata == IPTCMetadata())
+        #expect(model.batchCommonMetadata == nil)
+        #expect(model.batchFieldMutations.isEmpty)
+        #expect(model.batchImageSupplierMutation == .untouched)
+        #expect(!model.hasChanges)
+        #expect(model.sidecarHistory.isEmpty)
+    }
+
+    @Test("folder barriers serialize photo operations and later barriers while siblings proceed")
+    func folderBarrierOrdering() async throws {
+        let coordinator = MetadataIOCoordinator()
+        let gate = MetadataDiscardGate()
+        let events = FolderDiscardEvents()
+        let barrier = Task {
+            await coordinator.withFolderLock("/virtual") {
+                await events.append("folder-start")
+                await gate.enter()
+                await events.append("folder-end")
+            }
+        }
+        await gate.waitUntilStarted()
+        let photo = Task {
+            await coordinator.withLock("/virtual/image") { await events.append("photo") }
+        }
+        let nextBarrier = Task {
+            await coordinator.withFolderLock("/virtual") { await events.append("next-folder") }
+        }
+        await coordinator.withLock("/virtual-sibling/image") { await events.append("sibling") }
+        #expect(await events.values == ["folder-start", "sibling"])
+        await gate.release()
+        await barrier.value
+        await photo.value
+        await nextBarrier.value
+        let result = await events.values
+        #expect(result.firstIndex(of: "folder-end")! < result.firstIndex(of: "photo")!)
+        #expect(result.firstIndex(of: "folder-end")! < result.firstIndex(of: "next-folder")!)
+    }
+
+    @Test("folder discard waits for admitted photo writes and removes directory off main")
+    @MainActor
+    func folderDiscardService() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let directory = folder.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let gate = MetadataDiscardGate()
+        let imageURL = folder.appendingPathComponent("image.jpg")
+        let write = Task {
+            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+                await gate.enter()
+                try Data("saved".utf8).write(to: directory.appendingPathComponent("image.jpg.meta.json"))
+            }
+        }
+        await gate.waitUntilStarted()
+        let deletion = Task {
+            try await MetadataSidecarService().deleteAllSidecarsSerialized(in: folder) {
+                #expect(!Thread.isMainThread)
+            }
+        }
+        await gate.release()
+        try await write.value
+        try await deletion.value
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await MetadataSidecarService().deleteAllSidecarsSerialized(in: folder)
+        }
+        do {
+            try await cancelled.value
+            Issue.record("Pre-cancelled folder deletion should fail")
+        } catch is CancellationError {} catch { throw error }
+        #expect(FileManager.default.fileExists(atPath: directory.path))
+    }
+
     @MainActor
     private func makeDiscardModel(
+        folderDiscard: @escaping @Sendable (URL) async throws -> Void = { _ in },
         discard: @escaping @Sendable (URL, URL) async throws -> Void
     ) -> MetadataViewModel {
         let model = MetadataViewModel(
             readService: SwiftExifReadService(),
             writeEngine: SwiftExifWriteEngine(),
-            discardSidecar: discard
+            discardSidecar: discard,
+            discardFolderSidecars: folderDiscard
         )
         model.currentFolderURL = URL(fileURLWithPath: "/virtual")
         model.selectedURLs = [URL(fileURLWithPath: "/virtual/draft.jpg")]
@@ -531,4 +712,21 @@ private nonisolated final class MetadataDiscardAdmissionGate: @unchecked Sendabl
     }
 
     func release() { semaphore.signal() }
+}
+
+private actor FolderDiscardEvents {
+    private(set) var values: [String] = []
+    func append(_ value: String) { values.append(value) }
+}
+
+/// Successful image writer isolates the editor's post-write sidecar transaction.
+private nonisolated final class MetadataCleanupSuccessfulWriter: MetadataWriteEngine {
+    func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {}
+    func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {}
+    func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {}
+    func writeRating(_ rating: StarRating, to urls: [URL]) async throws {}
+    func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {}
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws {}
+    func stripIPTCAndXMP(from urls: [URL]) async throws {}
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {}
 }
