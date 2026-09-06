@@ -512,11 +512,12 @@ private struct TeamEditorView: View {
         Task {
             var thumbnails: [UUID: NSImage] = [:]
             for personID in Set(team.roster.compactMap(\.knownPersonID)) {
-                try Task.checkCancellation()
+                guard !Task.isCancelled else { return }
                 if let image = await KnownPeopleService.shared.loadThumbnail(for: personID) {
                     thumbnails[personID] = image
                 }
             }
+            guard !Task.isCancelled else { return }
             let pdf = RosterPDFExporter.makePDF(for: team, exportedOn: Date()) { id in
                 thumbnails[id]
             }

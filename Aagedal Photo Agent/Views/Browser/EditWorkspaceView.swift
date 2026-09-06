@@ -1508,7 +1508,9 @@ struct EditWorkspaceView: View {
                     }
                     return nil
                 }
-                workspaceInput.installScrollMonitor(monitor) { NSEvent.removeMonitor($0) }
+                if let monitor {
+                    workspaceInput.installScrollMonitor(monitor) { NSEvent.removeMonitor($0) }
+                }
             }
             .onDisappear {
                 workspaceInput.removeScrollMonitor()
@@ -2707,7 +2709,9 @@ struct EditWorkspaceView: View {
         let keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [self] event in
             handleKeyEvent(event)
         }
-        workspaceInput.installKeyMonitor(keyMonitor) { NSEvent.removeMonitor($0) }
+        if let keyMonitor {
+            workspaceInput.installKeyMonitor(keyMonitor) { NSEvent.removeMonitor($0) }
+        }
         // DaVinci Resolve-style grade copy: middle-click the hovered filmstrip thumbnail to
         // apply its develop settings to the current selection without changing that selection.
         let middleMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [self] event in
@@ -2719,7 +2723,9 @@ struct EditWorkspaceView: View {
             applyFilmstripSettingsFromImageToCurrentSelection(source)
             return nil
         }
-        workspaceInput.installMiddleMouseMonitor(middleMouseMonitor) { NSEvent.removeMonitor($0) }
+        if let middleMouseMonitor {
+            workspaceInput.installMiddleMouseMonitor(middleMouseMonitor) { NSEvent.removeMonitor($0) }
+        }
     }
 
     private func ensureSingleSelection() {

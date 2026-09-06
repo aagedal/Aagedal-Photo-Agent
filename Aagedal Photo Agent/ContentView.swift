@@ -221,7 +221,7 @@ struct ContentView: View {
             activityHistory: history
         )
         // Wire face deletion onto every pane (primary now, the split pane when created).
-        let configurePane: (BrowserViewModel) -> Void = { [weak faceRecognition] vm in
+        let configurePane: (BrowserViewModel) -> Void = { [weak faceRecognition, weak commandRouter] vm in
             vm.onImagesDeleted = { urls in faceRecognition?.deleteFaces(forImageURLs: urls) }
             vm.onDidOpenRootFolder = { [weak commandRouter] url in
                 commandRouter?.send(.registerOpenFolderForSidebar(url))
