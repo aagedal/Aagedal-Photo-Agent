@@ -408,8 +408,24 @@ struct AnalysisWorkspaceView: View {
         .padding(.vertical, 10)
     }
 
-    @ViewBuilder
+    // Keep the rail outside loading and tab branches so navigation retains its scroll view.
     private var workspaceBody: some View {
+        VStack(spacing: 0) {
+            if model.workspaceMode == .osint {
+                osintMarkupToolbar
+                    .disabled(model.loadState != .ready)
+                Divider()
+            }
+            HStack(spacing: 0) {
+                imageRail
+                Divider()
+                workspaceDetail
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var workspaceDetail: some View {
         switch model.loadState {
         case .idle, .loading:
             VStack(spacing: 12) {
@@ -758,34 +774,32 @@ struct AnalysisWorkspaceView: View {
         return cleaned.isEmpty ? "Imported Photo Intelligence Project" : cleaned
     }
 
+    private var imageRail: some View {
+        AnalysisImageRail(
+            images: folderImages,
+            selectedURL: model.sourceURL,
+            thumbnailService: thumbnailService,
+            copiedAnnotationCount: copiedPhotoAnnotations.count,
+            copiedAnnotationSourceName: copiedAnnotationSourceName,
+            annotationCount: { model.photoAnnotations(for: $0).count },
+            canPasteAnnotations: { image in
+                image.url != model.sourceURL || !model.sourceChanged
+            },
+            onSelect: onSelectImage,
+            onCopyAnnotations: copyAnnotations,
+            onPasteAnnotations: pasteAnnotations
+        )
+        .frame(width: 76)
+    }
+
     private var pixelAnalysisBody: some View {
-        HStack(spacing: 0) {
-            AnalysisImageRail(
-                images: folderImages,
-                selectedURL: model.sourceURL,
-                thumbnailService: thumbnailService,
-                copiedAnnotationCount: copiedPhotoAnnotations.count,
-                copiedAnnotationSourceName: copiedAnnotationSourceName,
-                annotationCount: { model.photoAnnotations(for: $0).count },
-                canPasteAnnotations: { image in
-                    image.url != model.sourceURL || !model.sourceChanged
-                },
-                onSelect: onSelectImage,
-                onCopyAnnotations: copyAnnotations,
-                onPasteAnnotations: pasteAnnotations
-            )
-            .frame(width: 76)
+        HSplitView {
+            sourcePreview(showMarkupToolbar: true)
+                .frame(minWidth: 520, minHeight: 360)
+                .layoutPriority(1)
 
-            Divider()
-
-            HSplitView {
-                sourcePreview(showMarkupToolbar: true)
-                    .frame(minWidth: 520, minHeight: 360)
-                    .layoutPriority(1)
-
-                pixelAnalysisInspector
-                    .frame(minWidth: 350, idealWidth: 410, maxWidth: .infinity)
-            }
+            pixelAnalysisInspector
+                .frame(minWidth: 350, idealWidth: 410, maxWidth: .infinity)
         }
     }
 
@@ -826,101 +840,76 @@ struct AnalysisWorkspaceView: View {
     }
 
     private var osintBody: some View {
-        VStack(spacing: 0) {
-            osintMarkupToolbar
-            Divider()
+        HSplitView {
+            VSplitView {
+                sourcePreview(showMarkupToolbar: false)
+                    .frame(minHeight: 260)
 
-            HStack(spacing: 0) {
-                AnalysisImageRail(
-                    images: folderImages,
-                    selectedURL: model.sourceURL,
-                    thumbnailService: thumbnailService,
-                    copiedAnnotationCount: copiedPhotoAnnotations.count,
-                    copiedAnnotationSourceName: copiedAnnotationSourceName,
-                    annotationCount: { model.photoAnnotations(for: $0).count },
-                    canPasteAnnotations: { image in
-                        image.url != model.sourceURL || !model.sourceChanged
-                    },
-                    onSelect: onSelectImage,
-                    onCopyAnnotations: copyAnnotations,
-                    onPasteAnnotations: pasteAnnotations
+                AnalysisTimelineView(
+                    evidence: model.timestampEvidence,
+                    observations: model.observations,
+                    conflicts: model.timestampConflicts,
+                    isReadOnly: model.sourceChanged,
+                    onAddTimed: { isTimestampEditorPresented = true },
+                    onAddNote: { isObservationEditorPresented = true },
+                    onDeleteTimestamp: model.removeTimestampEvidence,
+                    onDeleteObservation: model.removeObservation
                 )
-                .frame(width: 76)
-
-                Divider()
-
-                HSplitView {
-                    VSplitView {
-                        sourcePreview(showMarkupToolbar: false)
-                            .frame(minHeight: 260)
-
-                        AnalysisTimelineView(
-                            evidence: model.timestampEvidence,
-                            observations: model.observations,
-                            conflicts: model.timestampConflicts,
-                            isReadOnly: model.sourceChanged,
-                            onAddTimed: { isTimestampEditorPresented = true },
-                            onAddNote: { isObservationEditorPresented = true },
-                            onDeleteTimestamp: model.removeTimestampEvidence,
-                            onDeleteObservation: model.removeObservation
-                        )
-                        .frame(minHeight: 170, idealHeight: 280)
-                    }
-                    .frame(minWidth: 400, idealWidth: 620, maxWidth: 760)
-
-                    VSplitView {
-                        AnalysisMapEvidenceView(
-                            mapState: model.mapState,
-                            embeddedLocation: model.embeddedLocation,
-                            photoAnnotationToLocate: selectedPhotoAnnotation,
-                            currentSourceURL: model.sourceURL,
-                            folderAnnotations: model.workingFolderMapAnnotations,
-                            globalAnnotations: model.globalMapAnnotations,
-                            isReadOnly: model.sourceChanged,
-                            onSetStyle: model.setMapStyle,
-                            onSetTrafficVisible: model.setMapTrafficVisible,
-                            onSet3DContentVisible: model.setMap3DContentVisible,
-                            onSetViewport: model.setMapViewport,
-                            onSetInvestigationLocation: model.setInvestigationLocation,
-                            timestampEvidence: model.timestampEvidence,
-                            onSetSolarOverlay: model.setSolarOverlay,
-                            onClearSolarOverlay: model.clearSolarOverlay,
-                            onSetAnnotation: model.setGlobalMapAnnotation,
-                            onSetLocalAnnotation: model.setMapAnnotation,
-                            onDeleteAnnotation: model.removeGlobalMapAnnotation,
-                            annotationTool: $mapAnnotationTool,
-                            sharedAnnotationStyle: $annotationStyle,
-                            selectedAnnotationID: $selectedMapAnnotationID,
-                            primaryActionRequestID: mapPrimaryActionRequestID,
-                            finishShapeRequestID: mapFinishShapeRequestID,
-                            cancelDraftRequestID: mapCancelDraftRequestID,
-                            onDraftCountChanged: { mapDraftCoordinateCount = $0 }
-                        )
-                        .frame(minWidth: 520, minHeight: 480)
-
-                        AnalysisMapLayersView(
-                            globalAnnotations: model.globalMapAnnotations,
-                            photoAnnotations: model.annotations,
-                            folderAnnotations: model.workingFolderMapAnnotations,
-                            currentCaseID: model.analysisCase?.id,
-                            selectedPhotoAnnotationID: $selectedAnnotationID,
-                            selectedAnnotationID: $selectedMapAnnotationID,
-                            isReadOnly: model.sourceChanged,
-                            onSetPhotoVisible: model.setPhotoAnnotationVisible,
-                            onSetAllPhotosVisible: model.setAllPhotoAnnotationsVisible,
-                            onEditPhotoAnnotation: presentPhotoAnnotationEditor,
-                            onDeletePhotoAnnotation: model.removeAnnotation,
-                            onSetGlobalVisible: model.setGlobalMapAnnotationVisible,
-                            onSetAllGlobalsVisible: model.setAllGlobalMapAnnotationsVisible,
-                            onEditGlobalAnnotation: presentMapAnnotationEditor,
-                            onDeleteGlobalAnnotation: model.removeGlobalMapAnnotation,
-                            onSetGlobalPhotoAnnotationLink: model.setGlobalMapAnnotationPhotoLink
-                        )
-                        .frame(minHeight: 150, idealHeight: 210, maxHeight: 280)
-                    }
-                    .frame(minWidth: 520, maxWidth: .infinity)
-                }
+                .frame(minHeight: 170, idealHeight: 280)
             }
+            .frame(minWidth: 400, idealWidth: 620, maxWidth: 760)
+
+            VSplitView {
+                AnalysisMapEvidenceView(
+                    mapState: model.mapState,
+                    embeddedLocation: model.embeddedLocation,
+                    photoAnnotationToLocate: selectedPhotoAnnotation,
+                    currentSourceURL: model.sourceURL,
+                    folderAnnotations: model.workingFolderMapAnnotations,
+                    globalAnnotations: model.globalMapAnnotations,
+                    isReadOnly: model.sourceChanged,
+                    onSetStyle: model.setMapStyle,
+                    onSetTrafficVisible: model.setMapTrafficVisible,
+                    onSet3DContentVisible: model.setMap3DContentVisible,
+                    onSetViewport: model.setMapViewport,
+                    onSetInvestigationLocation: model.setInvestigationLocation,
+                    timestampEvidence: model.timestampEvidence,
+                    onSetSolarOverlay: model.setSolarOverlay,
+                    onClearSolarOverlay: model.clearSolarOverlay,
+                    onSetAnnotation: model.setGlobalMapAnnotation,
+                    onSetLocalAnnotation: model.setMapAnnotation,
+                    onDeleteAnnotation: model.removeGlobalMapAnnotation,
+                    annotationTool: $mapAnnotationTool,
+                    sharedAnnotationStyle: $annotationStyle,
+                    selectedAnnotationID: $selectedMapAnnotationID,
+                    primaryActionRequestID: mapPrimaryActionRequestID,
+                    finishShapeRequestID: mapFinishShapeRequestID,
+                    cancelDraftRequestID: mapCancelDraftRequestID,
+                    onDraftCountChanged: { mapDraftCoordinateCount = $0 }
+                )
+                .frame(minWidth: 520, minHeight: 480)
+
+                AnalysisMapLayersView(
+                    globalAnnotations: model.globalMapAnnotations,
+                    photoAnnotations: model.annotations,
+                    folderAnnotations: model.workingFolderMapAnnotations,
+                    currentCaseID: model.analysisCase?.id,
+                    selectedPhotoAnnotationID: $selectedAnnotationID,
+                    selectedAnnotationID: $selectedMapAnnotationID,
+                    isReadOnly: model.sourceChanged,
+                    onSetPhotoVisible: model.setPhotoAnnotationVisible,
+                    onSetAllPhotosVisible: model.setAllPhotoAnnotationsVisible,
+                    onEditPhotoAnnotation: presentPhotoAnnotationEditor,
+                    onDeletePhotoAnnotation: model.removeAnnotation,
+                    onSetGlobalVisible: model.setGlobalMapAnnotationVisible,
+                    onSetAllGlobalsVisible: model.setAllGlobalMapAnnotationsVisible,
+                    onEditGlobalAnnotation: presentMapAnnotationEditor,
+                    onDeleteGlobalAnnotation: model.removeGlobalMapAnnotation,
+                    onSetGlobalPhotoAnnotationLink: model.setGlobalMapAnnotationPhotoLink
+                )
+                .frame(minHeight: 150, idealHeight: 210, maxHeight: 280)
+            }
+            .frame(minWidth: 520, maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: photoAnnotationTool) {
@@ -2554,53 +2543,68 @@ private struct AnalysisImageRail: View {
                 .padding(.top, 8)
                 .help("Photos in the working folder")
 
-            ScrollView {
-                LazyVStack(spacing: 7) {
-                    ForEach(images) { image in
-                        Button {
-                            guard image.url != selectedURL else { return }
-                            onSelect(image)
-                        } label: {
-                            AnalysisRailThumbnail(
-                                image: image,
-                                isSelected: image.url == selectedURL,
-                                thumbnailService: thumbnailService
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 7) {
+                        ForEach(images) { image in
+                            Button {
+                                guard image.url != selectedURL else { return }
+                                onSelect(image)
+                            } label: {
+                                AnalysisRailThumbnail(
+                                    image: image,
+                                    isSelected: image.url == selectedURL,
+                                    thumbnailService: thumbnailService
+                                )
+                            }
+                            .id(image.url)
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                let count = annotationCount(image)
+                                Button("Copy All Photo Annotations", systemImage: "doc.on.doc") {
+                                    onCopyAnnotations(image)
+                                }
+                                .disabled(count == 0)
+
+                                Button(
+                                    copiedAnnotationCount == 1
+                                        ? "Paste 1 Photo Annotation"
+                                        : "Paste \(copiedAnnotationCount) Photo Annotations",
+                                    systemImage: "doc.on.clipboard"
+                                ) {
+                                    onPasteAnnotations(image)
+                                }
+                                .disabled(
+                                    copiedAnnotationCount == 0 || !canPasteAnnotations(image)
+                                )
+
+                                if let copiedAnnotationSourceName, copiedAnnotationCount > 0 {
+                                    Text("Copied from \(copiedAnnotationSourceName)")
+                                }
+                            }
+                            .help(image.filename)
+                            .accessibilityLabel(
+                                image.url == selectedURL
+                                    ? "\(image.filename), current photo"
+                                    : "Open \(image.filename) in analysis"
                             )
                         }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            let count = annotationCount(image)
-                            Button("Copy All Photo Annotations", systemImage: "doc.on.doc") {
-                                onCopyAnnotations(image)
-                            }
-                            .disabled(count == 0)
-
-                            Button(
-                                copiedAnnotationCount == 1
-                                    ? "Paste 1 Photo Annotation"
-                                    : "Paste \(copiedAnnotationCount) Photo Annotations",
-                                systemImage: "doc.on.clipboard"
-                            ) {
-                                onPasteAnnotations(image)
-                            }
-                            .disabled(
-                                copiedAnnotationCount == 0 || !canPasteAnnotations(image)
-                            )
-
-                            if let copiedAnnotationSourceName, copiedAnnotationCount > 0 {
-                                Text("Copied from \(copiedAnnotationSourceName)")
-                            }
-                        }
-                        .help(image.filename)
-                        .accessibilityLabel(
-                            image.url == selectedURL
-                                ? "\(image.filename), current photo"
-                                : "Open \(image.filename) in analysis"
-                        )
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
+                }
+                .onChange(of: selectedURL) { _, target in
+                    guard let target else { return }
+                    // With no anchor, an already visible thumbnail stays in place.
+                    proxy.scrollTo(target)
+                }
+                .onAppear {
+                    // Wait for the lazy stack's first layout before revealing an initial selection.
+                    DispatchQueue.main.async {
+                        guard let selectedURL else { return }
+                        proxy.scrollTo(selectedURL)
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.bottom, 8)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
