@@ -18,10 +18,13 @@ struct KeywordListEditor: View {
     @State private var searchText: String = ""
     @State private var selection: Set<String> = []
     @State private var feedback: String?
+    @State private var loadedDestinationURL: URL?
     @State private var loadTask: Task<Void, Never>?
     @State private var loadRequestID: UUID?
     @State private var persistenceTask: Task<Void, Never>?
     @State private var persistenceRequestID: UUID?
+    @State private var importTask: Task<Void, Never>?
+    @State private var importRequestID: UUID?
     @State private var exportTask: Task<Void, Never>?
     @State private var exportRequestID: UUID?
 
@@ -35,13 +38,25 @@ struct KeywordListEditor: View {
         return entries.indices.filter { entries[$0].lowercased().contains(needle) }
     }
 
+    private var canEdit: Bool { loadedDestinationURL != nil }
+
+    /// Keep body evaluation in memory; validate the route at every mutation boundary.
+    private func admitMutation() -> Bool {
+        guard let loadedDestinationURL else { return false }
+        guard loadedDestinationURL == KeywordListsStore.shared.url(for: storeKey) else {
+            loadEntries()
+            return false
+        }
+        return true
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            addRow
+            addRow.disabled(!canEdit)
             Divider()
-            list
+            list.disabled(!canEdit)
             Divider()
             footer
         }
@@ -50,6 +65,7 @@ struct KeywordListEditor: View {
             loadEntries()
         }
         .onDisappear {
+            loadedDestinationURL = nil
             loadRequestID = nil
             loadTask?.cancel()
             loadTask = nil
@@ -57,6 +73,9 @@ struct KeywordListEditor: View {
             // user's final mutation, but invalidating its request prevents stale UI publication.
             persistenceRequestID = nil
             persistenceTask = nil
+            importRequestID = nil
+            importTask?.cancel()
+            importTask = nil
             exportRequestID = nil
             exportTask?.cancel()
             exportTask = nil
@@ -119,6 +138,10 @@ struct KeywordListEditor: View {
             Button("Import from File…") {
                 importFromFile()
             }
+            .disabled(!canEdit)
+            if !canEdit, loadTask == nil {
+                Button("Retry Load", action: loadEntries)
+            }
             Button("Export to File…") {
                 exportToFile()
             }
@@ -145,6 +168,7 @@ struct KeywordListEditor: View {
     // MARK: - Actions
 
     private func loadEntries() {
+        loadedDestinationURL = nil
         loadTask?.cancel()
         let requestID = UUID()
         let sourceURL = KeywordListsStore.shared.url(for: storeKey)
@@ -156,13 +180,19 @@ struct KeywordListEditor: View {
                     requestID: requestID
                 )
                 guard loadRequestID == requestID, !Task.isCancelled else { return }
+                guard KeywordListsStore.shared.url(for: storeKey) == sourceURL else {
+                    loadEntries()
+                    return
+                }
                 loadTask = nil
                 loadRequestID = nil
                 switch result {
                 case .loaded(let snapshot):
                     entries = snapshot.entries
+                    loadedDestinationURL = sourceURL
                 case .missing:
                     entries = []
+                    loadedDestinationURL = sourceURL
                 case .cancelledBeforeAccess, .cancelledBeforeRead, .cancelledAfterRead:
                     break
                 }
@@ -176,6 +206,7 @@ struct KeywordListEditor: View {
     }
 
     private func addEntry() {
+        guard admitMutation() else { return }
         let trimmed = newEntry.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if !entries.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
@@ -186,6 +217,7 @@ struct KeywordListEditor: View {
     }
 
     private func remove(at index: Int) {
+        guard admitMutation() else { return }
         guard entries.indices.contains(index) else { return }
         entries.remove(at: index)
         persist()
@@ -195,6 +227,7 @@ struct KeywordListEditor: View {
     /// the visible subset. When filtered, the relative order of off-screen items
     /// is preserved (we splice the filtered subarray back into the same slots).
     private func move(from source: IndexSet, to destination: Int) {
+        guard admitMutation() else { return }
         let visible = filteredIndices
         guard !visible.isEmpty else { return }
         // Build a new array by reordering only the visible subset.
@@ -209,6 +242,7 @@ struct KeywordListEditor: View {
     /// Persists the current entries through the serialized filesystem owner. Called after every
     /// mutation so the editor saves instantly — there is no explicit Save step.
     private func persist() {
+        guard admitMutation() else { return }
         loadRequestID = nil
         loadTask?.cancel()
         loadTask = nil
@@ -232,6 +266,7 @@ struct KeywordListEditor: View {
                     // without reading the file again; only UI callbacks remain request-gated.
                     KeywordListsStore.shared.recordExternalWrite(
                         to: storeKey,
+                        destinationURL: commit.destinationURL,
                         entries: commit.entries
                     )
                     guard persistenceRequestID == requestID else { return }
@@ -254,6 +289,7 @@ struct KeywordListEditor: View {
     }
 
     private func importFromFile() {
+        guard admitMutation() else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -261,18 +297,41 @@ struct KeywordListEditor: View {
         panel.allowedContentTypes = [.plainText, .commaSeparatedText]
         panel.message = "Choose a list file (.txt or .csv)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let imported = try ApprovedListParser.parse(url)
-            var seen = Set(entries.map { $0.lowercased() })
-            var added = 0
-            for entry in imported where seen.insert(entry.lowercased()).inserted {
-                entries.append(entry)
-                added += 1
+        importTask?.cancel()
+        let requestID = UUID()
+        let destinationURL = KeywordListsStore.shared.url(for: storeKey)
+        importRequestID = requestID
+        feedback = "Importing \(url.lastPathComponent)…"
+        importTask = Task {
+            // Preserve the existing managed entries if the initial load is still in flight.
+            await loadTask?.value
+            do {
+                let snapshot = try await ApprovedListImportService.shared.loadEntries(
+                    from: url, requestID: requestID
+                )
+                guard importRequestID == snapshot.requestID, !Task.isCancelled else { return }
+                importTask = nil
+                importRequestID = nil
+                guard loadedDestinationURL == destinationURL,
+                      KeywordListsStore.shared.url(for: storeKey) == destinationURL else {
+                    feedback = "List storage changed. Import the file again."
+                    loadEntries()
+                    return
+                }
+                var seen = Set(entries.map { $0.lowercased() })
+                var added = 0
+                for entry in snapshot.entries where seen.insert(entry.lowercased()).inserted {
+                    entries.append(entry)
+                    added += 1
+                }
+                feedback = "Imported \(added) new \(added == 1 ? "entry" : "entries")"
+                if added > 0 { persist() }
+            } catch {
+                guard importRequestID == requestID, !Task.isCancelled else { return }
+                importTask = nil
+                importRequestID = nil
+                feedback = "Import failed: \(error.localizedDescription)"
             }
-            feedback = "Imported \(added) new \(added == 1 ? "entry" : "entries")"
-            if added > 0 { persist() }
-        } catch {
-            feedback = "Import failed: \(error.localizedDescription)"
         }
     }
 

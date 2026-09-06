@@ -1255,10 +1255,11 @@ final class SettingsViewModel {
                 let key = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey,
                 case .quick(let type) = key
             else { return }
+            let destinationURL = note.userInfo?[KeywordListsStore.changedDestinationURLUserInfo] as? URL
             let committedEntries = note.userInfo?[KeywordListsStore.changedEntriesUserInfo] as? [String]
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if let committedEntries {
+                if let committedEntries, destinationURL == KeywordListsStore.shared.url(for: key) {
                     self.installQuickListEntries(committedEntries, for: type)
                 } else {
                     // A no-payload notification may represent an iCloud route change. Re-resolve
@@ -1394,9 +1395,15 @@ final class SettingsViewModel {
     private func publishQuickListCommit(_ commit: QuickListMutationCommit, type: QuickListType) {
         KeywordListsStore.shared.recordExternalWrite(
             to: .quick(type),
+            destinationURL: commit.destinationURL,
             entries: commit.entries,
             sourceID: commit.requestID
         )
+        guard KeywordListsStore.shared.url(for: .quick(type)) == commit.destinationURL else {
+            quickListURLs.removeAll()
+            scheduleQuickListRefresh()
+            return
+        }
         installQuickListEntries(commit.entries, for: type)
     }
 

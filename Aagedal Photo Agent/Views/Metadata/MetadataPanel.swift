@@ -893,6 +893,7 @@ struct MetadataPanel: View {
             // request. A disappearing or superseded panel must not leave observers stale.
             KeywordListsStore.shared.recordExternalWrite(
                 to: .quick(type),
+                destinationURL: commit.destinationURL,
                 entries: commit.entries,
                 sourceID: commit.requestID
             )

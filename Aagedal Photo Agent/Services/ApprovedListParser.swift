@@ -122,6 +122,12 @@ nonisolated struct ApprovedListImportCommit: Equatable, Sendable {
     let cancellationRequestedAfterCommit: Bool
 }
 
+nonisolated struct ApprovedListSourceSnapshot: Equatable, Sendable {
+    let requestID: UUID
+    let sourceURL: URL
+    let entries: [String]
+}
+
 nonisolated enum ApprovedListImportResult: Equatable, Sendable {
     case committed(ApprovedListImportCommit)
     case cancelledBeforeAccess(requestID: UUID)
@@ -166,6 +172,34 @@ actor ApprovedListImportService {
 
     init(access: ApprovedListImportFileAccess = .system) {
         self.access = access
+    }
+
+    /// Reads a selected source without replacing the managed list. Editors merge this immutable
+    /// snapshot into their current entries, so edits made during the read are retained.
+    func loadEntries(from sourceURL: URL, requestID: UUID) throws -> ApprovedListSourceSnapshot {
+        try Task.checkCancellation()
+        let didStartAccessing = access.startAccessing(sourceURL)
+        defer { if didStartAccessing { access.stopAccessing(sourceURL) } }
+        try Task.checkCancellation()
+        let size = try access.fileSize(sourceURL)
+        guard size <= ApprovedListParser.maxFileSizeBytes else {
+            throw ApprovedListParserError.fileTooLarge(bytes: size, limit: ApprovedListParser.maxFileSizeBytes)
+        }
+        try Task.checkCancellation()
+        let data: Data
+        do {
+            data = try access.readData(sourceURL)
+        } catch {
+            throw ApprovedListParserError.readFailed(underlying: error)
+        }
+        try Task.checkCancellation()
+        // The source may have grown after the size probe.
+        guard data.count <= ApprovedListParser.maxFileSizeBytes else {
+            throw ApprovedListParserError.fileTooLarge(bytes: Int64(data.count), limit: ApprovedListParser.maxFileSizeBytes)
+        }
+        let entries = try ApprovedListParser.parse(data, csv: sourceURL.pathExtension.lowercased() == "csv")
+        try Task.checkCancellation()
+        return ApprovedListSourceSnapshot(requestID: requestID, sourceURL: sourceURL, entries: entries)
     }
 
     func importEntries(

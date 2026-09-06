@@ -930,3 +930,71 @@ struct KeywordListsReconciliationReadFailureTests {
         #expect(try String(contentsOf: destinationFile, encoding: .utf8) == "Berlin\nParis\nLondon\n")
     }
 }
+
+@Suite("Keyword-list durable write route publication")
+@MainActor
+struct KeywordListsStoreRoutePublicationTests {
+    @Test("An old-root commit invalidates the current route without publishing stale payload or owner identity")
+    func staleCommitInvalidatesActiveRoute() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let store = KeywordListsStore()
+            let key = KeywordListKey.approved(.keywords)
+            let owner = UUID()
+            var received = false
+            let token = NotificationCenter.default.addObserver(
+                forName: .keywordListChanged, object: store, queue: .main
+            ) { note in
+                let entries = note.userInfo?[KeywordListsStore.changedEntriesUserInfo] as? [String]
+                let text = note.userInfo?[KeywordListsStore.changedTextUserInfo] as? String
+                let sourceID = note.userInfo?[KeywordListsStore.changedSourceIDUserInfo] as? UUID
+                let route = note.userInfo?[KeywordListsStore.changedDestinationURLUserInfo] as? URL
+                MainActor.assumeIsolated {
+                    received = true
+                    #expect(entries == nil)
+                    #expect(text == nil)
+                    #expect(sourceID == nil)
+                    #expect(route == store.url(for: key))
+                }
+            }
+            defer { NotificationCenter.default.removeObserver(token) }
+            store.recordExternalWrite(
+                to: key,
+                destinationURL: root.appendingPathComponent("previous/keywords.txt"),
+                entries: ["Stale"], text: "Stale", sourceID: owner
+            )
+            #expect(received)
+            #expect(store.version == 1)
+        }
+    }
+
+    @Test("A current-root commit retains its payload and includes the route for deferred observers")
+    func currentCommitCarriesRoute() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let store = KeywordListsStore()
+            let key = KeywordListKey.quick(.keywords)
+            let destination = store.url(for: key)
+            let owner = UUID()
+            var received = false
+            let token = NotificationCenter.default.addObserver(
+                forName: .keywordListChanged, object: store, queue: .main
+            ) { note in
+                let entries = note.userInfo?[KeywordListsStore.changedEntriesUserInfo] as? [String]
+                let text = note.userInfo?[KeywordListsStore.changedTextUserInfo] as? String
+                let sourceID = note.userInfo?[KeywordListsStore.changedSourceIDUserInfo] as? UUID
+                let route = note.userInfo?[KeywordListsStore.changedDestinationURLUserInfo] as? URL
+                MainActor.assumeIsolated {
+                    received = true
+                    #expect(entries == ["Current"])
+                    #expect(text == nil)
+                    #expect(sourceID == owner)
+                    #expect(route == destination)
+                }
+            }
+            defer { NotificationCenter.default.removeObserver(token) }
+            store.recordExternalWrite(to: key, destinationURL: destination, entries: ["Current"], sourceID: owner)
+            #expect(received)
+        }
+    }
+}

@@ -83,26 +83,47 @@ actor AtomicJSONDocumentStore<Document: VersionedJSONDocument> {
     let documentURL: URL
     let backupURL: URL
 
-    init(documentURL: URL, backupURL: URL? = nil) {
+    /// Runs on this actor against the exact bytes being decoded or replaced. A compatibility
+    /// rejection is read-only evidence, never corruption eligible for backup recovery.
+    private let validateCompatibility: @Sendable (Data) throws -> Void
+
+    init(
+        documentURL: URL,
+        backupURL: URL? = nil,
+        validateCompatibility: @escaping @Sendable (Data) throws -> Void = { _ in }
+    ) {
         self.documentURL = documentURL
         self.backupURL = backupURL ?? documentURL.appendingPathExtension("backup")
+        self.validateCompatibility = validateCompatibility
     }
 
     func load() throws -> AtomicJSONDocumentLoad<Document> {
+        let data: Data
         do {
-            let data = try Data(contentsOf: documentURL)
+            data = try Data(contentsOf: documentURL)
+        } catch {
+            return try recoverBackup(primaryError: error)
+        }
+        try validateCompatibility(data)
+        do {
             return try decode(data, source: .primary)
         } catch {
-            let primaryError = error
-            do {
-                let backupData = try Data(contentsOf: backupURL)
-                return try decode(backupData, source: .backup)
-            } catch let backupError as CocoaError
-                where backupError.code == .fileReadNoSuchFile {
-                throw primaryError
-            } catch {
-                throw primaryError
-            }
+            return try recoverBackup(primaryError: error)
+        }
+    }
+
+    private func recoverBackup(primaryError: Error) throws -> AtomicJSONDocumentLoad<Document> {
+        let data: Data
+        do {
+            data = try Data(contentsOf: backupURL)
+        } catch {
+            throw primaryError
+        }
+        try validateCompatibility(data)
+        do {
+            return try decode(data, source: .backup)
+        } catch {
+            throw primaryError
         }
     }
 
@@ -125,16 +146,10 @@ actor AtomicJSONDocumentStore<Document: VersionedJSONDocument> {
             withIntermediateDirectories: true
         )
 
-        if fileManager.fileExists(atPath: documentURL.path) {
-            let existingData = try Data(contentsOf: documentURL)
-            if let existingSchema = try? Self.schemaVersion(in: existingData),
-               existingSchema > Document.currentSchemaVersion {
-                throw AtomicJSONDocumentStoreError.newerSchemaRequiresReadOnly(
-                    found: existingSchema,
-                    supported: Document.currentSchemaVersion
-                )
-            }
-        }
+        try validateExistingCompatibility(at: documentURL)
+        // A backup can be the sole surviving future document after a crash or corrupt primary.
+        // Refuse direct saves too, rather than protecting it only when callers load first.
+        try validateExistingCompatibility(at: backupURL)
 
         let stagingURL = siblingTemporaryURL(label: "staging")
         defer { try? fileManager.removeItem(at: stagingURL) }
@@ -149,12 +164,25 @@ actor AtomicJSONDocumentStore<Document: VersionedJSONDocument> {
         try Self.atomicallyInstall(stagingURL, at: documentURL)
     }
 
+    private func validateExistingCompatibility(at url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let data = try Data(contentsOf: url)
+        try validateCompatibility(data)
+        if let schema = try? Self.schemaVersion(in: data), schema > Document.currentSchemaVersion {
+            throw AtomicJSONDocumentStoreError.newerSchemaRequiresReadOnly(
+                found: schema,
+                supported: Document.currentSchemaVersion
+            )
+        }
+    }
+
     private func validCurrentPrimaryData() throws -> Data? {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
             return nil
         }
 
         let data = try Data(contentsOf: documentURL)
+        try validateCompatibility(data)
         do {
             _ = try decodeWritableDocument(data)
             return data
@@ -177,6 +205,7 @@ actor AtomicJSONDocumentStore<Document: VersionedJSONDocument> {
         try Self.writeAndSynchronize(data, to: stagingBackupURL)
         let verifiedData = try Data(contentsOf: stagingBackupURL)
         _ = try decodeWritableDocument(verifiedData)
+        try validateExistingCompatibility(at: backupURL)
         try Self.atomicallyInstall(stagingBackupURL, at: backupURL)
     }
 
@@ -203,6 +232,7 @@ actor AtomicJSONDocumentStore<Document: VersionedJSONDocument> {
     }
 
     private func decodeWritableDocument(_ data: Data) throws -> Document {
+        try validateCompatibility(data)
         let schemaVersion = try Self.schemaVersion(in: data)
         if schemaVersion > Document.currentSchemaVersion {
             throw AtomicJSONDocumentStoreError.newerSchemaRequiresReadOnly(

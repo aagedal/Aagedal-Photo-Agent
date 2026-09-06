@@ -67,7 +67,10 @@ actor DeliveryReceiptRepository {
     ) {
         self.documentURL = documentURL
         self.retentionPolicy = retentionPolicy
-        store = AtomicJSONDocumentStore(documentURL: documentURL)
+        store = AtomicJSONDocumentStore(
+            documentURL: documentURL,
+            validateCompatibility: { try Self.rejectNewerReceiptSchema(in: $0) }
+        )
     }
 
     /// Records a completed receipt without replacing either an existing receipt or batch.
@@ -160,10 +163,8 @@ actor DeliveryReceiptRepository {
     }
 
     private func loadDocument() async throws -> DeliveryReceiptRepositoryDocument {
-        // The generic atomic store can recover any decode failure from its backup. A receipt made
-        // by a newer build is not corruption: protect the primary explicitly so an older backup
-        // can never be used as a path to overwrite future receipt data.
-        try rejectNewerReceiptSchemaInPrimary()
+        // The store's compatibility guard rejects future nested receipt bytes before backup
+        // recovery and before writes, using the same actor-owned read as decoding.
         do {
             switch try await store.load() {
             case let .document(document, source):
@@ -184,10 +185,8 @@ actor DeliveryReceiptRepository {
         }
     }
 
-    private func rejectNewerReceiptSchemaInPrimary() throws {
-        guard FileManager.default.fileExists(atPath: documentURL.path),
-              let data = try? Data(contentsOf: documentURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    private nonisolated static func rejectNewerReceiptSchema(in data: Data) throws {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let receipts = object["receipts"] as? [[String: Any]] else {
             return
         }

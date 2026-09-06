@@ -223,7 +223,10 @@ actor BatchRenameRecipeRepository {
         self.documentURL = documentURL
         self.presetIO = presetIO
         self.testingPauseAfterLoad = testingPauseAfterLoad
-        store = AtomicJSONDocumentStore(documentURL: documentURL)
+        store = AtomicJSONDocumentStore(
+            documentURL: documentURL,
+            validateCompatibility: { try Self.rejectNewerRecipeSchema(in: $0) }
+        )
     }
 
     func snapshot() async throws -> BatchRenameRecipeRepositorySnapshot {
@@ -421,10 +424,8 @@ actor BatchRenameRecipeRepository {
     }
 
     private func loadDocument() async throws -> BatchRenameRecipeRepositoryDocument {
-        // A future recipe nested inside a current catalog must not be mistaken for corruption;
-        // otherwise the atomic store could expose an older backup which this build then saves
-        // over the future primary.
-        try rejectNewerRecipeSchemaInPrimary()
+        // The store's compatibility guard rejects future nested recipe bytes before backup
+        // recovery and before writes, using the same actor-owned read as decoding.
         do {
             switch try await store.load() {
             case let .document(document, source):
@@ -445,10 +446,8 @@ actor BatchRenameRecipeRepository {
         }
     }
 
-    private func rejectNewerRecipeSchemaInPrimary() throws {
-        guard FileManager.default.fileExists(atPath: documentURL.path),
-              let data = try? Data(contentsOf: documentURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    private nonisolated static func rejectNewerRecipeSchema(in data: Data) throws {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let presets = object["presets"] as? [[String: Any]] else {
             return
         }

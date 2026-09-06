@@ -656,6 +656,87 @@ struct KnownPeopleServiceTests {
         #expect(Set(service.getAllPeople().map(\.id)) == Set(people.map(\.id)))
     }
 
+    @Test("archive destination reservations reject overlapping local writes and preserve deferred deletion", arguments: [false, true])
+    func importReservesDestinationPaths(cancelImport: Bool) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let sample = embedding(1)
+        let person = KnownPerson(name: "Imported", embeddings: [sample])
+        let data = try encode([person])
+        let gate = KnownPeopleImportPublicationGate(failSecondWrite: false)
+        defer { gate.resume() }
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: { _ in }, removeItem: { _ in },
+            contentsOfDirectory: { _ in [] }, isDirectory: { _ in false },
+            itemExists: { $0.lastPathComponent == "people.json" || $0.pathExtension == "jpg" },
+            readData: { $0.pathExtension == "jpg" ? Data([1, 2, 3]) : data },
+            readCoordinatedData: { _ in data }, writeData: { _, _ in },
+            writeCoordinatedData: { data, url in try gate.write(data, to: url) },
+            runDitto: { _ in }
+        )
+        let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        _ = service.loadDatabase()
+        let task = Task { try await service.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip")) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(gate.entered)
+        // The first thumbnail has reached disk; the embedding and record writes are still pending.
+        let conflictingWrites: [() throws -> Void] = [
+            { try service.removePerson(id: person.id) },
+            { try service.saveThumbnail(Data([9]), for: person.id) },
+            { try service.saveEmbeddingThumbnail(Data([9]), for: sample.id) },
+            { try service.clearDatabase() }
+        ]
+        for write in conflictingWrites {
+            do {
+                try write()
+                Issue.record("A local mutation overlapped the reserved archive destination")
+            } catch {
+                #expect((error as NSError).domain == "KnownPeopleService")
+                #expect((error as NSError).code == 11)
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("people/\(person.id.uuidString).deleted").path))
+        let unrelated = try service.addPerson(name: "Unrelated", embeddings: [])
+        do {
+            try service.addEmbeddingsDeduped([sample], toPersonID: unrelated.id,
+                                            embeddingThumbnails: [sample.id: Data([9])])
+            Issue.record("An embedding mutation bypassed thumbnail admission")
+        } catch {
+            #expect((error as NSError).code == 11)
+        }
+        #expect(service.person(byID: unrelated.id)?.embeddings.isEmpty == true)
+        let persisted = try JSONDecoder().decode(KnownPerson.self, from: Data(contentsOf:
+            directory.appendingPathComponent("people/\(unrelated.id.uuidString).json")
+        ))
+        #expect(persisted.embeddings.isEmpty)
+        // A void deletion API cannot report busy. It must win after the actor's later write.
+        service.deleteEmbeddingThumbnail(for: sample.id)
+        if cancelImport { task.cancel() }
+        gate.resume()
+        do {
+            #expect(try await task.value == 1)
+            #expect(!cancelImport)
+        } catch {
+            #expect(cancelImport && error is CancellationError)
+        }
+        #expect(service.person(byID: unrelated.id) != nil)
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(
+            "embedding_thumbnails/\(sample.id.uuidString).jpg"
+        ).path))
+        // Both normal completion and cancellation release admission for retry.
+        try service.saveEmbeddingThumbnail(Data([9]), for: sample.id)
+        #expect(try Data(contentsOf: directory.appendingPathComponent(
+            "embedding_thumbnails/\(sample.id.uuidString).jpg"
+        )) == Data([9]))
+        try service.clearDatabase()
+        #expect(service.getAllPeople().isEmpty)
+    }
+
     @Test("overlapping imports publish before readmission and reject cancelled or rerouted waiters", arguments: [0, 1, 2])
     func overlappingImportAdmission(outcome: Int) async throws {
         let directory = makeTempDir()

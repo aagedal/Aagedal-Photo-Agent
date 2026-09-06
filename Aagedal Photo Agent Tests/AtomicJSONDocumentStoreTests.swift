@@ -4,6 +4,86 @@ import Testing
 
 @Suite("Atomic JSON document store")
 struct AtomicJSONDocumentStoreTests {
+    @Test("direct saves preserve a future-only backup", arguments: [false, true], [false, true])
+    func futureBackupBlocksDirectSave(corruptPrimary: Bool, nestedFuture: Bool) async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let future = Data((nestedFuture
+            ? #"{"schemaVersion":1,"value":"future"}"#
+            : #"{"schemaVersion":2,"value":"future"}"#).utf8)
+        try future.write(to: fixture.backupURL)
+        if corruptPrimary { try Data("{".utf8).write(to: fixture.documentURL) }
+        let store = AtomicJSONDocumentStore<TestDocument>(
+            documentURL: fixture.documentURL,
+            validateCompatibility: { data in
+                if nestedFuture && data == future { throw CompatibilityFailure.futureVersion }
+            }
+        )
+        do {
+            try await store.save(TestDocument(value: "replacement"))
+            Issue.record("A direct save accepted a future-only backup")
+        } catch {
+            if nestedFuture {
+                #expect(error as? CompatibilityFailure == .futureVersion)
+            } else {
+                #expect(error as? AtomicJSONDocumentStoreError == .newerSchemaRequiresReadOnly(found: 2, supported: 1))
+            }
+        }
+        #expect(try Data(contentsOf: fixture.backupURL) == future)
+        if corruptPrimary {
+            #expect(try Data(contentsOf: fixture.documentURL) == Data("{".utf8))
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: fixture.documentURL.path))
+        }
+    }
+
+    @Test("compatibility guards reject future nested bytes without falling back or overwriting")
+    func compatibilityGuardPreservesFutureBytes() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let store = AtomicJSONDocumentStore<TestDocument>(
+            documentURL: fixture.documentURL,
+            validateCompatibility: { data in
+                #expect(!Thread.isMainThread)
+                if String(decoding: data, as: UTF8.self).contains("future") {
+                    throw CompatibilityFailure.futureVersion
+                }
+            }
+        )
+        try await store.save(TestDocument(value: "backup"))
+        try await store.save(TestDocument(value: "primary"))
+        let backup = try Data(contentsOf: fixture.backupURL)
+        let future = Data(#"{"schemaVersion":1,"value":"future","unknown":true}"#.utf8)
+        try future.write(to: fixture.documentURL)
+        await #expect(throws: CompatibilityFailure.futureVersion) {
+            _ = try await store.load()
+        }
+        await #expect(throws: CompatibilityFailure.futureVersion) {
+            try await store.save(TestDocument(value: "replacement"))
+        }
+        #expect(try Data(contentsOf: fixture.documentURL) == future)
+        #expect(try Data(contentsOf: fixture.backupURL) == backup)
+    }
+
+    @Test("backup compatibility errors remain explicit when the primary is corrupt")
+    func backupCompatibilityGuard() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        try Data("{".utf8).write(to: fixture.documentURL)
+        let future = Data(#"{"schemaVersion":1,"value":"future"}"#.utf8)
+        try future.write(to: fixture.backupURL)
+        let store = AtomicJSONDocumentStore<TestDocument>(
+            documentURL: fixture.documentURL,
+            validateCompatibility: { data in
+                if data == future { throw CompatibilityFailure.futureVersion }
+            }
+        )
+        await #expect(throws: CompatibilityFailure.futureVersion) {
+            _ = try await store.load()
+        }
+        #expect(try Data(contentsOf: fixture.backupURL) == future)
+    }
+
     @Test("save writes a validated document that can be loaded")
     func saveAndLoad() async throws {
         let fixture = try StoreFixture()
@@ -229,3 +309,5 @@ private struct StoreFixture {
         try? FileManager.default.removeItem(at: directoryURL)
     }
 }
+
+private enum CompatibilityFailure: Error, Equatable { case futureVersion }

@@ -15,6 +15,13 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Storage admission and schema compatibility continuation (2026-09-06):** Known People
+archive destination reservations prevent overlapping local mutations; keyword commits and deferred
+notifications reject stale-route cache publication, and editor import reads cross the serialized
+parser. Nested JSON schema checks run inside atomic storage for both loads and saves, preserving
+future primary/backup bytes. The complete storage and manual/device gates remain open.
+([validation and remaining work](../plan-status-storage-admission-schema-continuation-2026-09-06.md))
+
 **Keyword archive and DNG discovery continuation (2026-09-06):** failed keyword routing/import
 reads preserve affected destinations and retain earlier durable commits. Known People archives accept
 flat or unique wrapped payloads and reject ambiguous layouts before writes. DNG converter discovery

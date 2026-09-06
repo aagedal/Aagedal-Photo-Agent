@@ -875,3 +875,41 @@ struct KeywordListLegacyMigrationTests {
         }
     }
 }
+
+@Suite("Flat keyword editor source import")
+struct ApprovedListSourceLoadTests {
+    @Test("Source loading parses CSV off MainActor with balanced scope and no managed write")
+    @MainActor
+    func loadsSourceWithoutWriting() async throws {
+        let source = URL(fileURLWithPath: "/virtual/source.csv")
+        let requestID = UUID()
+        let probe = ApprovedListImportAccessProbe(sourceData: Data("Berlin,DE\nParis,FR\nBerlin,duplicate\n".utf8))
+        let service = ApprovedListImportService(access: probe.fileAccess)
+        let snapshot = try await service.loadEntries(from: source, requestID: requestID)
+        #expect(snapshot == ApprovedListSourceSnapshot(requestID: requestID, sourceURL: source, entries: ["Berlin", "Paris"]))
+        #expect(!probe.ranFilesystemCallOnMainThread)
+        #expect(probe.startAccessCount == 1)
+        #expect(probe.stopAccessCount == 1)
+        #expect(probe.writtenData == nil)
+    }
+
+    @Test("A cancelled source load never enters filesystem access")
+    func cancelledLoadDoesNotRead() async {
+        let probe = ApprovedListImportAccessProbe(sourceData: Data("Berlin".utf8))
+        let service = ApprovedListImportService(access: probe.fileAccess)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await service.loadEntries(from: URL(fileURLWithPath: "/virtual/source.txt"), requestID: UUID())
+                return false
+            } catch is CancellationError {
+                return true
+            } catch {
+                return false
+            }
+        }
+        let cancelled = await task.value
+        #expect(cancelled)
+        #expect(probe.filesystemCallCount == 0)
+    }
+}

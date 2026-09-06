@@ -55,7 +55,10 @@ actor DeadlineProfileRepository {
     init(documentURL: URL, profileIO: DeadlineProfileIO = DeadlineProfileIO()) {
         self.documentURL = documentURL
         self.profileIO = profileIO
-        store = AtomicJSONDocumentStore(documentURL: documentURL)
+        store = AtomicJSONDocumentStore(
+            documentURL: documentURL,
+            validateCompatibility: { try Self.rejectNewerProfileSchema(in: $0) }
+        )
     }
 
     func snapshot() async throws -> DeadlineProfileRepositorySnapshot {
@@ -236,9 +239,8 @@ actor DeadlineProfileRepository {
     }
 
     private func loadDocument() async throws -> DeadlineProfileRepositoryDocument {
-        // A newer nested profile is not corruption. Detect it before the generic store can
-        // recover an older backup and later overwrite the future primary through this build.
-        try rejectNewerProfileSchemaInPrimary()
+        // The store's compatibility guard rejects future nested profile bytes before backup
+        // recovery and before writes, using the same actor-owned read as decoding.
         do {
             switch try await store.load() {
             case let .document(document, source):
@@ -259,10 +261,8 @@ actor DeadlineProfileRepository {
         }
     }
 
-    private func rejectNewerProfileSchemaInPrimary() throws {
-        guard FileManager.default.fileExists(atPath: documentURL.path),
-              let data = try? Data(contentsOf: documentURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    private nonisolated static func rejectNewerProfileSchema(in data: Data) throws {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let profiles = object["profiles"] as? [[String: Any]] else {
             return
         }

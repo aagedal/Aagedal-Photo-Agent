@@ -119,6 +119,7 @@ final class ApprovedListService {
             ) { [weak self] note in
                 let committedEntries = note.userInfo?[KeywordListsStore.changedEntriesUserInfo]
                     as? [String]
+                let destinationURL = note.userInfo?[KeywordListsStore.changedDestinationURLUserInfo] as? URL
                 let sourceID = note.userInfo?[KeywordListsStore.changedSourceIDUserInfo] as? UUID
                 guard
                     let key = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey,
@@ -130,7 +131,7 @@ final class ApprovedListService {
                     // notifications represent editor, migration, or remote changes that require a
                     // fresh serialized read.
                     guard sourceID == nil else { return }
-                    if let committedEntries {
+                    if let committedEntries, destinationURL == KeywordListsStore.shared.url(for: key) {
                         self.cancelCacheLoad(for: field)
                         self.installParsed(
                             committedEntries,
@@ -234,9 +235,14 @@ final class ApprovedListService {
 
         KeywordListsStore.shared.recordExternalWrite(
             to: key,
+            destinationURL: commit.destinationURL,
             entries: commit.entries,
             sourceID: notificationSourceID
         )
+        guard KeywordListsStore.shared.url(for: key) == commit.destinationURL else {
+            await reloadFromStore(for: field)
+            return
+        }
         installParsed(commit.entries, sourcePath: destinationURL.path, for: field)
         loadError = nil
         bumpVersion()
@@ -265,9 +271,14 @@ final class ApprovedListService {
 
         KeywordListsStore.shared.recordExternalWrite(
             to: key,
+            destinationURL: commit.destinationURL,
             entries: commit.entries,
             sourceID: notificationSourceID
         )
+        guard KeywordListsStore.shared.url(for: key) == commit.destinationURL else {
+            await reloadFromStore(for: field)
+            return
+        }
         installParsed(commit.entries, sourcePath: destinationURL.path, for: field)
         loadError = nil
         bumpVersion()

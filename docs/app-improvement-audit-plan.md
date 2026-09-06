@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Storage admission and schema compatibility continuation (2026-09-06):** Known People
+archive destination reservations prevent overlapping local mutations; keyword commits and deferred
+notifications reject stale-route cache publication, and editor import reads cross the serialized
+parser. Nested JSON schema checks run inside atomic storage for both loads and saves, preserving
+future primary/backup bytes. The complete storage and manual/device gates remain open.
+([validation and remaining work](plan-status-storage-admission-schema-continuation-2026-09-06.md))
+
 **Keyword archive and DNG discovery continuation (2026-09-06):** keyword routing and archive
 imports preserve affected destinations when source or append-destination reads fail. Known People
 archive preparation selects root or unique wrapped payloads deterministically and samples discovery

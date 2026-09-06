@@ -102,6 +102,7 @@ nonisolated enum KeywordListsStoreStorageOverride {
 final class KeywordListsStore {
     static let shared = KeywordListsStore()
     nonisolated static let changedKeyUserInfo = "key"
+    nonisolated static let changedDestinationURLUserInfo = "destinationURL"
     nonisolated static let changedEntriesUserInfo = "entries"
     nonisolated static let changedTextUserInfo = "text"
     nonisolated static let changedSourceIDUserInfo = "sourceID"
@@ -233,11 +234,19 @@ final class KeywordListsStore {
     /// observable state and delivers the same notification as `writeText`.
     func recordExternalWrite(
         to key: KeywordListKey,
+        destinationURL: URL? = nil,
         entries: [String]? = nil,
         text: String? = nil,
         sourceID: UUID? = nil
     ) {
-        notifyChanged(key, entries: entries, text: text, sourceID: sourceID)
+        // A durable write can finish after routing switches roots. Invalidate observers but
+        // never advertise its old-root payload as the active list. Clear source identity too,
+        // since owners otherwise suppress their own invalidation notification.
+        if let destinationURL, destinationURL != url(for: key) {
+            notifyChanged(key)
+        } else {
+            notifyChanged(key, entries: entries, text: text, sourceID: sourceID)
+        }
     }
 
     /// Publishes a removal already committed by a serialized filesystem service.
@@ -391,7 +400,10 @@ final class KeywordListsStore {
         sourceID: UUID? = nil
     ) {
         bumpVersion()
-        var userInfo: [String: Any] = [Self.changedKeyUserInfo: key]
+        var userInfo: [String: Any] = [
+            Self.changedKeyUserInfo: key,
+            Self.changedDestinationURLUserInfo: url(for: key)
+        ]
         if let entries {
             userInfo[Self.changedEntriesUserInfo] = entries
         }

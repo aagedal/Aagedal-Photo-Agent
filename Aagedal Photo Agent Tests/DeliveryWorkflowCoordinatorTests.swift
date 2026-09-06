@@ -461,6 +461,13 @@ struct DeliveryWorkflowCoordinatorTests {
         )) {
             _ = try await persistence.load()
         }
+        await #expect(throws: EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
+            document: "delivery upload checkpoint",
+            found: DeliveryUploadCheckpoint.currentSchemaVersion + 1,
+            supported: DeliveryUploadCheckpoint.currentSchemaVersion
+        )) {
+            try await persistence.save(updated)
+        }
         #expect(try Data(contentsOf: url) == futureData)
         #expect(try Data(contentsOf: backupURL) == backupData)
     }

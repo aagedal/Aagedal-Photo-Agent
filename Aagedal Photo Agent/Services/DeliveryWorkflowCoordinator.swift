@@ -177,12 +177,12 @@ nonisolated struct DeliveryWorkflowManifestPersistence: Sendable {
     let save: @Sendable (DeliveryWorkflowManifest) async throws -> Void
 
     static func atomic(documentURL: URL) -> Self {
-        let store = AtomicJSONDocumentStore<DeliveryWorkflowManifest>(documentURL: documentURL)
+        let store = AtomicJSONDocumentStore<DeliveryWorkflowManifest>(
+            documentURL: documentURL,
+            validateCompatibility: { try rejectNewerUploadCheckpointSchema(in: $0) }
+        )
         return Self(
             load: {
-                // A future nested upload checkpoint is not a corrupt manifest. Refuse it before
-                // generic backup recovery can surface an older checkpoint and enable downgrade.
-                try rejectNewerUploadCheckpointSchema(in: documentURL)
                 do {
                     switch try await store.load() {
                     case let .document(document, _): return document
@@ -200,10 +200,8 @@ nonisolated struct DeliveryWorkflowManifestPersistence: Sendable {
         )
     }
 
-    private static func rejectNewerUploadCheckpointSchema(in documentURL: URL) throws {
-        guard FileManager.default.fileExists(atPath: documentURL.path),
-              let data = try? Data(contentsOf: documentURL),
-              let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    private static func rejectNewerUploadCheckpointSchema(in data: Data) throws {
+        guard let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let checkpoint = manifest["uploadCheckpoint"] as? [String: Any],
               let version = checkpoint["schemaVersion"] as? Int,
               version > DeliveryUploadCheckpoint.currentSchemaVersion else {

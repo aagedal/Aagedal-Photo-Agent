@@ -591,6 +591,55 @@ final class KnownPeopleService {
     // The archive actor serializes file work but yields back to MainActor between these stages.
     private var importInProgress = false
     private var importWaiters: [CheckedContinuation<Void, Never>] = []
+    // Reserve destination paths before yielding to the archive actor. Synchronous local
+    // writers cannot wait for that actor without blocking MainActor, so overlapping writes
+    // return a retryable error; unrelated records remain editable.
+    private var importCommitRoot: URL?
+    private var importReservedURLs: Set<URL> = []
+    private var deferredThumbnailDeletions: Set<URL> = []
+
+    private func requireLocalWriteAdmission(to url: URL) throws {
+        guard !importReservedURLs.contains(url.standardizedFileURL) else {
+            throw importBusyError()
+        }
+    }
+
+    private func importBusyError() -> NSError {
+        NSError(domain: "KnownPeopleService", code: 11, userInfo: [
+            NSLocalizedDescriptionKey: "A Known People import is updating this data. Try again when the import finishes."
+        ])
+    }
+
+    private func reserveImportDestinations(_ people: [KnownPerson], root: URL) {
+        importCommitRoot = root.standardizedFileURL
+        for person in people {
+            for path in ["people/\(person.id.uuidString).json", "people/\(person.id.uuidString).deleted",
+                         "thumbnails/\(person.id.uuidString).jpg"] {
+                importReservedURLs.insert(root.appendingPathComponent(path).standardizedFileURL)
+            }
+            for embedding in person.embeddings {
+                importReservedURLs.insert(root.appendingPathComponent(
+                    "embedding_thumbnails/\(embedding.id.uuidString).jpg"
+                ).standardizedFileURL)
+            }
+        }
+    }
+
+    private func releaseImportDestinations() {
+        importCommitRoot = nil
+        importReservedURLs.removeAll()
+        // These void APIs historically perform best-effort removal. Preserve a deletion
+        // requested during import by applying it after all archive writes, at its original root.
+        for url in deferredThumbnailDeletions {
+            try? CloudCoordinatedIO.removeItem(at: url)
+        }
+        if !deferredThumbnailDeletions.isEmpty {
+            thumbnailContentRevision &+= 1
+            personThumbnailCache.removeAllObjects()
+            embeddingThumbnailCache.removeAllObjects()
+        }
+        deferredThumbnailDeletions.removeAll()
+    }
 
     init(
         thumbnailLoader: KnownPeopleThumbnailLoadService = .shared,
@@ -823,6 +872,7 @@ final class KnownPeopleService {
     /// Encodes one person to its own file. The single entry point for persisting
     /// a person, so self-write stamping and change notification live here.
     private func writePerson(_ person: KnownPerson) throws {
+        try requireLocalWriteAdmission(to: personFileURL(for: person.id))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(person)
@@ -838,6 +888,7 @@ final class KnownPeopleService {
     /// - Returns: whether a write happened.
     @discardableResult
     private func mutatePerson(id personID: UUID, _ transform: (inout KnownPerson) throws -> Bool) throws -> Bool {
+        try requireLocalWriteAdmission(to: personFileURL(for: personID))
         _ = loadDatabase()
         guard let index = peopleIndex[personID],
               var db = database,
@@ -992,6 +1043,7 @@ final class KnownPeopleService {
     }
 
     private func deleteRecordDurably(for personID: UUID) throws {
+        try requireLocalWriteAdmission(to: personFileURL(for: personID))
         let tombstone = KnownPersonTombstone(id: personID)
         let url = tombstoneURL(for: personID)
         try DurableDeletionTransaction.execute(
@@ -1162,6 +1214,7 @@ final class KnownPeopleService {
 
     func saveThumbnail(_ imageData: Data, for personID: UUID) throws {
         let url = thumbnailURL(for: personID)
+        try requireLocalWriteAdmission(to: url)
         try CloudCoordinatedIO.writeData(imageData, to: url)
         thumbnailContentRevision &+= 1
         if let image = NSImage(data: imageData) {
@@ -1175,6 +1228,10 @@ final class KnownPeopleService {
         thumbnailContentRevision &+= 1
         personThumbnailCache.removeObject(forKey: personID as NSUUID)
         let url = thumbnailURL(for: personID)
+        if importReservedURLs.contains(url.standardizedFileURL) {
+            deferredThumbnailDeletions.insert(url.standardizedFileURL)
+            return
+        }
         do {
             try CloudCoordinatedIO.removeItem(at: url)
         } catch {
@@ -1186,6 +1243,7 @@ final class KnownPeopleService {
 
     func saveEmbeddingThumbnail(_ imageData: Data, for embeddingID: UUID) throws {
         let url = embeddingThumbnailURL(for: embeddingID)
+        try requireLocalWriteAdmission(to: url)
         try CloudCoordinatedIO.writeData(imageData, to: url)
         thumbnailContentRevision &+= 1
         if let image = NSImage(data: imageData) {
@@ -1196,6 +1254,9 @@ final class KnownPeopleService {
     }
 
     func saveEmbeddingThumbnails(_ thumbnails: [UUID: Data]) throws {
+        for embeddingID in thumbnails.keys {
+            try requireLocalWriteAdmission(to: embeddingThumbnailURL(for: embeddingID))
+        }
         for (embeddingID, data) in thumbnails {
             try saveEmbeddingThumbnail(data, for: embeddingID)
         }
@@ -1271,6 +1332,10 @@ final class KnownPeopleService {
         thumbnailContentRevision &+= 1
         embeddingThumbnailCache.removeObject(forKey: embeddingID as NSUUID)
         let url = embeddingThumbnailURL(for: embeddingID)
+        if importReservedURLs.contains(url.standardizedFileURL) {
+            deferredThumbnailDeletions.insert(url.standardizedFileURL)
+            return
+        }
         try? CloudCoordinatedIO.removeItem(at: url)
     }
 
@@ -1293,6 +1358,9 @@ final class KnownPeopleService {
         // new data. Loading after the write would discover this person on disk
         // and append it twice, or migrate away its newly written thumbnails.
         var db = loadDatabase()
+        for embeddingID in embeddingThumbnails.keys {
+            try requireLocalWriteAdmission(to: embeddingThumbnailURL(for: embeddingID))
+        }
         let person = KnownPerson(
             name: name,
             role: role,
@@ -1334,6 +1402,7 @@ final class KnownPeopleService {
     }
 
     func removePerson(id: UUID) throws {
+        try requireLocalWriteAdmission(to: personFileURL(for: id))
         // Capture cache keys, but leave every derived file and in-memory entry
         // untouched until the marker + record transition has completed.
         let personToCleanUp = person(byID: id)
@@ -1359,6 +1428,7 @@ final class KnownPeopleService {
     }
 
     func addEmbedding(_ embedding: PersonEmbedding, toPersonID personID: UUID, thumbnailData: Data? = nil) throws {
+        try requireLocalWriteAdmission(to: personFileURL(for: personID))
         guard peopleIndex[personID] != nil else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
@@ -1464,6 +1534,15 @@ final class KnownPeopleService {
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
 
+        // Admission must precede the person write: a later busy thumbnail error
+        // must not leave the new embedding installed without its requested image.
+        if let person = person(byID: personID) {
+            let existingData = Set(person.embeddings.map(\.featurePrintData))
+            for embedding in embeddings where !existingData.contains(embedding.featurePrintData)
+                && embeddingThumbnails[embedding.id] != nil {
+                try requireLocalWriteAdmission(to: embeddingThumbnailURL(for: embedding.id))
+            }
+        }
         var addedEmbeddingIDs: Set<UUID> = []
 
         try mutatePerson(id: personID) { person in
@@ -1505,6 +1584,8 @@ final class KnownPeopleService {
     /// recovery path and is idempotent by feature-print bytes.
     func mergePeople(sourceID: UUID, intoTargetID: UUID) throws {
         guard sourceID != intoTargetID else { return }
+        try requireLocalWriteAdmission(to: personFileURL(for: sourceID))
+        try requireLocalWriteAdmission(to: personFileURL(for: intoTargetID))
 
         guard peopleIndex[sourceID] != nil, peopleIndex[intoTargetID] != nil,
               let source = person(byID: sourceID) else {
@@ -1700,6 +1781,9 @@ final class KnownPeopleService {
     }
 
     func clearDatabase() throws {
+        guard importCommitRoot != knownPeopleDirectory.standardizedFileURL else {
+            throw importBusyError()
+        }
         let emptyDB = KnownPeopleDatabase()
         featurePrintCache.removeAllObjects()
         personThumbnailCache.removeAllObjects()
@@ -1999,6 +2083,8 @@ final class KnownPeopleService {
         let newPeople = payload.people.filter { admittedIDs.insert($0.id).inserted }
         let requestID = UUID()
         let storageRoot = knownPeopleDirectory
+        reserveImportDestinations(newPeople, root: storageRoot)
+        defer { releaseImportDestinations() }
         let result = await archiveService.commitImport(KnownPeopleArchiveImportCommitRequest(
             requestID: requestID,
             storageRoot: storageRoot,
