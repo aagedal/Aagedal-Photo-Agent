@@ -239,6 +239,70 @@ struct KeywordListBackupPreviewServiceTests {
 
 @Suite("Keyword-list backup inventory and restore filesystem boundary")
 struct KeywordListBackupFileServiceTests {
+    @Test("managed source snapshot reads and writes off MainActor")
+    @MainActor
+    func snapshotReadsManagedSourceOffMainActor() async throws {
+        let probe = KeywordListBackupFileIOProbe(files: [])
+        probe.readDataResult = Data("Berlin\nParis\n".utf8)
+        let service = KeywordListBackupFileService(io: probe.fileIO)
+        let written = try await service.snapshot(
+            sourceURL: URL(fileURLWithPath: "/virtual/list.txt"),
+            directoryURL: URL(fileURLWithPath: "/virtual/backups"),
+            destinationURL: URL(fileURLWithPath: "/virtual/backups/version.txt"),
+            retentionCutoff: .distantPast, minimumVersionCount: 1
+        )
+        #expect(written)
+        #expect(probe.writtenData == probe.readDataResult)
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("cancellation after managed source read prevents a backup write")
+    func snapshotCancellationAfterSourceRead() async throws {
+        let probe = KeywordListBackupFileIOProbe(files: [])
+        probe.readDataResult = Data("Berlin".utf8)
+        probe.cancelDuringRead = true
+        let service = KeywordListBackupFileService(io: probe.fileIO)
+        let task = Task {
+            try await service.snapshot(
+                sourceURL: URL(fileURLWithPath: "/virtual/list.txt"),
+                directoryURL: URL(fileURLWithPath: "/virtual/backups"),
+                destinationURL: URL(fileURLWithPath: "/virtual/backups/version.txt"),
+                retentionCutoff: .distantPast, minimumVersionCount: 1
+            )
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(probe.writeInvocationCount == 0)
+    }
+
+    @Test("recovery source scan distinguishes missing and empty from unreadable lists")
+    @MainActor
+    func recoverySourceStates() async throws {
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { _ in [] },
+            inspectTextFile: { _ in fatalError("Unexpected backup inspection") },
+            createDirectory: { _ in },
+            readData: { url in
+                #expect(!Thread.isMainThread)
+                switch url.lastPathComponent {
+                case "missing": throw CocoaError(.fileReadNoSuchFile)
+                case "unreadable": throw CocoaError(.fileReadNoPermission)
+                case "empty": return Data(" \n".utf8)
+                default: return Data("Berlin".utf8)
+                }
+            },
+            writeData: { _, _ in }, removeItem: { _ in }
+        )
+        let service = KeywordListBackupFileService(io: io)
+        let identifiers = try await service.emptySourceIdentifiers(
+            ["missing", "unreadable", "empty", "populated"].map {
+                KeywordListBackupSourceRequest(
+                    identifier: $0, sourceURL: URL(fileURLWithPath: "/virtual/\($0)")
+                )
+            }
+        )
+        #expect(identifiers == ["missing", "empty"])
+    }
+
     @Test("inventory returns an immutable sorted snapshot away from the main actor")
     @MainActor
     func inventoryRunsOffMainActor() async {

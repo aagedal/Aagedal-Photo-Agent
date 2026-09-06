@@ -91,6 +91,11 @@ nonisolated struct KeywordListBackupDirectoryRequest: Equatable, Sendable {
     let directoryURL: URL
 }
 
+nonisolated struct KeywordListBackupSourceRequest: Equatable, Sendable {
+    let identifier: String
+    let sourceURL: URL
+}
+
 nonisolated struct KeywordListBackupFileSnapshot: Equatable, Sendable {
     let url: URL
     let date: Date
@@ -165,7 +170,7 @@ nonisolated struct KeywordListBackupFileIO: Sendable {
             )
         },
         readData: { url in
-            try Data(contentsOf: url, options: .mappedIfSafe)
+            try CloudCoordinatedIO.readData(at: url)
         },
         writeData: { data, url in
             try CloudCoordinatedIO.writeData(data, to: url)
@@ -235,6 +240,48 @@ actor KeywordListBackupFileService {
             requestID: requestID,
             directories: snapshots
         ))
+    }
+
+    /// Reads managed source files on the same executor as backup writes. Missing files are
+    /// recoverable; permission/provider failures are unknown and must not be presented as empty.
+    func emptySourceIdentifiers(_ sources: [KeywordListBackupSourceRequest]) throws -> Set<String> {
+        var empty: Set<String> = []
+        for source in sources {
+            try Task.checkCancellation()
+            do {
+                let data = try io.readData(source.sourceURL)
+                if String(decoding: data, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    empty.insert(source.identifier)
+                }
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                empty.insert(source.identifier)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Unreadable is not evidence of an empty list.
+            }
+        }
+        try Task.checkCancellation()
+        return empty
+    }
+
+    @discardableResult
+    func snapshot(
+        sourceURL: URL,
+        directoryURL: URL,
+        destinationURL: URL,
+        retentionCutoff: Date,
+        minimumVersionCount: Int
+    ) throws -> Bool {
+        try Task.checkCancellation()
+        let text = String(decoding: try io.readData(sourceURL), as: UTF8.self)
+        try Task.checkCancellation()
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return try snapshot(
+            text: text, directoryURL: directoryURL, destinationURL: destinationURL,
+            retentionCutoff: retentionCutoff, minimumVersionCount: minimumVersionCount
+        )
     }
 
     @discardableResult
@@ -468,21 +515,20 @@ final class KeywordListsBackupService {
     @discardableResult
     private func snapshot(_ key: KeywordListKey) async -> Bool {
         let store = KeywordListsStore.shared
-        guard let text = store.readText(key),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return false
-        }
-
         let dir = directory(for: key)
         let now = Date()
         do {
             return try await filesystem.snapshot(
-                text: text,
+                sourceURL: store.url(for: key),
                 directoryURL: dir,
                 destinationURL: dir.appendingPathComponent(Self.snapshotFileName(for: now)),
                 retentionCutoff: now.addingTimeInterval(-Double(retentionDays) * 86_400),
                 minimumVersionCount: minVersionsPerKey
             )
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return false
+        } catch is CancellationError {
+            return false
         } catch {
             logger.error("Failed to snapshot \(key.relativePath, privacy: .private(mask: .hash)): \(String(describing: error), privacy: .private)")
             return false
@@ -560,19 +606,26 @@ final class KeywordListsBackupService {
     /// Recomputes which lists look empty while a backup exists.
     func refreshRecoverable() async {
         let store = KeywordListsStore.shared
-        let emptyKeys = Set(Self.allKeys.filter { key in
-            let text = store.readText(key)
-            return text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
-        })
         let requestID = UUID()
         recoverableRequestID = requestID
-        guard case .loaded(_, let groups) = await allVersionsByKey(requestID: requestID),
+        let capturedRoot = store.rootURL
+        let capturedVersion = store.version
+        let sources = Self.allKeys.map { key in
+            KeywordListBackupSourceRequest(
+                identifier: key.relativePath,
+                sourceURL: capturedRoot.appendingPathComponent(key.relativePath)
+            )
+        }
+        guard let emptyIdentifiers = try? await filesystem.emptySourceIdentifiers(sources),
               recoverableRequestID == requestID,
+              case .loaded(_, let groups) = await allVersionsByKey(requestID: requestID),
+              recoverableRequestID == requestID,
+              store.rootURL == capturedRoot, store.version == capturedVersion,
               !Task.isCancelled else { return }
         recoverableRequestID = nil
         let backedUpKeys = Set(groups.map(\.key))
         recoverableKeys = Self.allKeys.filter {
-            emptyKeys.contains($0) && backedUpKeys.contains($0)
+            emptyIdentifiers.contains($0.relativePath) && backedUpKeys.contains($0)
         }
     }
 

@@ -15,6 +15,20 @@ nonisolated struct KnownPeopleThumbnailLoadSnapshot: Sendable, Equatable {
     let data: Data?
 }
 
+/// Captures only the versions that participate in a merge. New conflicts arriving
+/// while the merged record is written must remain unresolved for the next load.
+struct KnownPeopleConflictVersion {
+    let url: URL
+    let resolve: () throws -> Void
+}
+
+struct KnownPeopleConflictAccess {
+    let versions: (URL) -> [KnownPeopleConflictVersion]
+    let readCurrent: (URL) throws -> Data
+    let readVersion: (URL) throws -> Data
+    let writePerson: (KnownPerson) throws -> Void
+}
+
 nonisolated enum KnownPeopleThumbnailLoadResult: Sendable, Equatable {
     case loaded(KnownPeopleThumbnailLoadSnapshot)
     case cancelledBeforeRead(requestID: UUID, fileURL: URL)
@@ -756,7 +770,11 @@ final class KnownPeopleService {
         }
         do {
             let data = try CloudCoordinatedIO.readData(at: url)
-            return try JSONDecoder().decode(KnownPerson.self, from: data)
+            let person = try JSONDecoder().decode(KnownPerson.self, from: data)
+            guard person.id == personID(fromFileURL: url) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return person
         } catch {
             knownPeopleLog.error("Failed to load person file \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             backupCorruptFile(at: url)
@@ -860,40 +878,58 @@ final class KnownPeopleService {
     }
 
     /// If the file has unresolved iCloud conflict versions, merge them all into
-    /// one record, rewrite the file, and clear the conflict versions. Returns the
-    /// merged person, or nil if there were no conflicts (caller decodes normally).
+    /// one record, rewrite the file, and clear only the captured conflict versions.
+    /// Returns the durable merged person, or nil if there were no conflicts or any
+    /// input/write failed (the caller then decodes the durable current file).
     /// No-op on local stores, which never have conflict versions.
-    private func resolveConflicts(at url: URL) -> KnownPerson? {
-        guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
-              !conflicts.isEmpty else {
+    func resolveConflicts(at url: URL, access injectedAccess: KnownPeopleConflictAccess? = nil) -> KnownPerson? {
+        let access = injectedAccess ?? KnownPeopleConflictAccess(
+            versions: { url in
+                (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).map { version in
+                    KnownPeopleConflictVersion(url: version.url) {
+                        version.isResolved = true
+                        try version.remove()
+                    }
+                }
+            },
+            readCurrent: { try CloudCoordinatedIO.readData(at: $0) },
+            readVersion: { try Data(contentsOf: $0) },
+            writePerson: { try self.writePerson($0) }
+        )
+        let conflicts = access.versions(url)
+        guard !conflicts.isEmpty,
+              let expectedID = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else {
             return nil
         }
 
         let decoder = JSONDecoder()
         var records: [KnownPerson] = []
-        if let currentData = try? CloudCoordinatedIO.readData(at: url),
-           let current = try? decoder.decode(KnownPerson.self, from: currentData) {
+        do {
+            let current = try decoder.decode(KnownPerson.self, from: access.readCurrent(url))
+            guard current.id == expectedID else { return nil }
             records.append(current)
-        }
-        for version in conflicts {
-            if let data = try? Data(contentsOf: version.url),
-               let person = try? decoder.decode(KnownPerson.self, from: data) {
+            for version in conflicts {
+                let person = try decoder.decode(KnownPerson.self, from: access.readVersion(version.url))
+                guard person.id == expectedID else { return nil }
                 records.append(person)
             }
-        }
-
-        guard !records.isEmpty else {
-            // Can't decode anything — give up but still clear versions so we
-            // don't loop on this file forever.
-            try? NSFileVersion.removeOtherVersionsOfItem(at: url)
+        } catch {
+            // Even one unavailable/corrupt version may contain unique data. Keep
+            // all originals untouched until every input can be merged safely.
+            knownPeopleLog.error("Preserving unreadable conflicts for \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             return nil
         }
 
         let merged = mergePersonRecords(records)
         do {
-            try writePerson(merged)
-            for version in conflicts { version.isResolved = true }
-            try NSFileVersion.removeOtherVersionsOfItem(at: url)
+            try access.writePerson(merged)
+        } catch {
+            knownPeopleLog.error("Failed to write merged person \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+            // The caller must keep displaying the durable current record.
+            return nil
+        }
+        do {
+            for version in conflicts { try version.resolve() }
             knownPeopleLog.info("Resolved \(conflicts.count, privacy: .public) conflict version(s) for \(url.lastPathComponent, privacy: .private(mask: .hash))")
         } catch {
             knownPeopleLog.error("Failed to resolve conflicts for \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
@@ -978,13 +1014,15 @@ final class KnownPeopleService {
     /// we resolve conflicts, re-read it, and update just that cache entry — or
     /// remove it for a tombstone / deleted file.
     func applyRemoteChanges(_ changes: [(url: URL, contentChangeDate: Date?)]) {
-        // Nothing loaded yet → a full lazy load on next access is cheaper and
-        // correct; no per-file patching needed.
-        guard var db = database else { return }
+        // Thumbnail caches can be populated before the database loads. Invalidate those
+        // independently, while leaving a cold database cold for its next complete load.
+        let hadDatabase = database != nil
+        var db = database ?? KnownPeopleDatabase()
 
         var didChange = false
         for change in changes {
             let url = change.url
+            guard KnownPeopleCloudCoordinator.acceptsChange(at: url, root: knownPeopleDirectory) else { continue }
             guard !shouldSkipRemoteReload(path: url.path, contentChangeDate: change.contentChangeDate) else { continue }
             guard let personID = personID(fromFileURL: url) else { continue }
 
@@ -998,13 +1036,25 @@ final class KnownPeopleService {
                     continue
                 }
                 // Reject a read that began against the previous thumbnail contents.
-                storageRevision &+= 1
+                thumbnailContentRevision &+= 1
                 didChange = true
                 continue
             }
 
+            guard hadDatabase else {
+                if url.pathExtension == "deleted" {
+                    // With no person records loaded we cannot map embedding IDs to their owner.
+                    // Invalidate decoded thumbnails without forcing a synchronous database load.
+                    thumbnailContentRevision &+= 1
+                    personThumbnailCache.removeObject(forKey: personID as NSUUID)
+                    embeddingThumbnailCache.removeAllObjects()
+                    didChange = true
+                }
+                continue
+            }
             if url.pathExtension == "deleted" {
                 // A peer deleted this person — drop it and clean its file.
+                invalidateRemotePersonThumbnails(personID, in: db)
                 if db.people.contains(where: { $0.id == personID }) {
                     db.people.removeAll { $0.id == personID }
                     didChange = true
@@ -1032,6 +1082,7 @@ final class KnownPeopleService {
                 didChange = true
             } else if !CloudCoordinatedIO.itemExists(at: url) {
                 // File vanished (deleted remotely without a tombstone reaching us yet).
+                invalidateRemotePersonThumbnails(personID, in: db)
                 if db.people.contains(where: { $0.id == personID }) {
                     db.people.removeAll { $0.id == personID }
                     didChange = true
@@ -1041,13 +1092,21 @@ final class KnownPeopleService {
 
         if didChange {
             db.lastModified = db.people.map(\.updatedAt).max() ?? Date()
-            database = db
+            if hadDatabase { database = db }
             NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
         }
     }
 
     private func personID(fromFileURL url: URL) -> UUID? {
         UUID(uuidString: url.deletingPathExtension().lastPathComponent)
+    }
+
+    private func invalidateRemotePersonThumbnails(_ personID: UUID, in db: KnownPeopleDatabase) {
+        thumbnailContentRevision &+= 1
+        personThumbnailCache.removeObject(forKey: personID as NSUUID)
+        for embedding in db.people.first(where: { $0.id == personID })?.embeddings ?? [] {
+            embeddingThumbnailCache.removeObject(forKey: embedding.id as NSUUID)
+        }
     }
 
     // MARK: - Thumbnails

@@ -724,7 +724,7 @@ final class ICloudSyncCoordinator {
                 pendingKeywordListsEnabled = nil
                 switch result {
                 case .committed(let commit):
-                    KeywordListsStore.shared.applyICloudRoutingPreference(on)
+                    KeywordListsStore.shared.applyICloudRoutingPreference(on, resolvedRoot: commit.destinationURL)
                     if on {
                         KeywordListsCloudCoordinator.shared.refresh(resolvedRoot: commit.destinationURL)
                     } else {

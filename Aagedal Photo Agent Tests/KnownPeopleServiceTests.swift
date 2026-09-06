@@ -13,6 +13,43 @@ import AppKit
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Remote Known People changes reject old roots, siblings, and nested record paths")
+    func remoteChangesRequireActiveDirectory() throws {
+        try withIsolatedEmbeddingMigration { directory in
+            let person = KnownPerson(name: "Keep", embeddings: [embedding(1)])
+            try writePersonFile(person, into: directory)
+            let service = KnownPeopleService()
+            _ = service.loadDatabase()
+            let foreign = directory.appendingPathExtension("old")
+            defer { try? FileManager.default.removeItem(at: foreign) }
+            var replacement = person
+            replacement.name = "Wrong root"
+            try writePersonFile(replacement, into: foreign)
+            service.applyRemoteChanges([(personFileURL(person.id, in: foreign), nil)])
+            service.applyRemoteChanges([(tombstoneURL(person.id, in: foreign), nil)])
+            service.applyRemoteChanges([(
+                directory.appendingPathComponent("people/nested/\(person.id.uuidString).deleted"), nil
+            )])
+            #expect(service.person(byID: person.id)?.name == "Keep")
+            #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: directory).path))
+        }
+    }
+
+    @Test("Known People watcher accepts only direct records and thumbnail files")
+    func remoteFileClassification() {
+        let root = URL(fileURLWithPath: "/library/KnownPeople")
+        let id = UUID().uuidString
+        for path in ["people/\(id).json", "people/\(id).deleted", "thumbnails/\(id).jpg", "embedding_thumbnails/\(id).jpg"] {
+            #expect(KnownPeopleCloudCoordinator.acceptsChange(at: root.appendingPathComponent(path), root: root))
+        }
+        for path in ["people/nested/\(id).json", "people/\(id).jpg", "thumbnails/\(id).json", "people/not-a-person.json", "database.json"] {
+            #expect(!KnownPeopleCloudCoordinator.acceptsChange(at: root.appendingPathComponent(path), root: root))
+        }
+        #expect(!KnownPeopleCloudCoordinator.acceptsChange(
+            at: URL(fileURLWithPath: "/library/KnownPeople-old/people/\(id).json"), root: root
+        ))
+    }
+
     @Test("Adding to a cold Known People cache preserves existing records without duplicating the new person")
     func addPersonWithColdCache() throws {
         try withIsolatedEmbeddingMigration { dir in
@@ -65,6 +102,54 @@ struct KnownPeopleServiceTests {
             #expect(try Data(contentsOf: dir.appendingPathComponent("embedding_thumbnails/\(sample.id.uuidString).jpg")) == embeddingThumbnail)
             service.reloadAfterStorageChange()
             #expect(service.getAllPeople().map(\.id) == [added.id])
+        }
+    }
+
+    @Test("Cold loads reject mismatched person filenames and preserve recovery bytes", arguments: [false, true])
+    func coldLoadRejectsMismatchedIdentity(malformedFilename: Bool) throws {
+        try withIsolatedEmbeddingMigration { directory in
+            UserDefaults.standard.set(FaceRecognitionDefaults.embeddingVersion, forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+            let person = KnownPerson(name: "Keep")
+            try writePersonFile(person, into: directory)
+            var impostor = person
+            impostor.name = "Wrong file"
+            let bytes = try encode(impostor)
+            let filename = malformedFilename ? "not-a-person.json" : "\(UUID().uuidString).json"
+            let url = directory.appendingPathComponent("people/\(filename)")
+            try bytes.write(to: url)
+            let service = KnownPeopleService()
+
+            #expect(service.loadDatabase().people.count == 1)
+            #expect(service.person(byID: person.id)?.name == "Keep")
+            #expect(try Data(contentsOf: url) == bytes)
+            let backups = try FileManager.default.contentsOfDirectory(
+                at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil
+            ).filter { $0.lastPathComponent.hasPrefix("\(filename).corrupt.") }
+            #expect(backups.count == 1)
+            if let backup = backups.first { #expect(try Data(contentsOf: backup) == bytes) }
+        }
+    }
+
+    @Test("Remote records cannot update another person's identity", arguments: [false, true])
+    func remoteLoadRejectsMismatchedIdentity(malformedFilename: Bool) throws {
+        try withIsolatedEmbeddingMigration { directory in
+            UserDefaults.standard.set(FaceRecognitionDefaults.embeddingVersion, forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+            let person = KnownPerson(name: "Keep")
+            try writePersonFile(person, into: directory)
+            let service = KnownPeopleService()
+            _ = service.loadDatabase()
+            var impostor = person
+            impostor.name = "Wrong remote file"
+            let bytes = try encode(impostor)
+            let filename = malformedFilename ? "not-a-person.json" : "\(UUID().uuidString).json"
+            let url = directory.appendingPathComponent("people/\(filename)")
+            try bytes.write(to: url)
+
+            service.applyRemoteChanges([(url, nil)])
+
+            #expect(service.getAllPeople().count == 1)
+            #expect(service.person(byID: person.id)?.name == "Keep")
+            #expect(try Data(contentsOf: url) == bytes)
         }
     }
 
@@ -179,7 +264,7 @@ struct KnownPeopleServiceTests {
         #expect(probe.urls == [fileURL])
     }
 
-    @Test("A local thumbnail save or deletion rejects an older in-flight read", arguments: [0, 1, 2, 3])
+    @Test("A local or remote thumbnail mutation rejects an older in-flight read", arguments: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
     func thumbnailReadRejectsLocalMutation(operation: Int) async throws {
         let directory = makeTempDir()
         activate(directory)
@@ -197,7 +282,13 @@ struct KnownPeopleServiceTests {
             access: KnownPeopleThumbnailFileAccess(readData: { gate.read($0) })
         ))
         let sample = embedding(11)
-        let person = try service.addPerson(name: "Thumbnail race", embeddings: [sample])
+        let person: KnownPerson
+        if operation >= 8 {
+            person = KnownPerson(name: "Cold thumbnail race", embeddings: [sample])
+            try writePersonFile(person, into: directory)
+        } else {
+            person = try service.addPerson(name: "Thumbnail race", embeddings: [sample])
+        }
         let isEmbedding = operation % 2 == 1
         let task = Task {
             if isEmbedding { return await service.loadEmbeddingThumbnail(for: sample.id) }
@@ -213,6 +304,16 @@ struct KnownPeopleServiceTests {
             // not resurrect the earlier valid image after this successful local write.
             if isEmbedding { try service.saveEmbeddingThumbnail(Data(), for: sample.id) }
             else { try service.saveThumbnail(Data(), for: person.id) }
+        } else if operation == 6 || operation == 7 || operation >= 10 {
+            service.applyRemoteChanges([(
+                tombstoneURL(person.id, in: directory), Date.distantFuture
+            )])
+        } else if operation >= 4 {
+            let folder = isEmbedding ? "embedding_thumbnails" : "thumbnails"
+            let id = isEmbedding ? sample.id : person.id
+            service.applyRemoteChanges([(
+                directory.appendingPathComponent("\(folder)/\(id.uuidString).jpg"), Date.distantFuture
+            )])
         } else if isEmbedding {
             service.deleteEmbeddingThumbnail(for: sample.id)
         } else {
@@ -222,6 +323,9 @@ struct KnownPeopleServiceTests {
         #expect(await task.value == nil)
         if isEmbedding { #expect(service.cachedEmbeddingThumbnail(for: sample.id) == nil) }
         else { #expect(service.cachedThumbnail(for: person.id) == nil) }
+        if operation >= 8 {
+            #expect(service.getAllPeople().map(\.id) == [person.id])
+        }
     }
 
     @Test("Removing an embedding cannot mutate a different storage root after its thumbnail read")
@@ -1092,5 +1196,89 @@ private nonisolated final class KnownPeopleThumbnailPublicationGate: @unchecked 
         lock.withLock { didEnter = true }
         guard semaphore.wait(timeout: .now() + 5) == .success else { return nil }
         return data
+    }
+}
+
+@Suite("Known People conflict preservation")
+@MainActor
+struct KnownPeopleConflictPreservationTests {
+    @Test("Unreadable inputs and mismatched identities preserve every conflict", arguments: ["currentRead", "currentDecode", "versionRead", "versionDecode", "currentID", "versionID", "allUnreadable"])
+    func preservesInvalidInputs(failure: String) throws {
+        let person = KnownPerson(name: "Current")
+        let currentURL = URL(fileURLWithPath: "/people/\(person.id.uuidString).json")
+        let versionURL = URL(fileURLWithPath: "/versions/conflict")
+        let encoded = try JSONEncoder().encode(person)
+        let other = try JSONEncoder().encode(KnownPerson(name: "Unrelated"))
+        var writes = 0
+        var resolutions = 0
+        let access = KnownPeopleConflictAccess(
+            versions: { _ in [KnownPeopleConflictVersion(url: versionURL, resolve: { resolutions += 1 })] },
+            readCurrent: { _ in
+                if failure == "currentRead" || failure == "allUnreadable" { throw CocoaError(.fileReadUnknown) }
+                if failure == "currentDecode" { return Data([0]) }
+                return failure == "currentID" ? other : encoded
+            },
+            readVersion: { _ in
+                if failure == "versionRead" || failure == "allUnreadable" { throw CocoaError(.fileReadUnknown) }
+                if failure == "versionDecode" { return Data([0]) }
+                return failure == "versionID" ? other : encoded
+            },
+            writePerson: { _ in writes += 1 }
+        )
+        #expect(KnownPeopleService().resolveConflicts(at: currentURL, access: access) == nil)
+        #expect(writes == 0)
+        #expect(resolutions == 0)
+    }
+
+    @Test("A failed durable write never resolves conflicts or publishes the merge")
+    func failedWritePreservesVersions() throws {
+        let person = KnownPerson(name: "Current")
+        let encoded = try JSONEncoder().encode(person)
+        let url = URL(fileURLWithPath: "/people/\(person.id.uuidString).json")
+        var resolutions = 0
+        var writes = 0
+        let access = KnownPeopleConflictAccess(
+            versions: { _ in [KnownPeopleConflictVersion(url: url, resolve: { resolutions += 1 })] },
+            readCurrent: { _ in encoded },
+            readVersion: { _ in encoded },
+            writePerson: { _ in writes += 1; throw CocoaError(.fileWriteNoPermission) }
+        )
+        #expect(KnownPeopleService().resolveConflicts(at: url, access: access) == nil)
+        #expect(writes == 1)
+        #expect(resolutions == 0)
+    }
+
+    @Test("Only captured versions resolve, after the merged record is durable", arguments: [false, true])
+    func durableMergePrecedesCleanup(cleanupFails: Bool) throws {
+        let person = KnownPerson(name: "Current", updatedAt: Date(timeIntervalSince1970: 1))
+        var newer = person
+        newer.name = "Merged"
+        newer.updatedAt = Date(timeIntervalSince1970: 2)
+        let currentData = try JSONEncoder().encode(person)
+        let versionData = try JSONEncoder().encode(newer)
+        let url = URL(fileURLWithPath: "/people/\(person.id.uuidString).json")
+        var events: [String] = []
+        var durable: KnownPerson?
+        var incomingVersionResolved = false
+        let incoming = KnownPeopleConflictVersion(url: url) { incomingVersionResolved = true }
+        var versions = [KnownPeopleConflictVersion(url: url) {
+            #expect(durable?.name == "Merged")
+            events.append("resolve")
+            if cleanupFails { throw CocoaError(.fileWriteUnknown) }
+        }]
+        let access = KnownPeopleConflictAccess(
+            versions: { _ in events.append("capture"); return versions },
+            readCurrent: { _ in currentData },
+            readVersion: { _ in versionData },
+            writePerson: { merged in
+                events.append("write")
+                durable = merged
+                versions.append(incoming)
+            }
+        )
+        let merged = KnownPeopleService().resolveConflicts(at: url, access: access)
+        #expect(merged?.name == "Merged")
+        #expect(events == ["capture", "write", "resolve"])
+        #expect(!incomingVersionResolved)
     }
 }

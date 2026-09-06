@@ -658,7 +658,7 @@ struct ICloudSyncCoordinatorTests {
         #expect(source.contains("keywordListsRoutingTask?.cancel()"))
         #expect(source.contains("try await KeywordListsRoutingService.shared.reconcile("))
         #expect(source.contains("keywordListsRoutingRequestID == requestID"))
-        #expect(source.contains("KeywordListsStore.shared.applyICloudRoutingPreference(on)"))
+        #expect(source.contains("KeywordListsStore.shared.applyICloudRoutingPreference(on, resolvedRoot: commit.destinationURL)"))
         #expect(!source.contains("let ok = KeywordListsStore.shared.setICloudEnabled(on)"))
         #expect(source.contains("try await templatesRouting.reconcile("))
         #expect(source.contains("templatesRoutingRequestID == requestID"))

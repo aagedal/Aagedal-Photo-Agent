@@ -107,9 +107,8 @@ final class KnownPeopleCloudCoordinator {
         queryGeneration = generation
         let q = makeMetadataQuery()
         q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
-        // Match database.json and the thumbnail .jpg files anywhere in the
-        // ubiquitous documents scope; `handleUpdate` narrows to the KnownPeople
-        // folder by path prefix (the scope only contains this app's files).
+        // Gather records, tombstones and thumbnails; handleUpdate requires their
+        // exact parent directory and UUID filename within the resolved library.
         q.predicate = NSPredicate(
             format: "%K ENDSWITH %@ OR %K ENDSWITH %@ OR %K ENDSWITH %@",
             NSMetadataItemFSNameKey, ".json",
@@ -166,16 +165,13 @@ final class KnownPeopleCloudCoordinator {
         defer { query.enableUpdates() }
 
         guard let root = resolvedRoot else { return }
-        let peoplePath = root.appendingPathComponent("people", isDirectory: true).path + "/"
 
         var downloadURLs: [URL] = []
         for case let item as NSMetadataItem in query.results {
             guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String,
                   let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL else { continue }
-            // Only person files (people/<uuid>.json and <uuid>.deleted) drive a
-            // record-level refresh; thumbnails are read lazily on demand.
-            guard path.hasPrefix(peoplePath),
-                  url.pathExtension == "json" || url.pathExtension == "deleted" else { continue }
+            // Thumbnail updates invalidate decoded caches and superseded reads too.
+            guard Self.acceptsChange(at: url, root: root) else { continue }
 
             // Pull down any item that is still a metadata-only stub locally — on
             // the first sync after a new device signs in, iCloud may hold only
@@ -191,6 +187,24 @@ final class KnownPeopleCloudCoordinator {
 
         if !downloadURLs.isEmpty { requestDownloads(for: downloadURLs) }
         if !pendingChanges.isEmpty { scheduleRefresh() }
+    }
+
+    /// Pure lexical validation shared with the store. Exact parent matching rejects old roots,
+    /// similarly named siblings and nested files without blocking on filesystem resolution.
+    nonisolated static func acceptsChange(at url: URL, root: URL) -> Bool {
+        guard url.isFileURL, root.isFileURL,
+              UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil else { return false }
+        let parent = url.standardizedFileURL.deletingLastPathComponent()
+        let root = root.standardizedFileURL
+        switch url.pathExtension {
+        case "json", "deleted":
+            return parent == root.appendingPathComponent("people", isDirectory: true)
+        case "jpg":
+            return parent == root.appendingPathComponent("thumbnails", isDirectory: true)
+                || parent == root.appendingPathComponent("embedding_thumbnails", isDirectory: true)
+        default:
+            return false
+        }
     }
 
     private func requestDownloads(for urls: [URL]) {

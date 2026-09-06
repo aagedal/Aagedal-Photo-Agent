@@ -20,6 +20,14 @@ serialized actor with durable/cancelled evidence and preserves existing managed 
 edits. The broad filesystem and real-volume gates remain open; the count remains 66 of 75.
 ([validation](plan-status-cloud-lifecycle-keyword-migration-continuation-2026-09-06.md))
 
+**Known People conflicts and keyword backup continuation (2026-09-06):** conflict merges preserve
+unreadable/mismatched versions and resolve only captured versions after a durable write. Ordinary
+person loads reject mismatched identities. Remote changes require the active root and refresh
+thumbnail caches, including cold-database reads. Keyword backup reads run on a serialized actor,
+recovery publication rejects stale generations, and committed keyword routes reuse their resolved
+root. The broad storage and real-volume gates remain open; the count remains 66 of 75.
+([validation](plan-status-known-people-conflicts-keyword-backup-continuation-2026-09-06.md))
+
 ## Outcome
 
 Improve Photo Agent without weakening its strongest existing properties: explicit plans before destructive

@@ -296,9 +296,9 @@ final class KeywordListsStore {
     /// Installs the route chosen by `KeywordListsRoutingService` after its coordinated merge has
     /// completed away from MainActor. The destination skeleton already exists at this point, so
     /// publication only changes the preference/cache and invalidates observers.
-    func applyICloudRoutingPreference(_ enabled: Bool) {
+    func applyICloudRoutingPreference(_ enabled: Bool, resolvedRoot: URL? = nil) {
         UserDefaults.standard.set(enabled, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
-        cachedRoot = nil
+        cachedRoot = resolvedRoot
         bumpVersion()
         for key in Self.allKnownKeys() {
             notifyChanged(key)
