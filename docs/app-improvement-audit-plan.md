@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Library conflicts and import thumbnail continuation (2026-09-06):** Teams and Watermarks
+preserve unreadable/mismatched conflicts, reject ordinary record identity mismatches, and resolve only
+captured versions after a durable write. Known People archive imports invalidate stale thumbnail caches
+and suspended reads even when later person writes fail. The broad storage and real-volume gates remain
+open; the count remains 66 of 75.
+([validation](plan-status-library-conflicts-thumbnail-continuation-2026-09-06.md))
+
 **Storage generation and structured keyword continuation (2026-09-06):** structured keyword
 initialization, notification reloads, saves, and deletion cross the serialized persistence actor.
 Teams and Watermarks reject old-storage mutation publication while retaining durable write evidence;

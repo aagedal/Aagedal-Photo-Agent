@@ -149,6 +149,76 @@ struct RosterStoreTests {
 struct RosterLibraryPersistenceServiceTests {
     private let root = URL(fileURLWithPath: "/tmp/roster-library-service-tests", isDirectory: true)
 
+    @Test("conflict resolution preserves unavailable and mismatched inputs and failed writes",
+          arguments: ["success", "unreadable-current", "unreadable-version", "wrong-current", "wrong-version", "write-failure", "resolve-failure", "no-conflict", "ordinary-wrong", "corrupt-current", "corrupt-version", "cancel-read"])
+    func conflictResolutionPreservesEvidence(scenario: String) async throws {
+        let original = makeTeam(name: "Current")
+        var newest = original
+        newest.name = "Newer conflict"
+        newest.updatedAt = original.updatedAt.addingTimeInterval(100)
+        let currentURL = root.appendingPathComponent("teams/\(original.id.uuidString).json")
+        let versionURL = root.appendingPathComponent("captured-version")
+        let originalData = try JSONEncoder().encode(original)
+        let newestData = try JSONEncoder().encode(newest)
+        let wrongData = try JSONEncoder().encode(makeTeam(name: "Unrelated"))
+        let probe = RosterConflictProbe()
+        let access = RosterLibraryFileAccess(
+            ensureDirectory: { _ in },
+            contentsOfDirectory: { _ in [currentURL] },
+            readData: { _ in
+                if scenario == "unreadable-current" { throw CocoaError(.fileReadNoPermission) }
+                if scenario == "corrupt-current" { return Data("invalid".utf8) }
+                return scenario == "wrong-current" || scenario == "ordinary-wrong" ? wrongData : originalData
+            },
+            writeData: { data, url in
+                if scenario == "write-failure" { throw CocoaError(.fileWriteNoPermission) }
+                probe.recordWrite(data: data, url: url)
+            },
+            removeItem: { _ in Issue.record("Must not remove library files") }
+        )
+        let conflicts = RosterLibraryConflictAccess(
+            versions: { _ in
+                if scenario == "no-conflict" || scenario == "ordinary-wrong" { return [] }
+                return [RosterLibraryConflictVersion(url: versionURL) {
+                    probe.recordResolution()
+                    if scenario == "resolve-failure" { throw CocoaError(.fileWriteNoPermission) }
+                }]
+            },
+            readVersion: { _ in
+                if scenario == "unreadable-version" { throw CocoaError(.fileReadNoPermission) }
+                if scenario == "corrupt-version" { return Data("invalid".utf8) }
+                if scenario == "cancel-read" { withUnsafeCurrentTask { $0?.cancel() } }
+                return scenario == "wrong-version" ? wrongData : newestData
+            }
+        )
+        let service = RosterLibraryPersistenceService(access: access, conflictAccess: conflicts)
+        let result = await Task { await service.load(from: root, requestID: UUID()) }.value
+        if scenario == "cancel-read" {
+            guard case .cancelledAfterPrefix(_, _, let commits) = result else {
+                Issue.record("Expected cancellation after conflict read")
+                return
+            }
+            #expect(commits.isEmpty)
+            #expect(probe.writes.isEmpty)
+            #expect(probe.resolutionCount == 0)
+            return
+        }
+        guard case .loaded(let snapshot) = result else {
+            Issue.record("Expected completed load")
+            return
+        }
+        let committed = scenario == "success" || scenario == "resolve-failure"
+        #expect(probe.resolutionCount == (committed ? 1 : 0))
+        #expect(snapshot.cleanupCommitURLs.contains(currentURL) == committed)
+        #expect(probe.writes.contains(where: { $0.1 == currentURL }) == committed)
+        if ["wrong-current", "ordinary-wrong", "unreadable-current", "corrupt-current"].contains(scenario) {
+            #expect(snapshot.teams.isEmpty)
+        } else {
+            #expect(snapshot.teams.map(\.name) == [committed ? newest.name : original.name])
+        }
+        #expect(!probe.ranOnMainThread)
+    }
+
     @Test("pre-cancelled load performs no filesystem access")
     func preCancelledLoadDoesNoWork() async {
         let probe = RosterLibraryFileAccessProbe()
@@ -507,3 +577,28 @@ nonisolated final class LibraryRootPublicationProbe: @unchecked Sendable {
 }
 
 private nonisolated struct LibraryRootWriteGateTimeout: Error {}
+
+/// Mutable test evidence is protected by the lock across the persistence actor and test executor.
+private nonisolated final class RosterConflictProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedWrites: [(Data, URL)] = []
+    private var resolutions = 0
+    private var observedMainThread = false
+    func recordWrite(data: Data, url: URL) {
+        lock.withLock {
+            recordedWrites.append((data, url))
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+    }
+    func recordResolution() {
+        lock.withLock {
+            // Conflict cleanup is allowed only after the durable replacement.
+            #expect(!recordedWrites.isEmpty)
+            resolutions += 1
+            observedMainThread = observedMainThread || Thread.isMainThread
+        }
+    }
+    var writes: [(Data, URL)] { lock.withLock { recordedWrites } }
+    var resolutionCount: Int { lock.withLock { resolutions } }
+    var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}

@@ -403,6 +403,86 @@ struct KnownPeopleServiceTests {
         #expect(probe.dittoArguments.count == 1)
     }
 
+    @Test("Archive thumbnail commits invalidate cached and suspended reads even after person write failure", arguments: [0, 1, 2, 3, 4, 5, 6, 7])
+    func importInvalidatesThumbnailPublication(operation: Int) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let isEmbedding = operation % 2 == 1
+        let pendingRead = operation % 4 >= 2
+        let failPersonWrite = operation >= 4
+        let sample = embedding(12)
+        let person = KnownPerson(name: "Imported thumbnail", embeddings: [sample])
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32
+        ))
+        let oldImage = try #require(bitmap.representation(using: .png, properties: [:]))
+        let replacement = Data([9, 8, 7])
+        let peopleData = try encode([person])
+        let gate = KnownPeopleThumbnailPublicationGate(data: oldImage)
+        defer { gate.resume() }
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: { _ in }, removeItem: { _ in },
+            contentsOfDirectory: { _ in [] }, isDirectory: { _ in false },
+            itemExists: { _ in true },
+            readData: { $0.lastPathComponent == "people.json" ? peopleData : replacement },
+            readCoordinatedData: { _ in replacement }, writeData: { _, _ in },
+            writeCoordinatedData: { data, url in
+                if failPersonWrite && url.pathExtension == "json" {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                try data.write(to: url, options: .atomic)
+            },
+            runDitto: { _ in }
+        )
+        let service = KnownPeopleService(
+            thumbnailLoader: KnownPeopleThumbnailLoadService(
+                access: KnownPeopleThumbnailFileAccess(readData: { gate.read($0) })
+            ),
+            archiveService: KnownPeopleArchiveService(access: access)
+        )
+        _ = service.loadDatabase()
+        let read: Task<NSImage?, Never>?
+        if pendingRead {
+            read = Task {
+                if isEmbedding { return await service.loadEmbeddingThumbnail(for: sample.id) }
+                return await service.loadThumbnail(for: person.id)
+            }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !gate.entered, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            #expect(gate.entered)
+        } else {
+            read = nil
+            if isEmbedding {
+                try service.saveEmbeddingThumbnail(oldImage, for: sample.id)
+                #expect(service.cachedEmbeddingThumbnail(for: sample.id) != nil)
+            } else {
+                try service.saveThumbnail(oldImage, for: person.id)
+                #expect(service.cachedThumbnail(for: person.id) != nil)
+            }
+        }
+        do {
+            let count = try await service.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip"))
+            #expect(count == 1)
+            #expect(!failPersonWrite)
+        } catch {
+            #expect(failPersonWrite)
+        }
+        gate.resume()
+        if let read { #expect(await read.value == nil) }
+        #expect((service.person(byID: person.id) != nil) == !failPersonWrite)
+        #expect(service.cachedThumbnail(for: person.id) == nil)
+        #expect(service.cachedEmbeddingThumbnail(for: sample.id) == nil)
+        let folder = isEmbedding ? "embedding_thumbnails" : "thumbnails"
+        let id = isEmbedding ? sample.id : person.id
+        #expect(try Data(contentsOf: directory.appendingPathComponent("\(folder)/\(id.uuidString).jpg")) == replacement)
+    }
+
     @Test("late import publication retains concurrent additions edits and deletions", arguments: [0, 1, 2])
     func importPreservesConcurrentCacheChanges(completion: Int) async throws {
         let directory = makeTempDir()

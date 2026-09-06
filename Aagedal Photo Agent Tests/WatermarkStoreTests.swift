@@ -690,3 +690,207 @@ nonisolated private final class LibraryCloudCallbackCountingQuery: NSMetadataQue
         return []
     }
 }
+
+@Suite("Watermark conflict persistence")
+struct WatermarkConflictPersistenceTests {
+    @Test("Unreadable or mismatched inputs preserve all conflict versions", arguments: [
+        "corrupt-current", "missing-current", "wrong-current", "corrupt-conflict",
+        "missing-conflict", "wrong-conflict"
+    ])
+    func preservesUnsafeInputs(problem: String) async throws {
+        let fixture = try WatermarkConflictFixture(problem: problem)
+        let result = await fixture.service.load(from: fixture.root, requestID: UUID())
+        guard case .loaded(let snapshot) = result else {
+            Issue.record("Expected a completed load")
+            return
+        }
+        #expect(snapshot.assets == (problem.hasSuffix("current") ? [] : [fixture.current]))
+        #expect(snapshot.cleanupCommitURLs.isEmpty)
+        #expect(fixture.events.isEmpty)
+        #expect(fixture.currentData == fixture.initialCurrentData)
+    }
+
+    @Test("Failed conflict writes keep the durable current record visible")
+    func failedWrite() async throws {
+        let fixture = try WatermarkConflictFixture(failWrite: true)
+        let result = await fixture.service.load(from: fixture.root, requestID: UUID())
+        guard case .loaded(let snapshot) = result else {
+            Issue.record("Expected a completed load")
+            return
+        }
+        #expect(snapshot.assets == [fixture.current])
+        #expect(snapshot.cleanupCommitURLs.isEmpty)
+        #expect(fixture.events == ["write"])
+        #expect(fixture.currentData == fixture.initialCurrentData)
+    }
+
+    @Test("Only captured versions are resolved after the merged metadata is durable")
+    func successfulWrite() async throws {
+        let fixture = try WatermarkConflictFixture()
+        let result = await fixture.service.load(from: fixture.root, requestID: UUID())
+        guard case .loaded(let snapshot) = result else {
+            Issue.record("Expected a completed load")
+            return
+        }
+        #expect(snapshot.assets == [fixture.newest])
+        #expect(snapshot.cleanupCommitURLs == [fixture.metadataURL])
+        let durableData = try #require(fixture.currentData)
+        #expect(try JSONDecoder().decode(WatermarkAsset.self, from: durableData) == fixture.newest)
+        #expect(fixture.events == ["write", "resolve-first", "resolve-second"])
+        #expect(fixture.remainingVersions == ["late"])
+    }
+
+    @Test("Cancellation during conflict reads preserves metadata and every version")
+    func cancellationDuringConflictRead() async throws {
+        let fixture = try WatermarkConflictFixture(cancelDuringConflictRead: true)
+        let requestID = UUID()
+        let service = fixture.service
+        // Cancel only the load task, keeping the test's own task available for assertions.
+        let result = await Task {
+            await service.load(from: fixture.root, requestID: requestID)
+        }.value
+        guard case .cancelledAfterPrefix(let returnedID, let inspected, let cleanupURLs) = result else {
+            Issue.record("Expected cancellation evidence after the conflict read")
+            return
+        }
+        #expect(returnedID == requestID)
+        #expect(inspected == 1)
+        #expect(cleanupURLs.isEmpty)
+        #expect(fixture.events.isEmpty)
+        #expect(fixture.currentData == fixture.initialCurrentData)
+        #expect(fixture.remainingVersions == ["first", "second"])
+    }
+
+    @Test("Cleanup failures still publish the already durable merge")
+    func failedCleanup() async throws {
+        let fixture = try WatermarkConflictFixture(failCleanup: true)
+        let result = await fixture.service.load(from: fixture.root, requestID: UUID())
+        guard case .loaded(let snapshot) = result else {
+            Issue.record("Expected a completed load")
+            return
+        }
+        #expect(snapshot.assets == [fixture.newest])
+        #expect(snapshot.cleanupCommitURLs == [fixture.metadataURL])
+        #expect(fixture.events == ["write", "resolve-first"])
+        #expect(fixture.remainingVersions == ["first", "second", "late"])
+    }
+
+    @Test("Ordinary loads reject metadata belonging to a different item directory")
+    func rejectsMismatchedIdentityWithoutConflicts() async throws {
+        let fixture = try WatermarkConflictFixture(problem: "wrong-current", hasConflicts: false)
+        let result = await fixture.service.load(from: fixture.root, requestID: UUID())
+        guard case .loaded(let snapshot) = result else {
+            Issue.record("Expected a completed load")
+            return
+        }
+        #expect(snapshot.assets.isEmpty)
+        #expect(snapshot.imageDataByAssetID.isEmpty)
+        #expect(fixture.events.isEmpty)
+    }
+}
+
+/// Lock-protected in-memory filesystem and version inventory shared with the persistence actor.
+nonisolated private final class WatermarkConflictFixture: @unchecked Sendable {
+    let root = URL(fileURLWithPath: "/watermark-conflict-tests")
+    let current: WatermarkAsset
+    let newest: WatermarkAsset
+    let initialCurrentData: Data?
+    private let lock = NSLock()
+    private var storedData: Data?
+    private let versionData: Data?
+    private let failWrite: Bool
+    private let failCleanup: Bool
+    private let cancelDuringConflictRead: Bool
+    private var storedEvents: [String] = []
+    private var versionNames: [String]
+
+    init(
+        problem: String = "", failWrite: Bool = false,
+        failCleanup: Bool = false, hasConflicts: Bool = true,
+        cancelDuringConflictRead: Bool = false
+    ) throws {
+        let id = UUID()
+        current = WatermarkAsset(id: id, name: "Current", pixelWidth: 2, pixelHeight: 2,
+                                 updatedAt: Date(timeIntervalSince1970: 1))
+        newest = WatermarkAsset(id: id, name: "Newest", pixelWidth: 2, pixelHeight: 2,
+                                updatedAt: Date(timeIntervalSince1970: 2))
+        let wrong = WatermarkAsset(name: "Wrong identity", pixelWidth: 2, pixelHeight: 2)
+        let encoder = JSONEncoder()
+        switch problem {
+        case "corrupt-current": initialCurrentData = Data("broken".utf8)
+        case "missing-current": initialCurrentData = nil
+        case "wrong-current": initialCurrentData = try encoder.encode(wrong)
+        default: initialCurrentData = try encoder.encode(current)
+        }
+        storedData = initialCurrentData
+        switch problem {
+        case "corrupt-conflict": versionData = Data("broken".utf8)
+        case "missing-conflict": versionData = nil
+        case "wrong-conflict": versionData = try encoder.encode(wrong)
+        default: versionData = try encoder.encode(newest)
+        }
+        self.failWrite = failWrite
+        self.failCleanup = failCleanup
+        self.cancelDuringConflictRead = cancelDuringConflictRead
+        versionNames = hasConflicts ? ["first", "second"] : []
+    }
+
+    var metadataURL: URL {
+        root.appendingPathComponent("items").appendingPathComponent(current.id.uuidString)
+            .appendingPathComponent("meta.json")
+    }
+    var events: [String] { lock.withLock { storedEvents } }
+    var currentData: Data? { lock.withLock { storedData } }
+    var remainingVersions: [String] { lock.withLock { versionNames } }
+
+    var service: WatermarkLibraryPersistenceService {
+        WatermarkLibraryPersistenceService(
+            access: WatermarkLibraryFileAccess(
+                startAccessing: { _ in false }, stopAccessing: { _ in },
+                readData: { [self] url in
+                    guard url == metadataURL, let data = currentData else {
+                        throw CocoaError(.fileReadNoSuchFile)
+                    }
+                    return data
+                },
+                writeData: { [self] data, _ in
+                    try lock.withLock {
+                        storedEvents.append("write")
+                        if failWrite { throw CocoaError(.fileWriteUnknown) }
+                        storedData = data
+                        versionNames.append("late")
+                    }
+                },
+                removeItem: { _ in Issue.record("Unexpected record removal") },
+                ensureDirectory: { _ in },
+                contentsOfDirectory: { [self] directory in
+                    [directory.appendingPathComponent(current.id.uuidString)]
+                },
+                isDirectory: { _ in true }
+            ),
+            conflictAccess: WatermarkLibraryConflictAccess(
+                versions: { [self] _ in
+                    remainingVersions.map { name in
+                        WatermarkLibraryConflictVersion(url: root.appendingPathComponent(name)) { [self] in
+                            try lock.withLock {
+                                storedEvents.append("resolve-\(name)")
+                                if failCleanup { throw CocoaError(.fileWriteUnknown) }
+                                versionNames.removeAll { $0 == name }
+                            }
+                        }
+                    }
+                },
+                readVersion: { [self] url in
+                    // The second captured version exercises all-or-nothing validation even
+                    // after the first newer record has already decoded successfully.
+                    if url.lastPathComponent == "first" { return try JSONEncoder().encode(newest) }
+                    guard let versionData else { throw CocoaError(.fileReadNoSuchFile) }
+                    if cancelDuringConflictRead {
+                        withUnsafeCurrentTask { $0?.cancel() }
+                    }
+                    return versionData
+                }
+            )
+        )
+    }
+}

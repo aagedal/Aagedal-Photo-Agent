@@ -15,6 +15,12 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Library conflicts and import thumbnail continuation (2026-09-06):** Teams and Watermarks
+retain unreadable or mismatched conflicts and clean up only captured versions after successful writes.
+Known People partial archive imports invalidate stale thumbnail publication from durable write evidence.
+Phase 12's complete storage and manual/device gates remain open.
+([validation and remaining inventory](../plan-status-library-conflicts-thumbnail-continuation-2026-09-06.md))
+
 **Known People conflicts and keyword backup continuation (2026-09-06):** Known People preserves
 unreadable conflict versions, rejects mismatched record identities and old-root remote changes,
 and refreshes thumbnail caches safely across suspended reads. Keyword backup source reads and

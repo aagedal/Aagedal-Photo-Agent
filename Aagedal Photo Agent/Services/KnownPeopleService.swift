@@ -2009,6 +2009,24 @@ final class KnownPeopleService {
             throw CancellationError()
         }
 
+        // Thumbnail writes precede the person commit and can survive a partial failure.
+        // Invalidate from durable evidence even when no person was committed, so cached
+        // images and reads suspended across the import cannot publish older bytes.
+        if !evidence.committedThumbnailURLs.isEmpty {
+            thumbnailContentRevision &+= 1
+            for url in evidence.committedThumbnailURLs {
+                guard let id = personID(fromFileURL: url) else { continue }
+                switch url.deletingLastPathComponent().lastPathComponent {
+                case "thumbnails":
+                    personThumbnailCache.removeObject(forKey: id as NSUUID)
+                case "embedding_thumbnails":
+                    embeddingThumbnailCache.removeObject(forKey: id as NSUUID)
+                default:
+                    break
+                }
+            }
+        }
+
         // Publish the durable import prefix into the latest cache. Local CRUD can run while
         // commitImport is suspended; its additions, edits and removals must not be replaced by
         // the pre-import snapshot. Existing IDs remain authoritative in the current cache.

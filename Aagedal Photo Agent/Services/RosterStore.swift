@@ -75,6 +75,39 @@ nonisolated struct RosterLibraryFileAccess: @unchecked Sendable {
     )
 }
 
+/// A captured conflict handle is consumed only by the persistence actor after a durable write.
+nonisolated struct RosterLibraryConflictVersion: Sendable {
+    let url: URL
+    let resolve: @Sendable () throws -> Void
+}
+
+nonisolated struct RosterLibraryConflictAccess: Sendable {
+    let versions: @Sendable (URL) -> [RosterLibraryConflictVersion]
+    let readVersion: @Sendable (URL) throws -> Data
+
+    static let system = RosterLibraryConflictAccess(
+        versions: { url in
+            (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).map { version in
+                let handle = RosterLibrarySystemConflict(version: version)
+                return RosterLibraryConflictVersion(url: version.url) {
+                    try handle.resolve()
+                }
+            }
+        },
+        readVersion: { try Data(contentsOf: $0) }
+    )
+}
+
+/// Foundation version handles remain inside the persistence actor's serial transaction.
+nonisolated private final class RosterLibrarySystemConflict: @unchecked Sendable {
+    let version: NSFileVersion
+    init(version: NSFileVersion) { self.version = version }
+    func resolve() throws {
+        version.isResolved = true
+        try version.remove()
+    }
+}
+
 /// Owns every coordinated Teams-library filesystem operation. Its immutable results are the
 /// only values published by ``RosterStore`` on MainActor. Foundation coordination is not
 /// preemptible, so each mutation result records whether cancellation arrived after durability.
@@ -82,6 +115,7 @@ actor RosterLibraryPersistenceService {
     static let shared = RosterLibraryPersistenceService()
 
     private let access: RosterLibraryFileAccess
+    private let conflictAccess: RosterLibraryConflictAccess
     private let deletionIO: DurableDeletionIO?
     private let now: @Sendable () -> Date
 
@@ -89,10 +123,12 @@ actor RosterLibraryPersistenceService {
 
     init(
         access: RosterLibraryFileAccess = .system,
+        conflictAccess: RosterLibraryConflictAccess = .system,
         deletionIO: DurableDeletionIO? = nil,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.access = access
+        self.conflictAccess = conflictAccess
         self.deletionIO = deletionIO
         self.now = now
     }
@@ -294,7 +330,9 @@ actor RosterLibraryPersistenceService {
         }
         do {
             let data = try access.readData(url)
-            return try JSONDecoder().decode(Team.self, from: data)
+            let team = try JSONDecoder().decode(Team.self, from: data)
+            guard team.id == teamID(fromFileURL: url) else { return nil }
+            return team
         } catch {
             rosterLog.error("Failed to load team file \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             backupCorruptFile(at: url, cleanupCommits: &cleanupCommits)
@@ -324,33 +362,38 @@ actor RosterLibraryPersistenceService {
 
     /// Conflict versions are inspected and rewritten on this actor, never by the UI owner.
     private func resolveConflicts(at url: URL, cleanupCommits: inout [URL]) -> Team? {
-        guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
-              !conflicts.isEmpty else {
-            return nil
-        }
+        let conflicts = conflictAccess.versions(url)
+        guard !conflicts.isEmpty, let expectedID = teamID(fromFileURL: url) else { return nil }
         let decoder = JSONDecoder()
         var records: [Team] = []
-        if let currentData = try? access.readData(url),
-           let current = try? decoder.decode(Team.self, from: currentData) {
+        do {
+            let current = try decoder.decode(Team.self, from: access.readData(url))
+            guard current.id == expectedID else { return nil }
             records.append(current)
-        }
-        for version in conflicts {
-            if let data = try? Data(contentsOf: version.url),
-               let team = try? decoder.decode(Team.self, from: data) {
+            for version in conflicts {
+                let team = try decoder.decode(Team.self, from: conflictAccess.readVersion(version.url))
+                guard team.id == expectedID else { return nil }
                 records.append(team)
             }
-        }
-        guard let merged = records.max(by: { $0.updatedAt < $1.updatedAt }) else {
-            try? NSFileVersion.removeOtherVersionsOfItem(at: url)
+        } catch {
+            // An unreadable version may contain the newest roster. Preserve every input for retry.
+            rosterLog.error("Preserving unreadable Teams conflicts: \(error.localizedDescription, privacy: .private)")
             return nil
         }
+        guard let merged = records.max(by: { $0.updatedAt < $1.updatedAt }) else { return nil }
+        guard !Task.isCancelled else { return nil }
         do {
             try writeTeam(merged, to: url)
             cleanupCommits.append(url)
-            for version in conflicts { version.isResolved = true }
-            try NSFileVersion.removeOtherVersionsOfItem(at: url)
         } catch {
-            rosterLog.error("Failed to resolve conflicts for \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+            rosterLog.error("Failed to write merged team: \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
+        do {
+            // Only captured versions may be removed; newly arriving conflicts remain for another load.
+            for version in conflicts { try version.resolve() }
+        } catch {
+            rosterLog.error("Failed to resolve Teams conflicts: \(error.localizedDescription, privacy: .private)")
         }
         return merged
     }

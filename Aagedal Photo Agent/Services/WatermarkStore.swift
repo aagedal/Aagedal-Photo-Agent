@@ -67,6 +67,39 @@ nonisolated struct WatermarkLibraryFileAccess: Sendable {
     )
 }
 
+/// A captured conflict handle is consumed only by the persistence actor after a durable write.
+nonisolated struct WatermarkLibraryConflictVersion: Sendable {
+    let url: URL
+    let resolve: @Sendable () throws -> Void
+}
+
+nonisolated struct WatermarkLibraryConflictAccess: Sendable {
+    let versions: @Sendable (URL) -> [WatermarkLibraryConflictVersion]
+    let readVersion: @Sendable (URL) throws -> Data
+
+    static let system = WatermarkLibraryConflictAccess(
+        versions: { url in
+            (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).map { version in
+                let handle = WatermarkLibrarySystemConflict(version: version)
+                return WatermarkLibraryConflictVersion(url: version.url) {
+                    try handle.resolve()
+                }
+            }
+        },
+        readVersion: { try Data(contentsOf: $0) }
+    )
+}
+
+/// Foundation version handles remain inside the persistence actor's serial transaction.
+nonisolated private final class WatermarkLibrarySystemConflict: @unchecked Sendable {
+    let version: NSFileVersion
+    init(version: NSFileVersion) { self.version = version }
+    func resolve() throws {
+        version.isResolved = true
+        try version.remove()
+    }
+}
+
 nonisolated struct WatermarkLibrarySnapshot: Sendable {
     let requestID: UUID
     let assets: [WatermarkAsset]
@@ -116,9 +149,14 @@ actor WatermarkLibraryPersistenceService {
     static let shared = WatermarkLibraryPersistenceService()
 
     private let access: WatermarkLibraryFileAccess
+    private let conflictAccess: WatermarkLibraryConflictAccess
 
-    init(access: WatermarkLibraryFileAccess = .system) {
+    init(
+        access: WatermarkLibraryFileAccess = .system,
+        conflictAccess: WatermarkLibraryConflictAccess = .system
+    ) {
         self.access = access
+        self.conflictAccess = conflictAccess
     }
 
     func importPNG(
@@ -414,11 +452,13 @@ actor WatermarkLibraryPersistenceService {
         cleanupCommitURLs: inout [URL]
     ) -> WatermarkAsset? {
         let url = metadataFileURL(for: id, in: itemsDirectory)
-        if let resolved = resolveConflicts(at: url, cleanupCommitURLs: &cleanupCommitURLs) {
+        if let resolved = resolveConflicts(at: url, expectedID: id, cleanupCommitURLs: &cleanupCommitURLs) {
             return resolved
         }
         do {
-            return try JSONDecoder().decode(WatermarkAsset.self, from: access.readData(url))
+            let asset = try JSONDecoder().decode(WatermarkAsset.self, from: access.readData(url))
+            guard asset.id == id else { return nil }
+            return asset
         } catch {
             watermarkLog.error("Failed to load watermark meta \(id.uuidString, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             return nil
@@ -433,33 +473,43 @@ actor WatermarkLibraryPersistenceService {
 
     private func resolveConflicts(
         at url: URL,
+        expectedID: UUID,
         cleanupCommitURLs: inout [URL]
     ) -> WatermarkAsset? {
-        guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
-              !conflicts.isEmpty else { return nil }
+        let conflicts = conflictAccess.versions(url)
+        guard !conflicts.isEmpty else { return nil }
         let decoder = JSONDecoder()
         var records: [WatermarkAsset] = []
-        if let currentData = try? access.readData(url),
-           let current = try? decoder.decode(WatermarkAsset.self, from: currentData) {
+        do {
+            let current = try decoder.decode(WatermarkAsset.self, from: access.readData(url))
+            guard current.id == expectedID else { return nil }
             records.append(current)
-        }
-        for version in conflicts {
-            if let data = try? Data(contentsOf: version.url),
-               let asset = try? decoder.decode(WatermarkAsset.self, from: data) {
+            for version in conflicts {
+                let asset = try decoder.decode(
+                    WatermarkAsset.self, from: conflictAccess.readVersion(version.url)
+                )
+                guard asset.id == expectedID else { return nil }
                 records.append(asset)
             }
-        }
-        guard let merged = records.max(by: { $0.updatedAt < $1.updatedAt }) else {
-            try? NSFileVersion.removeOtherVersionsOfItem(at: url)
+        } catch {
+            // Any unavailable version may carry unique data. Preserve every original.
+            watermarkLog.error("Preserving unreadable watermark conflicts: \(error.localizedDescription, privacy: .private)")
             return nil
         }
+        guard let merged = records.max(by: { $0.updatedAt < $1.updatedAt }) else { return nil }
+        guard !Task.isCancelled else { return nil }
         do {
             try writeAsset(merged, to: url)
-            cleanupCommitURLs.append(url)
-            for version in conflicts { version.isResolved = true }
-            try NSFileVersion.removeOtherVersionsOfItem(at: url)
         } catch {
-            watermarkLog.error("Failed to resolve conflicts for \(merged.id.uuidString, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+            watermarkLog.error("Failed to write merged watermark: \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
+        cleanupCommitURLs.append(url)
+        do {
+            // Never remove versions that arrived after this transaction captured its inputs.
+            for version in conflicts { try version.resolve() }
+        } catch {
+            watermarkLog.error("Failed to resolve watermark conflicts: \(error.localizedDescription, privacy: .private)")
         }
         return merged
     }

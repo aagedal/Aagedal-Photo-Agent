@@ -46,6 +46,10 @@ upload the current image from Photo Agent.
 
 ### Reliability and compatibility
 
+- Teams and Watermarks preserve unreadable iCloud conflict versions for recovery and avoid displaying
+  conflict merges that could not be saved.
+- Known People archive imports refresh cached thumbnails even when a later person-record write fails.
+
 - Command-S export now preserves originals and existing renditions when a derived filename collides,
   appending a number for same-folder exports, RAW/JPEG siblings, and selected files that share a
   basename. Metadata copying also rejects source/destination aliases before touching either file.
