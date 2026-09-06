@@ -286,15 +286,40 @@ actor KnownPeopleArchiveService {
         try await access.runDitto(["-x", "-k", sourceURL.path, tempDirectory.path])
         try Task.checkCancellation()
 
-        let contents = try access.contentsOfDirectory(tempDirectory)
-        let extractedDirectory = contents.first(where: access.isDirectory) ?? tempDirectory
-        let peopleURL = extractedDirectory.appendingPathComponent("people.json")
-        guard access.itemExists(peopleURL) else {
-            throw NSError(domain: "KnownPeopleService", code: 3, userInfo: [
-                NSLocalizedDescriptionKey: "Invalid archive: missing people.json"
-            ])
+        // Flat archives contain thumbnail directories too, so a directory alone does not
+        // identify the payload. Prefer the root; otherwise require one unambiguous wrapper.
+        let extractedDirectory: URL
+        let hasRootPeople = access.itemExists(tempDirectory.appendingPathComponent("people.json"))
+        try Task.checkCancellation()
+        if hasRootPeople {
+            extractedDirectory = tempDirectory
+        } else {
+            let contents = try access.contentsOfDirectory(tempDirectory)
+            try Task.checkCancellation()
+            var candidates: [URL] = []
+            for entry in contents {
+                try Task.checkCancellation()
+                let isDirectory = access.isDirectory(entry)
+                try Task.checkCancellation()
+                if isDirectory {
+                    let hasPeople = access.itemExists(entry.appendingPathComponent("people.json"))
+                    try Task.checkCancellation()
+                    if hasPeople { candidates.append(entry) }
+                }
+            }
+            try Task.checkCancellation()
+            guard candidates.count == 1, let candidate = candidates.first else {
+                throw NSError(domain: "KnownPeopleService", code: candidates.isEmpty ? 3 : 4, userInfo: [
+                    NSLocalizedDescriptionKey: candidates.isEmpty
+                        ? "Invalid archive: missing people.json"
+                        : "Invalid archive: multiple folders contain people.json"
+                ])
+            }
+            extractedDirectory = candidate
         }
 
+        let peopleURL = extractedDirectory.appendingPathComponent("people.json")
+        try Task.checkCancellation()
         let peopleData = try access.readData(peopleURL)
         try Task.checkCancellation()
         let people = try JSONDecoder().decode([KnownPerson].self, from: peopleData)

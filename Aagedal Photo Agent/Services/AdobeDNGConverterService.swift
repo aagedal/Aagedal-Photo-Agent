@@ -33,33 +33,6 @@ nonisolated enum AdobeDNGConverterService {
         string: "https://helpx.adobe.com/camera-raw/using/adobe-dng-converter.html"
     )!
 
-    /// Resolve through Launch Services so non-standard application locations work, with
-    /// explicit Applications-folder fallbacks because Adobe's installer does not always
-    /// leave the converter registered in the current Launch Services database.
-    @MainActor
-    static var installedExecutableURL: URL? {
-        var applicationURLs: [URL] = []
-        if let registeredURL = NSWorkspace.shared.urlForApplication(
-            withBundleIdentifier: bundleIdentifier
-        ) {
-            applicationURLs.append(registeredURL)
-        }
-        applicationURLs.append(
-            URL(fileURLWithPath: "/Applications/Adobe DNG Converter.app", isDirectory: true)
-        )
-        applicationURLs.append(
-            FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Applications/Adobe DNG Converter.app", isDirectory: true)
-        )
-
-        for applicationURL in applicationURLs {
-            if let executable = executableURL(in: applicationURL) {
-                return executable
-            }
-        }
-        return nil
-    }
-
     nonisolated static func executableURL(in applicationURL: URL) -> URL? {
         let executable = applicationURL
             .appendingPathComponent("Contents/MacOS/Adobe DNG Converter")
@@ -132,5 +105,85 @@ nonisolated enum AdobeDNGConverterService {
         }
 
         return destinationURL
+    }
+}
+
+nonisolated enum AdobeDNGDiscoveryResult: Sendable, Equatable {
+    case complete(executableURL: URL?)
+    case cancelled(inspectedCount: Int)
+}
+
+/// Launch Services lookup and executable probes may block on application volumes.
+/// Keep the entire ordered lookup on a serialized worker, including fallback probes.
+actor AdobeDNGDiscoveryService {
+    static let shared = AdobeDNGDiscoveryService()
+    private let applications: @Sendable () -> [URL]
+    private let executable: @Sendable (URL) -> URL?
+
+    init(
+        applications: @escaping @Sendable () -> [URL] = {
+            var urls: [URL] = []
+            if let registered = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: AdobeDNGConverterService.bundleIdentifier
+            ) {
+                urls.append(registered)
+            }
+            urls.append(URL(fileURLWithPath: "/Applications/Adobe DNG Converter.app", isDirectory: true))
+            urls.append(FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Applications/Adobe DNG Converter.app", isDirectory: true))
+            return urls
+        },
+        executable: @escaping @Sendable (URL) -> URL? = AdobeDNGConverterService.executableURL
+    ) {
+        self.applications = applications
+        self.executable = executable
+    }
+
+    func discover() -> AdobeDNGDiscoveryResult {
+        guard !Task.isCancelled else { return .cancelled(inspectedCount: 0) }
+        let candidates = applications()
+        var inspectedCount = 0
+        guard !Task.isCancelled else { return .cancelled(inspectedCount: 0) }
+        for candidate in candidates {
+            guard !Task.isCancelled else { return .cancelled(inspectedCount: inspectedCount) }
+            let resolved = executable(candidate)
+            inspectedCount += 1
+            guard !Task.isCancelled else { return .cancelled(inspectedCount: inspectedCount) }
+            if let resolved { return .complete(executableURL: resolved) }
+        }
+        return .complete(executableURL: nil)
+    }
+}
+
+/// Context menus read a cached snapshot. The archive action always performs a fresh
+/// asynchronous lookup so installation/removal since the last menu cannot select a stale tool.
+@MainActor
+final class AdobeDNGDiscoveryStore {
+    static let shared = AdobeDNGDiscoveryStore()
+    private(set) var hasChecked = false
+    private(set) var executableURL: URL?
+    private let service: AdobeDNGDiscoveryService
+    private var requestID = UUID()
+    private var backgroundRefresh: Task<Void, Never>?
+
+    init(service: AdobeDNGDiscoveryService = .shared) { self.service = service }
+
+    func refreshInBackground() {
+        guard backgroundRefresh == nil else { return }
+        backgroundRefresh = Task {
+            _ = await refresh()
+            backgroundRefresh = nil
+        }
+    }
+
+    func refresh() async -> AdobeDNGDiscoveryResult {
+        let id = UUID()
+        requestID = id
+        let result = await service.discover()
+        if id == requestID, !Task.isCancelled, case .complete(let url) = result {
+            executableURL = url
+            hasChecked = true
+        }
+        return result
     }
 }

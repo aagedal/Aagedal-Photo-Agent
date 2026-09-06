@@ -790,48 +790,43 @@ enum KeywordListsArchive {
             }
             guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
 
-            let importedText = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
-            let committedText: String
-            let committedEntryCount: Int
-            if entry.kind == "structured" || entry.kind == "structuredPersonShown" {
-                // Append has historically meant replace for structured trees.
-                committedText = importedText
-                committedEntryCount = entry.entryCount
-            } else {
-                let importedEntries = importedText
-                    .components(separatedBy: .newlines)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                let finalEntries: [String]
-                switch route.mode {
-                case .replace:
-                    finalEntries = sanitizeFlatEntries(importedEntries)
-                case .append:
-                    let existingEntries: [String]
-                    if CloudCoordinatedIO.itemExists(at: route.destinationURL),
-                       let data = try? CloudCoordinatedIO.readData(at: route.destinationURL) {
-                        existingEntries = ApprovedListParser.parseString(
-                            String(decoding: data, as: UTF8.self),
-                            csv: false
-                        )
-                    } else {
-                        existingEntries = []
-                    }
-                    var seen = Set(existingEntries.map { $0.lowercased() })
-                    var combined = existingEntries
-                    for importedEntry in importedEntries
-                    where seen.insert(importedEntry.lowercased()).inserted {
-                        combined.append(importedEntry)
-                    }
-                    finalEntries = sanitizeFlatEntries(combined)
-                }
-                committedText = finalEntries.joined(separator: "\n")
-                    + (finalEntries.isEmpty ? "" : "\n")
-                committedEntryCount = finalEntries.count
-            }
-
             do {
+                let importedText = try String(contentsOf: fileURL, encoding: .utf8)
+                let committedText: String
+                let committedEntryCount: Int
+                if entry.kind == "structured" || entry.kind == "structuredPersonShown" {
+                    // Append has historically meant replace for structured trees.
+                    committedText = importedText
+                    committedEntryCount = entry.entryCount
+                } else {
+                    let importedEntries = importedText
+                        .components(separatedBy: .newlines)
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    let finalEntries: [String]
+                    switch route.mode {
+                    case .replace:
+                        finalEntries = sanitizeFlatEntries(importedEntries)
+                    case .append:
+                        let existingEntries = try appendEntries(at: route.destinationURL)
+                        var seen = Set(existingEntries.map { $0.lowercased() })
+                        var combined = existingEntries
+                        for importedEntry in importedEntries
+                        where seen.insert(importedEntry.lowercased()).inserted {
+                            combined.append(importedEntry)
+                        }
+                        finalEntries = sanitizeFlatEntries(combined)
+                    }
+                    committedText = finalEntries.joined(separator: "\n")
+                        + (finalEntries.isEmpty ? "" : "\n")
+                    committedEntryCount = finalEntries.count
+                }
                 try CloudCoordinatedIO.writeText(committedText, to: route.destinationURL)
+                committedItems.append(KeywordListsArchiveImportCommit.Item(
+                    identifier: route.identifier,
+                    destinationURL: route.destinationURL,
+                    entryCount: committedEntryCount
+                ))
             } catch {
                 let failure = KeywordListsArchiveImportFailure(
                     identifier: route.identifier,
@@ -846,11 +841,6 @@ enum KeywordListsArchive {
                 }
                 return .partiallyCommitted(commitSnapshot(), failure: failure)
             }
-            committedItems.append(KeywordListsArchiveImportCommit.Item(
-                identifier: route.identifier,
-                destinationURL: route.destinationURL,
-                entryCount: committedEntryCount
-            ))
         }
 
         let commit = commitSnapshot()
@@ -890,7 +880,7 @@ enum KeywordListsArchive {
                 continue
             }
             guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-            let text = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+            let text = try String(contentsOf: fileURL, encoding: .utf8)
 
             switch key {
             case .structured, .structuredPersonShown:
@@ -909,7 +899,7 @@ enum KeywordListsArchive {
                 case .replace:
                     try KeywordListsStore.shared.writeEntries(newEntries, to: key)
                 case .append:
-                    let existing = KeywordListsStore.shared.readEntries(key)
+                    let existing = try appendEntries(at: KeywordListsStore.shared.url(for: key))
                     var seen = Set(existing.map { $0.lowercased() })
                     var combined = existing
                     for entry in newEntries where seen.insert(entry.lowercased()).inserted {
@@ -923,6 +913,14 @@ enum KeywordListsArchive {
             imported += 1
         }
         return imported
+    }
+
+    /// Missing lists can be seeded; failed reads (including cloud placeholders) must abort
+    /// the affected import before replacement, preserving existing content and prior commits.
+    nonisolated private static func appendEntries(at url: URL) throws -> [String] {
+        guard CloudCoordinatedIO.itemExists(at: url) else { return [] }
+        let data = try CloudCoordinatedIO.readData(at: url)
+        return ApprovedListParser.parseString(String(decoding: data, as: UTF8.self), csv: false)
     }
 
     /// Convenience for the old "import every list in the archive with the same

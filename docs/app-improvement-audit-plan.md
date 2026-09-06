@@ -6,6 +6,14 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Keyword archive and DNG discovery continuation (2026-09-06):** keyword routing and archive
+imports preserve affected destinations when source or append-destination reads fail. Known People
+archive preparation selects root or unique wrapped payloads deterministically and samples discovery
+cancellation. DNG converter lookup and executable probes now cross a serialized actor, with cached
+menu state and a fresh asynchronous archive preflight. The broad storage and real-volume gates remain
+open; the count remains 66 of 75.
+([validation and remaining work](plan-status-keyword-archive-dng-continuation-2026-09-06.md))
+
 **Library conflicts and import thumbnail continuation (2026-09-06):** Teams and Watermarks
 preserve unreadable/mismatched conflicts, reject ordinary record identity mismatches, and resolve only
 captured versions after a durable write. Known People archive imports invalidate stale thumbnail caches

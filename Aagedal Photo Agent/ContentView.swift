@@ -3358,19 +3358,6 @@ struct ContentView: View {
             }
         }
 
-        let dngConverterURL: URL?
-        if format.requiresAdobeDNGConverter {
-            guard let installedURL = AdobeDNGConverterService.installedExecutableURL else {
-                browserViewModel.errorMessage = """
-                Adobe DNG Converter is required for DNG archiving. Install the free converter from Adobe, then try again.
-                """
-                return
-            }
-            dngConverterURL = installedURL
-        } else {
-            dngConverterURL = nil
-        }
-
         let locationMode = RAWArchiveService.currentLocationMode
         var askedFolder: URL?
         if locationMode == .askEveryTime {
@@ -3411,6 +3398,22 @@ struct ContentView: View {
 
         renderExportTask = Task {
             defer { renderExportTask = nil }
+            let dngConverterURL: URL?
+            if format.requiresAdobeDNGConverter {
+                let discovery = await AdobeDNGDiscoveryStore.shared.refresh()
+                guard !Task.isCancelled else {
+                    isRenderingEditedFolder = false
+                    return
+                }
+                guard case .complete(let installedURL?) = discovery else {
+                    isRenderingEditedFolder = false
+                    browserViewModel.errorMessage = "Adobe DNG Converter is required for DNG archiving. Install the free converter from Adobe, then try again."
+                    return
+                }
+                dngConverterURL = installedURL
+            } else {
+                dngConverterURL = nil
+            }
             let securityScopeRequest = RAWArchiveSecurityScopeRequest(
                 ingestRoot: configuredIngestRoot,
                 archiveRoot: configuredArchiveRoot

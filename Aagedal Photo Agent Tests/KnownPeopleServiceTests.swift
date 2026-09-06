@@ -403,6 +403,124 @@ struct KnownPeopleServiceTests {
         #expect(probe.dittoArguments.count == 1)
     }
 
+    @Test("Archive preparation selects a unique payload and cleans up every layout", arguments: [
+        "flat", "wrapper", "root-precedence", "ambiguous", "missing", "invalid-root"
+    ])
+    func archivePayloadLayouts(layout: String) async throws {
+        let directory = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sample = embedding(7)
+        let person = KnownPerson(name: "Selected payload", embeddings: [sample])
+        let peopleData = try encode([person])
+        let otherPeopleData = try encode([KnownPerson(name: "Other payload")])
+        let thumbnail = Data([1, 2, 3])
+        let embeddingThumbnail = Data([4, 5, 6])
+        let system = KnownPeopleArchiveFileAccess.system
+        let service = KnownPeopleArchiveService(access: KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory,
+            removeItem: system.removeItem,
+            // Put irrelevant directories first to reproduce the old selection failure.
+            contentsOfDirectory: { try system.contentsOfDirectory($0).sorted { $0.path < $1.path } },
+            isDirectory: system.isDirectory,
+            itemExists: system.itemExists,
+            readData: system.readData,
+            readCoordinatedData: { _ in
+                Issue.record("Preparation must not read destination storage")
+                throw CancellationError()
+            },
+            writeData: { _, _ in Issue.record("Preparation must not write payload files") },
+            writeCoordinatedData: { _, _ in Issue.record("Preparation must not commit destination files") },
+            runDitto: { arguments in
+                let extracted = URL(fileURLWithPath: try #require(arguments.last), isDirectory: true)
+                try system.createDirectory(extracted.appendingPathComponent("__MACOSX"))
+                if layout == "missing" { return }
+                let payloadRoot = layout == "wrapper" || layout == "ambiguous"
+                    ? extracted.appendingPathComponent("payload") : extracted
+                try system.createDirectory(payloadRoot.appendingPathComponent("thumbnails"))
+                try system.createDirectory(payloadRoot.appendingPathComponent("embedding_thumbnails"))
+                try system.writeData(
+                    layout == "invalid-root" ? Data("invalid JSON".utf8) : peopleData,
+                    payloadRoot.appendingPathComponent("people.json")
+                )
+                try system.writeData(thumbnail, payloadRoot.appendingPathComponent("thumbnails/\(person.id.uuidString).jpg"))
+                try system.writeData(embeddingThumbnail, payloadRoot.appendingPathComponent("embedding_thumbnails/\(sample.id.uuidString).jpg"))
+                if ["root-precedence", "ambiguous", "invalid-root"].contains(layout) {
+                    let otherRoot = extracted.appendingPathComponent("other-payload")
+                    try system.createDirectory(otherRoot)
+                    try system.writeData(otherPeopleData, otherRoot.appendingPathComponent("people.json"))
+                }
+            }
+        ))
+
+        let source = directory.appendingPathComponent("fixture.zip")
+        switch layout {
+        case "ambiguous", "missing":
+            do {
+                _ = try await service.prepareImport(sourceURL: source)
+                Issue.record("Invalid archive layout was accepted")
+            } catch {
+                #expect((error as NSError).domain == "KnownPeopleService")
+                #expect((error as NSError).code == (layout == "missing" ? 3 : 4))
+            }
+        case "invalid-root":
+            await #expect(throws: DecodingError.self) {
+                _ = try await service.prepareImport(sourceURL: source)
+            }
+        default:
+            let payload = try await service.prepareImport(sourceURL: source)
+            #expect(payload.people.map(\.id) == [person.id])
+            #expect(payload.personThumbnails == [person.id: thumbnail])
+            #expect(payload.embeddingThumbnails == [sample.id: embeddingThumbnail])
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    @Test("Archive layout discovery stops after each cancelled filesystem probe", arguments: [
+        "root", "enumeration", "directory", "wrapper"
+    ])
+    func archiveLayoutCancellation(stage: String) async throws {
+        let directory = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let system = KnownPeopleArchiveFileAccess.system
+        let candidate = directory.appendingPathComponent("wrapper", isDirectory: true)
+        let service = KnownPeopleArchiveService(access: KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory,
+            removeItem: system.removeItem,
+            contentsOfDirectory: { _ in
+                #expect(!Task.isCancelled)
+                if stage == "enumeration" { withUnsafeCurrentTask { $0?.cancel() } }
+                return [candidate, directory.appendingPathComponent("another-wrapper")]
+            },
+            isDirectory: { _ in
+                #expect(!Task.isCancelled)
+                if stage == "directory" { withUnsafeCurrentTask { $0?.cancel() } }
+                return true
+            },
+            itemExists: { url in
+                #expect(!Task.isCancelled)
+                let isWrapper = url.deletingLastPathComponent().standardizedFileURL.path
+                    == candidate.standardizedFileURL.path
+                if stage == "root" || (stage == "wrapper" && isWrapper) {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                return isWrapper
+            },
+            readData: { _ in
+                Issue.record("Cancelled discovery must not read a payload")
+                return Data()
+            },
+            readCoordinatedData: { _ in throw CancellationError() },
+            writeData: { _, _ in Issue.record("Cancelled discovery must not write files") },
+            writeCoordinatedData: { _, _ in Issue.record("Cancelled discovery must not commit files") },
+            runDitto: { _ in }
+        ))
+        let operation = Task { try await service.prepareImport(sourceURL: directory.appendingPathComponent("fixture.zip")) }
+        await #expect(throws: CancellationError.self) { _ = try await operation.value }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
     @Test("Archive thumbnail commits invalidate cached and suspended reads even after person write failure", arguments: [0, 1, 2, 3, 4, 5, 6, 7])
     func importInvalidatesThumbnailPublication(operation: Int) async throws {
         let directory = makeTempDir()

@@ -15,6 +15,13 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Keyword archive and DNG discovery continuation (2026-09-06):** failed keyword routing/import
+reads preserve affected destinations and retain earlier durable commits. Known People archives accept
+flat or unique wrapped payloads and reject ambiguous layouts before writes. DNG converter discovery
+runs off MainActor with cached menu state and fresh archive preflight. Phase 12 storage and
+manual/device gates remain open.
+([validation and remaining work](../plan-status-keyword-archive-dng-continuation-2026-09-06.md))
+
 **Library conflicts and import thumbnail continuation (2026-09-06):** Teams and Watermarks
 retain unreadable or mismatched conflicts and clean up only captured versions after successful writes.
 Known People partial archive imports invalidate stale thumbnail publication from durable write evidence.

@@ -442,10 +442,10 @@ final class KeywordListsStore {
             let destURL = destination.appendingPathComponent(key.relativePath)
             switch key {
             case .quick, .approved:
-                let destEntries = entries(at: destURL)
+                let destEntries = try entries(at: destURL)
                 var seen = Set(destEntries)
                 var merged = destEntries
-                for entry in entries(at: sourceURL) where seen.insert(entry).inserted {
+                for entry in try entries(at: sourceURL) where seen.insert(entry).inserted {
                     merged.append(entry)
                 }
                 let joined = merged.joined(separator: "\n") + (merged.isEmpty ? "" : "\n")
@@ -460,9 +460,12 @@ final class KeywordListsStore {
 
     /// Reads line entries from an explicit file URL (used by `reconcileTree`, which
     /// must read both roots regardless of which one is currently active).
-    nonisolated private static func entries(at url: URL) -> [String] {
-        guard CloudCoordinatedIO.itemExists(at: url),
-              let data = try? CloudCoordinatedIO.readData(at: url) else { return [] }
+    nonisolated private static func entries(at url: URL) throws -> [String] {
+        guard CloudCoordinatedIO.itemExists(at: url) else { return [] }
+        // An unavailable cloud placeholder or unreadable file is not an empty list.
+        // Abort before writing the affected key so a failed read cannot erase its existing entries.
+        // Earlier keys may already have committed additive unions; retrying those is idempotent.
+        let data = try CloudCoordinatedIO.readData(at: url)
         return ApprovedListParser.parseString(String(decoding: data, as: UTF8.self), csv: false)
     }
 }

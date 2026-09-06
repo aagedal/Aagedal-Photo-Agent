@@ -1011,3 +1011,103 @@ private nonisolated final class BlockingKeywordListsArchivePreviewReaderProbe: @
         return maximumActiveInspections
     }
 }
+
+@Suite("Keyword archive import read failure preservation")
+struct KeywordListsArchiveImportReadFailureTests {
+    @Test("Read failures preserve affected destination and report exact durable prefix",
+          arguments: ["invalidUTF8", "placeholder", "directory"], [false, true])
+    func readFailure(failureKind: String, durablePrefix: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let payload = root.appendingPathComponent("payload")
+        let destination = root.appendingPathComponent("destination")
+        let archive = root.appendingPathComponent("lists.zip")
+        let prefixPath = "quick/keywords.txt"
+        let failingPath = "quick/personShown.txt"
+        let prefixDestination = destination.appendingPathComponent(prefixPath)
+        let failingDestination = destination.appendingPathComponent(failingPath)
+        try CloudCoordinatedIO.writeText("Imported keyword\n", to: payload.appendingPathComponent(prefixPath))
+        try CloudCoordinatedIO.writeData(
+            failureKind == "invalidUTF8" ? Data([0xff, 0xfe, 0xff]) : Data("Bob\n".utf8),
+            to: payload.appendingPathComponent(failingPath)
+        )
+        var files: [KeywordListsArchive.Manifest.File] = []
+        if durablePrefix {
+            files.append(.init(path: prefixPath, kind: "quick.keywords", entryCount: 1))
+        }
+        files.append(.init(path: failingPath, kind: "quick.personShown", entryCount: 1))
+        let manifest = KeywordListsArchive.Manifest(
+            schemaVersion: KeywordListsArchive.currentSchemaVersion, exportedAt: Date(), files: files
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(manifest).write(to: payload.appendingPathComponent("manifest.json"))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-c", "-k", "--keepParent", payload.path, archive.path]
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+
+        try CloudCoordinatedIO.writeText("Original keyword\n", to: prefixDestination)
+        let placeholder = failingDestination.deletingLastPathComponent()
+            .appendingPathComponent(".\(failingDestination.lastPathComponent).icloud")
+        switch failureKind {
+        case "invalidUTF8":
+            try CloudCoordinatedIO.writeText("Alice\n", to: failingDestination)
+        case "placeholder":
+            try Data("Remote bytes".utf8).write(to: placeholder)
+        default:
+            try FileManager.default.createDirectory(at: failingDestination, withIntermediateDirectories: true)
+        }
+        let requestID = UUID()
+        let result = KeywordListsArchive.performImport(.init(
+            requestID: requestID, sourceURL: archive,
+            routes: [
+                .init(identifier: prefixPath, kind: "quick.keywords", destinationURL: prefixDestination, mode: .replace),
+                .init(identifier: failingPath, kind: "quick.personShown", destinationURL: failingDestination,
+                      mode: failureKind == "invalidUTF8" ? .replace : .append)
+            ]
+        ))
+        if durablePrefix {
+            guard case .partiallyCommitted(let commit, let failure) = result else {
+                Issue.record("Expected partial commit, received \(result)")
+                return
+            }
+            #expect(commit == KeywordListsArchiveImportCommit(
+                requestID: requestID, sourceURL: archive,
+                items: [.init(identifier: prefixPath, destinationURL: prefixDestination, entryCount: 1)]
+            ))
+            #expect(failure.identifier == failingPath)
+            #expect(!failure.reason.isEmpty)
+        } else {
+            guard case .failedBeforeCommit(let id, let source, let failure) = result else {
+                Issue.record("Expected failure before commit, received \(result)")
+                return
+            }
+            #expect(id == requestID)
+            #expect(source == archive)
+            #expect(failure.identifier == failingPath)
+            #expect(!failure.reason.isEmpty)
+        }
+        #expect(try String(contentsOf: prefixDestination, encoding: .utf8)
+                == (durablePrefix ? "Imported keyword\n" : "Original keyword\n"))
+        KeywordListsStoreStorageOverride.$current.withValue(destination) {
+            #expect(throws: (any Error).self) {
+                try KeywordListsArchive.importSelected(
+                    from: archive,
+                    choices: [.quick(.personShown): failureKind == "invalidUTF8" ? .replace : .append]
+                )
+            }
+        }
+        switch failureKind {
+        case "invalidUTF8":
+            #expect(try String(contentsOf: failingDestination, encoding: .utf8) == "Alice\n")
+        case "placeholder":
+            #expect(!FileManager.default.fileExists(atPath: failingDestination.path))
+            #expect(try Data(contentsOf: placeholder) == Data("Remote bytes".utf8))
+        default:
+            #expect(try failingDestination.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true)
+        }
+    }
+}

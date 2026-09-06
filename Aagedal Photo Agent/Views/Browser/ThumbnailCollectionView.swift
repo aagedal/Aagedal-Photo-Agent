@@ -446,8 +446,10 @@ final class ThumbnailCollectionView: NSCollectionView {
             .count
         if rawSelectionCount > 0 {
             let archiveMenu = NSMenu()
-            let dngConverterInstalled =
-                AdobeDNGConverterService.installedExecutableURL != nil
+            let discovery = AdobeDNGDiscoveryStore.shared
+            discovery.refreshInBackground()
+            // Unknown availability remains actionable; the action awaits a fresh probe.
+            let dngConverterInstalled = !discovery.hasChecked || discovery.executableURL != nil
 
             for format in RAWArchiveFormat.allCases {
                 if format == .dngLossless {

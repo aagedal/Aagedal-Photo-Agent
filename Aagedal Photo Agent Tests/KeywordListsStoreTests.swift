@@ -835,3 +835,98 @@ struct KeywordListsStorePathResolutionTests {
         }
     }
 }
+
+@Suite("Keyword list reconciliation read failures")
+struct KeywordListsReconciliationReadFailureTests {
+    @Test("Earlier unions survive a later read failure and retry without duplicates")
+    func partialMergeRetryIsIdempotent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let destination = root.appendingPathComponent("destination")
+        let firstPath = KeywordListKey.quick(.keywords).relativePath
+        let laterPath = KeywordListKey.quick(.personShown).relativePath
+        let firstDestination = destination.appendingPathComponent(firstPath)
+        let laterDestination = destination.appendingPathComponent(laterPath)
+        let laterSource = source.appendingPathComponent(laterPath)
+        try CloudCoordinatedIO.writeText("Paris\nLondon\n", to: source.appendingPathComponent(firstPath))
+        try CloudCoordinatedIO.writeText("Berlin\nParis\n", to: firstDestination)
+        try CloudCoordinatedIO.writeText("Alice\n", to: laterDestination)
+        let placeholder = laterSource.deletingLastPathComponent()
+            .appendingPathComponent(".\(laterSource.lastPathComponent).icloud")
+        try Data().write(to: placeholder)
+
+        #expect(throws: (any Error).self) {
+            try KeywordListsStore.reconcileTree(from: source, to: destination)
+        }
+        let expectedFirst = "Berlin\nParis\nLondon\n"
+        #expect(try String(contentsOf: firstDestination, encoding: .utf8) == expectedFirst)
+        #expect(try String(contentsOf: laterDestination, encoding: .utf8) == "Alice\n")
+
+        // Simulate the later list becoming available, then repeat the entire reconciliation.
+        try FileManager.default.removeItem(at: placeholder)
+        try CloudCoordinatedIO.writeText("Alice\nBob\n", to: laterSource)
+        try KeywordListsStore.reconcileTree(from: source, to: destination)
+        #expect(try String(contentsOf: firstDestination, encoding: .utf8) == expectedFirst)
+        #expect(try String(contentsOf: laterDestination, encoding: .utf8) == "Alice\nBob\n")
+    }
+
+    @Test("An unreadable list aborts reconciliation without replacing destination content",
+          arguments: [true, false], [true, false])
+    func unreadableListPreservesDestination(failingSource: Bool, placeholder: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let destination = root.appendingPathComponent("destination")
+        let key = KeywordListKey.quick(.keywords)
+        let sourceFile = source.appendingPathComponent(key.relativePath)
+        let destinationFile = destination.appendingPathComponent(key.relativePath)
+        let unreadable = failingSource ? sourceFile : destinationFile
+        let readable = failingSource ? destinationFile : sourceFile
+        try CloudCoordinatedIO.writeText("Existing entries\n", to: readable)
+        try FileManager.default.createDirectory(
+            at: unreadable.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let unavailableItem: URL
+        if placeholder {
+            unavailableItem = unreadable.deletingLastPathComponent()
+                .appendingPathComponent(".\(unreadable.lastPathComponent).icloud")
+            try Data("Remote placeholder".utf8).write(to: unavailableItem)
+        } else {
+            // A directory at a list path deterministically fails Data's file read, including
+            // when tests run with privileges that would bypass POSIX permission bits.
+            unavailableItem = unreadable
+            try FileManager.default.createDirectory(at: unavailableItem, withIntermediateDirectories: true)
+        }
+
+        #expect(throws: (any Error).self) {
+            try KeywordListsStore.reconcileTree(from: source, to: destination)
+        }
+
+        #expect(try String(contentsOf: readable, encoding: .utf8) == "Existing entries\n")
+        #expect(FileManager.default.fileExists(atPath: unavailableItem.path))
+        if placeholder {
+            #expect(!FileManager.default.fileExists(atPath: unreadable.path))
+            #expect(try Data(contentsOf: unavailableItem) == Data("Remote placeholder".utf8))
+        }
+    }
+
+    @Test("A genuinely missing destination is seeded and existing lists retain union order")
+    func missingDestinationAndUnion() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let destination = root.appendingPathComponent("destination")
+        let key = KeywordListKey.quick(.keywords)
+        let sourceFile = source.appendingPathComponent(key.relativePath)
+        let destinationFile = destination.appendingPathComponent(key.relativePath)
+        try CloudCoordinatedIO.writeText("Berlin\nParis\n", to: sourceFile)
+
+        try KeywordListsStore.reconcileTree(from: source, to: destination)
+        #expect(try String(contentsOf: destinationFile, encoding: .utf8) == "Berlin\nParis\n")
+
+        try CloudCoordinatedIO.writeText("Paris\nLondon\n", to: sourceFile)
+        try KeywordListsStore.reconcileTree(from: source, to: destination)
+        #expect(try String(contentsOf: destinationFile, encoding: .utf8) == "Berlin\nParis\nLondon\n")
+    }
+}
