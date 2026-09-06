@@ -389,7 +389,7 @@ struct AnalysisWorkspaceView: View {
             }
 
             Picker(
-                "Image Representation",
+                "Version",
                 selection: Binding(
                     get: { model.displayPreference },
                     set: { model.selectDisplayPreference($0) }
@@ -405,7 +405,7 @@ struct AnalysisWorkspaceView: View {
             .pickerStyle(.menu)
             .fixedSize()
             .disabled(model.analysisCase == nil)
-            .help("Choose which representation is displayed; source-byte findings remain bound to the original")
+            .help("Choose which version is displayed; findings based on the source file remain tied to the original")
 
             Button("Close", action: onClose)
                 .keyboardShortcut(.cancelAction)
@@ -913,7 +913,7 @@ struct AnalysisWorkspaceView: View {
                     cancelDraftRequestID: mapCancelDraftRequestID,
                     onDraftCountChanged: { mapDraftCoordinateCount = $0 }
                 )
-                .frame(minWidth: 520, minHeight: 480)
+                .frame(minWidth: 520, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
 
                 AnalysisMapLayersView(
                     globalAnnotations: model.globalMapAnnotations,

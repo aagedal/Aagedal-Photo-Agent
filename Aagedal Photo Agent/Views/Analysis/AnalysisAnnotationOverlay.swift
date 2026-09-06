@@ -213,7 +213,7 @@ struct AnalysisAnnotationToolbar: View {
             }
 
             HStack(spacing: 5) {
-                ForEach(AnalysisAnnotationPaletteColor.allCases, id: \.self) { color in
+                ForEach(Array(AnalysisAnnotationPaletteColor.allCases.enumerated()), id: \.element) { index, color in
                     Button {
                         style.color = .palette(color)
                     } label: {
@@ -240,7 +240,7 @@ struct AnalysisAnnotationToolbar: View {
                             }
                     }
                     .buttonStyle(.plain)
-                    .help(color.displayName)
+                    .help("\(color.displayName) (\(index + 1))")
                     .accessibilityLabel("\(color.displayName) annotation color")
                     .accessibilityAddTraits(
                         style.color == .palette(color) ? .isSelected : []
@@ -330,6 +330,11 @@ struct AnalysisAnnotationToolbar: View {
             }
         }
         .padding(.horizontal, 2)
+        .background {
+            AnalysisColorShortcutView(isEnabled: !isReadOnly) { color in
+                style.color = .palette(color)
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(contextLabel) markup tools")
     }
@@ -370,6 +375,62 @@ struct AnalysisAnnotationToolbar: View {
         .labelsHidden()
         .fixedSize()
         .disabled(isReadOnly)
+    }
+}
+
+/// Scope bare-number shortcuts to the window containing the visible markup toolbar.
+private struct AnalysisColorShortcutView: NSViewRepresentable {
+    let isEnabled: Bool
+    let onSelect: (AnalysisAnnotationPaletteColor) -> Void
+
+    func makeNSView(context: Context) -> ShortcutView {
+        ShortcutView()
+    }
+
+    func updateNSView(_ view: ShortcutView, context: Context) {
+        view.isEnabled = isEnabled
+        view.onSelect = onSelect
+    }
+
+    static func dismantleNSView(_ view: ShortcutView, coordinator: ()) {
+        view.removeMonitor()
+    }
+
+    final class ShortcutView: NSView {
+        var isEnabled = false
+        var onSelect: ((AnalysisAnnotationPaletteColor) -> Void)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            removeMonitor()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, self.isEnabled,
+                      let window = self.window,
+                      event.window === window, window.isKeyWindow,
+                      window.attachedSheet == nil, NSApp.modalWindow == nil,
+                      !self.isHiddenOrHasHiddenAncestor,
+                      !(window.firstResponder is NSText),
+                      !(window.firstResponder is NSTextField),
+                      event.modifierFlags.isDisjoint(with: [.command, .control, .option, .shift]),
+                      let key = event.charactersIgnoringModifiers, key.count == 1,
+                      let number = Int(key),
+                      (1...AnalysisAnnotationPaletteColor.allCases.count).contains(number) else {
+                    return event
+                }
+                if !event.isARepeat {
+                    self.onSelect?(AnalysisAnnotationPaletteColor.allCases[number - 1])
+                }
+                return nil
+            }
+        }
+
+        func removeMonitor() {
+            guard let monitor else { return }
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
     }
 }
 

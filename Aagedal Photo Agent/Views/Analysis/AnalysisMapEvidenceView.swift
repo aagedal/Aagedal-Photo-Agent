@@ -140,7 +140,7 @@ struct AnalysisMapEvidenceView: View {
             searchControls
 
             map
-                .frame(minHeight: 360)
+                .frame(minHeight: 360, maxHeight: .infinity)
                 .layoutPriority(1)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay {
@@ -166,6 +166,7 @@ struct AnalysisMapEvidenceView: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Location evidence map")
         .onChange(of: embeddedLocation) { _, newLocation in
