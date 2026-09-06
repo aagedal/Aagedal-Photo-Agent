@@ -5,6 +5,43 @@ import Testing
 
 @Suite("Analysis case")
 struct AnalysisCaseTests {
+    @Test("Sidebar navigation preserves the active tab through loading and saved case preferences",
+          arguments: [AnalysisWorkspaceMode.pixelAnalysis, .osint])
+    func sidebarNavigationPreservesWorkspaceMode(mode: AnalysisWorkspaceMode) async throws {
+        let fixture = try AnalysisFixture(contents: "first analysis image")
+        defer { fixture.remove() }
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        let thirdURL = fixture.directoryURL.appendingPathComponent("third.jpg")
+        try Data("second analysis image".utf8).write(to: secondURL)
+        try Data("third analysis image".utf8).write(to: thirdURL)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let revision = try await SourceImageRevision.capture(at: thirdURL)
+        var savedCase = AnalysisCase.create(for: revision)
+        savedCase.setWorkspaceMode(mode == .pixelAnalysis ? .osint : .pixelAnalysis)
+        try await repository.save(savedCase)
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        model.selectWorkspaceMode(mode)
+        await model.flushPendingSaves()
+
+        model.openImageInCurrentWorkspace(ImageFile(url: secondURL))
+        #expect(model.loadState == .loading)
+        #expect(model.workspaceMode == mode)
+        model.openImageInCurrentWorkspace(ImageFile(url: thirdURL))
+        #expect(model.workspaceMode == mode)
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.sourceURL == thirdURL)
+        #expect(model.workspaceMode == mode)
+        #expect(model.analysisCase?.workspaceMode == mode)
+        await model.flushPendingSaves()
+
+        // Opening Analysis afresh still restores the destination's saved preference.
+        model.open(ImageFile(url: thirdURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.workspaceMode == mode)
+    }
+
     @Test("linked map markers share photo annotation names with numbered suffixes")
     func linkedMapMarkerNames() {
         let firstPhotoAnnotation = AnalysisAnnotation(

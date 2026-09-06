@@ -307,6 +307,8 @@ struct AnalysisWorkspaceView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel("Analysis Mode")
             .frame(maxWidth: 280)
             .disabled(model.analysisCase == nil)
 

@@ -79,8 +79,10 @@ final class AnalysisWorkspaceModel {
         }
     }
 
+    private var sessionWorkspaceMode: AnalysisWorkspaceMode?
+
     var workspaceMode: AnalysisWorkspaceMode {
-        analysisCase?.workspaceMode ?? .pixelAnalysis
+        sessionWorkspaceMode ?? analysisCase?.workspaceMode ?? .pixelAnalysis
     }
 
     var displayPreference: AnalysisSourceRepresentation {
@@ -464,10 +466,16 @@ final class AnalysisWorkspaceModel {
         saveTask?.cancel()
     }
 
+    /// Sidebar navigation keeps the current tab, including while a previous image is loading.
+    func openImageInCurrentWorkspace(_ image: ImageFile) {
+        open(image, preferredWorkspaceMode: workspaceMode)
+    }
+
     func open(
         _ image: ImageFile,
         preferredWorkspaceMode: AnalysisWorkspaceMode? = nil
     ) {
+        sessionWorkspaceMode = preferredWorkspaceMode
         workspaceGeneration = UUID()
         let pendingFolderMapSaveTask = folderMapSaveTask
         loadTask?.cancel()
@@ -662,6 +670,7 @@ final class AnalysisWorkspaceModel {
     }
 
     func selectWorkspaceMode(_ mode: AnalysisWorkspaceMode) {
+        sessionWorkspaceMode = mode
         guard var updatedCase = analysisCase,
               updatedCase.workspaceMode != mode else { return }
         updatedCase.setWorkspaceMode(mode)
