@@ -3425,6 +3425,8 @@ private struct AnalysisSourceThumbnail: View {
     @State private var loupeSourceIdentity: SourcePreviewIdentity?
     @State private var loupeSourceCGImage: CGImage?
     @State private var loupeLoadFailedIdentity: SourcePreviewIdentity?
+    @State private var zoomedImage: NSImage?
+    @State private var loadedZoomedPreviewIdentity: PreviewIdentity?
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDraft: CGRect?
     @State private var annotationDraft: AnalysisAnnotationGestureDraft?
@@ -3458,17 +3460,17 @@ private struct AnalysisSourceThumbnail: View {
                     if pixelViewMode == .compressionResidual, let sourceImage {
                         HStack(spacing: 8) {
                             analysisImagePane(
-                                sourceImage,
+                                fullResolutionReferenceImage ?? sourceImage,
                                 label: "Reference"
                             )
                             analysisImagePane(
-                                image,
+                                displayedZoomedImage ?? image,
                                 label: "Compression Residual"
                             )
                         }
                     } else {
                         analysisImagePane(
-                            image,
+                            displayedZoomedImage ?? image,
                             label: pixelViewMode.displayName,
                             showsLabel: false
                         )
@@ -3907,10 +3909,32 @@ private struct AnalysisSourceThumbnail: View {
             loupeSourceIdentity = identity
             loupeSourceCGImage = fullResolutionImage
         }
+        .task(id: zoomedPreviewIdentity) {
+            zoomedImage = nil
+            loadedZoomedPreviewIdentity = nil
+            guard let identity = zoomedPreviewIdentity,
+                  let sourceIdentity = loupeSourceIdentity,
+                  let source = loupeSourceCGImage else { return }
+            let key = AnalysisDerivedViewCacheKey(
+                sourceIdentifier: sourceIdentity.derivedViewCacheIdentifier,
+                mode: identity.pixelViewMode,
+                source: source
+            )
+            let rendered = await AnalysisDerivedViewService.shared.image(for: key, source: source)
+            guard !Task.isCancelled, let rendered else { return }
+            zoomedImage = NSImage(
+                cgImage: rendered,
+                size: NSSize(width: rendered.width, height: rendered.height)
+            )
+            loadedZoomedPreviewIdentity = identity
+        }
     }
 
+    // Keep the bounded preview for initial display and scopes, but use the loupe's
+    // original-resolution decode for the zoomed canvas. Zoom must request it even
+    // without a hover sample (for example when using a trackpad pinch).
     private var loupeLoadIdentity: SourcePreviewIdentity? {
-        guard inspectionSample != nil, let url else { return nil }
+        guard inspectionSample != nil || zoomScale > 1, let url else { return nil }
         return SourcePreviewIdentity(
             url: url,
             representation: representation,
@@ -3920,6 +3944,31 @@ private struct AnalysisSourceThumbnail: View {
                 isEdited: representation == .developed
             )
         )
+    }
+
+    private var zoomedPreviewIdentity: PreviewIdentity? {
+        guard zoomScale > 1,
+              let source = loupeSourceIdentity,
+              source == loupeLoadIdentity,
+              loupeSourceCGImage != nil else { return nil }
+        return PreviewIdentity(
+            url: source.url,
+            representation: source.representation,
+            pixelViewMode: pixelViewMode,
+            sourceOrientation: source.sourceOrientation,
+            renderToken: source.renderToken
+        )
+    }
+
+    private var displayedZoomedImage: NSImage? {
+        guard let identity = zoomedPreviewIdentity,
+              loadedZoomedPreviewIdentity == identity else { return nil }
+        return zoomedImage
+    }
+
+    private var fullResolutionReferenceImage: NSImage? {
+        guard zoomedPreviewIdentity != nil, let source = loupeSourceCGImage else { return nil }
+        return NSImage(cgImage: source, size: NSSize(width: source.width, height: source.height))
     }
 
     private func setZoom(
