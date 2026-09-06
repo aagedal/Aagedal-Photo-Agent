@@ -543,6 +543,9 @@ final class KnownPeopleService {
     /// Cleared by `reloadAfterStorageChange()` when the backing store toggles.
     private var cachedDirectory: URL?
     private var storageRevision: UInt64 = 0
+    // Local thumbnail mutations invalidate suspended reads without cancelling archive imports,
+    // which also use storageRevision to reject stale publication.
+    private var thumbnailContentRevision: UInt64 = 0
     private let thumbnailLoader: KnownPeopleThumbnailLoadService
     private let archiveService: KnownPeopleArchiveService
     // Keep admission, duplicate filtering, durable commit and cache publication ordered.
@@ -1063,6 +1066,8 @@ final class KnownPeopleService {
             fileURL: request.fileURL,
             requestID: request.requestID
         ), request.storageRevision == storageRevision,
+           request.contentRevision == thumbnailContentRevision,
+           !Task.isCancelled,
            snapshot.requestID == request.requestID,
            snapshot.fileURL == request.fileURL,
            let data = snapshot.data,
@@ -1074,6 +1079,7 @@ final class KnownPeopleService {
     func saveThumbnail(_ imageData: Data, for personID: UUID) throws {
         let url = thumbnailURL(for: personID)
         try CloudCoordinatedIO.writeData(imageData, to: url)
+        thumbnailContentRevision &+= 1
         if let image = NSImage(data: imageData) {
             personThumbnailCache.setObject(image, forKey: personID as NSUUID, cost: imageData.count)
         } else {
@@ -1082,6 +1088,7 @@ final class KnownPeopleService {
     }
 
     private func deleteThumbnail(for personID: UUID) {
+        thumbnailContentRevision &+= 1
         personThumbnailCache.removeObject(forKey: personID as NSUUID)
         let url = thumbnailURL(for: personID)
         do {
@@ -1096,6 +1103,7 @@ final class KnownPeopleService {
     func saveEmbeddingThumbnail(_ imageData: Data, for embeddingID: UUID) throws {
         let url = embeddingThumbnailURL(for: embeddingID)
         try CloudCoordinatedIO.writeData(imageData, to: url)
+        thumbnailContentRevision &+= 1
         if let image = NSImage(data: imageData) {
             embeddingThumbnailCache.setObject(image, forKey: embeddingID as NSUUID, cost: imageData.count)
         } else {
@@ -1125,6 +1133,8 @@ final class KnownPeopleService {
             fileURL: request.fileURL,
             requestID: request.requestID
         ), request.storageRevision == storageRevision,
+           request.contentRevision == thumbnailContentRevision,
+           !Task.isCancelled,
            snapshot.requestID == request.requestID,
            snapshot.fileURL == request.fileURL,
            let data = snapshot.data,
@@ -1137,6 +1147,7 @@ final class KnownPeopleService {
         let requestID: UUID
         let fileURL: URL
         let storageRevision: UInt64
+        let contentRevision: UInt64
     }
 
     private func thumbnailReadRequest(
@@ -1167,11 +1178,13 @@ final class KnownPeopleService {
         return ThumbnailReadRequest(
             requestID: UUID(),
             fileURL: fileURL,
-            storageRevision: revision
+            storageRevision: revision,
+            contentRevision: thumbnailContentRevision
         )
     }
 
     func deleteEmbeddingThumbnail(for embeddingID: UUID) {
+        thumbnailContentRevision &+= 1
         embeddingThumbnailCache.removeObject(forKey: embeddingID as NSUUID)
         let url = embeddingThumbnailURL(for: embeddingID)
         try? CloudCoordinatedIO.removeItem(at: url)
@@ -1454,6 +1467,8 @@ final class KnownPeopleService {
 
     /// Delete a single embedding from a person
     func removeEmbedding(_ embeddingID: UUID, fromPersonID personID: UUID) async throws {
+        try Task.checkCancellation()
+        let expectedStorageRevision = storageRevision
         guard let currentPerson = person(byID: personID) else { return }
         let replacementThumbnail: (id: UUID, image: NSImage)?
         if currentPerson.representativeThumbnailID == embeddingID,
@@ -1465,6 +1480,7 @@ final class KnownPeopleService {
         } else {
             replacementThumbnail = nil
         }
+        guard expectedStorageRevision == storageRevision else { throw CancellationError() }
         guard peopleIndex[personID] != nil else { return }
 
         var wasRepresentative = false

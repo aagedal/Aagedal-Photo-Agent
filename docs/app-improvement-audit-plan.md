@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Storage generation and structured keyword continuation (2026-09-06):** structured keyword
+initialization, notification reloads, saves, and deletion cross the serialized persistence actor.
+Teams and Watermarks reject old-storage mutation publication while retaining durable write evidence;
+Known People rejects thumbnail reads superseded by local changes and embedding removal across a
+storage switch. The broad storage and real-volume gates remain open; the count remains 66 of 75.
+([validation](plan-status-storage-generation-structured-keyword-continuation-2026-09-06.md))
+
 **Cloud lifecycle and legacy migration continuation (2026-09-06):** all four cloud watchers reject
 callbacks from replaced queries; Teams/Watermark explicit-root refreshes replace stale roots and cancel
 pending lookup. Keyword routing reuses its prepared root. Legacy keyword bookmark migration now crosses a

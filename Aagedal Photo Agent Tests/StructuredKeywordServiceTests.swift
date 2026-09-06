@@ -45,14 +45,14 @@ struct StructuredKeywordServiceTests {
     }
 
     @Test("expansion(forName:) matches keyword nodes and synonyms case-insensitively")
-    func expansionForName() throws {
+    func expansionForName() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("structured-service-expansion-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        try KeywordListsStoreStorageOverride.$current.withValue(root) {
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
             let service = StructuredKeywordService(key: .structured)
-            try service.saveTree([
+            try await service.saveTree([
                 StructuredKeyword(name: "Politicians", kind: .container, children: [
                     StructuredKeyword(name: "Norway", kind: .keyword, children: [
                         StructuredKeyword(name: "Jonas Gahr Støre", kind: .keyword, synonyms: ["Store"]),
@@ -69,14 +69,14 @@ struct StructuredKeywordServiceTests {
     }
 
     @Test("activation(forName:) carries related keywords for node and synonym matches")
-    func activationForNameIncludesRelatedKeywords() throws {
+    func activationForNameIncludesRelatedKeywords() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("structured-service-activation-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        try KeywordListsStoreStorageOverride.$current.withValue(root) {
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
             let service = StructuredKeywordService(key: .structuredPersonShown, includesAncestors: false)
-            try service.saveTree([
+            try await service.saveTree([
                 StructuredKeyword(name: "People", kind: .container, children: [
                     StructuredKeyword(
                         name: "Ada Lovelace",
@@ -93,14 +93,14 @@ struct StructuredKeywordServiceTests {
     }
 
     @Test("searchable names include synonyms and canonical resolver maps aliases to node names")
-    func searchableNamesAndCanonicalResolver() throws {
+    func searchableNamesAndCanonicalResolver() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("structured-service-searchable-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        try KeywordListsStoreStorageOverride.$current.withValue(root) {
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
             let service = StructuredKeywordService(key: .structuredPersonShown, includesAncestors: false)
-            try service.saveTree([
+            try await service.saveTree([
                 StructuredKeyword(name: "People", kind: .container, children: [
                     StructuredKeyword(name: "Jonas Gahr Støre", kind: .keyword, synonyms: ["Store", "Statsministeren"]),
                     StructuredKeyword(name: "Store", kind: .keyword),
@@ -310,4 +310,229 @@ private nonisolated final class BlockingStructuredKeywordSettingsImportProbe: @u
 
     var writeCount: Int { condition.withLock { writes } }
     var committedText: String? { condition.withLock { writtenText } }
+}
+
+@MainActor
+@Suite("Structured keyword persistence")
+struct StructuredKeywordPersistenceTests {
+    @Test("Structured loads preserve tabs off MainActor and cancellation suppresses publication")
+    func structuredLoadBoundary() async throws {
+        let text = "[People]\n\tAda\n\t\t{Countess}\n"
+        let service = KeywordListEditorPersistenceService(access: .init(
+            itemExists: { _ in #expect(!Thread.isMainThread); return true },
+            readData: { _ in #expect(!Thread.isMainThread); return Data(text.utf8) },
+            writeData: { _, _ in Issue.record("A load must not write") }
+        ))
+        let source = URL(fileURLWithPath: "/virtual/structured.txt")
+        let requestID = UUID()
+        #expect(try await service.loadText(from: source, requestID: requestID) == .loaded(
+            requestID: requestID, sourceURL: source, text: text
+        ))
+        let cancelledService = KeywordListEditorPersistenceService(access: .init(
+            itemExists: { _ in true },
+            readData: { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return Data(text.utf8)
+            },
+            writeData: { _, _ in Issue.record("A load must not write") }
+        ))
+        let result = try await Task {
+            try await cancelledService.loadText(from: source, requestID: requestID)
+        }.value
+        #expect(result == .cancelled(requestID: requestID))
+    }
+
+    @Test("A save cancelled during its write still installs the durable tree")
+    func saveAfterCommitCancellation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let service = StructuredKeywordService(persistenceService: KeywordListEditorPersistenceService(access: .init(
+                itemExists: { _ in false }, readData: { _ in Data() },
+                writeData: { _, _ in
+                    #expect(!Thread.isMainThread)
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            )))
+            let saved = await Task {
+                try? await service.saveTree([StructuredKeyword(name: "Durable", kind: .keyword)])
+            }.value
+            #expect(saved == true)
+            #expect(service.roots.map(\.name) == ["Durable"])
+        }
+    }
+
+    @Test("Failed deletion retains the visible tree and propagates the error")
+    func deletionFailurePreservesSnapshot() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let service = StructuredKeywordService(persistenceService: KeywordListEditorPersistenceService(access: .init(
+                itemExists: { _ in true }, readData: { _ in Data("Keep\n".utf8) },
+                writeData: { _, _ in },
+                removeItem: { _ in #expect(!Thread.isMainThread); throw CocoaError(.fileWriteNoPermission) }
+            )))
+            await service.reload()
+            #expect(service.roots.map(\.name) == ["Keep"])
+            await #expect(throws: CocoaError.self) { try await service.clearList() }
+            #expect(service.roots.map(\.name) == ["Keep"])
+        }
+    }
+
+    @Test("Readable empty trees remain editable while failed reads cannot seed an editor")
+    func emptyAndUnreadableSnapshots() async {
+        let empty = StructuredKeywordService(persistenceService: KeywordListEditorPersistenceService(access: .init(
+            itemExists: { _ in true }, readData: { _ in Data() }, writeData: { _, _ in }
+        )))
+        await empty.reload()
+        #expect(empty.roots.isEmpty)
+        #expect(!empty.hasReadFailure)
+        let unreadable = StructuredKeywordService(persistenceService: KeywordListEditorPersistenceService(access: .init(
+            itemExists: { _ in true }, readData: { _ in throw CocoaError(.fileReadNoPermission) },
+            writeData: { _, _ in }
+        )))
+        await unreadable.reload()
+        #expect(unreadable.hasReadFailure)
+    }
+
+    @Test("Deleting a structured tree clears its cache only after successful removal")
+    func successfulDeletion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let service = StructuredKeywordService()
+            try await service.saveTree([StructuredKeyword(name: "Temporary", kind: .keyword)])
+            try await service.clearList()
+            #expect(service.roots.isEmpty)
+            #expect(service.sourcePath == nil)
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("structured/keywords.txt").path))
+        }
+    }
+}
+
+@MainActor
+@Suite("Structured keyword route publication")
+struct StructuredKeywordRoutePublicationTests {
+    @Test("A durable save to the previous root reloads the active route without broadcasting stale text")
+    func changedRouteRejectsOldCommit() async throws {
+        let previous = URL(fileURLWithPath: "/virtual/previous.txt")
+        let current = URL(fileURLWithPath: "/virtual/current.txt")
+        var route = previous
+        let probe = StructuredKeywordBlockedWriteProbe()
+        let service = StructuredKeywordService(
+            persistenceService: KeywordListEditorPersistenceService(access: .init(
+                itemExists: { _ in true },
+                readData: { url in Data((url == current ? "Current\n" : "Previous\n").utf8) },
+                writeData: { _, _ in probe.write() }
+            )),
+            storageURL: { _ in route }
+        )
+        let observer = NotificationCenter.default.addObserver(
+            forName: .keywordListChanged, object: KeywordListsStore.shared, queue: .main
+        ) { note in
+            guard note.userInfo?[KeywordListsStore.changedSourceIDUserInfo] != nil,
+                  note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey == .structured else { return }
+            // Other suites may publish concurrently; only the stale content under test is forbidden.
+            let text = note.userInfo?[KeywordListsStore.changedTextUserInfo] as? String
+            #expect(text != "Obsolete\n")
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let save = Task { try await service.saveTree([StructuredKeyword(name: "Obsolete", kind: .keyword)]) }
+        defer { probe.release() }
+        try await probe.waitForWrite()
+        route = current
+        probe.release()
+        #expect(try await save.value)
+        await service.reload()
+        #expect(service.roots.map(\.name) == ["Current"])
+        #expect(service.sourcePath == current.path)
+    }
+}
+
+private nonisolated final class StructuredKeywordBlockedWriteProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = false
+    private var released = false
+
+    func write() {
+        condition.lock()
+        started = true
+        while !released { condition.wait() }
+        condition.unlock()
+    }
+
+    func release() {
+        condition.withLock { released = true; condition.broadcast() }
+    }
+
+    func waitForWrite() async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition.withLock({ started }) {
+            guard ContinuousClock.now < deadline else { throw StructuredKeywordSettingsImportProbeError.timedOut }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
+@MainActor
+@Suite("Structured keyword reload replacement")
+struct StructuredKeywordReloadReplacementTests {
+    @Test("Editor reload follows a replacement read before returning its snapshot")
+    func reloadAwaitsReplacement() async throws {
+        let probe = StructuredKeywordReplacementReadProbe()
+        let service = StructuredKeywordService(persistenceService: KeywordListEditorPersistenceService(access: .init(
+            itemExists: { _ in true }, readData: { _ in probe.read() }, writeData: { _, _ in }
+        )))
+        var firstFinished = false
+        let first = Task {
+            await service.reload()
+            firstFinished = true
+        }
+        defer { probe.release(1); probe.release(2) }
+        try await probe.waitForRead(1)
+        var replacementStarted = false
+        let replacement = Task {
+            replacementStarted = true
+            await service.reload()
+        }
+        // Both tasks inherit MainActor: observing this flag means reload has synchronously
+        // installed its replacement generation before its first suspension.
+        while !replacementStarted { await Task.yield() }
+        probe.release(1)
+        try await probe.waitForRead(2)
+        // Give the cancelled first generation's waiter a chance to resume while the
+        // replacement is held at a deterministic filesystem gate.
+        for _ in 0..<20 { await Task.yield() }
+        #expect(!firstFinished)
+        probe.release(2)
+        await first.value
+        await replacement.value
+        #expect(firstFinished)
+        #expect(service.roots.map(\.name) == ["Replacement"])
+    }
+}
+
+private nonisolated final class StructuredKeywordReplacementReadProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = 0
+    private var released: Set<Int> = []
+
+    func read() -> Data {
+        condition.lock()
+        started += 1
+        let index = started
+        while index <= 2 && !released.contains(index) { condition.wait() }
+        condition.unlock()
+        return Data((index == 1 ? "Obsolete\n" : "Replacement\n").utf8)
+    }
+
+    func release(_ index: Int) {
+        condition.withLock { _ = released.insert(index); condition.broadcast() }
+    }
+
+    func waitForRead(_ index: Int) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition.withLock({ started >= index }) {
+            guard ContinuousClock.now < deadline else { throw StructuredKeywordSettingsImportProbeError.timedOut }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
 }

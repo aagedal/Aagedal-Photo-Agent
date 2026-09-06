@@ -44,14 +44,21 @@ final class StructuredKeywordService {
     /// (person-shown), only the activated node's name and synonyms are returned.
     @ObservationIgnored private let includesAncestors: Bool
     @ObservationIgnored private let textImportService: TextFileImportService
+    @ObservationIgnored private let storageURL: (KeywordListKey) -> URL
     @ObservationIgnored private let persistenceService: KeywordListEditorPersistenceService
     @ObservationIgnored private var importRequestID: UUID?
+    @ObservationIgnored private let sourceID = UUID()
+    @ObservationIgnored private var loadRequestID: UUID?
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+
 
     /// Bumped on any state change so SwiftUI views re-render.
     private(set) var version: Int = 0
 
     /// Surfaced to Settings if the loaded file failed to parse. nil = no error.
     private(set) var loadError: String?
+    /// A failed read cannot safely seed an editor; an empty readable tree remains editable.
+    private(set) var hasReadFailure = false
 
     private(set) var roots: [StructuredKeyword] = []
     private(set) var sourcePath: String?
@@ -62,12 +69,14 @@ final class StructuredKeywordService {
         key: KeywordListKey = .structured,
         includesAncestors: Bool = true,
         textImportService: TextFileImportService = .shared,
-        persistenceService: KeywordListEditorPersistenceService = .shared
+        persistenceService: KeywordListEditorPersistenceService = .shared,
+        storageURL: @escaping (KeywordListKey) -> URL = { KeywordListsStore.shared.url(for: $0) }
     ) {
         self.key = key
         self.includesAncestors = includesAncestors
         self.textImportService = textImportService
         self.persistenceService = persistenceService
+        self.storageURL = storageURL
         loadFromStore()
         changeObserver = NotificationCenter.default.addObserver(
             forName: .keywordListChanged,
@@ -82,14 +91,12 @@ final class StructuredKeywordService {
             guard
                 let changed = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey
             else { return }
-            let committedText = note.userInfo?[KeywordListsStore.changedTextUserInfo] as? String
+            let changedSourceID = note.userInfo?[KeywordListsStore.changedSourceIDUserInfo] as? UUID
             Task { @MainActor [weak self] in
-                guard let self, changed == self.key else { return }
-                if let committedText {
-                    self.install(text: committedText)
-                } else {
-                    self.loadFromStore()
-                }
+                guard let self, changed == self.key, changedSourceID != self.sourceID else { return }
+                // Reload through the same actor as writes. A notification may be delivered after
+                // a newer commit; its old text must never replace the current durable contents.
+                self.loadFromStore()
             }
         }
     }
@@ -130,7 +137,7 @@ final class StructuredKeywordService {
             }
         }
 
-        let destinationURL = KeywordListsStore.shared.url(for: key)
+        let destinationURL = storageURL(key)
         let loadResult = try await textImportService.loadText(from: url, requestID: requestID)
         guard importRequestID == requestID else { return }
 
@@ -154,7 +161,7 @@ final class StructuredKeywordService {
             // A coordinated write is durable even if this request was cancelled or superseded
             // while it was in progress. Publish its in-memory text so observers never re-read the
             // managed file synchronously on MainActor.
-            KeywordListsStore.shared.recordExternalWrite(to: key, text: commit.text)
+            publish(commit)
         case .cancelledBeforeCommit:
             return
         }
@@ -166,21 +173,55 @@ final class StructuredKeywordService {
 
     /// Saves an edited tree back to the managed store. Re-serialises through
     /// `StructuredKeywordSerializer` so the on-disk format remains PhotoMechanic-compatible.
-    func saveTree(_ tree: [StructuredKeyword]) throws {
-        let text = StructuredKeywordSerializer.serialize(tree)
-        try KeywordListsStore.shared.writeText(text, to: key)
-        roots = tree
-        sourcePath = KeywordListsStore.shared.url(for: key).path
-        loadError = nil
-        bumpVersion()
+    @discardableResult
+    func saveTree(_ tree: [StructuredKeyword]) async throws -> Bool {
+        cancelImport()
+        invalidateLoad()
+        let requestID = UUID()
+        importRequestID = requestID
+        defer { if importRequestID == requestID { importRequestID = nil } }
+        let destination = storageURL(key)
+        let result = try await persistenceService.saveText(
+            StructuredKeywordSerializer.serialize(tree), to: destination, requestID: requestID
+        )
+        guard case .committed(let commit) = result else { return false }
+        publish(commit)
+        return true
     }
 
-    func clearList() {
-        KeywordListsStore.shared.delete(key)
-        roots = []
-        sourcePath = nil
-        loadError = nil
-        bumpVersion()
+    func clearList() async throws {
+        cancelImport()
+        invalidateLoad()
+        let requestID = UUID()
+        importRequestID = requestID
+        defer { if importRequestID == requestID { importRequestID = nil } }
+        let destination = storageURL(key)
+        let result = try await persistenceService.deleteQuickList(at: destination, requestID: requestID)
+        switch result {
+        case .removed:
+            if importRequestID == requestID, storageURL(key) == destination { clearSnapshot() }
+            else { loadFromStore() }
+            KeywordListsStore.shared.recordExternalDeletion(to: key, sourceID: sourceID)
+        case .missing:
+            if importRequestID == requestID, storageURL(key) == destination { clearSnapshot() }
+            else { loadFromStore() }
+        case .cancelledBeforeAccess, .cancelledBeforeCommit:
+            break
+        }
+    }
+
+    private func publish(_ commit: KeywordListTextSaveCommit) {
+        invalidateLoad()
+        if importRequestID == commit.requestID,
+           storageURL(key) == commit.destinationURL {
+            install(text: commit.text)
+        } else {
+            loadFromStore()
+        }
+        // Cancellation cannot erase a durable write. All other observers must invalidate too.
+        KeywordListsStore.shared.recordExternalWrite(
+            to: key, text: storageURL(key) == commit.destinationURL ? commit.text : nil, sourceID: sourceID
+        )
     }
 
     /// Computes the keywords to add when the user activates (double-clicks) a node.
@@ -357,29 +398,64 @@ final class StructuredKeywordService {
 
     private func bumpVersion() { version &+= 1 }
 
+    private func invalidateLoad() {
+        loadTask?.cancel()
+        loadTask = nil
+        loadRequestID = nil
+    }
+
+    private func clearSnapshot() {
+        invalidateLoad()
+        roots = []
+        sourcePath = nil
+        loadError = nil
+        hasReadFailure = false
+        bumpVersion()
+    }
+
+    /// Editors await the initial disk snapshot before constructing their editable tree.
+    func reload() async {
+        loadFromStore()
+        // A notification can replace the task while this caller awaits it. Editors must
+        // follow that replacement rather than seeding their tree from the cancelled load.
+        while let task = loadTask {
+            let requestID = loadRequestID
+            await task.value
+            guard !Task.isCancelled, loadRequestID != requestID else { return }
+        }
+    }
+
     private func loadFromStore() {
-        let store = KeywordListsStore.shared
-        guard store.exists(key) else {
-            roots = []
-            sourcePath = nil
-            loadError = nil
-            bumpVersion()
-            return
+        invalidateLoad()
+        let requestID = UUID()
+        loadRequestID = requestID
+        let source = storageURL(key)
+        let persistence = persistenceService
+        loadTask = Task { [weak self] in
+            do {
+                let result = try await persistence.loadText(from: source, requestID: requestID)
+                guard let self, !Task.isCancelled, self.loadRequestID == requestID,
+                      self.storageURL(self.key) == source else { return }
+                switch result {
+                case .loaded(_, _, let text): self.install(text: text)
+                case .missing: self.clearSnapshot()
+                case .cancelled: break
+                }
+            } catch {
+                guard let self, !Task.isCancelled, self.loadRequestID == requestID,
+                      self.storageURL(self.key) == source else { return }
+                self.clearSnapshot()
+                self.loadError = "Could not read structured keywords file."
+                self.hasReadFailure = true
+            }
         }
-        guard let text = store.readText(key) else {
-            roots = []
-            sourcePath = nil
-            loadError = "Could not read structured keywords file."
-            bumpVersion()
-            return
-        }
-        install(text: text)
     }
 
     private func install(text: String) {
         let parsed = StructuredKeywordParser.parseString(text)
+        hasReadFailure = false
         roots = parsed
-        sourcePath = KeywordListsStore.shared.url(for: key).path
+        sourcePath = storageURL(key).path
         loadError = parsed.isEmpty ? "File contained no keywords." : nil
         bumpVersion()
     }

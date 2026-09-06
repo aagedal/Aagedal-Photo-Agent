@@ -500,6 +500,7 @@ final class WatermarkStore {
     @ObservationIgnored private var recentLocalWrites: [String: Date] = [:]
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var loadRequestID = UUID()
+    @ObservationIgnored private var storageGeneration = UUID()
     @ObservationIgnored private let persistence: WatermarkLibraryPersistenceService
 
     private static let selfWriteWindow: TimeInterval = 10
@@ -609,6 +610,8 @@ final class WatermarkStore {
     /// Test and lifecycle seam that invalidates cached presentation without starting filesystem
     /// work. Production route changes normally use ``reloadAfterStorageChange``.
     func invalidateStorageCache(resolvedStorageURL: URL? = nil) {
+        storageGeneration = UUID()
+        loadRequestID = UUID()
         cachedDirectory = resolvedStorageURL
         didLoad = false
         loadTask?.cancel()
@@ -632,18 +635,22 @@ final class WatermarkStore {
                 requestID: requestID
             ) else { return }
             let result = await persistence.load(from: root, requestID: requestID)
+            switch result {
+            case .loaded(let snapshot):
+                snapshot.cleanupCommitURLs.forEach(self.stampLocalWrite)
+            case .cancelledAfterPrefix(_, _, let cleanupCommitURLs):
+                cleanupCommitURLs.forEach(self.stampLocalWrite)
+            case .cancelledBeforeAccess:
+                break
+            }
             guard self.loadRequestID == requestID else { return }
             self.loadTask = nil
             switch result {
             case .loaded(let snapshot) where snapshot.requestID == requestID:
-                snapshot.cleanupCommitURLs.forEach(self.stampLocalWrite)
                 self.assets = snapshot.assets
                 self.imageDataByAssetID = snapshot.imageDataByAssetID
                 self.didLoad = true
                 NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)
-            case .cancelledAfterPrefix(let resultID, _, let cleanupCommitURLs)
-                where resultID == requestID:
-                cleanupCommitURLs.forEach(self.stampLocalWrite)
             case .cancelledBeforeAccess, .cancelledAfterPrefix, .loaded:
                 break
             }
@@ -701,7 +708,11 @@ final class WatermarkStore {
         name: String,
         requestID: UUID
     ) async throws -> WatermarkLibraryImportResult {
+        let generation = storageGeneration
         await loadIfNeeded()
+        guard storageGeneration == generation, cachedDirectory != nil else {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
         let result = try await persistence.importPNG(
             from: sourceURL,
             name: name,
@@ -711,6 +722,7 @@ final class WatermarkStore {
         if case .committed(let commit) = result {
             stampLocalWrite(commit.imageURL)
             stampLocalWrite(commit.metadataURL)
+            guard storageGeneration == generation else { return result }
             imageDataByAssetID[commit.asset.id] = commit.imageData
             if let index = assets.firstIndex(where: { $0.id == commit.asset.id }) {
                 assets[index] = commit.asset
@@ -723,7 +735,7 @@ final class WatermarkStore {
     }
 
     /// Convenience for non-UI callers. Interactive owners should keep the request ID so they can
-    /// reject stale presentation while the store still publishes every durable commit.
+    /// reject stale presentation while the store retains every durable commit for its original storage root.
     @discardableResult
     func importPNG(from sourceURL: URL, name: String) async throws -> WatermarkAsset {
         let result = try await importPNG(
@@ -739,7 +751,9 @@ final class WatermarkStore {
 
     /// Renames an existing asset in place.
     func rename(_ id: UUID, to newName: String) async throws {
+        let generation = storageGeneration
         await loadIfNeeded()
+        guard storageGeneration == generation else { return }
         guard var asset = assets.first(where: { $0.id == id }) else { return }
         asset.name = newName
         asset.updatedAt = Date()
@@ -750,6 +764,7 @@ final class WatermarkStore {
         )
         guard case .committed(let commit) = result else { return }
         stampLocalWrite(commit.metadataURL)
+        guard storageGeneration == generation else { return }
         if let index = assets.firstIndex(where: { $0.id == id }) {
             assets[index] = commit.asset
         }
@@ -765,7 +780,9 @@ final class WatermarkStore {
         marginUnit: WatermarkMarginUnit,
         marginValue: Double
     ) async throws {
+        let generation = storageGeneration
         await loadIfNeeded()
+        guard storageGeneration == generation else { return }
         guard var asset = assets.first(where: { $0.id == id }) else { return }
         asset.defaultSizeDimension = sizeDimension
         asset.defaultSizeUnit = sizeUnit
@@ -780,6 +797,7 @@ final class WatermarkStore {
         )
         guard case .committed(let commit) = result else { return }
         stampLocalWrite(commit.metadataURL)
+        guard storageGeneration == generation else { return }
         if let index = assets.firstIndex(where: { $0.id == id }) {
             assets[index] = commit.asset
         }
@@ -787,7 +805,9 @@ final class WatermarkStore {
     }
 
     func delete(id: UUID) async throws {
+        let generation = storageGeneration
         await loadIfNeeded()
+        guard storageGeneration == generation, cachedDirectory != nil else { return }
         let result = try await persistence.delete(
             assetID: id,
             in: loadedRootDirectory,
@@ -796,6 +816,7 @@ final class WatermarkStore {
         )
         guard case .committed(let commit) = result else { return }
         stampLocalWrite(commit.markerURL)
+        guard storageGeneration == generation else { return }
         assets.removeAll { $0.id == id }
         imageDataByAssetID[id] = nil
         NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)
@@ -807,8 +828,12 @@ final class WatermarkStore {
     /// complete actor-loaded snapshot so metadata and PNG bytes cannot publish from different
     /// iCloud generations.
     func applyRemoteChanges(_ changes: [(url: URL, contentChangeDate: Date?)]) async {
+        let directory = cachedDirectory?.appendingPathComponent("items", isDirectory: true)
+        guard let directory else { return }
+        let prefix = directory.standardizedFileURL.path + "/"
         let hasExternalChange = changes.contains { change in
-            !shouldSkipRemoteReload(path: change.url.path, contentChangeDate: change.contentChangeDate)
+            change.url.standardizedFileURL.path.hasPrefix(prefix)
+                && !shouldSkipRemoteReload(path: change.url.path, contentChangeDate: change.contentChangeDate)
         }
         guard hasExternalChange else { return }
         didLoad = false

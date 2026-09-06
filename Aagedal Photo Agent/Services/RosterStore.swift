@@ -377,6 +377,7 @@ final class RosterStore {
     @ObservationIgnored private var recentLocalWrites: [String: Date] = [:]
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var loadRequestID = UUID()
+    @ObservationIgnored private var storageGeneration = UUID()
     @ObservationIgnored private let persistence: RosterLibraryPersistenceService
     @ObservationIgnored private let injectedStorageRoot: URL?
     @ObservationIgnored private let injectedDeletionIO: DurableDeletionIO?
@@ -436,11 +437,19 @@ final class RosterStore {
 
     /// Re-resolves the selected local/iCloud root and asynchronously replaces the full library.
     func reloadAfterStorageChange(resolvedStorageURL: URL? = nil) async {
+        invalidateStorageCache(resolvedStorageURL: resolvedStorageURL)
+        await loadIfNeeded()
+    }
+
+    /// Invalidates presentation immediately, including operations suspended on the old root.
+    func invalidateStorageCache(resolvedStorageURL: URL? = nil) {
+        storageGeneration = UUID()
+        loadRequestID = UUID()
         cachedDirectory = resolvedStorageURL
         didLoad = false
         loadTask?.cancel()
         loadTask = nil
-        await loadIfNeeded()
+        teams = []
     }
 
     func loadIfNeeded() async {
@@ -455,17 +464,22 @@ final class RosterStore {
         let root = teamsRootDirectory
         let task = Task { @MainActor [weak self, persistence] in
             let result = await persistence.load(from: root, requestID: requestID)
-            guard let self, self.loadRequestID == requestID else { return }
+            guard let self else { return }
+            switch result {
+            case .loaded(let snapshot):
+                snapshot.cleanupCommitURLs.forEach(self.stampLocalWrite)
+            case .cancelledAfterPrefix(_, _, let cleanupCommitURLs):
+                cleanupCommitURLs.forEach(self.stampLocalWrite)
+            case .cancelledBeforeAccess:
+                break
+            }
+            guard self.loadRequestID == requestID else { return }
             self.loadTask = nil
             switch result {
             case .loaded(let snapshot) where snapshot.requestID == requestID:
-                snapshot.cleanupCommitURLs.forEach(self.stampLocalWrite)
                 self.teams = snapshot.teams
                 self.didLoad = true
                 NotificationCenter.default.post(name: .teamsLibraryDidChange, object: nil)
-            case .cancelledAfterPrefix(let resultID, _, let cleanupCommitURLs)
-                where resultID == requestID:
-                cleanupCommitURLs.forEach(self.stampLocalWrite)
             case .cancelledBeforeAccess, .cancelledAfterPrefix, .loaded:
                 break
             }
@@ -499,7 +513,9 @@ final class RosterStore {
 
     /// Insert a new team or overwrite an existing one with the same id.
     func upsert(_ team: Team) async throws {
+        let generation = storageGeneration
         await loadIfNeeded()
+        guard storageGeneration == generation else { return }
         var updated = team
         updated.updatedAt = Date()
         let result = try await persistence.upsert(
@@ -509,6 +525,7 @@ final class RosterStore {
         )
         guard case .committed(let commit) = result else { return }
         stampLocalWrite(commit.recordURL)
+        guard storageGeneration == generation else { return }
         if let index = teams.firstIndex(where: { $0.id == updated.id }) {
             teams[index] = commit.team
         } else {
@@ -518,7 +535,9 @@ final class RosterStore {
     }
 
     func delete(id: UUID) async throws {
+        let generation = storageGeneration
         await loadIfNeeded()
+        guard storageGeneration == generation else { return }
         let result = try await persistence.delete(
             teamID: id,
             in: teamsRootDirectory,
@@ -527,6 +546,7 @@ final class RosterStore {
         )
         guard case .committed(let commit) = result else { return }
         stampLocalWrite(commit.markerURL)
+        guard storageGeneration == generation else { return }
         teams.removeAll { $0.id == id }
         NotificationCenter.default.post(name: .teamsLibraryDidChange, object: nil)
     }
@@ -536,7 +556,9 @@ final class RosterStore {
         toPlayerNumber number: Int,
         teamID: UUID
     ) async throws {
+        let generation = storageGeneration
         await loadIfNeeded()
+        guard storageGeneration == generation else { return }
         guard var team = teams.first(where: { $0.id == teamID }),
               let playerIndex = team.roster.firstIndex(where: { $0.number == number }) else { return }
         team.roster[playerIndex].knownPersonID = knownPersonID
@@ -546,8 +568,12 @@ final class RosterStore {
     /// Remote notifications are filtered on MainActor, then collapsed into one complete actor-owned
     /// snapshot. This avoids publishing a mixture of old and newly coordinated record reads.
     func applyRemoteChanges(_ changes: [(url: URL, contentChangeDate: Date?)]) async {
+        guard let cachedDirectory else { return }
+        let directory = cachedDirectory.appendingPathComponent("teams", isDirectory: true)
+        let prefix = directory.standardizedFileURL.path + "/"
         let hasExternalChange = changes.contains { change in
-            !shouldSkipRemoteReload(path: change.url.path, contentChangeDate: change.contentChangeDate)
+            change.url.standardizedFileURL.path.hasPrefix(prefix)
+                && !shouldSkipRemoteReload(path: change.url.path, contentChangeDate: change.contentChangeDate)
         }
         guard hasExternalChange else { return }
         didLoad = false

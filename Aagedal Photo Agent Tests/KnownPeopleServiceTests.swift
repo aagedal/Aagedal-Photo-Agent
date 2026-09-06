@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AppKit
 @testable import Aagedal_Photo_Agent
 
 /// Tests for the per-person file store in `KnownPeopleService`.
@@ -176,6 +177,88 @@ struct KnownPeopleServiceTests {
             fileURL: fileURL
         ))
         #expect(probe.urls == [fileURL])
+    }
+
+    @Test("A local thumbnail save or deletion rejects an older in-flight read", arguments: [0, 1, 2, 3])
+    func thumbnailReadRejectsLocalMutation(operation: Int) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32
+        ))
+        let imageData = try #require(bitmap.representation(using: .png, properties: [:]))
+        #expect(NSImage(data: imageData) != nil)
+        let gate = KnownPeopleThumbnailPublicationGate(data: imageData)
+        defer { gate.resume() }
+        let service = KnownPeopleService(thumbnailLoader: KnownPeopleThumbnailLoadService(
+            access: KnownPeopleThumbnailFileAccess(readData: { gate.read($0) })
+        ))
+        let sample = embedding(11)
+        let person = try service.addPerson(name: "Thumbnail race", embeddings: [sample])
+        let isEmbedding = operation % 2 == 1
+        let task = Task {
+            if isEmbedding { return await service.loadEmbeddingThumbnail(for: sample.id) }
+            return await service.loadThumbnail(for: person.id)
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(gate.entered)
+        if operation < 2 {
+            // Invalid replacement bytes deliberately clear the cache. A stale read must
+            // not resurrect the earlier valid image after this successful local write.
+            if isEmbedding { try service.saveEmbeddingThumbnail(Data(), for: sample.id) }
+            else { try service.saveThumbnail(Data(), for: person.id) }
+        } else if isEmbedding {
+            service.deleteEmbeddingThumbnail(for: sample.id)
+        } else {
+            try service.removePerson(id: person.id)
+        }
+        gate.resume()
+        #expect(await task.value == nil)
+        if isEmbedding { #expect(service.cachedEmbeddingThumbnail(for: sample.id) == nil) }
+        else { #expect(service.cachedThumbnail(for: person.id) == nil) }
+    }
+
+    @Test("Removing an embedding cannot mutate a different storage root after its thumbnail read")
+    func removeEmbeddingRejectsChangedStorageRoot() async throws {
+        let originalDirectory = makeTempDir()
+        let replacementDirectory = makeTempDir()
+        activate(originalDirectory)
+        defer {
+            teardown(originalDirectory)
+            try? FileManager.default.removeItem(at: replacementDirectory)
+        }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let service = KnownPeopleService(thumbnailLoader: KnownPeopleThumbnailLoadService(
+            access: KnownPeopleThumbnailFileAccess(readData: { gate.read($0) })
+        ))
+        let first = embedding(21)
+        let second = embedding(22)
+        var person = try service.addPerson(name: "Shared ID", embeddings: [first, second])
+        person.representativeThumbnailID = first.id
+        try service.updatePerson(person)
+        try writePersonFile(person, into: replacementDirectory)
+        let task = Task { try await service.removeEmbedding(first.id, fromPersonID: person.id) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(gate.entered)
+        service.reloadAfterStorageChange(resolvedStorageURL: replacementDirectory)
+        gate.resume()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(service.person(byID: person.id)?.embeddings.map(\.id) == [first.id, second.id])
+        let persisted = try JSONDecoder().decode(
+            KnownPerson.self,
+            from: Data(contentsOf: personFileURL(person.id, in: replacementDirectory))
+        )
+        #expect(persisted.embeddings.map(\.id) == [first.id, second.id])
     }
 
     @Test("Known People archive preparation runs off MainActor and returns immutable thumbnail bytes")
@@ -992,5 +1075,22 @@ private nonisolated final class KnownPeopleImportPublicationGate: @unchecked Sen
                 throw CocoaError(.fileWriteUnknown)
             }
         }
+    }
+}
+
+/// Holds one thumbnail read while MainActor performs a conflicting local mutation.
+private nonisolated final class KnownPeopleThumbnailPublicationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let data: Data
+    private var didEnter = false
+
+    init(data: Data) { self.data = data }
+    var entered: Bool { lock.withLock { didEnter } }
+    func resume() { semaphore.signal() }
+    func read(_ url: URL) -> Data? {
+        lock.withLock { didEnter = true }
+        guard semaphore.wait(timeout: .now() + 5) == .success else { return nil }
+        return data
     }
 }

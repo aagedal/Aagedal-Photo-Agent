@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -18,6 +19,77 @@ struct RosterStoreTests {
 
     private func makeTeam(name: String = "Test Team") -> Team {
         Team(name: name, primaryColor: TeamKitColor(r: 0.2, g: 0.4, b: 0.6))
+    }
+
+    @Test("a blocked old-root mutation retains durability without publishing into the replacement", arguments: [false, true])
+    func oldRootMutationCannotPublish(deleting: Bool) async throws {
+        let oldRoot = makeTempDir()
+        let replacement = makeTempDir()
+        defer { teardown(oldRoot); teardown(replacement) }
+        let gate = LibraryRootWriteGate()
+        defer { gate.release() }
+        let access = RosterLibraryFileAccess(
+            ensureDirectory: { try FileManager.default.createDirectory(at: $0, withIntermediateDirectories: true) },
+            contentsOfDirectory: { try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) },
+            readData: { try Data(contentsOf: $0) },
+            writeData: { data, url in
+                gate.block()
+                try data.write(to: url, options: .atomic)
+            },
+            removeItem: { try FileManager.default.removeItem(at: $0) }
+        )
+        let team = makeTeam(name: "Old root")
+        let record = oldRoot.appendingPathComponent("teams/\(team.id.uuidString).json")
+        try FileManager.default.createDirectory(at: record.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(team).write(to: record)
+        let deletionIO = DurableDeletionIO(
+            writeData: { data, url in gate.block(); try data.write(to: url, options: .atomic) },
+            readData: { try Data(contentsOf: $0) },
+            removeItem: { try FileManager.default.removeItem(at: $0) }
+        )
+        let store = RosterStore(persistence: RosterLibraryPersistenceService(access: access), storageRoot: oldRoot, deletionIO: deletionIO)
+        await store.loadIfNeeded()
+        let mutation = Task {
+            if deleting { try await store.delete(id: team.id) }
+            else { try await store.upsert(team) }
+        }
+        try await gate.waitUntilBlocked()
+        store.invalidateStorageCache(resolvedStorageURL: replacement)
+        let publication = LibraryRootPublicationProbe()
+        withObservationTracking { _ = store.teams } onChange: { publication.record() }
+        gate.release()
+        try await mutation.value
+
+        #expect(store.teams.isEmpty)
+        #expect(!publication.didPublish)
+        let committedURL: URL
+        if deleting {
+            committedURL = oldRoot.appendingPathComponent("teams/\(team.id.uuidString).deleted")
+            #expect(try JSONDecoder().decode(TeamTombstone.self, from: Data(contentsOf: committedURL)).id == team.id)
+            #expect(!FileManager.default.fileExists(atPath: record.path))
+        } else {
+            committedURL = record
+            #expect(try JSONDecoder().decode(Team.self, from: Data(contentsOf: record)).id == team.id)
+        }
+        #expect(store.shouldSkipRemoteReload(path: committedURL.path, contentChangeDate: nil))
+        await store.loadIfNeeded()
+        #expect(store.teams.isEmpty)
+    }
+
+    @Test("events from a previous root do not reload the current Teams library")
+    func oldRootRemoteEventsAreIgnored() async throws {
+        let oldRoot = makeTempDir()
+        let replacement = makeTempDir()
+        defer { teardown(oldRoot); teardown(replacement) }
+        let store = RosterStore(storageRoot: oldRoot)
+        await store.reloadAfterStorageChange(resolvedStorageURL: replacement)
+        let team = makeTeam()
+        let record = replacement.appendingPathComponent("teams/\(team.id.uuidString).json")
+        try JSONEncoder().encode(team).write(to: record)
+        await store.applyRemoteChanges([(oldRoot.appendingPathComponent("teams/old.json"), nil)])
+        #expect(store.teams.isEmpty)
+        await store.applyRemoteChanges([(record, nil)])
+        #expect(store.teams.map(\.id) == [team.id])
     }
 
     @Test("delete installs a decodable marker, removes the record, and prevents resurrection")
@@ -383,3 +455,55 @@ private nonisolated final class CloudDownloadProbe: @unchecked Sendable {
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
     var maximumConcurrentCalls: Int { lock.withLock { maximumCalls } }
 }
+
+/// Blocks only worker filesystem access; the test awaits a continuation without blocking MainActor.
+nonisolated final class LibraryRootWriteGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var blocked = false
+    private var waiter: CheckedContinuation<Void, Error>?
+
+    func block() {
+        let continuation = lock.withLock {
+            blocked = true
+            let continuation = waiter
+            waiter = nil
+            return continuation
+        }
+        continuation?.resume()
+        semaphore.wait()
+    }
+
+    func waitUntilBlocked() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let alreadyBlocked = lock.withLock {
+                if blocked { return true }
+                waiter = continuation
+                return false
+            }
+            if alreadyBlocked {
+                continuation.resume()
+            } else {
+                DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [self] in
+                    let expired = lock.withLock {
+                        let pending = waiter
+                        waiter = nil
+                        return pending
+                    }
+                    expired?.resume(throwing: LibraryRootWriteGateTimeout())
+                }
+            }
+        }
+    }
+
+    func release() { semaphore.signal() }
+}
+
+nonisolated final class LibraryRootPublicationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var published = false
+    func record() { lock.withLock { published = true } }
+    var didPublish: Bool { lock.withLock { published } }
+}
+
+private nonisolated struct LibraryRootWriteGateTimeout: Error {}

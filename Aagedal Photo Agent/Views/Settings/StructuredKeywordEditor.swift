@@ -40,6 +40,9 @@ struct StructuredKeywordEditor: View {
     @State private var synonymPopoverFor: UUID?
     @State private var relatedKeywordsPopoverFor: UUID?
     @State private var feedback: String?
+    @State private var saveTask: Task<Void, Never>?
+    @State private var isSaving = false
+    @State private var isLoading = true
     @State private var importTask: Task<Void, Never>?
     @State private var importRequestID: UUID?
     @State private var exportTask: Task<Void, Never>?
@@ -51,16 +54,24 @@ struct StructuredKeywordEditor: View {
             header
             Divider()
             toolbar
+                .disabled(isLoading || isSaving)
             Divider()
             treeList
+                .disabled(isLoading || isSaving)
             Divider()
             footer
         }
         .frame(minWidth: 540, idealWidth: 680, minHeight: 520, idealHeight: 620)
-        .onAppear {
+        .task {
+            await service.reload()
+            guard !Task.isCancelled else { return }
             load()
+            feedback = service.loadError
+            isLoading = false
         }
         .onDisappear {
+            saveTask?.cancel()
+            saveTask = nil
             importRequestID = nil
             importTask?.cancel()
             importTask = nil
@@ -164,7 +175,8 @@ struct StructuredKeywordEditor: View {
             Spacer()
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
-            Button("Save") { save() }
+            Button(isSaving ? "Saving…" : "Save") { save() }
+                .disabled(isLoading || isSaving || service.hasReadFailure)
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
         }
@@ -583,11 +595,16 @@ struct StructuredKeywordEditor: View {
         // Drop empty-name nodes before serialising. This is forgiving — the user
         // can't accidentally lose a real node, only blanks they left behind.
         let cleaned = root.snapshotChildren().compactMap { strip($0) }
-        do {
-            try service.saveTree(cleaned)
-            dismiss()
-        } catch {
-            feedback = "Save failed: \(error.localizedDescription)"
+        guard !isSaving else { return }
+        isSaving = true
+        saveTask = Task {
+            defer { isSaving = false }
+            do {
+                if try await service.saveTree(cleaned), !Task.isCancelled { dismiss() }
+            } catch {
+                guard !Task.isCancelled else { return }
+                feedback = "Save failed: \(error.localizedDescription)"
+            }
         }
     }
 

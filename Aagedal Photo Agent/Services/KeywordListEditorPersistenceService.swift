@@ -41,6 +41,12 @@ nonisolated enum KeywordListEditorLoadResult: Equatable, Sendable {
     case cancelledAfterRead(requestID: UUID, sourceURL: URL, byteCount: Int)
 }
 
+nonisolated enum KeywordListTextLoadResult: Equatable, Sendable {
+    case loaded(requestID: UUID, sourceURL: URL, text: String)
+    case missing(requestID: UUID, sourceURL: URL)
+    case cancelled(requestID: UUID)
+}
+
 nonisolated struct KeywordListEditorSaveCommit: Equatable, Sendable {
     let requestID: UUID
     let destinationURL: URL
@@ -317,6 +323,18 @@ actor KeywordListEditorPersistenceService {
             entries: ApprovedListParser.parseString(text, csv: false),
             byteCount: data.count
         ))
+    }
+
+    /// Structured text retains indentation and shares ordering with managed saves/deletions.
+    func loadText(from sourceURL: URL, requestID: UUID) throws -> KeywordListTextLoadResult {
+        guard !Task.isCancelled else { return .cancelled(requestID: requestID) }
+        let exists = access.itemExists(sourceURL)
+        guard !Task.isCancelled else { return .cancelled(requestID: requestID) }
+        guard exists else { return .missing(requestID: requestID, sourceURL: sourceURL) }
+        let data = try access.readData(sourceURL)
+        guard !Task.isCancelled else { return .cancelled(requestID: requestID) }
+        return .loaded(requestID: requestID, sourceURL: sourceURL,
+                       text: String(decoding: data, as: UTF8.self))
     }
 
     func saveEntries(

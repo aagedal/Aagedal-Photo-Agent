@@ -132,15 +132,9 @@ final class KeywordListsStore {
     /// the destination and the coordinator installs the new preference.
     @ObservationIgnored private var cachedRoot: URL?
 
-    init() {
-        // Ensure the local directory skeleton exists. We intentionally do NOT
-        // touch `rootURL` here: resolving the iCloud container this early in
-        // launch can momentarily fail and (pre-fix) pinned the cached root to
-        // local for the whole session. iCloud directories are created lazily on
-        // first write (CloudCoordinatedIO ensures the parent) and by the cloud
-        // coordinator when it starts its metadata query.
-        ensureDirectories(at: localRootURL)
-    }
+    // Directories are prepared by coordinated writes and routing reconciliation. Merely
+    // constructing the observable store or resolving a path must not touch the filesystem.
+    init() {}
 
     // MARK: - Root resolution
 
@@ -179,12 +173,10 @@ final class KeywordListsStore {
         if let override = KeywordListsStoreStorageOverride.current {
             // Test seam: never cached, so each test's task-local root is honored
             // and never pins the singleton for the rest of the process.
-            ensureDirectories(at: override)
             return override
         }
         if let testRoot = KeywordListsStoreStorageOverride.testProcessFallback {
             // Test run without a task-local override: never touch real data.
-            ensureDirectories(at: testRoot)
             return testRoot
         }
         if let cached = cachedRoot { return cached }
@@ -391,17 +383,6 @@ final class KeywordListsStore {
     // MARK: - Internals
 
     private func bumpVersion() { version &+= 1 }
-
-    private func ensureDirectories(at root: URL) {
-        for sub in ["quick", "approved", "structured"] {
-            let dir = root.appendingPathComponent(sub, isDirectory: true)
-            try? CloudCoordinatedIO.ensureDirectory(dir)
-        }
-    }
-
-    private func ensureDirectory(_ url: URL) throws {
-        try CloudCoordinatedIO.ensureDirectory(url)
-    }
 
     private func notifyChanged(
         _ key: KeywordListKey,

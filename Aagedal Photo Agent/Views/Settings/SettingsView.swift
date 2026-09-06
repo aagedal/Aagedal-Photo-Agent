@@ -1366,8 +1366,14 @@ struct SettingsView: View {
                 }
                 if isLoaded {
                     Button(role: .destructive) {
-                        service.clearList()
-                        structuredKeywordsErrorMessage = nil
+                        Task {
+                            do {
+                                try await service.clearList()
+                                structuredKeywordsErrorMessage = nil
+                            } catch {
+                                structuredKeywordsErrorMessage = error.localizedDescription
+                            }
+                        }
                     } label: {
                         Image(systemName: "xmark.circle")
                     }
@@ -1469,8 +1475,14 @@ struct SettingsView: View {
                 }
                 if isLoaded {
                     Button(role: .destructive) {
-                        service.clearList()
-                        structuredPersonShownErrorMessage = nil
+                        Task {
+                            do {
+                                try await service.clearList()
+                                structuredPersonShownErrorMessage = nil
+                            } catch {
+                                structuredPersonShownErrorMessage = error.localizedDescription
+                            }
+                        }
                     } label: {
                         Image(systemName: "xmark.circle")
                     }

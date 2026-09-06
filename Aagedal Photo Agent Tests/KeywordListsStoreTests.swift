@@ -753,3 +753,21 @@ struct KeywordListsLegacyMigrationServiceTests {
         #expect(!result.cancelled)
     }
 }
+
+@MainActor
+@Suite("Keyword store path resolution")
+struct KeywordListsStorePathResolutionTests {
+    @Test("Resolving a test root does not create directories; coordinated writes prepare parents")
+    func resolvingRootIsReadOnly() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let store = KeywordListsStore()
+            #expect(store.rootURL == root)
+            #expect(store.url(for: .structured) == root.appendingPathComponent("structured/keywords.txt"))
+            #expect(!FileManager.default.fileExists(atPath: root.path))
+            try store.writeText("Prepared lazily", to: .structured)
+            #expect(store.readText(.structured) == "Prepared lazily")
+        }
+    }
+}

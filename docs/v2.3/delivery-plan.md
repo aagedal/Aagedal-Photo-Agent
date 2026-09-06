@@ -15,6 +15,12 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Storage generation and structured keyword continuation (2026-09-06):** structured keyword
+load/save/deletion uses a serialized actor with cancellation and stale-route protection. Teams and
+Watermarks keep completed old-root mutations out of replacement caches, and Known People invalidates
+thumbnail reads after local content changes. These advances leave the complete Phase 12 storage,
+manual, and device gates open. See the [validation and remaining inventory](../plan-status-storage-generation-structured-keyword-continuation-2026-09-06.md).
+
 **Cloud lifecycle and legacy migration continuation (2026-09-06):** query generations reject stale
 cloud callbacks, changed Teams/Watermark roots replace their queries, and keyword monitoring reuses its
 prepared route. Legacy keyword migration runs on a serialized actor and seeds only missing managed files,

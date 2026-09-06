@@ -47,6 +47,52 @@ struct WatermarkStoreTests {
         return url
     }
 
+    @Test("an old-root import returns its durable commit without repopulating the replacement")
+    func oldRootImportCannotPublish() async throws {
+        let oldRoot = makeTempDir()
+        let replacement = makeTempDir()
+        let source = try makeTempPNG()
+        defer { teardown(oldRoot); teardown(replacement); try? FileManager.default.removeItem(at: source) }
+        let gate = LibraryRootWriteGate()
+        defer { gate.release() }
+        let access = WatermarkLibraryFileAccess(
+            startAccessing: { _ in false },
+            stopAccessing: { _ in },
+            readData: { try Data(contentsOf: $0) },
+            writeData: { data, url in
+                if url.lastPathComponent == "meta.json" { gate.block() }
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: url, options: .atomic)
+            },
+            removeItem: { try FileManager.default.removeItem(at: $0) },
+            ensureDirectory: { try FileManager.default.createDirectory(at: $0, withIntermediateDirectories: true) },
+            contentsOfDirectory: { try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) },
+            isDirectory: { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        )
+        let store = WatermarkStore(storageRoot: oldRoot, persistence: WatermarkLibraryPersistenceService(access: access))
+        await store.loadIfNeeded()
+        let requestID = UUID()
+        let mutation = Task { try await store.importPNG(from: source, name: "Old root", requestID: requestID) }
+        try await gate.waitUntilBlocked()
+        store.invalidateStorageCache(resolvedStorageURL: replacement)
+        gate.release()
+        let result = try await mutation.value
+        guard case .committed(let commit) = result else {
+            Issue.record("The original-root import must remain a durable commit")
+            return
+        }
+        #expect(commit.requestID == requestID)
+        #expect(commit.metadataURL.path.hasPrefix(oldRoot.path + "/"))
+        #expect(FileManager.default.fileExists(atPath: commit.metadataURL.path))
+        #expect(FileManager.default.fileExists(atPath: commit.imageURL.path))
+        #expect(store.shouldSkipRemoteReload(path: commit.metadataURL.path, contentChangeDate: nil))
+        #expect(store.assets.isEmpty)
+        await store.loadIfNeeded()
+        #expect(store.assets.isEmpty)
+        #expect(store.imageData(forAssetID: commit.asset.id) == nil)
+        #expect(store.imageURL(forAssetID: commit.asset.id) == nil)
+    }
+
     @Test("importing a PNG creates a co-located meta.json + image.png and lists the asset")
     func importCreatesItemFolder() async throws {
         let dir = makeTempDir()
