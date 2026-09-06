@@ -7,6 +7,32 @@ import UniformTypeIdentifiers
 
 @Suite("Analysis report snapshot")
 struct AnalysisReportSnapshotTests {
+    @Test("Counter evidence freezes hidden markers and independent color totals")
+    func freezesCounterEvidence() async throws {
+        let fixture = try AnalysisReportFixture(contents: "counter report")
+        defer { fixture.remove() }
+        var analysisCase = AnalysisCase.create(for: try await SourceImageRevision.capture(at: fixture.fileURL))
+        let first = AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.2, y: 0.2)), isVisible: false)
+        analysisCase.setAnnotation(first)
+        analysisCase.setAnnotation(AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.4, y: 0.2))))
+        var red = AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.6, y: 0.2)))
+        red.style.color = .palette(.red)
+        analysisCase.setAnnotation(red)
+        let snapshot = try await AnalysisReportSnapshot.capture(from: analysisCase, sourceURL: fixture.fileURL, appVersion: "test", appBuild: "test")
+        analysisCase.removeAnnotation(id: first.id)
+        #expect(snapshot.counterEvidence.map(\.count) == [2, 1])
+        #expect(snapshot.counterEvidence.map(\.color) == [.palette(.yellow), .palette(.red)])
+        #expect(snapshot.counterEvidence.first?.annotationIDs.contains(first.id) == true)
+        let restored = try JSONDecoder().decode(AnalysisReportSnapshot.self, from: JSONEncoder().encode(snapshot))
+        #expect(restored.counterEvidence == snapshot.counterEvidence)
+        let pdf = try await AnalysisPDFReportRenderer.makePDF(snapshot: restored)
+        let document = try #require(PDFDocument(data: pdf))
+        let reportText = try #require(document.string)
+        #expect(reportText.contains("Counter evidence"))
+        #expect(reportText.contains("Yellow: 2 counted markers"))
+        #expect(reportText.contains("Red: 1 counted marker"))
+    }
+
     @Test("freezes an exact viewport as schematic evidence without map imagery")
     func freezesSchematicMapEvidence() async throws {
         let fixture = try AnalysisReportFixture(contents: "report source")
@@ -137,7 +163,7 @@ struct AnalysisReportSnapshotTests {
             civilDayOffsetMinutes: 120
         )
 
-        #expect(snapshot.schemaVersion == 4)
+        #expect(snapshot.schemaVersion == AnalysisReportSnapshot.currentSchemaVersion)
         #expect(solar.coordinate == coordinate)
         #expect(solar.locationEvidenceID == location.id)
         #expect(solar.locationSourceDetail == "Surveyed photo location")

@@ -102,6 +102,72 @@ struct AnalysisEvidenceJPEGRendererTests {
     }
 
     @MainActor
+    @Test("counter evidence renders readable numbered badges even with thick strokes", arguments: [2.0, 32.0])
+    func counterBadgesAndVisibility(lineWidth: Double) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "analysis-evidence-counter-tests-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appendingPathComponent("source.jpg")
+        try whiteJPEG(width: 300, height: 200).write(to: sourceURL)
+        let visible = AnalysisAnnotation(
+            kind: .counter,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.2, y: 0.5)),
+            text: "People",
+            style: AnalysisAnnotationStyle(color: .palette(.red), lineWidthPoints: lineWidth, fillOpacity: 0),
+            counterNumber: 42
+        )
+        let hidden = AnalysisAnnotation(
+            kind: .counter,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.8, y: 0.5)),
+            style: AnalysisAnnotationStyle(color: .palette(.blue), lineWidthPoints: 2, fillOpacity: 0),
+            isVisible: false,
+            counterNumber: 1
+        )
+        let data = try await AnalysisEvidenceJPEGRenderer.photoJPEG(
+            sourceURL: sourceURL, annotations: [visible, hidden], maxPixelSize: 300
+        )
+        let rendered = try #require(NSBitmapImageRep(data: data))
+        var redPixels = 0
+        var numberPixels = 0
+        for y in 92...108 {
+            for x in 52...68 {
+                let color = try #require(rendered.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+                if color.redComponent > color.greenComponent + 0.25,
+                   color.redComponent > color.blueComponent + 0.25 {
+                    redPixels += 1
+                }
+                // The inner region excludes the circle outline, so dark pixels
+                // here confirm that the counter number survived flattening.
+                if (55...65).contains(x), (96...104).contains(y),
+                   max(color.redComponent, color.greenComponent, color.blueComponent) < 0.4 {
+                    numberPixels += 1
+                }
+            }
+        }
+        #expect(redPixels > 100)
+        #expect(numberPixels > 5)
+        for y in 88...112 {
+            for x in 228...252 {
+                let color = try #require(rendered.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+                #expect(min(color.redComponent, color.greenComponent, color.blueComponent) > 0.95)
+            }
+        }
+        // The optional label sits above and to the right of the badge.
+        var labelPixels = 0
+        for y in 55...85 {
+            for x in 76...145 {
+                let color = try #require(rendered.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+                if min(color.redComponent, color.greenComponent, color.blueComponent) < 0.8 {
+                    labelPixels += 1
+                }
+            }
+        }
+        #expect(labelPixels > 20)
+    }
+
+    @MainActor
     private func whiteJPEG(width: Int, height: Int) throws -> Data {
         let representation = try #require(NSBitmapImageRep(
             bitmapDataPlanes: nil,

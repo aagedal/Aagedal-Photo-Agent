@@ -4,6 +4,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## 3.0.0 — Unreleased
 
+- Added Counter photo markup with independent color sequences, automatic renumbering after deletion,
+  and count evidence in Analysis and PDF reports. Photo layers can be filtered by type and color,
+  with grouped show/hide controls in Pixel Analysis and OSINT.
+
 ### Highlights
 
 - Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel

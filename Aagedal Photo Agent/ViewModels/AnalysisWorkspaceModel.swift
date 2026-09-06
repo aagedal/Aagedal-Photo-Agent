@@ -120,6 +120,10 @@ final class AnalysisWorkspaceModel {
         analysisCase?.annotations ?? []
     }
 
+    var counterEvidence: [AnalysisCounterEvidence] {
+        AnalysisCounterEvidence.summaries(for: annotations)
+    }
+
     func photoAnnotations(for image: ImageFile) -> [AnalysisAnnotation] {
         photoAnnotationCasesByPresentedURL[image.url.standardizedFileURL]?.annotations ?? []
     }
@@ -1074,12 +1078,16 @@ final class AnalysisWorkspaceModel {
     }
 
     func setAllPhotoAnnotationsVisible(_ isVisible: Bool) {
+        setPhotoAnnotationsVisible(ids: Set(annotations.map(\.id)), isVisible: isVisible)
+    }
+
+    func setPhotoAnnotationsVisible(ids: Set<UUID>, isVisible: Bool) {
         guard var updatedCase = analysisCase, !sourceChanged else { return }
         let before = updatedCase.annotations
         let now = Date()
         var after = before
         var changed = false
-        for index in after.indices where after[index].isVisible != isVisible {
+        for index in after.indices where ids.contains(after[index].id) && after[index].isVisible != isVisible {
             after[index].isVisible = isVisible
             after[index].markUpdated(now: now)
             changed = true
@@ -1089,7 +1097,7 @@ final class AnalysisWorkspaceModel {
         photoAnnotationHistory.record(
             before: before,
             after: after,
-            actionName: isVisible ? "Show All Annotations" : "Hide All Annotations"
+            actionName: isVisible ? "Show Annotations" : "Hide Annotations"
         )
         persist(updatedCase)
     }

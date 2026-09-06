@@ -5,6 +5,98 @@ import Testing
 
 @Suite("Analysis case")
 struct AnalysisCaseTests {
+    @Test("Counter sequences are independent by color and renumber after edits")
+    func counterSequences() async throws {
+        let fixture = try AnalysisFixture(contents: "counted source")
+        defer { fixture.remove() }
+        var analysisCase = AnalysisCase.create(for: try await SourceImageRevision.capture(at: fixture.fileURL))
+        let first = AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.1, y: 0.2)))
+        let second = AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.2, y: 0.2)))
+        var red = AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.3, y: 0.2)))
+        red.style.color = .palette(.red)
+        analysisCase.setAnnotation(first)
+        analysisCase.setAnnotation(second)
+        analysisCase.setAnnotation(red)
+        #expect(analysisCase.annotations.map(\.counterNumber) == [1, 2, 1])
+        analysisCase.removeAnnotation(id: first.id)
+        #expect(analysisCase.annotations.map(\.counterNumber) == [1, 1])
+        red = try #require(analysisCase.annotations.last)
+        red.style.color = .palette(.yellow)
+        analysisCase.setAnnotation(red)
+        #expect(analysisCase.annotations.map(\.counterNumber) == [1, 2])
+        for copy in AnalysisAnnotationTransfer.copies(of: analysisCase.annotations) {
+            analysisCase.setAnnotation(copy)
+        }
+        #expect(analysisCase.annotations.map(\.counterNumber) == [1, 2, 3, 4])
+        try analysisCase.validateForPersistence()
+        let decoded = try JSONDecoder().decode(AnalysisCase.self, from: JSONEncoder().encode(analysisCase))
+        #expect(decoded == analysisCase)
+    }
+
+    @Test("Counter evidence follows undo and grouped visibility includes hidden markers")
+    func counterEvidenceUndoAndVisibility() async throws {
+        let fixture = try AnalysisFixture(contents: "counter workspace")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        let first = AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.1, y: 0.2)))
+        let second = AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.3, y: 0.2)))
+        model.setAnnotation(first)
+        model.setAnnotation(second)
+        model.setPhotoAnnotationsVisible(ids: [first.id, second.id], isVisible: false)
+        #expect(model.annotations.allSatisfy { !$0.isVisible })
+        #expect(model.counterEvidence.first?.count == 2)
+        model.undoPhotoAnnotation()
+        #expect(model.annotations.allSatisfy { $0.isVisible })
+        model.removeAnnotation(id: first.id)
+        #expect(model.counterEvidence.first?.count == 1)
+        #expect(model.annotations.first?.counterNumber == 1)
+        model.undoPhotoAnnotation()
+        #expect(model.annotations.map(\.counterNumber) == [1, 2])
+        model.redoPhotoAnnotation()
+        #expect(model.annotations.map(\.counterNumber) == [1])
+        await model.flushPendingSaves()
+    }
+
+    @Test("Version nine annotations decode without counter metadata")
+    func migratesVersionNineCounterMetadata() async throws {
+        let fixture = try AnalysisFixture(contents: "legacy annotations")
+        defer { fixture.remove() }
+        var analysisCase = AnalysisCase.create(for: try await SourceImageRevision.capture(at: fixture.fileURL))
+        analysisCase.setAnnotation(AnalysisAnnotation(kind: .label, geometry: .anchor(.init(x: 0.2, y: 0.2)), text: "Existing"))
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(analysisCase)) as? [String: Any])
+        object["schemaVersion"] = 9
+        let migrated = try AnalysisCase.decodeVersion(from: JSONSerialization.data(withJSONObject: object), schemaVersion: 9, using: JSONDecoder())
+        #expect(migrated.schemaVersion == AnalysisCase.currentSchemaVersion)
+        #expect(migrated.annotations.first?.counterNumber == nil)
+        #expect(migrated.annotations.first?.text == "Existing")
+        try migrated.validateForPersistence()
+    }
+
+    @Test("Persisted counters reject duplicate and noncontiguous numbers", arguments: [1, 3])
+    func rejectsMalformedPersistedCounterSequence(secondNumber: Int) async throws {
+        let fixture = try AnalysisFixture(contents: "malformed counter source")
+        defer { fixture.remove() }
+        var analysisCase = AnalysisCase.create(for: try await SourceImageRevision.capture(at: fixture.fileURL))
+        analysisCase.setAnnotation(AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.2, y: 0.2))))
+        analysisCase.setAnnotation(AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.4, y: 0.2))))
+        analysisCase.annotations[1].counterNumber = secondNumber
+        let decoded = try JSONDecoder().decode(AnalysisCase.self, from: JSONEncoder().encode(analysisCase))
+        #expect(throws: AnalysisCaseValidationError.invalidAnnotations) { try decoded.validateForPersistence() }
+    }
+
+    @Test("Counter numbers require positive values and anchor geometry")
+    func counterValidation() throws {
+        var counter = AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.2, y: 0.2)), counterNumber: 1)
+        try counter.validate()
+        counter.counterNumber = 0
+        #expect(throws: AnalysisAnnotationValidationError.invalidCounterNumber) { try counter.validate() }
+        counter.counterNumber = 1
+        counter.geometry = .segment(start: .init(x: 0, y: 0), end: .init(x: 1, y: 1))
+        #expect(throws: AnalysisAnnotationValidationError.invalidGeometry) { try counter.validate() }
+    }
+
     @Test("Sidebar navigation preserves the active tab through loading and saved case preferences",
           arguments: [AnalysisWorkspaceMode.pixelAnalysis, .osint])
     func sidebarNavigationPreservesWorkspaceMode(mode: AnalysisWorkspaceMode) async throws {
@@ -176,7 +268,7 @@ struct AnalysisCaseTests {
             now: Date(timeIntervalSince1970: 100)
         )
 
-        #expect(analysisCase.schemaVersion == 9)
+        #expect(analysisCase.schemaVersion == AnalysisCase.currentSchemaVersion)
         #expect(analysisCase.source == revision)
         #expect(analysisCase.workspaceMode == .pixelAnalysis)
         #expect(analysisCase.displayPreference == .original)
@@ -611,7 +703,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version one case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 9)
+        #expect(migrated.schemaVersion == AnalysisCase.currentSchemaVersion)
         #expect(migrated.analyzerRuns.isEmpty)
         #expect(migrated.annotations.isEmpty)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -648,7 +740,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version two case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 9)
+        #expect(migrated.schemaVersion == AnalysisCase.currentSchemaVersion)
         #expect(migrated.analyzerRuns == analysisCase.analyzerRuns)
         #expect(migrated.annotations.isEmpty)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -691,7 +783,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version three case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 9)
+        #expect(migrated.schemaVersion == AnalysisCase.currentSchemaVersion)
         #expect(migrated.annotations.count == 1)
         #expect(migrated.annotations.first?.measurementCalibration == nil)
         #expect(migrated.timestampEvidence.isEmpty)
@@ -736,7 +828,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version four case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 9)
+        #expect(migrated.schemaVersion == AnalysisCase.currentSchemaVersion)
         #expect(migrated.annotations.map(\.id) == analysisCase.annotations.map(\.id))
         #expect(migrated.annotations.map(\.kind) == analysisCase.annotations.map(\.kind))
         #expect(migrated.annotations.map(\.geometry) == analysisCase.annotations.map(\.geometry))
@@ -851,7 +943,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version five case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 9)
+        #expect(migrated.schemaVersion == AnalysisCase.currentSchemaVersion)
         #expect(migrated.timestampEvidence == analysisCase.timestampEvidence)
         #expect(migrated.mapState == AnalysisMapState())
         try migrated.validateForPersistence()
@@ -974,7 +1066,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version eight case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 9)
+        #expect(migrated.schemaVersion == AnalysisCase.currentSchemaVersion)
         #expect(migrated.mapState.solarOverlay == nil)
         try migrated.validateForPersistence()
     }
@@ -1263,7 +1355,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version six case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 9)
+        #expect(migrated.schemaVersion == AnalysisCase.currentSchemaVersion)
         #expect(migrated.mapState.viewport == analysisCase.mapState.viewport)
         #expect(migrated.mapState.annotations.isEmpty)
         try migrated.validateForPersistence()
@@ -1303,7 +1395,7 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version seven case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 9)
+        #expect(migrated.schemaVersion == AnalysisCase.currentSchemaVersion)
         #expect(migrated.mapState.annotations.map(\.id) == analysisCase.mapState.annotations.map(\.id))
         #expect(migrated.mapState.annotations.map(\.kind) == analysisCase.mapState.annotations.map(\.kind))
         #expect(migrated.mapState.annotations.map(\.geometry) == analysisCase.mapState.annotations.map(\.geometry))
@@ -1889,6 +1981,7 @@ struct AnalysisCaseTests {
                 end,
             ])),
             AnalysisAnnotation(kind: .label, geometry: .anchor(start), text: "Detail"),
+            AnalysisAnnotation(kind: .counter, geometry: .anchor(start), counterNumber: 1),
         ]
 
         #expect(annotations.map(\.kind) == AnalysisAnnotationKind.allCases)

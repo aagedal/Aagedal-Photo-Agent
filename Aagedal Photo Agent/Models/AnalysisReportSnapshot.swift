@@ -307,7 +307,7 @@ nonisolated struct AnalysisReportEvidenceCrop: Codable, Equatable, Sendable {
 /// findings, and establishes deterministic ordering. Edits made after creation cannot mix with an
 /// export already in progress.
 nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
 
     let schemaVersion: Int
     let id: UUID
@@ -328,6 +328,10 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
     let timestampEvidence: [AnalysisTimestampEvidence]
     let observations: [AnalysisObservation]
     let mapEvidence: AnalysisReportMapEvidence?
+
+    var counterEvidence: [AnalysisCounterEvidence] {
+        AnalysisCounterEvidence.summaries(for: photoAnnotations)
+    }
 
     /// Re-hashes the current source bytes immediately before freezing report inputs.
     static func capture(

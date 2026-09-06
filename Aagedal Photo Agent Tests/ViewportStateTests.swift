@@ -481,6 +481,37 @@ struct ImagePreviewZoomGeometryTests {
         #expect(AnalysisAnnotationTool.photoTool(forShortcut: "x") == nil)
     }
 
+    @Test("counter badges remain selectable in letterboxed images and move as anchors")
+    func counterBadgeHitTesting() throws {
+        let transform = try DisplayImageTransform(
+            sourcePixelWidth: 1_000, sourcePixelHeight: 500, exifOrientation: 1
+        )
+        let mapper = AnalysisAnnotationCoordinateMapper(
+            annotationTransform: transform, displayTransform: transform
+        )
+        let geometry = try ImageInspectionGeometry(
+            imagePixelSize: CGSize(width: 1_000, height: 500),
+            containerRect: CGRect(x: 0, y: 0, width: 500, height: 500)
+        )
+        let counter = AnalysisAnnotation(
+            kind: .counter,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.5, y: 0.5)),
+            counterNumber: 42
+        )
+        #expect(AnalysisAnnotationHitTester.annotationID(
+            at: CGPoint(x: 260, y: 250), annotations: [counter],
+            geometry: geometry, coordinateMapper: mapper
+        ) == counter.id)
+        #expect(AnalysisAnnotationHitTester.editTarget(
+            at: CGPoint(x: 250, y: 250), selectedAnnotationID: counter.id,
+            annotations: [counter], geometry: geometry, coordinateMapper: mapper
+        ) == .move(annotationID: counter.id))
+        #expect(AnalysisAnnotationHitTester.annotationID(
+            at: CGPoint(x: 250, y: 100), annotations: [counter],
+            geometry: geometry, coordinateMapper: mapper
+        ) == nil)
+    }
+
     @Test("analysis preview zoom supports 4000 percent")
     func zoomLimit() {
         #expect(ImagePreviewZoomGeometry.maximumScale == 40)
@@ -521,5 +552,53 @@ struct ImagePreviewZoomGeometryTests {
         )
 
         #expect(offset == CGSize(width: -100, height: 50))
+    }
+}
+
+@Suite("Analysis annotation layer filtering")
+struct AnalysisAnnotationLayerFilteringTests {
+    @Test("Type and color filters intersect without hiding markers or changing evidence totals")
+    func filteringKeepsEvidence() {
+        let red = AnalysisAnnotationColor.palette(.red)
+        let blue = AnalysisAnnotationColor.palette(.blue)
+        let annotations = (0..<1_000).map { index in
+            AnalysisAnnotation(
+                kind: index.isMultiple(of: 5) ? .label : .counter,
+                geometry: .anchor(AnalysisNormalizedPoint(x: 0.5, y: 0.5)),
+                text: index.isMultiple(of: 5) ? "Label" : nil,
+                style: AnalysisAnnotationStyle(color: index.isMultiple(of: 2) ? red : blue,
+                                               lineWidthPoints: 2, fillOpacity: 0),
+                isVisible: !index.isMultiple(of: 3)
+            )
+        }
+        let filter = AnalysisAnnotationLayerFilter(kind: .counter, colorID: red.stableIdentifier)
+        let ids = filter.matchingIDs(in: annotations)
+        #expect(ids.count == 400)
+        #expect(annotations.filter { ids.contains($0.id) }.allSatisfy {
+            $0.kind == .counter && $0.style.color == red
+        })
+        #expect(AnalysisCounterEvidence.summaries(for: annotations).map(\.count) == [400, 400])
+        let groups = AnalysisAnnotationLayerGroup.groups(in: annotations)
+        #expect(groups.count == 4)
+        #expect(groups.reduce(0) { $0 + $1.annotationIDs.count } == 1_000)
+        #expect(groups.reduce(0) { $0 + $1.visibleCount } == annotations.count(where: \.isVisible))
+        #expect(AnalysisAnnotationLayerFilter().matchingIDs(in: annotations).count == 1_000)
+    }
+
+    @Test("Custom color groups preserve distinct colors and stable group identity")
+    func customColorGroups() {
+        let first = AnalysisAnnotationColor.custom(.init(red: 0.50001, green: 0, blue: 0, opacity: 1))
+        let second = AnalysisAnnotationColor.custom(.init(red: 0.50002, green: 0, blue: 0, opacity: 1))
+        func annotation(_ color: AnalysisAnnotationColor) -> AnalysisAnnotation {
+            AnalysisAnnotation(kind: .counter, geometry: .anchor(.init(x: 0.4, y: 0.4)),
+                               style: .init(color: color, lineWidthPoints: 2, fillOpacity: 0))
+        }
+        let annotations = [annotation(first), annotation(second), annotation(first)]
+        let groups = AnalysisAnnotationLayerGroup.groups(in: annotations)
+        #expect(groups.count == 2)
+        #expect(groups.map { $0.annotationIDs.count } == [2, 1])
+        #expect(Set(groups.map(\.id)).count == 2)
+        #expect(AnalysisAnnotationLayerFilter(colorID: second.stableIdentifier)
+            .matchingIDs(in: annotations) == [annotations[1].id])
     }
 }

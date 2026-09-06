@@ -386,6 +386,10 @@ nonisolated enum AnalysisLinkedMapMarkerNaming {
         _ annotation: AnalysisAnnotation,
         index: Int
     ) -> String {
+        if annotation.kind == .counter {
+            let number = annotation.counterNumber.map(String.init) ?? "?"
+            return "\(annotation.style.color.displayName) Counter \(number)"
+        }
         if let text = annotation.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty {
             return text
@@ -399,6 +403,7 @@ nonisolated enum AnalysisLinkedMapMarkerNaming {
         case .ellipse: "Ellipse"
         case .polygon: "Polygon"
         case .label: "Label"
+        case .counter: "Counter"
         }
         return "\(kindName) \(index + 1)"
     }

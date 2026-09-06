@@ -43,6 +43,18 @@ Use the Photo tools for line/arrow, distance, rectangle, ellipse, and label anno
 in source pixels unless you explicitly calibrate a known segment and unit. Calibration is case evidence,
 not camera metadata, and does not infer physical size from DPI alone.
 
+Choose **Counter** (C) and click each person, car, or other item you want to count. Each color has its
+own sequence, starting at 1. Changing color starts or continues that color's sequence. Deleting a marker
+renumbers the remaining markers of its color; Undo restores the marker and count. Counter Evidence
+shows the totals automatically, and the PDF report includes those totals with the individual markers.
+These are manual counts stored with the analysis case, not IPTC/XMP fields.
+
+In Pixel Analysis, open the right-hand **Layers** tab (also opened when selecting Counter). In OSINT,
+use the Photo Annotations pane. Filter the list by type and color, then show or hide matching layers.
+Expand **Groups by Type and Color** to toggle a whole group. Filters narrow the list; visibility
+controls hide markers in the image and exported image. Hidden markers still contribute to counter
+evidence. Delete a marker to remove it from the count.
+
 ### Build OSINT context
 
 In OSINT mode you can:

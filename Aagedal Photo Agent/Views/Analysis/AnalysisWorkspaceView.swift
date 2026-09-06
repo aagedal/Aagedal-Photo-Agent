@@ -5,11 +5,13 @@ import UniformTypeIdentifiers
 private enum AnalysisPixelInspectorSection: String, CaseIterable {
     case evidence
     case scopes
+    case layers
 
     var label: String {
         switch self {
         case .evidence: "Evidence"
         case .scopes: "Scopes"
+        case .layers: "Layers"
         }
     }
 }
@@ -160,6 +162,11 @@ struct AnalysisWorkspaceView: View {
 
     private var workspaceWithStateObservers: some View {
         workspaceWithSourceObservers
+        .onChange(of: photoAnnotationTool) {
+            if photoAnnotationTool == .counter {
+                pixelInspectorSection = .layers
+            }
+        }
         .onChange(of: selectedAnnotationID) {
             guard let selectedAnnotationID,
                   let annotation = model.annotations.first(where: {
@@ -832,6 +839,25 @@ struct AnalysisWorkspaceView: View {
                     state: $scopeWorkspaceState
                 )
                 .frame(minHeight: 300)
+            case .layers:
+                VStack(alignment: .leading, spacing: 12) {
+                    AnalysisCounterEvidenceView(annotations: model.annotations)
+                    AnalysisAnnotationList(
+                        annotations: model.annotations,
+                        selectedAnnotationID: $selectedAnnotationID,
+                        isReadOnly: model.sourceChanged,
+                        onSetVisible: model.setPhotoAnnotationVisible,
+                        onSetAllVisible: model.setAllPhotoAnnotationsVisible,
+                        onSetGroupVisible: { model.setPhotoAnnotationsVisible(ids: $0, isVisible: $1) },
+                        onEdit: presentPhotoAnnotationEditor,
+                        onDelete: { id in
+                            model.removeAnnotation(id: id)
+                            if selectedAnnotationID == id { selectedAnnotationID = nil }
+                        },
+                        expandsToFill: true
+                    )
+                }
+                .padding(14)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -898,7 +924,8 @@ struct AnalysisWorkspaceView: View {
                     selectedAnnotationID: $selectedMapAnnotationID,
                     isReadOnly: model.sourceChanged,
                     onSetPhotoVisible: model.setPhotoAnnotationVisible,
-                    onSetAllPhotosVisible: model.setAllPhotoAnnotationsVisible,
+                            onSetAllPhotosVisible: model.setAllPhotoAnnotationsVisible,
+                            onSetPhotoGroupVisible: { model.setPhotoAnnotationsVisible(ids: $0, isVisible: $1) },
                     onEditPhotoAnnotation: presentPhotoAnnotationEditor,
                     onDeletePhotoAnnotation: model.removeAnnotation,
                     onSetGlobalVisible: model.setGlobalMapAnnotationVisible,
@@ -907,7 +934,7 @@ struct AnalysisWorkspaceView: View {
                     onDeleteGlobalAnnotation: model.removeGlobalMapAnnotation,
                     onSetGlobalPhotoAnnotationLink: model.setGlobalMapAnnotationPhotoLink
                 )
-                .frame(minHeight: 150, idealHeight: 210, maxHeight: 280)
+                .frame(minHeight: 220, idealHeight: 360, maxHeight: .infinity)
             }
             .frame(minWidth: 520, maxWidth: .infinity)
         }
@@ -1002,7 +1029,7 @@ struct AnalysisWorkspaceView: View {
         case .distance: mapDraftCoordinateCount == 0 ? "Set Start" : "Set End"
         case .shape: "Add Vertex"
         case .label: "Add Label"
-        case .arrow, .rectangle, .ellipse: nil
+        case .arrow, .rectangle, .ellipse, .counter: nil
         }
     }
 
@@ -1090,23 +1117,11 @@ struct AnalysisWorkspaceView: View {
                     .frame(maxHeight: 260)
                 }
 
-                if !model.annotations.isEmpty {
-                    Divider()
+                AnalysisCounterEvidenceView(annotations: model.annotations)
 
-                    AnalysisAnnotationList(
-                        annotations: model.annotations,
-                        selectedAnnotationID: $selectedAnnotationID,
-                        isReadOnly: model.sourceChanged,
-                        onSetVisible: model.setPhotoAnnotationVisible,
-                        onSetAllVisible: model.setAllPhotoAnnotationsVisible,
-                        onEdit: presentPhotoAnnotationEditor,
-                        onDelete: { annotationID in
-                            model.removeAnnotation(id: annotationID)
-                            if selectedAnnotationID == annotationID {
-                                self.selectedAnnotationID = nil
-                            }
-                        }
-                    )
+                if !model.annotations.isEmpty {
+                    Button("Manage Annotation Layers…") { pixelInspectorSection = .layers }
+                        .font(.caption)
                 }
 
                 Divider()
@@ -1599,19 +1614,162 @@ private struct AnalysisReportExportSheet: View {
     }
 }
 
+private struct AnalysisCounterEvidenceView: View {
+    let annotations: [AnalysisAnnotation]
+
+    private var groups: [AnalysisAnnotationLayerGroup] {
+        AnalysisAnnotationLayerGroup.groups(in: annotations.filter { $0.kind == .counter })
+    }
+
+    var body: some View {
+        if !groups.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Counter Evidence", systemImage: "number.circle")
+                    .font(.caption.weight(.semibold))
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(groups) { group in
+                            HStack {
+                                Circle().fill(group.color.swiftUIColor)
+                                    .overlay(Circle().stroke(Color.secondary, lineWidth: 1))
+                                    .frame(width: 10, height: 10)
+                                    .accessibilityHidden(true)
+                                Text(group.color.displayName)
+                                Spacer()
+                                Text("\(group.annotationIDs.count)").monospacedDigit().bold()
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                }
+                .frame(height: min(CGFloat(groups.count) * 22, 100))
+                Text("Manual counts · includes hidden markers · included in reports")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.caption)
+        }
+    }
+}
+
+/// Group visibility edits are persisted once and undo together; filters only narrow this list.
+private struct AnalysisAnnotationLayerControls: View {
+    let annotations: [AnalysisAnnotation]
+    @Binding var filter: AnalysisAnnotationLayerFilter
+    let isReadOnly: Bool
+    let onSetVisible: (Set<UUID>, Bool) -> Void
+    @State private var showsGroups = false
+
+    private var groups: [AnalysisAnnotationLayerGroup] {
+        AnalysisAnnotationLayerGroup.groups(in: annotations)
+    }
+
+    private var colors: [AnalysisAnnotationColor] {
+        var seen = Set<String>()
+        return annotations.compactMap {
+            seen.insert($0.style.color.stableIdentifier).inserted ? $0.style.color : nil
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Picker("Type", selection: $filter.kind) {
+                    Text("All Types").tag(AnalysisAnnotationKind?.none)
+                    ForEach(AnalysisAnnotationKind.allCases, id: \.self) { kind in
+                        Text(kind.displayName).tag(Optional(kind))
+                    }
+                }
+                Picker("Color", selection: $filter.colorID) {
+                    Text("All Colors").tag(String?.none)
+                    ForEach(colors, id: \.stableIdentifier) { color in
+                        Text(color.displayName).tag(Optional(color.stableIdentifier))
+                    }
+                }
+            }
+            .labelsHidden()
+            .controlSize(.small)
+
+            HStack(spacing: 8) {
+                let ids = filter.matchingIDs(in: annotations)
+                Text("\(ids.count) of \(annotations.count) layers")
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if filter.kind != nil || filter.colorID != nil {
+                    Button("Reset") { filter = AnalysisAnnotationLayerFilter() }
+                }
+                Button { onSetVisible(ids, true) } label: {
+                    Image(systemName: "eye")
+                }
+                .help("Show all layers matching these filters")
+                .accessibilityLabel("Show matching layers")
+                .disabled(isReadOnly || ids.isEmpty)
+                Button { onSetVisible(ids, false) } label: {
+                    Image(systemName: "eye.slash")
+                }
+                .help("Hide all layers matching these filters")
+                .accessibilityLabel("Hide matching layers")
+                .disabled(isReadOnly || ids.isEmpty)
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+
+            DisclosureGroup("Groups by Type and Color", isExpanded: $showsGroups) {
+                ScrollView {
+                    LazyVStack(spacing: 5) {
+                        ForEach(groups) { group in
+                            HStack {
+                                Image(systemName: group.kind.systemImage)
+                                    .foregroundStyle(group.color.swiftUIColor)
+                                Button {
+                                    filter.kind = group.kind
+                                    filter.colorID = group.color.stableIdentifier
+                                } label: {
+                                    Text("\(group.color.displayName) \(group.kind.displayName)")
+                                        .lineLimit(1)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Filter the layer list to this group")
+                                Spacer(minLength: 3)
+                                Text("\(group.visibleCount)/\(group.annotationIDs.count)")
+                                    .monospacedDigit().foregroundStyle(.secondary)
+                                    .accessibilityLabel("\(group.visibleCount) visible of \(group.annotationIDs.count)")
+                                Button {
+                                    onSetVisible(group.annotationIDs, group.visibleCount == 0)
+                                } label: {
+                                    Image(systemName: group.visibleCount == 0 ? "eye.slash" : "eye")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(isReadOnly)
+                                .accessibilityLabel("\(group.visibleCount == 0 ? "Show" : "Hide") \(group.color.displayName) \(group.kind.displayName) layers")
+                            }
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+                .frame(maxHeight: 150)
+            }
+            .font(.caption)
+        }
+    }
+}
+
 private struct AnalysisAnnotationList: View {
     let annotations: [AnalysisAnnotation]
     @Binding var selectedAnnotationID: UUID?
     let isReadOnly: Bool
     let onSetVisible: (UUID, Bool) -> Void
     let onSetAllVisible: (Bool) -> Void
+    let onSetGroupVisible: (Set<UUID>, Bool) -> Void
     let onEdit: (UUID) -> Void
     let onDelete: (UUID) -> Void
+    var expandsToFill = false
+    @State private var filter = AnalysisAnnotationLayerFilter()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("ANNOTATIONS")
+                Text("PHOTO LAYERS")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
@@ -1632,8 +1790,13 @@ private struct AnalysisAnnotationList: View {
                 .help("Show or hide all photo-annotation layers")
             }
 
+            AnalysisAnnotationLayerControls(
+                annotations: annotations, filter: $filter,
+                isReadOnly: isReadOnly, onSetVisible: onSetGroupVisible
+            )
+
             List(selection: $selectedAnnotationID) {
-                ForEach(Array(annotations.enumerated()), id: \.element.id) { index, annotation in
+                ForEach(Array(annotations.enumerated()).filter { filter.includes($0.element) }, id: \.element.id) { index, annotation in
                     HStack(spacing: 7) {
                         Image(systemName: annotation.kind.systemImage)
                             .frame(width: 14)
@@ -1705,7 +1868,7 @@ private struct AnalysisAnnotationList: View {
                 }
             }
             .listStyle(.inset)
-            .frame(minHeight: 90, idealHeight: 150, maxHeight: 210)
+            .frame(minHeight: 90, idealHeight: 150, maxHeight: expandsToFill ? .infinity : 210)
             .onDeleteCommand {
                 guard !isReadOnly, let selectedAnnotationID else { return }
                 onDelete(selectedAnnotationID)
@@ -1986,6 +2149,7 @@ private struct AnalysisMapLayersView: View {
     let isReadOnly: Bool
     let onSetPhotoVisible: (UUID, Bool) -> Void
     let onSetAllPhotosVisible: (Bool) -> Void
+    let onSetPhotoGroupVisible: (Set<UUID>, Bool) -> Void
     let onEditPhotoAnnotation: (UUID) -> Void
     let onDeletePhotoAnnotation: (UUID) -> Void
     let onSetGlobalVisible: (UUID, Bool) -> Void
@@ -1993,6 +2157,7 @@ private struct AnalysisMapLayersView: View {
     let onEditGlobalAnnotation: (UUID) -> Void
     let onDeleteGlobalAnnotation: (UUID) -> Void
     let onSetGlobalPhotoAnnotationLink: (UUID, UUID, Bool) -> Void
+    @State private var photoFilter = AnalysisAnnotationLayerFilter()
 
     var body: some View {
         HSplitView {
@@ -2017,6 +2182,12 @@ private struct AnalysisMapLayersView: View {
                     .disabled(isReadOnly || photoAnnotations.allSatisfy({ !$0.isVisible }))
             }
 
+            AnalysisCounterEvidenceView(annotations: photoAnnotations)
+            AnalysisAnnotationLayerControls(
+                annotations: photoAnnotations, filter: $photoFilter,
+                isReadOnly: isReadOnly, onSetVisible: onSetPhotoGroupVisible
+            )
+
             if photoAnnotations.isEmpty {
                 ContentUnavailableView(
                     "No Photo Annotations",
@@ -2026,7 +2197,7 @@ private struct AnalysisMapLayersView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 5) {
-                        ForEach(Array(photoAnnotations.enumerated().reversed()), id: \.element.id) {
+                        ForEach(Array(photoAnnotations.enumerated().reversed()).filter { photoFilter.includes($0.element) }, id: \.element.id) {
                             index, annotation in
                             photoLayerRow(annotation, index: index)
                         }
@@ -2858,6 +3029,11 @@ private struct AnalysisCalibrationEditor: View {
 
 private extension AnalysisAnnotation {
     func listName(index: Int) -> String {
+        if kind == .counter {
+            let number = counterNumber.map(String.init) ?? "?"
+            let label = text.map { " · " + $0 } ?? ""
+            return "\(style.color.displayName) Counter \(number)\(label)"
+        }
         if let text = text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty {
             return text
@@ -2876,6 +3052,7 @@ private extension AnalysisAnnotationKind {
         case .ellipse: "Ellipse"
         case .polygon: "Polygon"
         case .label: "Label"
+        case .counter: "Counter"
         }
     }
 
@@ -2888,6 +3065,7 @@ private extension AnalysisAnnotationKind {
         case .ellipse: "circle"
         case .polygon: "pentagon"
         case .label: "character.cursor.ibeam"
+        case .counter: "number.circle"
         }
     }
 }
@@ -4085,7 +4263,7 @@ private struct AnalysisSourceThumbnail: View {
             return false
         }
         if kind == .polygon { return true }
-        guard kind != .label else { return true }
+        guard kind != .label, kind != .counter else { return true }
         guard let image,
               let coordinateMapper,
               let geometry = inspectionGeometry(
@@ -4183,6 +4361,28 @@ private struct AnalysisSourceThumbnail: View {
             guard polygonDraftPoints.count < 1_000 else { return true }
             polygonDraftPoints.append(point)
             onPolygonDraftCountChanged(polygonDraftPoints.count)
+            return true
+        }
+
+        if kind == .counter {
+            // A click adds one marker. Ignore drags so accidental movement does
+            // not add counts while the user is navigating a crowded image.
+            guard hypot(
+                value.location.x - value.startLocation.x,
+                value.location.y - value.startLocation.y
+            ) < 3,
+            let point = geometry.normalizedDisplayPoint(fromViewPoint: value.location) else {
+                return true
+            }
+            let annotation = AnalysisAnnotation(
+                kind: .counter,
+                geometry: .anchor(coordinateMapper.annotationPoint(from: point)),
+                style: annotationStyle
+            )
+            onSetAnnotation(annotation)
+            // Leave the new marker unselected so choosing another color starts
+            // a separate counter instead of recoloring the marker just placed.
+            selectedAnnotationID = nil
             return true
         }
 

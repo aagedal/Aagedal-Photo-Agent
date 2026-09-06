@@ -267,7 +267,36 @@ enum AnalysisEvidenceJPEGRenderer {
                 )
 
             case .anchor(let point):
-                drawPhotoLabel(annotation, near: photoPoint(point, in: rect), scale: scale)
+                if annotation.kind == .counter {
+                    let center = photoPoint(point, in: rect)
+                    let number = String(annotation.counterNumber ?? 1) as NSString
+                    let font = NSFont.systemFont(ofSize: (number.length > 3 ? 8 : 11) * scale, weight: .bold)
+                    let textColor: NSColor
+                    switch annotation.style.color {
+                    case .palette(.black): textColor = .white
+                    case .custom(let custom)
+                        where 0.2126 * custom.red + 0.7152 * custom.green + 0.0722 * custom.blue < 0.25:
+                        textColor = .white
+                    default: textColor = .black
+                    }
+                    let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
+                    let size = number.size(withAttributes: attributes)
+                    let diameter = 24 * scale
+                    let counterLineWidth = CGFloat(min(3, annotation.style.lineWidthPoints)) * scale
+                    let circle = NSBezierPath(ovalIn: CGRect(x: center.x - diameter / 2, y: center.y - diameter / 2, width: diameter, height: diameter))
+                    color.setFill()
+                    circle.fill()
+                    textColor.withAlphaComponent(0.82).setStroke()
+                    circle.lineWidth = counterLineWidth + 2 * scale
+                    circle.stroke()
+                    color.setStroke()
+                    circle.lineWidth = counterLineWidth
+                    circle.stroke()
+                    number.draw(at: CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2), withAttributes: attributes)
+                    drawPhotoLabel(annotation, near: center, scale: scale)
+                } else {
+                    drawPhotoLabel(annotation, near: photoPoint(point, in: rect), scale: scale)
+                }
             }
         }
     }
@@ -337,9 +366,10 @@ enum AnalysisEvidenceJPEGRenderer {
         let text = annotation.text?.trimmingCharacters(in: .whitespacesAndNewlines)
             ?? annotation.measurementCalibration?.formattedKnownLength
         guard let text, !text.isEmpty else { return }
+        let offset: CGFloat = annotation.kind == .counter ? 16 : 6
         drawLabel(
             text,
-            at: CGPoint(x: point.x + 6 * scale, y: point.y + 6 * scale),
+            at: CGPoint(x: point.x + offset * scale, y: point.y + offset * scale),
             color: nsColor(annotation.style.color),
             scale: scale
         )

@@ -9,6 +9,7 @@ nonisolated enum AnalysisAnnotationKind: String, Codable, CaseIterable, Sendable
     case ellipse
     case polygon
     case label
+    case counter
 }
 
 /// A point in the original image's display-oriented coordinate space.
@@ -126,6 +127,7 @@ nonisolated struct AnalysisAnnotationStyle: Codable, Equatable, Sendable {
 
 nonisolated enum AnalysisAnnotationValidationError: Error, Equatable, Sendable {
     case invalidGeometry
+    case invalidCounterNumber
     case invalidStyle
     case invalidText
     case invalidNote
@@ -221,6 +223,7 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
     var isVisible: Bool
     var findingIDs: [String]
     var measurementCalibration: AnalysisMeasurementCalibration?
+    var counterNumber: Int?
     let createdAt: Date
     var updatedAt: Date
 
@@ -234,6 +237,7 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
         isVisible: Bool = true,
         findingIDs: [String] = [],
         measurementCalibration: AnalysisMeasurementCalibration? = nil,
+        counterNumber: Int? = nil,
         now: Date = Date()
     ) {
         self.id = id
@@ -245,6 +249,7 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
         self.isVisible = isVisible
         self.findingIDs = findingIDs
         self.measurementCalibration = measurementCalibration
+        self.counterNumber = counterNumber
         createdAt = now
         updatedAt = now
     }
@@ -278,6 +283,9 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
     func validate() throws {
         guard geometry.isValid, geometry.matches(kind) else {
             throw AnalysisAnnotationValidationError.invalidGeometry
+        }
+        guard kind == .counter ? (counterNumber.map { $0 > 0 } ?? false) : counterNumber == nil else {
+            throw AnalysisAnnotationValidationError.invalidCounterNumber
         }
         guard style.isValid else {
             throw AnalysisAnnotationValidationError.invalidStyle
@@ -395,7 +403,7 @@ nonisolated enum AnalysisAnnotationGeometryBuilder {
             return .bounds(bounds)
         case .polygon:
             return nil
-        case .label:
+        case .label, .counter:
             return .anchor(start)
         }
     }
@@ -712,10 +720,56 @@ private extension AnalysisAnnotationGeometry {
         switch (kind, self) {
         case (.line, .segment), (.arrow, .segment), (.distance, .segment),
              (.rectangle, .bounds), (.ellipse, .bounds), (.polygon, .polygon),
-             (.label, .anchor):
+             (.label, .anchor), (.counter, .anchor):
             true
         default:
             false
         }
+    }
+}
+
+extension AnalysisAnnotationColor {
+    nonisolated var stableIdentifier: String {
+        switch self {
+        case .palette(let color): "palette-" + color.rawValue
+        case .custom(let color):
+            "custom-" + [color.red, color.green, color.blue, color.opacity]
+                .map { String($0 == 0 ? 0.0 : $0) }.joined(separator: "-")
+        }
+    }
+
+    nonisolated var displayName: String {
+        switch self {
+        case .palette(let color): color.rawValue.capitalized
+        case .custom(let color):
+            String(format: "Custom #%02X%02X%02X (%.0f%%)",
+                   Int(min(1, max(0, color.red)) * 255),
+                   Int(min(1, max(0, color.green)) * 255),
+                   Int(min(1, max(0, color.blue)) * 255), color.opacity * 100)
+        }
+    }
+}
+
+/// Investigator-authored counts derived from all markers, including hidden layers.
+/// Marker numbers form a contiguous sequence within each color group.
+nonisolated struct AnalysisCounterEvidence: Identifiable, Equatable, Sendable {
+    let color: AnalysisAnnotationColor
+    private(set) var annotationIDs: [UUID]
+    var id: String { color.stableIdentifier }
+    var count: Int { annotationIDs.count }
+
+    static func summaries(for annotations: [AnalysisAnnotation]) -> [Self] {
+        var summaries: [Self] = []
+        var indices: [String: Int] = [:]
+        for annotation in annotations where annotation.kind == .counter {
+            let key = annotation.style.color.stableIdentifier
+            if let index = indices[key] {
+                summaries[index].annotationIDs.append(annotation.id)
+            } else {
+                indices[key] = summaries.count
+                summaries.append(Self(color: annotation.style.color, annotationIDs: [annotation.id]))
+            }
+        }
+        return summaries
     }
 }

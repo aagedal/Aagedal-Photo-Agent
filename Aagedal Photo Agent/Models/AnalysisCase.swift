@@ -59,7 +59,7 @@ enum AnalysisCaseValidationError: Error, Equatable, LocalizedError, Sendable {
 /// Map state shares this source-bound document; report state will join it in a later slice rather
 /// than creating separate Pixel Analysis and OSINT sessions.
 nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 10
 
     let schemaVersion: Int
     let id: UUID
@@ -139,6 +139,7 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         } else {
             annotations.append(updatedAnnotation)
         }
+        renumberCounters(now: now)
         updatedAt = max(max(now, createdAt), updatedAnnotation.updatedAt)
     }
 
@@ -148,6 +149,7 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
             return false
         }
         annotations.remove(at: index)
+        renumberCounters(now: now)
         updatedAt = max(now, createdAt)
         return true
     }
@@ -157,10 +159,30 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         now: Date = Date()
     ) {
         annotations = replacements
+        renumberCounters(now: now)
         updatedAt = max(
             max(now, createdAt),
             replacements.map(\.updatedAt).max() ?? createdAt
         )
+    }
+
+    /// Array order defines each independent color sequence, keeping numbers contiguous.
+    private mutating func renumberCounters(now: Date) {
+        var counts: [String: Int] = [:]
+        for index in annotations.indices {
+            let number: Int?
+            if annotations[index].kind == .counter {
+                let key = annotations[index].style.color.stableIdentifier
+                counts[key, default: 0] += 1
+                number = counts[key]
+            } else {
+                number = nil
+            }
+            if annotations[index].counterNumber != number {
+                annotations[index].counterNumber = number
+                annotations[index].markUpdated(now: now)
+            }
+        }
     }
 
     mutating func setTimestampEvidence(
@@ -295,6 +317,18 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         switch schemaVersion {
         case currentSchemaVersion:
             return try decoder.decode(AnalysisCase.self, from: data)
+        case 9:
+            let legacy = try decoder.decode(AnalysisCase.self, from: data)
+            return AnalysisCase(
+                schemaVersion: currentSchemaVersion,
+                id: legacy.id, title: legacy.title, source: legacy.source,
+                createdAt: legacy.createdAt, updatedAt: legacy.updatedAt,
+                createdByAppBuild: legacy.createdByAppBuild,
+                workspaceMode: legacy.workspaceMode, displayPreference: legacy.displayPreference,
+                analyzerRuns: legacy.analyzerRuns, annotations: legacy.annotations,
+                timestampEvidence: legacy.timestampEvidence, observations: legacy.observations,
+                mapState: legacy.mapState
+            )
         case 8:
             let legacy = try decoder.decode(LegacyAnalysisCaseV8.self, from: data)
             return AnalysisCase(
@@ -478,6 +512,14 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
               annotations.filter({ $0.measurementCalibration != nil }).count <= 1,
               annotations.allSatisfy({ (try? $0.validate()) != nil }) else {
             throw AnalysisCaseValidationError.invalidAnnotations
+        }
+        var counterSequences: [String: Int] = [:]
+        for annotation in annotations where annotation.kind == .counter {
+            let key = annotation.style.color.stableIdentifier
+            counterSequences[key, default: 0] += 1
+            guard annotation.counterNumber == counterSequences[key] else {
+                throw AnalysisCaseValidationError.invalidAnnotations
+            }
         }
         guard Set(timestampEvidence.map(\.id)).count == timestampEvidence.count,
               timestampEvidence.allSatisfy({ $0.source == .userEntered && $0.validate() }),

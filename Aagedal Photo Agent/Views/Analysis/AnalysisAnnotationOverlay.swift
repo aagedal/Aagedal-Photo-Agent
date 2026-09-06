@@ -5,6 +5,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     case select
     case hand
     case marker
+    case counter
     case line
     case arrow
     case distance
@@ -20,6 +21,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
         case .select: "Select"
         case .hand: "Hand"
         case .marker: "Marker"
+        case .counter: "Counter"
         case .line: "Line"
         case .arrow: "Arrow"
         case .distance: "Distance"
@@ -35,6 +37,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
         case .select: "cursorarrow"
         case .hand: "hand.draw"
         case .marker: "mappin"
+        case .counter: "number.circle"
         case .line: "line.diagonal"
         case .arrow: "arrow.up.right"
         case .distance: "ruler"
@@ -48,6 +51,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     var annotationKind: AnalysisAnnotationKind? {
         switch self {
         case .select, .hand, .marker: nil
+        case .counter: .counter
         case .line: .line
         case .arrow: .arrow
         case .distance: .distance
@@ -61,6 +65,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     var photoShortcutKey: String? {
         switch self {
         case .select: "V"
+        case .counter: "C"
         case .hand: "H"
         case .line: "L"
         case .arrow: "A"
@@ -76,6 +81,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     static func photoTool(forShortcut key: String) -> Self? {
         switch key.lowercased() {
         case "v": .select
+        case "c": .counter
         case "h": .hand
         case "l": .line
         case "a": .arrow
@@ -89,7 +95,7 @@ enum AnalysisAnnotationTool: String, CaseIterable, Identifiable {
     }
 
     static let photoTools: [Self] = [
-        .select, .hand, .line, .arrow, .distance, .rectangle, .ellipse, .shape, .label,
+        .select, .hand, .counter, .line, .arrow, .distance, .rectangle, .ellipse, .shape, .label,
     ]
 
     static let mapTools: [Self] = [
@@ -407,9 +413,14 @@ struct AnalysisAnnotationOverlay: View {
             )?.formattedLength(calibratedBy: measurementScale)
                 .replacingOccurrences(of: " px", with: " pixels")
         }
-        guard !measurements.isEmpty else { return "\(annotations.count) visible" }
-        return "\(annotations.count) visible; source-pixel distances: "
-            + measurements.joined(separator: ", ")
+        var parts = ["\(annotations.count) visible"]
+        for group in AnalysisCounterEvidence.summaries(for: annotations) {
+            parts.append("\(group.color.displayName) visible counters: \(group.count)")
+        }
+        if !measurements.isEmpty {
+            parts.append("source-pixel distances: " + measurements.joined(separator: ", "))
+        }
+        return parts.joined(separator: "; ")
     }
 
     private func draw(
@@ -425,7 +436,13 @@ struct AnalysisAnnotationOverlay: View {
         )
         let color = annotation.style.color.swiftUIColor.opacity(isDraft ? 0.72 : 1)
         let contrast = annotation.style.color.contrastColor.opacity(isDraft ? 0.55 : 0.82)
-        let width = CGFloat(annotation.style.lineWidthPoints)
+        // A thick line-tool setting must not cover the number inside a counter badge.
+        let width = CGFloat(annotation.kind == .counter
+            ? min(3, annotation.style.lineWidthPoints) : annotation.style.lineWidthPoints)
+
+        if annotation.kind == .counter {
+            context.fill(path, with: .color(color))
+        }
 
         if annotation.geometry.supportsFill, annotation.style.fillOpacity > 0 {
             context.fill(
@@ -443,6 +460,27 @@ struct AnalysisAnnotationOverlay: View {
                 lineJoin: .round
             )
         )
+
+        if annotation.kind == .counter, case .anchor(let anchor) = annotation.geometry {
+            let center = AnalysisAnnotationViewGeometry.viewPoint(
+                anchor, geometry: geometry, coordinateMapper: coordinateMapper
+            )
+            let number = String(annotation.counterNumber ?? 1)
+            let fontSize: CGFloat = number.count > 3 ? 8 : 11
+            context.draw(
+                Text(number).font(.system(size: fontSize, weight: .bold, design: .rounded))
+                    .foregroundColor(annotation.style.color.contrastColor),
+                at: center,
+                anchor: .center
+            )
+            if selected {
+                let ring = Path(ellipseIn: CGRect(
+                    x: center.x - 17, y: center.y - 17, width: 34, height: 34
+                ))
+                context.stroke(ring, with: .color(.white), lineWidth: 4)
+                context.stroke(ring, with: .color(.accentColor), lineWidth: 2)
+            }
+        }
         context.stroke(
             path,
             with: .color(color),
@@ -531,7 +569,7 @@ struct AnalysisAnnotationOverlay: View {
             }
         }
 
-        if selected {
+        if selected, annotation.kind != .counter {
             let handles = AnalysisAnnotationViewGeometry.controlPoints(
                 for: annotation,
                 geometry: geometry,
@@ -697,7 +735,8 @@ private enum AnalysisAnnotationViewGeometry {
         switch annotation.geometry {
         case .anchor(let anchor):
             let point = viewPoint(anchor, geometry: geometry, coordinateMapper: coordinateMapper)
-            return (CGPoint(x: point.x + 7, y: point.y - 7), .bottomLeading)
+            let offset: CGFloat = annotation.kind == .counter ? 16 : 7
+            return (CGPoint(x: point.x + offset, y: point.y - offset), .bottomLeading)
         case .segment(let start, let end):
             let first = viewPoint(start, geometry: geometry, coordinateMapper: coordinateMapper)
             let last = viewPoint(end, geometry: geometry, coordinateMapper: coordinateMapper)
@@ -755,7 +794,11 @@ private enum AnalysisAnnotationViewGeometry {
 
         case .anchor(let anchor):
             let point = viewPoint(anchor, geometry: geometry, coordinateMapper: coordinateMapper)
-            return Path(ellipseIn: CGRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6))
+            let radius: CGFloat = annotation.kind == .counter ? 12 : 3
+            return Path(ellipseIn: CGRect(
+                x: point.x - radius, y: point.y - radius,
+                width: radius * 2, height: radius * 2
+            ))
         }
     }
 

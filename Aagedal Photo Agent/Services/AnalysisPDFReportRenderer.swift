@@ -710,13 +710,30 @@ private final class Renderer {
             return
         }
 
+        if !snapshot.counterEvidence.isEmpty {
+            drawSubheading("Counter evidence")
+            drawFlowingText(
+                "Investigator-placed markers grouped by color. Counts include hidden markers; marker numbers follow the order within each color group.",
+                font: .systemFont(ofSize: 9), color: secondary, lineSpacing: 2
+            )
+            for evidence in snapshot.counterEvidence {
+                drawFlowingText(
+                    "\(evidence.color.displayName): \(evidence.count) counted \(evidence.count == 1 ? "marker" : "markers")",
+                    font: .systemFont(ofSize: 10.5, weight: .semibold), color: ink, lineSpacing: 2
+                )
+            }
+            cursorY -= 12
+        }
+
         for (index, annotation) in snapshot.photoAnnotations.enumerated() {
             ensureSpace(70)
             let color = reportColor(annotation.style.color)
             let swatchRect = CGRect(x: margin, y: cursorY - 12, width: 12, height: 12)
             color.setFill()
             NSBezierPath(roundedRect: swatchRect, xRadius: 3, yRadius: 3).fill()
-            let label = annotation.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = annotation.kind == .counter
+                ? "#\(annotation.counterNumber ?? 1) — \(annotation.style.color.displayName)"
+                : annotation.text?.trimmingCharacters(in: .whitespacesAndNewlines)
             drawText(
                 "\(index + 1). \(annotation.kind.rawValue.capitalized)\(label.map { ": \($0)" } ?? "")",
                 font: .systemFont(ofSize: 10.5, weight: .semibold),
@@ -730,6 +747,9 @@ private final class Renderer {
                 color: secondary,
                 lineSpacing: 2
             )
+            if annotation.kind == .counter, let text = annotation.text {
+                drawFlowingText("Label: \(text)", font: .systemFont(ofSize: 9), color: ink, lineSpacing: 2)
+            }
             if let calibration = annotation.measurementCalibration {
                 drawFlowingText(
                     "Calibration: this segment was assigned a known length of \(calibration.formattedKnownLength). Converted measurements depend on that investigator-entered calibration and are not inferred from DPI metadata.",

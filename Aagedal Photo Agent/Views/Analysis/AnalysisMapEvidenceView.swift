@@ -1159,7 +1159,7 @@ struct AnalysisMapEvidenceView: View {
         switch annotationTool {
         case .select, .hand:
             return
-        case .arrow, .rectangle, .ellipse:
+        case .arrow, .rectangle, .ellipse, .counter:
             return
         case .marker:
             addMapAnnotation(kind: .marker, geometry: .point(coordinate))
