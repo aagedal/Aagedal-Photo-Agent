@@ -1131,11 +1131,11 @@ struct KeywordArchiveRootRoutingTests {
             resolveCloudRoot: { cloudRoot }
         )
         let resolvedRoot = try await store.resolveRootURL()
-        let keys: [KeywordListKey] = [.quick(.keywords), .structured, .approved(.personShown)]
+        let keys: [KeywordListKey] = [.quick(.keywords), .structured, .approved(.keywords)]
         let candidates = KeywordListsArchive.inventoryCandidates(for: keys, rootURL: resolvedRoot)
         let request = KeywordListsArchive.importRequest(
             from: URL(fileURLWithPath: "/virtual/archive.zip"),
-            choices: [.quick(.keywords): .append, .structured: .replace, .approved(.personShown): .skip],
+            choices: [.quick(.keywords): .append, .structured: .replace, .approved(.keywords): .skip],
             requestID: UUID(),
             rootURL: resolvedRoot
         )
