@@ -283,14 +283,16 @@ struct KeywordListBackupFileServiceTests {
         }
         let versions = try #require(inventory.directories.first?.versions)
         #expect(versions.count == 3)
-        let emptySnapshot = try #require(versions.first { $0.url == empty })
+        // Foundation may enumerate /private/var while temporaryDirectory uses /var.
+        // Compare standardized file URLs so both spellings identify the same fixture.
+        let emptySnapshot = try #require(versions.first { $0.url.standardizedFileURL == empty.standardizedFileURL })
         #expect(emptySnapshot.text == "")
         #expect(emptySnapshot.unavailableReason == nil)
-        let damagedSnapshot = try #require(versions.first { $0.url == damaged })
+        let damagedSnapshot = try #require(versions.first { $0.url.standardizedFileURL == damaged.standardizedFileURL })
         #expect(damagedSnapshot.text == nil)
         #expect(damagedSnapshot.unavailableReason == .invalidUTF8)
         #expect(damagedSnapshot.byteCount == 1)
-        let unreadableSnapshot = try #require(versions.first { $0.url == unreadable })
+        let unreadableSnapshot = try #require(versions.first { $0.url.standardizedFileURL == unreadable.standardizedFileURL })
         #expect(unreadableSnapshot.text == nil)
         #expect(unreadableSnapshot.unavailableReason == .unreadable)
     }
