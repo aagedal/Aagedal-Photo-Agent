@@ -45,6 +45,7 @@ final class StructuredKeywordService {
     @ObservationIgnored private let includesAncestors: Bool
     @ObservationIgnored private let textImportService: TextFileImportService
     @ObservationIgnored private let storageURL: (KeywordListKey) -> URL
+    @ObservationIgnored private let resolveStorageURL: (KeywordListKey) async throws -> URL
     @ObservationIgnored private let persistenceService: KeywordListEditorPersistenceService
     @ObservationIgnored private var importRequestID: UUID?
     @ObservationIgnored private let sourceID = UUID()
@@ -70,13 +71,18 @@ final class StructuredKeywordService {
         includesAncestors: Bool = true,
         textImportService: TextFileImportService = .shared,
         persistenceService: KeywordListEditorPersistenceService = .shared,
-        storageURL: @escaping (KeywordListKey) -> URL = { KeywordListsStore.shared.url(for: $0) }
+        storageURL: ((KeywordListKey) -> URL)? = nil
     ) {
         self.key = key
         self.includesAncestors = includesAncestors
         self.textImportService = textImportService
         self.persistenceService = persistenceService
-        self.storageURL = storageURL
+        self.storageURL = storageURL ?? { KeywordListsStore.shared.currentURL(for: $0) }
+        if let storageURL {
+            self.resolveStorageURL = { storageURL($0) }
+        } else {
+            self.resolveStorageURL = { try await KeywordListsStore.shared.resolveURL(for: $0) }
+        }
         loadFromStore()
         changeObserver = NotificationCenter.default.addObserver(
             forName: .keywordListChanged,
@@ -137,7 +143,8 @@ final class StructuredKeywordService {
             }
         }
 
-        let destinationURL = storageURL(key)
+        let destinationURL = try await resolveStorageURL(key)
+        guard importRequestID == requestID, !Task.isCancelled else { return }
         let loadResult = try await textImportService.loadText(from: url, requestID: requestID)
         guard importRequestID == requestID else { return }
 
@@ -180,7 +187,8 @@ final class StructuredKeywordService {
         let requestID = UUID()
         importRequestID = requestID
         defer { if importRequestID == requestID { importRequestID = nil } }
-        let destination = storageURL(key)
+        let destination = try await resolveStorageURL(key)
+        guard importRequestID == requestID, !Task.isCancelled else { return false }
         let result = try await persistenceService.saveText(
             StructuredKeywordSerializer.serialize(tree), to: destination, requestID: requestID
         )
@@ -195,7 +203,8 @@ final class StructuredKeywordService {
         let requestID = UUID()
         importRequestID = requestID
         defer { if importRequestID == requestID { importRequestID = nil } }
-        let destination = storageURL(key)
+        let destination = try await resolveStorageURL(key)
+        guard importRequestID == requestID, !Task.isCancelled else { return }
         let result = try await persistenceService.deleteQuickList(at: destination, requestID: requestID)
         switch result {
         case .removed:
@@ -220,7 +229,8 @@ final class StructuredKeywordService {
         }
         // Cancellation cannot erase a durable write. All other observers must invalidate too.
         KeywordListsStore.shared.recordExternalWrite(
-            to: key, text: storageURL(key) == commit.destinationURL ? commit.text : nil, sourceID: sourceID
+            to: key, destinationURL: commit.destinationURL,
+            text: storageURL(key) == commit.destinationURL ? commit.text : nil, sourceID: sourceID
         )
     }
 
@@ -429,12 +439,17 @@ final class StructuredKeywordService {
         invalidateLoad()
         let requestID = UUID()
         loadRequestID = requestID
-        let source = storageURL(key)
         let persistence = persistenceService
         loadTask = Task { [weak self] in
+            guard let self else { return }
+            let source: URL
+            do {
+                source = try await self.resolveStorageURL(self.key)
+            } catch { return }
+            guard !Task.isCancelled, self.loadRequestID == requestID else { return }
             do {
                 let result = try await persistence.loadText(from: source, requestID: requestID)
-                guard let self, !Task.isCancelled, self.loadRequestID == requestID,
+                guard !Task.isCancelled, self.loadRequestID == requestID,
                       self.storageURL(self.key) == source else { return }
                 switch result {
                 case .loaded(_, _, let text): self.install(text: text)
@@ -442,7 +457,7 @@ final class StructuredKeywordService {
                 case .cancelled: break
                 }
             } catch {
-                guard let self, !Task.isCancelled, self.loadRequestID == requestID,
+                guard !Task.isCancelled, self.loadRequestID == requestID,
                       self.storageURL(self.key) == source else { return }
                 self.clearSnapshot()
                 self.loadError = "Could not read structured keywords file."

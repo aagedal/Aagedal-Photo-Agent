@@ -998,3 +998,139 @@ struct KeywordListsStoreRoutePublicationTests {
         }
     }
 }
+
+@Suite("Keyword root resolution")
+struct KeywordListsRootResolutionTests {
+    @Test("Container lookup runs away from the main thread")
+    func resolvesOffMainThread() async {
+        let container = URL(fileURLWithPath: "/tmp/keyword-container", isDirectory: true)
+        let service = KeywordListsRootResolutionService(resolveContainer: {
+            #expect(!Thread.isMainThread)
+            return container
+        })
+        #expect(await service.resolve() == container.appendingPathComponent("Documents/Lists", isDirectory: true))
+    }
+
+    @Test("Cancellation skips container lookup")
+    func cancellationSkipsLookup() async {
+        let service = KeywordListsRootResolutionService(resolveContainer: {
+            Issue.record("Cancelled request must not enter the blocking lookup")
+            return nil
+        })
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.resolve()
+        }
+        #expect(await task.value == nil)
+    }
+
+    @Test("Async resolution honors the task-local storage root")
+    func resolvesTaskLocalRoot() async throws {
+        let root = URL(fileURLWithPath: "/tmp/keyword-task-local", isDirectory: true)
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let store = KeywordListsStore()
+            let resolved = try await store.resolveURL(for: .structured)
+            #expect(resolved == root.appendingPathComponent("structured/keywords.txt"))
+            #expect(store.currentURL(for: .structured) == resolved)
+        }
+    }
+}
+
+private actor KeywordRootResolutionGate {
+    private var continuation: CheckedContinuation<URL?, Never>?
+    private var entered = false
+
+    func resolve() async -> URL? {
+        entered = true
+        return await withCheckedContinuation { continuation = $0 }
+    }
+
+    func waitUntilEntered() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !entered {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.fileReadUnknown) }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func resume(with root: URL?) { continuation?.resume(returning: root); continuation = nil }
+}
+
+@Suite("Keyword root routing publication")
+struct KeywordRootRoutingPublicationTests {
+    @Test("An installed route wins over a suspended container lookup")
+    func installedRouteWins() async throws {
+        let gate = KeywordRootResolutionGate()
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true },
+                                     resolveCloudRoot: { await gate.resolve() })
+        let lookup = Task { try await store.resolveRootURL() }
+        try await gate.waitUntilEntered()
+        let installed = URL(fileURLWithPath: "/tmp/installed-keyword-route", isDirectory: true)
+        store.applyICloudRoutingPreference(true, resolvedRoot: installed)
+        await gate.resume(with: URL(fileURLWithPath: "/tmp/stale-keyword-route"))
+        #expect(try await lookup.value == installed)
+        #expect(store.currentRootURL == installed)
+    }
+
+    @Test("Cancellation after container resolution does not cache the result")
+    func cancelledResolutionDoesNotPublish() async throws {
+        let gate = KeywordRootResolutionGate()
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true },
+                                     resolveCloudRoot: { await gate.resolve() })
+        let lookup = Task { try await store.resolveRootURL() }
+        try await gate.waitUntilEntered()
+        lookup.cancel()
+        await gate.resume(with: URL(fileURLWithPath: "/tmp/cancelled-keyword-route"))
+        do {
+            _ = try await lookup.value
+            Issue.record("Cancelled resolution should throw")
+        } catch is CancellationError {} catch { Issue.record("Unexpected error: \(error)") }
+        #expect(store.currentRootURL == store.localRootURL)
+    }
+}
+
+@Suite("Keyword managed UTF-8 preservation")
+struct KeywordManagedUTF8PreservationTests {
+    @Test("Routing rejects damaged source or destination without changing either file",
+          arguments: [true, false])
+    func routingPreservesInvalidBytes(damagedSource: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let destination = root.appendingPathComponent("destination")
+        let path = KeywordListKey.quick(.keywords).relativePath
+        let sourceFile = source.appendingPathComponent(path)
+        let destinationFile = destination.appendingPathComponent(path)
+        let damaged = Data([0xff, 0xfe, 0xff])
+        let valid = Data("Existing\n".utf8)
+        let sourceBytes = damagedSource ? damaged : valid
+        let destinationBytes = damagedSource ? valid : damaged
+        try CloudCoordinatedIO.writeData(sourceBytes, to: sourceFile)
+        try CloudCoordinatedIO.writeData(destinationBytes, to: destinationFile)
+        #expect(throws: CocoaError.self) {
+            try KeywordListsStore.reconcileTree(from: source, to: destination)
+        }
+        #expect(try Data(contentsOf: sourceFile) == sourceBytes)
+        #expect(try Data(contentsOf: destinationFile) == destinationBytes)
+    }
+
+    @Test("Backup rejects malformed managed text without replacing an existing version")
+    func backupPreservesExistingVersion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.txt")
+        let directory = root.appendingPathComponent("backups")
+        let destination = directory.appendingPathComponent("existing.txt")
+        let damaged = Data([0xff, 0xfe, 0xff])
+        try CloudCoordinatedIO.writeData(damaged, to: source)
+        try CloudCoordinatedIO.writeText("Recoverable\n", to: destination)
+        let service = KeywordListBackupFileService()
+        await #expect(throws: CocoaError.self) {
+            try await service.snapshot(sourceURL: source, directoryURL: directory,
+                                       destinationURL: destination, retentionCutoff: .distantPast,
+                                       minimumVersionCount: 1)
+        }
+        #expect(try Data(contentsOf: source) == damaged)
+        #expect(try String(contentsOf: destination, encoding: .utf8) == "Recoverable\n")
+    }
+}

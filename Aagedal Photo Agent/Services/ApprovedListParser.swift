@@ -49,6 +49,11 @@ nonisolated enum ApprovedListParser {
     /// Parses already-read bytes so callers that own an asynchronous filesystem boundary do not
     /// have to re-enter the synchronous URL-based API.
     static func parse(_ data: Data, csv: Bool) throws -> [String] {
+        // Check the actual read as well as callers' preflight sizes: selected files can grow
+        // between the metadata probe and the read, and byte-based callers may have no probe.
+        guard data.count <= maxFileSizeBytes else {
+            throw ApprovedListParserError.fileTooLarge(bytes: Int64(data.count), limit: maxFileSizeBytes)
+        }
         guard let raw = decode(data) else {
             throw ApprovedListParserError.decodingFailed
         }

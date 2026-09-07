@@ -219,12 +219,23 @@ actor KeywordListEditorPersistenceService {
             }
 
             let exists = access.itemExists(source.url)
+            guard !Task.isCancelled else {
+                return cancelledQuickListCacheResult(
+                    requestID: requestID,
+                    requestedSources: sources,
+                    processedSources: processed,
+                    entriesByType: entriesByType,
+                    availableTypes: availableTypes,
+                    failedTypes: failedTypes,
+                    interval: interval
+                )
+            }
             if exists {
                 availableTypes.insert(source.type)
                 do {
                     let data = try access.readData(source.url)
                     entriesByType[source.type] = ApprovedListParser.parseString(
-                        String(decoding: data, as: UTF8.self),
+                        try KeywordListsStore.decodeManagedText(data),
                         csv: false
                     )
                 } catch {
@@ -300,11 +311,12 @@ actor KeywordListEditorPersistenceService {
             return .cancelledBeforeAccess(requestID: requestID)
         }
 
-        guard access.itemExists(sourceURL) else {
-            return .missing(requestID: requestID, sourceURL: sourceURL)
-        }
+        let exists = access.itemExists(sourceURL)
         guard !Task.isCancelled else {
             return .cancelledBeforeRead(requestID: requestID, sourceURL: sourceURL)
+        }
+        guard exists else {
+            return .missing(requestID: requestID, sourceURL: sourceURL)
         }
 
         let data = try access.readData(sourceURL)
@@ -316,7 +328,7 @@ actor KeywordListEditorPersistenceService {
             )
         }
 
-        let text = String(decoding: data, as: UTF8.self)
+        let text = try KeywordListsStore.decodeManagedText(data)
         return .loaded(KeywordListEditorLoadSnapshot(
             requestID: requestID,
             sourceURL: sourceURL,
@@ -334,7 +346,7 @@ actor KeywordListEditorPersistenceService {
         let data = try access.readData(sourceURL)
         guard !Task.isCancelled else { return .cancelled(requestID: requestID) }
         return .loaded(requestID: requestID, sourceURL: sourceURL,
-                       text: String(decoding: data, as: UTF8.self))
+                       text: try KeywordListsStore.decodeManagedText(data))
     }
 
     func saveEntries(
@@ -425,17 +437,17 @@ actor KeywordListEditorPersistenceService {
             }
         } else {
             destinationExists = access.itemExists(destinationURL)
-            guard destinationExists || createDestinationIfMissing else {
-                return .missingDestination(
-                    requestID: requestID,
-                    destinationURL: destinationURL
-                )
-            }
             guard !Task.isCancelled else {
                 return .cancelledAfterRead(
                     requestID: requestID,
                     destinationURL: destinationURL,
                     byteCount: 0
+                )
+            }
+            guard destinationExists || createDestinationIfMissing else {
+                return .missingDestination(
+                    requestID: requestID,
+                    destinationURL: destinationURL
                 )
             }
             importedData = nil
@@ -463,7 +475,7 @@ actor KeywordListEditorPersistenceService {
                 )
             }
             existing = ApprovedListParser.parseString(
-                String(decoding: existingData, as: UTF8.self),
+                try KeywordListsStore.decodeManagedText(existingData),
                 csv: false
             )
         } else {
@@ -513,14 +525,15 @@ actor KeywordListEditorPersistenceService {
         guard !Task.isCancelled else {
             return .cancelledBeforeAccess(requestID: requestID)
         }
-        guard access.itemExists(destinationURL) else {
-            return .missing(requestID: requestID, destinationURL: destinationURL)
-        }
+        let exists = access.itemExists(destinationURL)
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(
                 requestID: requestID,
                 destinationURL: destinationURL
             )
+        }
+        guard exists else {
+            return .missing(requestID: requestID, destinationURL: destinationURL)
         }
         try access.removeItem(destinationURL)
         return .removed(

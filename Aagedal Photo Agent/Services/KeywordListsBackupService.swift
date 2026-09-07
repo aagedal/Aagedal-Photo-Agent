@@ -250,7 +250,7 @@ actor KeywordListBackupFileService {
             try Task.checkCancellation()
             do {
                 let data = try io.readData(source.sourceURL)
-                if String(decoding: data, as: UTF8.self)
+                if try KeywordListsStore.decodeManagedText(data)
                     .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     empty.insert(source.identifier)
                 }
@@ -275,7 +275,7 @@ actor KeywordListBackupFileService {
         minimumVersionCount: Int
     ) throws -> Bool {
         try Task.checkCancellation()
-        let text = String(decoding: try io.readData(sourceURL), as: UTF8.self)
+        let text = try KeywordListsStore.decodeManagedText(io.readData(sourceURL))
         try Task.checkCancellation()
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         return try snapshot(

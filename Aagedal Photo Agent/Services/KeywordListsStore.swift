@@ -132,17 +132,33 @@ final class KeywordListsStore {
     /// Cached active root, invalidated only after the routing actor has reconciled
     /// the destination and the coordinator installs the new preference.
     @ObservationIgnored private var cachedRoot: URL?
+    @ObservationIgnored private var routingGeneration = UUID()
 
     // Directories are prepared by coordinated writes and routing reconciliation. Merely
     // constructing the observable store or resolving a path must not touch the filesystem.
-    init() {}
+    @ObservationIgnored private let resolveCloudRoot: @Sendable () async -> URL?
+    @ObservationIgnored private let usesTestStorage: Bool
+    @ObservationIgnored private let cloudPreference: (() -> Bool)?
+
+    /// Injection keeps routing-race tests isolated from both real cloud storage and preferences.
+    init(
+        usesTestStorage: Bool = true,
+        cloudPreference: (() -> Bool)? = nil,
+        resolveCloudRoot: @escaping @Sendable () async -> URL? = {
+            await KeywordListsRootResolutionService.shared.resolve()
+        }
+    ) {
+        self.usesTestStorage = usesTestStorage
+        self.cloudPreference = cloudPreference
+        self.resolveCloudRoot = resolveCloudRoot
+    }
 
     // MARK: - Root resolution
 
     /// Whether the user has opted into iCloud sync. The actual effective root may
     /// fall back to local if iCloud is unavailable (no account, no entitlement).
     var iCloudEnabled: Bool {
-        UserDefaults.standard.bool(forKey: UserDefaultsKeys.keywordListsICloudEnabled)
+        cloudPreference?() ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.keywordListsICloudEnabled)
     }
 
     /// Returns the current ubiquity container's `Documents/Lists` directory if
@@ -193,6 +209,49 @@ final class KeywordListsStore {
         return localRootURL
     }
 
+    /// A nonblocking route snapshot for stale-result comparisons after asynchronous resolution.
+    /// Call `resolveURL(for:)` before starting new filesystem work.
+    func currentURL(for key: KeywordListKey) -> URL {
+        currentRootURL.appendingPathComponent(key.relativePath)
+    }
+
+    private var testStorageRoot: URL? {
+        usesTestStorage ? (KeywordListsStoreStorageOverride.current
+            ?? KeywordListsStoreStorageOverride.testProcessFallback) : nil
+    }
+
+    var currentRootURL: URL {
+        testStorageRoot ?? cachedRoot ?? localRootURL
+    }
+
+    /// Ubiquity lookup can block during provisioning. Resolve it on a filesystem actor and
+    /// discard a result if a routing preference was installed while the lookup was suspended.
+    func resolveRootURL() async throws -> URL {
+        while true {
+            try Task.checkCancellation()
+            if let root = testStorageRoot { return root }
+            if let cachedRoot { return cachedRoot }
+            guard iCloudEnabled else {
+                cachedRoot = localRootURL
+                return localRootURL
+            }
+            let generation = routingGeneration
+            let cloud = await resolveCloudRoot()
+            try Task.checkCancellation()
+            guard generation == routingGeneration else { continue }
+            if let cloud {
+                cachedRoot = cloud
+                return cloud
+            }
+            // Do not cache a transient fallback: subsequent requests retry provisioning.
+            return localRootURL
+        }
+    }
+
+    func resolveURL(for key: KeywordListKey) async throws -> URL {
+        try await resolveRootURL().appendingPathComponent(key.relativePath)
+    }
+
     // MARK: - Public read/write
 
     func url(for key: KeywordListKey) -> URL {
@@ -208,7 +267,7 @@ final class KeywordListsStore {
         guard CloudCoordinatedIO.itemExists(at: target) else { return nil }
         do {
             let data = try CloudCoordinatedIO.readData(at: target)
-            return String(decoding: data, as: UTF8.self)
+            return try Self.decodeManagedText(data)
         } catch {
             logger.error("Failed to read \(key.relativePath, privacy: .private(mask: .hash)): \(String(describing: error), privacy: .private)")
             return nil
@@ -242,7 +301,7 @@ final class KeywordListsStore {
         // A durable write can finish after routing switches roots. Invalidate observers but
         // never advertise its old-root payload as the active list. Clear source identity too,
         // since owners otherwise suppress their own invalidation notification.
-        if let destinationURL, destinationURL != url(for: key) {
+        if let destinationURL, destinationURL != currentURL(for: key) {
             notifyChanged(key)
         } else {
             notifyChanged(key, entries: entries, text: text, sourceID: sourceID)
@@ -306,7 +365,10 @@ final class KeywordListsStore {
     /// completed away from MainActor. The destination skeleton already exists at this point, so
     /// publication only changes the preference/cache and invalidates observers.
     func applyICloudRoutingPreference(_ enabled: Bool, resolvedRoot: URL? = nil) {
-        UserDefaults.standard.set(enabled, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
+        if cloudPreference == nil {
+            UserDefaults.standard.set(enabled, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
+        }
+        routingGeneration = UUID()
         cachedRoot = resolvedRoot
         bumpVersion()
         for key in Self.allKnownKeys() {
@@ -342,7 +404,7 @@ final class KeywordListsStore {
         let requestID = UUID()
         activeMigrationID = requestID
         defer { activeMigrationID = nil }
-        let capturedRoot = rootURL
+        guard let capturedRoot = try? await resolveRootURL() else { return }
         let capturedVersion = version
         let completed = Set(defaults.stringArray(
             forKey: UserDefaultsKeys.keywordListsMigrationCompletedKeys
@@ -370,7 +432,7 @@ final class KeywordListsStore {
         // Durable writes invalidate the active route even if another edit or bookmark change made
         // completion stamps stale. Notifications carry no stale contents; readers reload the file.
         let unchangedVersion = version == capturedVersion
-        guard activeMigrationID == result.requestID, rootURL == capturedRoot else { return }
+        guard activeMigrationID == result.requestID, currentRootURL == capturedRoot else { return }
         for source in sources where result.writtenIDs.contains(source.id) {
             notifyChanged(source.key)
         }
@@ -389,6 +451,15 @@ final class KeywordListsStore {
         }
     }
 
+    /// Managed lists are UTF-8. Lossy replacement would turn damaged bytes into an accepted
+    /// merge baseline and overwrite the only recoverable copy during a subsequent write.
+    nonisolated static func decodeManagedText(_ data: Data) throws -> String {
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+        return text
+    }
+
     // MARK: - Internals
 
     private func bumpVersion() { version &+= 1 }
@@ -402,7 +473,7 @@ final class KeywordListsStore {
         bumpVersion()
         var userInfo: [String: Any] = [
             Self.changedKeyUserInfo: key,
-            Self.changedDestinationURLUserInfo: url(for: key)
+            Self.changedDestinationURLUserInfo: currentURL(for: key)
         ]
         if let entries {
             userInfo[Self.changedEntriesUserInfo] = entries
@@ -465,6 +536,7 @@ final class KeywordListsStore {
             case .structured, .structuredPersonShown:
                 guard !CloudCoordinatedIO.itemExists(at: destURL) else { continue }
                 let data = try CloudCoordinatedIO.readData(at: sourceURL)
+                _ = try decodeManagedText(data)
                 try CloudCoordinatedIO.writeData(data, to: destURL)
             }
         }
@@ -478,7 +550,7 @@ final class KeywordListsStore {
         // Abort before writing the affected key so a failed read cannot erase its existing entries.
         // Earlier keys may already have committed additive unions; retrying those is idempotent.
         let data = try CloudCoordinatedIO.readData(at: url)
-        return ApprovedListParser.parseString(String(decoding: data, as: UTF8.self), csv: false)
+        return ApprovedListParser.parseString(try decodeManagedText(data), csv: false)
     }
 }
 
@@ -531,7 +603,7 @@ nonisolated struct KeywordListsLegacyMigrationFileAccess: Sendable {
             }
         },
         writeTextIfMissing: { try CloudCoordinatedIO.writeTextIfMissing($0, to: $1) },
-        readDestination: { String(decoding: try CloudCoordinatedIO.readData(at: $0), as: UTF8.self) }
+        readDestination: { try KeywordListsStore.decodeManagedText(CloudCoordinatedIO.readData(at: $0)) }
     )
 }
 
@@ -590,5 +662,22 @@ actor KeywordListsLegacyMigrationService {
             requestID: requestID, completedIDs: completed, writtenIDs: written,
             failedIDs: failed, cancelled: Task.isCancelled
         )
+    }
+}
+
+/// Keeps the potentially blocking first ubiquity lookup off MainActor.
+actor KeywordListsRootResolutionService {
+    static let shared = KeywordListsRootResolutionService()
+    private let resolveContainer: @Sendable () -> URL?
+
+    init(resolveContainer: @escaping @Sendable () -> URL? = {
+        FileManager.default.url(forUbiquityContainerIdentifier: KeywordListsStore.iCloudContainerID)
+    }) {
+        self.resolveContainer = resolveContainer
+    }
+
+    func resolve() -> URL? {
+        guard !Task.isCancelled else { return nil }
+        return resolveContainer()?.appendingPathComponent("Documents/Lists", isDirectory: true)
     }
 }

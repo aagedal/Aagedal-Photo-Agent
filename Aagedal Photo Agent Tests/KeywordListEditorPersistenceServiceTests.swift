@@ -26,6 +26,103 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("invalid managed UTF-8 is rejected without replacing source bytes")
+    func invalidManagedTextPreserved() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("keywords.txt")
+        let bytes = Data([0x4E, 0x65, 0x77, 0x73, 0x0A, 0xC3, 0x28])
+        try bytes.write(to: source)
+        let service = KeywordListEditorPersistenceService()
+
+        await #expect(throws: CocoaError.self) {
+            try await service.loadEntries(from: source, requestID: UUID())
+        }
+        await #expect(throws: CocoaError.self) {
+            try await service.loadText(from: source, requestID: UUID())
+        }
+        await #expect(throws: CocoaError.self) {
+            try await service.appendEntries(["Sport"], to: source, requestID: UUID())
+        }
+        #expect(try Data(contentsOf: source) == bytes)
+    }
+
+    @Test("cache reports invalid text as failed while preserving valid sibling entries")
+    func invalidManagedCacheText() async throws {
+        let invalid = URL(fileURLWithPath: "/virtual/keywords.txt")
+        let valid = URL(fileURLWithPath: "/virtual/city.txt")
+        let sources = [QuickListCacheSource(type: .keywords, url: invalid),
+                       QuickListCacheSource(type: .city, url: valid)]
+        let service = KeywordListEditorPersistenceService(access: KeywordListEditorFileAccess(
+            itemExists: { _ in true },
+            readData: { $0 == invalid ? Data([0xC3, 0x28]) : Data("Tromsø\n".utf8) },
+            writeData: { _, _ in Issue.record("Cache reads must not write") }
+        ))
+        let requestID = UUID()
+        let result = await service.loadQuickListCache(from: sources, requestID: requestID)
+        #expect(result == .complete(QuickListCacheSnapshot(
+            requestID: requestID,
+            requestedSources: sources,
+            processedSources: sources,
+            entriesByType: [.city: ["Tromsø"]],
+            availableTypes: [.keywords, .city],
+            failedTypes: [.keywords]
+        )))
+    }
+
+    @Test("cancellation during a cache probe prevents its read and preserves the completed prefix")
+    func cacheCancellationDuringExistenceProbe() async {
+        let first = QuickListCacheSource(type: .keywords, url: URL(fileURLWithPath: "/virtual/keywords.txt"))
+        let second = QuickListCacheSource(type: .city, url: URL(fileURLWithPath: "/virtual/city.txt"))
+        let service = KeywordListEditorPersistenceService(access: KeywordListEditorFileAccess(
+            itemExists: { url in
+                if url == second.url { withUnsafeCurrentTask { $0?.cancel() } }
+                return true
+            },
+            readData: { url in
+                #expect(url == first.url)
+                return Data("News\n".utf8)
+            },
+            writeData: { _, _ in Issue.record("Cache reads must not write") }
+        ))
+        let requestID = UUID()
+        let result = await Task {
+            await service.loadQuickListCache(from: [first, second], requestID: requestID)
+        }.value
+        #expect(result == .cancelledAfterPartialAccess(QuickListCacheSnapshot(
+            requestID: requestID,
+            requestedSources: [first, second],
+            processedSources: [first],
+            entriesByType: [.keywords: ["News"]],
+            availableTypes: [.keywords],
+            failedTypes: []
+        )))
+    }
+
+    @Test("cancelled missing probes cannot authorize first-use creation or publish missing state")
+    func cancellationDuringMissingProbe() async throws {
+        let source = URL(fileURLWithPath: "/virtual/missing.txt")
+        let service = KeywordListEditorPersistenceService(access: KeywordListEditorFileAccess(
+            itemExists: { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return false
+            },
+            readData: { _ in Issue.record("Cancelled probes must not read"); return Data() },
+            writeData: { _, _ in Issue.record("Cancelled probes must not write") },
+            removeItem: { _ in Issue.record("Cancelled probes must not remove") }
+        ))
+        let requestID = UUID()
+        let load = try await Task { try await service.loadEntries(from: source, requestID: requestID) }.value
+        #expect(load == .cancelledBeforeRead(requestID: requestID, sourceURL: source))
+        let append = try await Task {
+            try await service.appendEntries(["News"], to: source, requestID: requestID)
+        }.value
+        #expect(append == .cancelledAfterRead(requestID: requestID, destinationURL: source, byteCount: 0))
+        let deletion = try await Task { try await service.deleteQuickList(at: source, requestID: requestID) }.value
+        #expect(deletion == .cancelledBeforeCommit(requestID: requestID, destinationURL: source))
+    }
+
     @Test("missing file returns immutable evidence without entering the reader")
     func missingFile() async throws {
         let source = URL(fileURLWithPath: "/virtual/missing.txt")

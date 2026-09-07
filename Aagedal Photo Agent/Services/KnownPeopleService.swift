@@ -124,6 +124,7 @@ nonisolated struct KnownPeopleArchiveFileAccess: Sendable {
     let writeData: @Sendable (Data, URL) throws -> Void
     let writeCoordinatedData: @Sendable (Data, URL) throws -> Void
     let runDitto: @Sendable ([String]) async throws -> Void
+    var destinationExists: @Sendable (URL) -> Bool = { CloudCoordinatedIO.itemExists(at: $0) }
 
     static let system = KnownPeopleArchiveFileAccess(
         temporaryDirectory: FileManager.default.temporaryDirectory,
@@ -409,6 +410,17 @@ actor KnownPeopleArchiveService {
 
         for person in request.people {
             guard !Task.isCancelled else { return cancelled() }
+            let personURL = peopleDirectory.appendingPathComponent("\(person.id.uuidString).json")
+            let markerURL = peopleDirectory.appendingPathComponent("\(person.id.uuidString).deleted")
+            // The cache omits unreadable records and deleted people. Neither is a
+            // vacant destination: preserve the original bytes and deletion intent.
+            // Probe under serialized commit ownership, off MainActor and before thumbnails.
+            let recordExists = access.destinationExists(personURL)
+            guard !Task.isCancelled else { return cancelled() }
+            if recordExists { continue }
+            let markerExists = access.destinationExists(markerURL)
+            guard !Task.isCancelled else { return cancelled() }
+            if markerExists { continue }
 
             if let data = request.personThumbnails[person.id] {
                 let url = thumbnailsDirectory.appendingPathComponent("\(person.id.uuidString).jpg")
@@ -436,7 +448,6 @@ actor KnownPeopleArchiveService {
                 guard !Task.isCancelled else { return cancelled() }
             }
 
-            let personURL = peopleDirectory.appendingPathComponent("\(person.id.uuidString).json")
             do {
                 try access.writeCoordinatedData(try encoder.encode(person), personURL)
             } catch {
@@ -597,6 +608,7 @@ final class KnownPeopleService {
     private var importCommitRoot: URL?
     private var importReservedURLs: Set<URL> = []
     private var deferredThumbnailDeletions: Set<URL> = []
+    private var deferredImportRemoteChanges: [(url: URL, contentChangeDate: Date?)] = []
 
     private func requireLocalWriteAdmission(to url: URL) throws {
         guard !importReservedURLs.contains(url.standardizedFileURL) else {
@@ -639,6 +651,11 @@ final class KnownPeopleService {
             embeddingThumbnailCache.removeAllObjects()
         }
         deferredThumbnailDeletions.removeAll()
+        let changes = deferredImportRemoteChanges
+        deferredImportRemoteChanges.removeAll()
+        // These events arrived before the import's local-write stamps. Replay after
+        // publication without mistaking them for echoes of that later commit.
+        applyRemoteChanges(changes, ignoringLocalWriteEchoes: true)
     }
 
     init(
@@ -1091,6 +1108,13 @@ final class KnownPeopleService {
     /// we resolve conflicts, re-read it, and update just that cache entry — or
     /// remove it for a tombstone / deleted file.
     func applyRemoteChanges(_ changes: [(url: URL, contentChangeDate: Date?)]) {
+        applyRemoteChanges(changes, ignoringLocalWriteEchoes: false)
+    }
+
+    private func applyRemoteChanges(
+        _ changes: [(url: URL, contentChangeDate: Date?)],
+        ignoringLocalWriteEchoes: Bool
+    ) {
         // Thumbnail caches can be populated before the database loads. Invalidate those
         // independently, while leaving a cold database cold for its next complete load.
         let hadDatabase = database != nil
@@ -1100,7 +1124,13 @@ final class KnownPeopleService {
         for change in changes {
             let url = change.url
             guard KnownPeopleCloudCoordinator.acceptsChange(at: url, root: knownPeopleDirectory) else { continue }
-            guard !shouldSkipRemoteReload(path: url.path, contentChangeDate: change.contentChangeDate) else { continue }
+            if importReservedURLs.contains(url.standardizedFileURL) {
+                deferredImportRemoteChanges.append(change)
+                continue
+            }
+            guard ignoringLocalWriteEchoes || !shouldSkipRemoteReload(
+                path: url.path, contentChangeDate: change.contentChangeDate
+            ) else { continue }
             guard let personID = personID(fromFileURL: url) else { continue }
 
             if url.pathExtension.lowercased() == "jpg" {
@@ -1145,6 +1175,12 @@ final class KnownPeopleService {
 
             // Suppress a resurrected file if we hold a live tombstone for it.
             if CloudCoordinatedIO.itemExists(at: tombstoneURL(for: personID)) {
+                invalidateRemotePersonThumbnails(personID, in: db)
+                if db.people.contains(where: { $0.id == personID }) {
+                    db.people.removeAll { $0.id == personID }
+                    didChange = true
+                }
+                featurePrintCache.removeAllObjects()
                 try? CloudCoordinatedIO.removeItem(at: url)
                 continue
             }

@@ -92,6 +92,7 @@ final class ApprovedListService {
     @ObservationIgnored private var cache: [ApprovedListField: ParsedList] = [:]
     @ObservationIgnored private let importService: ApprovedListImportService
     @ObservationIgnored private let persistence: KeywordListEditorPersistenceService
+    @ObservationIgnored private let store: KeywordListsStore
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let notificationSourceID = UUID()
     @ObservationIgnored private var sourceImportRequestIDs: [ApprovedListField: UUID] = [:]
@@ -104,12 +105,14 @@ final class ApprovedListService {
     init(
         importService: ApprovedListImportService = .shared,
         persistence: KeywordListEditorPersistenceService = .shared,
+        store: KeywordListsStore = .shared,
         defaults: UserDefaults = AppDefaults.store,
         startInitialLoad: Bool = true,
         observeChanges: Bool = true
     ) {
         self.importService = importService
         self.persistence = persistence
+        self.store = store
         self.defaults = defaults
         if observeChanges {
             changeObserver = NotificationCenter.default.addObserver(
@@ -127,15 +130,14 @@ final class ApprovedListService {
                 else { return }
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    // Identified owners publish their own immutable committed snapshot. Anonymous
-                    // notifications represent editor, migration, or remote changes that require a
-                    // fresh serialized read.
-                    guard sourceID == nil else { return }
-                    if let committedEntries, destinationURL == KeywordListsStore.shared.url(for: key) {
+                    // This owner publishes its own committed snapshot directly. Other owners'
+                    // identified commits still invalidate this instance's independent cache.
+                    guard sourceID != self.notificationSourceID else { return }
+                    if let committedEntries, destinationURL == self.store.currentURL(for: key) {
                         self.cancelCacheLoad(for: field)
                         self.installParsed(
                             committedEntries,
-                            sourcePath: KeywordListsStore.shared.url(for: key).path,
+                            sourcePath: self.store.currentURL(for: key).path,
                             for: field
                         )
                         self.loadError = nil
@@ -216,7 +218,6 @@ final class ApprovedListService {
     func importListURL(_ url: URL, for field: ApprovedListField) async throws {
         cancelCacheLoad(for: field)
         let key = KeywordListKey.approved(field)
-        let destinationURL = KeywordListsStore.shared.url(for: key)
         let requestID = UUID()
         sourceImportRequestIDs[field] = requestID
         defer {
@@ -224,22 +225,26 @@ final class ApprovedListService {
                 sourceImportRequestIDs[field] = nil
             }
         }
+        let destinationURL = try await store.resolveURL(for: key)
+        try Task.checkCancellation()
+        guard sourceImportRequestIDs[field] == requestID,
+              store.currentURL(for: key) == destinationURL else { return }
         let result = try await importService.importEntries(
             from: url,
             to: destinationURL,
             requestID: requestID
         )
-        guard sourceImportRequestIDs[field] == requestID,
-              case let .committed(commit) = result,
+        guard case let .committed(commit) = result,
               commit.requestID == requestID else { return }
 
-        KeywordListsStore.shared.recordExternalWrite(
+        store.recordExternalWrite(
             to: key,
             destinationURL: commit.destinationURL,
             entries: commit.entries,
             sourceID: notificationSourceID
         )
-        guard KeywordListsStore.shared.url(for: key) == commit.destinationURL else {
+        guard sourceImportRequestIDs[field] == requestID else { return }
+        guard store.currentURL(for: key) == commit.destinationURL else {
             await reloadFromStore(for: field)
             return
         }
@@ -259,8 +264,15 @@ final class ApprovedListService {
     func saveEntries(_ entries: [String], for field: ApprovedListField) async throws {
         cancelCacheLoad(for: field)
         let key = KeywordListKey.approved(field)
-        let destinationURL = KeywordListsStore.shared.url(for: key)
         let requestID = UUID()
+        cacheLoadRequestIDs[field] = requestID
+        defer {
+            if cacheLoadRequestIDs[field] == requestID { cacheLoadRequestIDs[field] = nil }
+        }
+        let destinationURL = try await store.resolveURL(for: key)
+        try Task.checkCancellation()
+        guard cacheLoadRequestIDs[field] == requestID,
+              store.currentURL(for: key) == destinationURL else { return }
         let result = try await persistence.saveEntries(
             entries,
             to: destinationURL,
@@ -269,13 +281,14 @@ final class ApprovedListService {
         guard case let .committed(commit) = result,
               commit.requestID == requestID else { return }
 
-        KeywordListsStore.shared.recordExternalWrite(
+        store.recordExternalWrite(
             to: key,
             destinationURL: commit.destinationURL,
             entries: commit.entries,
             sourceID: notificationSourceID
         )
-        guard KeywordListsStore.shared.url(for: key) == commit.destinationURL else {
+        guard cacheLoadRequestIDs[field] == requestID else { return }
+        guard store.currentURL(for: key) == commit.destinationURL else {
             await reloadFromStore(for: field)
             return
         }
@@ -288,32 +301,42 @@ final class ApprovedListService {
         cancelImport(for: field)
         cancelCacheLoad(for: field)
         let key = KeywordListKey.approved(field)
-        let destinationURL = KeywordListsStore.shared.url(for: key)
         let requestID = UUID()
         cacheLoadRequestIDs[field] = requestID
 
         do {
+            let destinationURL = try await store.resolveURL(for: key)
+            try Task.checkCancellation()
+            guard cacheLoadRequestIDs[field] == requestID,
+                  store.currentURL(for: key) == destinationURL else { return }
             let result = try await persistence.deleteQuickList(
                 at: destinationURL,
                 requestID: requestID
             )
-            guard cacheLoadRequestIDs[field] == requestID else { return }
-            cacheLoadRequestIDs[field] = nil
             switch result {
             case .missing, .removed:
-                KeywordListsStore.shared.recordExternalDeletion(
+                let isCurrent = cacheLoadRequestIDs[field] == requestID
+                store.recordExternalDeletion(
                     to: key,
-                    sourceID: notificationSourceID
+                    sourceID: isCurrent && store.currentURL(for: key) == destinationURL
+                        ? notificationSourceID : nil
                 )
+                guard isCurrent else { return }
+                cacheLoadRequestIDs[field] = nil
+                guard store.currentURL(for: key) == destinationURL else {
+                    await reloadFromStore(for: field)
+                    return
+                }
                 cache.removeValue(forKey: field)
                 loadError = nil
                 bumpVersion()
             case .cancelledBeforeAccess, .cancelledBeforeCommit:
-                break
+                if cacheLoadRequestIDs[field] == requestID { cacheLoadRequestIDs[field] = nil }
             }
         } catch {
             guard cacheLoadRequestIDs[field] == requestID else { return }
             cacheLoadRequestIDs[field] = nil
+            guard !(error is CancellationError) else { return }
             loadError = error.localizedDescription
             bumpVersion()
         }
@@ -447,20 +470,27 @@ final class ApprovedListService {
     func reloadFromStore(for field: ApprovedListField) async {
         cancelCacheLoad(for: field)
         let key = KeywordListKey.approved(field)
-        let sourceURL = KeywordListsStore.shared.url(for: key)
         let requestID = UUID()
         cacheLoadRequestIDs[field] = requestID
-        let persistence = self.persistence
-        let task = Task {
-            try await persistence.loadEntries(from: sourceURL, requestID: requestID)
-        }
-        cacheLoadTasks[field] = task
-
         do {
+            let sourceURL = try await store.resolveURL(for: key)
+            try Task.checkCancellation()
+            guard cacheLoadRequestIDs[field] == requestID,
+                  store.currentURL(for: key) == sourceURL else { return }
+            let persistence = self.persistence
+            let task = Task {
+                try await persistence.loadEntries(from: sourceURL, requestID: requestID)
+            }
+            cacheLoadTasks[field] = task
+
             let result = try await task.value
             guard cacheLoadRequestIDs[field] == requestID else { return }
             cacheLoadRequestIDs[field] = nil
             cacheLoadTasks[field] = nil
+            guard store.currentURL(for: key) == sourceURL else {
+                await reloadFromStore(for: field)
+                return
+            }
             switch result {
             case .loaded(let snapshot):
                 guard snapshot.requestID == requestID,
@@ -479,6 +509,7 @@ final class ApprovedListService {
             guard cacheLoadRequestIDs[field] == requestID else { return }
             cacheLoadRequestIDs[field] = nil
             cacheLoadTasks[field] = nil
+            guard !(error is CancellationError) else { return }
             loadError = error.localizedDescription
             bumpVersion()
         }

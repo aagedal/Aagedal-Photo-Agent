@@ -166,9 +166,9 @@ actor KeywordListsArchiveInventoryService {
             let entryCount: Int
             switch candidate.format {
             case .flat:
-                entryCount = try ApprovedListParser.parse(data, csv: false).count
+                entryCount = ApprovedListParser.parseString(try KeywordListsStore.decodeManagedText(data), csv: false).count
             case .structured:
-                entryCount = Self.structuredKeywordCount(in: data)
+                entryCount = try Self.structuredKeywordCount(in: data)
             }
             items.append(KeywordListsArchiveInventorySnapshot.Item(
                 identifier: candidate.identifier,
@@ -183,8 +183,8 @@ actor KeywordListsArchiveInventoryService {
     }
 
     /// Mirrors the parser's keyword/container syntax without constructing UI-owned tree nodes.
-    nonisolated private static func structuredKeywordCount(in data: Data) -> Int {
-        let text = String(decoding: data, as: UTF8.self)
+    nonisolated private static func structuredKeywordCount(in data: Data) throws -> Int {
+        let text = try KeywordListsStore.decodeManagedText(data)
             .replacingOccurrences(of: "\u{FEFF}", with: "")
             .replacingOccurrences(of: "\u{00A0}", with: " ")
         var count = 0
@@ -920,7 +920,7 @@ enum KeywordListsArchive {
     nonisolated private static func appendEntries(at url: URL) throws -> [String] {
         guard CloudCoordinatedIO.itemExists(at: url) else { return [] }
         let data = try CloudCoordinatedIO.readData(at: url)
-        return ApprovedListParser.parseString(String(decoding: data, as: UTF8.self), csv: false)
+        return ApprovedListParser.parseString(try KeywordListsStore.decodeManagedText(data), csv: false)
     }
 
     /// Convenience for the old "import every list in the archive with the same

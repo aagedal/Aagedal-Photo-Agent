@@ -125,6 +125,29 @@ struct ApprovedListImportServiceTests {
         #expect(!probe.ranFilesystemCallOnMainThread)
     }
 
+    @Test("a source growing past the size limit cannot replace the managed destination")
+    func growingSourcePreservesDestination() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("managed.txt")
+        let original = Data("Existing entry\n".utf8)
+        try original.write(to: destination)
+        let service = ApprovedListImportService(access: ApprovedListImportFileAccess(
+            startAccessing: { _ in true },
+            stopAccessing: { _ in #expect(!Thread.isMainThread) },
+            fileSize: { _ in 1 },
+            readData: { _ in Data(repeating: 0x61, count: Int(ApprovedListParser.maxFileSizeBytes) + 1) },
+            writeData: { try $0.write(to: $1, options: .atomic) }
+        ))
+        await #expect(throws: ApprovedListParserError.self) {
+            try await service.importEntries(
+                from: root.appendingPathComponent("source.txt"), to: destination, requestID: UUID()
+            )
+        }
+        #expect(try Data(contentsOf: destination) == original)
+    }
+
     @Test("a pre-cancelled import performs no filesystem access")
     func preCancellation() async throws {
         let requestID = UUID()
@@ -911,5 +934,181 @@ struct ApprovedListSourceLoadTests {
         let cancelled = await task.value
         #expect(cancelled)
         #expect(probe.filesystemCallCount == 0)
+    }
+}
+
+@Suite("Approved list asynchronous routing")
+@MainActor
+struct ApprovedListAsyncRoutingTests {
+    @Test("Cancellation while resolving the root prevents managed access", arguments: [0, 1, 2, 3])
+    func cancellationDuringRootResolution(operation: Int) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = ApprovedListRouteGate()
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true },
+                                      resolveCloudRoot: { await gate.resolve(root) })
+        let probe = ApprovedListManagedAccessGate(root: root, operation: -1)
+        let service = ApprovedListService(
+            persistence: KeywordListEditorPersistenceService(access: probe.access), store: store,
+            defaults: makeApprovedListTestDefaults(), startInitialLoad: false, observeChanges: false
+        )
+        let task = Task {
+            switch operation {
+            case 0: try await service.importListURL(root.appendingPathComponent("source.txt"), for: .keywords)
+            case 1: try await service.saveEntries(["New"], for: .keywords)
+            case 2: await service.reloadFromStore(for: .keywords)
+            default: await service.clearList(for: .keywords)
+            }
+        }
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !(await gate.entered), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await gate.entered)
+        task.cancel()
+        await gate.release()
+        do { try await task.value } catch { #expect(error is CancellationError) }
+        #expect(probe.accesses == 0)
+        #expect(service.orderedEntries(for: .keywords).isEmpty)
+        #expect(service.loadError == nil)
+    }
+
+    @Test("Old-root read or removal reloads the current root", arguments: [0, 1])
+    func staleRoutePublication(operation: Int) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldRoot = root.appendingPathComponent("old")
+        let newRoot = root.appendingPathComponent("new")
+        let key = KeywordListKey.approved(.keywords)
+        let oldURL = oldRoot.appendingPathComponent(key.relativePath)
+        let newURL = newRoot.appendingPathComponent(key.relativePath)
+        try CloudCoordinatedIO.writeData(Data("Old\n".utf8), to: oldURL)
+        try CloudCoordinatedIO.writeData(Data("Current\n".utf8), to: newURL)
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true })
+        store.applyICloudRoutingPreference(true, resolvedRoot: oldRoot)
+        let probe = ApprovedListManagedAccessGate(root: oldRoot, operation: operation)
+        defer { probe.release() }
+        let service = ApprovedListService(
+            persistence: KeywordListEditorPersistenceService(access: probe.access), store: store,
+            defaults: makeApprovedListTestDefaults(), startInitialLoad: false, observeChanges: false
+        )
+        let task = Task {
+            if operation == 0 { await service.reloadFromStore(for: .keywords) }
+            else { await service.clearList(for: .keywords) }
+        }
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !probe.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(probe.entered)
+        store.applyICloudRoutingPreference(true, resolvedRoot: newRoot)
+        probe.release()
+        await task.value
+        #expect(service.orderedEntries(for: .keywords) == ["Current"])
+        #expect(service.displayPath(for: .keywords) == newURL.path)
+        #expect(try Data(contentsOf: newURL) == Data("Current\n".utf8))
+        #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("Independent approved-list owners receive identified commits")
+    func otherOwnerReceivesCommit() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true })
+        store.applyICloudRoutingPreference(true, resolvedRoot: root)
+        let writer = ApprovedListService(store: store, defaults: makeApprovedListTestDefaults(),
+                                         startInitialLoad: false, observeChanges: false)
+        let reader = ApprovedListService(store: store, defaults: makeApprovedListTestDefaults(),
+                                         startInitialLoad: false, observeChanges: true)
+        try await writer.saveEntries(["Shared"], for: .keywords)
+        let deadline = ContinuousClock.now + .seconds(30)
+        while reader.orderedEntries(for: .keywords) != ["Shared"], ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(reader.orderedEntries(for: .keywords) == ["Shared"])
+        #expect(reader.displayPath(for: .keywords) == store.currentURL(for: .approved(.keywords)).path)
+    }
+
+    @Test("A superseded durable import still broadcasts its commit")
+    func supersededImportNotifies() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true })
+        store.applyICloudRoutingPreference(true, resolvedRoot: root)
+        let key = KeywordListKey.approved(.keywords)
+        let destination = store.currentURL(for: key)
+        let writeProbe = BlockingApprovedListImportWriteProbe(sourceData: Data("Committed\n".utf8))
+        let notifications = ApprovedListManagedAccessGate(root: root, operation: -1)
+        let observer = NotificationCenter.default.addObserver(forName: .keywordListChanged, object: nil, queue: nil) { note in
+            if note.userInfo?[KeywordListsStore.changedDestinationURLUserInfo] as? URL == destination {
+                notifications.recordNotification()
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let service = ApprovedListService(importService: ApprovedListImportService(access: writeProbe.fileAccess),
+                                          store: store, defaults: makeApprovedListTestDefaults(),
+                                          startInitialLoad: false, observeChanges: false)
+        let task = Task { try await service.importListURL(root.appendingPathComponent("source.txt"), for: .keywords) }
+        defer { writeProbe.releaseWrite() }
+        try await writeProbe.waitUntilWriteStarts()
+        service.cancelImport(for: .keywords)
+        writeProbe.releaseWrite()
+        try await task.value
+        #expect(notifications.notificationCount == 1)
+        #expect(service.orderedEntries(for: .keywords).isEmpty)
+    }
+}
+
+private actor ApprovedListRouteGate {
+    private(set) var entered = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func resolve(_ root: URL) async -> URL? {
+        entered = true
+        await withCheckedContinuation { continuation = $0 }
+        return root
+    }
+    func release() { continuation?.resume(); continuation = nil }
+}
+
+private nonisolated final class ApprovedListManagedAccessGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let root: URL
+    private let operation: Int
+    private var storedEntered = false
+    private var storedAccesses = 0
+    private var storedMainThread = false
+    private var storedNotifications = 0
+    init(root: URL, operation: Int) { self.root = root; self.operation = operation }
+    var entered: Bool { lock.withLock { storedEntered } }
+    var accesses: Int { lock.withLock { storedAccesses } }
+    var ranOnMainThread: Bool { lock.withLock { storedMainThread } }
+    var notificationCount: Int { lock.withLock { storedNotifications } }
+    func recordNotification() { lock.withLock { storedNotifications += 1 } }
+    func release() { semaphore.signal() }
+    private func record() {
+        lock.withLock { storedAccesses += 1; storedMainThread = storedMainThread || Thread.isMainThread }
+    }
+    private func pause(_ url: URL, operation: Int) throws {
+        guard self.operation == operation, url.path.hasPrefix(root.path + "/") else { return }
+        lock.withLock { storedEntered = true }
+        guard semaphore.wait(timeout: .now() + 30) == .success else { throw CocoaError(.fileReadUnknown) }
+    }
+    var access: KeywordListEditorFileAccess {
+        KeywordListEditorFileAccess(
+            itemExists: { [self] in record(); return FileManager.default.fileExists(atPath: $0.path) },
+            readData: { [self] in
+                record()
+                let data = try Data(contentsOf: $0)
+                try pause($0, operation: 0)
+                return data
+            },
+            writeData: { [self] in record(); try CloudCoordinatedIO.writeData($0, to: $1) },
+            removeItem: { [self] in
+                record()
+                try FileManager.default.removeItem(at: $0)
+                try pause($0, operation: 1)
+            }
+        )
     }
 }

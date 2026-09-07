@@ -737,6 +737,128 @@ struct KnownPeopleServiceTests {
         #expect(service.getAllPeople().isEmpty)
     }
 
+    @Test("Archive admission preserves unreadable records and tombstoned identities", arguments: [false, true])
+    func importPreservesOccupiedDestinations(tombstoned: Bool) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let person = KnownPerson(name: "Archived person", embeddings: [])
+        let payload = try encode([person])
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: { _ in }, removeItem: { _ in },
+            contentsOfDirectory: { _ in [] }, isDirectory: { _ in false },
+            itemExists: { $0.lastPathComponent == "people.json" || $0.pathExtension == "jpg" },
+            readData: { $0.pathExtension == "jpg" ? Data([1, 2, 3]) : payload }, readCoordinatedData: { _ in payload },
+            writeData: { _, _ in },
+            writeCoordinatedData: { try CloudCoordinatedIO.writeData($0, to: $1) },
+            runDitto: { _ in }
+        )
+        let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        _ = service.loadDatabase()
+        let occupiedURL = tombstoned
+            ? tombstoneURL(person.id, in: directory)
+            : personFileURL(person.id, in: directory)
+        let original = tombstoned
+            ? try encode(KnownPersonTombstone(id: person.id))
+            : Data("unreadable original record".utf8)
+        try original.write(to: occupiedURL)
+        service.reloadAfterStorageChange(resolvedStorageURL: directory)
+        #expect(service.getAllPeople().isEmpty)
+        #expect(try await service.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip")) == 0)
+        #expect(try Data(contentsOf: occupiedURL) == original)
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(
+            "thumbnails/\(person.id.uuidString).jpg"
+        ).path))
+        #expect(service.getAllPeople().isEmpty)
+        service.reloadAfterStorageChange(resolvedStorageURL: directory)
+        #expect(service.getAllPeople().isEmpty)
+    }
+
+    @Test("Remote deletion during archive commit wins after publication", arguments: [false, true], [false, true])
+    func importDefersRemoteDeletion(cancelImport: Bool, recordEvent: Bool) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let person = KnownPerson(name: "Imported", embeddings: [])
+        let payload = try encode([person])
+        let gate = KnownPeopleImportPublicationGate(failSecondWrite: false)
+        defer { gate.resume() }
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: { _ in }, removeItem: { _ in },
+            contentsOfDirectory: { _ in [] }, isDirectory: { _ in false },
+            itemExists: { $0.lastPathComponent == "people.json" },
+            readData: { _ in payload }, readCoordinatedData: { _ in payload },
+            writeData: { _, _ in },
+            writeCoordinatedData: { try gate.write($0, to: $1) },
+            runDitto: { _ in }
+        )
+        let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        _ = service.loadDatabase()
+        let task = Task { try await service.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip")) }
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(gate.entered)
+        let marker = tombstoneURL(person.id, in: directory)
+        try encode(KnownPersonTombstone(id: person.id)).write(to: marker)
+        // Unknown change dates must not become self-write echoes when replayed.
+        service.applyRemoteChanges([(recordEvent ? personFileURL(person.id, in: directory) : marker, nil)])
+        #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: directory).path))
+        if cancelImport { task.cancel() }
+        gate.resume()
+        do {
+            #expect(try await task.value == 1)
+            #expect(!cancelImport)
+        } catch {
+            #expect(cancelImport && error is CancellationError)
+        }
+        #expect(service.person(byID: person.id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: personFileURL(person.id, in: directory).path))
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+        service.reloadAfterStorageChange(resolvedStorageURL: directory)
+        #expect(service.person(byID: person.id) == nil)
+    }
+
+    @Test("Cancellation during destination admission stops before subsequent probes and writes")
+    func importCancellationDuringDestinationProbe() async throws {
+        let directory = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let person = KnownPerson(name: "Cancelled", embeddings: [])
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: { _ in }, removeItem: { _ in },
+            contentsOfDirectory: { _ in [] }, isDirectory: { _ in false },
+            itemExists: { _ in false },
+            readData: { _ in Data() }, readCoordinatedData: { _ in Data() },
+            writeData: { _, _ in },
+            writeCoordinatedData: { _, _ in Issue.record("Cancelled admission must not write") },
+            runDitto: { _ in },
+            destinationExists: { url in
+                #expect(!Thread.isMainThread)
+                #expect(url.pathExtension == "json")
+                withUnsafeCurrentTask { $0?.cancel() }
+                return false
+            }
+        )
+        let service = KnownPeopleArchiveService(access: access)
+        let operation = Task {
+            await service.commitImport(KnownPeopleArchiveImportCommitRequest(
+                requestID: UUID(), storageRoot: directory, people: [person],
+                personThumbnails: [person.id: Data([1])], embeddingThumbnails: [:]
+            ))
+        }
+        guard case .cancelled(let evidence) = await operation.value else {
+            Issue.record("Expected cancellation during destination admission")
+            return
+        }
+        #expect(evidence.committedPeople.isEmpty)
+        #expect(evidence.committedFileURLs.isEmpty)
+        #expect(evidence.committedThumbnailURLs.isEmpty)
+    }
+
     @Test("overlapping imports publish before readmission and reject cancelled or rerouted waiters", arguments: [0, 1, 2])
     func overlappingImportAdmission(outcome: Int) async throws {
         let directory = makeTempDir()
@@ -1454,7 +1576,7 @@ private nonisolated final class KnownPeopleImportPublicationGate: @unchecked Sen
         try CloudCoordinatedIO.writeData(data, to: url)
         if count == 1 {
             lock.withLock { didEnter = true }
-            guard semaphore.wait(timeout: .now() + 5) == .success else {
+            guard semaphore.wait(timeout: .now() + 30) == .success else {
                 throw CocoaError(.fileWriteUnknown)
             }
         }

@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Keyword routing and import preservation continuation (2026-09-07):** flat/structured
+editors, Approved Lists, and migration resolve uncached roots asynchronously. Managed keyword
+reads reject damaged UTF-8 before append/routing/archive/backup writes. Known People archive
+admission preserves occupied/tombstoned destinations, and reserved remote deletions replay after
+publication. Complete storage ownership and manual/device/release gates remain open.
+([validation and remaining work](plan-status-keyword-routing-import-preservation-continuation-2026-09-07.md))
+
 **Storage admission and schema compatibility continuation (2026-09-06):** Known People
 archive destination reservations prevent overlapping local mutations; keyword commits and deferred
 notifications reject stale-route cache publication, and editor import reads cross the serialized

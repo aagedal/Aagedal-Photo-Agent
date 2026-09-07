@@ -43,7 +43,7 @@ struct KeywordListEditor: View {
     /// Keep body evaluation in memory; validate the route at every mutation boundary.
     private func admitMutation() -> Bool {
         guard let loadedDestinationURL else { return false }
-        guard loadedDestinationURL == KeywordListsStore.shared.url(for: storeKey) else {
+        guard loadedDestinationURL == KeywordListsStore.shared.currentURL(for: storeKey) else {
             loadEntries()
             return false
         }
@@ -171,16 +171,17 @@ struct KeywordListEditor: View {
         loadedDestinationURL = nil
         loadTask?.cancel()
         let requestID = UUID()
-        let sourceURL = KeywordListsStore.shared.url(for: storeKey)
         loadRequestID = requestID
         loadTask = Task {
             do {
+                let sourceURL = try await KeywordListsStore.shared.resolveURL(for: storeKey)
+                guard loadRequestID == requestID, !Task.isCancelled else { return }
                 let result = try await KeywordListEditorPersistenceService.shared.loadEntries(
                     from: sourceURL,
                     requestID: requestID
                 )
                 guard loadRequestID == requestID, !Task.isCancelled else { return }
-                guard KeywordListsStore.shared.url(for: storeKey) == sourceURL else {
+                guard KeywordListsStore.shared.currentURL(for: storeKey) == sourceURL else {
                     loadEntries()
                     return
                 }
@@ -250,10 +251,19 @@ struct KeywordListEditor: View {
 
         let requestID = UUID()
         let snapshot = entries
-        let destinationURL = KeywordListsStore.shared.url(for: storeKey)
+        let destinationURL = KeywordListsStore.shared.currentURL(for: storeKey)
         persistenceRequestID = requestID
         persistenceTask = Task {
             do {
+                let activeDestination = try await KeywordListsStore.shared.resolveURL(for: storeKey)
+                guard persistenceRequestID == requestID, !Task.isCancelled else { return }
+                guard activeDestination == destinationURL else {
+                    persistenceTask = nil
+                    persistenceRequestID = nil
+                    feedback = "List storage changed. Apply the edit again."
+                    loadEntries()
+                    return
+                }
                 let result = try await KeywordListEditorPersistenceService.shared.saveEntries(
                     snapshot,
                     to: destinationURL,
@@ -299,7 +309,7 @@ struct KeywordListEditor: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         importTask?.cancel()
         let requestID = UUID()
-        let destinationURL = KeywordListsStore.shared.url(for: storeKey)
+        let destinationURL = KeywordListsStore.shared.currentURL(for: storeKey)
         importRequestID = requestID
         feedback = "Importing \(url.lastPathComponent)…"
         importTask = Task {
@@ -313,7 +323,7 @@ struct KeywordListEditor: View {
                 importTask = nil
                 importRequestID = nil
                 guard loadedDestinationURL == destinationURL,
-                      KeywordListsStore.shared.url(for: storeKey) == destinationURL else {
+                      KeywordListsStore.shared.currentURL(for: storeKey) == destinationURL else {
                     feedback = "List storage changed. Import the file again."
                     loadEntries()
                     return

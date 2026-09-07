@@ -1015,7 +1015,7 @@ private nonisolated final class BlockingKeywordListsArchivePreviewReaderProbe: @
 @Suite("Keyword archive import read failure preservation")
 struct KeywordListsArchiveImportReadFailureTests {
     @Test("Read failures preserve affected destination and report exact durable prefix",
-          arguments: ["invalidUTF8", "placeholder", "directory"], [false, true])
+          arguments: ["invalidUTF8", "invalidDestinationUTF8", "placeholder", "directory"], [false, true])
     func readFailure(failureKind: String, durablePrefix: Bool) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1053,6 +1053,8 @@ struct KeywordListsArchiveImportReadFailureTests {
         let placeholder = failingDestination.deletingLastPathComponent()
             .appendingPathComponent(".\(failingDestination.lastPathComponent).icloud")
         switch failureKind {
+        case "invalidDestinationUTF8":
+            try CloudCoordinatedIO.writeData(Data([0xff, 0xfe, 0xff]), to: failingDestination)
         case "invalidUTF8":
             try CloudCoordinatedIO.writeText("Alice\n", to: failingDestination)
         case "placeholder":
@@ -1101,6 +1103,8 @@ struct KeywordListsArchiveImportReadFailureTests {
             }
         }
         switch failureKind {
+        case "invalidDestinationUTF8":
+            #expect(try Data(contentsOf: failingDestination) == Data([0xff, 0xfe, 0xff]))
         case "invalidUTF8":
             #expect(try String(contentsOf: failingDestination, encoding: .utf8) == "Alice\n")
         case "placeholder":
