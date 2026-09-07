@@ -465,6 +465,79 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("Settings retries root resolution before writing after a route switch")
+    @MainActor
+    func settingsMutationUsesCurrentRoot() async throws {
+        let oldRoot = URL(fileURLWithPath: "/virtual/old-settings-root")
+        let newRoot = URL(fileURLWithPath: "/virtual/new-settings-root")
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true }, resolveCloudRoot: { oldRoot })
+        let probe = KeywordListEditorFileAccessProbe(readData: Data("Existing\n".utf8))
+        let model = SettingsViewModel(
+            quickListPersistence: KeywordListEditorPersistenceService(access: probe.fileAccess),
+            quickListStore: store
+        )
+        let deadline = ContinuousClock.now + .seconds(10)
+        while model.quickListURL(for: .keywords) == nil {
+            guard ContinuousClock.now < deadline else { throw KeywordListEditorFileAccessProbeError.timedOut }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.quickListURL(for: .keywords) == oldRoot.appendingPathComponent("quick/keywords.txt"))
+        store.applyICloudRoutingPreference(true, resolvedRoot: newRoot)
+        #expect(await model.appendToQuickList(for: .keywords, values: ["Added"]))
+        #expect(probe.writtenURL == newRoot.appendingPathComponent("quick/keywords.txt"))
+        #expect(model.entries(for: .keywords) == ["Existing", "Added"])
+    }
+
+    @Test("Cancelled Settings mutation cannot write after suspended root lookup")
+    @MainActor
+    func settingsMutationCancellationDuringRootLookup() async throws {
+        let gate = SettingsQuickListRootGate()
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true }, resolveCloudRoot: {
+            await gate.resolve()
+        })
+        let probe = KeywordListEditorFileAccessProbe()
+        let model = SettingsViewModel(
+            quickListPersistence: KeywordListEditorPersistenceService(access: probe.fileAccess),
+            quickListStore: store
+        )
+        let mutation = Task { await model.appendToQuickList(for: .keywords, values: ["Cancelled"]) }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while await gate.requestCount < 2 {
+            guard ContinuousClock.now < deadline else { throw KeywordListEditorFileAccessProbeError.timedOut }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(probe.existsInvocationCount == 0)
+        mutation.cancel()
+        await gate.release(URL(fileURLWithPath: "/virtual/resolved-settings-root"))
+        #expect(await mutation.value == false)
+        #expect(probe.writtenURL == nil)
+    }
+
+    @Test("Settings discards a cache read completed for an earlier root")
+    @MainActor
+    func settingsCacheRejectsEarlierRoot() async throws {
+        let oldRoot = URL(fileURLWithPath: "/virtual/old-cache-root")
+        let newRoot = URL(fileURLWithPath: "/virtual/new-cache-root")
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true }, resolveCloudRoot: { oldRoot })
+        let probe = BlockingKeywordListEditorFileAccessProbe()
+        let model = SettingsViewModel(
+            quickListPersistence: KeywordListEditorPersistenceService(access: probe.fileAccess),
+            quickListStore: store
+        )
+        defer { probe.releaseFirstRead() }
+        try await probe.waitUntilFirstReadStarts()
+        store.applyICloudRoutingPreference(true, resolvedRoot: newRoot)
+        #expect(model.entries(for: .keywords).isEmpty)
+        probe.releaseFirstRead()
+        let deadline = ContinuousClock.now + .seconds(10)
+        while model.quickListURL(for: .keywords) != newRoot.appendingPathComponent("quick/keywords.txt") {
+            guard ContinuousClock.now < deadline else { throw KeywordListEditorFileAccessProbeError.timedOut }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.entries(for: .keywords) == ["first"])
+        #expect(probe.maximumConcurrentReads == 1)
+    }
+
     @Test("Settings publishes only actor-loaded Quick List snapshots")
     func settingsCacheSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -487,6 +560,8 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(!settingsSource.contains("KeywordListsStore.shared.writeEntries("))
         #expect(!settingsSource.contains("KeywordListsStore.shared.importEntries("))
         #expect(!settingsSource.contains("KeywordListsStore.shared.exists("))
+        #expect(!settingsSource.contains("KeywordListsStore.shared.url(for:"))
+        #expect(settingsSource.contains("try await store.resolveRootURL()"))
 
         let metadataPanelSource = try String(
             contentsOf: workspace.appendingPathComponent(
@@ -501,6 +576,8 @@ struct KeywordListEditorPersistenceServiceTests {
             encoding: .utf8
         )
         #expect(metadataPanelSource.contains("try await settingsViewModel.setKeywordsListURL(url)"))
+        #expect(!metadataPanelSource.contains("KeywordListsStore.shared.url(for:"))
+        #expect(metadataPanelSource.contains("try await KeywordListsStore.shared.resolveURL(for:"))
         #expect(faceViewSource.contains("try await settingsViewModel.setPersonShownListURL(url)"))
     }
 
@@ -686,4 +763,20 @@ private nonisolated final class BlockingKeywordListEditorFileAccessProbe: @unche
 
     var readInvocationCount: Int { condition.withLock { readCount } }
     var maximumConcurrentReads: Int { condition.withLock { maximumActiveReads } }
+}
+
+private actor SettingsQuickListRootGate {
+    private var continuations: [CheckedContinuation<URL?, Never>] = []
+    private(set) var requestCount = 0
+
+    func resolve() async -> URL? {
+        requestCount += 1
+        return await withCheckedContinuation { continuations.append($0) }
+    }
+
+    func release(_ root: URL) {
+        let waiting = continuations
+        continuations.removeAll()
+        for continuation in waiting { continuation.resume(returning: root) }
+    }
 }

@@ -479,6 +479,7 @@ actor TemplatesFolderBookmarkService {
 final class SettingsViewModel {
     private let c2paConfigurationService: C2PASigningConfigurationService
     private let quickListPersistence: KeywordListEditorPersistenceService
+    private let quickListStore: KeywordListsStore
     private let templatesFolderDefaults: UserDefaults
     private let templatesFolderBookmarkService: TemplatesFolderBookmarkService
     @ObservationIgnored private var c2paOperationRequestID: UUID?
@@ -775,7 +776,7 @@ final class SettingsViewModel {
 
     private func importQuickList(from url: URL, type: QuickListType) async throws {
         let requestID = UUID()
-        let destinationURL = managedQuickListURL(for: type)
+        let destinationURL = try await managedQuickListURL(for: type)
         let result = try await quickListPersistence.appendEntries(
             [],
             to: destinationURL,
@@ -1097,6 +1098,7 @@ final class SettingsViewModel {
         pkcs12Importer: any C2PAIdentityImporting = SecurityPKCS12IdentityImporter(),
         c2paFileIO: C2PACertificateFileIO = .system,
         quickListPersistence: KeywordListEditorPersistenceService = .shared,
+        quickListStore: KeywordListsStore = .shared,
         templatesFolderDefaults: UserDefaults = .standard,
         templatesFolderBookmarkService: TemplatesFolderBookmarkService = .shared
     ) {
@@ -1106,6 +1108,7 @@ final class SettingsViewModel {
             fileIO: c2paFileIO
         )
         self.quickListPersistence = quickListPersistence
+        self.quickListStore = quickListStore
         self.templatesFolderDefaults = templatesFolderDefaults
         self.templatesFolderBookmarkService = templatesFolderBookmarkService
         self.rawRenderAsHDR = UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR)
@@ -1248,7 +1251,7 @@ final class SettingsViewModel {
         // routing, or legacy writers) trigger one complete actor-owned reload.
         quickListChangeObserver = NotificationCenter.default.addObserver(
             forName: .keywordListChanged,
-            object: nil,
+            object: quickListStore,
             queue: .main
         ) { [weak self] note in
             guard
@@ -1259,7 +1262,8 @@ final class SettingsViewModel {
             let committedEntries = note.userInfo?[KeywordListsStore.changedEntriesUserInfo] as? [String]
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if let committedEntries, destinationURL == KeywordListsStore.shared.url(for: key) {
+                if let committedEntries, destinationURL == self.quickListStore.currentURL(for: key) {
+                    self.quickListURLs[type] = destinationURL
                     self.installQuickListEntries(committedEntries, for: type)
                 } else {
                     // A no-payload notification may represent an iCloud route change. Re-resolve
@@ -1318,7 +1322,7 @@ final class SettingsViewModel {
         do {
             let result = try await quickListPersistence.appendEntries(
                 sanitized,
-                to: managedQuickListURL(for: type),
+                to: try await managedQuickListURL(for: type),
                 createDestinationIfMissing: true,
                 requestID: UUID()
             )
@@ -1342,7 +1346,7 @@ final class SettingsViewModel {
         do {
             let result = try await quickListPersistence.saveEntries(
                 entries,
-                to: managedQuickListURL(for: type),
+                to: try await managedQuickListURL(for: type),
                 requestID: UUID()
             )
             guard case .committed(let commit) = result else { return false }
@@ -1364,19 +1368,22 @@ final class SettingsViewModel {
     func clearQuickList(_ type: QuickListType) async {
         let requestID = UUID()
         do {
+            let destinationURL = try await managedQuickListURL(for: type)
             let result = try await quickListPersistence.deleteQuickList(
-                at: managedQuickListURL(for: type),
+                at: destinationURL,
                 requestID: requestID
             )
             switch result {
             case .missing, .removed:
+                quickListStore.recordExternalDeletion(to: .quick(type), sourceID: requestID)
+                guard quickListStore.currentURL(for: .quick(type)) == destinationURL else {
+                    scheduleQuickListRefresh()
+                    return
+                }
                 quickListCache[type] = []
                 availableQuickLists.remove(type)
                 quickListVersion += 1
-                KeywordListsStore.shared.recordExternalDeletion(
-                    to: .quick(type),
-                    sourceID: requestID
-                )
+
             case .cancelledBeforeAccess, .cancelledBeforeCommit:
                 break
             }
@@ -1385,25 +1392,23 @@ final class SettingsViewModel {
         }
     }
 
-    private func managedQuickListURL(for type: QuickListType) -> URL {
-        if let cached = quickListURLs[type] { return cached }
-        let url = KeywordListsStore.shared.url(for: .quick(type))
-        quickListURLs[type] = url
-        return url
+    private func managedQuickListURL(for type: QuickListType) async throws -> URL {
+        try await quickListStore.resolveURL(for: .quick(type))
     }
 
     private func publishQuickListCommit(_ commit: QuickListMutationCommit, type: QuickListType) {
-        KeywordListsStore.shared.recordExternalWrite(
+        quickListStore.recordExternalWrite(
             to: .quick(type),
             destinationURL: commit.destinationURL,
             entries: commit.entries,
             sourceID: commit.requestID
         )
-        guard KeywordListsStore.shared.url(for: .quick(type)) == commit.destinationURL else {
+        guard quickListStore.currentURL(for: .quick(type)) == commit.destinationURL else {
             quickListURLs.removeAll()
             scheduleQuickListRefresh()
             return
         }
+        quickListURLs[type] = commit.destinationURL
         installQuickListEntries(commit.entries, for: type)
     }
 
@@ -1417,27 +1422,45 @@ final class SettingsViewModel {
     private func scheduleQuickListRefresh() {
         quickListRefreshTask?.cancel()
         let requestID = UUID()
-        let sources = QuickListType.allCases.map { type in
-            QuickListCacheSource(type: type, url: managedQuickListURL(for: type))
-        }
         quickListRefreshRequestID = requestID
         let persistence = quickListPersistence
+        let store = quickListStore
         quickListRefreshTask = Task { @MainActor [weak self] in
+            let root: URL
+            do {
+                root = try await store.resolveRootURL()
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled,
+                  self.quickListRefreshRequestID == requestID else { return }
+            let version = self.quickListVersion
+            let sources = QuickListType.allCases.map { type in
+                QuickListCacheSource(type: type, url: root.appendingPathComponent(KeywordListKey.quick(type).relativePath))
+            }
             let result = await persistence.loadQuickListCache(
                 from: sources,
                 requestID: requestID
             )
-            guard let self,
-                  self.quickListRefreshRequestID == requestID,
+            guard self.quickListRefreshRequestID == requestID,
                   !Task.isCancelled,
                   case .complete(let snapshot) = result,
                   snapshot.requestID == requestID,
                   snapshot.requestedSources == sources
             else { return }
+            guard store.currentRootURL == root, self.quickListVersion == version else {
+                self.scheduleQuickListRefresh()
+                return
+            }
             self.quickListRefreshTask = nil
             self.quickListRefreshRequestID = nil
-            for source in sources where !snapshot.failedTypes.contains(source.type) {
-                self.quickListCache[source.type] = snapshot.entriesByType[source.type] ?? []
+            for source in sources {
+                if !snapshot.failedTypes.contains(source.type) {
+                    self.quickListCache[source.type] = snapshot.entriesByType[source.type] ?? []
+                } else if self.quickListURLs[source.type] != source.url {
+                    self.quickListCache[source.type] = []
+                }
+                self.quickListURLs[source.type] = source.url
             }
             self.availableQuickLists = snapshot.availableTypes
             self.quickListVersion += 1

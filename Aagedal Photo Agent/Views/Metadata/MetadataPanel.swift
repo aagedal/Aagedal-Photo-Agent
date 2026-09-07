@@ -816,7 +816,8 @@ struct MetadataPanel: View {
                 guard quickListCreationRequestID == requestID else { return }
                 metadataPanelLog.error("Failed to create or import quick list file at \(url.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                 do {
-                    let destinationURL = KeywordListsStore.shared.url(for: .quick(type))
+                    let destinationURL = try await KeywordListsStore.shared.resolveURL(for: .quick(type))
+                    guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
                     let fallback = try await KeywordListEditorPersistenceService.shared.appendEntries(
                         values,
                         to: destinationURL,
@@ -838,9 +839,10 @@ struct MetadataPanel: View {
         cancelQuickListCreation()
         let requestID = UUID()
         quickListCreationRequestID = requestID
-        let destinationURL = KeywordListsStore.shared.url(for: .quick(type))
         quickListCreationTask = Task {
             do {
+                let destinationURL = try await KeywordListsStore.shared.resolveURL(for: .quick(type))
+                guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
                 let result = try await KeywordListEditorPersistenceService.shared.appendEntries(
                     values,
                     to: destinationURL,
@@ -849,6 +851,10 @@ struct MetadataPanel: View {
                 switch result {
                 case .missingDestination:
                     guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
+                    guard KeywordListsStore.shared.currentURL(for: .quick(type)) == destinationURL else {
+                        appendToQuickList(type: type, values: values)
+                        return
+                    }
                     guard let url = promptForQuickListFile(type: type) else {
                         quickListCreationTask = nil
                         quickListCreationRequestID = nil
@@ -873,7 +879,8 @@ struct MetadataPanel: View {
         values: [String],
         requestID: UUID
     ) async throws {
-        let destinationURL = KeywordListsStore.shared.url(for: .quick(type))
+        let destinationURL = try await KeywordListsStore.shared.resolveURL(for: .quick(type))
+        guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
         let result = try await KeywordListEditorPersistenceService.shared.appendEntries(
             values,
             to: destinationURL,
