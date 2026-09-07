@@ -13,6 +13,28 @@ import AppKit
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Mismatched tombstones suppress only their filename identity and preserve marker bytes", arguments: [false, true])
+    func mismatchedTombstoneIdentity(expired: Bool) throws {
+        try withIsolatedEmbeddingMigration { directory in
+            let deleted = KnownPerson(name: "Deleted")
+            let survivor = KnownPerson(name: "Keep")
+            try writePersonFile(deleted, into: directory)
+            try writePersonFile(survivor, into: directory)
+            let marker = KnownPersonTombstone(
+                id: survivor.id,
+                deletedAt: expired ? .distantPast : Date()
+            )
+            let bytes = try encode(marker)
+            let url = tombstoneURL(deleted.id, in: directory)
+            try bytes.write(to: url)
+
+            let service = KnownPeopleService()
+            #expect(service.loadDatabase().people.map(\.id) == [survivor.id])
+            #expect(try Data(contentsOf: url) == bytes)
+            #expect(FileManager.default.fileExists(atPath: personFileURL(survivor.id, in: directory).path))
+        }
+    }
+
     @Test("Remote Known People changes reject old roots, siblings, and nested record paths")
     func remoteChangesRequireActiveDirectory() throws {
         try withIsolatedEmbeddingMigration { directory in

@@ -1050,6 +1050,13 @@ final class KnownPeopleService {
                 }
                 continue
             }
+            // A marker belongs to its filename, just like a person record. Never let
+            // mismatched payload bytes delete another identity or expire the marker.
+            guard let fileID = personID(fromFileURL: url) else { continue }
+            guard tombstone.id == fileID else {
+                tombstoned.insert(fileID)
+                continue
+            }
             if now.timeIntervalSince(tombstone.deletedAt) >= Self.tombstoneRetention {
                 try? CloudCoordinatedIO.removeItem(at: url)
             } else {

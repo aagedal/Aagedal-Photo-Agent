@@ -163,8 +163,8 @@ final class KeywordListsStore {
 
     /// Returns the current ubiquity container's `Documents/Lists` directory if
     /// iCloud is reachable, else nil. The check runs off the main thread when
-    /// called from the coordinator; it is safe to call from main too — Apple
-    /// docs note the call can block briefly on first use.
+    /// called from the coordinator. UI callers must use `resolveRootURL()` because
+    /// the synchronous compatibility property can block during container provisioning.
     var iCloudContainerListsURL: URL? {
         guard let container = FileManager.default.url(forUbiquityContainerIdentifier: Self.iCloudContainerID) else {
             return nil
