@@ -840,6 +840,53 @@ struct ICloudSyncCoordinatorTests {
         #expect(cloud.storageDestination.contains("iCloud Drive"))
     }
 
+    @Test("Known People measurement distinguishes missing storage, invalid roots, and symbolic links")
+    func knownPeopleDataSummaryRootFailures() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("KnownPeopleSummaryRoots-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("file")
+        try Data([1, 2, 3]).write(to: file)
+        let link = root.appendingPathComponent("linked-directory")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+
+        #expect(KnownPeopleDataSummaryService.systemDirectorySize(at: root.appendingPathComponent("missing")) == .complete(0))
+        #expect(KnownPeopleDataSummaryService.systemDirectorySize(at: file) == .unavailable)
+        #expect(KnownPeopleDataSummaryService.systemDirectorySize(at: link) == .unavailable)
+        #expect(KnownPeopleDataSummaryService.systemDirectorySize(at: root) == .complete(3))
+    }
+
+    @Test("Known People unavailable measurement preserves counts without advertising zero bytes")
+    func knownPeopleDataSummaryUnavailable() async throws {
+        let service = KnownPeopleDataSummaryService(measureDirectory: { _ in .unavailable })
+        let evidence = await service.summarize(
+            peopleCount: 3, sampleCount: 8,
+            storageURL: URL(fileURLWithPath: "/unavailable-known-people"), syncEnabled: true
+        )
+        let summary = try #require(completeSummary(from: evidence))
+        #expect(summary.peopleCount == 3)
+        #expect(summary.sampleCount == 8)
+        #expect(summary.syncEnabled)
+        #expect(summary.storedBytes == nil)
+    }
+
+    @Test("Known People measurement rejects partial totals when a nested directory is unreadable")
+    func knownPeopleDataSummaryUnreadableSubdirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("KnownPeopleSummaryUnreadable-\(UUID().uuidString)", isDirectory: true)
+        let blocked = root.appendingPathComponent("blocked", isDirectory: true)
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: blocked.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try Data([1, 2, 3]).write(to: root.appendingPathComponent("readable"))
+        try Data([4, 5]).write(to: blocked.appendingPathComponent("hidden"))
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: blocked.path)
+        #expect(KnownPeopleDataSummaryService.systemDirectorySize(at: root) == .unavailable)
+    }
+
     @Test("Known People storage measurement executes away from the main thread")
     @MainActor
     func knownPeopleDataSummaryRunsOffMainThread() async throws {

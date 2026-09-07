@@ -53,17 +53,32 @@ struct KeywordListsStoreTests {
         #expect(KeywordListsStore.shared.readEntries(.quick(.event)) == [])
     }
 
-    @Test("importEntries from a temp file writes through to the store")
-    func importEntriesRoundTrip() throws {
-        clearAllStoreFiles()
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("kl-test-\(UUID().uuidString).txt")
-        try "Alice\nBob\nCharlie\n".write(to: url, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        let entries = try KeywordListsStore.shared.importEntries(from: url, into: .quick(.personShown))
-        #expect(entries == ["Alice", "Bob", "Charlie"])
-        #expect(KeywordListsStore.shared.readEntries(.quick(.personShown)) == ["Alice", "Bob", "Charlie"])
+    @Test("The production import actor commits a selected file to an asynchronously resolved store route")
+    func importEntriesRoundTrip() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("selected.txt")
+        try "Alice\nBob\nCharlie\n".write(to: source, atomically: true, encoding: .utf8)
+        try await KeywordListsStoreStorageOverride.$current.withValue(root.appendingPathComponent("managed")) {
+            let store = KeywordListsStore()
+            let key = KeywordListKey.quick(.personShown)
+            let destination = try await store.resolveURL(for: key)
+            let requestID = UUID()
+            let result = try await ApprovedListImportService().importEntries(
+                from: source, to: destination, requestID: requestID
+            )
+            guard case .committed(let commit) = result else {
+                Issue.record("Expected committed import, received \(result)")
+                return
+            }
+            #expect(commit.requestID == requestID)
+            #expect(commit.destinationURL == destination)
+            #expect(commit.entries == ["Alice", "Bob", "Charlie"])
+            #expect(try String(contentsOf: destination, encoding: .utf8) == "Alice\nBob\nCharlie\n")
+            store.recordExternalWrite(to: key, destinationURL: destination, entries: commit.entries)
+            #expect(store.version == 1)
+        }
     }
 
     @Test("Write posts a keywordListChanged notification carrying the key")

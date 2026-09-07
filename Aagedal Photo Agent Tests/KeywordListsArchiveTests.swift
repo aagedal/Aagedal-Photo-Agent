@@ -13,12 +13,12 @@ struct KeywordListsArchiveTests {
     /// archive's file count (the historical `exported → 5` flake). The override
     /// is task-local, so this isolation holds even while sibling suites write to
     /// the default root concurrently.
-    private func withIsolatedStore(_ body: () throws -> Void) rethrows {
+    private func withIsolatedStore(_ body: () async throws -> Void) async rethrows {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("kl-archive-store-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try KeywordListsStoreStorageOverride.$current.withValue(root) {
-            try body()
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            try await body()
         }
     }
 
@@ -28,8 +28,8 @@ struct KeywordListsArchiveTests {
     }
 
     @Test("Export then import round-trips all list types and preserves entry order")
-    func roundTripAllTypes() throws {
-        try withIsolatedStore {
+    func roundTripAllTypes() async throws {
+        try await withIsolatedStore {
             let store = KeywordListsStore.shared
             try store.writeEntries(["Berlin", "Paris", "London"], to: .quick(.keywords))
             try store.writeEntries(["Alice", "Bob"], to: .quick(.personShown))
@@ -38,7 +38,7 @@ struct KeywordListsArchiveTests {
 
             let zipURL = tempZip()
             defer { try? FileManager.default.removeItem(at: zipURL) }
-            let exported = try KeywordListsArchive.exportAll(to: zipURL)
+            let exported = try await KeywordListsArchive.exportAll(to: zipURL)
             #expect(exported == 4)
 
             // Wipe the store and re-import.
@@ -47,7 +47,7 @@ struct KeywordListsArchiveTests {
             store.delete(.structured)
             #expect(store.readEntries(.quick(.keywords)) == [])
 
-            let imported = try KeywordListsArchive.importAll(from: zipURL, mode: .replace)
+            let imported = try await KeywordListsArchive.importAll(from: zipURL, mode: .replace)
             #expect(imported == 4)
 
             #expect(store.readEntries(.quick(.keywords)) == ["Berlin", "Paris", "London"])
@@ -58,8 +58,8 @@ struct KeywordListsArchiveTests {
     }
 
     @Test("Import in .merge mode appends new entries without disturbing existing order")
-    func mergeMode() throws {
-        try withIsolatedStore {
+    func mergeMode() async throws {
+        try await withIsolatedStore {
             let store = KeywordListsStore.shared
             try store.writeEntries(["Existing-1", "Existing-2"], to: .quick(.copyright))
 
@@ -67,11 +67,11 @@ struct KeywordListsArchiveTests {
             try store.writeEntries(["New-1", "Existing-1", "New-2"], to: .quick(.copyright))
             let zipURL = tempZip()
             defer { try? FileManager.default.removeItem(at: zipURL) }
-            try KeywordListsArchive.exportAll(to: zipURL)
+            try await KeywordListsArchive.exportAll(to: zipURL)
 
             // Restore the original store state, then merge-import.
             try store.writeEntries(["Existing-1", "Existing-2"], to: .quick(.copyright))
-            try KeywordListsArchive.importAll(from: zipURL, mode: .merge)
+            try await KeywordListsArchive.importAll(from: zipURL, mode: .merge)
 
             let merged = store.readEntries(.quick(.copyright))
             // Existing order preserved at the front, new entries appended.
@@ -80,8 +80,8 @@ struct KeywordListsArchiveTests {
     }
 
     @Test("Import rejects manifest entries that escape the payload root (path traversal)")
-    func rejectsPathTraversal() throws {
-        try withIsolatedStore {
+    func rejectsPathTraversal() async throws {
+        try await withIsolatedStore {
             let store = KeywordListsStore.shared
 
             // Plant a secret OUTSIDE the archive payload. The importer unzips into
@@ -122,14 +122,14 @@ struct KeywordListsArchiveTests {
             p.waitUntilExit()
 
             // The malicious entry must be skipped: nothing imported, secret never read.
-            let imported = try KeywordListsArchive.importAll(from: zipURL, mode: .replace)
+            let imported = try await KeywordListsArchive.importAll(from: zipURL, mode: .replace)
             #expect(imported == 0)
             #expect(store.readEntries(.quick(.keywords)) == [])
         }
     }
 
     @Test("Importing a zip without a manifest throws an actionable error")
-    func missingManifestThrows() throws {
+    func missingManifestThrows() async throws {
         // Build a zip that has the right shape but no manifest.json.
         let stagingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("kl-bogus-\(UUID().uuidString)", isDirectory: true)
@@ -148,8 +148,8 @@ struct KeywordListsArchiveTests {
         try p.run()
         p.waitUntilExit()
 
-        #expect(throws: KeywordListsArchive.ArchiveError.self) {
-            try KeywordListsArchive.importAll(from: zipURL, mode: .replace)
+        await #expect(throws: KeywordListsArchive.ArchiveError.self) {
+            try await KeywordListsArchive.importAll(from: zipURL, mode: .replace)
         }
     }
 }
@@ -603,14 +603,15 @@ struct KeywordListsArchiveImportServiceTests {
             let store = KeywordListsStore.shared
             try store.writeEntries(["Local", "Shared"], to: .quick(.keywords))
             try store.writeEntries(["Imported", "shared"], to: .quick(.keywords))
-            try KeywordListsArchive.exportSelected([.quick(.keywords)], to: zipURL)
+            try await KeywordListsArchive.exportSelected([.quick(.keywords)], to: zipURL)
             try store.writeEntries(["Local", "Shared"], to: .quick(.keywords))
 
             let requestID = UUID()
             let request = KeywordListsArchive.importRequest(
                 from: zipURL,
                 choices: [.quick(.keywords): .append],
-                requestID: requestID
+                requestID: requestID,
+                rootURL: root
             )
             let result = await KeywordListsArchiveImportService().importArchive(request)
 
@@ -1019,7 +1020,7 @@ private nonisolated final class BlockingKeywordListsArchivePreviewReaderProbe: @
 struct KeywordListsArchiveImportReadFailureTests {
     @Test("Read failures preserve affected destination and report exact durable prefix",
           arguments: ["invalidUTF8", "invalidDestinationUTF8", "placeholder", "directory"], [false, true])
-    func readFailure(failureKind: String, durablePrefix: Bool) throws {
+    func readFailure(failureKind: String, durablePrefix: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let payload = root.appendingPathComponent("payload")
@@ -1097,13 +1098,27 @@ struct KeywordListsArchiveImportReadFailureTests {
         }
         #expect(try String(contentsOf: prefixDestination, encoding: .utf8)
                 == (durablePrefix ? "Imported keyword\n" : "Original keyword\n"))
-        KeywordListsStoreStorageOverride.$current.withValue(destination) {
-            #expect(throws: (any Error).self) {
-                try KeywordListsArchive.importSelected(
-                    from: archive,
-                    choices: [.quick(.personShown): failureKind == "invalidUTF8" ? .replace : .append]
-                )
+        await KeywordListsStoreStorageOverride.$current.withValue(destination) {
+            let store = KeywordListsStore.shared
+            var publishedRoutes: [URL] = []
+            let token = NotificationCenter.default.addObserver(
+                forName: .keywordListChanged, object: store, queue: .main
+            ) { note in
+                guard let route = note.userInfo?[KeywordListsStore.changedDestinationURLUserInfo] as? URL,
+                      route == prefixDestination || route == failingDestination else { return }
+                MainActor.assumeIsolated { publishedRoutes.append(route) }
             }
+            defer { NotificationCenter.default.removeObserver(token) }
+            var choices: [KeywordListKey: KeywordListsArchive.ImportMode] = [
+                .quick(.personShown): failureKind == "invalidUTF8" ? .replace : .append
+            ]
+            if durablePrefix { choices[.quick(.keywords)] = .replace }
+            await #expect(throws: (any Error).self) {
+                try await KeywordListsArchive.importSelected(from: archive, choices: choices)
+            }
+            // The convenience path must publish the durable prefix before propagating the later
+            // failure. Filter by isolated destination so parallel suites cannot affect evidence.
+            #expect(publishedRoutes == (durablePrefix ? [prefixDestination] : []))
         }
         switch failureKind {
         case "invalidDestinationUTF8":

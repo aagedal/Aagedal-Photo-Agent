@@ -35,7 +35,8 @@ nonisolated enum KnownPeoplePrivacyLifecycle {
 nonisolated struct KnownPeopleDataSummary: Equatable, Sendable {
     let peopleCount: Int
     let sampleCount: Int
-    let storedBytes: Int64
+    /// Nil when the directory could not be measured completely.
+    let storedBytes: Int64?
     let syncEnabled: Bool
 
     var storageDestination: String {

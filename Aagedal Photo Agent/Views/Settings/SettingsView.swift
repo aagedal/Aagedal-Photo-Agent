@@ -25,7 +25,7 @@ struct SettingsView: View {
     @State private var knownPeopleDataSummary = KnownPeopleDataSummary(
         peopleCount: 0,
         sampleCount: 0,
-        storedBytes: 0,
+        storedBytes: nil,
         syncEnabled: false
     )
     @State private var knownPeopleDataSummaryTask: Task<Void, Never>?
@@ -784,12 +784,21 @@ struct SettingsView: View {
             }
 
             LabeledContent("Stored size") {
-                Text(ByteCountFormatter.string(
-                    fromByteCount: knownPeopleDataSummary.storedBytes,
-                    countStyle: .file
-                ))
+                Text(knownPeopleDataSummaryTask != nil ? "Calculating…" :
+                    knownPeopleDataSummary.storedBytes.map {
+                        ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+                    } ?? "Unavailable")
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+            }
+
+            if knownPeopleDataSummaryTask == nil && knownPeopleDataSummary.storedBytes == nil {
+                Text("The storage folder could not be measured completely. Check that it is available and try again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Reload Stored Size") {
+                    refreshKnownPeopleStats()
+                }
             }
 
             LabeledContent("Known People storage") {
@@ -1846,7 +1855,7 @@ struct SettingsView: View {
         knownPeopleDataSummary = KnownPeopleDataSummary(
             peopleCount: statistics.peopleCount,
             sampleCount: statistics.embeddingCount,
-            storedBytes: knownPeopleDataSummary.storedBytes,
+            storedBytes: nil,
             syncEnabled: syncEnabled
         )
 

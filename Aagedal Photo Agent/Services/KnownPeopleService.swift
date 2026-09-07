@@ -598,6 +598,25 @@ final class KnownPeopleService {
     private var thumbnailContentRevision: UInt64 = 0
     private let thumbnailLoader: KnownPeopleThumbnailLoadService
     private let archiveService: KnownPeopleArchiveService
+    private final class WeakService {
+        weak var value: KnownPeopleService?
+        init(_ value: KnownPeopleService) { self.value = value }
+    }
+    private static var instances: [WeakService] = []
+
+    /// Only already-resolved peers can have cached images or an admitted read. Avoid resolving
+    /// cold peers here: doing so would create directories and perform routing work on MainActor.
+    private func invalidatePeerThumbnails(at root: URL) {
+        Self.instances.removeAll { $0.value == nil }
+        for instance in Self.instances {
+            guard let peer = instance.value, peer !== self,
+                  peer.cachedDirectory?.standardizedFileURL == root.standardizedFileURL else { continue }
+            peer.thumbnailContentRevision &+= 1
+            peer.personThumbnailCache.removeAllObjects()
+            peer.embeddingThumbnailCache.removeAllObjects()
+        }
+    }
+
     // Process-wide ownership covers every KnownPeopleService instance, including injected
     // archive actors. Keep admission, duplicate filtering, commit and publication ordered.
     // The archive actor serializes file work but yields back to MainActor between these stages.
@@ -648,6 +667,7 @@ final class KnownPeopleService {
         // requested during import by applying it after all archive writes, at its original root.
         for url in Self.deferredThumbnailDeletions {
             try? CloudCoordinatedIO.removeItem(at: url)
+            invalidatePeerThumbnails(at: url.deletingLastPathComponent().deletingLastPathComponent())
         }
         if !Self.deferredThumbnailDeletions.isEmpty {
             // Another instance can request deletion after this owner starts a thumbnail read.
@@ -680,6 +700,8 @@ final class KnownPeopleService {
     ) {
         self.thumbnailLoader = thumbnailLoader
         self.archiveService = archiveService
+        Self.instances.removeAll { $0.value == nil }
+        Self.instances.append(WeakService(self))
     }
 
     private var knownPeopleDirectory: URL {
@@ -1174,6 +1196,7 @@ final class KnownPeopleService {
                 default:
                     continue
                 }
+                invalidatePeerThumbnails(at: knownPeopleDirectory)
                 // Reject a read that began against the previous thumbnail contents.
                 thumbnailContentRevision &+= 1
                 didChange = true
@@ -1184,6 +1207,7 @@ final class KnownPeopleService {
                 if url.pathExtension == "deleted" {
                     // With no person records loaded we cannot map embedding IDs to their owner.
                     // Invalidate decoded thumbnails without forcing a synchronous database load.
+                    invalidatePeerThumbnails(at: knownPeopleDirectory)
                     thumbnailContentRevision &+= 1
                     personThumbnailCache.removeObject(forKey: personID as NSUUID)
                     embeddingThumbnailCache.removeAllObjects()
@@ -1247,6 +1271,7 @@ final class KnownPeopleService {
     }
 
     private func invalidateRemotePersonThumbnails(_ personID: UUID, in db: KnownPeopleDatabase) {
+        invalidatePeerThumbnails(at: knownPeopleDirectory)
         thumbnailContentRevision &+= 1
         personThumbnailCache.removeObject(forKey: personID as NSUUID)
         for embedding in db.people.first(where: { $0.id == personID })?.embeddings ?? [] {
@@ -1284,6 +1309,7 @@ final class KnownPeopleService {
         let url = thumbnailURL(for: personID)
         try requireLocalWriteAdmission(to: url)
         try CloudCoordinatedIO.writeData(imageData, to: url)
+        invalidatePeerThumbnails(at: url.deletingLastPathComponent().deletingLastPathComponent())
         thumbnailContentRevision &+= 1
         if let image = NSImage(data: imageData) {
             personThumbnailCache.setObject(image, forKey: personID as NSUUID, cost: imageData.count)
@@ -1300,6 +1326,7 @@ final class KnownPeopleService {
             deferThumbnailDeletion(at: url)
             return
         }
+        invalidatePeerThumbnails(at: url.deletingLastPathComponent().deletingLastPathComponent())
         do {
             try CloudCoordinatedIO.removeItem(at: url)
         } catch {
@@ -1313,6 +1340,7 @@ final class KnownPeopleService {
         let url = embeddingThumbnailURL(for: embeddingID)
         try requireLocalWriteAdmission(to: url)
         try CloudCoordinatedIO.writeData(imageData, to: url)
+        invalidatePeerThumbnails(at: url.deletingLastPathComponent().deletingLastPathComponent())
         thumbnailContentRevision &+= 1
         if let image = NSImage(data: imageData) {
             embeddingThumbnailCache.setObject(image, forKey: embeddingID as NSUUID, cost: imageData.count)
@@ -1404,6 +1432,7 @@ final class KnownPeopleService {
             deferThumbnailDeletion(at: url)
             return
         }
+        invalidatePeerThumbnails(at: url.deletingLastPathComponent().deletingLastPathComponent())
         try? CloudCoordinatedIO.removeItem(at: url)
     }
 
@@ -1837,6 +1866,8 @@ final class KnownPeopleService {
 
     private func resetDatabaseForEmbeddingMigration(io: KnownPeopleEmbeddingMigrationIO) throws {
         try io.removeItem(knownPeopleDirectory)
+        thumbnailContentRevision &+= 1
+        invalidatePeerThumbnails(at: knownPeopleDirectory)
         try io.ensureDirectory(peopleDirectory)
         try io.ensureDirectory(thumbnailsDirectory)
         try io.ensureDirectory(embeddingThumbnailsDirectory)
@@ -1862,6 +1893,8 @@ final class KnownPeopleService {
         // Remove all files (people/, thumbnails, embedding thumbnails, any
         // tombstones). This is a local nuke — tombstones go with it.
         try CloudCoordinatedIO.removeItem(at: knownPeopleDirectory)
+        thumbnailContentRevision &+= 1
+        invalidatePeerThumbnails(at: knownPeopleDirectory)
 
         // Recreate empty directory structure
         try CloudCoordinatedIO.ensureDirectory(peopleDirectory)
@@ -2184,6 +2217,9 @@ final class KnownPeopleService {
               evidence.storageRoot.standardizedFileURL == storageRoot.standardizedFileURL,
               evidence.requestedPersonCount == newPeople.count else {
             throw CancellationError()
+        }
+        if !evidence.committedThumbnailURLs.isEmpty {
+            invalidatePeerThumbnails(at: evidence.storageRoot)
         }
         guard storageRevision == expectedStorageRevision else {
             throw CancellationError()

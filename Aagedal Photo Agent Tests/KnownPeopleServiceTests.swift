@@ -286,7 +286,7 @@ struct KnownPeopleServiceTests {
         #expect(probe.urls == [fileURL])
     }
 
-    @Test("A local or remote thumbnail mutation rejects an older in-flight read", arguments: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+    @Test("A local or remote thumbnail mutation rejects an older in-flight read", arguments: Array(0..<26))
     func thumbnailReadRejectsLocalMutation(operation: Int) async throws {
         let directory = makeTempDir()
         activate(directory)
@@ -321,7 +321,30 @@ struct KnownPeopleServiceTests {
             try await Task.sleep(for: .milliseconds(5))
         }
         #expect(gate.entered)
-        if operation < 2 {
+        if operation >= 18 {
+            let observer = KnownPeopleService()
+            if operation >= 22 { _ = observer.loadDatabase() }
+            if operation % 4 < 2 {
+                observer.applyRemoteChanges([(
+                    tombstoneURL(person.id, in: directory), Date.distantFuture
+                )])
+            } else {
+                let folder = isEmbedding ? "embedding_thumbnails" : "thumbnails"
+                let id = isEmbedding ? sample.id : person.id
+                observer.applyRemoteChanges([(
+                    directory.appendingPathComponent("\(folder)/\(id.uuidString).jpg"), Date.distantFuture
+                )])
+            }
+        } else if operation >= 12 {
+            let writer = KnownPeopleService()
+            switch operation {
+            case 12: try writer.saveThumbnail(Data(), for: person.id)
+            case 13: try writer.saveEmbeddingThumbnail(Data(), for: sample.id)
+            case 14: try writer.removePerson(id: person.id)
+            case 15: writer.deleteEmbeddingThumbnail(for: sample.id)
+            default: try writer.clearDatabase()
+            }
+        } else if operation < 2 {
             // Invalid replacement bytes deliberately clear the cache. A stale read must
             // not resurrect the earlier valid image after this successful local write.
             if isEmbedding { try service.saveEmbeddingThumbnail(Data(), for: sample.id) }
@@ -345,9 +368,54 @@ struct KnownPeopleServiceTests {
         #expect(await task.value == nil)
         if isEmbedding { #expect(service.cachedEmbeddingThumbnail(for: sample.id) == nil) }
         else { #expect(service.cachedThumbnail(for: person.id) == nil) }
-        if operation >= 8 {
+        if operation >= 8 && operation < 12 {
             #expect(service.getAllPeople().map(\.id) == [person.id])
         }
+    }
+
+    @Test("Peer thumbnail invalidation is scoped to the storage root", arguments: [false, true])
+    func peerThumbnailCacheInvalidation(sameRoot: Bool) throws {
+        let directory = makeTempDir()
+        let otherDirectory = makeTempDir()
+        activate(directory)
+        defer {
+            teardown(directory)
+            try? FileManager.default.removeItem(at: otherDirectory)
+        }
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32
+        ))
+        let image = try #require(bitmap.representation(using: .png, properties: [:]))
+        let reader = KnownPeopleService()
+        let writer = KnownPeopleService()
+        writer.reloadAfterStorageChange(resolvedStorageURL: sameRoot ? directory : otherDirectory)
+        let personID = try writer.addPerson(name: "Peer echo", embeddings: []).id
+        let embeddingID = UUID()
+        try reader.saveThumbnail(image, for: personID)
+        try reader.saveEmbeddingThumbnail(image, for: embeddingID)
+        #expect(reader.cachedThumbnail(for: personID) != nil)
+        #expect(reader.cachedEmbeddingThumbnail(for: embeddingID) != nil)
+
+        // A wrong-root event and a local-write echo cannot evict another instance's cache.
+        writer.applyRemoteChanges([(
+            directory.appendingPathExtension("wrong").appendingPathComponent("thumbnails/\(personID.uuidString).jpg"),
+            Date.distantFuture
+        )])
+        let marker = tombstoneURL(personID, in: sameRoot ? directory : otherDirectory)
+        try encode(KnownPersonTombstone(id: personID)).write(to: marker)
+        writer.applyRemoteChanges([(
+            personFileURL(personID, in: sameRoot ? directory : otherDirectory), nil
+        )])
+        try FileManager.default.removeItem(at: marker)
+        #expect(reader.cachedThumbnail(for: personID) != nil)
+        #expect(reader.cachedEmbeddingThumbnail(for: embeddingID) != nil)
+        try writer.saveThumbnail(Data(), for: personID)
+        #expect((reader.cachedThumbnail(for: personID) == nil) == sameRoot)
+        try reader.saveEmbeddingThumbnail(image, for: embeddingID)
+        writer.deleteEmbeddingThumbnail(for: embeddingID)
+        #expect((reader.cachedEmbeddingThumbnail(for: embeddingID) == nil) == sameRoot)
     }
 
     @Test("Removing an embedding cannot mutate a different storage root after its thumbnail read")
@@ -543,14 +611,14 @@ struct KnownPeopleServiceTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
     }
 
-    @Test("Archive thumbnail commits invalidate cached and suspended reads even after person write failure", arguments: [0, 1, 2, 3, 4, 5, 6, 7])
+    @Test("Archive thumbnail commits invalidate cached and suspended reads even after person write failure", arguments: Array(0..<16))
     func importInvalidatesThumbnailPublication(operation: Int) async throws {
         let directory = makeTempDir()
         activate(directory)
         defer { teardown(directory) }
         let isEmbedding = operation % 2 == 1
         let pendingRead = operation % 4 >= 2
-        let failPersonWrite = operation >= 4
+        let failPersonWrite = operation % 8 >= 4
         let sample = embedding(12)
         let person = KnownPerson(name: "Imported thumbnail", embeddings: [sample])
         let bitmap = try #require(NSBitmapImageRep(
@@ -606,8 +674,11 @@ struct KnownPeopleServiceTests {
                 #expect(service.cachedThumbnail(for: person.id) != nil)
             }
         }
+        let importer = operation >= 8
+            ? KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+            : service
         do {
-            let count = try await service.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip"))
+            let count = try await importer.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip"))
             #expect(count == 1)
             #expect(!failPersonWrite)
         } catch {
@@ -615,7 +686,7 @@ struct KnownPeopleServiceTests {
         }
         gate.resume()
         if let read { #expect(await read.value == nil) }
-        #expect((service.person(byID: person.id) != nil) == !failPersonWrite)
+        #expect((importer.person(byID: person.id) != nil) == !failPersonWrite)
         #expect(service.cachedThumbnail(for: person.id) == nil)
         #expect(service.cachedEmbeddingThumbnail(for: sample.id) == nil)
         let folder = isEmbedding ? "embedding_thumbnails" : "thumbnails"
@@ -799,10 +870,11 @@ struct KnownPeopleServiceTests {
         #expect(service.getAllPeople().isEmpty)
     }
 
-    @Test("Remote deletion from either service instance wins after archive publication", arguments: [false, true], [0, 1, 2, 3])
+    @Test("Remote deletion from either service instance wins after archive publication", arguments: [false, true], Array(0..<8))
     func importDefersRemoteDeletion(cancelImport: Bool, mode: Int) async throws {
         let recordEvent = mode % 2 == 1
-        let crossInstance = mode >= 2
+        let crossInstance = mode % 4 >= 2
+        let pendingRead = mode >= 4
         let directory = makeTempDir()
         activate(directory)
         defer { teardown(directory) }
@@ -824,6 +896,29 @@ struct KnownPeopleServiceTests {
         _ = service.loadDatabase()
         let observer = crossInstance ? KnownPeopleService() : service
         _ = observer.loadDatabase()
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32
+        ))
+        let image = try #require(bitmap.representation(using: .png, properties: [:]))
+        let thumbnailGate = KnownPeopleThumbnailPublicationGate(data: image)
+        defer { thumbnailGate.resume() }
+        let peer = KnownPeopleService(thumbnailLoader: KnownPeopleThumbnailLoadService(
+            access: KnownPeopleThumbnailFileAccess(readData: { thumbnailGate.read($0) })
+        ))
+        let read: Task<NSImage?, Never>?
+        if pendingRead {
+            read = Task { await peer.loadThumbnail(for: person.id) }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !thumbnailGate.entered, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            try #require(thumbnailGate.entered)
+        } else {
+            read = nil
+            try peer.saveThumbnail(image, for: person.id)
+        }
         let task = Task { try await service.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip")) }
         let deadline = ContinuousClock.now + .seconds(30)
         while !gate.entered, ContinuousClock.now < deadline {
@@ -835,6 +930,7 @@ struct KnownPeopleServiceTests {
         // Unknown change dates must not become self-write echoes when replayed.
         observer.applyRemoteChanges([(recordEvent ? personFileURL(person.id, in: directory) : marker, nil)])
         #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: directory).path))
+        if !pendingRead { #expect(peer.cachedThumbnail(for: person.id) != nil) }
         if cancelImport { task.cancel() }
         gate.resume()
         do {
@@ -843,6 +939,9 @@ struct KnownPeopleServiceTests {
         } catch {
             #expect(cancelImport && error is CancellationError)
         }
+        thumbnailGate.resume()
+        if let read { #expect(await read.value == nil) }
+        #expect(peer.cachedThumbnail(for: person.id) == nil)
         #expect(service.person(byID: person.id) == nil)
         #expect(!FileManager.default.fileExists(atPath: personFileURL(person.id, in: directory).path))
         #expect(FileManager.default.fileExists(atPath: marker.path))

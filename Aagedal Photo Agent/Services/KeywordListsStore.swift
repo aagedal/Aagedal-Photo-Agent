@@ -334,33 +334,6 @@ final class KeywordListsStore {
         notifyChanged(key, sourceID: sourceID)
     }
 
-    /// Convenience for editors that want to import a user-picked file directly.
-    /// Reads the file, parses, and writes through the store. Returns the parsed
-    /// entry list so callers can show a count toast.
-    @discardableResult
-    func importEntries(from source: URL, into key: KeywordListKey) throws -> [String] {
-        let didStart = source.startAccessingSecurityScopedResource()
-        defer { if didStart { source.stopAccessingSecurityScopedResource() } }
-        let entries = try ApprovedListParser.parse(source)
-        try writeEntries(entries, to: key)
-        return entries
-    }
-
-    /// Convenience for the structured-tree file (preserves indentation/syntax).
-    @discardableResult
-    func importText(from source: URL, into key: KeywordListKey) throws -> String {
-        let didStart = source.startAccessingSecurityScopedResource()
-        defer { if didStart { source.stopAccessingSecurityScopedResource() } }
-        let data = try Data(contentsOf: source)
-        guard let text = String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .utf16)
-            ?? String(data: data, encoding: .isoLatin1) else {
-            throw NSError(domain: "KeywordListsStore", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not decode file contents as text."])
-        }
-        try writeText(text, to: key)
-        return text
-    }
-
     /// Installs the route chosen by `KeywordListsRoutingService` after its coordinated merge has
     /// completed away from MainActor. The destination skeleton already exists at this point, so
     /// publication only changes the preference/cache and invalidates observers.
@@ -498,11 +471,6 @@ final class KeywordListsStore {
         keys.append(.structured)
         keys.append(.structuredPersonShown)
         return keys
-    }
-
-    private func resolveBookmarkData(forKey key: String) -> URL? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return Self.legacyBookmarkResolver(data)
     }
 
     /// Non-destructively brings `source`'s lists into `destination` when toggling

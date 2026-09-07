@@ -520,50 +520,29 @@ enum KeywordListsArchive {
     /// Writes every list currently in the managed store to `destination`.
     /// Returns the number of files included in the archive.
     @discardableResult
-    static func exportAll(to destination: URL) throws -> Int {
-        try exportSelected(Set(enumerateKeys()), to: destination)
+    static func exportAll(to destination: URL) async throws -> Int {
+        try await exportSelected(Set(enumerateKeys()), to: destination)
     }
 
-    /// Writes only the requested lists to `destination`. Keys not present in
-    /// the store (or not in `keys`) are skipped. Returns the number of files
-    /// actually written.
+    /// Resolves one root, then inventories and exports through the shared filesystem owner.
     @discardableResult
-    static func exportSelected(_ keys: Set<KeywordListKey>, to destination: URL) throws -> Int {
-        let request = exportRequest(
-            for: keys,
-            destinationURL: destination,
-            requestID: UUID()
+    static func exportSelected(_ keys: Set<KeywordListKey>, to destination: URL) async throws -> Int {
+        let root = try await KeywordListsStore.shared.resolveRootURL()
+        let requestID = UUID()
+        let inventory = try await KeywordListsArchiveInventoryService.shared.loadInventory(
+            candidates: inventoryCandidates(for: enumerateKeys().filter { keys.contains($0) }, rootURL: root),
+            requestID: requestID
         )
-        switch try performExport(request) {
+        guard case .loaded(let snapshot) = inventory else { throw CancellationError() }
+        let request = exportRequest(
+            from: snapshot, selecting: keys, destinationURL: destination, requestID: requestID
+        )
+        switch try await KeywordListsArchiveExportService.shared.export(request) {
         case .exported(let commit):
             return commit.exportedFileCount
         case .cancelledBeforeCommit:
             throw CancellationError()
         }
-    }
-
-    /// Captures MainActor-owned store routing and entry counts before filesystem work crosses the
-    /// export actor. The canonical key ordering keeps manifests stable across runs.
-    static func exportRequest(
-        for keys: Set<KeywordListKey>,
-        destinationURL: URL,
-        requestID: UUID
-    ) -> KeywordListsArchiveExportRequest {
-        let store = KeywordListsStore.shared
-        let items = enumerateKeys().compactMap { key -> KeywordListsArchiveExportItem? in
-            guard keys.contains(key), store.exists(key) else { return nil }
-            return KeywordListsArchiveExportItem(
-                sourceURL: store.url(for: key),
-                relativePath: key.relativePath,
-                kind: kindString(for: key),
-                entryCount: entryCount(for: key, in: store)
-            )
-        }
-        return KeywordListsArchiveExportRequest(
-            requestID: requestID,
-            destinationURL: destinationURL,
-            items: items
-        )
     }
 
     /// Blocking transport-only export implementation used by the serialized actor. The zip is
@@ -649,8 +628,12 @@ enum KeywordListsArchive {
 
     /// Reads `source`'s manifest without importing anything, so the UI can
     /// render a per-list picker before the user commits.
-    static func inspect(_ source: URL) throws -> ManifestPreview {
-        manifestPreview(from: try readPreviewPayload(from: source))
+    static func inspect(_ source: URL) async throws -> ManifestPreview {
+        let result = try await KeywordListsArchivePreviewService.shared.loadPreview(
+            from: source, requestID: UUID()
+        )
+        guard case .loaded(let snapshot) = result else { throw CancellationError() }
+        return manifestPreview(from: snapshot.payload)
     }
 
     /// Blocking, transport-only half of archive inspection. This is nonisolated so the dedicated
@@ -695,14 +678,14 @@ enum KeywordListsArchive {
 
     /// Captures the MainActor-owned logical choices as a transport-only request. The actor can
     /// subsequently read/merge/write using only stable identifiers and destination URLs.
-    /// UI callers supply an asynchronously resolved root; omission is synchronous compatibility.
+    /// Callers supply an asynchronously resolved root; request construction never resolves storage.
     static func importRequest(
         from source: URL,
         choices: [KeywordListKey: ImportMode],
         requestID: UUID,
-        rootURL: URL? = nil
+        rootURL: URL
     ) -> KeywordListsArchiveImportRequest {
-        let root = rootURL ?? KeywordListsStore.shared.rootURL
+        let root = rootURL
         let routes = choices.compactMap { key, mode -> KeywordListsArchiveImportRoute? in
             let transportMode: KeywordListsArchiveImportMode
             switch mode {
@@ -865,59 +848,26 @@ enum KeywordListsArchive {
     /// missing from `choices`) are left untouched. Returns the number of lists
     /// actually written.
     @discardableResult
-    static func importSelected(from source: URL, choices: [KeywordListKey: ImportMode]) throws -> Int {
-        let stagingRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("klists-import-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: stagingRoot) }
-        try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
-        try ditto(unzip: source, into: stagingRoot)
-        let payloadRoot = resolvePayloadRoot(in: stagingRoot)
-
-        let manifest = try readManifest(in: payloadRoot)
-        var imported = 0
-        for entry in manifest.files {
-            guard let key = resolveKey(forKind: entry.kind, path: entry.path) else { continue }
-            let mode = choices[key] ?? .skip
-            if mode == .skip { continue }
-
-            guard let fileURL = safeEntryURL(for: entry.path, in: payloadRoot) else {
-                logger.warning("Skipping keyword-list import entry with unsafe path: \(entry.path, privacy: .private(mask: .hash))")
-                continue
-            }
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-            let text = try String(contentsOf: fileURL, encoding: .utf8)
-
-            switch key {
-            case .structured, .structuredPersonShown:
-                // Append-mode on a tab-indented tree isn't meaningfully defined
-                // (two trees may collide on the same parent), so for the
-                // structured file `.append` falls through to `.replace`. The
-                // surfaced UI choice therefore reads as Replace / Skip only for
-                // structured. Documented in the import sheet caption.
-                try KeywordListsStore.shared.writeText(text, to: key)
-            case .quick, .approved:
-                let newEntries = text
-                    .components(separatedBy: .newlines)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                switch mode {
-                case .replace:
-                    try KeywordListsStore.shared.writeEntries(newEntries, to: key)
-                case .append:
-                    let existing = try appendEntries(at: KeywordListsStore.shared.url(for: key))
-                    var seen = Set(existing.map { $0.lowercased() })
-                    var combined = existing
-                    for entry in newEntries where seen.insert(entry.lowercased()).inserted {
-                        combined.append(entry)
-                    }
-                    try KeywordListsStore.shared.writeEntries(combined, to: key)
-                case .skip:
-                    continue
-                }
-            }
-            imported += 1
+    static func importSelected(from source: URL, choices: [KeywordListKey: ImportMode]) async throws -> Int {
+        let store = KeywordListsStore.shared
+        let root = try await store.resolveRootURL()
+        let request = importRequest(from: source, choices: choices, requestID: UUID(), rootURL: root)
+        let result = await KeywordListsArchiveImportService.shared.importArchive(request)
+        let keysByIdentifier = Dictionary(uniqueKeysWithValues: choices.keys.map { ($0.relativePath, $0) })
+        // Publish durable progress even when a later list fails or cancellation arrives after a
+        // write. The store rejects old-route payloads while still invalidating affected observers.
+        for item in result.durableCommit?.items ?? [] {
+            guard let key = keysByIdentifier[item.identifier] else { continue }
+            store.recordExternalWrite(to: key, destinationURL: item.destinationURL)
         }
-        return imported
+        switch result {
+        case .committed(let commit):
+            return commit.items.count
+        case .failedBeforeCommit(_, _, let failure), .partiallyCommitted(_, let failure):
+            throw failure
+        case .cancelledBeforeAccess, .cancelledBeforeCommit, .cancelledAfterCommit:
+            throw CancellationError()
+        }
     }
 
     /// Missing lists can be seeded; failed reads (including cloud placeholders) must abort
@@ -931,13 +881,13 @@ enum KeywordListsArchive {
     /// Convenience for the old "import every list in the archive with the same
     /// mode" entry point. Retained so existing callers and tests keep working.
     @discardableResult
-    static func importAll(from source: URL, mode: ImportMode = .replace) throws -> Int {
-        let preview = try inspect(source)
+    static func importAll(from source: URL, mode: ImportMode = .replace) async throws -> Int {
+        let preview = try await inspect(source)
         var choices: [KeywordListKey: ImportMode] = [:]
         for entry in preview.entries {
             choices[entry.key] = mode
         }
-        return try importSelected(from: source, choices: choices)
+        return try await importSelected(from: source, choices: choices)
     }
 
     nonisolated private static func readManifest(in payloadRoot: URL) throws -> Manifest {
@@ -972,23 +922,6 @@ enum KeywordListsArchive {
         return keys
     }
 
-    private static func entryCount(for key: KeywordListKey, in store: KeywordListsStore) -> Int {
-        switch key {
-        case .structured, .structuredPersonShown:
-            // Count keyword (not container) lines in the text.
-            let text = store.readText(key) ?? ""
-            return StructuredKeywordParser.parseString(text).reduce(0) { $0 + countKeywords(in: $1) }
-        case .quick, .approved:
-            return store.readEntries(key).count
-        }
-    }
-
-    private static func countKeywords(in node: StructuredKeyword) -> Int {
-        var n = node.isKeyword ? 1 : 0
-        for child in node.children { n += countKeywords(in: child) }
-        return n
-    }
-
     static func kindString(for key: KeywordListKey) -> String {
         switch key {
         case .quick(let type): return "quick.\(type.rawValue)"
@@ -999,14 +932,13 @@ enum KeywordListsArchive {
     }
 
     /// Captures logical store routes only; the inventory actor performs every existence probe and
-    /// content read. This is intentionally separate from `exportRequest`, which remains as the
-    /// synchronous compatibility entry point for non-UI callers. UI callers must supply a root
-    /// obtained with `resolveRootURL()`; the default preserves synchronous callers.
+    /// content read. Callers must supply a root obtained with `resolveRootURL()` so request
+    /// construction cannot perform a synchronous ubiquity-container lookup.
     static func inventoryCandidates(
         for keys: some Sequence<KeywordListKey>,
-        rootURL: URL? = nil
+        rootURL: URL
     ) -> [KeywordListsArchiveInventoryCandidate] {
-        let root = rootURL ?? KeywordListsStore.shared.rootURL
+        let root = rootURL
         return keys.map { key in
             KeywordListsArchiveInventoryCandidate(
                 identifier: key.relativePath,
