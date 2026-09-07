@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Backup, Quick List, and archive continuation (2026-09-07):** remaining Quick List and
+archive UI routing plus backup operations resolve roots asynchronously and reject stale publication.
+Backup inventory exposes unreadable/damaged versions and directories; retention preserves unavailable
+history, and restore saves exact current bytes before replacement. Known People deletion markers
+cannot suppress another payload identity. The broad storage and external gates remain open.
+([validation and remaining work](plan-status-backup-quick-list-archive-continuation-2026-09-07.md))
+
 **Keyword routing and import preservation continuation (2026-09-07):** flat/structured
 editors, Approved Lists, and migration resolve uncached roots asynchronously. Managed keyword
 reads reject damaged UTF-8 before append/routing/archive/backup writes. Known People archive

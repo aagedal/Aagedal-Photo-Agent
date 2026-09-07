@@ -15,6 +15,13 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Backup, Quick List, and archive continuation (2026-09-07):** remaining Quick List and
+archive UI routing plus backup operations resolve roots asynchronously and reject stale publication.
+Backup inventory exposes unreadable/damaged versions and directories; retention preserves unavailable
+history, and restore saves exact current bytes before replacement. Known People deletion markers
+cannot suppress another payload identity. The broad storage and external gates remain open.
+([validation and remaining work](../plan-status-backup-quick-list-archive-continuation-2026-09-07.md))
+
 **Keyword routing and import preservation continuation (2026-09-07):** flat/structured
 editors, Approved Lists, and migration resolve uncached roots asynchronously. Managed keyword
 reads reject damaged UTF-8 before append/routing/archive/backup writes. Known People archive
