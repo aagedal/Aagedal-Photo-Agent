@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Archive and peer-cache continuation (2026-09-07):** archive convenience APIs now
+resolve roots asynchronously and use the shared filesystem services; unused direct store imports
+are removed. Known People thumbnail mutations and accepted remote events invalidate same-root
+peer caches and suspended reads. Storage-size failures are explicit and retryable in Settings.
+The broad async storage and manual/device/release gates remain open.
+([validation and remaining work](plan-status-archive-peer-cache-continuation-2026-09-07.md))
+
 **Shared storage and model-candidate continuation (2026-09-07):** keyword editor,
 archive, backup, migration, and routing transactions share one filesystem actor. Known People
 archive admission/reservations now span service instances, with deferred deletion replay into
