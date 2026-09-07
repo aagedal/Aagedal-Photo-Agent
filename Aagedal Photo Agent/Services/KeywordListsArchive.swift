@@ -692,12 +692,14 @@ enum KeywordListsArchive {
 
     /// Captures the MainActor-owned logical choices as a transport-only request. The actor can
     /// subsequently read/merge/write using only stable identifiers and destination URLs.
+    /// UI callers supply an asynchronously resolved root; omission is synchronous compatibility.
     static func importRequest(
         from source: URL,
         choices: [KeywordListKey: ImportMode],
-        requestID: UUID
+        requestID: UUID,
+        rootURL: URL? = nil
     ) -> KeywordListsArchiveImportRequest {
-        let store = KeywordListsStore.shared
+        let root = rootURL ?? KeywordListsStore.shared.rootURL
         let routes = choices.compactMap { key, mode -> KeywordListsArchiveImportRoute? in
             let transportMode: KeywordListsArchiveImportMode
             switch mode {
@@ -711,7 +713,7 @@ enum KeywordListsArchive {
             return KeywordListsArchiveImportRoute(
                 identifier: key.relativePath,
                 kind: kindString(for: key),
-                destinationURL: store.url(for: key),
+                destinationURL: root.appendingPathComponent(key.relativePath),
                 mode: transportMode
             )
         }
@@ -995,15 +997,17 @@ enum KeywordListsArchive {
 
     /// Captures logical store routes only; the inventory actor performs every existence probe and
     /// content read. This is intentionally separate from `exportRequest`, which remains as the
-    /// synchronous compatibility entry point for non-UI callers.
+    /// synchronous compatibility entry point for non-UI callers. UI callers must supply a root
+    /// obtained with `resolveRootURL()`; the default preserves synchronous callers.
     static func inventoryCandidates(
-        for keys: some Sequence<KeywordListKey>
+        for keys: some Sequence<KeywordListKey>,
+        rootURL: URL? = nil
     ) -> [KeywordListsArchiveInventoryCandidate] {
-        let store = KeywordListsStore.shared
+        let root = rootURL ?? KeywordListsStore.shared.rootURL
         return keys.map { key in
             KeywordListsArchiveInventoryCandidate(
                 identifier: key.relativePath,
-                sourceURL: store.url(for: key),
+                sourceURL: root.appendingPathComponent(key.relativePath),
                 kind: kindString(for: key),
                 format: {
                     switch key {

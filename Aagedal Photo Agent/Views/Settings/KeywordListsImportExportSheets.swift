@@ -81,6 +81,7 @@ struct KeywordListsExportSheet: View {
     @State private var selection: Set<KeywordListKey> = []
     @State private var feedback: String?
     @State private var inventorySnapshot: KeywordListsArchiveInventorySnapshot?
+    @State private var inventoryRoot: URL?
     @State private var inventoryError: String?
     @State private var inventoryTask: Task<Void, Never>?
     @State private var inventoryRequestID: UUID?
@@ -233,14 +234,18 @@ struct KeywordListsExportSheet: View {
         let requestID = UUID()
         inventoryRequestID = requestID
         inventorySnapshot = nil
+        inventoryRoot = nil
         inventoryError = nil
         selection.removeAll()
-        let candidates = KeywordListsArchive.inventoryCandidates(
-            for: KeywordListsArchive.enumerateKeys().filter(scope.includes)
-        )
-
         inventoryTask = Task {
             do {
+                let root = try await KeywordListsStore.shared.resolveRootURL()
+                try Task.checkCancellation()
+                guard inventoryRequestID == requestID else { return }
+                let candidates = KeywordListsArchive.inventoryCandidates(
+                    for: KeywordListsArchive.enumerateKeys().filter(scope.includes),
+                    rootURL: root
+                )
                 let result = try await KeywordListsArchiveInventoryService.shared.loadInventory(
                     candidates: candidates,
                     requestID: requestID
@@ -248,8 +253,14 @@ struct KeywordListsExportSheet: View {
                 guard inventoryRequestID == requestID else { return }
                 inventoryTask = nil
                 inventoryRequestID = nil
+                guard !Task.isCancelled else { return }
+                guard KeywordListsStore.shared.currentRootURL == root else {
+                    loadInventory()
+                    return
+                }
                 switch result {
                 case .loaded(let snapshot):
+                    inventoryRoot = root
                     inventorySnapshot = snapshot
                     let keysByIdentifier = Dictionary(
                         uniqueKeysWithValues: KeywordListsArchive.enumerateKeys().map {
@@ -264,7 +275,9 @@ struct KeywordListsExportSheet: View {
                 guard inventoryRequestID == requestID else { return }
                 inventoryTask = nil
                 inventoryRequestID = nil
-                inventoryError = error.localizedDescription
+                if !(error is CancellationError) {
+                    inventoryError = error.localizedDescription
+                }
             }
         }
     }
@@ -277,6 +290,10 @@ struct KeywordListsExportSheet: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         guard let inventorySnapshot else { return }
+        guard inventoryRoot == KeywordListsStore.shared.currentRootURL else {
+            loadInventory()
+            return
+        }
         exportTask?.cancel()
         let requestID = UUID()
         exportRequestID = requestID
@@ -504,12 +521,22 @@ struct KeywordListsImportSheet: View {
                 case .loaded(let snapshot):
                     let loadedPreview = KeywordListsArchive.manifestPreview(from: snapshot.payload)
                     let scoped = scopedEntries(loadedPreview)
-                    let candidates = KeywordListsArchive.inventoryCandidates(for: scoped.map(\.key))
+                    let root = try await KeywordListsStore.shared.resolveRootURL()
+                    try Task.checkCancellation()
+                    guard previewRequestID == requestID else { return }
+                    let candidates = KeywordListsArchive.inventoryCandidates(
+                        for: scoped.map(\.key), rootURL: root
+                    )
                     let inventoryResult = try await KeywordListsArchiveInventoryService.shared.loadInventory(
                         candidates: candidates,
                         requestID: requestID
                     )
                     guard previewRequestID == requestID else { return }
+                    try Task.checkCancellation()
+                    guard KeywordListsStore.shared.currentRootURL == root else {
+                        loadPreview()
+                        return
+                    }
                     guard case .loaded(let inventory) = inventoryResult else {
                         previewTask = nil
                         previewRequestID = nil
@@ -576,17 +603,31 @@ struct KeywordListsImportSheet: View {
         importTask?.cancel()
         let requestID = UUID()
         importRequestID = requestID
-        let request = KeywordListsArchive.importRequest(
-            from: source,
-            choices: choices,
-            requestID: requestID
-        )
+        let selectedChoices = choices
         let keysByIdentifier = Dictionary(
             uniqueKeysWithValues: choices.keys.map { ($0.relativePath, $0) }
         )
         feedback = "Importing…"
 
         importTask = Task {
+            let root: URL
+            do {
+                root = try await KeywordListsStore.shared.resolveRootURL()
+                try Task.checkCancellation()
+            } catch {
+                guard importRequestID == requestID else { return }
+                importTask = nil
+                importRequestID = nil
+                feedback = error is CancellationError ? "Import cancelled" : "Import failed: \(error.localizedDescription)"
+                return
+            }
+            guard !Task.isCancelled, importRequestID == requestID else { return }
+            let request = KeywordListsArchive.importRequest(
+                from: source,
+                choices: selectedChoices,
+                requestID: requestID,
+                rootURL: root
+            )
             let result = await KeywordListsArchiveImportService.shared.importArchive(request)
 
             // A cancelled or superseded view request can still own durable writes because an
@@ -598,6 +639,12 @@ struct KeywordListsImportSheet: View {
             guard importRequestID == requestID else { return }
             importTask = nil
             importRequestID = nil
+            guard !Task.isCancelled else { return }
+            guard KeywordListsStore.shared.currentRootURL == root else {
+                feedback = "List storage changed during import. Reloading the preview…"
+                loadPreview()
+                return
+            }
 
             switch result {
             case .committed(let commit):
@@ -630,7 +677,8 @@ struct KeywordListsImportSheet: View {
     ) {
         let store = KeywordListsStore.shared
         for item in commit.items {
-            guard let key = keysByIdentifier[item.identifier] else { continue }
+            guard let key = keysByIdentifier[item.identifier],
+                  store.currentURL(for: key) == item.destinationURL else { continue }
             store.recordExternalWrite(to: key)
         }
     }

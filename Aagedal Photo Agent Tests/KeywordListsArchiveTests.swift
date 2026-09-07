@@ -732,7 +732,10 @@ struct KeywordListsArchiveImportServiceTests {
         let functionEnd = try #require(suffix.range(of: "\n    private func cancelImport()"))
         let functionSource = String(suffix[..<functionEnd.lowerBound])
         let publishRange = try #require(functionSource.range(of: "publish(commit"))
-        let staleGuardRange = try #require(functionSource.range(of: "guard importRequestID == requestID"))
+        let staleGuardRange = try #require(functionSource.range(
+            of: "guard importRequestID == requestID",
+            range: publishRange.upperBound..<functionSource.endIndex
+        ))
 
         #expect(functionSource.contains(
             "await KeywordListsArchiveImportService.shared.importArchive(request)"
@@ -1113,5 +1116,54 @@ struct KeywordListsArchiveImportReadFailureTests {
         default:
             #expect(try failingDestination.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true)
         }
+    }
+}
+
+
+@Suite("Keyword archive asynchronous root routing")
+struct KeywordArchiveRootRoutingTests {
+    @Test("Inventory and import requests retain an explicitly resolved root")
+    func requestRoutesUseResolvedRoot() async throws {
+        let cloudRoot = URL(fileURLWithPath: "/virtual/archive-cloud", isDirectory: true)
+        let store = KeywordListsStore(
+            usesTestStorage: false,
+            cloudPreference: { true },
+            resolveCloudRoot: { cloudRoot }
+        )
+        let resolvedRoot = try await store.resolveRootURL()
+        let keys: [KeywordListKey] = [.quick(.keywords), .structured, .approved(.personShown)]
+        let candidates = KeywordListsArchive.inventoryCandidates(for: keys, rootURL: resolvedRoot)
+        let request = KeywordListsArchive.importRequest(
+            from: URL(fileURLWithPath: "/virtual/archive.zip"),
+            choices: [.quick(.keywords): .append, .structured: .replace, .approved(.personShown): .skip],
+            requestID: UUID(),
+            rootURL: resolvedRoot
+        )
+        store.applyICloudRoutingPreference(false, resolvedRoot: nil)
+        #expect(candidates.map(\.sourceURL) == keys.map { cloudRoot.appendingPathComponent($0.relativePath) })
+        #expect(request.routes.count == 2)
+        #expect(request.routes.allSatisfy {
+            $0.destinationURL == cloudRoot.appendingPathComponent($0.identifier)
+        })
+        #expect(store.currentRootURL != resolvedRoot)
+    }
+
+    @Test("Archive sheets resolve roots within tasks and guard routing before publication")
+    func sheetRoutingSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: workspace.appendingPathComponent(
+            "Aagedal Photo Agent/Views/Settings/KeywordListsImportExportSheets.swift"
+        ), encoding: .utf8)
+        #expect(source.components(separatedBy: "try await KeywordListsStore.shared.resolveRootURL()").count == 4)
+        #expect(source.components(separatedBy: "guard KeywordListsStore.shared.currentRootURL == root else").count == 4)
+        #expect(source.contains("store.currentURL(for: key) == item.destinationURL"))
+        #expect(source.contains("guard inventoryRoot == KeywordListsStore.shared.currentRootURL else"))
+        let importStart = try #require(source.range(of: "private func runImport()"))
+        let importSource = source[importStart.lowerBound...]
+        let taskStart = try #require(importSource.range(of: "importTask = Task {"))
+        let resolution = try #require(importSource.range(of: "try await KeywordListsStore.shared.resolveRootURL()"))
+        let request = try #require(importSource.range(of: "let request = KeywordListsArchive.importRequest("))
+        #expect(taskStart.lowerBound < resolution.lowerBound)
+        #expect(resolution.lowerBound < request.lowerBound)
     }
 }
