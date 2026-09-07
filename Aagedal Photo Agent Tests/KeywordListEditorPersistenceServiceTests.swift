@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Keyword-list editor filesystem boundary")
 struct KeywordListEditorPersistenceServiceTests {
-    @Test("routing and backup restore wait for an editor read/merge/write transaction")
+    @Test("routing, approved import, and backup restore wait for an editor transaction")
     func sharedFilesystemTransactions() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -40,16 +40,27 @@ struct KeywordListEditorPersistenceServiceTests {
             readData: { url in probe.recordBackupRead(); return try Data(contentsOf: url) },
             writeData: { try $0.write(to: $1) }, removeItem: system.removeItem
         ))
+        let approvedDestination = root.appendingPathComponent("approved.txt")
+        let approvedImport = ApprovedListImportService(access: ApprovedListImportFileAccess(
+            startAccessing: { _ in probe.recordApprovedAccess(); return false },
+            stopAccessing: { _ in }, fileSize: { _ in 9 },
+            readData: { try Data(contentsOf: $0) },
+            writeData: { try $0.write(to: $1) }
+        ))
+        let approvedTask = Task {
+            try await approvedImport.importEntries(from: backup, to: approvedDestination, requestID: UUID())
+        }
         let routingTask = Task { try await routing.reconcile(enabled: true, requestID: UUID()) }
         let restoreTask = Task {
             try await restore.restore(from: backup, to: destination, requestID: UUID(),
                                       previousContentBackupURL: preimage)
         }
-        // Give both independent service requests time to attempt entry while the editor is
-        // suspended inside its synchronous read. Neither may enter the filesystem transaction.
+        // Give the independent service requests time to attempt entry while the editor is
+        // suspended inside its synchronous read. None may enter the filesystem transaction.
         try await Task.sleep(for: .milliseconds(50))
         #expect(probe.routingCount == 0)
         #expect(probe.backupReadCount == 0)
+        #expect(probe.approvedAccessCount == 0)
         gate.releaseFirstRead()
         guard case .committed(let edit) = try await editorTask.value else {
             Issue.record("Editor append did not commit")
@@ -60,6 +71,13 @@ struct KeywordListEditorPersistenceServiceTests {
             Issue.record("Backup restore did not commit")
             return
         }
+        guard case .committed(let approved) = try await approvedTask.value else {
+            Issue.record("Approved import did not commit")
+            return
+        }
+        #expect(approved.entries == ["restored"])
+        #expect(try String(contentsOf: approvedDestination, encoding: .utf8) == "restored\n")
+        #expect(probe.approvedAccessCount == 1)
         #expect(edit.entries == ["first", "added"])
         #expect(try String(contentsOf: preimage, encoding: .utf8) == "first\nadded\n")
         #expect(try String(contentsOf: destination, encoding: .utf8) == "restored\n")
@@ -848,7 +866,10 @@ private nonisolated final class KeywordFilesystemTransactionProbe: @unchecked Se
     private let lock = NSLock()
     private var routes = 0
     private var reads = 0
+    private var approvedAccesses = 0
 
+    func recordApprovedAccess() { lock.withLock { approvedAccesses += 1 } }
+    var approvedAccessCount: Int { lock.withLock { approvedAccesses } }
     func recordRouting() { lock.withLock { routes += 1 } }
     func recordBackupRead() { lock.withLock { reads += 1 } }
     var routingCount: Int { lock.withLock { routes } }

@@ -170,12 +170,13 @@ nonisolated struct ApprovedListImportFileAccess: Sendable {
 /// read and coordinated destination commit. Synchronous Foundation calls are non-preemptible, so
 /// cancellation is checked only at stable boundaries. Once the destination write returns, the
 /// result always carries immutable durable-commit evidence even if cancellation arrived in flight.
-actor ApprovedListImportService {
-    static let shared = ApprovedListImportService()
+@KeywordListsFilesystemActor
+final class ApprovedListImportService {
+    nonisolated static let shared = ApprovedListImportService()
 
     private let access: ApprovedListImportFileAccess
 
-    init(access: ApprovedListImportFileAccess = .system) {
+    nonisolated init(access: ApprovedListImportFileAccess = .system) {
         self.access = access
     }
 
