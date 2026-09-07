@@ -819,8 +819,8 @@ struct KnownPeopleServiceTests {
         #expect(Set(service.getAllPeople().map(\.id)) == Set(people.map(\.id)))
     }
 
-    @Test("Archive destination reservations cover every service instance and preserve deferred deletion", arguments: [false, true], [false, true])
-    func importReservesDestinationPaths(cancelImport: Bool, crossInstance: Bool) async throws {
+    @Test("Archive destination reservations cover every service instance and preserve deferred deletion", arguments: [0, 1, 2, 3], [false, true])
+    func importReservesDestinationPaths(completion: Int, crossInstance: Bool) async throws {
         let directory = makeTempDir()
         activate(directory)
         defer { teardown(directory) }
@@ -829,7 +829,9 @@ struct KnownPeopleServiceTests {
         let data = try encode([person])
         let gate = KnownPeopleImportPublicationGate(failSecondWrite: false)
         defer { gate.resume() }
-        let access = KnownPeopleArchiveFileAccess(
+        let cleanup = KnownPeopleDeferredRemovalGate()
+        defer { cleanup.resume() }
+        var access = KnownPeopleArchiveFileAccess(
             temporaryDirectory: directory,
             createDirectory: { _ in }, removeItem: { _ in },
             contentsOfDirectory: { _ in [] }, isDirectory: { _ in false },
@@ -839,6 +841,7 @@ struct KnownPeopleServiceTests {
             writeCoordinatedData: { data, url in try gate.write(data, to: url) },
             runDitto: { _ in }
         )
+        access.removeCoordinatedItem = { try cleanup.remove($0) }
         let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
         _ = service.loadDatabase()
         let writer = crossInstance ? KnownPeopleService() : service
@@ -881,14 +884,36 @@ struct KnownPeopleServiceTests {
         #expect(persisted.embeddings.isEmpty)
         // A void deletion API cannot report busy. It must win after the actor's later write.
         writer.deleteEmbeddingThumbnail(for: sample.id)
-        if cancelImport { task.cancel() }
+        if completion == 1 { task.cancel() }
         gate.resume()
+        let cleanupDeadline = ContinuousClock.now + .seconds(5)
+        while !cleanup.entered, ContinuousClock.now < cleanupDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(cleanup.entered)
+        // Cleanup yields MainActor but keeps the import reservation alive. A second
+        // deletion queued during that suspension must be drained before admission opens.
+        do {
+            try writer.saveEmbeddingThumbnail(Data([9]), for: sample.id)
+            Issue.record("A local write bypassed the reservation during cleanup")
+        } catch {
+            #expect((error as NSError).code == 11)
+        }
+        writer.deleteEmbeddingThumbnail(for: sample.id)
+        if completion == 2 { task.cancel() }
+        if completion == 3 {
+            // Even re-resolving the same root invalidates the captured storage revision.
+            service.reloadAfterStorageChange(resolvedStorageURL: directory)
+        }
+        cleanup.resume()
         do {
             #expect(try await task.value == 1)
-            #expect(!cancelImport)
+            #expect(completion == 0)
         } catch {
-            #expect(cancelImport && error is CancellationError)
+            #expect(completion != 0 && error is CancellationError)
         }
+        #expect(cleanup.removalCount == 2)
+        #expect(!cleanup.observedMainThread)
         #expect(writer.person(byID: unrelated.id) != nil)
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(
             "embedding_thumbnails/\(sample.id.uuidString).jpg"
@@ -1886,5 +1911,32 @@ struct KnownPeopleConflictPreservationTests {
         #expect(merged?.name == "Merged")
         #expect(events == ["capture", "write", "resolve"])
         #expect(!incomingVersionResolved)
+    }
+}
+
+/// Pauses the first deferred removal to exercise MainActor reentrancy during cleanup.
+private nonisolated final class KnownPeopleDeferredRemovalGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var count = 0
+    private var mainThread = false
+
+    var entered: Bool { lock.withLock { count > 0 } }
+    var removalCount: Int { lock.withLock { count } }
+    var observedMainThread: Bool { lock.withLock { mainThread } }
+    func resume() { semaphore.signal() }
+
+    func remove(_ url: URL) throws {
+        let current = lock.withLock {
+            count += 1
+            mainThread = mainThread || Thread.isMainThread
+            return count
+        }
+        if current == 1 {
+            guard semaphore.wait(timeout: .now() + 30) == .success else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+        try CloudCoordinatedIO.removeItem(at: url)
     }
 }

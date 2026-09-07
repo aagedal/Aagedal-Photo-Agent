@@ -125,6 +125,7 @@ nonisolated struct KnownPeopleArchiveFileAccess: Sendable {
     let writeCoordinatedData: @Sendable (Data, URL) throws -> Void
     let runDitto: @Sendable ([String]) async throws -> Void
     var destinationExists: @Sendable (URL) -> Bool = { CloudCoordinatedIO.itemExists(at: $0) }
+    var removeCoordinatedItem: @Sendable (URL) throws -> Void = { try CloudCoordinatedIO.removeItem(at: $0) }
 
     static let system = KnownPeopleArchiveFileAccess(
         temporaryDirectory: FileManager.default.temporaryDirectory,
@@ -193,6 +194,16 @@ actor KnownPeopleArchiveService {
 
     init(access: KnownPeopleArchiveFileAccess = .system) {
         self.access = access
+    }
+
+    /// Cleanup is part of an admitted import transaction and must finish even when its
+    /// caller was cancelled. Keep it ordered with archive reads and commits.
+    func removeDeferredThumbnails(at urls: Set<URL>) async {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        for url in urls {
+            try? access.removeCoordinatedItem(url)
+        }
     }
 
     func export(
@@ -672,24 +683,25 @@ final class KnownPeopleService {
         }
     }
 
-    private func releaseImportDestinations() {
-        Self.importCommitOwner = nil
-        Self.importCommitRoot = nil
-        Self.importReservedURLs.removeAll()
-        // These void APIs historically perform best-effort removal. Preserve a deletion
-        // requested during import by applying it after all archive writes, at its original root.
-        for url in Self.deferredThumbnailDeletions {
-            try? CloudCoordinatedIO.removeItem(at: url)
-            invalidatePeerThumbnails(at: url.deletingLastPathComponent().deletingLastPathComponent())
-        }
-        if !Self.deferredThumbnailDeletions.isEmpty {
-            // Another instance can request deletion after this owner starts a thumbnail read.
-            // Invalidate the owner too, so that read cannot republish the removed bytes.
+    private func releaseImportDestinations() async {
+        // Keep reservations until all queued removals finish. MainActor may admit more
+        // deletion requests while the worker is suspended; drain those in another batch.
+        while !Self.deferredThumbnailDeletions.isEmpty {
+            let urls = Self.deferredThumbnailDeletions
+            Self.deferredThumbnailDeletions.removeAll()
+            await archiveService.removeDeferredThumbnails(at: urls)
+            for url in urls {
+                invalidatePeerThumbnails(at: url.deletingLastPathComponent().deletingLastPathComponent())
+            }
+            // Reads can start during cleanup, including on a different service instance.
+            // Invalidate after durable removal so none can republish removed bytes.
             thumbnailContentRevision &+= 1
             personThumbnailCache.removeAllObjects()
             embeddingThumbnailCache.removeAllObjects()
         }
-        Self.deferredThumbnailDeletions.removeAll()
+        Self.importCommitOwner = nil
+        Self.importCommitRoot = nil
+        Self.importReservedURLs.removeAll()
         let actions = Self.deferredImportActions
         Self.deferredImportActions.removeAll()
         // Replay each originating instance's invalidation/events after durable publication.
@@ -2210,7 +2222,6 @@ final class KnownPeopleService {
         let requestID = UUID()
         let storageRoot = knownPeopleDirectory
         reserveImportDestinations(newPeople, root: storageRoot)
-        defer { releaseImportDestinations() }
         let result = await archiveService.commitImport(KnownPeopleArchiveImportCommitRequest(
             requestID: requestID,
             storageRoot: storageRoot,
@@ -2219,78 +2230,84 @@ final class KnownPeopleService {
             embeddingThumbnails: payload.embeddingThumbnails
         ))
 
-        let evidence: KnownPeopleArchiveImportCommitEvidence
-        let completionError: (any Error)?
-        switch result {
-        case .complete(let committed):
-            evidence = committed
-            completionError = nil
-        case .cancelled(let committed):
-            evidence = committed
-            completionError = CancellationError()
-        case .failed(let committed, let message):
-            evidence = committed
-            completionError = NSError(
-                domain: "KnownPeopleService",
-                code: 4,
-                userInfo: [NSLocalizedDescriptionKey: message]
-            )
-        }
+        let outcome = Result { () throws -> Int in
+            let evidence: KnownPeopleArchiveImportCommitEvidence
+            let completionError: (any Error)?
+            switch result {
+            case .complete(let committed):
+                evidence = committed
+                completionError = nil
+            case .cancelled(let committed):
+                evidence = committed
+                completionError = CancellationError()
+            case .failed(let committed, let message):
+                evidence = committed
+                completionError = NSError(
+                    domain: "KnownPeopleService",
+                    code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: message]
+                )
+            }
 
-        guard evidence.requestID == requestID,
-              evidence.storageRoot.standardizedFileURL == storageRoot.standardizedFileURL,
-              evidence.requestedPersonCount == newPeople.count else {
-            throw CancellationError()
-        }
-        if !evidence.committedPeople.isEmpty {
-            invalidatePeerDatabases(at: evidence.storageRoot)
-        }
-        if !evidence.committedThumbnailURLs.isEmpty {
-            invalidatePeerThumbnails(at: evidence.storageRoot)
-        }
-        guard storageRevision == expectedStorageRevision else {
-            throw CancellationError()
-        }
+            guard evidence.requestID == requestID,
+                  evidence.storageRoot.standardizedFileURL == storageRoot.standardizedFileURL,
+                  evidence.requestedPersonCount == newPeople.count else {
+                throw CancellationError()
+            }
+            if !evidence.committedPeople.isEmpty {
+                invalidatePeerDatabases(at: evidence.storageRoot)
+            }
+            if !evidence.committedThumbnailURLs.isEmpty {
+                invalidatePeerThumbnails(at: evidence.storageRoot)
+            }
+            guard storageRevision == expectedStorageRevision else {
+                throw CancellationError()
+            }
 
-        // Thumbnail writes precede the person commit and can survive a partial failure.
-        // Invalidate from durable evidence even when no person was committed, so cached
-        // images and reads suspended across the import cannot publish older bytes.
-        if !evidence.committedThumbnailURLs.isEmpty {
-            thumbnailContentRevision &+= 1
-            for url in evidence.committedThumbnailURLs {
-                guard let id = personID(fromFileURL: url) else { continue }
-                switch url.deletingLastPathComponent().lastPathComponent {
-                case "thumbnails":
-                    personThumbnailCache.removeObject(forKey: id as NSUUID)
-                case "embedding_thumbnails":
-                    embeddingThumbnailCache.removeObject(forKey: id as NSUUID)
-                default:
-                    break
+            // Thumbnail writes precede the person commit and can survive a partial failure.
+            // Invalidate from durable evidence even when no person was committed, so cached
+            // images and reads suspended across the import cannot publish older bytes.
+            if !evidence.committedThumbnailURLs.isEmpty {
+                thumbnailContentRevision &+= 1
+                for url in evidence.committedThumbnailURLs {
+                    guard let id = personID(fromFileURL: url) else { continue }
+                    switch url.deletingLastPathComponent().lastPathComponent {
+                    case "thumbnails":
+                        personThumbnailCache.removeObject(forKey: id as NSUUID)
+                    case "embedding_thumbnails":
+                        embeddingThumbnailCache.removeObject(forKey: id as NSUUID)
+                    default:
+                        break
+                    }
                 }
             }
-        }
 
-        // Publish the durable import prefix into the latest cache. Local CRUD can run while
-        // commitImport is suspended; its additions, edits and removals must not be replaced by
-        // the pre-import snapshot. Existing IDs remain authoritative in the current cache.
-        for url in evidence.committedFileURLs + evidence.committedThumbnailURLs {
-            stampLocalWrite(url)
-        }
-        if !evidence.committedPeople.isEmpty {
-            var current = loadDatabase()
-            let currentIDs = Set(current.people.map(\.id))
-            current.people.append(contentsOf: evidence.committedPeople.filter { !currentIDs.contains($0.id) })
-            current.lastModified = max(
-                current.lastModified,
-                evidence.committedPeople.map(\.updatedAt).max() ?? current.lastModified
-            )
-            database = current
-            clearFeaturePrintCache()
-            NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
-        }
+            // Publish the durable import prefix into the latest cache. Local CRUD can run while
+            // commitImport is suspended; its additions, edits and removals must not be replaced by
+            // the pre-import snapshot. Existing IDs remain authoritative in the current cache.
+            for url in evidence.committedFileURLs + evidence.committedThumbnailURLs {
+                stampLocalWrite(url)
+            }
+            if !evidence.committedPeople.isEmpty {
+                var current = loadDatabase()
+                let currentIDs = Set(current.people.map(\.id))
+                current.people.append(contentsOf: evidence.committedPeople.filter { !currentIDs.contains($0.id) })
+                current.lastModified = max(
+                    current.lastModified,
+                    evidence.committedPeople.map(\.updatedAt).max() ?? current.lastModified
+                )
+                database = current
+                clearFeaturePrintCache()
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+            }
 
-        if let completionError { throw completionError }
-        return evidence.committedPeople.count
+            if let completionError { throw completionError }
+            return evidence.committedPeople.count
+        }
+        await releaseImportDestinations()
+        try Task.checkCancellation()
+        guard storageRevision == expectedStorageRevision else { throw CancellationError() }
+        return try outcome.get()
     }
 
     private func beginImport() async {

@@ -15,6 +15,14 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Export packaging and deferred cleanup continuation (2026-09-07):** keyword exports capture
+managed files without suspension, then release the shared storage actor during manifest creation,
+compression, atomic destination replacement, and private staging cleanup. Known People imports
+remove deferred thumbnails on the archive actor while retaining destination reservations; newly
+queued deletions drain before release, and cancellation/storage revisions are rechecked afterward.
+Broad async storage and manual/device/release gates remain open.
+([validation and remaining work](../plan-status-export-packaging-deferred-cleanup-continuation-2026-09-07.md))
+
 **Database coherence and archive staging continuation (2026-09-07):** Known People
 record mutations and remote events invalidate same-root peer databases. Synchronous keyword-store
 compatibility APIs are removed; archive transport isolation is compiler-enforced, and import

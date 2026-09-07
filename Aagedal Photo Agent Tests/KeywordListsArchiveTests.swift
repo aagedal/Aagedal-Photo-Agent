@@ -1186,6 +1186,68 @@ struct KeywordArchiveRootRoutingTests {
 
 @Suite("Keyword-list archive staging isolation")
 struct KeywordListsSharedFilesystemTests {
+    @Test("Blocked compression allows edits and preserves the captured export; cancellation and failures clean staging", arguments: [0, 1, 2])
+    func compressionDoesNotHoldManagedFilesystem(outcome: Int) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("keywords.txt")
+        let destination = root.appendingPathComponent("export.zip")
+        try Data("Original\n".utf8).write(to: source)
+        let previous = Data("previous archive".utf8)
+        try previous.write(to: destination)
+        let gate = KeywordArchiveExtractionGate()
+        defer { gate.release() }
+        let packaging = KeywordListsArchivePackagingService { staging, archive in
+            try gate.waitForRelease(staging: staging)
+            #expect(try String(contentsOf: staging.appendingPathComponent("keywords.txt"), encoding: .utf8) == "Original\n")
+            try Data("new archive".utf8).write(to: archive)
+            if outcome == 2 { throw CocoaError(.fileWriteUnknown) }
+        }
+        let request = KeywordListsArchiveExportRequest(
+            requestID: UUID(), destinationURL: destination,
+            items: [.init(sourceURL: source, relativePath: "keywords.txt", kind: "quick.keywords", entryCount: 1)]
+        )
+        let exporting = Task { try await KeywordListsArchive.performExport(request, packagingService: packaging) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while gate.stagingRoot == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let staging = try #require(gate.stagingRoot)
+        let progress = KeywordArchiveManagedProgress()
+        let editing = Task {
+            _ = try await KeywordListEditorPersistenceService().appendEntries(["Edited"], to: source, requestID: UUID())
+            progress.markComplete()
+        }
+        let editDeadline = ContinuousClock.now + .seconds(5)
+        while !progress.completed, ContinuousClock.now < editDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(progress.completed)
+        if outcome == 1 { exporting.cancel() }
+        gate.release()
+        try await editing.value
+        if outcome == 2 {
+            await #expect(throws: (any Error).self) { try await exporting.value }
+        } else {
+            let result = try await exporting.value
+            if outcome == 1 {
+                #expect(result == .cancelledBeforeCommit(requestID: request.requestID,
+                    destinationURL: destination, preparedFileCount: 1))
+            } else {
+                guard case .exported(let commit) = result else {
+                    Issue.record("Expected durable export")
+                    return
+                }
+                #expect(commit.exportedFileCount == 1)
+            }
+        }
+        #expect(try Data(contentsOf: destination) == (outcome == 0 ? Data("new archive".utf8) : previous))
+        #expect(try String(contentsOf: source, encoding: .utf8) == "Original\nEdited\n")
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted() == ["export.zip", "keywords.txt"])
+    }
+
     @Test("Blocked archive extraction allows managed edits and inventory; staging is always removed", arguments: [false, true])
     func extractionDoesNotHoldManagedFilesystem(cancel: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -1281,7 +1343,7 @@ private nonisolated final class KeywordArchiveExtractionGate: @unchecked Sendabl
         condition.unlock()
     }
 
-    func extract(into staging: URL) throws {
+    func waitForRelease(staging: URL) throws {
         condition.lock()
         root = staging
         let deadline = Date().addingTimeInterval(15)
@@ -1291,6 +1353,10 @@ private nonisolated final class KeywordArchiveExtractionGate: @unchecked Sendabl
         let didRelease = released
         condition.unlock()
         guard didRelease else { throw CocoaError(.fileReadUnknown) }
+    }
+
+    func extract(into staging: URL) throws {
+        try waitForRelease(staging: staging)
         let manifest = KeywordListsArchive.Manifest(
             schemaVersion: 1, exportedAt: Date(),
             files: [.init(path: "keywords.txt", kind: "quick.keywords", entryCount: 1)]

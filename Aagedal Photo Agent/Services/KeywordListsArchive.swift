@@ -251,15 +251,15 @@ nonisolated enum KeywordListsArchiveExportResult: Equatable, Sendable {
 }
 
 nonisolated struct KeywordListsArchiveExporter: Sendable {
-    let perform: @KeywordListsFilesystemActor @Sendable (KeywordListsArchiveExportRequest) throws -> KeywordListsArchiveExportResult
+    let perform: @KeywordListsFilesystemActor @Sendable (KeywordListsArchiveExportRequest) async throws -> KeywordListsArchiveExportResult
 
     static let system = KeywordListsArchiveExporter { request in
-        try KeywordListsArchive.performExport(request)
+        try await KeywordListsArchive.performExport(request)
     }
 }
 
-/// Serializes staging, manifest I/O, `ditto`, and the atomic destination replacement away from
-/// MainActor. Immutable result evidence lets the sheet reject stale feedback without confusing a
+/// Captures managed files on the shared filesystem actor, then yields to private packaging.
+/// Immutable evidence lets the sheet reject stale feedback without confusing a
 /// late cancellation with a destination that was never written.
 @KeywordListsFilesystemActor
 final class KeywordListsArchiveExportService {
@@ -273,7 +273,7 @@ final class KeywordListsArchiveExportService {
 
     func export(
         _ request: KeywordListsArchiveExportRequest
-    ) throws -> KeywordListsArchiveExportResult {
+    ) async throws -> KeywordListsArchiveExportResult {
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(
                 requestID: request.requestID,
@@ -297,7 +297,7 @@ final class KeywordListsArchiveExportService {
             )
         }
 
-        let result = try exporter.perform(request)
+        let result = try await exporter.perform(request)
         guard Task.isCancelled, case .exported(let commit) = result else {
             return result
         }
@@ -350,6 +350,77 @@ actor KeywordListsArchivePreparationService {
 
     func discard(_ payload: KeywordListsArchivePreparedImport) {
         try? FileManager.default.removeItem(at: payload.stagingRoot)
+    }
+}
+
+/// Owns only immutable private export copies and destination archives. Compression and destination
+/// replacement are serialized here without holding the managed-list filesystem actor.
+actor KeywordListsArchivePackagingService {
+    static let shared = KeywordListsArchivePackagingService()
+    private let compress: @Sendable (URL, URL) throws -> Void
+
+    init(compress: @escaping @Sendable (URL, URL) throws -> Void = {
+        try KeywordListsArchive.ditto(zip: $0, into: $1)
+    }) {
+        self.compress = compress
+    }
+
+    func package(
+        _ request: KeywordListsArchiveExportRequest,
+        stagingRoot: URL,
+        files: [KeywordListsArchive.Manifest.File]
+    ) throws -> KeywordListsArchiveExportResult {
+        defer { try? FileManager.default.removeItem(at: stagingRoot) }
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(requestID: request.requestID,
+                destinationURL: request.destinationURL, preparedFileCount: files.count)
+        }
+        let manifest = KeywordListsArchive.Manifest(
+            schemaVersion: KeywordListsArchive.currentSchemaVersion,
+            exportedAt: Date(),
+            files: files
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let manifestData = try encoder.encode(manifest)
+        try manifestData.write(to: stagingRoot.appendingPathComponent("manifest.json"))
+
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: request.requestID,
+                destinationURL: request.destinationURL,
+                preparedFileCount: files.count
+            )
+        }
+
+        let stagedArchive = request.destinationURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(request.destinationURL.lastPathComponent).\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: stagedArchive) }
+        try compress(stagingRoot, stagedArchive)
+
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(
+                requestID: request.requestID,
+                destinationURL: request.destinationURL,
+                preparedFileCount: files.count
+            )
+        }
+
+        if FileManager.default.fileExists(atPath: request.destinationURL.path) {
+            _ = try FileManager.default.replaceItemAt(
+                request.destinationURL,
+                withItemAt: stagedArchive
+            )
+        } else {
+            try FileManager.default.moveItem(at: stagedArchive, to: request.destinationURL)
+        }
+        return .exported(KeywordListsArchiveExportCommit(
+            requestID: request.requestID,
+            destinationURL: request.destinationURL,
+            exportedFileCount: files.count,
+            cancellationObservedAfterCommit: Task.isCancelled
+        ))
     }
 }
 
@@ -588,16 +659,18 @@ enum KeywordListsArchive {
         }
     }
 
-    /// Blocking transport-only export implementation used by the serialized actor. The zip is
+    /// Captures a consistent managed-file snapshot, then yields for private packaging. The zip is
     /// built beside the requested destination and installed only after staging succeeds, so an
     /// error or cancellation before replacement cannot expose a partial archive.
     @KeywordListsFilesystemActor
     static func performExport(
-        _ request: KeywordListsArchiveExportRequest
-    ) throws -> KeywordListsArchiveExportResult {
+        _ request: KeywordListsArchiveExportRequest,
+        packagingService: KeywordListsArchivePackagingService = .shared
+    ) async throws -> KeywordListsArchiveExportResult {
         let stagingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("klists-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: stagingRoot) }
+        var handedOff = false
+        defer { if !handedOff { try? FileManager.default.removeItem(at: stagingRoot) } }
         try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
 
         var files: [Manifest.File] = []
@@ -622,52 +695,10 @@ enum KeywordListsArchive {
             ))
         }
 
-        let manifest = Manifest(
-            schemaVersion: currentSchemaVersion,
-            exportedAt: Date(),
-            files: files
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let manifestData = try encoder.encode(manifest)
-        try manifestData.write(to: stagingRoot.appendingPathComponent("manifest.json"))
-
-        guard !Task.isCancelled else {
-            return .cancelledBeforeCommit(
-                requestID: request.requestID,
-                destinationURL: request.destinationURL,
-                preparedFileCount: files.count
-            )
-        }
-
-        let stagedArchive = request.destinationURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(request.destinationURL.lastPathComponent).\(UUID().uuidString).tmp")
-        defer { try? FileManager.default.removeItem(at: stagedArchive) }
-        try ditto(zip: stagingRoot, into: stagedArchive)
-
-        guard !Task.isCancelled else {
-            return .cancelledBeforeCommit(
-                requestID: request.requestID,
-                destinationURL: request.destinationURL,
-                preparedFileCount: files.count
-            )
-        }
-
-        if FileManager.default.fileExists(atPath: request.destinationURL.path) {
-            _ = try FileManager.default.replaceItemAt(
-                request.destinationURL,
-                withItemAt: stagedArchive
-            )
-        } else {
-            try FileManager.default.moveItem(at: stagedArchive, to: request.destinationURL)
-        }
-        return .exported(KeywordListsArchiveExportCommit(
-            requestID: request.requestID,
-            destinationURL: request.destinationURL,
-            exportedFileCount: files.count,
-            cancellationObservedAfterCommit: Task.isCancelled
-        ))
+        // Copies above form one uninterrupted managed-files snapshot. The packaging actor owns
+        // cleanup after the handoff, including cancellation and compression/replacement errors.
+        handedOff = true
+        return try await packagingService.package(request, stagingRoot: stagingRoot, files: files)
     }
 
     /// Reads `source`'s manifest without importing anything, so the UI can
@@ -1092,7 +1123,7 @@ enum KeywordListsArchive {
         return stagingRoot
     }
 
-    nonisolated private static func ditto(zip source: URL, into destination: URL) throws {
+    nonisolated fileprivate static func ditto(zip source: URL, into destination: URL) throws {
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
