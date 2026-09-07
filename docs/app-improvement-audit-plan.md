@@ -6,6 +6,14 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Shared storage and model-candidate continuation (2026-09-07):** keyword editor,
+archive, backup, migration, and routing transactions share one filesystem actor. Known People
+archive admission/reservations now span service instances, with deferred deletion replay into
+the import owner's cache. Release packaging validates model omission recursively. An unsigned Release
+candidate passed inspection; a controlled paired ZIP comparison measures 120.39 MB saved by model
+omission. Broad storage and device/release gates remain open.
+([validation and remaining work](plan-status-shared-storage-model-candidate-continuation-2026-09-07.md))
+
 **Backup, Quick List, and archive continuation (2026-09-07):** remaining Quick List and
 archive UI routing plus backup operations resolve roots asynchronously and reject stale publication.
 Backup inventory exposes unreadable/damaged versions and directories; retention preserves unavailable

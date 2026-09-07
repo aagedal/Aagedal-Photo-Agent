@@ -152,3 +152,9 @@ source-aware bundled/downloaded UI, and model/embedding version binding are comp
 at `aagedal.me` completed on 2026-09-01. A model-omitted release candidate, measured update-size reduction,
 and real-server/macOS-tier tests remain open; see the [AuraFace packaging validation](docs/auraface-on-demand-packaging-validation.md)
 and [runtime validation](docs/auraface-on-demand-runtime-validation-2026-08-27.md).
+
+
+**Local model-candidate follow-up (2026-09-07):** an unsigned Release candidate now passes
+recursive model-omission inspection. A controlled paired ZIP comparison measures 120.39 MB
+saved by omitting the legacy compiled model. Signed distribution and production-server tests
+on supported macOS tiers remain open; see the [candidate validation](docs/plan-status-shared-storage-model-candidate-continuation-2026-09-07.md#local-model-free-candidate).

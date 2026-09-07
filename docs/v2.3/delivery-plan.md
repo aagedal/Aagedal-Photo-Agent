@@ -15,6 +15,14 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Shared storage and model-candidate continuation (2026-09-07):** keyword editor,
+archive, backup, migration, and routing transactions share one filesystem actor. Known People
+archive admission/reservations now span service instances, with deferred deletion replay into
+the import owner's cache. Release packaging validates model omission recursively. An unsigned Release
+candidate passed inspection; a controlled paired ZIP comparison measures 120.39 MB saved by model
+omission. Broad storage and device/release gates remain open.
+([validation and remaining work](../plan-status-shared-storage-model-candidate-continuation-2026-09-07.md))
+
 **Backup, Quick List, and archive continuation (2026-09-07):** remaining Quick List and
 archive UI routing plus backup operations resolve roots asynchronously and reject stale publication.
 Backup inventory exposes unreadable/damaged versions and directories; retention preserves unavailable

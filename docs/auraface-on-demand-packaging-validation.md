@@ -63,3 +63,11 @@ release work:
 
 The local app/component separation and production-publication boundaries are complete, but the release-candidate
 and real-server drill gates keep the background-download TODO and overall on-demand component exit gate open.
+
+## Local candidate follow-up — 2026-09-07
+
+An unsigned 3.0.0 (738) Release build from `87fe4c5` now passes recursive model-omission
+inspection. Its ZIP is 49,640,262 bytes; adding only the preserved legacy compiled model to
+an otherwise identical app yields 170,033,832 bytes, a 120,393,570-byte difference. This
+is controlled local packaging evidence; signing, notarization, and the production-server
+macOS-tier drill matrix remain open. See the [candidate validation and remaining work](plan-status-shared-storage-model-candidate-continuation-2026-09-07.md#local-model-free-candidate).
