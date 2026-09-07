@@ -15,6 +15,13 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Database coherence and archive staging continuation (2026-09-07):** Known People
+record mutations and remote events invalidate same-root peer databases. Synchronous keyword-store
+compatibility APIs are removed; archive transport isolation is compiler-enforced, and import
+extraction/cleanup no longer occupies the shared managed-list transaction actor. Broad async
+storage and manual/device/release gates remain open.
+([validation and remaining work](../plan-status-database-coherence-archive-staging-continuation-2026-09-07.md))
+
 **Archive and peer-cache continuation (2026-09-07):** archive convenience APIs now
 resolve roots asynchronously and use the shared filesystem services; unused direct store imports
 are removed. Known People thumbnail mutations and accepted remote events invalidate same-root

@@ -1,8 +1,5 @@
 import Foundation
 import Observation
-import os
-
-private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "KeywordListsStore")
 
 /// Identifies one of the keyword lists managed by `KeywordListsStore`. Maps 1:1
 /// to a stable on-disk path so iCloud sync is deterministic across machines.
@@ -64,7 +61,7 @@ extension Notification.Name {
 /// Test-only seam for `KeywordListsStore`'s storage root.
 ///
 /// Declared outside the `@MainActor` class so the `@TaskLocal` projected value
-/// is nonisolated — `rootURL` reads `current` and tests set it via
+/// is nonisolated — `resolveRootURL()` reads `current` and tests set it via
 /// `$current.withValue(tempDir) { … }`. It is **task-local** rather than a plain
 /// static because Swift Testing runs suites concurrently and several of them
 /// write to this shared singleton; a process-wide static override would leak
@@ -94,9 +91,8 @@ nonisolated enum KeywordListsStoreStorageOverride {
 
 /// Canonical disk-backed store for every keyword list the app manages.
 ///
-/// All read/write goes through here so we have a single place to choose between
-/// local (`~/Library/Application Support/.../Lists`) and iCloud (ubiquity
-/// container) storage and to emit change notifications.
+/// Resolves local or iCloud routes and publishes committed changes. Blocking reads and writes
+/// belong to services isolated to `KeywordListsFilesystemActor`.
 @Observable
 @MainActor
 final class KeywordListsStore {
@@ -126,7 +122,7 @@ final class KeywordListsStore {
     nonisolated static let iCloudContainerID = "iCloud.aagedal.Aagedal-Photo-Agent"
 
     /// Bumped whenever the backing root changes (e.g. iCloud toggled) so SwiftUI
-    /// views observing the store re-evaluate `url(for:)` derived values.
+    /// views observing the store re-evaluate `currentURL(for:)` derived values.
     private(set) var version: Int = 0
 
     /// Cached active root, invalidated only after the routing actor has reconciled
@@ -161,52 +157,9 @@ final class KeywordListsStore {
         cloudPreference?() ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.keywordListsICloudEnabled)
     }
 
-    /// Returns the current ubiquity container's `Documents/Lists` directory if
-    /// iCloud is reachable, else nil. The check runs off the main thread when
-    /// called from the coordinator. UI callers must use `resolveRootURL()` because
-    /// the synchronous compatibility property can block during container provisioning.
-    var iCloudContainerListsURL: URL? {
-        guard let container = FileManager.default.url(forUbiquityContainerIdentifier: Self.iCloudContainerID) else {
-            return nil
-        }
-        return container.appendingPathComponent("Documents/Lists", isDirectory: true)
-    }
-
     /// Local fallback root: `<App Support>/Aagedal Photo Agent/Lists`.
     var localRootURL: URL {
         AppPaths.applicationSupport.appendingPathComponent("Lists", isDirectory: true)
-    }
-
-    /// Effective root: iCloud container if opted-in and available, else local.
-    ///
-    /// The resolved root is cached only when it is *final*: local when iCloud is
-    /// off, or the ubiquity container once it actually resolves. When iCloud is
-    /// on but the container isn't ready yet (the daemon can still be provisioning
-    /// it right after launch) we return local **without caching**, so a later
-    /// access re-resolves and picks up the container as soon as it appears.
-    /// Caching local in that window would pin the store to local for the entire
-    /// session and silently stop syncing — the cause of lists reverting on launch.
-    var rootURL: URL {
-        if let override = KeywordListsStoreStorageOverride.current {
-            // Test seam: never cached, so each test's task-local root is honored
-            // and never pins the singleton for the rest of the process.
-            return override
-        }
-        if let testRoot = KeywordListsStoreStorageOverride.testProcessFallback {
-            // Test run without a task-local override: never touch real data.
-            return testRoot
-        }
-        if let cached = cachedRoot { return cached }
-        if iCloudEnabled {
-            if let cloud = iCloudContainerListsURL {
-                cachedRoot = cloud
-                return cloud
-            }
-            logger.warning("iCloud enabled but ubiquity container unavailable; using local root transiently (will re-resolve)")
-            return localRootURL
-        }
-        cachedRoot = localRootURL
-        return localRootURL
     }
 
     /// A nonblocking route snapshot for stale-result comparisons after asynchronous resolution.
@@ -252,45 +205,11 @@ final class KeywordListsStore {
         try await resolveRootURL().appendingPathComponent(key.relativePath)
     }
 
-    // MARK: - Public read/write
-
-    func url(for key: KeywordListKey) -> URL {
-        rootURL.appendingPathComponent(key.relativePath)
-    }
-
-    func exists(_ key: KeywordListKey) -> Bool {
-        CloudCoordinatedIO.itemExists(at: url(for: key))
-    }
-
-    func readText(_ key: KeywordListKey) -> String? {
-        let target = url(for: key)
-        guard CloudCoordinatedIO.itemExists(at: target) else { return nil }
-        do {
-            let data = try CloudCoordinatedIO.readData(at: target)
-            return try Self.decodeManagedText(data)
-        } catch {
-            logger.error("Failed to read \(key.relativePath, privacy: .private(mask: .hash)): \(String(describing: error), privacy: .private)")
-            return nil
-        }
-    }
-
-    /// Reads the file and returns its line-delimited entries (skipping blanks
-    /// and `#`-comment lines). Convenience for the flat list types.
-    func readEntries(_ key: KeywordListKey) -> [String] {
-        guard let text = readText(key) else { return [] }
-        return ApprovedListParser.parseString(text, csv: false)
-    }
-
-    /// Writes `text` to the file atomically and posts `.keywordListChanged`.
-    func writeText(_ text: String, to key: KeywordListKey) throws {
-        let target = url(for: key)
-        try CloudCoordinatedIO.writeText(text, to: target)
-        notifyChanged(key)
-    }
+    // MARK: - Change publication
 
     /// Publishes a write already committed by a serialized filesystem service.
     /// The service owns the blocking coordinated write; the main actor only updates
-    /// observable state and delivers the same notification as `writeText`.
+    /// observable state and delivers change notifications.
     func recordExternalWrite(
         to key: KeywordListKey,
         destinationURL: URL? = nil,
@@ -310,27 +229,6 @@ final class KeywordListsStore {
 
     /// Publishes a removal already committed by a serialized filesystem service.
     func recordExternalDeletion(to key: KeywordListKey, sourceID: UUID? = nil) {
-        notifyChanged(key, sourceID: sourceID)
-    }
-
-    /// Writes a list of entries one-per-line. Sanitizes whitespace and dedupes
-    /// case-sensitively (callers can lowercase if they want a stricter rule).
-    func writeEntries(_ entries: [String], to key: KeywordListKey) throws {
-        var seen = Set<String>()
-        var ordered: [String] = []
-        for entry in entries {
-            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            if seen.insert(trimmed).inserted {
-                ordered.append(trimmed)
-            }
-        }
-        let joined = ordered.joined(separator: "\n") + (ordered.isEmpty ? "" : "\n")
-        try writeText(joined, to: key)
-    }
-
-    func delete(_ key: KeywordListKey, sourceID: UUID? = nil) {
-        try? CloudCoordinatedIO.removeItem(at: url(for: key))
         notifyChanged(key, sourceID: sourceID)
     }
 

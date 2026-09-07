@@ -13,6 +13,73 @@ import AppKit
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Peer databases follow durable CRUD without losing unrelated additions")
+    func peerDatabaseCRUD() throws {
+        try withIsolatedEmbeddingMigration { directory in
+            let writer = KnownPeopleService()
+            let peer = KnownPeopleService()
+            _ = writer.loadDatabase()
+            _ = peer.loadDatabase()
+            var person = try writer.addPerson(name: "Original", embeddings: [])
+            #expect(peer.person(byID: person.id)?.name == "Original")
+            let other = try peer.addPerson(name: "Other", embeddings: [])
+            person.name = "Updated"
+            // updatePerson must reload an invalidated index before checking existence.
+            try writer.updatePerson(person)
+            #expect(peer.person(byID: person.id)?.name == "Updated")
+            #expect(writer.person(byID: other.id) != nil)
+            try peer.removePerson(id: person.id)
+            #expect(writer.person(byID: person.id) == nil)
+            #expect(writer.getAllPeople().map(\.id) == [other.id])
+            try writer.clearDatabase()
+            #expect(peer.getAllPeople().isEmpty)
+        }
+    }
+
+    @Test("Remote record events on a cold receiver invalidate warm peer databases", arguments: [false, true])
+    func coldRemoteReceiverInvalidatesPeers(deletion: Bool) throws {
+        try withIsolatedEmbeddingMigration { directory in
+            var person = KnownPerson(name: "Before")
+            try writePersonFile(person, into: directory)
+            let peer = KnownPeopleService()
+            #expect(peer.person(byID: person.id)?.name == "Before")
+            let receiver = KnownPeopleService()
+            let url: URL
+            if deletion {
+                url = tombstoneURL(person.id, in: directory)
+                try encode(KnownPersonTombstone(id: person.id)).write(to: url)
+            } else {
+                person.name = "Remote edit"
+                try writePersonFile(person, into: directory)
+                url = personFileURL(person.id, in: directory)
+            }
+            receiver.applyRemoteChanges([(url, nil)])
+            #expect(peer.person(byID: person.id)?.name == (deletion ? nil : "Remote edit"))
+        }
+    }
+
+    @Test("Database invalidation leaves unresolved and other-root peers untouched")
+    func peerDatabaseRootScope() throws {
+        try withIsolatedEmbeddingMigration { directory in
+            let writer = KnownPeopleService()
+            let original = try writer.addPerson(name: "Original root", embeddings: [])
+            let peer = KnownPeopleService()
+            #expect(peer.person(byID: original.id) != nil)
+            let cold = KnownPeopleService()
+            let otherRoot = directory.appendingPathComponent("other-root")
+            KnownPeopleService.storageOverrideURL = otherRoot
+            writer.reloadAfterStorageChange(resolvedStorageURL: otherRoot)
+            _ = try writer.addPerson(name: "Other root", embeddings: [])
+            // Remove a file behind the old peer's cache; unrelated-root invalidation must
+            // not force that peer to reload, and must not resolve the cold service's root.
+            try FileManager.default.removeItem(at: personFileURL(original.id, in: directory))
+            _ = try writer.addPerson(name: "Another", embeddings: [])
+            #expect(peer.person(byID: original.id) != nil)
+            KnownPeopleService.storageOverrideURL = directory
+            #expect(cold.getAllPeople().isEmpty)
+        }
+    }
+
     @Test("Mismatched tombstones suppress only their filename identity and preserve marker bytes", arguments: [false, true])
     func mismatchedTombstoneIdentity(expired: Bool) throws {
         try withIsolatedEmbeddingMigration { directory in
@@ -694,8 +761,8 @@ struct KnownPeopleServiceTests {
         #expect(try Data(contentsOf: directory.appendingPathComponent("\(folder)/\(id.uuidString).jpg")) == replacement)
     }
 
-    @Test("late import publication retains concurrent additions edits and deletions", arguments: [0, 1, 2])
-    func importPreservesConcurrentCacheChanges(completion: Int) async throws {
+    @Test("late import publication retains concurrent additions edits and deletions", arguments: [0, 1, 2], [false, true])
+    func importPreservesConcurrentCacheChanges(completion: Int, crossInstance: Bool) async throws {
         let directory = makeTempDir()
         activate(directory)
         defer { teardown(directory) }
@@ -718,6 +785,8 @@ struct KnownPeopleServiceTests {
         _ = service.loadDatabase()
         var edited = try service.addPerson(name: "Before edit", embeddings: [])
         let deleted = try service.addPerson(name: "Delete during import", embeddings: [])
+        let editor = crossInstance ? KnownPeopleService() : service
+        _ = editor.loadDatabase()
         let task = Task { try await service.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip")) }
         let deadline = ContinuousClock.now + .seconds(5)
         while !gate.entered, ContinuousClock.now < deadline {
@@ -725,9 +794,9 @@ struct KnownPeopleServiceTests {
         }
         #expect(gate.entered)
         edited.name = "Edited during import"
-        try service.updatePerson(edited)
-        try service.removePerson(id: deleted.id)
-        let added = try service.addPerson(name: "Added during import", embeddings: [])
+        try editor.updatePerson(edited)
+        try editor.removePerson(id: deleted.id)
+        let added = try editor.addPerson(name: "Added during import", embeddings: [])
         if completion == 2 { task.cancel() }
         gate.resume()
         do {
@@ -745,6 +814,7 @@ struct KnownPeopleServiceTests {
         #expect(people.contains { $0.id == first.id })
         #expect(people.contains { $0.id == second.id } == (completion == 0))
         #expect(Set(people.map(\.id)).count == people.count)
+        #expect(Set(editor.getAllPeople().map(\.id)) == Set(people.map(\.id)))
         service.reloadAfterStorageChange(resolvedStorageURL: directory)
         #expect(Set(service.getAllPeople().map(\.id)) == Set(people.map(\.id)))
     }

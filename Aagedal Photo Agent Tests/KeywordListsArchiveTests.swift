@@ -31,10 +31,10 @@ struct KeywordListsArchiveTests {
     func roundTripAllTypes() async throws {
         try await withIsolatedStore {
             let store = KeywordListsStore.shared
-            try store.writeEntries(["Berlin", "Paris", "London"], to: .quick(.keywords))
-            try store.writeEntries(["Alice", "Bob"], to: .quick(.personShown))
-            try store.writeEntries(["Approved-A", "Approved-B"], to: .approved(.keywords))
-            try store.writeText("animals\n\tlivestock\n", to: .structured)
+            try await store.fixtureWriteEntries(["Berlin", "Paris", "London"], to: .quick(.keywords))
+            try await store.fixtureWriteEntries(["Alice", "Bob"], to: .quick(.personShown))
+            try await store.fixtureWriteEntries(["Approved-A", "Approved-B"], to: .approved(.keywords))
+            try await store.fixtureWriteText("animals\n\tlivestock\n", to: .structured)
 
             let zipURL = tempZip()
             defer { try? FileManager.default.removeItem(at: zipURL) }
@@ -42,18 +42,18 @@ struct KeywordListsArchiveTests {
             #expect(exported == 4)
 
             // Wipe the store and re-import.
-            for type in QuickListType.allCases { store.delete(.quick(type)) }
-            for field in ApprovedListField.allCases { store.delete(.approved(field)) }
-            store.delete(.structured)
-            #expect(store.readEntries(.quick(.keywords)) == [])
+            for type in QuickListType.allCases { try await store.fixtureDelete(.quick(type)) }
+            for field in ApprovedListField.allCases { try await store.fixtureDelete(.approved(field)) }
+            try await store.fixtureDelete(.structured)
+            #expect(try await store.fixtureReadEntries(.quick(.keywords)) == [])
 
             let imported = try await KeywordListsArchive.importAll(from: zipURL, mode: .replace)
             #expect(imported == 4)
 
-            #expect(store.readEntries(.quick(.keywords)) == ["Berlin", "Paris", "London"])
-            #expect(store.readEntries(.quick(.personShown)) == ["Alice", "Bob"])
-            #expect(store.readEntries(.approved(.keywords)) == ["Approved-A", "Approved-B"])
-            #expect(store.readText(.structured)?.contains("animals") == true)
+            #expect(try await store.fixtureReadEntries(.quick(.keywords)) == ["Berlin", "Paris", "London"])
+            #expect(try await store.fixtureReadEntries(.quick(.personShown)) == ["Alice", "Bob"])
+            #expect(try await store.fixtureReadEntries(.approved(.keywords)) == ["Approved-A", "Approved-B"])
+            #expect(try await store.fixtureReadText(.structured)?.contains("animals") == true)
         }
     }
 
@@ -61,19 +61,19 @@ struct KeywordListsArchiveTests {
     func mergeMode() async throws {
         try await withIsolatedStore {
             let store = KeywordListsStore.shared
-            try store.writeEntries(["Existing-1", "Existing-2"], to: .quick(.copyright))
+            try await store.fixtureWriteEntries(["Existing-1", "Existing-2"], to: .quick(.copyright))
 
             // Build an archive that has a different copyright list.
-            try store.writeEntries(["New-1", "Existing-1", "New-2"], to: .quick(.copyright))
+            try await store.fixtureWriteEntries(["New-1", "Existing-1", "New-2"], to: .quick(.copyright))
             let zipURL = tempZip()
             defer { try? FileManager.default.removeItem(at: zipURL) }
             try await KeywordListsArchive.exportAll(to: zipURL)
 
             // Restore the original store state, then merge-import.
-            try store.writeEntries(["Existing-1", "Existing-2"], to: .quick(.copyright))
+            try await store.fixtureWriteEntries(["Existing-1", "Existing-2"], to: .quick(.copyright))
             try await KeywordListsArchive.importAll(from: zipURL, mode: .merge)
 
-            let merged = store.readEntries(.quick(.copyright))
+            let merged = try await store.fixtureReadEntries(.quick(.copyright))
             // Existing order preserved at the front, new entries appended.
             #expect(merged == ["Existing-1", "Existing-2", "New-1", "New-2"])
         }
@@ -124,7 +124,7 @@ struct KeywordListsArchiveTests {
             // The malicious entry must be skipped: nothing imported, secret never read.
             let imported = try await KeywordListsArchive.importAll(from: zipURL, mode: .replace)
             #expect(imported == 0)
-            #expect(store.readEntries(.quick(.keywords)) == [])
+            #expect(try await store.fixtureReadEntries(.quick(.keywords)) == [])
         }
     }
 
@@ -361,7 +361,7 @@ struct KeywordListsArchiveExportServiceTests {
     }
 
     @Test("a staging failure preserves the previous destination bytes")
-    func failedStagingPreservesDestination() throws {
+    func failedStagingPreservesDestination() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("kl-export-atomic-\(UUID().uuidString)", isDirectory: true)
         let destination = directory.appendingPathComponent("Keywords.zip")
@@ -380,8 +380,8 @@ struct KeywordListsArchiveExportServiceTests {
             )]
         )
 
-        #expect(throws: (any Error).self) {
-            try KeywordListsArchive.performExport(request)
+        await #expect(throws: (any Error).self) {
+            try await KeywordListsArchiveExportService.shared.export(request)
         }
         #expect(try Data(contentsOf: destination) == original)
     }
@@ -601,10 +601,10 @@ struct KeywordListsArchiveImportServiceTests {
 
         try await KeywordListsStoreStorageOverride.$current.withValue(root) {
             let store = KeywordListsStore.shared
-            try store.writeEntries(["Local", "Shared"], to: .quick(.keywords))
-            try store.writeEntries(["Imported", "shared"], to: .quick(.keywords))
+            try await store.fixtureWriteEntries(["Local", "Shared"], to: .quick(.keywords))
+            try await store.fixtureWriteEntries(["Imported", "shared"], to: .quick(.keywords))
             try await KeywordListsArchive.exportSelected([.quick(.keywords)], to: zipURL)
-            try store.writeEntries(["Local", "Shared"], to: .quick(.keywords))
+            try await store.fixtureWriteEntries(["Local", "Shared"], to: .quick(.keywords))
 
             let requestID = UUID()
             let request = KeywordListsArchive.importRequest(
@@ -617,7 +617,7 @@ struct KeywordListsArchiveImportServiceTests {
 
             #expect(result.durableCommit?.requestID == requestID)
             #expect(result.durableCommit?.items.count == 1)
-            #expect(store.readEntries(.quick(.keywords)) == ["Local", "Shared", "Imported"])
+            #expect(try await store.fixtureReadEntries(.quick(.keywords)) == ["Local", "Shared", "Imported"])
         }
     }
 
@@ -1067,7 +1067,7 @@ struct KeywordListsArchiveImportReadFailureTests {
             try FileManager.default.createDirectory(at: failingDestination, withIntermediateDirectories: true)
         }
         let requestID = UUID()
-        let result = KeywordListsArchive.performImport(.init(
+        let result = await KeywordListsArchiveImportService.shared.importArchive(.init(
             requestID: requestID, sourceURL: archive,
             routes: [
                 .init(identifier: prefixPath, kind: "quick.keywords", destinationURL: prefixDestination, mode: .replace),
@@ -1180,5 +1180,124 @@ struct KeywordArchiveRootRoutingTests {
         let request = try #require(importSource.range(of: "let request = KeywordListsArchive.importRequest("))
         #expect(taskStart.lowerBound < resolution.lowerBound)
         #expect(resolution.lowerBound < request.lowerBound)
+    }
+}
+
+
+@Suite("Keyword-list archive staging isolation")
+struct KeywordListsSharedFilesystemTests {
+    @Test("Blocked archive extraction allows managed edits and inventory; staging is always removed", arguments: [false, true])
+    func extractionDoesNotHoldManagedFilesystem(cancel: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("keywords.txt")
+        try Data("Original\n".utf8).write(to: destination)
+        let gate = KeywordArchiveExtractionGate()
+        defer { gate.release() }
+        let preparation = KeywordListsArchivePreparationService { _, staging in
+            try gate.extract(into: staging)
+        }
+        let request = KeywordListsArchiveImportRequest(
+            requestID: UUID(), sourceURL: root.appendingPathComponent("source.zip"),
+            routes: [.init(identifier: "keywords", kind: "quick.keywords",
+                           destinationURL: destination, mode: .append)]
+        )
+        let importing = Task {
+            await KeywordListsArchive.performImport(request, preparationService: preparation)
+        }
+        let startDeadline = ContinuousClock.now + .seconds(5)
+        while gate.stagingRoot == nil, ContinuousClock.now < startDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let staging = try #require(gate.stagingRoot)
+        let progress = KeywordArchiveManagedProgress()
+        let managed = Task {
+            let editor = KeywordListEditorPersistenceService()
+            let edit = try await editor.appendEntries(["Edited"], to: destination, requestID: UUID())
+            guard case .committed = edit else {
+                Issue.record("Managed edit failed while archive extraction was blocked")
+                return
+            }
+            let inventory = try await KeywordListsArchiveInventoryService.shared.loadInventory(
+                candidates: [.init(identifier: "keywords", sourceURL: destination,
+                                   kind: "quick.keywords", format: .flat)], requestID: UUID()
+            )
+            guard case .loaded(let snapshot) = inventory else {
+                Issue.record("Inventory did not complete")
+                return
+            }
+            #expect(snapshot.items.first?.entryCount == 2)
+            progress.markComplete()
+        }
+        let progressDeadline = ContinuousClock.now + .seconds(5)
+        while !progress.completed, ContinuousClock.now < progressDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // Check before release: a regression that occupies the shared actor must fail this
+        // assertion, then release staging so the test can finish instead of deadlocking.
+        #expect(progress.completed)
+        if cancel { importing.cancel() }
+        gate.release()
+        try await managed.value
+        let result = await importing.value
+        if cancel {
+            guard case .cancelledBeforeCommit = result else {
+                Issue.record("Cancellation during extraction must not commit a destination")
+                return
+            }
+        } else {
+            #expect(result.durableCommit?.items.count == 1)
+            #expect(result.durableCommit?.items.first?.entryCount == 3)
+        }
+        #expect(try String(contentsOf: destination, encoding: .utf8)
+                == (cancel ? "Original\nEdited\n" : "Original\nEdited\nImported\n"))
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+    }
+}
+
+private nonisolated final class KeywordArchiveManagedProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var complete = false
+    var completed: Bool { lock.withLock { complete } }
+    func markComplete() { lock.withLock { complete = true } }
+}
+
+private nonisolated final class KeywordArchiveExtractionGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var root: URL?
+    private var released = false
+
+    var stagingRoot: URL? {
+        condition.lock()
+        defer { condition.unlock() }
+        return root
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func extract(into staging: URL) throws {
+        condition.lock()
+        root = staging
+        let deadline = Date().addingTimeInterval(15)
+        while !released {
+            if !condition.wait(until: deadline) { break }
+        }
+        let didRelease = released
+        condition.unlock()
+        guard didRelease else { throw CocoaError(.fileReadUnknown) }
+        let manifest = KeywordListsArchive.Manifest(
+            schemaVersion: 1, exportedAt: Date(),
+            files: [.init(path: "keywords.txt", kind: "quick.keywords", entryCount: 1)]
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(manifest).write(to: staging.appendingPathComponent("manifest.json"))
+        try Data("Imported\n".utf8).write(to: staging.appendingPathComponent("keywords.txt"))
     }
 }

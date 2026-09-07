@@ -251,7 +251,7 @@ nonisolated enum KeywordListsArchiveExportResult: Equatable, Sendable {
 }
 
 nonisolated struct KeywordListsArchiveExporter: Sendable {
-    let perform: @Sendable (KeywordListsArchiveExportRequest) throws -> KeywordListsArchiveExportResult
+    let perform: @KeywordListsFilesystemActor @Sendable (KeywordListsArchiveExportRequest) throws -> KeywordListsArchiveExportResult
 
     static let system = KeywordListsArchiveExporter { request in
         try KeywordListsArchive.performExport(request)
@@ -307,6 +307,49 @@ final class KeywordListsArchiveExportService {
             exportedFileCount: commit.exportedFileCount,
             cancellationObservedAfterCommit: true
         ))
+    }
+}
+
+/// Only private extraction files live on this actor; managed-list reads and mutations remain
+/// one uninterrupted transaction on KeywordListsFilesystemActor.
+nonisolated struct KeywordListsArchivePreparedImport: Sendable {
+    let stagingRoot: URL
+    let payloadRoot: URL
+    let manifest: KeywordListsArchive.Manifest
+}
+
+actor KeywordListsArchivePreparationService {
+    static let shared = KeywordListsArchivePreparationService()
+
+    private let extract: @Sendable (URL, URL) throws -> Void
+
+    init(extract: @escaping @Sendable (URL, URL) throws -> Void = {
+        try KeywordListsArchive.ditto(unzip: $0, into: $1)
+    }) {
+        self.extract = extract
+    }
+
+    func prepare(_ sourceURL: URL) throws -> KeywordListsArchivePreparedImport {
+        try Task.checkCancellation()
+        let stagingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("klists-import-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+            try extract(sourceURL, stagingRoot)
+            try Task.checkCancellation()
+            let payloadRoot = KeywordListsArchive.resolvePayloadRoot(in: stagingRoot)
+            let manifest = try KeywordListsArchive.readManifest(in: payloadRoot)
+            return KeywordListsArchivePreparedImport(
+                stagingRoot: stagingRoot, payloadRoot: payloadRoot, manifest: manifest
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: stagingRoot)
+            throw error
+        }
+    }
+
+    func discard(_ payload: KeywordListsArchivePreparedImport) {
+        try? FileManager.default.removeItem(at: payload.stagingRoot)
     }
 }
 
@@ -385,14 +428,14 @@ nonisolated enum KeywordListsArchiveImportResult: Equatable, Sendable {
 }
 
 nonisolated struct KeywordListsArchiveImporter: Sendable {
-    let perform: @Sendable (KeywordListsArchiveImportRequest) -> KeywordListsArchiveImportResult
+    let perform: @KeywordListsFilesystemActor @Sendable (KeywordListsArchiveImportRequest) async -> KeywordListsArchiveImportResult
 
     static let system = KeywordListsArchiveImporter { request in
-        KeywordListsArchive.performImport(request)
+        await KeywordListsArchive.performImport(request)
     }
 }
 
-/// Serializes complete archive imports away from MainActor. The unzip subprocess and coordinated
+/// Prepares archives outside the shared managed-list transaction actor. The unzip subprocess and coordinated
 /// writes cannot be preempted once entered. Cancellation is therefore observed only at stable
 /// boundaries, and a result never describes an already-written destination as merely cancelled.
 @KeywordListsFilesystemActor
@@ -407,7 +450,7 @@ final class KeywordListsArchiveImportService {
 
     func importArchive(
         _ request: KeywordListsArchiveImportRequest
-    ) -> KeywordListsArchiveImportResult {
+    ) async -> KeywordListsArchiveImportResult {
         guard !Task.isCancelled else {
             return .cancelledBeforeAccess(requestID: request.requestID)
         }
@@ -423,7 +466,7 @@ final class KeywordListsArchiveImportService {
             return .cancelledBeforeAccess(requestID: request.requestID)
         }
 
-        let result = importer.perform(request)
+        let result = await importer.perform(request)
         guard Task.isCancelled, case .committed(let commit) = result else {
             return result
         }
@@ -480,12 +523,12 @@ enum KeywordListsArchive {
         let exportedAt: Date
     }
 
-    nonisolated struct Manifest: Codable {
+    nonisolated struct Manifest: Codable, Sendable {
         let schemaVersion: Int
         let exportedAt: Date
         let files: [File]
 
-        nonisolated struct File: Codable {
+        nonisolated struct File: Codable, Sendable {
             /// Relative path inside the archive (e.g. `quick/keywords.txt`).
             let path: String
             /// Logical list key, used by importers to route content even if we
@@ -548,7 +591,8 @@ enum KeywordListsArchive {
     /// Blocking transport-only export implementation used by the serialized actor. The zip is
     /// built beside the requested destination and installed only after staging succeeds, so an
     /// error or cancellation before replacement cannot expose a partial archive.
-    nonisolated static func performExport(
+    @KeywordListsFilesystemActor
+    static func performExport(
         _ request: KeywordListsArchiveExportRequest
     ) throws -> KeywordListsArchiveExportResult {
         let stagingRoot = FileManager.default.temporaryDirectory
@@ -639,7 +683,7 @@ enum KeywordListsArchive {
     /// Blocking, transport-only half of archive inspection. This is nonisolated so the dedicated
     /// preview actor can own extraction and manifest I/O without moving store/UI types off their
     /// actor. Callers on MainActor convert the payload with `manifestPreview(from:)`.
-    nonisolated static func readPreviewPayload(
+    nonisolated fileprivate static func readPreviewPayload(
         from source: URL
     ) throws -> KeywordListsArchivePreviewPayload {
         let stagingRoot = FileManager.default.temporaryDirectory
@@ -710,34 +754,42 @@ enum KeywordListsArchive {
         )
     }
 
-    /// Blocking transport half of archive import. Every successful coordinated write is appended
-    /// to the immutable commit immediately, so failure or cancellation on a later manifest entry
-    /// reports durable partial success instead of presenting the whole import as rolled back.
-    nonisolated static func performImport(
-        _ request: KeywordListsArchiveImportRequest
-    ) -> KeywordListsArchiveImportResult {
-        let stagingRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("klists-import-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: stagingRoot) }
-
-        let manifest: Manifest
-        let payloadRoot: URL
+    /// Prepares a private payload, then commits managed lists without suspension. Every durable
+    /// write is appended to the immutable result immediately, so later failure or cancellation
+    /// reports partial success instead of presenting the whole import as rolled back.
+    @KeywordListsFilesystemActor
+    static func performImport(
+        _ request: KeywordListsArchiveImportRequest,
+        preparationService: KeywordListsArchivePreparationService = .shared
+    ) async -> KeywordListsArchiveImportResult {
+        let payload: KeywordListsArchivePreparedImport
         do {
-            try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
-            try ditto(unzip: request.sourceURL, into: stagingRoot)
-            payloadRoot = resolvePayloadRoot(in: stagingRoot)
-            manifest = try readManifest(in: payloadRoot)
+            payload = try await preparationService.prepare(request.sourceURL)
+        } catch is CancellationError {
+            return .cancelledBeforeCommit(
+                requestID: request.requestID, sourceURL: request.sourceURL, discoveredEntryCount: 0
+            )
         } catch {
             return .failedBeforeCommit(
                 requestID: request.requestID,
                 sourceURL: request.sourceURL,
-                failure: KeywordListsArchiveImportFailure(
-                    identifier: nil,
-                    reason: error.localizedDescription
-                )
+                failure: KeywordListsArchiveImportFailure(identifier: nil, reason: error.localizedDescription)
             )
         }
+        // No suspension is permitted inside the read/merge/write transaction. Extraction and
+        // cleanup own only private staging files and can yield the shared filesystem actor.
+        let result = commitPreparedImport(request, payload: payload)
+        await preparationService.discard(payload)
+        return result
+    }
 
+    @KeywordListsFilesystemActor
+    private static func commitPreparedImport(
+        _ request: KeywordListsArchiveImportRequest,
+        payload: KeywordListsArchivePreparedImport
+    ) -> KeywordListsArchiveImportResult {
+        let manifest = payload.manifest
+        let payloadRoot = payload.payloadRoot
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(
                 requestID: request.requestID,
@@ -890,7 +942,7 @@ enum KeywordListsArchive {
         return try await importSelected(from: source, choices: choices)
     }
 
-    nonisolated private static func readManifest(in payloadRoot: URL) throws -> Manifest {
+    nonisolated fileprivate static func readManifest(in payloadRoot: URL) throws -> Manifest {
         let manifestURL = payloadRoot.appendingPathComponent("manifest.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path) else {
             throw ArchiveError.manifestMissing
@@ -1025,7 +1077,7 @@ enum KeywordListsArchive {
         return ordered
     }
 
-    nonisolated private static func resolvePayloadRoot(in stagingRoot: URL) -> URL {
+    nonisolated fileprivate static func resolvePayloadRoot(in stagingRoot: URL) -> URL {
         // ditto's --keepParent wraps the source dir as the archive's top-level
         // entry. After unzip the staging root contains exactly that one folder.
         if let children = try? FileManager.default.contentsOfDirectory(
@@ -1054,7 +1106,7 @@ enum KeywordListsArchive {
         }
     }
 
-    nonisolated private static func ditto(unzip source: URL, into destination: URL) throws {
+    nonisolated fileprivate static func ditto(unzip source: URL, into destination: URL) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = ["-x", "-k", source.path, destination.path]

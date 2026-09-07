@@ -277,7 +277,7 @@ struct ApprovedListImportServiceTests {
             try await second.value
 
             #expect(service.orderedEntries(for: .keywords) == ["second"])
-            #expect(KeywordListsStore.shared.readEntries(.approved(.keywords)) == ["second"])
+            #expect(try await KeywordListsStore.shared.fixtureReadEntries(.approved(.keywords)) == ["second"])
         }
     }
 
@@ -875,7 +875,7 @@ struct KeywordListLegacyMigrationTests {
             await store.migrateLegacyBookmarksIfNeeded()
 
             #expect(defaults.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion) == 0)
-            #expect(store.readEntries(.approved(.keywords)) == ["Berlin", "Paris"])
+            #expect(try await store.fixtureReadEntries(.approved(.keywords)) == ["Berlin", "Paris"])
             #expect(
                 defaults.stringArray(forKey: UserDefaultsKeys.keywordListsMigrationCompletedKeys)?
                     .contains("approved:keywords") == true
@@ -889,8 +889,8 @@ struct KeywordListLegacyMigrationTests {
             try "Fast One\nFast Two\n".write(to: quickSource, atomically: true, encoding: .utf8)
             await store.migrateLegacyBookmarksIfNeeded()
 
-            #expect(store.readEntries(.approved(.keywords)) == ["Berlin", "Paris"])
-            #expect(store.readEntries(.quick(.keywords)) == ["Fast One", "Fast Two"])
+            #expect(try await store.fixtureReadEntries(.approved(.keywords)) == ["Berlin", "Paris"])
+            #expect(try await store.fixtureReadEntries(.quick(.keywords)) == ["Fast One", "Fast Two"])
             #expect(defaults.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion) == 1)
             #expect(defaults.data(forKey: approvedKey) == approvedBookmark)
             #expect(defaults.data(forKey: quickKey) == quickBookmark)

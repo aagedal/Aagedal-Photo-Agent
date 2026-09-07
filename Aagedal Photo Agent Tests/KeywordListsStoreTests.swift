@@ -5,52 +5,52 @@ import Foundation
 @Suite("KeywordListsStore")
 struct KeywordListsStoreTests {
 
-    private func clearAllStoreFiles() {
-        let store = KeywordListsStore.shared
-        for type in QuickListType.allCases {
-            store.delete(.quick(type))
-        }
-        for field in ApprovedListField.allCases {
-            store.delete(.approved(field))
-        }
-        store.delete(.structured)
+    private func withIsolatedStore(_ body: () async throws -> Void) async rethrows {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await KeywordListsStoreStorageOverride.$current.withValue(root, operation: body)
     }
 
     @Test("writeEntries dedupes, trims, and round-trips through readEntries")
-    func writeEntriesRoundTrip() throws {
-        clearAllStoreFiles()
-        let key = KeywordListKey.quick(.keywords)
-        try KeywordListsStore.shared.writeEntries(
-            ["  Berlin  ", "Paris", "", "Berlin", "London"],
-            to: key
-        )
-        let entries = KeywordListsStore.shared.readEntries(key)
-        #expect(entries == ["Berlin", "Paris", "London"])
+    func writeEntriesRoundTrip() async throws {
+        try await withIsolatedStore {
+            let key = KeywordListKey.quick(.keywords)
+            try await KeywordListsStore.shared.fixtureWriteEntries(
+                ["  Berlin  ", "Paris", "", "Berlin", "London"],
+                to: key
+            )
+            let entries = try await KeywordListsStore.shared.fixtureReadEntries(key)
+            #expect(entries == ["Berlin", "Paris", "London"])
+        }
     }
 
     @Test("writeText preserves the exact text including tabs and braces")
-    func writeTextPreservesVerbatim() throws {
-        clearAllStoreFiles()
-        let text = "animals\n\tlivestock\n\t\t{cattle}\n\t[REPTILE]\n\t\talligator\n"
-        try KeywordListsStore.shared.writeText(text, to: .structured)
-        #expect(KeywordListsStore.shared.readText(.structured) == text)
+    func writeTextPreservesVerbatim() async throws {
+        try await withIsolatedStore {
+            let text = "animals\n\tlivestock\n\t\t{cattle}\n\t[REPTILE]\n\t\talligator\n"
+            try await KeywordListsStore.shared.fixtureWriteText(text, to: .structured)
+            #expect(try await KeywordListsStore.shared.fixtureReadText(.structured) == text)
+        }
     }
 
     @Test("exists reflects writes and deletes")
-    func existsContract() throws {
-        clearAllStoreFiles()
-        let key = KeywordListKey.approved(.keywords)
-        #expect(!KeywordListsStore.shared.exists(key))
-        try KeywordListsStore.shared.writeEntries(["a"], to: key)
-        #expect(KeywordListsStore.shared.exists(key))
-        KeywordListsStore.shared.delete(key)
-        #expect(!KeywordListsStore.shared.exists(key))
+    func existsContract() async throws {
+        try await withIsolatedStore {
+            let key = KeywordListKey.approved(.keywords)
+            #expect(try await KeywordListsStore.shared.fixtureExists(key) == false)
+            try await KeywordListsStore.shared.fixtureWriteEntries(["a"], to: key)
+            #expect(try await KeywordListsStore.shared.fixtureExists(key))
+            try await KeywordListsStore.shared.fixtureDelete(key)
+            #expect(try await KeywordListsStore.shared.fixtureExists(key) == false)
+        }
     }
 
     @Test("readEntries returns empty array when file is missing")
-    func readEntriesMissingFile() {
-        clearAllStoreFiles()
-        #expect(KeywordListsStore.shared.readEntries(.quick(.event)) == [])
+    func readEntriesMissingFile() async throws {
+        try await withIsolatedStore {
+            let entries = try await KeywordListsStore.shared.fixtureReadEntries(.quick(.event))
+            #expect(entries == [])
+        }
     }
 
     @Test("The production import actor commits a selected file to an asynchronously resolved store route")
@@ -81,42 +81,24 @@ struct KeywordListsStoreTests {
         }
     }
 
-    @Test("Write posts a keywordListChanged notification carrying the key")
+    @Test("A committed write posts a notification carrying its key and entries")
     func notificationOnWrite() async throws {
-        clearAllStoreFiles()
-        let key = KeywordListKey.quick(.credit)
-
-        // Tests run in parallel and the observer listens with `object: nil`, so it
-        // can receive `.keywordListChanged` posts triggered by *other* suites. Filter
-        // to our own key and resume exactly once — otherwise a second matching post
-        // resumes the continuation twice (SWIFT TASK CONTINUATION MISUSE → crash).
-        nonisolated final class Box: @unchecked Sendable {
-            var token: NSObjectProtocol?
-            var resumed = false
-        }
-        let box = Box()
-
-        // Set up a one-shot wait for the notification before triggering the write.
-        let observed = await withCheckedContinuation { (continuation: CheckedContinuation<KeywordListKey?, Never>) in
-            box.token = NotificationCenter.default.addObserver(
-                forName: .keywordListChanged,
-                object: nil,
-                queue: .main  // callbacks serialize here, so the `resumed` guard is race-free
+        try await withIsolatedStore {
+            let store = KeywordListsStore()
+            let key = KeywordListKey.quick(.credit)
+            var observedEntries: [String]?
+            let token = NotificationCenter.default.addObserver(
+                forName: .keywordListChanged, object: store, queue: .main
             ) { note in
-                let observed = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey
-                guard observed == key, !box.resumed else { return }
-                box.resumed = true
-                if let token = box.token {
-                    NotificationCenter.default.removeObserver(token)
-                }
-                continuation.resume(returning: observed)
+                let entries = note.userInfo?[KeywordListsStore.changedEntriesUserInfo] as? [String]
+                MainActor.assumeIsolated { observedEntries = entries }
             }
-            DispatchQueue.main.async {
-                try? KeywordListsStore.shared.writeEntries(["Acme"], to: key)
-            }
+            defer { NotificationCenter.default.removeObserver(token) }
+            try await store.fixtureWriteEntries(["Acme"], to: key)
+            #expect(observedEntries == ["Acme"])
         }
-        #expect(observed == key)
     }
+
 }
 
 @Suite("Keyword-list backup preview filesystem boundary")
@@ -1029,16 +1011,17 @@ struct KeywordListsLegacyMigrationServiceTests {
 @Suite("Keyword store path resolution")
 struct KeywordListsStorePathResolutionTests {
     @Test("Resolving a test root does not create directories; coordinated writes prepare parents")
-    func resolvingRootIsReadOnly() throws {
+    func resolvingRootIsReadOnly() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        try KeywordListsStoreStorageOverride.$current.withValue(root) {
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
             let store = KeywordListsStore()
-            #expect(store.rootURL == root)
-            #expect(store.url(for: .structured) == root.appendingPathComponent("structured/keywords.txt"))
+            #expect(store.currentRootURL == root)
+            #expect(try await store.resolveRootURL() == root)
+            #expect(try await store.resolveURL(for: .structured) == root.appendingPathComponent("structured/keywords.txt"))
             #expect(!FileManager.default.fileExists(atPath: root.path))
-            try store.writeText("Prepared lazily", to: .structured)
-            #expect(store.readText(.structured) == "Prepared lazily")
+            try await store.fixtureWriteText("Prepared lazily", to: .structured)
+            #expect(try await store.fixtureReadText(.structured) == "Prepared lazily")
         }
     }
 }
@@ -1161,7 +1144,7 @@ struct KeywordListsStoreRoutePublicationTests {
                     #expect(entries == nil)
                     #expect(text == nil)
                     #expect(sourceID == nil)
-                    #expect(route == store.url(for: key))
+                    #expect(route == store.currentURL(for: key))
                 }
             }
             defer { NotificationCenter.default.removeObserver(token) }
@@ -1181,7 +1164,7 @@ struct KeywordListsStoreRoutePublicationTests {
         KeywordListsStoreStorageOverride.$current.withValue(root) {
             let store = KeywordListsStore()
             let key = KeywordListKey.quick(.keywords)
-            let destination = store.url(for: key)
+            let destination = store.currentURL(for: key)
             let owner = UUID()
             var received = false
             let token = NotificationCenter.default.addObserver(
@@ -1339,5 +1322,53 @@ struct KeywordManagedUTF8PreservationTests {
         }
         #expect(try Data(contentsOf: source) == damaged)
         #expect(try String(contentsOf: destination, encoding: .utf8) == "Recoverable\n")
+    }
+}
+
+/// Test fixtures use the same serialized filesystem service as the UI. Keeping these helpers in
+/// the test target prevents a synchronous store API from bypassing transaction ordering in production.
+@MainActor
+extension KeywordListsStore {
+    func fixtureReadText(_ key: KeywordListKey) async throws -> String? {
+        let url = try await resolveURL(for: key)
+        switch try await KeywordListEditorPersistenceService.shared.loadText(from: url, requestID: UUID()) {
+        case .loaded(_, _, let text): return text
+        case .missing: return nil
+        case .cancelled: throw CancellationError()
+        }
+    }
+
+    func fixtureReadEntries(_ key: KeywordListKey) async throws -> [String] {
+        guard let text = try await fixtureReadText(key) else { return [] }
+        return ApprovedListParser.parseString(text, csv: false)
+    }
+
+    func fixtureExists(_ key: KeywordListKey) async throws -> Bool {
+        try await fixtureReadText(key) != nil
+    }
+
+    func fixtureWriteText(_ text: String, to key: KeywordListKey) async throws {
+        let url = try await resolveURL(for: key)
+        guard case .committed(let commit) = try await KeywordListEditorPersistenceService.shared.saveText(
+            text, to: url, requestID: UUID()
+        ) else { throw CancellationError() }
+        recordExternalWrite(to: key, destinationURL: commit.destinationURL, text: commit.text)
+    }
+
+    func fixtureWriteEntries(_ entries: [String], to key: KeywordListKey) async throws {
+        let url = try await resolveURL(for: key)
+        guard case .committed(let commit) = try await KeywordListEditorPersistenceService.shared.saveEntries(
+            entries, to: url, requestID: UUID()
+        ) else { throw CancellationError() }
+        recordExternalWrite(to: key, destinationURL: commit.destinationURL, entries: commit.entries)
+    }
+
+    func fixtureDelete(_ key: KeywordListKey) async throws {
+        let url = try await resolveURL(for: key)
+        switch try await KeywordListEditorPersistenceService.shared.deleteQuickList(at: url, requestID: UUID()) {
+        case .removed: recordExternalDeletion(to: key)
+        case .missing: break
+        case .cancelledBeforeAccess, .cancelledBeforeCommit: throw CancellationError()
+        }
     }
 }

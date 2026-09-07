@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Database coherence and archive staging continuation (2026-09-07):** Known People
+record mutations and remote events invalidate same-root peer databases. Synchronous keyword-store
+compatibility APIs are removed; archive transport isolation is compiler-enforced, and import
+extraction/cleanup no longer occupies the shared managed-list transaction actor. Broad async
+storage and manual/device/release gates remain open.
+([validation and remaining work](plan-status-database-coherence-archive-staging-continuation-2026-09-07.md))
+
 **Archive and peer-cache continuation (2026-09-07):** archive convenience APIs now
 resolve roots asynchronously and use the shared filesystem services; unused direct store imports
 are removed. Known People thumbnail mutations and accepted remote events invalidate same-root

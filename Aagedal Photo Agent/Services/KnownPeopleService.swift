@@ -617,6 +617,19 @@ final class KnownPeopleService {
         }
     }
 
+    /// Invalidate derived record state only after a durable transition. Do not change storage
+    /// revisions: unrelated CRUD must not cancel an admitted archive import. Peers reload on
+    /// their next access, and unresolved services remain cold (no routing or disk work here).
+    private func invalidatePeerDatabases(at root: URL) {
+        Self.instances.removeAll { $0.value == nil }
+        for instance in Self.instances {
+            guard let peer = instance.value, peer !== self,
+                  peer.cachedDirectory?.standardizedFileURL == root.standardizedFileURL else { continue }
+            peer.database = nil
+            peer.clearFeaturePrintCache()
+        }
+    }
+
     // Process-wide ownership covers every KnownPeopleService instance, including injected
     // archive actors. Keep admission, duplicate filtering, commit and publication ordered.
     // The archive actor serializes file work but yields back to MainActor between these stages.
@@ -934,6 +947,7 @@ final class KnownPeopleService {
         let url = personFileURL(for: person.id)
         try CloudCoordinatedIO.writeData(data, to: url)
         stampLocalWrite(url)
+        invalidatePeerDatabases(at: knownPeopleDirectory)
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
@@ -1116,6 +1130,7 @@ final class KnownPeopleService {
             io: Self.deletionIO
         )
         stampLocalWrite(url)
+        invalidatePeerDatabases(at: knownPeopleDirectory)
     }
 
     // MARK: - Migration
@@ -1203,16 +1218,20 @@ final class KnownPeopleService {
                 continue
             }
 
+            // Even a receiver with no loaded database can invalidate warm peers. Re-reading
+            // on demand also avoids copying this receiver's possibly partial snapshot.
+            invalidatePeerDatabases(at: knownPeopleDirectory)
+            didChange = true
             guard hadDatabase else {
-                if url.pathExtension == "deleted" {
-                    // With no person records loaded we cannot map embedding IDs to their owner.
-                    // Invalidate decoded thumbnails without forcing a synchronous database load.
-                    invalidatePeerThumbnails(at: knownPeopleDirectory)
-                    thumbnailContentRevision &+= 1
-                    personThumbnailCache.removeObject(forKey: personID as NSUUID)
-                    embeddingThumbnailCache.removeAllObjects()
-                    didChange = true
-                }
+                // A JSON event can also represent deletion (a missing record or a surviving
+                // tombstone). Peer database invalidation may have made this receiver cold
+                // since the event was queued. Invalidate images conservatively without loading
+                // records merely to recover the embedding ownership map; this also rejects
+                // reads admitted before deferred remote events replay after archive commits.
+                invalidatePeerThumbnails(at: knownPeopleDirectory)
+                thumbnailContentRevision &+= 1
+                personThumbnailCache.removeObject(forKey: personID as NSUUID)
+                embeddingThumbnailCache.removeAllObjects()
                 continue
             }
             if url.pathExtension == "deleted" {
@@ -1482,6 +1501,7 @@ final class KnownPeopleService {
     }
 
     func updatePerson(_ person: KnownPerson) throws {
+        _ = loadDatabase()
         guard peopleIndex[person.id] != nil else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found: \(person.name)"])
@@ -1866,6 +1886,8 @@ final class KnownPeopleService {
 
     private func resetDatabaseForEmbeddingMigration(io: KnownPeopleEmbeddingMigrationIO) throws {
         try io.removeItem(knownPeopleDirectory)
+        database = nil
+        invalidatePeerDatabases(at: knownPeopleDirectory)
         thumbnailContentRevision &+= 1
         invalidatePeerThumbnails(at: knownPeopleDirectory)
         try io.ensureDirectory(peopleDirectory)
@@ -1893,6 +1915,8 @@ final class KnownPeopleService {
         // Remove all files (people/, thumbnails, embedding thumbnails, any
         // tombstones). This is a local nuke — tombstones go with it.
         try CloudCoordinatedIO.removeItem(at: knownPeopleDirectory)
+        database = nil
+        invalidatePeerDatabases(at: knownPeopleDirectory)
         thumbnailContentRevision &+= 1
         invalidatePeerThumbnails(at: knownPeopleDirectory)
 
@@ -2217,6 +2241,9 @@ final class KnownPeopleService {
               evidence.storageRoot.standardizedFileURL == storageRoot.standardizedFileURL,
               evidence.requestedPersonCount == newPeople.count else {
             throw CancellationError()
+        }
+        if !evidence.committedPeople.isEmpty {
+            invalidatePeerDatabases(at: evidence.storageRoot)
         }
         if !evidence.committedThumbnailURLs.isEmpty {
             invalidatePeerThumbnails(at: evidence.storageRoot)
