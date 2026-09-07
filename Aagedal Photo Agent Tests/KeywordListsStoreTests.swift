@@ -300,10 +300,10 @@ struct KeywordListBackupFileServiceTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let names = ["old-damaged", "old-readable", "keep-readable", "new-damaged"]
+        let names = ["old-damaged", "old-readable", "keep-readable", "new-damaged", "new-empty"]
         for (index, name) in names.enumerated() {
             let url = directory.appendingPathComponent(name + ".txt")
-            let bytes = name.contains("damaged") ? Data([0xff]) : Data(name.utf8)
+            let bytes = name.contains("damaged") ? Data([0xff]) : (name == "new-empty" ? Data() : Data(name.utf8))
             try bytes.write(to: url)
             try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: Double(index))],
                                                   ofItemAtPath: url.path)

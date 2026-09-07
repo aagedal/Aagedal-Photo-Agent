@@ -445,8 +445,11 @@ actor KeywordListBackupFileService {
         // Unavailable versions may contain the only recoverable copy. Preserve them,
         // and do not let them displace readable versions from the minimum retained set.
         let versions = textFiles(in: directoryURL).filter { $0.unavailableReason == nil }
-        guard versions.count > minimumVersionCount else { return }
-        for (index, version) in versions.enumerated() where index >= minimumVersionCount {
+        // Empty pre-restore safety copies do not displace useful history either.
+        let protectedURLs = Set(versions.filter {
+            !($0.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.prefix(max(0, minimumVersionCount)).map(\.url))
+        for version in versions where !protectedURLs.contains(version.url) {
             guard !Task.isCancelled else { return }
             if version.date < retentionCutoff {
                 try? io.removeItem(version.url)
