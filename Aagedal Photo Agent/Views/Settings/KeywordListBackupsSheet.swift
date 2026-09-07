@@ -142,9 +142,15 @@ struct KeywordListBackupsSheet: View {
                             .background(Color.orange.opacity(0.25), in: Capsule())
                             .foregroundStyle(.orange)
                     }
-                    Text("\(group.versions.count)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if group.isUnavailable {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("Backups unavailable")
+                    } else {
+                        Text("\(group.versions.count)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .tag(group.key)
             }
@@ -156,6 +162,12 @@ struct KeywordListBackupsSheet: View {
     private var versionColumn: some View {
         if let key = selectedKey, let versions = versions(for: key) {
             VStack(spacing: 0) {
+                if groups.first(where: { $0.key == key })?.isUnavailable == true {
+                    ContentUnavailableView(
+                        "Backups Unavailable", systemImage: "exclamationmark.triangle",
+                        description: Text("The backup folder could not be read. Reload to try again.")
+                    )
+                }
                 if recoverableKeys.contains(key) {
                     Label("This list is currently empty. Restoring a version below brings its content back.", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -194,16 +206,23 @@ struct KeywordListBackupsSheet: View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(Self.dateFormatter.string(from: version.date))
-                Text("\(Self.relativeFormatter.localizedString(for: version.date, relativeTo: Date())) · \(version.entryCount) \(version.entryCount == 1 ? "entry" : "entries") · \(byteString(version.byteCount))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if let reason = version.unavailableReason {
+                    Label("Backup unavailable", systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .help(reason.message)
+                } else if let count = version.entryCount {
+                    Text("\(Self.relativeFormatter.localizedString(for: version.date, relativeTo: Date())) · \(count) \(count == 1 ? "entry" : "entries") · \(byteString(version.byteCount))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
             Button("Preview") { loadPreview(version) }
                 .buttonStyle(.borderless)
             Button("Restore") { pendingRestore = version }
                 .buttonStyle(.bordered)
-                .disabled(restoreTask != nil)
+                .disabled(restoreTask != nil || version.unavailableReason != nil)
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
@@ -246,6 +265,8 @@ struct KeywordListBackupsSheet: View {
                     .truncationMode(.middle)
             }
             Spacer()
+            Button("Reload") { reload() }
+                .disabled(groupsAreLoading || restoreTask != nil)
             Button("Done") { dismiss() }
                 .keyboardShortcut(.defaultAction)
         }
@@ -294,6 +315,10 @@ struct KeywordListBackupsSheet: View {
 
         let requestID = UUID()
         previewedVersion = version
+        if let reason = version.unavailableReason {
+            previewError = reason.message
+            return
+        }
         previewRequestID = requestID
         previewIsLoading = true
 

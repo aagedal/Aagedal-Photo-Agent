@@ -239,6 +239,193 @@ struct KeywordListBackupPreviewServiceTests {
 
 @Suite("Keyword-list backup inventory and restore filesystem boundary")
 struct KeywordListBackupFileServiceTests {
+    @Test("Inventory reports unreadable directories separately from missing directories")
+    func inventoryDirectoryFailures() async {
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { url in
+                throw CocoaError(url.lastPathComponent == "missing" ? .fileReadNoSuchFile : .fileReadNoPermission)
+            },
+            inspectTextFile: { _ in fatalError("Unexpected inspection") },
+            createDirectory: { _ in }, readData: { _ in Data() },
+            writeData: { _, _ in }, removeItem: { _ in }
+        )
+        let result = await KeywordListBackupFileService(io: io).inventory(
+            directories: ["missing", "unreadable"].map {
+                .init(identifier: $0, directoryURL: URL(fileURLWithPath: "/virtual/\($0)"))
+            }, requestID: UUID()
+        )
+        guard case .loaded(let snapshot) = result else {
+            Issue.record("Expected inventory")
+            return
+        }
+        #expect(snapshot.directories.map(\.isUnavailable) == [false, true])
+        #expect(snapshot.directories.allSatisfy { $0.versions.isEmpty })
+    }
+
+    @Test("Inventory distinguishes empty text, invalid UTF-8, and unreadable backups")
+    func inventoryPreservesUnavailableVersions() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let empty = directory.appendingPathComponent("empty.txt")
+        let damaged = directory.appendingPathComponent("damaged.txt")
+        let unreadable = directory.appendingPathComponent("unreadable.txt")
+        try Data().write(to: empty)
+        try Data([0xff]).write(to: damaged)
+        try FileManager.default.createSymbolicLink(at: unreadable,
+                                                   withDestinationURL: directory.appendingPathComponent("missing"))
+        let result = await KeywordListBackupFileService().inventory(
+            directories: [.init(identifier: "test", directoryURL: directory)], requestID: UUID()
+        )
+        guard case .loaded(let inventory) = result else {
+            Issue.record("Expected inventory")
+            return
+        }
+        let versions = try #require(inventory.directories.first?.versions)
+        #expect(versions.count == 3)
+        let emptySnapshot = try #require(versions.first { $0.url == empty })
+        #expect(emptySnapshot.text == "")
+        #expect(emptySnapshot.unavailableReason == nil)
+        let damagedSnapshot = try #require(versions.first { $0.url == damaged })
+        #expect(damagedSnapshot.text == nil)
+        #expect(damagedSnapshot.unavailableReason == .invalidUTF8)
+        #expect(damagedSnapshot.byteCount == 1)
+        let unreadableSnapshot = try #require(versions.first { $0.url == unreadable })
+        #expect(unreadableSnapshot.text == nil)
+        #expect(unreadableSnapshot.unavailableReason == .unreadable)
+    }
+
+    @Test("Retention preserves damaged backups and keeps the minimum readable versions")
+    func retentionPreservesUnavailableVersions() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let names = ["old-damaged", "old-readable", "keep-readable", "new-damaged"]
+        for (index, name) in names.enumerated() {
+            let url = directory.appendingPathComponent(name + ".txt")
+            let bytes = name.contains("damaged") ? Data([0xff]) : Data(name.utf8)
+            try bytes.write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: Double(index))],
+                                                  ofItemAtPath: url.path)
+        }
+        await KeywordListBackupFileService().prune(
+            directories: [directory], retentionCutoff: .distantFuture, minimumVersionCount: 1
+        )
+        let retained = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(Set(retained) == ["old-damaged.txt", "keep-readable.txt", "new-damaged.txt"])
+        #expect(try Data(contentsOf: directory.appendingPathComponent("old-damaged.txt")) == Data([0xff]))
+    }
+
+    @Test("Restore rejects damaged UTF-8 without changing the destination")
+    func restoreRejectsDamagedBackup() async throws {
+        let probe = KeywordListBackupFileIOProbe(files: [])
+        probe.readDataResult = Data([0xff])
+        let service = KeywordListBackupFileService(io: probe.fileIO)
+        await #expect(throws: KeywordListBackupPreviewError.self) {
+            try await service.restore(from: URL(fileURLWithPath: "/virtual/backup.txt"),
+                                      to: URL(fileURLWithPath: "/virtual/list.txt"), requestID: UUID())
+        }
+        #expect(probe.writeInvocationCount == 0)
+    }
+
+    @Test("Restore preserves exact previous bytes even when the current list is damaged")
+    func restoreBacksUpDamagedCurrentList() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("restore.txt")
+        let destination = root.appendingPathComponent("current.txt")
+        let safetyBackup = root.appendingPathComponent("history/safety.txt")
+        let damaged = Data([0xff, 0xfe, 0x00])
+        let replacement = Data("Restored\n".utf8)
+        try replacement.write(to: source)
+        try damaged.write(to: destination)
+        let result = try await KeywordListBackupFileService().restore(
+            from: source, to: destination, requestID: UUID(), previousContentBackupURL: safetyBackup
+        )
+        guard case .restored = result else {
+            Issue.record("Expected successful restore")
+            return
+        }
+        #expect(try Data(contentsOf: safetyBackup) == damaged)
+        #expect(try Data(contentsOf: destination) == replacement)
+    }
+
+    @Test("A failed safety backup prevents restore from replacing the current list")
+    func restoreAbortsWhenSafetyBackupFails() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("restore.txt")
+        let destination = root.appendingPathComponent("current.txt")
+        let safetyBackup = root.appendingPathComponent("safety.txt")
+        let original = Data("Original\n".utf8)
+        try Data("Replacement\n".utf8).write(to: source)
+        try original.write(to: destination)
+        let system = KeywordListBackupFileIO.system
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: system.contentsOfDirectory, inspectTextFile: system.inspectTextFile,
+            createDirectory: system.createDirectory, readData: system.readData,
+            writeData: { data, url in
+                if url == safetyBackup { throw CocoaError(.fileWriteNoPermission) }
+                try system.writeData(data, url)
+            }, removeItem: system.removeItem
+        )
+        await #expect(throws: CocoaError.self) {
+            try await KeywordListBackupFileService(io: io).restore(
+                from: source, to: destination, requestID: UUID(), previousContentBackupURL: safetyBackup
+            )
+        }
+        #expect(try Data(contentsOf: destination) == original)
+    }
+
+    @Test("Backup restore resolves the configured cloud root before writing")
+    @MainActor
+    func restoreResolvesCloudRoot() async throws {
+        let root = URL(fileURLWithPath: "/virtual/resolved-lists")
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true },
+                                     resolveCloudRoot: { root })
+        let probe = KeywordListBackupFileIOProbe(files: [])
+        probe.readDataResult = Data("Berlin".utf8)
+        let service = KeywordListsBackupService(filesystem: KeywordListBackupFileService(io: probe.fileIO),
+                                                store: store)
+        let key = KeywordListKey.quick(.keywords)
+        let version = KeywordListsBackupService.Version(
+            key: key, url: URL(fileURLWithPath: "/virtual/backup.txt"), date: .now,
+            entryCount: 1, byteCount: 6
+        )
+        let result = try await service.restore(version, requestID: UUID())
+        guard case .restored(let commit) = result else {
+            Issue.record("Expected restored result")
+            return
+        }
+        #expect(commit.destinationURL == root.appendingPathComponent(key.relativePath))
+        #expect(probe.writtenURL == commit.destinationURL)
+        #expect(probe.writtenData == Data("Berlin".utf8))
+    }
+
+    @Test("Cancelling cloud resolution prevents backup restore filesystem work")
+    @MainActor
+    func restoreCancellationDuringCloudResolution() async throws {
+        let gate = KeywordRootResolutionGate()
+        let store = KeywordListsStore(usesTestStorage: false, cloudPreference: { true },
+                                     resolveCloudRoot: { await gate.resolve() })
+        let probe = KeywordListBackupFileIOProbe(files: [])
+        let service = KeywordListsBackupService(filesystem: KeywordListBackupFileService(io: probe.fileIO),
+                                                store: store)
+        let version = KeywordListsBackupService.Version(
+            key: .quick(.keywords), url: URL(fileURLWithPath: "/virtual/backup.txt"), date: .now,
+            entryCount: 1, byteCount: 6
+        )
+        let task = Task { try await service.restore(version, requestID: UUID()) }
+        try await gate.waitUntilEntered()
+        task.cancel()
+        await gate.resume(with: URL(fileURLWithPath: "/virtual/resolved-lists"))
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(probe.readInvocationCount == 0)
+        #expect(probe.writeInvocationCount == 0)
+    }
+
     @Test("managed source snapshot reads and writes off MainActor")
     @MainActor
     func snapshotReadsManagedSourceOffMainActor() async throws {
@@ -487,6 +674,7 @@ private nonisolated final class KeywordListBackupFileIOProbe: @unchecked Sendabl
     private var contentsCount = 0
     private var inspectCount = 0
     private var writeCount = 0
+    private var readCount = 0
     private var observedMainThread = false
     private var committedData: Data?
     private var committedURL: URL?
@@ -514,6 +702,7 @@ private nonisolated final class KeywordListBackupFileIOProbe: @unchecked Sendabl
             createDirectory: { _ in },
             readData: { [self] _ in
                 let (data, shouldCancel) = lock.withLock {
+                    readCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
                     return (readDataResult, cancelDuringRead)
                 }
@@ -536,6 +725,7 @@ private nonisolated final class KeywordListBackupFileIOProbe: @unchecked Sendabl
 
     var contentsInvocationCount: Int { lock.withLock { contentsCount } }
     var inspectInvocationCount: Int { lock.withLock { inspectCount } }
+    var readInvocationCount: Int { lock.withLock { readCount } }
     var writeInvocationCount: Int { lock.withLock { writeCount } }
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
     var writtenData: Data? { lock.withLock { committedData } }

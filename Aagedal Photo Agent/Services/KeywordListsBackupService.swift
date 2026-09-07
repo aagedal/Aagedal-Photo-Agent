@@ -96,16 +96,46 @@ nonisolated struct KeywordListBackupSourceRequest: Equatable, Sendable {
     let sourceURL: URL
 }
 
+nonisolated enum KeywordListBackupUnavailableReason: Equatable, Sendable {
+    case unreadable
+    case invalidUTF8
+
+    var message: String {
+        switch self {
+        case .unreadable: "The backup could not be read. Reload to try again."
+        case .invalidUTF8: "The backup is not valid UTF-8 text."
+        }
+    }
+}
+
 nonisolated struct KeywordListBackupFileSnapshot: Equatable, Sendable {
     let url: URL
     let date: Date
-    let text: String
+    let text: String?
     let byteCount: Int
+    let unavailableReason: KeywordListBackupUnavailableReason?
+
+    init(url: URL, date: Date, text: String, byteCount: Int) {
+        self.url = url
+        self.date = date
+        self.text = text
+        self.byteCount = byteCount
+        self.unavailableReason = nil
+    }
+
+    init(url: URL, date: Date, byteCount: Int, unavailableReason: KeywordListBackupUnavailableReason) {
+        self.url = url
+        self.date = date
+        self.text = nil
+        self.byteCount = byteCount
+        self.unavailableReason = unavailableReason
+    }
 }
 
 nonisolated struct KeywordListBackupDirectorySnapshot: Equatable, Sendable {
     let identifier: String
     let versions: [KeywordListBackupFileSnapshot]
+    var isUnavailable: Bool = false
 }
 
 nonisolated struct KeywordListBackupInventorySnapshot: Equatable, Sendable {
@@ -154,14 +184,24 @@ nonisolated struct KeywordListBackupFileIO: Sendable {
         },
         inspectTextFile: { url in
             let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-            let data = (try? Data(contentsOf: url, options: .mappedIfSafe)) ?? Data()
-            let text = String(data: data, encoding: .utf8) ?? ""
-            return KeywordListBackupFileSnapshot(
-                url: url,
-                date: values?.contentModificationDate ?? .distantPast,
-                text: text,
-                byteCount: values?.fileSize ?? data.count
-            )
+            let date = values?.contentModificationDate ?? .distantPast
+            do {
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                guard let text = String(data: data, encoding: .utf8) else {
+                    return KeywordListBackupFileSnapshot(
+                        url: url, date: date, byteCount: data.count,
+                        unavailableReason: .invalidUTF8
+                    )
+                }
+                return KeywordListBackupFileSnapshot(
+                    url: url, date: date, text: text, byteCount: data.count
+                )
+            } catch {
+                return KeywordListBackupFileSnapshot(
+                    url: url, date: date, byteCount: values?.fileSize ?? 0,
+                    unavailableReason: .unreadable
+                )
+            }
         },
         createDirectory: { directory in
             try FileManager.default.createDirectory(
@@ -209,7 +249,17 @@ actor KeywordListBackupFileService {
                 )
             }
 
-            let urls = (try? io.contentsOfDirectory(directory.directoryURL)) ?? []
+            let urls: [URL]
+            do {
+                urls = try io.contentsOfDirectory(directory.directoryURL)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                urls = []
+            } catch {
+                snapshots.append(KeywordListBackupDirectorySnapshot(
+                    identifier: directory.identifier, versions: [], isUnavailable: true
+                ))
+                continue
+            }
             var versions: [KeywordListBackupFileSnapshot] = []
             for url in urls where url.pathExtension == "txt" {
                 guard !Task.isCancelled else {
@@ -299,6 +349,7 @@ actor KeywordListBackupFileService {
             return false
         }
 
+        guard !Task.isCancelled else { return false }
         try io.createDirectory(directoryURL)
         guard !Task.isCancelled else { return false }
         try io.writeData(Data(text.utf8), destinationURL)
@@ -328,7 +379,8 @@ actor KeywordListBackupFileService {
     func restore(
         from sourceURL: URL,
         to destinationURL: URL,
-        requestID: UUID
+        requestID: UUID,
+        previousContentBackupURL: URL? = nil
     ) throws -> KeywordListBackupRestoreResult {
         guard !Task.isCancelled else {
             return .cancelledBeforeRead(requestID: requestID)
@@ -346,6 +398,25 @@ actor KeywordListBackupFileService {
             throw KeywordListBackupPreviewError.invalidUTF8(sourceURL)
         }
 
+        if let previousContentBackupURL {
+            let previous: Data?
+            do {
+                previous = try io.readData(destinationURL)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                previous = nil
+            }
+            guard !Task.isCancelled else {
+                return .cancelledAfterRead(requestID: requestID, sourceURL: sourceURL, byteCount: data.count)
+            }
+            // Preserve exact bytes, including empty or damaged content, before replacement.
+            // If reading or backing up the destination fails, the restore must not overwrite it.
+            if let previous {
+                try io.writeData(previous, previousContentBackupURL)
+            }
+        }
+        guard !Task.isCancelled else {
+            return .cancelledAfterRead(requestID: requestID, sourceURL: sourceURL, byteCount: data.count)
+        }
         try io.writeData(data, destinationURL)
         return .restored(KeywordListBackupRestoreCommit(
             requestID: requestID,
@@ -358,10 +429,12 @@ actor KeywordListBackupFileService {
 
     private func textFiles(in directoryURL: URL) -> [KeywordListBackupFileSnapshot] {
         let urls = (try? io.contentsOfDirectory(directoryURL)) ?? []
-        return urls
-            .filter { $0.pathExtension == "txt" }
-            .map(io.inspectTextFile)
-            .sorted { $0.date > $1.date }
+        var versions: [KeywordListBackupFileSnapshot] = []
+        for url in urls where url.pathExtension == "txt" {
+            guard !Task.isCancelled else { break }
+            versions.append(io.inspectTextFile(url))
+        }
+        return versions.sorted { $0.date > $1.date }
     }
 
     private func prune(
@@ -369,7 +442,9 @@ actor KeywordListBackupFileService {
         retentionCutoff: Date,
         minimumVersionCount: Int
     ) {
-        let versions = textFiles(in: directoryURL)
+        // Unavailable versions may contain the only recoverable copy. Preserve them,
+        // and do not let them displace readable versions from the minimum retained set.
+        let versions = textFiles(in: directoryURL).filter { $0.unavailableReason == nil }
         guard versions.count > minimumVersionCount else { return }
         for (index, version) in versions.enumerated() where index >= minimumVersionCount {
             guard !Task.isCancelled else { return }
@@ -409,14 +484,16 @@ final class KeywordListsBackupService {
         let url: URL
         let date: Date
         /// Keyword count (structured) or entry count (flat lists).
-        let entryCount: Int
+        let entryCount: Int?
         let byteCount: Int
+        var unavailableReason: KeywordListBackupUnavailableReason? = nil
         var id: URL { url }
     }
 
     struct VersionGroup: Equatable {
         let key: KeywordListKey
         let versions: [Version]
+        var isUnavailable: Bool = false
     }
 
     enum VersionInventoryResult: Equatable {
@@ -443,6 +520,7 @@ final class KeywordListsBackupService {
     private var observer: NSObjectProtocol?
     private var recoverableRequestID: UUID?
     private let filesystem: KeywordListBackupFileService
+    private let store: KeywordListsStore
 
     /// Every list the store manages. Same enumeration the archive uses.
     private static let allKeys: [KeywordListKey] = {
@@ -454,8 +532,12 @@ final class KeywordListsBackupService {
         return keys
     }()
 
-    init(filesystem: KeywordListBackupFileService = .shared) {
+    init(
+        filesystem: KeywordListBackupFileService = .shared,
+        store: KeywordListsStore = .shared
+    ) {
         self.filesystem = filesystem
+        self.store = store
     }
 
     // MARK: - Lifecycle
@@ -514,12 +596,12 @@ final class KeywordListsBackupService {
     /// the most recent snapshot. Returns true if a new snapshot was written.
     @discardableResult
     private func snapshot(_ key: KeywordListKey) async -> Bool {
-        let store = KeywordListsStore.shared
         let dir = directory(for: key)
         let now = Date()
         do {
+            let sourceURL = try await store.resolveURL(for: key)
             return try await filesystem.snapshot(
-                sourceURL: store.url(for: key),
+                sourceURL: sourceURL,
                 directoryURL: dir,
                 destinationURL: dir.appendingPathComponent(Self.snapshotFileName(for: now)),
                 retentionCutoff: now.addingTimeInterval(-Double(retentionDays) * 86_400),
@@ -562,11 +644,13 @@ final class KeywordListsBackupService {
                         key: key,
                         url: file.url,
                         date: file.date,
-                        entryCount: Self.entryCount(for: key, text: file.text),
-                        byteCount: file.byteCount
+                        entryCount: file.text.map { Self.entryCount(for: key, text: $0) },
+                        byteCount: file.byteCount,
+                        unavailableReason: file.unavailableReason
                     )
                 }
-                return versions.isEmpty ? nil : VersionGroup(key: key, versions: versions)
+                guard !versions.isEmpty || directory.isUnavailable else { return nil }
+                return VersionGroup(key: key, versions: versions, isUnavailable: directory.isUnavailable)
             }
             return .loaded(requestID: snapshot.requestID, groups: groups)
         case .cancelled(let id, let completedDirectoryCount, let discoveredVersionCount):
@@ -588,14 +672,17 @@ final class KeywordListsBackupService {
         _ version: Version,
         requestID: UUID
     ) async throws -> KeywordListBackupRestoreResult {
-        let store = KeywordListsStore.shared
+        let destinationURL = try await store.resolveURL(for: version.key)
         let result = try await filesystem.restore(
             from: version.url,
-            to: store.url(for: version.key),
-            requestID: requestID
+            to: destinationURL,
+            requestID: requestID,
+            previousContentBackupURL: directory(for: version.key).appendingPathComponent(
+                Self.snapshotFileName(for: Date()).replacingOccurrences(of: ".txt", with: "-\(UUID().uuidString).txt")
+            )
         )
         if case .restored = result {
-            store.recordExternalWrite(to: version.key)
+            store.recordExternalWrite(to: version.key, destinationURL: destinationURL)
             await refreshRecoverable()
         }
         return result
@@ -605,10 +692,10 @@ final class KeywordListsBackupService {
 
     /// Recomputes which lists look empty while a backup exists.
     func refreshRecoverable() async {
-        let store = KeywordListsStore.shared
         let requestID = UUID()
         recoverableRequestID = requestID
-        let capturedRoot = store.rootURL
+        guard let capturedRoot = try? await store.resolveRootURL(),
+              recoverableRequestID == requestID, !Task.isCancelled else { return }
         let capturedVersion = store.version
         let sources = Self.allKeys.map { key in
             KeywordListBackupSourceRequest(
@@ -620,10 +707,12 @@ final class KeywordListsBackupService {
               recoverableRequestID == requestID,
               case .loaded(_, let groups) = await allVersionsByKey(requestID: requestID),
               recoverableRequestID == requestID,
-              store.rootURL == capturedRoot, store.version == capturedVersion,
+              store.currentRootURL == capturedRoot, store.version == capturedVersion,
               !Task.isCancelled else { return }
         recoverableRequestID = nil
-        let backedUpKeys = Set(groups.map(\.key))
+        let backedUpKeys = Set(groups.filter { group in
+            group.versions.contains { ($0.entryCount ?? 0) > 0 }
+        }.map(\.key))
         recoverableKeys = Self.allKeys.filter {
             emptyIdentifiers.contains($0.relativePath) && backedUpKeys.contains($0)
         }
