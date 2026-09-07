@@ -13,6 +13,7 @@ python3 scripts/generate_metadata_field_support.py --check
 python3 scripts/generate_bundled_component_docs.py --check
 
 say "Checking release metadata consistency"
+python3 -B scripts/ci/test_model_omission_validator.py
 python3 -B scripts/ci/test_release_metadata_validator.py
 python3 -B scripts/ci/validate_release_metadata.py
 

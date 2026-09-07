@@ -224,12 +224,13 @@ nonisolated struct KeywordListBackupFileIO: Sendable {
 /// Serializes keyword-backup enumeration, retention, snapshot writes, and restore commits away
 /// from MainActor. Directory reads and coordinated writes are synchronous Foundation operations;
 /// cancellation is therefore checked between calls, with durable-after-cancel evidence for restore.
-actor KeywordListBackupFileService {
-    static let shared = KeywordListBackupFileService()
+@KeywordListsFilesystemActor
+final class KeywordListBackupFileService {
+    nonisolated static let shared = KeywordListBackupFileService()
 
     private let io: KeywordListBackupFileIO
 
-    init(io: KeywordListBackupFileIO = .system) {
+    nonisolated init(io: KeywordListBackupFileIO = .system) {
         self.io = io
     }
 

@@ -598,20 +598,22 @@ final class KnownPeopleService {
     private var thumbnailContentRevision: UInt64 = 0
     private let thumbnailLoader: KnownPeopleThumbnailLoadService
     private let archiveService: KnownPeopleArchiveService
-    // Keep admission, duplicate filtering, durable commit and cache publication ordered.
+    // Process-wide ownership covers every KnownPeopleService instance, including injected
+    // archive actors. Keep admission, duplicate filtering, commit and publication ordered.
     // The archive actor serializes file work but yields back to MainActor between these stages.
-    private var importInProgress = false
-    private var importWaiters: [CheckedContinuation<Void, Never>] = []
+    private static var importInProgress = false
+    private static var importWaiters: [CheckedContinuation<Void, Never>] = []
     // Reserve destination paths before yielding to the archive actor. Synchronous local
     // writers cannot wait for that actor without blocking MainActor, so overlapping writes
     // return a retryable error; unrelated records remain editable.
-    private var importCommitRoot: URL?
-    private var importReservedURLs: Set<URL> = []
-    private var deferredThumbnailDeletions: Set<URL> = []
-    private var deferredImportRemoteChanges: [(url: URL, contentChangeDate: Date?)] = []
+    private static weak var importCommitOwner: KnownPeopleService?
+    private static var importCommitRoot: URL?
+    private static var importReservedURLs: Set<URL> = []
+    private static var deferredThumbnailDeletions: Set<URL> = []
+    private static var deferredImportActions: [() -> Void] = []
 
     private func requireLocalWriteAdmission(to url: URL) throws {
-        guard !importReservedURLs.contains(url.standardizedFileURL) else {
+        guard !Self.importReservedURLs.contains(url.standardizedFileURL) else {
             throw importBusyError()
         }
     }
@@ -623,14 +625,15 @@ final class KnownPeopleService {
     }
 
     private func reserveImportDestinations(_ people: [KnownPerson], root: URL) {
-        importCommitRoot = root.standardizedFileURL
+        Self.importCommitOwner = self
+        Self.importCommitRoot = root.standardizedFileURL
         for person in people {
             for path in ["people/\(person.id.uuidString).json", "people/\(person.id.uuidString).deleted",
                          "thumbnails/\(person.id.uuidString).jpg"] {
-                importReservedURLs.insert(root.appendingPathComponent(path).standardizedFileURL)
+                Self.importReservedURLs.insert(root.appendingPathComponent(path).standardizedFileURL)
             }
             for embedding in person.embeddings {
-                importReservedURLs.insert(root.appendingPathComponent(
+                Self.importReservedURLs.insert(root.appendingPathComponent(
                     "embedding_thumbnails/\(embedding.id.uuidString).jpg"
                 ).standardizedFileURL)
             }
@@ -638,24 +641,37 @@ final class KnownPeopleService {
     }
 
     private func releaseImportDestinations() {
-        importCommitRoot = nil
-        importReservedURLs.removeAll()
+        Self.importCommitOwner = nil
+        Self.importCommitRoot = nil
+        Self.importReservedURLs.removeAll()
         // These void APIs historically perform best-effort removal. Preserve a deletion
         // requested during import by applying it after all archive writes, at its original root.
-        for url in deferredThumbnailDeletions {
+        for url in Self.deferredThumbnailDeletions {
             try? CloudCoordinatedIO.removeItem(at: url)
         }
-        if !deferredThumbnailDeletions.isEmpty {
+        if !Self.deferredThumbnailDeletions.isEmpty {
+            // Another instance can request deletion after this owner starts a thumbnail read.
+            // Invalidate the owner too, so that read cannot republish the removed bytes.
             thumbnailContentRevision &+= 1
             personThumbnailCache.removeAllObjects()
             embeddingThumbnailCache.removeAllObjects()
         }
-        deferredThumbnailDeletions.removeAll()
-        let changes = deferredImportRemoteChanges
-        deferredImportRemoteChanges.removeAll()
-        // These events arrived before the import's local-write stamps. Replay after
-        // publication without mistaking them for echoes of that later commit.
-        applyRemoteChanges(changes, ignoringLocalWriteEchoes: true)
+        Self.deferredThumbnailDeletions.removeAll()
+        let actions = Self.deferredImportActions
+        Self.deferredImportActions.removeAll()
+        // Replay each originating instance's invalidation/events after durable publication.
+        // The callbacks retain the original URL; remote changes recheck the current root.
+        for action in actions { action() }
+    }
+
+    private func deferThumbnailDeletion(at url: URL) {
+        Self.deferredThumbnailDeletions.insert(url.standardizedFileURL)
+        Self.deferredImportActions.append { [weak self] in
+            guard let self else { return }
+            self.thumbnailContentRevision &+= 1
+            self.personThumbnailCache.removeAllObjects()
+            self.embeddingThumbnailCache.removeAllObjects()
+        }
     }
 
     init(
@@ -1090,6 +1106,7 @@ final class KnownPeopleService {
     /// UserDefaults version stamp here, because the legacy file can live in
     /// either the local or the iCloud root depending on the sync toggle.
     func migrateLegacyDatabaseIfNeeded() {
+        guard Self.importCommitRoot != knownPeopleDirectory.standardizedFileURL else { return }
         let legacyURL = legacyDatabaseFileURL
         guard CloudCoordinatedIO.itemExists(at: legacyURL) else { return }
 
@@ -1131,8 +1148,16 @@ final class KnownPeopleService {
         for change in changes {
             let url = change.url
             guard KnownPeopleCloudCoordinator.acceptsChange(at: url, root: knownPeopleDirectory) else { continue }
-            if importReservedURLs.contains(url.standardizedFileURL) {
-                deferredImportRemoteChanges.append(change)
+            if Self.importReservedURLs.contains(url.standardizedFileURL) {
+                let importOwner = Self.importCommitOwner
+                Self.deferredImportActions.append { [weak self, weak importOwner] in
+                    self?.applyRemoteChanges([change], ignoringLocalWriteEchoes: true)
+                    // The owner just published the durable prefix. A change received by another
+                    // instance must also remove or refresh that newly published cached record.
+                    if let importOwner, importOwner !== self {
+                        importOwner.applyRemoteChanges([change], ignoringLocalWriteEchoes: true)
+                    }
+                }
                 continue
             }
             guard ignoringLocalWriteEchoes || !shouldSkipRemoteReload(
@@ -1271,8 +1296,8 @@ final class KnownPeopleService {
         thumbnailContentRevision &+= 1
         personThumbnailCache.removeObject(forKey: personID as NSUUID)
         let url = thumbnailURL(for: personID)
-        if importReservedURLs.contains(url.standardizedFileURL) {
-            deferredThumbnailDeletions.insert(url.standardizedFileURL)
+        if Self.importReservedURLs.contains(url.standardizedFileURL) {
+            deferThumbnailDeletion(at: url)
             return
         }
         do {
@@ -1375,8 +1400,8 @@ final class KnownPeopleService {
         thumbnailContentRevision &+= 1
         embeddingThumbnailCache.removeObject(forKey: embeddingID as NSUUID)
         let url = embeddingThumbnailURL(for: embeddingID)
-        if importReservedURLs.contains(url.standardizedFileURL) {
-            deferredThumbnailDeletions.insert(url.standardizedFileURL)
+        if Self.importReservedURLs.contains(url.standardizedFileURL) {
+            deferThumbnailDeletion(at: url)
             return
         }
         try? CloudCoordinatedIO.removeItem(at: url)
@@ -1728,6 +1753,7 @@ final class KnownPeopleService {
     /// decision the Known People database starts fresh — but the old store is backed up first, so
     /// nothing is silently destroyed. A no-op once the stored version matches the current one.
     private func migrateEmbeddingVersionIfNeeded() {
+        guard Self.importCommitRoot != knownPeopleDirectory.standardizedFileURL else { return }
         let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
         let stored = UserDefaults.standard.object(forKey: key) as? Int
         let current = FaceRecognitionDefaults.embeddingVersion
@@ -1824,7 +1850,7 @@ final class KnownPeopleService {
     }
 
     func clearDatabase() throws {
-        guard importCommitRoot != knownPeopleDirectory.standardizedFileURL else {
+        guard Self.importCommitRoot != knownPeopleDirectory.standardizedFileURL else {
             throw importBusyError()
         }
         let emptyDB = KnownPeopleDatabase()
@@ -2205,18 +2231,18 @@ final class KnownPeopleService {
     }
 
     private func beginImport() async {
-        if !importInProgress {
-            importInProgress = true
+        if !Self.importInProgress {
+            Self.importInProgress = true
             return
         }
-        await withCheckedContinuation { importWaiters.append($0) }
+        await withCheckedContinuation { Self.importWaiters.append($0) }
     }
 
     private func endImport() {
-        if importWaiters.isEmpty {
-            importInProgress = false
+        if Self.importWaiters.isEmpty {
+            Self.importInProgress = false
         } else {
-            importWaiters.removeFirst().resume()
+            Self.importWaiters.removeFirst().resume()
         }
     }
 

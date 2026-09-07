@@ -678,8 +678,8 @@ struct KnownPeopleServiceTests {
         #expect(Set(service.getAllPeople().map(\.id)) == Set(people.map(\.id)))
     }
 
-    @Test("archive destination reservations reject overlapping local writes and preserve deferred deletion", arguments: [false, true])
-    func importReservesDestinationPaths(cancelImport: Bool) async throws {
+    @Test("Archive destination reservations cover every service instance and preserve deferred deletion", arguments: [false, true], [false, true])
+    func importReservesDestinationPaths(cancelImport: Bool, crossInstance: Bool) async throws {
         let directory = makeTempDir()
         activate(directory)
         defer { teardown(directory) }
@@ -700,6 +700,8 @@ struct KnownPeopleServiceTests {
         )
         let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
         _ = service.loadDatabase()
+        let writer = crossInstance ? KnownPeopleService() : service
+        _ = writer.loadDatabase()
         let task = Task { try await service.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip")) }
         let deadline = ContinuousClock.now + .seconds(5)
         while !gate.entered, ContinuousClock.now < deadline {
@@ -708,10 +710,10 @@ struct KnownPeopleServiceTests {
         try #require(gate.entered)
         // The first thumbnail has reached disk; the embedding and record writes are still pending.
         let conflictingWrites: [() throws -> Void] = [
-            { try service.removePerson(id: person.id) },
-            { try service.saveThumbnail(Data([9]), for: person.id) },
-            { try service.saveEmbeddingThumbnail(Data([9]), for: sample.id) },
-            { try service.clearDatabase() }
+            { try writer.removePerson(id: person.id) },
+            { try writer.saveThumbnail(Data([9]), for: person.id) },
+            { try writer.saveEmbeddingThumbnail(Data([9]), for: sample.id) },
+            { try writer.clearDatabase() }
         ]
         for write in conflictingWrites {
             do {
@@ -723,21 +725,21 @@ struct KnownPeopleServiceTests {
             }
         }
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("people/\(person.id.uuidString).deleted").path))
-        let unrelated = try service.addPerson(name: "Unrelated", embeddings: [])
+        let unrelated = try writer.addPerson(name: "Unrelated", embeddings: [])
         do {
-            try service.addEmbeddingsDeduped([sample], toPersonID: unrelated.id,
+            try writer.addEmbeddingsDeduped([sample], toPersonID: unrelated.id,
                                             embeddingThumbnails: [sample.id: Data([9])])
             Issue.record("An embedding mutation bypassed thumbnail admission")
         } catch {
             #expect((error as NSError).code == 11)
         }
-        #expect(service.person(byID: unrelated.id)?.embeddings.isEmpty == true)
+        #expect(writer.person(byID: unrelated.id)?.embeddings.isEmpty == true)
         let persisted = try JSONDecoder().decode(KnownPerson.self, from: Data(contentsOf:
             directory.appendingPathComponent("people/\(unrelated.id.uuidString).json")
         ))
         #expect(persisted.embeddings.isEmpty)
         // A void deletion API cannot report busy. It must win after the actor's later write.
-        service.deleteEmbeddingThumbnail(for: sample.id)
+        writer.deleteEmbeddingThumbnail(for: sample.id)
         if cancelImport { task.cancel() }
         gate.resume()
         do {
@@ -746,17 +748,17 @@ struct KnownPeopleServiceTests {
         } catch {
             #expect(cancelImport && error is CancellationError)
         }
-        #expect(service.person(byID: unrelated.id) != nil)
+        #expect(writer.person(byID: unrelated.id) != nil)
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(
             "embedding_thumbnails/\(sample.id.uuidString).jpg"
         ).path))
         // Both normal completion and cancellation release admission for retry.
-        try service.saveEmbeddingThumbnail(Data([9]), for: sample.id)
+        try writer.saveEmbeddingThumbnail(Data([9]), for: sample.id)
         #expect(try Data(contentsOf: directory.appendingPathComponent(
             "embedding_thumbnails/\(sample.id.uuidString).jpg"
         )) == Data([9]))
-        try service.clearDatabase()
-        #expect(service.getAllPeople().isEmpty)
+        try writer.clearDatabase()
+        #expect(writer.getAllPeople().isEmpty)
     }
 
     @Test("Archive admission preserves unreadable records and tombstoned identities", arguments: [false, true])
@@ -797,8 +799,10 @@ struct KnownPeopleServiceTests {
         #expect(service.getAllPeople().isEmpty)
     }
 
-    @Test("Remote deletion during archive commit wins after publication", arguments: [false, true], [false, true])
-    func importDefersRemoteDeletion(cancelImport: Bool, recordEvent: Bool) async throws {
+    @Test("Remote deletion from either service instance wins after archive publication", arguments: [false, true], [0, 1, 2, 3])
+    func importDefersRemoteDeletion(cancelImport: Bool, mode: Int) async throws {
+        let recordEvent = mode % 2 == 1
+        let crossInstance = mode >= 2
         let directory = makeTempDir()
         activate(directory)
         defer { teardown(directory) }
@@ -818,6 +822,8 @@ struct KnownPeopleServiceTests {
         )
         let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
         _ = service.loadDatabase()
+        let observer = crossInstance ? KnownPeopleService() : service
+        _ = observer.loadDatabase()
         let task = Task { try await service.importFromZip(sourceURL: directory.appendingPathComponent("archive.zip")) }
         let deadline = ContinuousClock.now + .seconds(30)
         while !gate.entered, ContinuousClock.now < deadline {
@@ -827,7 +833,7 @@ struct KnownPeopleServiceTests {
         let marker = tombstoneURL(person.id, in: directory)
         try encode(KnownPersonTombstone(id: person.id)).write(to: marker)
         // Unknown change dates must not become self-write echoes when replayed.
-        service.applyRemoteChanges([(recordEvent ? personFileURL(person.id, in: directory) : marker, nil)])
+        observer.applyRemoteChanges([(recordEvent ? personFileURL(person.id, in: directory) : marker, nil)])
         #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: directory).path))
         if cancelImport { task.cancel() }
         gate.resume()
@@ -881,8 +887,8 @@ struct KnownPeopleServiceTests {
         #expect(evidence.committedThumbnailURLs.isEmpty)
     }
 
-    @Test("overlapping imports publish before readmission and reject cancelled or rerouted waiters", arguments: [0, 1, 2])
-    func overlappingImportAdmission(outcome: Int) async throws {
+    @Test("Imports across service instances publish before readmission and reject cancelled or rerouted waiters", arguments: [0, 1, 2], [false, true])
+    func overlappingImportAdmission(outcome: Int, crossInstance: Bool) async throws {
         let directory = makeTempDir()
         activate(directory)
         defer { teardown(directory) }
@@ -903,6 +909,10 @@ struct KnownPeopleServiceTests {
         )
         let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
         _ = service.loadDatabase()
+        let secondService = crossInstance
+            ? KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+            : service
+        _ = secondService.loadDatabase()
         let source = directory.appendingPathComponent("archive.zip")
         let first = Task { try await service.importFromZip(sourceURL: source) }
         let deadline = ContinuousClock.now + .seconds(5)
@@ -915,11 +925,15 @@ struct KnownPeopleServiceTests {
         await withCheckedContinuation { (started: CheckedContinuation<Void, Never>) in
             second = Task {
                 started.resume()
-                return try await service.importFromZip(sourceURL: source)
+                return try await secondService.importFromZip(sourceURL: source)
             }
         }
+        #expect(gate.reads == 1)
         if outcome == 1 { second.cancel() }
-        if outcome == 2 { service.reloadAfterStorageChange(resolvedStorageURL: directory) }
+        if outcome == 2 {
+            service.reloadAfterStorageChange(resolvedStorageURL: directory)
+            if crossInstance { secondService.reloadAfterStorageChange(resolvedStorageURL: directory) }
+        }
         gate.resume()
         do {
             #expect(try await first.value == 1)

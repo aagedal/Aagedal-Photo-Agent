@@ -136,12 +136,13 @@ nonisolated struct KeywordListsArchiveInventoryFileAccess: Sendable {
 /// Serializes Settings archive inventory reads away from MainActor. Each coordinated existence
 /// probe and read is synchronous once entered, so cancellation is sampled between candidates and
 /// immediately after a read. Only immutable counts and source routes return to the view.
-actor KeywordListsArchiveInventoryService {
-    static let shared = KeywordListsArchiveInventoryService()
+@KeywordListsFilesystemActor
+final class KeywordListsArchiveInventoryService {
+    nonisolated static let shared = KeywordListsArchiveInventoryService()
 
     private let access: KeywordListsArchiveInventoryFileAccess
 
-    init(access: KeywordListsArchiveInventoryFileAccess = .system) {
+    nonisolated init(access: KeywordListsArchiveInventoryFileAccess = .system) {
         self.access = access
     }
 
@@ -260,12 +261,13 @@ nonisolated struct KeywordListsArchiveExporter: Sendable {
 /// Serializes staging, manifest I/O, `ditto`, and the atomic destination replacement away from
 /// MainActor. Immutable result evidence lets the sheet reject stale feedback without confusing a
 /// late cancellation with a destination that was never written.
-actor KeywordListsArchiveExportService {
-    static let shared = KeywordListsArchiveExportService()
+@KeywordListsFilesystemActor
+final class KeywordListsArchiveExportService {
+    nonisolated static let shared = KeywordListsArchiveExportService()
 
     private let exporter: KeywordListsArchiveExporter
 
-    init(exporter: KeywordListsArchiveExporter = .system) {
+    nonisolated init(exporter: KeywordListsArchiveExporter = .system) {
         self.exporter = exporter
     }
 
@@ -393,12 +395,13 @@ nonisolated struct KeywordListsArchiveImporter: Sendable {
 /// Serializes complete archive imports away from MainActor. The unzip subprocess and coordinated
 /// writes cannot be preempted once entered. Cancellation is therefore observed only at stable
 /// boundaries, and a result never describes an already-written destination as merely cancelled.
-actor KeywordListsArchiveImportService {
-    static let shared = KeywordListsArchiveImportService()
+@KeywordListsFilesystemActor
+final class KeywordListsArchiveImportService {
+    nonisolated static let shared = KeywordListsArchiveImportService()
 
     private let importer: KeywordListsArchiveImporter
 
-    init(importer: KeywordListsArchiveImporter = .system) {
+    nonisolated init(importer: KeywordListsArchiveImporter = .system) {
         self.importer = importer
     }
 

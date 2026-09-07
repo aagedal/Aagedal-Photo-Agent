@@ -402,9 +402,8 @@ fi
 
 # AuraFace is independently delivered. Assert this on the final exported or
 # reused app so an ignored local source package cannot inflate an app update.
-AURAFACE_BUNDLED_MODEL="$APP/Contents/Resources/AuraFaceR100.mlmodelc"
-[ ! -e "$AURAFACE_BUNDLED_MODEL" ] \
-  || die "Exported app contains AuraFaceR100.mlmodelc. The on-demand model must remain outside the app bundle."
+python3 -B scripts/ci/validate_model_omission.py "$APP" > "$OUTPUT_DIR/model-omission.json" \
+  || die "Exported app failed the recursive on-demand model omission check."
 ok "AuraFace is excluded from the app bundle"
 
 # ─── 8. Notarize the app, then staple ─────────────────────────────────────────

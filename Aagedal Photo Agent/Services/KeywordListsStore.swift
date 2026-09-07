@@ -610,11 +610,12 @@ nonisolated struct KeywordListsLegacyMigrationFileAccess: Sendable {
 /// No suspension occurs within a migration batch, keeping each read/write/verification transaction
 /// serialized. Blocking security-scoped and coordinated operations are sampled for cancellation at
 /// stable boundaries; a write already entered is verified before its durable evidence is returned.
-actor KeywordListsLegacyMigrationService {
-    static let shared = KeywordListsLegacyMigrationService()
+@KeywordListsFilesystemActor
+final class KeywordListsLegacyMigrationService {
+    nonisolated static let shared = KeywordListsLegacyMigrationService()
     private let access: KeywordListsLegacyMigrationFileAccess
 
-    init(access: KeywordListsLegacyMigrationFileAccess = .system) {
+    nonisolated init(access: KeywordListsLegacyMigrationFileAccess = .system) {
         self.access = access
     }
 

@@ -134,10 +134,10 @@ class AuraFaceDistributionTests(unittest.TestCase):
 
         release = (REPOSITORY / "scripts/release.sh").read_text(encoding="utf-8")
         self.assertIn(
-            'AURAFACE_BUNDLED_MODEL="$APP/Contents/Resources/AuraFaceR100.mlmodelc"',
+            'python3 -B scripts/ci/validate_model_omission.py "$APP" > "$OUTPUT_DIR/model-omission.json"',
             release,
         )
-        self.assertIn('[ ! -e "$AURAFACE_BUNDLED_MODEL" ]', release)
+        self.assertIn('|| die "Exported app failed the recursive on-demand model omission check."', release)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,16 @@
 import Foundation
 import os.log
 
+/// Shared ownership of managed keyword-list filesystem transactions. Every service below keeps
+/// its read/merge/write work synchronous on this executor, so archive imports, backup restores,
+/// migrations, and routing reconciliation cannot interleave with editor or Quick List mutations.
+/// Captured URLs and durable cancellation results remain owned by each request. External iCloud
+/// writers still require CloudCoordinatedIO; this boundary orders the app's asynchronous services.
+@globalActor
+actor KeywordListsFilesystemActor {
+    static let shared = KeywordListsFilesystemActor()
+}
+
 nonisolated struct QuickListCacheSource: Equatable, Sendable {
     let type: QuickListType
     let url: URL
@@ -170,8 +180,9 @@ nonisolated struct KeywordListEditorFileAccess: Sendable {
 /// and coordinated filesystem calls are synchronous once entered, so cancellation is sampled only
 /// at stable boundaries. A completed write always returns immutable commit evidence, allowing the
 /// editor to distinguish a durable older save from the latest result it is allowed to publish.
-actor KeywordListEditorPersistenceService {
-    static let shared = KeywordListEditorPersistenceService()
+@KeywordListsFilesystemActor
+final class KeywordListEditorPersistenceService {
+    nonisolated static let shared = KeywordListEditorPersistenceService()
 
     private let access: KeywordListEditorFileAccess
     private let signposter = OSSignposter(
@@ -179,7 +190,7 @@ actor KeywordListEditorPersistenceService {
         category: "QuickListCacheLoad"
     )
 
-    init(access: KeywordListEditorFileAccess = .system) {
+    nonisolated init(access: KeywordListEditorFileAccess = .system) {
         self.access = access
     }
 

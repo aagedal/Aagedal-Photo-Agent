@@ -494,13 +494,14 @@ nonisolated struct KeywordListsRoutingFileAccess: Sendable {
 /// is serialized, and cancellation is sampled before resolution and before the non-preemptible
 /// coordinated tree commit. A completed merge returns durable evidence even if the caller was
 /// cancelled while Foundation was inside the filesystem operation.
-actor KeywordListsRoutingService {
-    static let shared = KeywordListsRoutingService()
+@KeywordListsFilesystemActor
+final class KeywordListsRoutingService {
+    nonisolated static let shared = KeywordListsRoutingService()
 
     private let access: KeywordListsRoutingFileAccess
     private let ensureDirectory: @Sendable (URL) throws -> Void
 
-    init(
+    nonisolated init(
         access: KeywordListsRoutingFileAccess = .system,
         ensureDirectory: @escaping @Sendable (URL) throws -> Void = CloudCoordinatedIO.ensureDirectory
     ) {

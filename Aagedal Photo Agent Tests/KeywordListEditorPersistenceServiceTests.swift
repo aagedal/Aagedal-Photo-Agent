@@ -4,6 +4,69 @@ import Testing
 
 @Suite("Keyword-list editor filesystem boundary")
 struct KeywordListEditorPersistenceServiceTests {
+    @Test("routing and backup restore wait for an editor read/merge/write transaction")
+    func sharedFilesystemTransactions() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("list.txt")
+        let backup = root.appendingPathComponent("restore.txt")
+        let preimage = root.appendingPathComponent("previous.txt")
+        try Data("first\n".utf8).write(to: destination)
+        try Data("restored\n".utf8).write(to: backup)
+
+        let gate = BlockingKeywordListEditorFileAccessProbe()
+        let editor = KeywordListEditorPersistenceService(access: KeywordListEditorFileAccess(
+            itemExists: { _ in true },
+            readData: gate.fileAccess.readData,
+            writeData: { try $0.write(to: $1) }
+        ))
+        let editorTask = Task {
+            try await editor.appendEntries(["added"], to: destination, requestID: UUID())
+        }
+        defer { gate.releaseFirstRead() }
+        try await gate.waitUntilFirstReadStarts()
+
+        let probe = KeywordFilesystemTransactionProbe()
+        let routing = KeywordListsRoutingService(access: KeywordListsRoutingFileAccess(
+            localRootURL: { root }, cloudRootURL: { root.appendingPathComponent("cloud") },
+            merge: { _, _ in probe.recordRouting() }
+        ))
+        let system = KeywordListBackupFileIO.system
+        let restore = KeywordListBackupFileService(io: KeywordListBackupFileIO(
+            contentsOfDirectory: system.contentsOfDirectory,
+            inspectTextFile: system.inspectTextFile,
+            createDirectory: system.createDirectory,
+            readData: { url in probe.recordBackupRead(); return try Data(contentsOf: url) },
+            writeData: { try $0.write(to: $1) }, removeItem: system.removeItem
+        ))
+        let routingTask = Task { try await routing.reconcile(enabled: true, requestID: UUID()) }
+        let restoreTask = Task {
+            try await restore.restore(from: backup, to: destination, requestID: UUID(),
+                                      previousContentBackupURL: preimage)
+        }
+        // Give both independent service requests time to attempt entry while the editor is
+        // suspended inside its synchronous read. Neither may enter the filesystem transaction.
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(probe.routingCount == 0)
+        #expect(probe.backupReadCount == 0)
+        gate.releaseFirstRead()
+        guard case .committed(let edit) = try await editorTask.value else {
+            Issue.record("Editor append did not commit")
+            return
+        }
+        _ = try await routingTask.value
+        guard case .restored = try await restoreTask.value else {
+            Issue.record("Backup restore did not commit")
+            return
+        }
+        #expect(edit.entries == ["first", "added"])
+        #expect(try String(contentsOf: preimage, encoding: .utf8) == "first\nadded\n")
+        #expect(try String(contentsOf: destination, encoding: .utf8) == "restored\n")
+        #expect(probe.routingCount == 1)
+        #expect(probe.backupReadCount == 2)
+    }
+
     @Test("load returns a complete normalized snapshot away from MainActor")
     @MainActor
     func loadRunsOffMainActor() async throws {
@@ -779,4 +842,15 @@ private actor SettingsQuickListRootGate {
         continuations.removeAll()
         for continuation in waiting { continuation.resume(returning: root) }
     }
+}
+
+private nonisolated final class KeywordFilesystemTransactionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var routes = 0
+    private var reads = 0
+
+    func recordRouting() { lock.withLock { routes += 1 } }
+    func recordBackupRead() { lock.withLock { reads += 1 } }
+    var routingCount: Int { lock.withLock { routes } }
+    var backupReadCount: Int { lock.withLock { reads } }
 }
