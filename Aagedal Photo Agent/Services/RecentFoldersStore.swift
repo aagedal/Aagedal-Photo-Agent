@@ -121,11 +121,24 @@ nonisolated enum RecentFolderBookmarkCommitResult: Sendable {
 /// Bookmark APIs can synchronously contact file providers, so even the small Open Recent
 /// cache must not invoke them while SwiftUI is evaluating commands or opening a folder.
 actor RecentFolderBookmarkService {
+    /// Run blocking Foundation calls on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and the actor's transaction ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = RecentFolderBookmarkService()
 
     private let securityScopes: BrowserFolderSecurityScopeStore
 
-    init(securityScopes: BrowserFolderSecurityScopeStore = .shared) {
+    init(
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.recent-folder-bookmarks", qos: .utility
+        ),
+        securityScopes: BrowserFolderSecurityScopeStore = .shared
+    ) {
+        self.filesystemQueue = filesystemQueue
         self.securityScopes = securityScopes
     }
 
@@ -213,15 +226,26 @@ nonisolated enum FavoriteFolderBookmarkCommitResult: Sendable {
 /// Serializes Favorite-folder bookmark resolution and creation away from MainActor.
 /// File-provider bookmark APIs can block even when the favorite cache itself is small.
 actor FavoriteFolderBookmarkService {
+    /// Run blocking Foundation calls on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and the actor's transaction ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = FavoriteFolderBookmarkService()
 
     private let securityScopes: BrowserFolderSecurityScopeStore
     private let cancellationRequested: @Sendable () -> Bool
 
     init(
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.favorite-folder-bookmarks", qos: .utility
+        ),
         securityScopes: BrowserFolderSecurityScopeStore = .shared,
         cancellationRequested: @escaping @Sendable () -> Bool = { Task.isCancelled }
     ) {
+        self.filesystemQueue = filesystemQueue
         self.securityScopes = securityScopes
         self.cancellationRequested = cancellationRequested
     }

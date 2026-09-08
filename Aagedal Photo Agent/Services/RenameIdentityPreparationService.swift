@@ -24,16 +24,27 @@ nonisolated struct PreparedRenameIdentities: Sendable {
 /// Foundation symlink resolution may block on a network volume. Serialize that work on this
 /// actor and publish only a complete, non-cancelled snapshot to MainActor consumers.
 actor RenameIdentityPreparationService {
+    /// Run blocking Foundation calls on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and the actor's transaction ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = RenameIdentityPreparationService()
     private let lookup: @Sendable (URL) -> URL
     private let canonical: @Sendable (URL) -> URL
 
     init(
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.rename-identities", qos: .utility
+        ),
         lookup: @escaping @Sendable (URL) -> URL = renameReassociationLookupURL,
         canonical: @escaping @Sendable (URL) -> URL = {
             $0.standardizedFileURL.resolvingSymlinksInPath()
         }
     ) {
+        self.filesystemQueue = filesystemQueue
         self.lookup = lookup
         self.canonical = canonical
     }

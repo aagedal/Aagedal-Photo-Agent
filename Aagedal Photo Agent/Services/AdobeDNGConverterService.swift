@@ -116,11 +116,21 @@ nonisolated enum AdobeDNGDiscoveryResult: Sendable, Equatable {
 /// Launch Services lookup and executable probes may block on application volumes.
 /// Keep the entire ordered lookup on a serialized worker, including fallback probes.
 actor AdobeDNGDiscoveryService {
+    /// Run blocking Foundation calls on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and the actor's transaction ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = AdobeDNGDiscoveryService()
     private let applications: @Sendable () -> [URL]
     private let executable: @Sendable (URL) -> URL?
 
     init(
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.adobe-dng-discovery", qos: .utility
+        ),
         applications: @escaping @Sendable () -> [URL] = {
             var urls: [URL] = []
             if let registered = NSWorkspace.shared.urlForApplication(
@@ -135,6 +145,7 @@ actor AdobeDNGDiscoveryService {
         },
         executable: @escaping @Sendable (URL) -> URL? = AdobeDNGConverterService.executableURL
     ) {
+        self.filesystemQueue = filesystemQueue
         self.applications = applications
         self.executable = executable
     }

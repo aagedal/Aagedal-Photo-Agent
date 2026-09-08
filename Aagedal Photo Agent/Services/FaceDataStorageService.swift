@@ -249,26 +249,39 @@ nonisolated enum FaceScanFileSignatureResult: Sendable, Equatable {
 /// The same actor owns the initial classification transaction and the per-image signature reads
 /// performed after detection, so neither path can overlap a slow volume probe.
 actor FaceScanFileSignatureService {
+    /// Run blocking Foundation calls on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and the actor's transaction ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = FaceScanFileSignatureService()
 
     typealias SignatureReader = @Sendable (URL) -> FileSignature?
 
     private let readSignature: SignatureReader
 
-    init(readSignature: @escaping SignatureReader = { url in
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let modificationDate = attrs[.modificationDate] as? Date else {
-            return nil
+    init(
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.face-scan-signatures", qos: .utility
+        ),
+        readSignature: @escaping SignatureReader = { url in
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let modificationDate = attrs[.modificationDate] as? Date else {
+                return nil
+            }
+            let fileSize: Int64?
+            if let value = attrs[.size] as? NSNumber {
+                fileSize = value.int64Value
+            } else {
+                fileSize = attrs[.size] as? Int64
+            }
+            guard let fileSize else { return nil }
+            return FileSignature(modificationDate: modificationDate, fileSize: fileSize)
         }
-        let fileSize: Int64?
-        if let value = attrs[.size] as? NSNumber {
-            fileSize = value.int64Value
-        } else {
-            fileSize = attrs[.size] as? Int64
-        }
-        guard let fileSize else { return nil }
-        return FileSignature(modificationDate: modificationDate, fileSize: fileSize)
-    }) {
+    ) {
+        self.filesystemQueue = filesystemQueue
         self.readSignature = readSignature
     }
 
@@ -336,6 +349,13 @@ actor FaceScanFileSignatureService {
 /// cancellation observed after deletion is recorded in complete evidence rather than pretending
 /// the deleted data still exists.
 actor FaceDataFolderLoadService {
+    /// Run blocking Foundation calls on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and the actor's transaction ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = FaceDataFolderLoadService()
 
     typealias FaceDataLoader = @Sendable (URL) -> FolderFaceData?
@@ -357,6 +377,9 @@ actor FaceDataFolderLoadService {
     private let currentDate: CurrentDate
 
     init(
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.face-data-storage", qos: .utility
+        ),
         loadFaceData: @escaping FaceDataLoader = { folderURL in
             FaceDataStorageService().loadFaceData(for: folderURL)
         },
@@ -380,6 +403,7 @@ actor FaceDataFolderLoadService {
         },
         currentDate: @escaping CurrentDate = Date.init
     ) {
+        self.filesystemQueue = filesystemQueue
         self.loadFaceData = loadFaceData
         self.faceDataExists = faceDataExists
         self.loadThumbnail = loadThumbnail

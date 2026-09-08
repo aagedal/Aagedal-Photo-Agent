@@ -26,6 +26,13 @@ nonisolated struct VoiceMemoRenamePlanningSnapshot: Equatable, Sendable {
 /// operations are synchronous and individually non-preemptible, so cancellation is checked on
 /// both sides of every item and the exact completed prefix is returned as immutable evidence.
 actor VoiceMemoRenamePlanningService {
+    /// Run blocking Foundation calls on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and the actor's transaction ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     typealias ArtifactPlanner = @Sendable (URL) throws -> [RenamePlanningAssociatedArtifact]
 
     static let shared = VoiceMemoRenamePlanningService()
@@ -37,10 +44,14 @@ actor VoiceMemoRenamePlanningService {
     )
 
     init(
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.voice-memo-rename-planning", qos: .utility
+        ),
         artifactPlanner: @escaping ArtifactPlanner = {
             try VoiceMemoCompanionRepository().planningArtifacts(for: $0)
         }
     ) {
+        self.filesystemQueue = filesystemQueue
         self.artifactPlanner = artifactPlanner
     }
 

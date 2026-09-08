@@ -423,3 +423,280 @@ nonisolated private final class FavoriteCancellationSequence: @unchecked Sendabl
         }
     }
 }
+
+@Suite("Companion filesystem Dispatch executors")
+@MainActor
+struct CompanionFilesystemExecutorTests {
+    @Test("Bookmark resolution retains task context and exact cancellation evidence",
+          arguments: [false, true], [false, true])
+    func bookmarkResolution(favorite: Bool, cancel: Bool) async {
+        let root = URL(fileURLWithPath: "/virtual/bookmarks")
+        let requestID = UUID()
+        let queue = DispatchSerialQueue(label: "test.bookmarks.resolve")
+        let check = contextCheck(queue, root: root)
+        let scopes = BrowserFolderSecurityScopeStore(accessStarter: { _ in
+            check()
+            return true
+        }, bookmarkCreator: { _ in
+            check()
+            return Data([2])
+        }, bookmarkResolver: { _ in
+            check()
+            if cancel { withUnsafeCurrentTask { $0?.cancel() } }
+            return .init(url: root, isStale: true)
+        })
+        await Task {
+            await CompanionFilesystemContext.$marker.withValue(root) {
+                if favorite {
+                    let service = FavoriteFolderBookmarkService(filesystemQueue: queue, securityScopes: scopes)
+                    let result = await service.resolve([
+                        FavoriteFolder(url: root, bookmarkData: Data([1])),
+                        FavoriteFolder(url: root, bookmarkData: Data([1]))
+                    ], requestID: requestID)
+                    switch result {
+                    case .loaded(let snapshot):
+                        #expect(!cancel)
+                        #expect(snapshot.requestID == requestID)
+                        #expect(snapshot.inspectedCount == 2)
+                        #expect(snapshot.folders.allSatisfy { $0.bookmarkData == Data([2]) })
+                    case .cancelledAfterPrefix(let id, let count):
+                        #expect(cancel)
+                        #expect(id == requestID)
+                        #expect(count == 1)
+                    default: Issue.record("Bookmark resolution never entered the worker")
+                    }
+                } else {
+                    let service = RecentFolderBookmarkService(filesystemQueue: queue, securityScopes: scopes)
+                    let result = await service.resolve([
+                        RecentFolder(url: root, bookmarkData: Data([1])),
+                        RecentFolder(url: root, bookmarkData: Data([1]))
+                    ], requestID: requestID)
+                    switch result {
+                    case .loaded(let snapshot):
+                        #expect(!cancel)
+                        #expect(snapshot.requestID == requestID)
+                        #expect(snapshot.inspectedCount == 2)
+                        #expect(snapshot.folders.allSatisfy { $0.bookmarkData == Data([2]) })
+                    case .cancelledAfterPrefix(let id, let count):
+                        #expect(cancel)
+                        #expect(id == requestID)
+                        #expect(count == 1)
+                    default: Issue.record("Bookmark resolution never entered the worker")
+                    }
+                }
+            }
+        }.value
+    }
+
+    @Test("Bookmark creation keeps completed access evidence when cancelled", arguments: [false, true])
+    func bookmarkCreation(favorite: Bool) async {
+        let root = URL(fileURLWithPath: "/virtual/bookmark-create")
+        let queue = DispatchSerialQueue(label: "test.bookmarks.create")
+        let check = contextCheck(queue, root: root)
+        let scopes = BrowserFolderSecurityScopeStore(accessStarter: { _ in
+            check()
+            return true
+        }, bookmarkCreator: { _ in
+            check()
+            withUnsafeCurrentTask { $0?.cancel() }
+            return Data([3])
+        }, bookmarkResolver: { _ in nil })
+        await Task {
+            await CompanionFilesystemContext.$marker.withValue(root) {
+                let id = UUID()
+                if favorite {
+                    let service = FavoriteFolderBookmarkService(filesystemQueue: queue, securityScopes: scopes)
+                    guard case .completed(let result) = await service.createBookmark(for: root, requestID: id) else {
+                        Issue.record("Completed bookmark access was discarded")
+                        return
+                    }
+                    #expect(result.requestID == id)
+                    #expect(result.bookmarkData == Data([3]))
+                    #expect(result.cancellationRequestedAfterAccess)
+                } else {
+                    let service = RecentFolderBookmarkService(filesystemQueue: queue, securityScopes: scopes)
+                    guard case .completed(let result) = await service.createBookmark(for: root, requestID: id) else {
+                        Issue.record("Completed bookmark access was discarded")
+                        return
+                    }
+                    #expect(result.requestID == id)
+                    #expect(result.bookmarkData == Data([3]))
+                    #expect(result.cancellationRequestedAfterAccess)
+                }
+            }
+        }.value
+    }
+
+    @Test("Signature reads preserve task context and reject a cancelled classification", arguments: [false, true])
+    func faceSignatures(classify: Bool) async {
+        let root = URL(fileURLWithPath: "/virtual/face-signature")
+        let queue = DispatchSerialQueue(label: "test.face-signatures")
+        let check = contextCheck(queue, root: root)
+        let service = FaceScanFileSignatureService(filesystemQueue: queue) { url in
+            check()
+            #expect(url == root)
+            withUnsafeCurrentTask { $0?.cancel() }
+            return FileSignature(modificationDate: .distantPast, fileSize: 12)
+        }
+        await Task {
+            await CompanionFilesystemContext.$marker.withValue(root) {
+                if classify {
+                    let result = await service.classify(imageURLs: [root, root], existingSignatures: [:])
+                    #expect(result == .cancelled(processedFileCount: 1, requestedFileCount: 2))
+                } else {
+                    #expect(await service.signature(for: root) == .cancelled(imageURL: root, readCompleted: true))
+                }
+            }
+        }.value
+    }
+
+    @Test("Face storage reads and committed mutations retain cancellation on their worker",
+          arguments: [0, 1, 2, 3, 4, 5])
+    func faceStorage(operation: Int) async {
+        let root = URL(fileURLWithPath: "/virtual/face-storage")
+        let queue = DispatchSerialQueue(label: "test.face-storage")
+        let check = contextCheck(queue, root: root)
+        let cancel: @Sendable () -> Void = {
+            check()
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        let faceID = UUID()
+        let document = FolderFaceData(folderURL: root, faces: [], groups: [], lastScanDate: .distantPast, scanComplete: true)
+        let service = FaceDataFolderLoadService(filesystemQueue: queue, loadFaceData: { _ in
+            cancel()
+            return document
+        }, faceDataExists: { _ in
+            check()
+            return true
+        }, loadThumbnail: { _, _ in
+            cancel()
+            return Data([1])
+        }, deleteFaceData: { _ in cancel() }, saveFaceData: { _ in cancel() },
+        saveThumbnail: { _, _, _ in cancel() }, deleteThumbnail: { _, _ in
+            Issue.record("Cancellation after the document commit must stop thumbnail cleanup")
+        })
+        await Task {
+            await CompanionFilesystemContext.$marker.withValue(root) {
+                switch operation {
+                case 0:
+                    guard case .cancelled(let url) = await service.loadDocument(folderURL: root) else {
+                        Issue.record("Cancelled document read was published")
+                        return
+                    }
+                    #expect(url == root)
+                case 1:
+                    guard case .cancelled(let evidence) = await service.load(folderURL: root, cleanupPolicy: .never) else {
+                        Issue.record("Cancelled folder read was published")
+                        return
+                    }
+                    #expect(evidence.folderURL == root)
+                    #expect(evidence.processedThumbnailCount == 0)
+                case 2:
+                    guard case .cancelled = await service.loadThumbnailData(faceID: faceID, folderURL: root) else {
+                        Issue.record("Cancelled thumbnail read was published")
+                        return
+                    }
+                case 3:
+                    guard case .committed(let evidence) = await service.persist(document, deletingThumbnailIDs: [faceID]) else {
+                        Issue.record("Committed document evidence was lost")
+                        return
+                    }
+                    #expect(evidence.documentCommitted)
+                    #expect(evidence.deletedThumbnailIDs.isEmpty)
+                    #expect(evidence.requestedThumbnailDeletionCount == 1)
+                    #expect(evidence.cancellationRequestedAfterCommit)
+                case 4:
+                    #expect(await service.persistThumbnail(Data([1]), faceID: faceID, folderURL: root)
+                        == .committed(faceID: faceID, cancellationRequestedAfterCommit: true))
+                default:
+                    #expect(await service.deleteAll(for: root)
+                        == .committed(folderURL: root, cancellationRequestedAfterCommit: true))
+                }
+            }
+        }.value
+    }
+
+    @Test("Rename identities keep the caller task on their Dispatch worker", arguments: [false, true])
+    func renameIdentities(cancel: Bool) async throws {
+        let root = URL(fileURLWithPath: "/virtual/rename-identities")
+        let queue = DispatchSerialQueue(label: "test.rename-identities")
+        let check = contextCheck(queue, root: root)
+        let service = RenameIdentityPreparationService(filesystemQueue: queue, lookup: { url in
+            check()
+            return url
+        }, canonical: { url in
+            check()
+            if cancel { withUnsafeCurrentTask { $0?.cancel() } }
+            return url
+        })
+        try await Task {
+            try await CompanionFilesystemContext.$marker.withValue(root) {
+                do {
+                    let result = try await service.prepare(urls: [root], destinations: [root])
+                    #expect(!cancel)
+                    #expect(result.lookup(root) == root)
+                    #expect(result.canonical(root) == root)
+                } catch is CancellationError {
+                    #expect(cancel)
+                }
+            }
+        }.value
+    }
+
+    @Test("Voice memo planning retains only the complete prefix on cancellation")
+    func voiceMemoPlanning() async {
+        let root = URL(fileURLWithPath: "/virtual/voice-memo")
+        let queue = DispatchSerialQueue(label: "test.voice-memo-planning")
+        let check = contextCheck(queue, root: root)
+        let first = root.appendingPathComponent("first.raw")
+        let second = root.appendingPathComponent("second.raw")
+        let service = VoiceMemoRenamePlanningService(filesystemQueue: queue) { url in
+            check()
+            #expect(url == first || url == second)
+            if url == second { withUnsafeCurrentTask { $0?.cancel() } }
+            return []
+        }
+        let request = VoiceMemoRenamePlanningRequest(requestID: UUID(), folderURL: root,
+            items: [first, second, root.appendingPathComponent("unused.raw")].map { RenamePlanningItem(sourceImageURL: $0) })
+        let result = await Task {
+            await CompanionFilesystemContext.$marker.withValue(root) { await service.plan(request) }
+        }.value
+        #expect(result.requestID == request.requestID)
+        #expect(result.items == [request.items[0]])
+        #expect(result.completion == .cancelled(completedItemCount: 1))
+    }
+
+    @Test("DNG application lookup and executable probes retain caller cancellation", arguments: [false, true])
+    func dngDiscovery(cancelDuringLookup: Bool) async {
+        let root = URL(fileURLWithPath: "/virtual/converter.app")
+        let queue = DispatchSerialQueue(label: "test.dng-discovery")
+        let check = contextCheck(queue, root: root)
+        let service = AdobeDNGDiscoveryService(filesystemQueue: queue, applications: {
+            check()
+            if cancelDuringLookup { withUnsafeCurrentTask { $0?.cancel() } }
+            return [root, root.appendingPathComponent("unused")]
+        }, executable: { url in
+            check()
+            #expect(url == root)
+            #expect(!cancelDuringLookup)
+            withUnsafeCurrentTask { $0?.cancel() }
+            return root
+        })
+        let result = await Task {
+            await CompanionFilesystemContext.$marker.withValue(root) { await service.discover() }
+        }.value
+        #expect(result == .cancelled(inspectedCount: cancelDuringLookup ? 0 : 1))
+    }
+
+    private func contextCheck(_ queue: DispatchSerialQueue, root: URL) -> @Sendable () -> Void {
+        {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(CompanionFilesystemContext.marker == root)
+        }
+    }
+}
+
+private nonisolated enum CompanionFilesystemContext {
+    @TaskLocal static var marker: URL?
+}
