@@ -13,6 +13,14 @@ nonisolated struct SystemImageTrashHandler: ImageTrashHandling {
 }
 
 actor FileSystemService {
+    /// Volume-facing Foundation/ImageIO calls can block. Run the actor's original task on a
+    /// retained Dispatch worker so it keeps task locals and cancellation without occupying a
+    /// cooperative executor thread. Synchronous bundle mutations remain serialized end to end.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     enum Error: Swift.Error, Sendable, Equatable {
         case destinationAlreadyExists(URL)
         case destinationIsNotDirectory(URL)
@@ -175,8 +183,12 @@ actor FileSystemService {
         },
         displayOrientation: @escaping @Sendable (URL) -> Int? = { url in
             FileSystemService.systemDisplayOrientation(for: url)
-        }
+        },
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.filesystem", qos: .utility
+        )
     ) {
+        self.filesystemQueue = filesystemQueue
         self.isLocallyAvailable = isLocallyAvailable
         self.requestDownload = requestDownload
         self.rejectMove = rejectMove
