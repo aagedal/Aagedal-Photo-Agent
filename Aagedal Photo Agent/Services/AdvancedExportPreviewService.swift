@@ -127,6 +127,55 @@ nonisolated struct AdvancedExportLoupe: @unchecked Sendable {
     let configuration: AdvancedExportConfiguration
 }
 
+nonisolated struct AdvancedExportLoupeRenderRequest: @unchecked Sendable {
+    let item: AdvancedExportItem
+    let configuration: AdvancedExportConfiguration
+    let outputURL: URL
+    let normalizedPoint: CGPoint
+    let pixelSize: Int
+    let cachedReferenceImage: CGImage?
+}
+
+nonisolated struct AdvancedExportLoupeRenderer: Sendable {
+    let render: @Sendable (AdvancedExportLoupeRenderRequest) throws -> AdvancedExportLoupe
+
+    static let system = AdvancedExportLoupeRenderer { request in
+        let referenceImage: CGImage
+        if let cached = request.cachedReferenceImage {
+            referenceImage = cached
+        } else {
+            referenceImage = try EditedImageRenderer.makeAdvancedReferenceLoupe(
+                from: request.item.sourceURL,
+                cameraRaw: request.item.cameraRaw,
+                isHDR: request.item.isHDR,
+                configuration: request.configuration,
+                normalizedPoint: request.normalizedPoint,
+                pixelSize: request.pixelSize
+            )
+        }
+        try Task.checkCancellation()
+
+        let options: [CIImageOption: Any] = request.item.isHDR
+            ? [.expandToHDR: true, .toneMapHDRtoSDR: false, .applyOrientationProperty: true]
+            : [.applyOrientationProperty: true]
+        guard let encoded = CIImage(contentsOf: request.outputURL, options: options) else {
+            throw EditedImageRenderer.RenderError.unreadableImage
+        }
+        let exportImage = try EditedImageRenderer.makeLoupeCrop(
+            from: encoded,
+            isHDR: request.item.isHDR,
+            configuration: request.configuration,
+            normalizedPoint: request.normalizedPoint,
+            pixelSize: request.pixelSize
+        )
+        return AdvancedExportLoupe(
+            referenceImage: referenceImage,
+            exportImage: exportImage,
+            configuration: request.configuration
+        )
+    }
+}
+
 /// Creates real, full-resolution export artifacts in a private temporary folder,
 /// then decodes display-sized versions for side-by-side inspection.
 actor AdvancedExportPreviewService {
@@ -152,11 +201,14 @@ actor AdvancedExportPreviewService {
     init(
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.advanced-export-preview", qos: .utility
-        )
+        ),
+        loupeRenderer: AdvancedExportLoupeRenderer = .system
     ) {
         self.filesystemQueue = filesystemQueue
+        self.loupeRenderer = loupeRenderer
     }
 
+    private let loupeRenderer: AdvancedExportLoupeRenderer
     private let maxDisplayPixelSize: CGFloat = 1_600
     private var isRendering = false
     private var renderWaiters: [CheckedContinuation<Void, Never>] = []
@@ -247,41 +299,17 @@ actor AdvancedExportPreviewService {
             pixelSize: pixelSize
         )
         let cachedReferenceImage = referenceLoupeImages[loupeKey]
-        let result = try await Task.detached(priority: .userInitiated) {
-            let referenceImage: CGImage
-            if let cachedReferenceImage {
-                referenceImage = cachedReferenceImage
-            } else {
-                referenceImage = try EditedImageRenderer.makeAdvancedReferenceLoupe(
-                    from: item.sourceURL,
-                    cameraRaw: item.cameraRaw,
-                    isHDR: item.isHDR,
-                    configuration: configuration,
-                    normalizedPoint: normalizedPoint,
-                    pixelSize: pixelSize
-                )
-            }
-            try Task.checkCancellation()
-
-            let options: [CIImageOption: Any] = item.isHDR
-                ? [.expandToHDR: true, .toneMapHDRtoSDR: false, .applyOrientationProperty: true]
-                : [.applyOrientationProperty: true]
-            guard let encoded = CIImage(contentsOf: outputURL, options: options) else {
-                throw EditedImageRenderer.RenderError.unreadableImage
-            }
-            let exportImage = try EditedImageRenderer.makeLoupeCrop(
-                from: encoded,
-                isHDR: item.isHDR,
-                configuration: configuration,
-                normalizedPoint: normalizedPoint,
-                pixelSize: pixelSize
-            )
-            return AdvancedExportLoupe(
-                referenceImage: referenceImage,
-                exportImage: exportImage,
-                configuration: configuration
-            )
-        }.value
+        let result = try loupeRenderer.render(AdvancedExportLoupeRenderRequest(
+            item: item,
+            configuration: configuration,
+            outputURL: outputURL,
+            normalizedPoint: normalizedPoint,
+            pixelSize: pixelSize,
+            cachedReferenceImage: cachedReferenceImage
+        ))
+        // A synchronous render cannot be interrupted, but superseded work must neither
+        // populate the reference cache nor escape to the preview owner after it finishes.
+        try Task.checkCancellation()
         referenceLoupeImages[loupeKey] = result.referenceImage
         return result
     }

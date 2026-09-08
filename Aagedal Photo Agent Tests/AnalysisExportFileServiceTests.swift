@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -1563,4 +1564,81 @@ struct ExportFilesystemExecutorTests {
 
 private nonisolated enum ExportFilesystemExecutorContext {
     @TaskLocal static var requestID: UUID?
+}
+
+@Suite("Advanced Export loupe task ownership")
+struct AdvancedExportLoupeTaskTests {
+    @Test("Cancellation during rendering stays on the worker and cannot publish or cache the result")
+    @MainActor
+    func cancellationDoesNotPopulateCache() async throws {
+        let queue = DispatchSerialQueue(label: "test.advanced-export.loupe")
+        let requestID = UUID()
+        let context = try #require(CGContext(
+            data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let image = try #require(context.makeImage())
+        let item = AdvancedExportItem(
+            sourceURL: URL(fileURLWithPath: "/virtual/loupe-source.jpg"),
+            filename: "loupe-source.jpg", cameraRaw: nil, isHDR: false
+        )
+        let configuration = AdvancedExportConfiguration(
+            sdrFormat: .jpeg, sdrQuality: 0.8, sdrGamut: .sRGB,
+            hdrFormat: .jpegGainMap, hdrQuality: 0.8, hdrGamut: .displayP3,
+            tiffCompression: .lzw, resolutionLimit: .original,
+            locationMode: .formatSubfolder, customSubfolderName: "Exports"
+        )
+        let folder = URL(fileURLWithPath: "/virtual/loupe-preview")
+        let preview = AdvancedExportPreview(
+            referenceImage: image, exportImage: image, encodedFileSize: 1,
+            pixelWidth: 1, pixelHeight: 1, configuration: configuration,
+            storage: AdvancedExportPreviewStorage(
+                folderURL: folder, outputURL: folder.appendingPathComponent("output.jpg"),
+                cleanupService: AdvancedExportPreviewCleanupService(access: .init(removeItem: { _ in }))
+            )
+        )
+        let probe = AdvancedExportLoupeInvocationProbe()
+        let service = AdvancedExportPreviewService(filesystemQueue: queue, loupeRenderer: .init { request in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(ExportFilesystemExecutorContext.requestID == requestID)
+            let invocation = probe.nextInvocation()
+            // The cancelled first render must not seed the second request's cache. A successful
+            // second render does seed the third, also proving the render slot was released.
+            #expect((request.cachedReferenceImage != nil) == (invocation == 3))
+            if invocation == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+            return AdvancedExportLoupe(
+                referenceImage: preview.referenceImage,
+                exportImage: preview.exportImage,
+                configuration: request.configuration
+            )
+        })
+        let render: @Sendable () async throws -> AdvancedExportLoupe = {
+            try await ExportFilesystemExecutorContext.$requestID.withValue(requestID) {
+                try await service.makeLoupe(
+                    item: item, configuration: configuration, preview: preview,
+                    normalizedPoint: CGPoint(x: 0.5, y: 0.5), pixelSize: 1
+                )
+            }
+        }
+        let cancelled = Task { try await render() }
+        await #expect(throws: CancellationError.self) { _ = try await cancelled.value }
+        _ = try await render()
+        _ = try await render()
+        #expect(probe.invocationCount == 3)
+    }
+}
+
+private nonisolated final class AdvancedExportLoupeInvocationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func nextInvocation() -> Int {
+        lock.withLock {
+            count += 1
+            return count
+        }
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
 }
