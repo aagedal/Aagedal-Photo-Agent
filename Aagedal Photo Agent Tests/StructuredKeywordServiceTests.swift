@@ -264,6 +264,7 @@ private nonisolated final class BlockingStructuredKeywordSettingsImportProbe: @u
     private var firstReadReleased = false
     private var writes = 0
     private var writtenText: String?
+    private var writtenURL: URL?
 
     var textReader: TextFileImportReader {
         TextFileImportReader(read: { [self] url in
@@ -280,11 +281,12 @@ private nonisolated final class BlockingStructuredKeywordSettingsImportProbe: @u
 
     var fileAccess: KeywordListEditorFileAccess {
         KeywordListEditorFileAccess(
-            itemExists: { _ in false },
-            readData: { _ in Data() },
-            writeData: { [self] data, _ in
+            itemExists: { [self] url in condition.withLock { writtenURL == url } },
+            readData: { [self] _ in condition.withLock { Data((writtenText ?? "").utf8) } },
+            writeData: { [self] data, url in
                 condition.withLock {
                     writes += 1
+                    writtenURL = url
                     writtenText = String(decoding: data, as: UTF8.self)
                 }
             }
@@ -308,6 +310,7 @@ private nonisolated final class BlockingStructuredKeywordSettingsImportProbe: @u
         }
     }
 
+    var committedURL: URL? { condition.withLock { writtenURL } }
     var writeCount: Int { condition.withLock { writes } }
     var committedText: String? { condition.withLock { writtenText } }
 }
@@ -411,6 +414,83 @@ struct StructuredKeywordPersistenceTests {
 @MainActor
 @Suite("Structured keyword route publication")
 struct StructuredKeywordRoutePublicationTests {
+    @Test("A failed route resolution clears stale keywords and prevents editing the failed snapshot")
+    func routeResolutionFailureIsExplicit() async throws {
+        let source = URL(fileURLWithPath: "/virtual/structured.txt")
+        var failResolution = false
+        let service = StructuredKeywordService(
+            persistenceService: KeywordListEditorPersistenceService(access: .init(
+                itemExists: { _ in true }, readData: { _ in Data("Previous\n".utf8) },
+                writeData: { _, _ in Issue.record("A failed load must not write") }
+            )),
+            storageURL: { _ in source },
+            resolveStorageURL: { _ in
+                if failResolution { throw CocoaError(.fileReadNoPermission) }
+                return source
+            }
+        )
+        await service.reload()
+        #expect(service.roots.map(\.name) == ["Previous"])
+        failResolution = true
+        await service.reload()
+        #expect(service.roots.isEmpty)
+        #expect(service.sourcePath == nil)
+        #expect(service.hasReadFailure)
+        #expect(service.loadError != nil)
+        failResolution = false
+        await service.reload()
+        #expect(service.roots.map(\.name) == ["Previous"])
+        #expect(!service.hasReadFailure)
+        #expect(service.loadError == nil)
+    }
+
+    @Test("An import resolves the active destination after a suspended source read")
+    func importFollowsRouteAfterSourceRead() async throws {
+        let previous = URL(fileURLWithPath: "/virtual/previous.txt")
+        let current = URL(fileURLWithPath: "/virtual/current.txt")
+        var route = previous
+        let probe = BlockingStructuredKeywordSettingsImportProbe()
+        let service = StructuredKeywordService(
+            textImportService: TextFileImportService(reader: probe.textReader),
+            persistenceService: KeywordListEditorPersistenceService(access: probe.fileAccess),
+            storageURL: { _ in route }
+        )
+        let task = Task { try await service.importListURL(URL(fileURLWithPath: "/virtual/first.txt")) }
+        defer { probe.releaseFirstRead() }
+        try await probe.waitUntilFirstReadStarts()
+        route = current
+        probe.releaseFirstRead()
+        try await task.value
+        #expect(probe.committedURL == current)
+        #expect(probe.writeCount == 1)
+        #expect(service.roots.map(\.name) == ["First"])
+        #expect(service.sourcePath == current.path)
+    }
+
+    @Test("A reload follows a root change before returning to the editor")
+    func reloadFollowsRouteChange() async throws {
+        let previous = URL(fileURLWithPath: "/virtual/previous.txt")
+        let current = URL(fileURLWithPath: "/virtual/current.txt")
+        var route = previous
+        let probe = StructuredKeywordReplacementReadProbe()
+        let service = StructuredKeywordService(
+            persistenceService: KeywordListEditorPersistenceService(access: .init(
+                itemExists: { _ in true }, readData: { _ in probe.read() }, writeData: { _, _ in }
+            )),
+            storageURL: { _ in route }
+        )
+        let task = Task { await service.reload() }
+        defer { probe.release(1); probe.release(2) }
+        try await probe.waitForRead(1)
+        route = current
+        probe.release(1)
+        try await probe.waitForRead(2)
+        probe.release(2)
+        await task.value
+        #expect(service.roots.map(\.name) == ["Replacement"])
+        #expect(service.sourcePath == current.path)
+    }
+
     @Test("A durable save to the previous root reloads the active route without broadcasting stale text")
     func changedRouteRejectsOldCommit() async throws {
         let previous = URL(fileURLWithPath: "/virtual/previous.txt")

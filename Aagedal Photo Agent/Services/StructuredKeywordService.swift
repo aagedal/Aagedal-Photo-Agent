@@ -71,14 +71,17 @@ final class StructuredKeywordService {
         includesAncestors: Bool = true,
         textImportService: TextFileImportService = .shared,
         persistenceService: KeywordListEditorPersistenceService = .shared,
-        storageURL: ((KeywordListKey) -> URL)? = nil
+        storageURL: ((KeywordListKey) -> URL)? = nil,
+        resolveStorageURL: ((KeywordListKey) async throws -> URL)? = nil
     ) {
         self.key = key
         self.includesAncestors = includesAncestors
         self.textImportService = textImportService
         self.persistenceService = persistenceService
         self.storageURL = storageURL ?? { KeywordListsStore.shared.currentURL(for: $0) }
-        if let storageURL {
+        if let resolveStorageURL {
+            self.resolveStorageURL = resolveStorageURL
+        } else if let storageURL {
             self.resolveStorageURL = { storageURL($0) }
         } else {
             self.resolveStorageURL = { try await KeywordListsStore.shared.resolveURL(for: $0) }
@@ -143,8 +146,7 @@ final class StructuredKeywordService {
             }
         }
 
-        let destinationURL = try await resolveStorageURL(key)
-        guard importRequestID == requestID, !Task.isCancelled else { return }
+        guard !Task.isCancelled else { return }
         let loadResult = try await textImportService.loadText(from: url, requestID: requestID)
         guard importRequestID == requestID else { return }
 
@@ -158,6 +160,10 @@ final class StructuredKeywordService {
             return
         }
 
+        // Source access may wait for a slow or cloud-backed volume. Resolve the active
+        // destination only after that work so a routing change cannot strand the import.
+        let destinationURL = try await resolveStorageURL(key)
+        guard importRequestID == requestID, !Task.isCancelled else { return }
         let saveResult = try await persistenceService.saveText(
             text,
             to: destinationURL,
@@ -445,20 +451,32 @@ final class StructuredKeywordService {
             let source: URL
             do {
                 source = try await self.resolveStorageURL(self.key)
-            } catch { return }
+            } catch {
+                guard !Task.isCancelled, self.loadRequestID == requestID else { return }
+                self.clearSnapshot()
+                self.loadError = "Could not resolve structured keywords storage."
+                self.hasReadFailure = true
+                return
+            }
             guard !Task.isCancelled, self.loadRequestID == requestID else { return }
             do {
                 let result = try await persistence.loadText(from: source, requestID: requestID)
-                guard !Task.isCancelled, self.loadRequestID == requestID,
-                      self.storageURL(self.key) == source else { return }
+                guard !Task.isCancelled, self.loadRequestID == requestID else { return }
+                guard self.storageURL(self.key) == source else {
+                    self.loadFromStore()
+                    return
+                }
                 switch result {
                 case .loaded(_, _, let text): self.install(text: text)
                 case .missing: self.clearSnapshot()
                 case .cancelled: break
                 }
             } catch {
-                guard !Task.isCancelled, self.loadRequestID == requestID,
-                      self.storageURL(self.key) == source else { return }
+                guard !Task.isCancelled, self.loadRequestID == requestID else { return }
+                guard self.storageURL(self.key) == source else {
+                    self.loadFromStore()
+                    return
+                }
                 self.clearSnapshot()
                 self.loadError = "Could not read structured keywords file."
                 self.hasReadFailure = true
