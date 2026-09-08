@@ -6,6 +6,15 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Metadata and library storage executors continuation (2026-09-08):**
+Teams, Watermarks, templates, atomic JSON persistence, Known People thumbnail/size reads,
+and Browser/FTP/Raw Metadata inspection retain Dispatch workers with existing task context
+and cancellation evidence. Every async JSON/XMP sidecar operation moves key resolution and
+actual admitted I/O onto the shared metadata worker, retaining revision retries and
+photo/folder barriers. The unfiltered suite passed 2,289 tests. Broad storage ownership
+and manual/device/release gates remain open.
+([validation and remaining work](plan-status-metadata-library-executors-continuation-2026-09-08.md))
+
 **Person editing and storage workers continuation (2026-09-08):**
 production details and representative edits await reserved worker writes against the current record;
 forms retain failed edits and resolve people by identity across list changes. Known People archives,

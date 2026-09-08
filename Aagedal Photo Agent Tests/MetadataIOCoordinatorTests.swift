@@ -523,7 +523,7 @@ struct MetadataSidecarWorkerPathTests {
             #expect(updated.cameraRaw?.exposure2012 == 0.75)
             try await service.stripIPTCFromSidecarSerialized(for: url, beforeRevisionCheck: check)
             let stripped = try #require(service.loadSidecar(for: url))
-            #expect(stripped.title.isEmpty)
+            #expect(stripped.title == nil)
             #expect(stripped.cameraRaw?.exposure2012 == 0.75)
             #expect(stripped.exifOrientation == 6)
         }

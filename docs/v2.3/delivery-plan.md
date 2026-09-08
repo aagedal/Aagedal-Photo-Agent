@@ -15,6 +15,15 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Metadata and library storage executors continuation (2026-09-08):**
+Teams, Watermarks, templates, atomic JSON persistence, Known People thumbnail/size reads,
+and Browser/FTP/Raw Metadata inspection retain Dispatch workers with existing task context
+and cancellation evidence. Every async JSON/XMP sidecar operation moves key resolution and
+actual admitted I/O onto the shared metadata worker, retaining revision retries and
+photo/folder barriers. The unfiltered suite passed 2,289 tests. Broad storage ownership
+and manual/device/release gates remain open.
+([validation and remaining work](../plan-status-metadata-library-executors-continuation-2026-09-08.md))
+
 **Person editing and storage workers continuation (2026-09-08):**
 production details and representative edits await reserved worker writes against the current record;
 forms retain failed edits and resolve people by identity across list changes. Known People archives,

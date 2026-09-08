@@ -21,7 +21,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Person editing and storage workers](plan-status-person-edit-storage-workers-continuation-2026-09-08.md).
+**Latest improvement continuation:** [Metadata and library storage executors](plan-status-metadata-library-executors-continuation-2026-09-08.md).
 
 ## Portfolio
 
