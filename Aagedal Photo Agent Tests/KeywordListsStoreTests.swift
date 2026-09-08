@@ -236,6 +236,55 @@ struct KeywordListBackupPreviewServiceTests {
 
 @Suite("Keyword-list backup inventory and restore filesystem boundary")
 struct KeywordListBackupFileServiceTests {
+    @Test("unchanged snapshot reads only the newest timestamped backup")
+    func unchangedSnapshotReadsOnlyNewest() async throws {
+        let directory = URL(fileURLWithPath: "/virtual/backups")
+        let files = (0..<100).map {
+            directory.appendingPathComponent(String(format: "%03d.txt", $0))
+        }
+        let newest = files.last!
+        let probe = KeywordListBackupFileIOProbe(files: files + [directory.appendingPathComponent("zzz.json")])
+        // Deliberately omit older bodies: deduplication must not inspect them.
+        probe.snapshots[newest] = KeywordListBackupFileSnapshot(
+            url: newest, date: .distantPast, text: "current", byteCount: 7
+        )
+        let written = try await KeywordListBackupFileService(io: probe.fileIO).snapshot(
+            text: "current", directoryURL: directory,
+            destinationURL: directory.appendingPathComponent("100.txt"),
+            retentionCutoff: Date(), minimumVersionCount: 5
+        )
+        #expect(!written)
+        #expect(probe.contentsInvocationCount == 1)
+        #expect(probe.inspectInvocationCount == 1)
+        #expect(probe.writeInvocationCount == 0)
+    }
+
+    @Test("an unreadable newest backup does not suppress a fresh safety copy")
+    func unreadableNewestSnapshotStillWrites() async throws {
+        let directory = URL(fileURLWithPath: "/virtual/backups")
+        let older = directory.appendingPathComponent("001.txt")
+        let newest = directory.appendingPathComponent("002.txt")
+        let probe = KeywordListBackupFileIOProbe(files: [newest, older])
+        probe.snapshots = [
+            older: KeywordListBackupFileSnapshot(
+                url: older, date: .distantPast, text: "current", byteCount: 7
+            ),
+            newest: KeywordListBackupFileSnapshot(
+                url: newest, date: Date(), byteCount: 7, unavailableReason: .unreadable
+            )
+        ]
+        let written = try await KeywordListBackupFileService(io: probe.fileIO).snapshot(
+            text: "current", directoryURL: directory,
+            destinationURL: directory.appendingPathComponent("003.txt"),
+            retentionCutoff: .distantPast, minimumVersionCount: 5
+        )
+        #expect(written)
+        #expect(probe.writeInvocationCount == 1)
+        #expect(probe.writtenData == Data("current".utf8))
+        // One deduplication read, then one retention pass over the existing history.
+        #expect(probe.inspectInvocationCount == 3)
+    }
+
     @Test("Inventory reports unreadable directories separately from missing directories")
     func inventoryDirectoryFailures() async {
         let io = KeywordListBackupFileIO(

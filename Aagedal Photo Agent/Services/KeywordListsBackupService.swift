@@ -365,9 +365,14 @@ final class KeywordListBackupFileService {
         minimumVersionCount: Int
     ) throws -> Bool {
         guard !Task.isCancelled else { return false }
-        let existing = textFiles(in: directoryURL)
-        if let newest = existing.max(by: { $0.url.lastPathComponent < $1.url.lastPathComponent }),
-           newest.text == text {
+        // Notification-driven snapshots commonly contain unchanged text. Read only the newest
+        // timestamped version for deduplication; reading every historical body here monopolizes
+        // the managed-list executor, then repeats the same reads during retention after a write.
+        let urls = (try? io.contentsOfDirectory(directoryURL)) ?? []
+        guard !Task.isCancelled else { return false }
+        if let newest = urls.filter({ $0.pathExtension == "txt" })
+            .max(by: { $0.lastPathComponent < $1.lastPathComponent }),
+           io.inspectTextFile(newest).text == text {
             return false
         }
 
