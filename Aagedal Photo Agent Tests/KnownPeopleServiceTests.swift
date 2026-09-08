@@ -522,6 +522,136 @@ struct KnownPeopleServiceTests {
         #expect(persisted.embeddings.map(\.id) == [first.id, second.id])
     }
 
+    @Test("Replacement thumbnail conversion runs off MainActor and rejects cancelled conversion")
+    func replacementThumbnailConversionBoundary() async throws {
+        let url = URL(fileURLWithPath: "/known-people/embedding_thumbnails/sample.jpg")
+        let converted = Data([7, 8])
+        let probe = KnownPeopleThumbnailReadProbe(data: converted)
+        let worker = KnownPeopleThumbnailLoadService(access: KnownPeopleThumbnailFileAccess(
+            readData: { _ in Data([1]) },
+            prepareJPEGData: { _ in probe.read(url) }
+        ))
+        let requestID = UUID()
+        #expect(await worker.load(fileURL: url, requestID: requestID, prepareForReplacement: true)
+            == .loaded(KnownPeopleThumbnailLoadSnapshot(requestID: requestID, fileURL: url, data: converted)))
+        #expect(probe.urls == [url])
+        #expect(!probe.observedMainThread)
+
+        let gate = KnownPeopleThumbnailPublicationGate(data: converted)
+        defer { gate.resume() }
+        let heldWorker = KnownPeopleThumbnailLoadService(access: KnownPeopleThumbnailFileAccess(
+            readData: { _ in Data([1]) },
+            prepareJPEGData: { _ in gate.read(url) }
+        ))
+        let task = Task { await heldWorker.load(fileURL: url, requestID: requestID, prepareForReplacement: true) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(gate.entered)
+        task.cancel()
+        gate.resume()
+        #expect(await task.value == .cancelledAfterRead(requestID: requestID, fileURL: url))
+    }
+
+    @Test("Replacement thumbnail preparation returns JPEG bytes and tolerates corrupt image data", arguments: [false, true])
+    func replacementThumbnailImageData(corrupt: Bool) async throws {
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32
+        ))
+        let input = corrupt ? Data([1, 2, 3]) : try #require(bitmap.representation(using: .png, properties: [:]))
+        let worker = KnownPeopleThumbnailLoadService(access: KnownPeopleThumbnailFileAccess(readData: { _ in input }))
+        let url = URL(fileURLWithPath: "/known-people/embedding_thumbnails/sample.jpg")
+        guard case .loaded(let snapshot) = await worker.load(
+            fileURL: url, requestID: UUID(), prepareForReplacement: true
+        ) else {
+            Issue.record("Uncancelled conversion did not return a snapshot")
+            return
+        }
+        if corrupt {
+            #expect(snapshot.data == nil)
+        } else {
+            let jpeg = try #require(snapshot.data)
+            #expect(Array(jpeg.prefix(2)) == [0xFF, 0xD8])
+            #expect(NSImage(data: jpeg) != nil)
+        }
+    }
+
+    @Test("Representative removal persists prepared JPEG and preserves the old thumbnail on conversion failure", arguments: [false, true])
+    func removeEmbeddingReplacementJPEG(corrupt: Bool) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32
+        ))
+        let input = corrupt ? Data([1, 2, 3]) : try #require(bitmap.representation(using: .png, properties: [:]))
+        let service = KnownPeopleService()
+        let first = embedding(41)
+        let second = embedding(42)
+        let original = Data([9, 8, 7])
+        var person = try service.addPerson(name: "Replacement", embeddings: [first, second],
+            thumbnailData: original, embeddingThumbnails: [first.id: input, second.id: input])
+        person.representativeThumbnailID = first.id
+        try service.updatePerson(person)
+        try await service.removeEmbedding(first.id, fromPersonID: person.id)
+        #expect(service.person(byID: person.id)?.representativeThumbnailID == second.id)
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(
+            "embedding_thumbnails/\(first.id.uuidString).jpg").path))
+        let persisted = try Data(contentsOf: directory.appendingPathComponent("thumbnails/\(person.id.uuidString).jpg"))
+        if corrupt {
+            #expect(persisted == original)
+        } else {
+            #expect(Array(persisted.prefix(2)) == [0xFF, 0xD8])
+            #expect(NSImage(data: persisted) != nil)
+        }
+    }
+
+    @Test("Embedding removal reloads peer-invalidated records after thumbnail preparation", arguments: [false, true])
+    func removeEmbeddingReloadsPeerMutation(cancel: Bool) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data([1]))
+        defer { gate.resume() }
+        let service = KnownPeopleService(thumbnailLoader: KnownPeopleThumbnailLoadService(
+            access: KnownPeopleThumbnailFileAccess(readData: { gate.read($0) })
+        ))
+        let first = embedding(31)
+        let second = embedding(32)
+        var person = try service.addPerson(name: "Before", embeddings: [first, second])
+        person.representativeThumbnailID = first.id
+        try service.updatePerson(person)
+        let peer = KnownPeopleService()
+        _ = peer.loadDatabase()
+        let task = Task { try await service.removeEmbedding(first.id, fromPersonID: person.id) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(gate.entered)
+        person.name = "Peer edit"
+        try peer.updatePerson(person)
+        if cancel { task.cancel() }
+        gate.resume()
+        if cancel {
+            await #expect(throws: CancellationError.self) { try await task.value }
+        } else {
+            try await task.value
+        }
+        let expectedIDs = cancel ? [first.id, second.id] : [second.id]
+        #expect(service.person(byID: person.id)?.name == "Peer edit")
+        #expect(service.person(byID: person.id)?.embeddings.map(\.id) == expectedIDs)
+        #expect(peer.person(byID: person.id)?.embeddings.map(\.id) == expectedIDs)
+        let persisted = try JSONDecoder().decode(KnownPerson.self,
+            from: Data(contentsOf: personFileURL(person.id, in: directory)))
+        #expect(persisted.embeddings.map(\.id) == expectedIDs)
+    }
+
     @Test("Known People archive preparation runs off MainActor and returns immutable thumbnail bytes")
     func archivePreparationBoundary() async throws {
         let sample = embedding(4)

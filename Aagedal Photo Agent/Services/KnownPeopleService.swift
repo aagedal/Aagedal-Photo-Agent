@@ -37,10 +37,16 @@ nonisolated enum KnownPeopleThumbnailLoadResult: Sendable, Equatable {
 
 nonisolated struct KnownPeopleThumbnailFileAccess: Sendable {
     let readData: @Sendable (URL) -> Data?
-
-    static let system = KnownPeopleThumbnailFileAccess { url in
-        try? CloudCoordinatedIO.readData(at: url)
+    var prepareJPEGData: @Sendable (Data) -> Data? = { data in
+        guard let image = NSImage(data: data),
+              let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
     }
+
+    static let system = KnownPeopleThumbnailFileAccess(readData: { url in
+        try? CloudCoordinatedIO.readData(at: url)
+    })
 }
 
 /// Serializes coordinated Known People thumbnail reads away from MainActor. The underlying
@@ -59,7 +65,7 @@ actor KnownPeopleThumbnailLoadService {
         self.access = access
     }
 
-    func load(fileURL: URL, requestID: UUID) -> KnownPeopleThumbnailLoadResult {
+    func load(fileURL: URL, requestID: UUID, prepareForReplacement: Bool = false) -> KnownPeopleThumbnailLoadResult {
         let interval = signposter.beginInterval(
             "Read",
             id: signposter.makeSignpostID()
@@ -68,7 +74,10 @@ actor KnownPeopleThumbnailLoadService {
             signposter.endInterval("Read", interval, "result=cancelled stage=before-read")
             return .cancelledBeforeRead(requestID: requestID, fileURL: fileURL)
         }
-        let data = access.readData(fileURL)
+        var data = access.readData(fileURL)
+        if prepareForReplacement, !Task.isCancelled {
+            data = data.flatMap(access.prepareJPEGData)
+        }
         guard !Task.isCancelled else {
             signposter.endInterval("Read", interval, "result=cancelled stage=after-read")
             return .cancelledAfterRead(requestID: requestID, fileURL: fileURL)
@@ -1764,18 +1773,29 @@ final class KnownPeopleService {
         try Task.checkCancellation()
         let expectedStorageRevision = storageRevision
         guard let currentPerson = person(byID: personID) else { return }
-        let replacementThumbnail: (id: UUID, image: NSImage)?
+        var replacementThumbnail: (id: UUID, data: Data)?
         if currentPerson.representativeThumbnailID == embeddingID,
-           let replacementID = currentPerson.embeddings.first(where: { $0.id != embeddingID })?.id {
-            replacementThumbnail = await loadEmbeddingThumbnail(for: replacementID).map {
-                (id: replacementID, image: $0)
-            }
+           let replacementID = currentPerson.embeddings.first(where: { $0.id != embeddingID })?.id,
+           let request = await thumbnailReadRequest(itemID: replacementID, directoryName: "embedding_thumbnails") {
+            // Both coordinated reading and image conversion belong to the worker. Only immutable
+            // JPEG bytes cross back to MainActor, where revisions gate their eventual publication.
+            let result = await thumbnailLoader.load(
+                fileURL: request.fileURL, requestID: request.requestID, prepareForReplacement: true
+            )
             try Task.checkCancellation()
-        } else {
-            replacementThumbnail = nil
+            if case .loaded(let snapshot) = result,
+               request.storageRevision == storageRevision,
+               request.contentRevision == thumbnailContentRevision,
+               snapshot.requestID == request.requestID, snapshot.fileURL == request.fileURL,
+               let data = snapshot.data {
+                replacementThumbnail = (id: replacementID, data: data)
+            }
         }
+        try Task.checkCancellation()
         guard expectedStorageRevision == storageRevision else { throw CancellationError() }
-        guard peopleIndex[personID] != nil else { return }
+        // A peer write can invalidate our database while the worker is suspended. Reload
+        // the current person before deciding whether it survived and applying the mutation.
+        guard person(byID: personID) != nil else { return }
 
         var wasRepresentative = false
 
@@ -1793,11 +1813,8 @@ final class KnownPeopleService {
 
         // If deleted embedding was the representative, update person thumbnail to new representative's
         if wasRepresentative, let replacementThumbnail,
-           person(byID: personID)?.representativeThumbnailID == replacementThumbnail.id,
-           let tiffData = replacementThumbnail.image.tiffRepresentation,
-           let bitmap = NSBitmapImageRep(data: tiffData),
-           let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
-            try? saveThumbnail(jpegData, for: personID)
+           person(byID: personID)?.representativeThumbnailID == replacementThumbnail.id {
+            try? saveThumbnail(replacementThumbnail.data, for: personID)
         }
     }
 
