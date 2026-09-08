@@ -9,7 +9,10 @@ shortcuts shown in Settings → Keyboard Shortcuts are authoritative when they d
 
 ## Open a focused workspace
 
-Use the view/layout menu above the browser to open one of these workspaces:
+Use the **Workspace** menu in the toolbar to open one of these workspaces. The separate
+**Layout** menu in Browser arranges its panes as Single, Split Side by Side, Split Top and Bottom,
+or Tabs. Returning to Browser preserves that layout. Metadata Review also has a **Back to Browser**
+button for leaving the review table.
 
 - **Caption Workspace** works through the visible folder with a compact field navigator, validation,
   Previous, Save & Next, Write & Next, templates, Copy Previous, and Fix Next Issue. Save keeps the
@@ -20,6 +23,13 @@ Use the view/layout menu above the browser to open one of these workspaces:
 - **Image Analysis** opens the selected image. Analysis work is bound to that source revision and never
   silently writes analysis locations, notes, annotations, or findings into IPTC/XMP.
 - **Compare Two Images** is enabled when exactly two images are selected.
+
+## Recover a deleted template
+
+**Move to Trash** removes metadata and Develop templates from their lists while retaining the
+original files in Finder’s Trash until it is emptied. Restore the JSON file to its original
+Templates or DevelopTemplates folder, then reopen the template list to reload it. If moving to
+Trash fails, the template remains available and the list displays an error.
 
 ## Image Analysis
 

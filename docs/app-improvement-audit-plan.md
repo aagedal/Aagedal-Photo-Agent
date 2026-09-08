@@ -6,6 +6,14 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Template recovery, workspace navigation, and thumbnail writes continuation (2026-09-08):**
+metadata and Develop template deletion now preserves original files in Trash. Workspace and Layout
+are separate controls, with an explicit Metadata Review exit. The production forced-cast audit
+leaves only the type-checked Security identity bridge. Representative Known People thumbnail/record
+writes run on a serialized worker with reservations and durable cache invalidation. Broad storage
+and manual/device/release gates remain open.
+([validation and remaining work](plan-status-template-navigation-thumbnail-continuation-2026-09-08.md))
+
 **Routing, thumbnail preparation, and export layout continuation (2026-09-08):**
 structured imports resolve destinations after source reads; stale-root loads retry and routing
 failures disable editing. Known People prepares replacement thumbnail bytes on its worker with
@@ -1878,12 +1886,15 @@ drops by the model payload without silently disabling face features.
 
 These are worthwhile after the higher-risk phases unless user research promotes them:
 
-- Recoverable/undoable deletion for metadata and Develop templates.
-- Separate Workspace switching from pane Layout and add an explicit exit from Metadata Review.
+- Recoverable metadata and Develop template deletion is implemented using Move to Trash; actual
+  Finder/custom-volume/iCloud recovery validation remains. ([validation](plan-status-template-navigation-thumbnail-continuation-2026-09-08.md))
+- Workspace/Layout separation and an explicit Metadata Review exit are implemented; manual keyboard
+  and VoiceOver interaction validation remains. ([validation](plan-status-template-navigation-thumbnail-continuation-2026-09-08.md))
 - Advanced Export presenting-display layout is implemented; manual small-screen and display-change
   validation remains. ([validation](plan-status-routing-thumbnail-layout-continuation-2026-09-08.md))
 - A strings catalog, pseudolocalization, and layout tests if multilingual distribution is planned.
-- A project-wide audit replacing production forced casts with typed boundaries where practical.
+- Production forced-cast audit completed: typed scope payload and conditional map-camera copy;
+  the remaining Security identity bridge has an exact CF type check. ([validation](plan-status-template-navigation-thumbnail-continuation-2026-09-08.md))
 
 ## Delivery discipline
 

@@ -15,6 +15,14 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Template recovery, workspace navigation, and thumbnail writes continuation (2026-09-08):**
+metadata and Develop template deletion now preserves original files in Trash. Workspace and Layout
+are separate controls, with an explicit Metadata Review exit. The production forced-cast audit
+leaves only the type-checked Security identity bridge. Representative Known People thumbnail/record
+writes run on a serialized worker with reservations and durable cache invalidation. Broad storage
+and manual/device/release gates remain open.
+([validation and remaining work](../plan-status-template-navigation-thumbnail-continuation-2026-09-08.md))
+
 **Routing, thumbnail preparation, and export layout continuation (2026-09-08):**
 structured imports resolve destinations after source reads; stale-root loads retry and routing
 failures disable editing. Known People prepares replacement thumbnail bytes on its worker with
