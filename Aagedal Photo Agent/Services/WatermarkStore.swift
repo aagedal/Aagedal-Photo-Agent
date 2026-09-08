@@ -148,13 +148,25 @@ nonisolated enum WatermarkLibraryDeleteResult: Sendable {
 actor WatermarkLibraryPersistenceService {
     static let shared = WatermarkLibraryPersistenceService()
 
+    /// Coordinated reads, writes, and conflict handling can block. Keep the caller's task on a
+    /// retained Dispatch executor, preserving task locals, cancellation, and transaction ordering
+    /// without occupying Swift's cooperative pool.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: WatermarkLibraryFileAccess
     private let conflictAccess: WatermarkLibraryConflictAccess
 
     init(
         access: WatermarkLibraryFileAccess = .system,
-        conflictAccess: WatermarkLibraryConflictAccess = .system
+        conflictAccess: WatermarkLibraryConflictAccess = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.watermark.persistence", qos: .utility
+        )
     ) {
+        self.filesystemQueue = filesystemQueue
         self.access = access
         self.conflictAccess = conflictAccess
     }

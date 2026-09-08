@@ -114,6 +114,14 @@ nonisolated private final class RosterLibrarySystemConflict: @unchecked Sendable
 actor RosterLibraryPersistenceService {
     static let shared = RosterLibraryPersistenceService()
 
+    /// Coordinated reads, writes, and conflict handling can block. Keep the caller's task on a
+    /// retained Dispatch executor, preserving task locals, cancellation, and transaction ordering
+    /// without occupying Swift's cooperative pool.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: RosterLibraryFileAccess
     private let conflictAccess: RosterLibraryConflictAccess
     private let deletionIO: DurableDeletionIO?
@@ -125,8 +133,12 @@ actor RosterLibraryPersistenceService {
         access: RosterLibraryFileAccess = .system,
         conflictAccess: RosterLibraryConflictAccess = .system,
         deletionIO: DurableDeletionIO? = nil,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.roster.persistence", qos: .utility
+        )
     ) {
+        self.filesystemQueue = filesystemQueue
         self.access = access
         self.conflictAccess = conflictAccess
         self.deletionIO = deletionIO

@@ -238,14 +238,18 @@ struct RosterLibraryPersistenceServiceTests {
         #expect(probe.invocationCount == 0)
     }
 
-    @Test("load returns a sorted immutable snapshot away from the main actor")
+    @Test("load returns a sorted snapshot on its Dispatch worker with caller task context")
+    @MainActor
     func loadReturnsSortedSnapshot() async throws {
         let alpha = makeTeam(name: "Alpha")
         let zulu = makeTeam(name: "Zulu")
-        let probe = RosterLibraryFileAccessProbe(teams: [zulu, alpha])
-        let service = RosterLibraryPersistenceService(access: probe.fileAccess)
+        let queue = DispatchSerialQueue(label: "test.roster.load")
+        let probe = RosterLibraryFileAccessProbe(teams: [zulu, alpha], checkContext: contextCheck(queue))
+        let service = RosterLibraryPersistenceService(access: probe.fileAccess, filesystemQueue: queue)
 
-        let result = await service.load(from: root, requestID: UUID())
+        let result = await RosterExecutorContext.$marker.withValue(root) {
+            await service.load(from: root, requestID: UUID())
+        }
 
         guard case .loaded(let snapshot) = result else {
             Issue.record("Expected a complete snapshot")
@@ -258,15 +262,18 @@ struct RosterLibraryPersistenceServiceTests {
 
     @Test("cancellation after a record read reports the exact inspected prefix")
     func cancellationReportsPrefix() async {
+        let queue = DispatchSerialQueue(label: "test.roster.cancel-read")
         let probe = RosterLibraryFileAccessProbe(
             teams: [makeTeam(name: "One"), makeTeam(name: "Two")],
-            cancelDuringFirstRead: true
+            cancelDuringFirstRead: true, checkContext: contextCheck(queue)
         )
-        let service = RosterLibraryPersistenceService(access: probe.fileAccess)
+        let service = RosterLibraryPersistenceService(access: probe.fileAccess, filesystemQueue: queue)
         let requestID = UUID()
 
         let result = await Task {
-            await service.load(from: root, requestID: requestID)
+            await RosterExecutorContext.$marker.withValue(root) {
+                await service.load(from: root, requestID: requestID)
+            }
         }.value
 
         guard case .cancelledAfterPrefix(let resultID, let count, let cleanupURLs) = result else {
@@ -281,12 +288,15 @@ struct RosterLibraryPersistenceServiceTests {
 
     @Test("upsert reports a durable commit when cancellation arrives during write")
     func upsertReportsDurablePostCancellationCommit() async throws {
-        let probe = RosterLibraryFileAccessProbe(cancelDuringWrite: true)
-        let service = RosterLibraryPersistenceService(access: probe.fileAccess)
+        let queue = DispatchSerialQueue(label: "test.roster.cancel-write")
+        let probe = RosterLibraryFileAccessProbe(cancelDuringWrite: true, checkContext: contextCheck(queue))
+        let service = RosterLibraryPersistenceService(access: probe.fileAccess, filesystemQueue: queue)
         let team = makeTeam(name: "Committed")
 
         let result = try await Task {
-            try await service.upsert(team, in: root, requestID: UUID())
+            try await RosterExecutorContext.$marker.withValue(root) {
+                try await service.upsert(team, in: root, requestID: UUID())
+            }
         }.value
 
         guard case .committed(let commit) = result else {
@@ -296,6 +306,52 @@ struct RosterLibraryPersistenceServiceTests {
         #expect(commit.team.id == team.id)
         #expect(commit.cancellationRequestedAfterCommit)
         #expect(probe.writtenURLs.last?.lastPathComponent == "\(team.id.uuidString).json")
+    }
+
+    @Test("deletion keeps verification and record removal on its worker after cancellation")
+    @MainActor
+    func deleteTransactionPreservesTaskContext() async throws {
+        let team = makeTeam(name: "Deleted")
+        let queue = DispatchSerialQueue(label: "test.roster.delete")
+        let check = contextCheck(queue)
+        let probe = RosterLibraryFileAccessProbe(checkContext: check)
+        let markerURL = root.appendingPathComponent("teams/\(team.id.uuidString).deleted")
+        let recordURL = root.appendingPathComponent("teams/\(team.id.uuidString).json")
+        let markerData = try JSONEncoder().encode(TeamTombstone(id: team.id, deletedAt: Date()))
+        let io = DurableDeletionIO(
+            writeData: { @Sendable data, url in
+                check()
+                #expect(url == markerURL)
+                #expect(try JSONDecoder().decode(TeamTombstone.self, from: data).id == team.id)
+                withUnsafeCurrentTask { $0?.cancel() }
+            },
+            readData: { @Sendable url in
+                check()
+                #expect(url == markerURL)
+                #expect(Task.isCancelled)
+                return markerData
+            },
+            removeItem: { @Sendable url in
+                check()
+                #expect(url == recordURL)
+                #expect(Task.isCancelled)
+            }
+        )
+        let service = RosterLibraryPersistenceService(access: probe.fileAccess, deletionIO: io, filesystemQueue: queue)
+        let requestID = UUID()
+        let result = try await Task {
+            try await RosterExecutorContext.$marker.withValue(root) {
+                try await service.delete(teamID: team.id, in: root, requestID: requestID)
+            }
+        }.value
+        guard case .committed(let commit) = result else {
+            Issue.record("A completed deletion must preserve its durable result")
+            return
+        }
+        #expect(commit.requestID == requestID)
+        #expect(commit.teamID == team.id)
+        #expect(commit.markerURL == markerURL)
+        #expect(commit.cancellationRequestedAfterCommit)
     }
 
     @Test("store source keeps coordinated file operations inside the serialized service")
@@ -323,9 +379,22 @@ struct RosterLibraryPersistenceServiceTests {
         #expect(!ownerSource.contains("NSFileVersion."))
     }
 
+    private func contextCheck(_ queue: DispatchSerialQueue) -> @Sendable () -> Void {
+        let expectedRoot = root
+        return {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(RosterExecutorContext.marker == expectedRoot)
+        }
+    }
+
     private func makeTeam(name: String) -> Team {
         Team(name: name, primaryColor: TeamKitColor(r: 0.2, g: 0.4, b: 0.6))
     }
+}
+
+private nonisolated enum RosterExecutorContext {
+    @TaskLocal static var marker: URL?
 }
 
 private nonisolated final class RosterLibraryFileAccessProbe: @unchecked Sendable {
@@ -333,6 +402,7 @@ private nonisolated final class RosterLibraryFileAccessProbe: @unchecked Sendabl
     private let teamData: [String: Data]
     private let cancelDuringFirstRead: Bool
     private let cancelDuringWrite: Bool
+    private let checkContext: @Sendable () -> Void
     private var count = 0
     private var readCount = 0
     private var observedMainThread = false
@@ -341,13 +411,15 @@ private nonisolated final class RosterLibraryFileAccessProbe: @unchecked Sendabl
     init(
         teams: [Team] = [],
         cancelDuringFirstRead: Bool = false,
-        cancelDuringWrite: Bool = false
+        cancelDuringWrite: Bool = false,
+        checkContext: @escaping @Sendable () -> Void = {}
     ) {
         teamData = Dictionary(uniqueKeysWithValues: teams.map { team in
             ("\(team.id.uuidString).json", try! JSONEncoder().encode(team))
         })
         self.cancelDuringFirstRead = cancelDuringFirstRead
         self.cancelDuringWrite = cancelDuringWrite
+        self.checkContext = checkContext
     }
 
     var fileAccess: RosterLibraryFileAccess {
@@ -383,6 +455,7 @@ private nonisolated final class RosterLibraryFileAccessProbe: @unchecked Sendabl
     }
 
     private func recordInvocation() {
+        checkContext()
         lock.withLock {
             count += 1
             observedMainThread = observedMainThread || Thread.isMainThread

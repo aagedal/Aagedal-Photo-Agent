@@ -263,18 +263,21 @@ struct WatermarkLibraryPersistenceServiceTests {
     func libraryLoadRunsOffMainActor() async throws {
         let asset = WatermarkAsset(name: "Published", pixelWidth: 80, pixelHeight: 20)
         let imageData = Data("cached-png".utf8)
+        let queue = DispatchSerialQueue(label: "test.watermark.load")
         let probe = WatermarkLibraryImportAccessProbe(
             readData: Data(),
             libraryAsset: asset,
-            libraryImageData: imageData
+            libraryImageData: imageData, checkContext: contextCheck(queue, requestID: asset.id)
         )
-        let service = WatermarkLibraryPersistenceService(access: probe.fileAccess)
+        let service = WatermarkLibraryPersistenceService(access: probe.fileAccess, filesystemQueue: queue)
         let requestID = UUID()
 
-        let result = await service.load(
-            from: URL(fileURLWithPath: "/virtual/watermarks", isDirectory: true),
-            requestID: requestID
-        )
+        let result = await WatermarkExecutorContext.$marker.withValue(asset.id) {
+            await service.load(
+                from: URL(fileURLWithPath: "/virtual/watermarks", isDirectory: true),
+                requestID: requestID
+            )
+        }
 
         guard case .loaded(let snapshot) = result else {
             Issue.record("Expected a complete Watermark snapshot")
@@ -309,22 +312,32 @@ struct WatermarkLibraryPersistenceServiceTests {
         #expect(probe.filesystemCallCount == 0)
     }
 
-    @Test("source read and ordered two-file commit run away from MainActor")
+    @Test("PNG import preserves task context and cancellation on its Dispatch worker",
+          arguments: ["none", "read", "image.png", "meta.json"])
     @MainActor
-    func importRunsOffMainActor() async throws {
+    func importRunsOffMainActor(cancellationPoint: String) async throws {
         let pngData = try makePNGData(width: 18, height: 9)
-        let probe = WatermarkLibraryImportAccessProbe(readData: pngData)
-        let service = WatermarkLibraryPersistenceService(access: probe.fileAccess)
         let requestID = UUID()
+        let queue = DispatchSerialQueue(label: "test.watermark.import.\(cancellationPoint)")
+        let probe = WatermarkLibraryImportAccessProbe(
+            readData: pngData, checkContext: contextCheck(queue, requestID: requestID),
+            cancellationPoint: cancellationPoint
+        )
+        let service = WatermarkLibraryPersistenceService(access: probe.fileAccess, filesystemQueue: queue)
         let source = URL(fileURLWithPath: "/virtual/source.png")
         let items = URL(fileURLWithPath: "/virtual/items", isDirectory: true)
 
-        let result = try await service.importPNG(
-            from: source,
-            name: "Desk",
-            into: items,
-            requestID: requestID
-        )
+        let result = try await Task {
+            try await WatermarkExecutorContext.$marker.withValue(requestID) {
+                try await service.importPNG(from: source, name: "Desk", into: items, requestID: requestID)
+            }
+        }.value
+
+        if cancellationPoint == "read" {
+            #expect(result == .cancelledAfterRead(requestID: requestID, sourceURL: source, byteCount: pngData.count))
+            #expect(probe.writtenFilenames.isEmpty)
+            return
+        }
 
         guard case .committed(let commit) = result else {
             Issue.record("Expected a durable watermark import")
@@ -332,11 +345,86 @@ struct WatermarkLibraryPersistenceServiceTests {
         }
         #expect(commit.requestID == requestID)
         #expect(commit.asset.name == "Desk")
+        #expect(commit.cancellationRequestedAfterCommit == (cancellationPoint != "none"))
         #expect(commit.asset.pixelWidth == 18)
         #expect(commit.asset.pixelHeight == 9)
         #expect(commit.byteCount == pngData.count)
         #expect(probe.writtenFilenames == ["image.png", "meta.json"])
         #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("metadata updates retain a durable commit and caller context after cancellation")
+    @MainActor
+    func metadataUpdatePreservesTaskContext() async throws {
+        let requestID = UUID()
+        let queue = DispatchSerialQueue(label: "test.watermark.metadata")
+        let probe = WatermarkLibraryImportAccessProbe(
+            readData: Data(), checkContext: contextCheck(queue, requestID: requestID),
+            cancellationPoint: "meta.json"
+        )
+        let service = WatermarkLibraryPersistenceService(access: probe.fileAccess, filesystemQueue: queue)
+        let root = URL(fileURLWithPath: "/virtual/watermarks")
+        let asset = WatermarkAsset(name: "Renamed", pixelWidth: 20, pixelHeight: 10)
+        let result = try await Task {
+            try await WatermarkExecutorContext.$marker.withValue(requestID) {
+                try await service.upsertMetadata(asset, in: root, requestID: requestID)
+            }
+        }.value
+        guard case .committed(let commit) = result else {
+            Issue.record("A completed metadata write must preserve its durable result")
+            return
+        }
+        #expect(commit.requestID == requestID)
+        #expect(commit.asset == asset)
+        #expect(commit.cancellationRequestedAfterCommit)
+        #expect(probe.writtenFilenames == ["meta.json"])
+    }
+
+    @Test("deletion verifies its marker and removes its record on the worker after cancellation")
+    @MainActor
+    func deleteTransactionPreservesTaskContext() async throws {
+        let requestID = UUID()
+        let assetID = UUID()
+        let queue = DispatchSerialQueue(label: "test.watermark.delete")
+        let check = contextCheck(queue, requestID: requestID)
+        let probe = WatermarkLibraryImportAccessProbe(readData: Data(), checkContext: check)
+        let root = URL(fileURLWithPath: "/virtual/watermarks")
+        let markerURL = root.appendingPathComponent("items/\(assetID.uuidString).deleted")
+        let recordURL = root.appendingPathComponent("items/\(assetID.uuidString)", isDirectory: true)
+        let markerData = try JSONEncoder().encode(WatermarkTombstone(id: assetID, deletedAt: Date()))
+        let io = DurableDeletionIO(
+            writeData: { @Sendable data, url in
+                check()
+                #expect(url == markerURL)
+                #expect(try JSONDecoder().decode(WatermarkTombstone.self, from: data).id == assetID)
+                withUnsafeCurrentTask { $0?.cancel() }
+            },
+            readData: { @Sendable url in
+                check()
+                #expect(url == markerURL)
+                #expect(Task.isCancelled)
+                return markerData
+            },
+            removeItem: { @Sendable url in
+                check()
+                #expect(url == recordURL)
+                #expect(Task.isCancelled)
+            }
+        )
+        let service = WatermarkLibraryPersistenceService(access: probe.fileAccess, filesystemQueue: queue)
+        let result = try await Task {
+            try await WatermarkExecutorContext.$marker.withValue(requestID) {
+                try await service.delete(assetID: assetID, in: root, requestID: requestID, deletionIO: io)
+            }
+        }.value
+        guard case .committed(let commit) = result else {
+            Issue.record("A completed deletion must preserve its durable result")
+            return
+        }
+        #expect(commit.requestID == requestID)
+        #expect(commit.assetID == assetID)
+        #expect(commit.markerURL == markerURL)
+        #expect(commit.cancellationRequestedAfterCommit)
     }
 
     @Test("a pre-cancelled import performs no source or destination access")
@@ -398,6 +486,14 @@ struct WatermarkLibraryPersistenceServiceTests {
         #expect(!ownerSource.contains("NSFileVersion."))
     }
 
+    private func contextCheck(_ queue: DispatchSerialQueue, requestID: UUID) -> @Sendable () -> Void {
+        {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(WatermarkExecutorContext.marker == requestID)
+        }
+    }
+
     @MainActor
     private func makePNGData(width: Int, height: Int) throws -> Data {
         guard let rep = NSBitmapImageRep(
@@ -418,11 +514,17 @@ struct WatermarkLibraryPersistenceServiceTests {
     }
 }
 
+private nonisolated enum WatermarkExecutorContext {
+    @TaskLocal static var marker: UUID?
+}
+
 private nonisolated final class WatermarkLibraryImportAccessProbe: @unchecked Sendable {
     private let lock = NSLock()
     private let storedReadData: Data
     private let libraryAsset: WatermarkAsset?
     private let libraryImageData: Data?
+    private let checkContext: @Sendable () -> Void
+    private let cancellationPoint: String
     private var observedMainThread = false
     private var storedReadCount = 0
     private var storedFilesystemCallCount = 0
@@ -431,16 +533,21 @@ private nonisolated final class WatermarkLibraryImportAccessProbe: @unchecked Se
     init(
         readData: Data,
         libraryAsset: WatermarkAsset? = nil,
-        libraryImageData: Data? = nil
+        libraryImageData: Data? = nil,
+        checkContext: @escaping @Sendable () -> Void = {},
+        cancellationPoint: String = "none"
     ) {
         storedReadData = readData
         self.libraryAsset = libraryAsset
         self.libraryImageData = libraryImageData
+        self.checkContext = checkContext
+        self.cancellationPoint = cancellationPoint
     }
 
     var fileAccess: WatermarkLibraryFileAccess {
         WatermarkLibraryFileAccess(
             startAccessing: { [self] _ in
+                checkContext()
                 lock.withLock {
                     storedFilesystemCallCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
@@ -448,17 +555,20 @@ private nonisolated final class WatermarkLibraryImportAccessProbe: @unchecked Se
                 return true
             },
             stopAccessing: { [self] _ in
+                checkContext()
                 lock.withLock {
                     storedFilesystemCallCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
                 }
             },
             readData: { [self] url in
+                checkContext()
                 lock.withLock {
                     storedFilesystemCallCount += 1
                     storedReadCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
                 }
+                if cancellationPoint == "read" { withUnsafeCurrentTask { $0?.cancel() } }
                 if url.lastPathComponent == "meta.json", let libraryAsset {
                     return try JSONEncoder().encode(libraryAsset)
                 }
@@ -468,11 +578,13 @@ private nonisolated final class WatermarkLibraryImportAccessProbe: @unchecked Se
                 return storedReadData
             },
             writeData: { [self] _, url in
+                checkContext()
                 lock.withLock {
                     storedFilesystemCallCount += 1
                     storedWrittenFilenames.append(url.lastPathComponent)
                     observedMainThread = observedMainThread || Thread.isMainThread
                 }
+                if cancellationPoint == url.lastPathComponent { withUnsafeCurrentTask { $0?.cancel() } }
             },
             removeItem: { [self] _ in recordFilesystemCall() },
             ensureDirectory: { [self] _ in recordFilesystemCall() },
@@ -492,6 +604,7 @@ private nonisolated final class WatermarkLibraryImportAccessProbe: @unchecked Se
     }
 
     private func recordFilesystemCall() {
+        checkContext()
         lock.withLock {
             storedFilesystemCallCount += 1
             observedMainThread = observedMainThread || Thread.isMainThread
