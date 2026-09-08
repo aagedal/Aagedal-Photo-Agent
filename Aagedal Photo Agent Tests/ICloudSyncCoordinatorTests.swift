@@ -4,6 +4,70 @@ import Testing
 
 @Suite("iCloud sync coordinator")
 struct ICloudSyncCoordinatorTests {
+    @Test("Cloud routing workers retain task context and durable cancellation", arguments: [0, 1, 2, 3])
+    @MainActor
+    func routingDispatchWorkers(kind: Int) async throws {
+        let root = URL(fileURLWithPath: "/virtual/cloud-worker")
+        let queue = DispatchSerialQueue(label: "test.cloud-routing.\(kind)")
+        let check: @Sendable () -> Void = {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(KeywordListsStoreStorageOverride.current == root)
+            #expect(!Thread.isMainThread)
+        }
+        let merge: @Sendable (URL, URL) throws -> Void = { source, destination in
+            check()
+            #expect(source == root)
+            #expect(destination == root.appendingPathComponent("cloud"))
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        try await Task {
+            try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+                switch kind {
+                case 0:
+                    let service = ICloudAvailabilityProbeService(resolveAvailability: {
+                        check()
+                        withUnsafeCurrentTask { $0?.cancel() }
+                        return true
+                    }, filesystemQueue: queue)
+                    #expect(await service.probe() == .cancelledAfterResolution(wasAvailable: true))
+                case 1:
+                    let service = TemplateICloudRoutingService(access: TemplateICloudRoutingFileAccess(
+                        localRoot: {
+                            check()
+                            return TemplateICloudLocalRoot(url: root, release: check)
+                        },
+                        cloudRootURL: { check(); return root.appendingPathComponent("cloud") },
+                        merge: merge
+                    ), filesystemQueue: queue)
+                    guard case .committed(let commit) = try await service.reconcile(enabled: true, requestID: UUID()) else {
+                        Issue.record("Missing durable template merge"); return
+                    }
+                    #expect(commit.cancellationRequestedAfterCommit)
+                case 2:
+                    let service = LibraryICloudRoutingService(access: LibraryICloudRoutingFileAccess(
+                        localRootURL: { check(); return root },
+                        cloudRootURL: { check(); return root.appendingPathComponent("cloud") },
+                        ensureDirectory: { _ in check() }, merge: merge
+                    ), filesystemQueue: queue)
+                    guard case .committed(let commit) = try await service.reconcile(enabled: true, requestID: UUID()) else {
+                        Issue.record("Missing durable library merge"); return
+                    }
+                    #expect(commit.cancellationRequestedAfterCommit)
+                default:
+                    let service = KnownPeopleICloudRoutingService(access: KnownPeopleICloudRoutingFileAccess(
+                        localRootURL: { check(); return root },
+                        cloudRootURL: { check(); return root.appendingPathComponent("cloud") },
+                        ensureDirectory: { _ in check() }, merge: merge
+                    ), filesystemQueue: queue)
+                    guard case .committed(let commit) = try await service.reconcile(enabled: true, requestID: UUID()) else {
+                        Issue.record("Missing durable Known People merge"); return
+                    }
+                    #expect(commit.cancellationRequestedAfterCommit)
+                }
+            }
+        }.value
+    }
+
     @Test("keyword and people watcher root replacement discards queued old-query callbacks", arguments: [false, true])
     @MainActor
     func watcherRootReplacement(knownPeople: Bool) async {

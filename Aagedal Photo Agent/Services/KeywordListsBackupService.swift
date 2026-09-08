@@ -311,19 +311,104 @@ actor KeywordListBackupInventoryService {
 
 }
 
-/// Serializes keyword-backup retention, snapshot writes, and restore commits away
-/// from MainActor. Directory reads and coordinated writes are synchronous Foundation operations;
-/// cancellation is therefore checked between calls, with durable-after-cancel evidence for restore.
+/// History bodies are immutable, uniquely named local files. Inspect them outside the managed
+/// executor, then serialize deletion with snapshot and restore transactions. Newly added history
+/// is absent from the deletion plan, so a concurrent snapshot only makes retention conservative.
+/// Admission spans the scan/commit suspension: a second pass must observe the first pass's
+/// deletions before deciding which readable versions satisfy the retained minimum.
+actor KeywordListBackupRetentionService {
+    static let shared = KeywordListBackupRetentionService()
+
+    nonisolated let filesystemQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.keyword-lists.backup-retention", qos: .utility
+    )
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    private var isPruning = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Internal contention diagnostic; admission remains held while deletion awaits the managed executor.
+    var queuedRequestCount: Int { waiters.count }
+
+    func prune(
+        directories: [URL],
+        retentionCutoff: Date,
+        minimumVersionCount: Int,
+        io: KeywordListBackupFileIO
+    ) async {
+        guard !Task.isCancelled else { return }
+        await acquire()
+        defer { release() }
+
+        for directoryURL in directories {
+            guard !Task.isCancelled else { return }
+            let urls = (try? io.contentsOfDirectory(directoryURL)) ?? []
+            var versions: [KeywordListBackupFileSnapshot] = []
+            for url in urls where url.pathExtension == "txt" {
+                guard !Task.isCancelled else { return }
+                let version = io.inspectTextFile(url)
+                // Unavailable versions may be the only recoverable copy. Preserve them and
+                // do not let them displace readable versions from the minimum retained set.
+                if version.unavailableReason == nil { versions.append(version) }
+            }
+            guard !Task.isCancelled else { return }
+            versions.sort { $0.date > $1.date }
+            // Empty pre-restore safety copies do not displace useful history either.
+            let protectedURLs = Set(versions.filter {
+                !($0.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }.prefix(max(0, minimumVersionCount)).map(\.url))
+            let expiredURLs = versions.filter {
+                !protectedURLs.contains($0.url) && $0.date < retentionCutoff
+            }.map(\.url)
+            await Self.removeVersions(expiredURLs, io: io)
+        }
+    }
+
+    private func acquire() async {
+        if !isPruning {
+            isPruning = true
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            isPruning = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+
+    @KeywordListsFilesystemActor
+    private static func removeVersions(_ urls: [URL], io: KeywordListBackupFileIO) {
+        for url in urls {
+            guard !Task.isCancelled else { return }
+            try? io.removeItem(url)
+        }
+    }
+}
+
+/// Snapshot read/deduplication/write and restore commits remain synchronous managed-list
+/// transactions. Full retention scans run independently after a durable snapshot write.
+/// Cancellation is checked between Foundation calls, with durable-after-cancel evidence for restore.
 @KeywordListsFilesystemActor
 final class KeywordListBackupFileService {
     nonisolated static let shared = KeywordListBackupFileService()
 
-    private let io: KeywordListBackupFileIO
+    nonisolated private let io: KeywordListBackupFileIO
     nonisolated private let inventoryService: KeywordListBackupInventoryService
+    nonisolated private let retentionService: KeywordListBackupRetentionService
 
-    nonisolated init(io: KeywordListBackupFileIO = .system) {
+    nonisolated init(
+        io: KeywordListBackupFileIO = .system,
+        retentionService: KeywordListBackupRetentionService = .shared
+    ) {
         self.io = io
         self.inventoryService = KeywordListBackupInventoryService(io: io)
+        self.retentionService = retentionService
     }
 
     nonisolated func inventory(
@@ -364,15 +449,23 @@ final class KeywordListBackupFileService {
         destinationURL: URL,
         retentionCutoff: Date,
         minimumVersionCount: Int
-    ) throws -> Bool {
+    ) async throws -> Bool {
+        let written = try writeSnapshot(
+            sourceURL: sourceURL, directoryURL: directoryURL, destinationURL: destinationURL
+        )
+        if written {
+            await prune(directories: [directoryURL], retentionCutoff: retentionCutoff,
+                        minimumVersionCount: minimumVersionCount)
+        }
+        return written
+    }
+
+    private func writeSnapshot(sourceURL: URL, directoryURL: URL, destinationURL: URL) throws -> Bool {
         try Task.checkCancellation()
         let text = try KeywordListsStore.decodeManagedText(io.readData(sourceURL))
         try Task.checkCancellation()
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        return try snapshot(
-            text: text, directoryURL: directoryURL, destinationURL: destinationURL,
-            retentionCutoff: retentionCutoff, minimumVersionCount: minimumVersionCount
-        )
+        return try writeSnapshot(text: text, directoryURL: directoryURL, destinationURL: destinationURL)
     }
 
     @discardableResult
@@ -382,7 +475,18 @@ final class KeywordListBackupFileService {
         destinationURL: URL,
         retentionCutoff: Date,
         minimumVersionCount: Int
-    ) throws -> Bool {
+    ) async throws -> Bool {
+        let written = try writeSnapshot(
+            text: text, directoryURL: directoryURL, destinationURL: destinationURL
+        )
+        if written {
+            await prune(directories: [directoryURL], retentionCutoff: retentionCutoff,
+                        minimumVersionCount: minimumVersionCount)
+        }
+        return written
+    }
+
+    private func writeSnapshot(text: String, directoryURL: URL, destinationURL: URL) throws -> Bool {
         guard !Task.isCancelled else { return false }
         // Notification-driven snapshots commonly contain unchanged text. Read only the newest
         // timestamped version for deduplication; reading every historical body here monopolizes
@@ -399,27 +503,18 @@ final class KeywordListBackupFileService {
         try io.createDirectory(directoryURL)
         guard !Task.isCancelled else { return false }
         try io.writeData(Data(text.utf8), destinationURL)
-        prune(
-            directoryURL: directoryURL,
-            retentionCutoff: retentionCutoff,
-            minimumVersionCount: minimumVersionCount
-        )
         return true
     }
 
-    func prune(
+    nonisolated func prune(
         directories: [URL],
         retentionCutoff: Date,
         minimumVersionCount: Int
-    ) {
-        for directoryURL in directories {
-            guard !Task.isCancelled else { return }
-            prune(
-                directoryURL: directoryURL,
-                retentionCutoff: retentionCutoff,
-                minimumVersionCount: minimumVersionCount
-            )
-        }
+    ) async {
+        await retentionService.prune(
+            directories: directories, retentionCutoff: retentionCutoff,
+            minimumVersionCount: minimumVersionCount, io: io
+        )
     }
 
     func restore(
@@ -473,35 +568,6 @@ final class KeywordListBackupFileService {
         ))
     }
 
-    private func textFiles(in directoryURL: URL) -> [KeywordListBackupFileSnapshot] {
-        let urls = (try? io.contentsOfDirectory(directoryURL)) ?? []
-        var versions: [KeywordListBackupFileSnapshot] = []
-        for url in urls where url.pathExtension == "txt" {
-            guard !Task.isCancelled else { break }
-            versions.append(io.inspectTextFile(url))
-        }
-        return versions.sorted { $0.date > $1.date }
-    }
-
-    private func prune(
-        directoryURL: URL,
-        retentionCutoff: Date,
-        minimumVersionCount: Int
-    ) {
-        // Unavailable versions may contain the only recoverable copy. Preserve them,
-        // and do not let them displace readable versions from the minimum retained set.
-        let versions = textFiles(in: directoryURL).filter { $0.unavailableReason == nil }
-        // Empty pre-restore safety copies do not displace useful history either.
-        let protectedURLs = Set(versions.filter {
-            !($0.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }.prefix(max(0, minimumVersionCount)).map(\.url))
-        for version in versions where !protectedURLs.contains(version.url) {
-            guard !Task.isCancelled else { return }
-            if version.date < retentionCutoff {
-                try? io.removeItem(version.url)
-            }
-        }
-    }
 }
 
 /// Keeps timestamped **local** backups of every keyword list managed by

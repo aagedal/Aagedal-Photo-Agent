@@ -411,6 +411,144 @@ struct KeywordListBackupFileServiceTests {
         #expect(try Data(contentsOf: directory.appendingPathComponent("old-damaged.txt")) == Data([0xff]))
     }
 
+    @Test("blocked retention enumeration allows a managed restore to commit", arguments: [false, true])
+    func blockedRetentionAllowsManagedRestore(afterSnapshot: Bool) async throws {
+        let probe = BlockingKeywordListBackupFileIOProbe(enumerationToBlock: afterSnapshot ? 2 : 1)
+        let service = KeywordListBackupFileService(
+            io: probe.fileIO, retentionService: KeywordListBackupRetentionService()
+        )
+        let directory = URL(fileURLWithPath: "/virtual/backups")
+        let retention = Task {
+            if afterSnapshot {
+                return try await service.snapshot(
+                    text: "new version", directoryURL: directory,
+                    destinationURL: directory.appendingPathComponent("new.txt"),
+                    retentionCutoff: .distantFuture, minimumVersionCount: 1
+                )
+            }
+            await service.prune(directories: [directory],
+                                retentionCutoff: .distantFuture, minimumVersionCount: 1)
+            return true
+        }
+        defer { probe.releaseFirstEnumeration() }
+        try await probe.waitUntilFirstEnumerationStarts()
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled { probe.releaseFirstEnumeration() }
+        }
+        defer { timeout.cancel() }
+        let writer = KeywordListBackupFileIOProbe(files: [])
+        writer.readDataResult = Data("restored".utf8)
+        let result = try await KeywordListBackupFileService(io: writer.fileIO).restore(
+            from: URL(fileURLWithPath: "/virtual/version.txt"),
+            to: URL(fileURLWithPath: "/virtual/list.txt"), requestID: UUID()
+        )
+        guard case .restored = result else {
+            Issue.record("Expected managed restore to commit")
+            return
+        }
+        #expect(writer.writtenData == Data("restored".utf8))
+        #expect(!probe.isFirstEnumerationReleased)
+        probe.releaseFirstEnumeration()
+        #expect(try await retention.value)
+    }
+
+    @Test("cancelling a queued retention pass prevents its filesystem access")
+    func queuedRetentionCancellation() async throws {
+        let probe = BlockingKeywordListBackupFileIOProbe()
+        let service = KeywordListBackupFileService(
+            io: probe.fileIO, retentionService: KeywordListBackupRetentionService()
+        )
+        let directories = [URL(fileURLWithPath: "/virtual/backups")]
+        let first = Task {
+            await service.prune(directories: directories, retentionCutoff: .distantFuture,
+                                minimumVersionCount: 1)
+        }
+        defer { probe.releaseFirstEnumeration() }
+        try await probe.waitUntilFirstEnumerationStarts()
+        let second = Task {
+            await service.prune(directories: directories, retentionCutoff: .distantFuture,
+                                minimumVersionCount: 1)
+        }
+        second.cancel()
+        probe.releaseFirstEnumeration()
+        await first.value
+        await second.value
+        #expect(probe.contentsInvocationCount == 1)
+        #expect(probe.maximumConcurrentEnumerations == 1)
+    }
+
+    @Test("retention cancellation during inspection never deletes a partial history")
+    func retentionCancellationDuringInspection() async {
+        let directory = URL(fileURLWithPath: "/virtual/backups")
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { _ in [directory.appendingPathComponent("old.txt")] },
+            inspectTextFile: { url in
+                #expect(!Thread.isMainThread)
+                withUnsafeCurrentTask { $0?.cancel() }
+                return .init(url: url, date: .distantPast, text: "recoverable", byteCount: 11)
+            },
+            createDirectory: { _ in }, readData: { _ in Data() }, writeData: { _, _ in },
+            removeItem: { _ in Issue.record("A cancelled retention scan must not delete history") }
+        )
+        await Task {
+            await KeywordListBackupFileService(io: io).prune(
+                directories: [directory], retentionCutoff: .distantFuture, minimumVersionCount: 0
+            )
+        }.value
+    }
+
+    @Test("snapshot cancellation after its write preserves success and skips retention")
+    func snapshotDurableCancellationSkipsRetention() async throws {
+        let probe = KeywordListBackupFileIOProbe(files: [])
+        probe.cancelDuringWrite = true
+        let directory = URL(fileURLWithPath: "/virtual/backups")
+        let written = try await Task {
+            try await KeywordListBackupFileService(io: probe.fileIO).snapshot(
+                text: "recoverable", directoryURL: directory,
+                destinationURL: directory.appendingPathComponent("new.txt"),
+                retentionCutoff: .distantFuture, minimumVersionCount: 1
+            )
+        }.value
+        #expect(written)
+        #expect(probe.writtenData == Data("recoverable".utf8))
+        #expect(probe.contentsInvocationCount == 1)
+    }
+
+    @Test("retention admission spans deletion and subsequent scans preserve the readable minimum")
+    func retentionAdmissionSpansDeletion() async throws {
+        let retention = KeywordListBackupRetentionService()
+        let probe = KeywordListBackupRetentionIOProbe(retention: retention)
+        let service = KeywordListBackupFileService(io: probe.fileIO, retentionService: retention)
+        let first = Task {
+            await service.prune(directories: [probe.directory], retentionCutoff: .distantFuture,
+                                minimumVersionCount: 2)
+        }
+        defer { probe.releaseDeletion() }
+        try await probe.waitUntilDeletionStarts()
+        let second = Task {
+            await service.prune(directories: [probe.directory], retentionCutoff: .distantFuture,
+                                minimumVersionCount: 2)
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await retention.queuedRequestCount == 0 {
+            guard ContinuousClock.now < deadline else {
+                throw KeywordListBackupPreviewProbeError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // First pass is suspended awaiting its deletion transaction. Actor reentrancy must not
+        // let the next pass inspect history that the admitted transaction is about to remove.
+        #expect(probe.scanCount == 1)
+        probe.releaseDeletion()
+        await first.value
+        await second.value
+        #expect(probe.scanCount == 2)
+        #expect(probe.scannedVersionCounts == [4, 2])
+        #expect(probe.remainingNames == ["002.txt", "003.txt"])
+        #expect(await retention.queuedRequestCount == 0)
+    }
+
     @Test("Restore rejects damaged UTF-8 without changing the destination")
     func restoreRejectsDamagedBackup() async throws {
         let probe = KeywordListBackupFileIOProbe(files: [])
@@ -861,12 +999,92 @@ private nonisolated final class KeywordListBackupFileIOProbe: @unchecked Sendabl
     var writtenURL: URL? { lock.withLock { committedURL } }
 }
 
+private nonisolated final class KeywordListBackupRetentionIOProbe: @unchecked Sendable {
+    let directory = URL(fileURLWithPath: "/virtual/retention")
+    private let retention: KeywordListBackupRetentionService
+    private let condition = NSCondition()
+    private var names = ["000.txt", "001.txt", "002.txt", "003.txt"]
+    private var scannedCounts: [Int] = []
+    private var deletionStarted = false
+    private var deletionReleased = false
+
+    init(retention: KeywordListBackupRetentionService) {
+        self.retention = retention
+    }
+
+    var fileIO: KeywordListBackupFileIO {
+        KeywordListBackupFileIO(
+            contentsOfDirectory: { [self] _ in
+                #expect(retention.filesystemQueue.isIsolatingCurrentContext() == true)
+                condition.lock()
+                defer { condition.unlock() }
+                scannedCounts.append(names.count)
+                return names.map { directory.appendingPathComponent($0) }
+            },
+            inspectTextFile: { [self] url in
+                #expect(retention.filesystemQueue.isIsolatingCurrentContext() == true)
+                return .init(url: url,
+                             date: Date(timeIntervalSince1970: Double(url.deletingPathExtension().lastPathComponent)!),
+                             text: url.lastPathComponent, byteCount: 7)
+            },
+            createDirectory: { _ in }, readData: { _ in Data() }, writeData: { _, _ in },
+            removeItem: { [self] url in
+                #expect(KeywordListsFilesystemActor.shared.filesystemQueue.isIsolatingCurrentContext() == true)
+                condition.lock()
+                defer { condition.unlock() }
+                deletionStarted = true
+                while !deletionReleased { condition.wait() }
+                names.removeAll { $0 == url.lastPathComponent }
+            }
+        )
+    }
+
+    func waitUntilDeletionStarts() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !hasStartedDeletion {
+            guard ContinuousClock.now < deadline else { throw KeywordListBackupPreviewProbeError.timedOut }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func releaseDeletion() {
+        condition.lock()
+        deletionReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private var hasStartedDeletion: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return deletionStarted
+    }
+
+    var scanCount: Int { scannedVersionCounts.count }
+    var scannedVersionCounts: [Int] {
+        condition.lock()
+        defer { condition.unlock() }
+        return scannedCounts
+    }
+
+    var remainingNames: [String] {
+        condition.lock()
+        defer { condition.unlock() }
+        return names
+    }
+}
+
 private nonisolated final class BlockingKeywordListBackupFileIOProbe: @unchecked Sendable {
     private let condition = NSCondition()
+    private let enumerationToBlock: Int
     private var contentsCount = 0
     private var activeEnumerations = 0
     private var maximumActiveEnumerations = 0
     private var firstEnumerationReleased = false
+
+    init(enumerationToBlock: Int = 1) {
+        self.enumerationToBlock = enumerationToBlock
+    }
 
     var fileIO: KeywordListBackupFileIO {
         KeywordListBackupFileIO(
@@ -876,7 +1094,7 @@ private nonisolated final class BlockingKeywordListBackupFileIOProbe: @unchecked
                 activeEnumerations += 1
                 maximumActiveEnumerations = max(maximumActiveEnumerations, activeEnumerations)
                 condition.broadcast()
-                if contentsCount == 1 {
+                if contentsCount == enumerationToBlock {
                     while !firstEnumerationReleased { condition.wait() }
                 }
                 activeEnumerations -= 1
@@ -900,7 +1118,7 @@ private nonisolated final class BlockingKeywordListBackupFileIOProbe: @unchecked
 
     func waitUntilFirstEnumerationStarts() async throws {
         let deadline = ContinuousClock.now + .seconds(30)
-        while contentsInvocationCount == 0 {
+        while contentsInvocationCount < enumerationToBlock {
             guard ContinuousClock.now < deadline else {
                 throw KeywordListBackupPreviewProbeError.timedOut
             }
@@ -1327,6 +1545,24 @@ struct KeywordListsStoreRoutePublicationTests {
 
 @Suite("Keyword root resolution")
 struct KeywordListsRootResolutionTests {
+    @Test("Container lookup retains its task on a Dispatch worker and rejects cancellation during lookup")
+    func dispatchLookupCancellation() async {
+        let root = URL(fileURLWithPath: "/virtual/keyword-container")
+        let queue = DispatchSerialQueue(label: "test.keyword-container")
+        let service = KeywordListsRootResolutionService(resolveContainer: {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(KeywordListsStoreStorageOverride.current == root)
+            withUnsafeCurrentTask { $0?.cancel() }
+            return root
+        }, filesystemQueue: queue)
+        let result = await Task {
+            await KeywordListsStoreStorageOverride.$current.withValue(root) {
+                await service.resolve()
+            }
+        }.value
+        #expect(result == nil)
+    }
+
     @Test("Container lookup runs away from the main thread")
     func resolvesOffMainThread() async {
         let container = URL(fileURLWithPath: "/tmp/keyword-container", isDirectory: true)

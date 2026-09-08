@@ -536,15 +536,25 @@ final class KeywordListsLegacyMigrationService {
 actor KeywordListsRootResolutionService {
     static let shared = KeywordListsRootResolutionService()
     private let resolveContainer: @Sendable () -> URL?
+    // Container provisioning can block; retain the caller's task on a Dispatch worker.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
 
     init(resolveContainer: @escaping @Sendable () -> URL? = {
         FileManager.default.url(forUbiquityContainerIdentifier: KeywordListsStore.iCloudContainerID)
-    }) {
+    }, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.keyword-lists.root", qos: .utility
+    )) {
         self.resolveContainer = resolveContainer
+        self.filesystemQueue = filesystemQueue
     }
 
     func resolve() -> URL? {
         guard !Task.isCancelled else { return nil }
-        return resolveContainer()?.appendingPathComponent("Documents/Lists", isDirectory: true)
+        let container = resolveContainer()
+        guard !Task.isCancelled else { return nil }
+        return container?.appendingPathComponent("Documents/Lists", isDirectory: true)
     }
 }

@@ -58,6 +58,14 @@ extension PreferencesSyncService: PreferencesSyncControlling {}
 actor ICloudAvailabilityProbeService: ICloudAvailabilityProbing {
     static let shared = ICloudAvailabilityProbeService()
 
+    // Ubiquity provisioning and coordinated copies may block indefinitely. Keep the original
+    // task on a retained Dispatch executor so cancellation and task-local context are preserved
+    // without occupying Swift's cooperative pool. Each service retains its existing ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let resolveAvailability: @Sendable () -> Bool
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
@@ -68,8 +76,11 @@ actor ICloudAvailabilityProbeService: ICloudAvailabilityProbing {
         FileManager.default.url(
             forUbiquityContainerIdentifier: AppPaths.iCloudContainerID
         ) != nil
-    }) {
+    }, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.icloud.availability", qos: .utility
+    )) {
         self.resolveAvailability = resolveAvailability
+        self.filesystemQueue = filesystemQueue
     }
 
     func probe() async -> ICloudAvailabilityProbeResult {
@@ -204,14 +215,25 @@ nonisolated protocol TemplateICloudRouting: Sendable {
 actor TemplateICloudRoutingService: TemplateICloudRouting {
     static let shared = TemplateICloudRoutingService()
 
+    // Ubiquity provisioning and coordinated copies may block indefinitely. Keep the original
+    // task on a retained Dispatch executor so cancellation and task-local context are preserved
+    // without occupying Swift's cooperative pool. Each service retains its existing ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: TemplateICloudRoutingFileAccess
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
         category: "TemplateICloudRouting"
     )
 
-    init(access: TemplateICloudRoutingFileAccess = .system) {
+    init(access: TemplateICloudRoutingFileAccess = .system, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.icloud.templates", qos: .utility
+    )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func reconcile(
@@ -303,14 +325,25 @@ actor LibraryICloudRoutingService: LibraryICloudRouting {
     static let teams = LibraryICloudRoutingService(access: .teams)
     static let watermarks = LibraryICloudRoutingService(access: .watermarks)
 
+    // Ubiquity provisioning and coordinated copies may block indefinitely. Keep the original
+    // task on a retained Dispatch executor so cancellation and task-local context are preserved
+    // without occupying Swift's cooperative pool. Each service retains its existing ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: LibraryICloudRoutingFileAccess
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
         category: "LibraryICloudRouting"
     )
 
-    init(access: LibraryICloudRoutingFileAccess) {
+    init(access: LibraryICloudRoutingFileAccess, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.icloud.libraries", qos: .utility
+    )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func reconcile(
@@ -402,14 +435,25 @@ nonisolated protocol KnownPeopleICloudRouting: Sendable {
 actor KnownPeopleICloudRoutingService: KnownPeopleICloudRouting {
     static let shared = KnownPeopleICloudRoutingService()
 
+    // Ubiquity provisioning and coordinated copies may block indefinitely. Keep the original
+    // task on a retained Dispatch executor so cancellation and task-local context are preserved
+    // without occupying Swift's cooperative pool. Each service retains its existing ordering.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: KnownPeopleICloudRoutingFileAccess
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
         category: "KnownPeopleICloudRouting"
     )
 
-    init(access: KnownPeopleICloudRoutingFileAccess = .system) {
+    init(access: KnownPeopleICloudRoutingFileAccess = .system, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.icloud.known-people", qos: .utility
+    )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func reconcile(
