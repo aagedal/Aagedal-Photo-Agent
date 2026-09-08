@@ -9,6 +9,20 @@ import os.log
 @globalActor
 actor KeywordListsFilesystemActor {
     static let shared = KeywordListsFilesystemActor()
+
+    /// Coordinated provider reads can block for an unbounded duration. Run the original Swift
+    /// task on a Dispatch worker instead of occupying a cooperative-pool thread. Retaining the
+    /// queue here keeps the unowned executor alive for every service using this global actor.
+    /// There are deliberately no new suspension points inside read/merge/write transactions:
+    /// all managed roots still serialize, and cancellation and task-local routing stay intact.
+    nonisolated let filesystemQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.keyword-lists.filesystem",
+        qos: .utility
+    )
+
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
 }
 
 nonisolated struct QuickListCacheSource: Equatable, Sendable {

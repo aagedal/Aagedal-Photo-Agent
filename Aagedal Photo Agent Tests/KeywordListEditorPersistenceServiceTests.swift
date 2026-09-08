@@ -4,6 +4,47 @@ import Testing
 
 @Suite("Keyword-list editor filesystem boundary")
 struct KeywordListEditorPersistenceServiceTests {
+    @Test("managed reads and commits use the Dispatch worker with the caller's task context")
+    @MainActor
+    func managedTransactionUsesDispatchWorker() async throws {
+        let root = URL(fileURLWithPath: "/virtual/keyword-worker")
+        let destination = root.appendingPathComponent("keywords.txt")
+        let requestID = UUID()
+        let queue = KeywordListsFilesystemActor.shared.filesystemQueue
+        let service = KeywordListEditorPersistenceService(access: KeywordListEditorFileAccess(
+            itemExists: { _ in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(KeywordListsStoreStorageOverride.current == root)
+                return true
+            },
+            readData: { _ in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(KeywordListsStoreStorageOverride.current == root)
+                return Data("first\n".utf8)
+            },
+            writeData: { bytes, url in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(KeywordListsStoreStorageOverride.current == root)
+                #expect(bytes == Data("first\nsecond\n".utf8))
+                #expect(url == destination)
+                // The executor must run the actual caller task, so cancellation in a blocking
+                // writer is still visible when the service reports the durable commit.
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        ))
+        let result = try await Task {
+            try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+                try await service.appendEntries(["second"], to: destination, requestID: requestID)
+            }
+        }.value
+        #expect(result == .committed(QuickListMutationCommit(
+            requestID: requestID, destinationURL: destination,
+            entries: ["first", "second"], addedEntries: ["second"],
+            byteCount: Data("first\nsecond\n".utf8).count,
+            cancellationRequestedAfterCommit: true
+        )))
+    }
+
     @Test("routing, approved import, and backup restore wait for an editor transaction")
     func sharedFilesystemTransactions() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
