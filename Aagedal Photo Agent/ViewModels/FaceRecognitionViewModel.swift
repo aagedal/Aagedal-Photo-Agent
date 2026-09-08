@@ -517,7 +517,10 @@ final class FaceRecognitionViewModel {
 
     // MARK: - Sports tagging
     /// Per-folder match setup (home/away teams). Drives number→player resolution.
-    var matchRoster: MatchRoster?
+    var matchRoster: MatchRoster? {
+        didSet { matchRosterRevision &+= 1 }
+    }
+    @ObservationIgnored private var matchRosterRevision: UInt64 = 0
     /// When set, the colour-cluster → team mapping needs the photographer to
     /// confirm (or flip) before names are written. Drives the confirm UI.
     var pendingColorClusterConfirmation: TeamColorClusterer.ClusterResult?
@@ -2440,25 +2443,44 @@ final class FaceRecognitionViewModel {
     /// entry so future games recognise the player by face.
     @discardableResult
     func linkPlayerToKnownPeople(groupID: UUID, playerNumber: Int, teamID: UUID) async -> Bool {
-        guard let team = RosterStore.shared.team(byID: teamID),
+        guard let data = faceData,
+              let team = RosterStore.shared.team(byID: teamID),
               let player = team.roster.first(where: { $0.number == playerNumber }) else { return false }
+        let folderURL = data.folderURL.standardizedFileURL
+        let displayedFolder = displayedFolderURL
+        var expectedFaceRevision = faceDataRevision
+        var expectedMatchRevision = matchRosterRevision
+        func canPublish() -> Bool {
+            !Task.isCancelled && faceDataRevision == expectedFaceRevision
+                && matchRosterRevision == expectedMatchRevision
+                && faceData?.folderURL.standardizedFileURL == folderURL
+                && displayedFolderURL == displayedFolder
+        }
         do {
             let result = try await addGroupToKnownPeople(groupID: groupID, name: player.playerName)
+            // Known People may already be durable. A newer folder/edit only stops subsequent
+            // linking and presentation; it does not roll back that completed storage operation.
+            guard canPublish() else { return false }
             try await RosterStore.shared.linkKnownPerson(
                 result.personID,
                 toPlayerNumber: playerNumber,
                 teamID: teamID
             )
+            guard canPublish() else { return false }
             nameGroup(groupID, name: player.playerName, knownPersonID: result.personID)
+            expectedFaceRevision = faceDataRevision
             knownPersonMatchByGroup[groupID] = (personID: result.personID, confidence: 1.0)
             if var match = matchRoster, let updatedTeam = RosterStore.shared.team(byID: teamID) {
                 if match.homeTeamID == teamID { match.homeTeamSnapshot = updatedTeam }
                 if match.awayTeamID == teamID { match.awayTeamSnapshot = updatedTeam }
                 matchRoster = match
+                expectedMatchRevision = matchRosterRevision
                 _ = try await matchRosterService.save(match, requestID: UUID())
+                guard canPublish() else { return false }
             }
             return true
         } catch {
+            guard canPublish() else { return false }
             errorMessage = "Failed to link player to Known People: \(error.localizedDescription)"
             return false
         }
