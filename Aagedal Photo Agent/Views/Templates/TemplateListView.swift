@@ -39,13 +39,17 @@ struct TemplateListView: View {
                                 viewModel.startEditing(template)
                             }
 
-                            Button("Delete", role: .destructive) {
+                            Button("Move to Trash", role: .destructive) {
                                 viewModel.deleteTemplate(template)
                             }
                         }
                     }
                 }
             }
+
+            Text("Deleted templates remain in Finder’s Trash until it is emptied.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if let error = viewModel.errorMessage {
                 Text(error)

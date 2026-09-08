@@ -3,11 +3,46 @@ import os
 
 nonisolated private let templateStorageLog = Logger(subsystem: "com.aagedal.photo-agent", category: "TemplateStorageService")
 
+/// Deletion keeps the original file recoverable in Finder's Trash, including fields that
+/// a newer app may have written. Never fall back to permanent deletion if Trash fails.
+nonisolated struct TemplateTrashAccess: Sendable {
+    let moveItem: @Sendable (URL) throws -> Void
+
+    static let system = Self(moveItem: { url in
+        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+    })
+
+    func moveToTrash(at url: URL) throws {
+        guard CloudCoordinatedIO.itemExists(at: url) else { return }
+        // Materialize cloud placeholders before asking Finder to move the actual file.
+        _ = try CloudCoordinatedIO.readData(at: url)
+        var coordinationError: NSError?
+        var operationError: Error?
+        NSFileCoordinator(filePresenter: nil).coordinate(
+            writingItemAt: url,
+            options: .forDeleting,
+            error: &coordinationError
+        ) { coordinatedURL in
+            do {
+                // A peer may already have removed the item while coordination was pending.
+                guard FileManager.default.fileExists(atPath: coordinatedURL.path) else { return }
+                try moveItem(coordinatedURL)
+            } catch {
+                operationError = error
+            }
+        }
+        if let operationError { throw operationError }
+        if let coordinationError { throw coordinationError }
+    }
+}
+
 nonisolated struct TemplateStorageService: Sendable {
     private let directoryOverride: URL?
+    private let trashAccess: TemplateTrashAccess
 
-    init(directoryURL: URL? = nil) {
+    init(directoryURL: URL? = nil, trashAccess: TemplateTrashAccess = .system) {
         directoryOverride = directoryURL
+        self.trashAccess = trashAccess
     }
 
     func loadAll() throws -> [MetadataTemplate] {
@@ -49,7 +84,7 @@ nonisolated struct TemplateStorageService: Sendable {
         let (directory, release) = resolvedDirectory()
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
-        try CloudCoordinatedIO.removeItem(at: url)
+        try trashAccess.moveToTrash(at: url)
     }
 
     // MARK: - Export / Import

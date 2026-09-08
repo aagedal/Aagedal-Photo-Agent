@@ -11,6 +11,71 @@ struct MetadataTemplatePersistenceTests {
         return url
     }
 
+    @Test("metadata deletion moves exact persisted bytes to recoverable storage")
+    func deletionPreservesOriginalBytes() throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Templates")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let template = MetadataTemplate(name: "Recover me")
+        let source = folder.appendingPathComponent("\(template.id.uuidString).json")
+        let recovered = root.appendingPathComponent("trashed.json")
+        // A stale in-memory template must not lose unknown fields or a future schema marker.
+        let bytes = Data("{\"schemaVersion\":999,\"futureField\":\"preserve exactly\"}\n".utf8)
+        try bytes.write(to: source)
+        let storage = TemplateStorageService(directoryURL: folder, trashAccess: .init(moveItem: {
+            try FileManager.default.moveItem(at: $0, to: recovered)
+        }))
+
+        try storage.delete(template)
+
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+        #expect(try Data(contentsOf: recovered) == bytes)
+        #expect(try storage.loadAll().isEmpty)
+        // Repeated deletion of an already absent template remains harmless.
+        try storage.delete(template)
+        #expect(try Data(contentsOf: recovered) == bytes)
+    }
+
+    @MainActor
+    @Test("failed metadata trash leaves persisted template and CRUD inventory unchanged")
+    func failedTrashPreservesTemplate() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let template = MetadataTemplate(name: "Keep me")
+        let storage = TemplateStorageService(directoryURL: folder, trashAccess: .init(moveItem: { _ in
+            throw CocoaError(.fileWriteNoPermission)
+        }))
+        try storage.save(template)
+        let source = folder.appendingPathComponent("\(template.id.uuidString).json")
+        let before = try Data(contentsOf: source)
+        let crud = TemplateCRUDService(access: .storage(storage))
+
+        do {
+            _ = try await crud.delete(template, requestID: UUID())
+            Issue.record("Expected trash failure")
+        } catch let error as TemplateMutationError<MetadataTemplate> {
+            #expect(error.durableTemplateIDs.isEmpty)
+            #expect(error.refreshedTemplates.map(\.id) == [template.id])
+        }
+        #expect(try Data(contentsOf: source) == before)
+        #expect(try storage.loadAll().map(\.id) == [template.id])
+
+        let viewModel = TemplateViewModel(storage: storage)
+        viewModel.templates = [template]
+        viewModel.deleteTemplate(template)
+        let deadline = ContinuousClock.now + .seconds(30)
+        while viewModel.errorMessage == nil {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Timed out waiting for trash failure")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(viewModel.templates.map(\.id) == [template.id])
+        #expect(try Data(contentsOf: source) == before)
+    }
+
     @Test("earliest preset-shaped templates migrate with shipped defaults")
     func legacyPresetShapeMigrates() throws {
         let id = UUID()

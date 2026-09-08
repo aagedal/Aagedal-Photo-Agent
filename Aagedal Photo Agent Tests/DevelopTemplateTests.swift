@@ -4,6 +4,51 @@ import Testing
 
 @Suite("Develop templates")
 struct DevelopTemplateTests {
+    @MainActor
+    @Test("Develop deletion preserves exact bytes and failed trash preserves the template")
+    func recoverableDeletion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("DevelopTemplates")
+        let template = DevelopTemplate(name: "Recover Develop")
+        let failingStorage = DevelopTemplateStorageService(directoryURL: folder, trashAccess: .init(moveItem: { _ in
+            throw CocoaError(.fileWriteNoPermission)
+        }))
+        try failingStorage.save(template)
+        let source = folder.appendingPathComponent("\(template.id.uuidString).json")
+        let bytes = try Data(contentsOf: source)
+        #expect(throws: (any Error).self) { try failingStorage.delete(template) }
+        #expect(try Data(contentsOf: source) == bytes)
+        #expect(try failingStorage.loadAll().map(\.id) == [template.id])
+        let viewModel = DevelopTemplateViewModel(storage: failingStorage)
+        viewModel.templates = [template]
+        viewModel.deleteTemplate(template)
+        let deadline = ContinuousClock.now + .seconds(30)
+        while viewModel.errorMessage == nil {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Timed out waiting for Develop trash failure")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(viewModel.templates.map(\.id) == [template.id])
+
+        let recovered = root.appendingPathComponent("trashed.json")
+        let storage = DevelopTemplateStorageService(directoryURL: folder, trashAccess: .init(moveItem: {
+            try FileManager.default.moveItem(at: $0, to: recovered)
+        }))
+        try storage.delete(template)
+        #expect(try Data(contentsOf: recovered) == bytes)
+        #expect(try storage.loadAll().isEmpty)
+        try storage.delete(template)
+
+        // A file restored from Trash becomes available on the next inventory refresh.
+        try FileManager.default.moveItem(at: recovered, to: source)
+        #expect(try storage.loadAll().map(\.id) == [template.id])
+        #expect(try storage.loadAll().first?.name == template.name)
+        #expect(try Data(contentsOf: source) == bytes)
+    }
+
     @Test("Creation strips image-specific decoder state")
     func stripsImageSpecificState() {
         var settings = CameraRawSettings()

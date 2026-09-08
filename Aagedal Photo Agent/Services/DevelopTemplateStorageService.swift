@@ -8,9 +8,11 @@ nonisolated private let developTemplateStorageLog = Logger(
 
 nonisolated struct DevelopTemplateStorageService: Sendable {
     private let directoryOverride: URL?
+    private let trashAccess: TemplateTrashAccess
 
-    init(directoryURL: URL? = nil) {
+    init(directoryURL: URL? = nil, trashAccess: TemplateTrashAccess = .system) {
         directoryOverride = directoryURL
+        self.trashAccess = trashAccess
     }
 
     func loadAll() throws -> [DevelopTemplate] {
@@ -45,7 +47,7 @@ nonisolated struct DevelopTemplateStorageService: Sendable {
         let (directory, release) = resolvedDirectory()
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
-        try CloudCoordinatedIO.removeItem(at: url)
+        try trashAccess.moveToTrash(at: url)
     }
 
     private func resolvedDirectory() -> (url: URL, release: () -> Void) {
