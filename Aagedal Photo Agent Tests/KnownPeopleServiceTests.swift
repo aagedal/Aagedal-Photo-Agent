@@ -13,6 +13,145 @@ import AppKit
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Queued ordinary additions recheck names after admission")
+    func queuedOrdinaryAdditions() async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+            writeCoordinatedData: { data, url in
+                #expect(!Thread.isMainThread)
+                if url.pathExtension == "jpg" { _ = gate.read(url) }
+                try system.writeCoordinatedData(data, url)
+            }, runDitto: system.runDitto
+        )
+        let writer = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        let peer = KnownPeopleService()
+        let first = embedding(98)
+        let second = embedding(99)
+        let initial = Task {
+            try await writer.addOrMergePerson(name: "Same Name", embeddings: [first],
+                thumbnailData: Data([1]), duplicateCheck: .noDuplicate)
+        }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(gate.entered)
+        var queuedStarted = false
+        let queued = Task {
+            queuedStarted = true
+            return try await peer.addOrMergePerson(name: " same name ", embeddings: [second],
+                thumbnailData: nil, duplicateCheck: .noDuplicate)
+        }
+        while !queuedStarted { await Task.yield() }
+        gate.resume()
+        let created = try await initial.value
+        let merged = try await queued.value
+        #expect(!created.addedToExisting)
+        #expect(merged.addedToExisting)
+        #expect(created.person.id == merged.person.id)
+        #expect(peer.getAllPeople().count == 1)
+        #expect(merged.person.embeddings.map(\.id) == [first.id, second.id])
+    }
+
+    @Test("Ordinary add and merge own their writes and publish partial durable results",
+          arguments: [false, true], ["success", "cancel", "storageChange", "recordFailure", "thumbnailFailure"])
+    func asynchronousOrdinaryAddition(merge: Bool, outcome: String) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let sample = embedding(97)
+        let imageURL = directory.appendingPathComponent("embedding_thumbnails/\(sample.id.uuidString).jpg")
+        let system = KnownPeopleArchiveFileAccess.system
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+            writeCoordinatedData: { data, url in
+                #expect(!Thread.isMainThread)
+                if merge ? url.pathExtension == "json" : url == imageURL { _ = gate.read(url) }
+                if outcome == "recordFailure", url.pathExtension == "json" {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                if outcome == "thumbnailFailure", url == imageURL {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                try system.writeCoordinatedData(data, url)
+            }, runDitto: system.runDitto
+        )
+        let writer = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        let existing = try writer.addPerson(name: "Existing", embeddings: [])
+        let peer = KnownPeopleService()
+        #expect(peer.person(byID: existing.id)?.embeddings.isEmpty == true)
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32
+        ))
+        let oldImage = try #require(bitmap.representation(using: .png, properties: [:]))
+        try peer.saveEmbeddingThumbnail(oldImage, for: sample.id)
+        #expect(peer.cachedEmbeddingThumbnail(for: sample.id) != nil)
+        // A duplicate check is a snapshot. Scalar edits since that check must survive merging.
+        var edited = existing
+        edited.name = "Edited"
+        try peer.updatePerson(edited)
+        let operation = Task {
+            try await writer.addOrMergePerson(name: "New", embeddings: [sample], thumbnailData: nil,
+                embeddingThumbnails: [sample.id: Data([9])],
+                duplicateCheck: merge ? .nameMatch(person: existing) : .noDuplicate)
+        }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(gate.entered)
+        #expect(throws: (any Error).self) { try peer.saveEmbeddingThumbnail(Data(), for: sample.id) }
+        #expect(throws: (any Error).self) { try peer.clearDatabase() }
+        if merge { #expect(throws: (any Error).self) { try peer.removePerson(id: existing.id) } }
+        let unrelated = try peer.addPerson(name: "Unrelated", embeddings: [])
+        if outcome == "cancel" { operation.cancel() }
+        if outcome == "storageChange" {
+            writer.reloadAfterStorageChange(resolvedStorageURL: directory.appendingPathComponent("other"))
+        }
+        gate.resume()
+        if outcome == "success" {
+            let result = try await operation.value
+            #expect(result.addedToExisting == merge)
+            #expect(result.person.name == (merge ? "Edited" : "New"))
+        } else if outcome == "cancel" || outcome == "storageChange" {
+            await #expect(throws: CancellationError.self) { try await operation.value }
+        } else {
+            await #expect(throws: (any Error).self) { try await operation.value }
+        }
+        let thumbnailWritten = outcome != "thumbnailFailure" && !(merge && outcome == "recordFailure")
+        #expect(try Data(contentsOf: imageURL) == (thumbnailWritten ? Data([9]) : oldImage))
+        if thumbnailWritten { #expect(peer.cachedEmbeddingThumbnail(for: sample.id) == nil) }
+        let personWritten = outcome != "recordFailure" && (merge || outcome != "thumbnailFailure")
+        if merge {
+            #expect(peer.person(byID: existing.id)?.embeddings.map(\.id) == (personWritten ? [sample.id] : []))
+            #expect(peer.person(byID: existing.id)?.name == "Edited")
+        } else {
+            #expect((peer.person(byName: "New") != nil) == personWritten)
+        }
+        #expect(peer.person(byID: unrelated.id) != nil)
+        if outcome == "storageChange" { #expect(writer.person(byID: existing.id) == nil) }
+        try peer.saveEmbeddingThumbnail(Data(), for: sample.id)
+        try peer.removePerson(id: existing.id)
+    }
+
     @Test("Embedding removal invalidates cached and suspended images when its thumbnail is already missing", arguments: [false, true])
     func embeddingRemovalMissingThumbnailInvalidation(pendingRead: Bool) async throws {
         let directory = makeTempDir()

@@ -97,6 +97,12 @@ nonisolated struct KnownPeopleThumbnailReplacementResult: Sendable {
     let completion: Result<Void, any Error>
 }
 
+nonisolated struct KnownPeopleAdditionResult: Sendable {
+    let personWritten: Bool
+    let writtenThumbnailURLs: [URL]
+    let completion: Result<Void, any Error>
+}
+
 nonisolated struct KnownPeopleEmbeddingRemovalResult: Sendable {
     let personWritten: Bool
     let changedThumbnailURLs: [URL]
@@ -249,6 +255,36 @@ actor KnownPeopleArchiveService {
         return KnownPeopleThumbnailReplacementResult(
             thumbnailWritten: thumbnailWritten, personWritten: personWritten, completion: completion
         )
+    }
+
+    /// Preserve ordinary add/merge write ordering and return every durable change on failure.
+    /// Once admitted, complete the transaction even if its caller is cancelled during I/O.
+    func addOrMerge(person: KnownPerson, personURL: URL, thumbnails: [URL: Data],
+                    recordFirst: Bool) async -> KnownPeopleAdditionResult {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        var personWritten = false
+        var writtenThumbnailURLs: [URL] = []
+        let completion = Result { () throws -> Void in
+            try Task.checkCancellation()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(person)
+            if recordFirst {
+                try access.writeCoordinatedData(data, personURL)
+                personWritten = true
+            }
+            for (url, thumbnail) in thumbnails.sorted(by: { $0.key.path < $1.key.path }) {
+                try access.writeCoordinatedData(thumbnail, url)
+                writtenThumbnailURLs.append(url)
+            }
+            if !recordFirst {
+                try access.writeCoordinatedData(data, personURL)
+                personWritten = true
+            }
+        }
+        return KnownPeopleAdditionResult(personWritten: personWritten,
+            writtenThumbnailURLs: writtenThumbnailURLs, completion: completion)
     }
 
     /// The record is authoritative: only remove its image after the record commits. Once
@@ -1719,23 +1755,82 @@ final class KnownPeopleService {
         thumbnailData: Data?,
         embeddingThumbnails: [UUID: Data] = [:],
         duplicateCheck: DuplicateCheckResult
-    ) throws -> (person: KnownPerson, addedToExisting: Bool) {
-        switch duplicateCheck {
-        case .noDuplicate:
-            // Create new person
-            let person = try addPerson(name: name, role: role, embeddings: embeddings, thumbnailData: thumbnailData, embeddingThumbnails: embeddingThumbnails)
-            return (person, false)
-
-        case .nameMatch(let existingPerson), .faceMatch(let existingPerson, _), .bothMatch(let existingPerson, _):
-            // Add embeddings to existing person, avoiding duplicates
-            try addEmbeddingsDeduped(embeddings, toPersonID: existingPerson.id, embeddingThumbnails: embeddingThumbnails)
-
-            // Return updated person
-            if let updatedPerson = person(byID: existingPerson.id) {
-                return (updatedPerson, true)
-            }
-            return (existingPerson, true)
+    ) async throws -> (person: KnownPerson, addedToExisting: Bool) {
+        let revision = storageRevision
+        await beginImport()
+        defer { endImport() }
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
+        // Assemble cold storage before reserving paths; migrations must finish first.
+        _ = loadDatabase()
+        let root = knownPeopleDirectory
+        var person: KnownPerson
+        let addedToExisting: Bool
+        var thumbnails: [URL: Data] = [:]
+        let admittedDuplicate: DuplicateCheckResult
+        if case .noDuplicate = duplicateCheck, let existing = self.person(byName: name) {
+            // A preceding queued add may have created this name since the UI checked it.
+            admittedDuplicate = .nameMatch(person: existing)
+        } else {
+            admittedDuplicate = duplicateCheck
         }
+        switch admittedDuplicate {
+        case .noDuplicate:
+            person = KnownPerson(name: name, role: role, embeddings: embeddings,
+                                 representativeThumbnailID: embeddings.first?.id)
+            addedToExisting = false
+            if let thumbnailData { thumbnails[thumbnailURL(for: person.id)] = thumbnailData }
+            for (id, data) in embeddingThumbnails {
+                thumbnails[embeddingThumbnailURL(for: id)] = data
+            }
+        case .nameMatch(let existing), .faceMatch(let existing, _), .bothMatch(let existing, _):
+            // Admission may suspend behind another edit. Merge into the latest durable cache.
+            guard let current = self.person(byID: existing.id) else {
+                throw NSError(domain: "KnownPeopleService", code: 10,
+                    userInfo: [NSLocalizedDescriptionKey: "Person no longer exists."])
+            }
+            person = current
+            addedToExisting = true
+            let existingData = Set(person.embeddings.map(\.featurePrintData))
+            let added = embeddings.filter { !existingData.contains($0.featurePrintData) }
+            guard !added.isEmpty else { return (person, true) }
+            person.embeddings.append(contentsOf: added)
+            person.updatedAt = Date()
+            for embedding in added {
+                if let data = embeddingThumbnails[embedding.id] {
+                    thumbnails[embeddingThumbnailURL(for: embedding.id)] = data
+                }
+            }
+        }
+        let recordURL = personFileURL(for: person.id)
+        reserveImportDestinations([person], root: root)
+        Self.importReservedURLs.formUnion(thumbnails.keys.map(\.standardizedFileURL))
+        let result = await archiveService.addOrMerge(person: person, personURL: recordURL,
+            thumbnails: thumbnails, recordFirst: addedToExisting)
+        if !result.writtenThumbnailURLs.isEmpty {
+            invalidatePeerThumbnails(at: root)
+            if revision == storageRevision {
+                thumbnailContentRevision &+= 1
+                personThumbnailCache.removeAllObjects()
+                embeddingThumbnailCache.removeAllObjects()
+                for url in result.writtenThumbnailURLs { stampLocalWrite(url) }
+            }
+        }
+        if result.personWritten {
+            invalidatePeerDatabases(at: root)
+            if revision == storageRevision {
+                // Reload on demand to preserve unrelated edits made while the worker ran.
+                database = nil
+                clearFeaturePrintCache()
+                stampLocalWrite(recordURL)
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+            }
+        }
+        await releaseImportDestinations()
+        try result.completion.get()
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
+        return (person, addedToExisting)
     }
 
     /// Add embeddings to a person, skipping any that are duplicates (same featurePrintData).

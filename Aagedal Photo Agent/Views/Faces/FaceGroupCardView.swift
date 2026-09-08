@@ -190,6 +190,7 @@ final class FaceGroupCardView: NSView {
     private let countLabel = NSTextField(labelWithString: "")
     private let menuButton = NSButton()
 
+    private var isAddingToKnownPeople = false
     private var isEditingName = false
     private var editingName = ""
     /// Structured Person Shown names backing the name combo box's dropdown list.
@@ -1027,13 +1028,16 @@ final class FaceGroupCardView: NSView {
     }
 
     @objc private func menuAddToKnownPeople() {
-        guard let group = currentGroup, let name = group.name, !name.isEmpty, let viewModel else { return }
-
-        do {
-            _ = try viewModel.addGroupToKnownPeople(groupID: group.id, name: name)
-        } catch {
-            Logger(subsystem: "com.aagedal.photo-agent", category: "FaceGroupCard")
-                .error("Failed to add to Known People: \(error.localizedDescription)")
+        guard !isAddingToKnownPeople, let group = currentGroup, let name = group.name, !name.isEmpty, let viewModel else { return }
+        isAddingToKnownPeople = true
+        Task {
+            defer { isAddingToKnownPeople = false }
+            do {
+                _ = try await viewModel.addGroupToKnownPeople(groupID: group.id, name: name)
+            } catch {
+                Logger(subsystem: "com.aagedal.photo-agent", category: "FaceGroupCard")
+                    .error("Failed to add to Known People: \(error.localizedDescription)")
+            }
         }
     }
 

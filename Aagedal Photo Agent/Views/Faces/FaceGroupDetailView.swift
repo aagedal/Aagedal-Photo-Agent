@@ -12,6 +12,7 @@ struct FaceGroupDetailView: View {
     @State private var showDeleteGroupAlert = false
     @State private var showMergePopover = false
     @State private var isAddingToKnownPeople = false
+    @State private var knownPeopleRequestID: UUID?
     @State private var knownPeopleMessage: String?
     @FocusState private var nameFieldFocused: Bool
     var isExpanded: Bool = false
@@ -470,32 +471,39 @@ struct FaceGroupDetailView: View {
 
     private func addToKnownPeople() {
         let trimmed = trimmedName
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, !isAddingToKnownPeople else { return }
 
+        let requestID = UUID()
+        knownPeopleRequestID = requestID
         isAddingToKnownPeople = true
         knownPeopleMessage = nil
 
         // First apply the name to the group
         viewModel.nameGroup(group.id, name: trimmed)
 
-        do {
-            let result = try viewModel.addGroupToKnownPeople(groupID: group.id, name: trimmed)
+        Task {
+            do {
+                let result = try await viewModel.addGroupToKnownPeople(groupID: group.id, name: trimmed)
 
-            isAddingToKnownPeople = false
-            if result.addedToExisting {
-                knownPeopleMessage = "Added \(result.embeddingCount) sample(s) to \(result.name)"
-            } else {
-                knownPeopleMessage = "Added \(result.name) with \(result.embeddingCount) sample(s)"
-            }
+                isAddingToKnownPeople = false
+                guard knownPeopleRequestID == requestID, trimmedName == trimmed,
+                      viewModel.group(byID: group.id) != nil else { return }
+                if result.addedToExisting {
+                    knownPeopleMessage = "Added \(result.embeddingCount) sample(s) to \(result.name)"
+                } else {
+                    knownPeopleMessage = "Added \(result.name) with \(result.embeddingCount) sample(s)"
+                }
 
-            // Clear message after delay
-            Task {
-                try? await Task.sleep(for: .seconds(2))
-                knownPeopleMessage = nil
+                // Clear message after delay
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    if knownPeopleRequestID == requestID { knownPeopleMessage = nil }
+                }
+            } catch {
+                isAddingToKnownPeople = false
+                guard knownPeopleRequestID == requestID, trimmedName == trimmed else { return }
+                knownPeopleMessage = "Failed: \(error.localizedDescription)"
             }
-        } catch {
-            isAddingToKnownPeople = false
-            knownPeopleMessage = "Failed: \(error.localizedDescription)"
         }
     }
 }

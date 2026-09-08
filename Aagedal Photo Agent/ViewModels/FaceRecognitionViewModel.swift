@@ -1635,7 +1635,7 @@ final class FaceRecognitionViewModel {
 
     /// Add a face group to the Known People database.
     /// Collects embeddings, extracts a thumbnail, checks for duplicates, and calls addOrMergePerson.
-    func addGroupToKnownPeople(groupID: UUID, name: String) throws -> AddToKnownPeopleResult {
+    func addGroupToKnownPeople(groupID: UUID, name: String) async throws -> AddToKnownPeopleResult {
         guard let group = group(byID: groupID) else {
             throw AddToKnownPeopleError.groupNotFound
         }
@@ -1682,7 +1682,7 @@ final class FaceRecognitionViewModel {
             duplicateCheck = .noDuplicate
         }
 
-        let (person, addedToExisting) = try KnownPeopleService.shared.addOrMergePerson(
+        let (person, addedToExisting) = try await KnownPeopleService.shared.addOrMergePerson(
             name: name,
             embeddings: embeddings,
             thumbnailData: thumbnailData,
@@ -2443,7 +2443,7 @@ final class FaceRecognitionViewModel {
         guard let team = RosterStore.shared.team(byID: teamID),
               let player = team.roster.first(where: { $0.number == playerNumber }) else { return false }
         do {
-            let result = try addGroupToKnownPeople(groupID: groupID, name: player.playerName)
+            let result = try await addGroupToKnownPeople(groupID: groupID, name: player.playerName)
             try await RosterStore.shared.linkKnownPerson(
                 result.personID,
                 toPlayerNumber: playerNumber,
