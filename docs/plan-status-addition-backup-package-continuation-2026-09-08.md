@@ -74,6 +74,33 @@ Logs: `/private/tmp/aagedal-addition-backup-tests.log`,
 `/private/tmp/aagedal-addition-backup-final-tests.log`, and
 `/private/tmp/aagedal-addition-backup-repository.log`.
 
+## Current-source unsigned candidate
+
+The reproducible Release command succeeded from clean committed source
+`f7bd129d87fe3ca81d6df11691734742d3b8726c`, version **3.0.0 (738)**, on macOS
+27.0 (26A5425a), arm64, with Xcode 26.6 (17F113). Recursive model omission and
+archive payload verification both passed; all **79** regular-file/symlink payload
+entries match the built application.
+
+| Measurement | Result |
+| --- | ---: |
+| Regular files | 73 |
+| Regular-file bytes | 145,141,074 |
+| ZIP bytes | 49,699,786 |
+
+ZIP SHA-256: `b420f39f41a00bbe2efc442c9f7869abc93c65f0497f46cf427afdfda758ea41`.
+
+```sh
+python3 -B scripts/ci/build_model_free_candidate.py \
+  build/model-omission-candidate-addition-backup-2026-09-08
+```
+
+The app, ZIP, build log and `measurement.json` are retained under that ignored output
+directory. The command uses approved Xcode cache access. This is local unsigned
+build/package evidence; no launch, production-server, signing, notarization or distribution
+validation is claimed. The following documentation-only commit does not alter candidate
+application source.
+
 ## Remaining work
 
 1. **Storage ownership:** Known People cold root/database loading, migrations, low-level
