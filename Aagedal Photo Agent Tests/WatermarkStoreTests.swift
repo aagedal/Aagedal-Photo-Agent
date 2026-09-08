@@ -396,7 +396,8 @@ struct WatermarkLibraryPersistenceServiceTests {
             writeData: { @Sendable data, url in
                 check()
                 #expect(url == markerURL)
-                #expect(try JSONDecoder().decode(WatermarkTombstone.self, from: data).id == assetID)
+                let decoded = try JSONDecoder().decode(WatermarkTombstone.self, from: data)
+                #expect(decoded.id == assetID)
                 withUnsafeCurrentTask { $0?.cancel() }
             },
             readData: { @Sendable url in

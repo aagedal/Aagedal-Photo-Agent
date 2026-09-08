@@ -322,7 +322,8 @@ struct RosterLibraryPersistenceServiceTests {
             writeData: { @Sendable data, url in
                 check()
                 #expect(url == markerURL)
-                #expect(try JSONDecoder().decode(TeamTombstone.self, from: data).id == team.id)
+                let decoded = try JSONDecoder().decode(TeamTombstone.self, from: data)
+                #expect(decoded.id == team.id)
                 withUnsafeCurrentTask { $0?.cancel() }
             },
             readData: { @Sendable url in
