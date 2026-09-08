@@ -57,11 +57,24 @@ nonisolated enum MatchRosterSaveResult: Equatable, Sendable {
 actor MatchRosterService {
     static let shared = MatchRosterService()
 
+    // Run the original task on a retained Dispatch worker so blocking provider I/O does not
+    // occupy the cooperative pool, while task locals and cancellation remain intact.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private static let fileName = "match_roster.json"
     private let fileIO: MatchRosterFileIO
 
-    init(fileIO: MatchRosterFileIO = .system) {
+    init(
+        fileIO: MatchRosterFileIO = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.match-roster", qos: .utility
+        )
+    ) {
         self.fileIO = fileIO
+        self.filesystemQueue = filesystemQueue
     }
 
     private func faceDataDirectory(for folderURL: URL) -> URL {

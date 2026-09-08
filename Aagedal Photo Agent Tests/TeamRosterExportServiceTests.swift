@@ -4,17 +4,20 @@ import Testing
 
 @Suite("Team roster export filesystem boundary")
 struct TeamRosterExportServiceTests {
-    @Test("an immutable commit is written away from the main actor")
+    @Test("an immutable commit preserves caller task context on its Dispatch worker")
     @MainActor
     func completeCommitRunsOffMainActor() async {
         let destination = URL(fileURLWithPath: "/virtual/roster.pdf")
         let bytes = Data("roster PDF".utf8)
         let artifactID = UUID()
         let requestID = UUID()
-        let probe = TeamRosterExportWriterProbe()
-        let service = TeamRosterExportService(writer: TeamRosterExportWriter(write: probe.write))
+        let queue = DispatchSerialQueue(label: "test.team-roster-export.commit")
+        let probe = TeamRosterExportWriterProbe(checkContext: contextCheck(queue))
+        let service = TeamRosterExportService(
+            writer: TeamRosterExportWriter(write: probe.write), filesystemQueue: queue
+        )
 
-        let evidence = await Task {
+        let evidence = await TeamRosterExportExecutorContext.$marker.withValue("roster-export") {
             await service.export(
                 [TeamRosterExportArtifact(
                     id: artifactID,
@@ -23,7 +26,7 @@ struct TeamRosterExportServiceTests {
                 )],
                 requestID: requestID
             )
-        }.value
+        }
 
         #expect(evidence == TeamRosterExportEvidence(
             requestID: requestID,
@@ -79,6 +82,7 @@ struct TeamRosterExportServiceTests {
         let probe = BlockingTeamRosterExportWriterProbe()
         let service = TeamRosterExportService(writer: TeamRosterExportWriter(write: probe.write))
         let firstTask = Task { await service.export([first], requestID: UUID()) }
+        defer { probe.releaseFirstWrite() }
         try await probe.waitUntilFirstWriteStarts()
         let secondTask = Task { await service.export([second], requestID: UUID()) }
         secondTask.cancel()
@@ -144,12 +148,17 @@ struct TeamRosterExportServiceTests {
             data: Data("text".utf8),
             destinationURL: URL(fileURLWithPath: "/virtual/roster.txt")
         )
+        let queue = DispatchSerialQueue(label: "test.team-roster-export.cancel-write")
+        let check = contextCheck(queue)
         let service = TeamRosterExportService(writer: TeamRosterExportWriter { _, _, _ in
+            check()
             withUnsafeCurrentTask { $0?.cancel() }
-        })
+        }, filesystemQueue: queue)
 
         let evidence = await Task {
-            await service.export([first, second], requestID: UUID())
+            await TeamRosterExportExecutorContext.$marker.withValue("roster-export") {
+                await service.export([first, second], requestID: UUID())
+            }
         }.value
 
         #expect(evidence.results == [
@@ -162,6 +171,14 @@ struct TeamRosterExportServiceTests {
             .cancelledBeforeWrite(artifactID: second.id, destinationURL: second.destinationURL),
         ])
         #expect(evidence.isPartialSuccess)
+    }
+
+    private func contextCheck(_ queue: DispatchSerialQueue) -> @Sendable () -> Void {
+        {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(TeamRosterExportExecutorContext.marker == "roster-export")
+        }
     }
 
     @Test("the team editor awaits the service and rejects stale completion")
@@ -186,13 +203,23 @@ struct TeamRosterExportServiceTests {
     }
 }
 
+private nonisolated enum TeamRosterExportExecutorContext {
+    @TaskLocal static var marker: String?
+}
+
 private nonisolated final class TeamRosterExportWriterProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
     private var observedMainThread = false
+    private let checkContext: @Sendable () -> Void
+
+    init(checkContext: @escaping @Sendable () -> Void = {}) {
+        self.checkContext = checkContext
+    }
 
     func write(_ data: Data, _ url: URL, _ options: Data.WritingOptions) throws {
         _ = (data, url, options)
+        checkContext()
         lock.withLock {
             count += 1
             observedMainThread = observedMainThread || Thread.isMainThread

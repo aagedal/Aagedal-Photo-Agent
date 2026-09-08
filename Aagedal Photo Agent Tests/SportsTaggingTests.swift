@@ -579,20 +579,21 @@ struct SportsTaggingTests {
 
 @Suite("Match roster filesystem boundary")
 struct MatchRosterServiceTests {
-    @Test("load returns an immutable snapshot away from the main actor")
+    @Test("load preserves caller task context on its Dispatch worker")
     @MainActor
     func loadRunsOffMainActor() async throws {
         let folderURL = URL(fileURLWithPath: "/virtual/match")
         let teamID = UUID()
         let roster = MatchRoster(folderURL: folderURL, homeTeamID: teamID)
         let encoded = try JSONEncoder().encode(roster)
-        let probe = MatchRosterFileIOProbe(readData: encoded)
-        let service = MatchRosterService(fileIO: probe.fileIO)
+        let queue = DispatchSerialQueue(label: "test.match-roster.load")
+        let probe = MatchRosterFileIOProbe(readData: encoded, checkContext: contextCheck(queue))
+        let service = MatchRosterService(fileIO: probe.fileIO, filesystemQueue: queue)
         let requestID = UUID()
 
-        let result = await Task {
+        let result = await MatchRosterExecutorContext.$marker.withValue("match-roster") {
             await service.load(for: folderURL, requestID: requestID)
-        }.value
+        }
 
         guard case .loaded(let snapshot) = result else {
             Issue.record("Expected a loaded roster snapshot")
@@ -643,12 +644,15 @@ struct MatchRosterServiceTests {
     func cancellationAfterCommit() async throws {
         let folderURL = URL(fileURLWithPath: "/virtual/match")
         let roster = MatchRoster(folderURL: folderURL)
-        let probe = MatchRosterFileIOProbe(cancelDuringWrite: true)
-        let service = MatchRosterService(fileIO: probe.fileIO)
+        let queue = DispatchSerialQueue(label: "test.match-roster.cancel-write")
+        let probe = MatchRosterFileIOProbe(cancelDuringWrite: true, checkContext: contextCheck(queue))
+        let service = MatchRosterService(fileIO: probe.fileIO, filesystemQueue: queue)
         let requestID = UUID()
 
         let result = try await Task {
-            try await service.save(roster, requestID: requestID)
+            try await MatchRosterExecutorContext.$marker.withValue("match-roster") {
+                try await service.save(roster, requestID: requestID)
+            }
         }.value
 
         guard case .committed(let commit) = result else {
@@ -661,6 +665,68 @@ struct MatchRosterServiceTests {
         #expect(commit.cancellationRequestedAfterCommit)
         #expect(probe.directoryCreationCount == 1)
         #expect(probe.writeCount == 1)
+    }
+
+    @Test("cancellation during a read preserves task context and suppresses the snapshot")
+    @MainActor
+    func cancellationDuringRead() async throws {
+        let folderURL = URL(fileURLWithPath: "/virtual/match")
+        let bytes = try JSONEncoder().encode(MatchRoster(folderURL: folderURL))
+        let queue = DispatchSerialQueue(label: "test.match-roster.cancel-read")
+        let check = contextCheck(queue)
+        let service = MatchRosterService(fileIO: MatchRosterFileIO(
+            fileExists: { _ in check(); return true },
+            readData: { _ in
+                check()
+                withUnsafeCurrentTask { $0?.cancel() }
+                return bytes
+            },
+            createDirectory: { _ in Issue.record("A read created a directory") },
+            writeData: { _, _, _ in Issue.record("A read wrote bytes") }
+        ), filesystemQueue: queue)
+        let requestID = UUID()
+        let result = await Task {
+            await MatchRosterExecutorContext.$marker.withValue("match-roster") {
+                await service.load(for: folderURL, requestID: requestID)
+            }
+        }.value
+        guard case .cancelledAfterRead(let resultID, let resultFolder, let byteCount) = result else {
+            Issue.record("Expected cancellation evidence without a roster snapshot")
+            return
+        }
+        #expect(resultID == requestID)
+        #expect(resultFolder == folderURL)
+        #expect(byteCount == bytes.count)
+    }
+
+    @Test("pre-cancelled loads skip every filesystem access")
+    func preCancelledLoad() async {
+        let folderURL = URL(fileURLWithPath: "/virtual/match")
+        let service = MatchRosterService(fileIO: MatchRosterFileIO(
+            fileExists: { _ in Issue.record("Cancelled load probed a path"); return false },
+            readData: { _ in Issue.record("Cancelled load read data"); return Data() },
+            createDirectory: { _ in Issue.record("Cancelled load created a directory") },
+            writeData: { _, _, _ in Issue.record("Cancelled load wrote data") }
+        ))
+        let requestID = UUID()
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.load(for: folderURL, requestID: requestID)
+        }.value
+        guard case .cancelledBeforeRead(let resultID, let resultFolder) = result else {
+            Issue.record("Expected cancellation before filesystem access")
+            return
+        }
+        #expect(resultID == requestID)
+        #expect(resultFolder == folderURL)
+    }
+
+    private func contextCheck(_ queue: DispatchSerialQueue) -> @Sendable () -> Void {
+        {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(MatchRosterExecutorContext.marker == "match-roster")
+        }
     }
 
     @Test("callers await roster IO and reject stale UI loads")
@@ -689,9 +755,14 @@ struct MatchRosterServiceTests {
     }
 }
 
+private nonisolated enum MatchRosterExecutorContext {
+    @TaskLocal static var marker: String?
+}
+
 private nonisolated final class MatchRosterFileIOProbe: @unchecked Sendable {
     private let lock = NSLock()
     private let suppliedReadData: Data
+    private let checkContext: @Sendable () -> Void
     private let cancelDuringWrite: Bool
     private let readDelay: TimeInterval
     private var observedMainThread = false
@@ -703,22 +774,26 @@ private nonisolated final class MatchRosterFileIOProbe: @unchecked Sendable {
     init(
         readData: Data = Data(),
         cancelDuringWrite: Bool = false,
-        readDelay: TimeInterval = 0
+        readDelay: TimeInterval = 0,
+        checkContext: @escaping @Sendable () -> Void = {}
     ) {
         self.suppliedReadData = readData
         self.cancelDuringWrite = cancelDuringWrite
         self.readDelay = readDelay
+        self.checkContext = checkContext
     }
 
     var fileIO: MatchRosterFileIO {
         MatchRosterFileIO(
             fileExists: { [self] _ in
+                checkContext()
                 lock.withLock {
                     observedMainThread = observedMainThread || Thread.isMainThread
                 }
                 return !suppliedReadData.isEmpty
             },
             readData: { [self] _ in
+                checkContext()
                 lock.withLock {
                     activeReads += 1
                     maximumActiveReads = max(maximumActiveReads, activeReads)
@@ -728,12 +803,14 @@ private nonisolated final class MatchRosterFileIOProbe: @unchecked Sendable {
                 return suppliedReadData
             },
             createDirectory: { [self] _ in
+                checkContext()
                 lock.withLock {
                     createdDirectories += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
                 }
             },
             writeData: { [self] _, _, _ in
+                checkContext()
                 lock.withLock {
                     writes += 1
                     observedMainThread = observedMainThread || Thread.isMainThread

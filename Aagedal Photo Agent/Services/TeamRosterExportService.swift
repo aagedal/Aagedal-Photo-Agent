@@ -92,10 +92,23 @@ nonisolated struct TeamRosterExportWriter: Sendable {
 actor TeamRosterExportService {
     static let shared = TeamRosterExportService()
 
+    // Run the original task on a retained Dispatch worker so blocking provider I/O does not
+    // occupy the cooperative pool, while task locals and cancellation remain intact.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let writer: TeamRosterExportWriter
 
-    init(writer: TeamRosterExportWriter = .system) {
+    init(
+        writer: TeamRosterExportWriter = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.team-roster-export", qos: .utility
+        )
+    ) {
         self.writer = writer
+        self.filesystemQueue = filesystemQueue
     }
 
     func export(
