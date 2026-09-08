@@ -7,6 +7,83 @@ struct BatchRenameRecipeRepositoryTests {
     private let alphaID = UUID(uuidString: "41000000-0000-0000-0000-000000000001")!
     private let zuluID = UUID(uuidString: "42000000-0000-0000-0000-000000000002")!
 
+    @Test("cancelled portable operations skip source access and leave storage unchanged", arguments: [false, true])
+    func cancelledPortableOperation(isExport: Bool) async throws {
+        let fixture = try RecipeRepositoryFixture()
+        defer { fixture.remove() }
+        let repository = BatchRenameRecipeRepository(documentURL: fixture.repositoryURL, importFile: { _ in
+            Issue.record("A cancelled import accessed its source")
+            throw CancellationError()
+        }, stageExport: { _, _ in
+            Issue.record("A cancelled export staged output")
+        })
+        _ = try await repository.create(recipe: recipe(name: "Existing", literal: "a.jpg"), id: alphaID)
+        let original = try Data(contentsOf: fixture.repositoryURL)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            if isExport {
+                try await repository.exportPreset(id: alphaID, to: fixture.exportURL)
+            } else {
+                _ = try await repository.importPreset(from: fixture.exportURL)
+            }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try Data(contentsOf: fixture.repositoryURL) == original)
+        #expect(!FileManager.default.fileExists(atPath: fixture.exportURL.path))
+    }
+
+    @Test("portable import preserves task context and stops before mutation when its read is cancelled")
+    @MainActor
+    func cancelledPortableRead() async throws {
+        let fixture = try RecipeRepositoryFixture()
+        defer { fixture.remove() }
+        let imported = BatchRenameRecipePreset(id: zuluID, recipe: recipe(name: "Imported", literal: "i.jpg"))
+        let queue = DispatchSerialQueue(label: "test.recipe.portable-read")
+        let repository = BatchRenameRecipeRepository(documentURL: fixture.repositoryURL, filesystemQueue: queue, importFile: { _ in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(RecipePortableFileContext.marker == "portable-file")
+            withUnsafeCurrentTask { $0?.cancel() }
+            return imported
+        })
+        _ = try await repository.create(recipe: recipe(name: "Existing", literal: "a.jpg"), id: alphaID)
+        let original = try Data(contentsOf: fixture.repositoryURL)
+        let task = Task {
+            try await RecipePortableFileContext.$marker.withValue("portable-file") {
+                _ = try await repository.importPreset(from: fixture.exportURL)
+            }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try Data(contentsOf: fixture.repositoryURL) == original)
+    }
+
+    @Test("cancelled staging removes temporary output before export promotion")
+    @MainActor
+    func cancelledPortableStaging() async throws {
+        let fixture = try RecipeRepositoryFixture()
+        defer { fixture.remove() }
+        let queue = DispatchSerialQueue(label: "test.recipe.portable-stage")
+        let repository = BatchRenameRecipeRepository(documentURL: fixture.repositoryURL, filesystemQueue: queue, stageExport: { value, url in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(RecipePortableFileContext.marker == "portable-file")
+            try BatchRenameRecipePresetIO().encode(value).write(to: url, options: .atomic)
+            withUnsafeCurrentTask { $0?.cancel() }
+        })
+        _ = try await repository.create(recipe: recipe(name: "Existing", literal: "a.jpg"), id: alphaID)
+        let original = try Data(contentsOf: fixture.repositoryURL)
+        let task = Task {
+            try await RecipePortableFileContext.$marker.withValue("portable-file") {
+                try await repository.exportPreset(id: alphaID, to: fixture.exportURL)
+            }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try Data(contentsOf: fixture.repositoryURL) == original)
+        #expect(!FileManager.default.fileExists(atPath: fixture.exportURL.path))
+        let contents = try FileManager.default.contentsOfDirectory(atPath: fixture.directoryURL.path)
+        #expect(!contents.contains { $0.contains(".export-") })
+    }
+
     @Test("stable IDs, deterministic listing, selection, and deletion survive reopening")
     func stableIdentityAndSelection() async throws {
         let fixture = try RecipeRepositoryFixture()
@@ -69,6 +146,43 @@ struct BatchRenameRecipeRepositoryTests {
         _ = try await (first, second)
         let snapshot = try await repository.snapshot()
         #expect(snapshot.presets.map(\.id) == [alphaID, zuluID])
+    }
+
+    @Test("cancelling portable work behind an active mutation releases its turn without output", arguments: [false, true])
+    func cancelledPortableWorkBehindMutation(isExport: Bool) async throws {
+        let fixture = try RecipeRepositoryFixture()
+        defer { fixture.remove() }
+        let pause = MutationPause()
+        let repository = BatchRenameRecipeRepository(
+            documentURL: fixture.repositoryURL,
+            testingPauseAfterLoad: { await pause.pause() },
+            importFile: { _ in
+                Issue.record("Cancelled queued import accessed its source")
+                throw CancellationError()
+            },
+            stageExport: { _, _ in Issue.record("Cancelled queued export staged output") }
+        )
+        let first = Task {
+            try await repository.create(recipe: recipe(name: "Alpha", literal: "a.jpg"), id: alphaID)
+        }
+        await pause.waitUntilFirstLoadIsPaused()
+        let portable = Task {
+            if isExport {
+                try await repository.exportPreset(id: alphaID, to: fixture.exportURL)
+            } else {
+                _ = try await repository.importPreset(from: fixture.exportURL)
+            }
+        }
+        for _ in 0..<20 { await Task.yield() }
+        portable.cancel()
+        await pause.release()
+        _ = try await first.value
+        await #expect(throws: CancellationError.self) { try await portable.value }
+        #expect(try await repository.snapshot().presets.map(\.id) == [alphaID])
+        #expect(!FileManager.default.fileExists(atPath: fixture.exportURL.path))
+        // A cancelled waiter must relinquish its gate so the next mutation can commit.
+        _ = try await repository.create(recipe: recipe(name: "Zulu", literal: "z.jpg"), id: zuluID)
+        #expect(try await repository.snapshot().presets.map(\.id) == [alphaID, zuluID])
     }
 
     @Test("update, duplicate, and rename collisions do not replace existing recipes")
@@ -460,4 +574,8 @@ private struct RecipeRepositoryFixture {
     func remove() {
         try? FileManager.default.removeItem(at: directoryURL)
     }
+}
+
+private nonisolated enum RecipePortableFileContext {
+    @TaskLocal static var marker: String?
 }

@@ -207,8 +207,17 @@ nonisolated struct BatchRenameRecipePresetIO: Sendable {
 
 /// Atomic local persistence for reusable batch-rename recipes.
 actor BatchRenameRecipeRepository {
+    // Portable import/export still performs synchronous provider I/O outside the document store.
+    // Keep that work on a retained Dispatch executor with the caller's original task context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     let documentURL: URL
 
+    private let importFile: @Sendable (URL) throws -> BatchRenameRecipePreset
+    private let stageExport: @Sendable (BatchRenameRecipePreset, URL) throws -> Void
     private let presetIO: BatchRenameRecipePresetIO
     private let store: AtomicJSONDocumentStore<BatchRenameRecipeRepositoryDocument>
     private let testingPauseAfterLoad: (@Sendable () async -> Void)?
@@ -218,10 +227,18 @@ actor BatchRenameRecipeRepository {
     init(
         documentURL: URL,
         presetIO: BatchRenameRecipePresetIO = BatchRenameRecipePresetIO(),
-        testingPauseAfterLoad: (@Sendable () async -> Void)? = nil
+        testingPauseAfterLoad: (@Sendable () async -> Void)? = nil,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.rename-recipe-repository", qos: .utility
+        ),
+        importFile: (@Sendable (URL) throws -> BatchRenameRecipePreset)? = nil,
+        stageExport: (@Sendable (BatchRenameRecipePreset, URL) throws -> Void)? = nil
     ) {
         self.documentURL = documentURL
         self.presetIO = presetIO
+        self.filesystemQueue = filesystemQueue
+        self.importFile = importFile ?? { try presetIO.importPreset(from: $0) }
+        self.stageExport = stageExport ?? { try presetIO.encode($0).write(to: $1, options: .atomic) }
         self.testingPauseAfterLoad = testingPauseAfterLoad
         store = AtomicJSONDocumentStore(
             documentURL: documentURL,
@@ -343,10 +360,14 @@ actor BatchRenameRecipeRepository {
 
     @discardableResult
     func importPreset(from source: URL) async throws -> BatchRenameRecipePreset {
+        try Task.checkCancellation()
         await beginExclusiveAccess()
         defer { endExclusiveAccess() }
-        let imported = try presetIO.importPreset(from: source)
+        try Task.checkCancellation()
+        let imported = try importFile(source)
+        try Task.checkCancellation()
         var document = try await loadDocument()
+        try Task.checkCancellation()
         guard !document.presets.contains(where: { $0.id == imported.id }) else {
             throw BatchRenameRecipeRepositoryError.presetAlreadyExists(imported.id)
         }
@@ -358,9 +379,12 @@ actor BatchRenameRecipeRepository {
     }
 
     func exportPreset(id: UUID, to destination: URL) async throws {
+        try Task.checkCancellation()
         await beginExclusiveAccess()
         defer { endExclusiveAccess() }
+        try Task.checkCancellation()
         let document = try await loadDocument()
+        try Task.checkCancellation()
         guard let preset = document.presets.first(where: { $0.id == id }) else {
             throw BatchRenameRecipeRepositoryError.presetNotFound(id)
         }
@@ -372,7 +396,9 @@ actor BatchRenameRecipeRepository {
             ".\(destination.lastPathComponent).export-\(UUID().uuidString)"
         )
         defer { try? FileManager.default.removeItem(at: stagingURL) }
-        try presetIO.encode(preset).write(to: stagingURL, options: .atomic)
+        try stageExport(preset, stagingURL)
+        // Staging can finish after cancellation; remove it without promoting a visible export.
+        try Task.checkCancellation()
         do {
             try FileManager.default.moveItem(at: stagingURL, to: destination)
         } catch let error as CocoaError where error.code == .fileWriteFileExists {

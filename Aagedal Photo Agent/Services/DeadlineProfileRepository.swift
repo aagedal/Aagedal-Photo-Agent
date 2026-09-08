@@ -42,8 +42,17 @@ nonisolated enum DeadlineProfileRepositoryError: Error, Equatable, LocalizedErro
 /// The repository owns no connection records or credentials. Profiles contain only the stable
 /// connection identifiers accepted by `DeadlineProfileIO`.
 actor DeadlineProfileRepository {
+    // Portable import/export still performs synchronous provider I/O outside the document store.
+    // Keep that work on a retained Dispatch executor with the caller's original task context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     let documentURL: URL
 
+    private let importFile: @Sendable (URL) throws -> DeadlineProfile
+    private let stageExport: @Sendable (DeadlineProfile, URL) throws -> Void
     private let profileIO: DeadlineProfileIO
     private let store: AtomicJSONDocumentStore<DeadlineProfileRepositoryDocument>
     /// Actor methods become reentrant whenever they await the document store. Keep each logical
@@ -52,9 +61,20 @@ actor DeadlineProfileRepository {
     private var hasExclusiveAccess = false
     private var accessWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(documentURL: URL, profileIO: DeadlineProfileIO = DeadlineProfileIO()) {
+    init(
+        documentURL: URL,
+        profileIO: DeadlineProfileIO = DeadlineProfileIO(),
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.deadline-profile-repository", qos: .utility
+        ),
+        importFile: (@Sendable (URL) throws -> DeadlineProfile)? = nil,
+        stageExport: (@Sendable (DeadlineProfile, URL) throws -> Void)? = nil
+    ) {
         self.documentURL = documentURL
         self.profileIO = profileIO
+        self.filesystemQueue = filesystemQueue
+        self.importFile = importFile ?? { try profileIO.importProfile(from: $0) }
+        self.stageExport = stageExport ?? { try profileIO.export($0, to: $1) }
         store = AtomicJSONDocumentStore(
             documentURL: documentURL,
             validateCompatibility: { try Self.rejectNewerProfileSchema(in: $0) }
@@ -154,10 +174,14 @@ actor DeadlineProfileRepository {
 
     @discardableResult
     func importProfile(from source: URL) async throws -> DeadlineProfile {
+        try Task.checkCancellation()
         await beginExclusiveAccess()
         defer { endExclusiveAccess() }
-        let imported = try profileIO.importProfile(from: source)
+        try Task.checkCancellation()
+        let imported = try importFile(source)
+        try Task.checkCancellation()
         var document = try await loadDocument()
+        try Task.checkCancellation()
         guard !document.profiles.contains(where: { $0.id == imported.id }) else {
             throw DeadlineProfileRepositoryError.profileAlreadyExists(imported.id)
         }
@@ -170,9 +194,12 @@ actor DeadlineProfileRepository {
     }
 
     func exportProfile(id: UUID, to destination: URL) async throws {
+        try Task.checkCancellation()
         await beginExclusiveAccess()
         defer { endExclusiveAccess() }
+        try Task.checkCancellation()
         let document = try await loadDocument()
+        try Task.checkCancellation()
         guard let profile = document.profiles.first(where: { $0.id == id }) else {
             throw DeadlineProfileRepositoryError.profileNotFound(id)
         }
@@ -186,7 +213,9 @@ actor DeadlineProfileRepository {
             ".\(destination.lastPathComponent).export-\(UUID().uuidString)"
         )
         defer { try? fileManager.removeItem(at: stagingURL) }
-        try profileIO.export(profile, to: stagingURL)
+        try stageExport(profile, stagingURL)
+        // Staging can finish after cancellation; remove it without promoting a visible export.
+        try Task.checkCancellation()
         do {
             try fileManager.moveItem(at: stagingURL, to: destination)
         } catch let error as CocoaError where error.code == .fileWriteFileExists {

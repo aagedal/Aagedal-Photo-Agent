@@ -7,6 +7,83 @@ struct DeadlineProfileRepositoryTests {
     private let alphaID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
     private let zuluID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
 
+    @Test("cancelled portable operations skip source access and leave storage unchanged", arguments: [false, true])
+    func cancelledPortableOperation(isExport: Bool) async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = DeadlineProfileRepository(documentURL: fixture.repositoryURL, importFile: { _ in
+            Issue.record("A cancelled import accessed its source")
+            throw CancellationError()
+        }, stageExport: { _, _ in
+            Issue.record("A cancelled export staged output")
+        })
+        _ = try await repository.create(name: "Existing", id: alphaID)
+        let original = try Data(contentsOf: fixture.repositoryURL)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            if isExport {
+                try await repository.exportProfile(id: alphaID, to: fixture.exportURL)
+            } else {
+                _ = try await repository.importProfile(from: fixture.importURL)
+            }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try Data(contentsOf: fixture.repositoryURL) == original)
+        #expect(!FileManager.default.fileExists(atPath: fixture.exportURL.path))
+    }
+
+    @Test("portable import preserves task context and stops before mutation when its read is cancelled")
+    @MainActor
+    func cancelledPortableRead() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let imported = DeadlineProfile(id: zuluID, name: "Imported")
+        let queue = DispatchSerialQueue(label: "test.deadline.portable-read")
+        let repository = DeadlineProfileRepository(documentURL: fixture.repositoryURL, filesystemQueue: queue, importFile: { _ in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(DeadlinePortableFileContext.marker == "portable-file")
+            withUnsafeCurrentTask { $0?.cancel() }
+            return imported
+        })
+        _ = try await repository.create(name: "Existing", id: alphaID)
+        let original = try Data(contentsOf: fixture.repositoryURL)
+        let task = Task {
+            try await DeadlinePortableFileContext.$marker.withValue("portable-file") {
+                _ = try await repository.importProfile(from: fixture.importURL)
+            }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try Data(contentsOf: fixture.repositoryURL) == original)
+    }
+
+    @Test("cancelled staging removes temporary output before export promotion")
+    @MainActor
+    func cancelledPortableStaging() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let queue = DispatchSerialQueue(label: "test.deadline.portable-stage")
+        let repository = DeadlineProfileRepository(documentURL: fixture.repositoryURL, filesystemQueue: queue, stageExport: { value, url in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(DeadlinePortableFileContext.marker == "portable-file")
+            try DeadlineProfileIO().encode(value).write(to: url, options: .atomic)
+            withUnsafeCurrentTask { $0?.cancel() }
+        })
+        _ = try await repository.create(name: "Existing", id: alphaID)
+        let original = try Data(contentsOf: fixture.repositoryURL)
+        let task = Task {
+            try await DeadlinePortableFileContext.$marker.withValue("portable-file") {
+                try await repository.exportProfile(id: alphaID, to: fixture.exportURL)
+            }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try Data(contentsOf: fixture.repositoryURL) == original)
+        #expect(!FileManager.default.fileExists(atPath: fixture.exportURL.path))
+        let contents = try FileManager.default.contentsOfDirectory(atPath: fixture.directoryURL.path)
+        #expect(!contents.contains { $0.contains(".export-") })
+    }
+
     @Test("stable IDs, deterministic listing, and selection survive reopening")
     func stableIdentityAndSelection() async throws {
         let fixture = try RepositoryFixture()
@@ -266,4 +343,8 @@ private struct RepositoryFixture {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         try data.write(to: repositoryURL)
     }
+}
+
+private nonisolated enum DeadlinePortableFileContext {
+    @TaskLocal static var marker: String?
 }
