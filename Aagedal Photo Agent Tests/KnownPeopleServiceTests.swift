@@ -13,6 +13,172 @@ import AppKit
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Person merges own both records, publish durable prefixes and preserve transferred thumbnails",
+          arguments: ["success", "cancel", "storageChange", "targetFailure", "markerFailure", "recordFailure", "rollbackFailure", "cleanupFailure", "storageChangeMarkerFailure"])
+    func asynchronousPersonMerge(outcome: String) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        var access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+            writeCoordinatedData: { data, url in
+                #expect(!Thread.isMainThread)
+                _ = gate.read(url)
+                if outcome == "targetFailure" { throw CocoaError(.fileWriteNoPermission) }
+                try system.writeCoordinatedData(data, url)
+            }, runDitto: system.runDitto
+        )
+        access.removeCoordinatedItem = { url in
+            #expect(!Thread.isMainThread)
+            if outcome == "cleanupFailure" { throw CocoaError(.fileWriteNoPermission) }
+            try system.removeCoordinatedItem(url)
+        }
+        let writer = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        let transferred = embedding(72)
+        let targetSample = embedding(73)
+        let duplicate = embedding(73)
+        let target = try writer.addPerson(name: "Target", embeddings: [targetSample])
+        let source = try writer.addPerson(name: "Source", embeddings: [transferred, duplicate],
+            thumbnailData: Data([1]), embeddingThumbnails: [transferred.id: Data([2]), duplicate.id: Data([3])])
+        let peer = KnownPeopleService()
+        #expect(peer.person(byID: target.id)?.embeddings.count == 1)
+        let live = DurableDeletionIO.live
+        KnownPeopleService.deletionIO = DurableDeletionIO(
+            writeData: { data, url in
+                #expect(!Thread.isMainThread)
+                if ["markerFailure", "storageChangeMarkerFailure"].contains(outcome) { throw CocoaError(.fileWriteNoPermission) }
+                try live.writeData(data, url)
+            },
+            readData: { url in
+                #expect(!Thread.isMainThread)
+                return try live.readData(url)
+            },
+            removeItem: { url in
+                #expect(!Thread.isMainThread)
+                if outcome == "rollbackFailure" || (outcome == "recordFailure" && url.pathExtension == "json") {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                try live.removeItem(url)
+            }
+        )
+        let task = Task { try await writer.mergePeople(sourceID: source.id, intoTargetID: target.id) }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(gate.entered)
+        #expect(throws: (any Error).self) { try peer.removePerson(id: source.id) }
+        #expect(throws: (any Error).self) { try peer.removePerson(id: target.id) }
+        #expect(throws: (any Error).self) { try peer.saveEmbeddingThumbnail(Data(), for: transferred.id) }
+        #expect(throws: (any Error).self) { try peer.clearDatabase() }
+        let unrelated = try peer.addPerson(name: "Unrelated", embeddings: [])
+        if outcome == "cancel" { task.cancel() }
+        if outcome.hasPrefix("storageChange") {
+            writer.reloadAfterStorageChange(resolvedStorageURL: directory.appendingPathComponent("other"))
+        }
+        gate.resume()
+        if ["success", "cleanupFailure"].contains(outcome) {
+            try await task.value
+        } else if outcome == "cancel" || outcome.hasPrefix("storageChange") {
+            await #expect(throws: CancellationError.self) { try await task.value }
+        } else {
+            await #expect(throws: (any Error).self) { try await task.value }
+        }
+        let removed = ["success", "cancel", "storageChange", "cleanupFailure"].contains(outcome)
+        #expect(FileManager.default.fileExists(atPath: personFileURL(source.id, in: directory).path) == !removed)
+        #expect(FileManager.default.fileExists(atPath: tombstoneURL(source.id, in: directory).path) == (removed || outcome == "rollbackFailure"))
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("embedding_thumbnails/\(transferred.id.uuidString).jpg").path))
+        for path in ["thumbnails/\(source.id.uuidString).jpg", "embedding_thumbnails/\(duplicate.id.uuidString).jpg"] {
+            #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent(path).path) == (!removed || outcome == "cleanupFailure"))
+        }
+        // Read durable worker evidence before lazy loading: a surviving rollback-failure
+        // marker makes loadDatabase remove the suppressed source record during maintenance.
+        #expect(peer.person(byID: target.id)?.embeddings.count == (outcome == "targetFailure" ? 1 : 2))
+        #expect((peer.person(byID: source.id) == nil) == (removed || outcome == "rollbackFailure"))
+        #expect(peer.person(byID: unrelated.id) != nil)
+        if outcome.hasPrefix("storageChange") {
+            #expect(writer.person(byID: target.id) == nil)
+        } else {
+            #expect(writer.person(byID: unrelated.id) != nil)
+        }
+        // A retry after target commit must retain the image already referenced by the target.
+        if ["markerFailure", "recordFailure"].contains(outcome) {
+            KnownPeopleService.deletionIO = .live
+            try await peer.mergePeople(sourceID: source.id, intoTargetID: target.id)
+            #expect(peer.person(byID: target.id)?.embeddings.count == 2)
+            #expect(peer.person(byID: source.id) == nil)
+            #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("embedding_thumbnails/\(transferred.id.uuidString).jpg").path))
+        }
+        try peer.saveThumbnail(Data([9]), for: source.id)
+    }
+
+    @Test("Multi-person merges stop after a storage switch even when both roots contain the selected IDs")
+    func personMergeBatchStorageRevision() async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let otherRoot = directory.appendingPathComponent("other")
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+            writeCoordinatedData: { data, url in
+                _ = gate.read(url)
+                try system.writeCoordinatedData(data, url)
+            }, runDitto: system.runDitto
+        )
+        let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        let target = try service.addPerson(name: "Target", embeddings: [])
+        let first = try service.addPerson(name: "First", embeddings: [embedding(75)])
+        let second = try service.addPerson(name: "Second", embeddings: [embedding(76)])
+        for person in [target, first, second] {
+            try CloudCoordinatedIO.writeData(encode(person), to: personFileURL(person.id, in: otherRoot))
+        }
+        let task = Task { try await service.mergePeople(sourceIDs: [first.id, second.id], intoTargetID: target.id) }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(gate.entered)
+        service.reloadAfterStorageChange(resolvedStorageURL: otherRoot)
+        gate.resume()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(service.person(byID: target.id)?.embeddings.isEmpty == true)
+        #expect(service.person(byID: first.id) != nil)
+        #expect(service.person(byID: second.id) != nil)
+        let original = KnownPeopleService()
+        #expect(original.person(byID: target.id)?.embeddings.map(\.id) == first.embeddings.map(\.id))
+        #expect(original.person(byID: first.id) == nil)
+        #expect(original.person(byID: second.id) != nil)
+    }
+
+    @Test("Merge cancellation before admission leaves both records intact")
+    func cancelledPersonMergeBeforeAdmission() async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let service = KnownPeopleService()
+        let source = try service.addPerson(name: "Source", embeddings: [embedding(74)])
+        let target = try service.addPerson(name: "Target", embeddings: [])
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await service.mergePeople(sourceID: source.id, intoTargetID: target.id)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(service.person(byID: source.id) != nil)
+        #expect(service.person(byID: target.id)?.embeddings.isEmpty == true)
+        try await service.mergePeople(sourceID: source.id, intoTargetID: target.id)
+        #expect(service.person(byID: source.id) == nil)
+    }
+
     @Test("Cancelled person deletion writes no tombstone and releases admission")
     func cancelledPersonDeletionBeforeAdmission() async throws {
         let directory = makeTempDir()
@@ -2105,7 +2271,7 @@ struct KnownPeopleServiceTests {
     }
 
     @Test("interrupted merge keeps its source and retry finishes without duplicate embeddings")
-    func interruptedMergeIsRecoverableAndIdempotent() throws {
+    func interruptedMergeIsRecoverableAndIdempotent() async throws {
         let dir = makeTempDir()
         defer { teardown(dir) }
         activate(dir)
@@ -2122,15 +2288,15 @@ struct KnownPeopleServiceTests {
             removeItem: { try CloudCoordinatedIO.removeItem(at: $0) }
         )
 
-        #expect(throws: DurableDeletionError.self) {
-            try KnownPeopleService.shared.mergePeople(sourceID: source.id, intoTargetID: target.id)
+        await #expect(throws: DurableDeletionError.self) {
+            try await KnownPeopleService.shared.mergePeople(sourceID: source.id, intoTargetID: target.id)
         }
         #expect(KnownPeopleService.shared.person(byID: source.id) != nil)
         #expect(KnownPeopleService.shared.person(byID: target.id)?.embeddings.count == 2)
         #expect(FileManager.default.fileExists(atPath: personFileURL(source.id, in: dir).path))
 
         KnownPeopleService.deletionIO = .live
-        try KnownPeopleService.shared.mergePeople(sourceID: source.id, intoTargetID: target.id)
+        try await KnownPeopleService.shared.mergePeople(sourceID: source.id, intoTargetID: target.id)
         #expect(KnownPeopleService.shared.person(byID: source.id) == nil)
         #expect(KnownPeopleService.shared.person(byID: target.id)?.embeddings.count == 2)
     }

@@ -110,6 +110,14 @@ nonisolated struct KnownPeoplePersonRemovalResult: Sendable {
     let completion: Result<Void, any Error>
 }
 
+nonisolated struct KnownPeopleMergeResult: Sendable {
+    let targetWritten: Bool
+    let sourceRemoved: Bool
+    let markerRollbackFailed: Bool
+    let removedThumbnailURLs: [URL]
+    let completion: Result<Void, any Error>
+}
+
 nonisolated struct KnownPeopleEmbeddingRemovalResult: Sendable {
     let personWritten: Bool
     let changedThumbnailURLs: [URL]
@@ -332,6 +340,50 @@ actor KnownPeopleArchiveService {
         }
         return KnownPeoplePersonRemovalResult(personRemoved: personRemoved,
             markerRollbackFailed: markerRollbackFailed, removedThumbnailURLs: removedThumbnailURLs, completion: completion)
+    }
+
+    /// Preserve the target-first recovery contract across the entire admitted merge. Once
+    /// writing starts, cancellation cannot skip source deletion or lose durable evidence.
+    func mergePeople(target: KnownPerson?, targetURL: URL, sourceID: UUID,
+                     sourceURL: URL, markerURL: URL, thumbnailURLs: [URL],
+                     deletionIO: DurableDeletionIO) async -> KnownPeopleMergeResult {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        var targetWritten = false
+        var sourceRemoved = false
+        var removedThumbnailURLs: [URL] = []
+        let completion = Result { () throws -> Void in
+            try Task.checkCancellation()
+            if let target {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                try access.writeCoordinatedData(encoder.encode(target), targetURL)
+                targetWritten = true
+            }
+            try DurableDeletionTransaction.execute(
+                marker: KnownPersonTombstone(id: sourceID), markerURL: markerURL,
+                recordURL: sourceURL, markerMatches: { $0.id == sourceID }, io: deletionIO
+            )
+            sourceRemoved = true
+            for url in thumbnailURLs {
+                do {
+                    try access.removeCoordinatedItem(url)
+                    removedThumbnailURLs.append(url)
+                } catch {
+                    deletionLog.debug("Could not remove merged person's thumbnail: \(url.path, privacy: .private)")
+                }
+            }
+        }
+        let markerRollbackFailed: Bool
+        if case .failure(let error) = completion,
+           case .markerRollbackFailed = error as? DurableDeletionError {
+            markerRollbackFailed = true
+        } else {
+            markerRollbackFailed = false
+        }
+        return KnownPeopleMergeResult(targetWritten: targetWritten, sourceRemoved: sourceRemoved,
+            markerRollbackFailed: markerRollbackFailed, removedThumbnailURLs: removedThumbnailURLs,
+            completion: completion)
     }
 
     /// The record is authoritative: only remove its image after the record commits. Once
@@ -1976,6 +2028,22 @@ final class KnownPeopleService {
         }
     }
 
+    /// Keep a multi-selection merge bound to one storage revision across every suspension.
+    func mergePeople(sourceIDs: [UUID], intoTargetID: UUID) async throws {
+        let revision = storageRevision
+        for sourceID in sourceIDs {
+            try Task.checkCancellation()
+            guard revision == storageRevision else { throw CancellationError() }
+            do {
+                try await mergePeople(sourceID: sourceID, intoTargetID: intoTargetID)
+            } catch {
+                guard revision == storageRevision else { throw CancellationError() }
+                throw error
+            }
+            guard revision == storageRevision else { throw CancellationError() }
+        }
+    }
+
     /// Merge people: combine embeddings from source into target, delete source.
     /// Deduplicates embeddings to avoid storing the same face data multiple times.
     ///
@@ -1985,43 +2053,67 @@ final class KnownPeopleService {
     /// source removal then fails, the source stays usable while the target may
     /// already contain a deduplicated copy; retrying the merge is the documented
     /// recovery path and is idempotent by feature-print bytes.
-    func mergePeople(sourceID: UUID, intoTargetID: UUID) throws {
+    func mergePeople(sourceID: UUID, intoTargetID: UUID) async throws {
         guard sourceID != intoTargetID else { return }
-        try requireLocalWriteAdmission(to: personFileURL(for: sourceID))
-        try requireLocalWriteAdmission(to: personFileURL(for: intoTargetID))
-
-        guard peopleIndex[sourceID] != nil, peopleIndex[intoTargetID] != nil,
-              let source = person(byID: sourceID) else {
-            return
-        }
-
-        let sourceEmbeddings = source.embeddings
-        var keptEmbeddingIDs: Set<UUID> = []
-
-        // 1. Fold source embeddings into the target (one file write).
-        try mutatePerson(id: intoTargetID) { target in
-            let existingData = Set(target.embeddings.map { $0.featurePrintData })
-            let newEmbeddings = sourceEmbeddings.filter { !existingData.contains($0.featurePrintData) }
-            keptEmbeddingIDs = Set(newEmbeddings.map(\.id))
-            guard !newEmbeddings.isEmpty else { return false }
+        let revision = storageRevision
+        await beginImport()
+        defer { endImport() }
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
+        // Admission may wait behind another mutation. Resolve both people from current storage.
+        guard let source = person(byID: sourceID), var target = person(byID: intoTargetID) else { return }
+        let existingData = Set(target.embeddings.map(\.featurePrintData))
+        let newEmbeddings = source.embeddings.filter { !existingData.contains($0.featurePrintData) }
+        if !newEmbeddings.isEmpty {
             target.embeddings.append(contentsOf: newEmbeddings)
-            return true
+            target.updatedAt = Date()
         }
-
-        // 2. Tombstone and remove the source (so the delete propagates) and drop
-        //    it from the cache.
-        try deleteRecordDurably(for: sourceID)
-        if var db = database {
-            db.people.removeAll { $0.id == sourceID }
-            database = db
+        // Include embeddings retained by an earlier partial merge, so retrying does not delete
+        // thumbnails that the target already references.
+        let keptEmbeddingIDs = Set(target.embeddings.map(\.id))
+        let removedEmbeddings = source.embeddings.filter { !keptEmbeddingIDs.contains($0.id) }
+        let root = knownPeopleDirectory
+        let sourceURL = personFileURL(for: sourceID)
+        let targetURL = personFileURL(for: intoTargetID)
+        let markerURL = tombstoneURL(for: sourceID)
+        let thumbnailURLs = [thumbnailURL(for: sourceID)] + removedEmbeddings.map {
+            embeddingThumbnailURL(for: $0.id)
         }
-        deleteThumbnail(for: sourceID)
-
-        for embedding in sourceEmbeddings where !keptEmbeddingIDs.contains(embedding.id) {
-            featurePrintCache.removeObject(forKey: embedding.id as NSUUID)
-            deleteEmbeddingThumbnail(for: embedding.id)
+        reserveImportDestinations([source, target], root: root)
+        let result = await archiveService.mergePeople(target: newEmbeddings.isEmpty ? nil : target,
+            targetURL: targetURL, sourceID: sourceID, sourceURL: sourceURL,
+            markerURL: markerURL, thumbnailURLs: thumbnailURLs, deletionIO: Self.deletionIO)
+        if result.targetWritten || result.sourceRemoved || result.markerRollbackFailed {
+            invalidatePeerDatabases(at: root)
+            if revision == storageRevision {
+                // Reload on demand to retain unrelated writes admitted while the worker ran.
+                database = nil
+                clearFeaturePrintCache()
+                if result.targetWritten { stampLocalWrite(targetURL) }
+                if result.sourceRemoved {
+                    stampLocalWrite(sourceURL)
+                    stampLocalWrite(markerURL)
+                }
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+            }
         }
-        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        if result.sourceRemoved {
+            invalidatePeerThumbnails(at: root)
+            if revision == storageRevision {
+                thumbnailContentRevision &+= 1
+                personThumbnailCache.removeObject(forKey: sourceID as NSUUID)
+                for embedding in removedEmbeddings {
+                    embeddingThumbnailCache.removeObject(forKey: embedding.id as NSUUID)
+                }
+                for url in result.removedThumbnailURLs { stampLocalWrite(url) }
+            }
+        }
+        await releaseImportDestinations()
+        // Durable evidence above belongs to the captured root. Suppress its error as well as
+        // success presentation if the caller has since switched to another storage revision.
+        guard revision == storageRevision else { throw CancellationError() }
+        try result.completion.get()
+        try Task.checkCancellation()
     }
 
     /// Replace the thumbnail for a known person

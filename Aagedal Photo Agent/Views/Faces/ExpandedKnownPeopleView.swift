@@ -35,6 +35,7 @@ struct ExpandedKnownPeopleView: View {
     @State private var showDeleteConfirmation = false
     @State private var personToDelete: KnownPerson?
     @State private var deletingPersonIDs: Set<UUID> = []
+    @State private var isMergingPeople = false
     @State private var showMergeConfirmation = false
     @State private var sortMode: KnownPeopleSortMode = .name
     @State private var isImporting = false
@@ -223,7 +224,7 @@ struct ExpandedKnownPeopleView: View {
             } label: {
                 Label("Merge", systemImage: "arrow.triangle.merge")
             }
-            .disabled(!canMerge)
+            .disabled(!canMerge || isMergingPeople)
             .help("Merge selected people into one")
 
             // Delete button
@@ -446,7 +447,7 @@ struct ExpandedKnownPeopleView: View {
     }
 
     private func mergeSelectedPeople() {
-        guard selectedPersonIDs.count >= 2 else { return }
+        guard selectedPersonIDs.count >= 2, !isMergingPeople else { return }
 
         // Sort selected people by name to get consistent merge order
         let sortedSelected = people
@@ -456,14 +457,21 @@ struct ExpandedKnownPeopleView: View {
         guard let targetPerson = sortedSelected.first else { return }
         let sourcePeople = Array(sortedSelected.dropFirst())
 
-        do {
-            for source in sourcePeople {
-                try KnownPeopleService.shared.mergePeople(sourceID: source.id, intoTargetID: targetPerson.id)
+        isMergingPeople = true
+        Task {
+            defer { isMergingPeople = false }
+            do {
+                try await KnownPeopleService.shared.mergePeople(
+                    sourceIDs: sourcePeople.map(\.id), intoTargetID: targetPerson.id
+                )
+                loadPeople()
+                selectedPersonIDs = [targetPerson.id]
+            } catch is CancellationError {
+                // The service publishes durable changes; a new storage root cancels this request.
+            } catch {
+                loadPeople()
+                destructiveOperationErrorMessage = error.localizedDescription
             }
-            loadPeople()
-            selectedPersonIDs = [targetPerson.id]
-        } catch {
-            destructiveOperationErrorMessage = error.localizedDescription
         }
     }
 }
