@@ -4,6 +4,43 @@ import Testing
 
 @Suite("Atomic JSON document store")
 struct AtomicJSONDocumentStoreTests {
+    @Test("Atomic replacement retains task context and completes admitted saves after cancellation",
+          arguments: [false, true])
+    @MainActor
+    func dispatchTransactionContext(cancelDuringSave: Bool) async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let queue = DispatchSerialQueue(label: "test.atomic-json.transaction")
+        let root = fixture.directoryURL
+        let initialStore = AtomicJSONDocumentStore<TestDocument>(documentURL: fixture.documentURL)
+        try await initialStore.save(TestDocument(value: "previous"))
+        let store = AtomicJSONDocumentStore<TestDocument>(
+            documentURL: fixture.documentURL, filesystemQueue: queue,
+            validateCompatibility: { _ in
+                #expect(!Thread.isMainThread)
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(AtomicJSONExecutorContext.marker == root)
+                #expect(Task.currentPriority >= .userInitiated)
+                if cancelDuringSave { withUnsafeCurrentTask { $0?.cancel() } }
+            }
+        )
+        try await Task(priority: .userInitiated) {
+            try await AtomicJSONExecutorContext.$marker.withValue(root) {
+                try await store.save(TestDocument(value: "replacement"))
+                #expect(Task.isCancelled == cancelDuringSave)
+                guard case .document(let loaded, .primary) = try await store.load() else {
+                    Issue.record("Expected the committed primary")
+                    return
+                }
+                #expect(loaded.value == "replacement")
+            }
+        }.value
+        #expect(try fixture.decode(at: fixture.documentURL).value == "replacement")
+        #expect(try fixture.decode(at: fixture.backupURL).value == "previous")
+        let entries = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        #expect(entries.sorted() == ["case.json", "case.json.backup"])
+    }
+
     @Test("direct saves preserve a future-only backup", arguments: [false, true], [false, true])
     func futureBackupBlocksDirectSave(corruptPrimary: Bool, nestedFuture: Bool) async throws {
         let fixture = try StoreFixture()
@@ -257,6 +294,10 @@ struct AtomicJSONDocumentStoreTests {
         )
         #expect(siblings.filter { $0.lastPathComponent.contains("staging-") }.isEmpty)
     }
+}
+
+private nonisolated enum AtomicJSONExecutorContext {
+    @TaskLocal static var marker: URL?
 }
 
 private struct TestDocument: VersionedJSONDocument, Equatable {

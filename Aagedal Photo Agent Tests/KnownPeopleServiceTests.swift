@@ -2868,3 +2868,87 @@ private nonisolated final class KnownPeopleDeferredRemovalGate: @unchecked Senda
 private nonisolated enum KnownPeopleEditTaskContext {
     @TaskLocal static var root: URL?
 }
+
+@Suite("Known People read Dispatch executors")
+struct KnownPeopleReadExecutorTests {
+    @Test("Thumbnail reads and preparation preserve task context and cancellation",
+          arguments: ["complete", "beforeRead", "read", "prepare"])
+    @MainActor
+    func thumbnailContext(stage: String) async {
+        let url = URL(fileURLWithPath: "/virtual/known-people/thumbnail.jpg")
+        let requestID = UUID()
+        let queue = DispatchSerialQueue(label: "test.known-people.thumbnail.\(stage)")
+        let check: @Sendable () -> Void = {
+            #expect(!Thread.isMainThread)
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(KnownPeopleReadContext.marker == url)
+            #expect(Task.currentPriority >= .userInitiated)
+        }
+        let service = KnownPeopleThumbnailLoadService(access: KnownPeopleThumbnailFileAccess(
+            readData: { readURL in
+                check()
+                #expect(stage != "beforeRead")
+                #expect(readURL == url)
+                if stage == "read" { withUnsafeCurrentTask { $0?.cancel() } }
+                return Data([1])
+            }, prepareJPEGData: { data in
+                check()
+                #expect(stage != "read" && stage != "beforeRead")
+                #expect(data == Data([1]))
+                if stage == "prepare" { withUnsafeCurrentTask { $0?.cancel() } }
+                return Data([2])
+            }
+        ), filesystemQueue: queue)
+        let result = await Task(priority: .userInitiated) {
+            await KnownPeopleReadContext.$marker.withValue(url) {
+                if stage == "beforeRead" { withUnsafeCurrentTask { $0?.cancel() } }
+                return await service.load(fileURL: url, requestID: requestID, prepareForReplacement: true)
+            }
+        }.value
+        switch stage {
+        case "complete":
+            #expect(result == .loaded(KnownPeopleThumbnailLoadSnapshot(
+                requestID: requestID, fileURL: url, data: Data([2])
+            )))
+        case "beforeRead":
+            #expect(result == .cancelledBeforeRead(requestID: requestID, fileURL: url))
+        default:
+            #expect(result == .cancelledAfterRead(requestID: requestID, fileURL: url))
+        }
+    }
+
+    @Test("Storage measurement retains its worker and rejects cancelled partial counts",
+          arguments: ["complete", "unavailable", "beforeRead", "duringRead"])
+    @MainActor
+    func measurementContext(stage: String) async {
+        let root = URL(fileURLWithPath: "/virtual/known-people/summary")
+        let queue = DispatchSerialQueue(label: "test.known-people.summary.\(stage)")
+        let service = KnownPeopleDataSummaryService(measureDirectory: { url in
+            #expect(!Thread.isMainThread)
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(KnownPeopleReadContext.marker == root)
+            #expect(Task.currentPriority >= .userInitiated)
+            #expect(url == root)
+            #expect(stage != "beforeRead")
+            if stage == "duringRead" { withUnsafeCurrentTask { $0?.cancel() } }
+            return stage == "unavailable" ? .unavailable : .complete(123)
+        }, filesystemQueue: queue)
+        let result = await Task(priority: .userInitiated) {
+            await KnownPeopleReadContext.$marker.withValue(root) {
+                if stage == "beforeRead" { withUnsafeCurrentTask { $0?.cancel() } }
+                return await service.summarize(peopleCount: 2, sampleCount: 3,
+                    storageURL: root, syncEnabled: true)
+            }
+        }.value
+        if stage == "beforeRead" || stage == "duringRead" {
+            #expect(result == .cancelled)
+        } else {
+            #expect(result == .complete(KnownPeopleDataSummary(peopleCount: 2, sampleCount: 3,
+                storedBytes: stage == "unavailable" ? nil : 123, syncEnabled: true)))
+        }
+    }
+}
+
+private nonisolated enum KnownPeopleReadContext {
+    @TaskLocal static var marker: URL?
+}

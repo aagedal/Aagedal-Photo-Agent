@@ -11,6 +11,12 @@ nonisolated enum KnownPeopleDataSummaryEvidence: Equatable, Sendable {
 actor KnownPeopleDataSummaryService {
     static let shared = KnownPeopleDataSummaryService()
 
+    // Recursive provider enumeration must not occupy a cooperative executor thread.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     nonisolated enum DirectorySizeEvidence: Equatable, Sendable {
         case complete(Int64)
         case unavailable
@@ -22,9 +28,13 @@ actor KnownPeopleDataSummaryService {
     init(
         measureDirectory: @escaping @Sendable (URL) -> DirectorySizeEvidence = {
             KnownPeopleDataSummaryService.systemDirectorySize(at: $0)
-        }
+        },
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.known-people.storage-summary", qos: .utility
+        )
     ) {
         self.measureDirectory = measureDirectory
+        self.filesystemQueue = filesystemQueue
     }
 
     func summarize(

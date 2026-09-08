@@ -55,14 +55,25 @@ nonisolated struct KnownPeopleThumbnailFileAccess: Sendable {
 actor KnownPeopleThumbnailLoadService {
     static let shared = KnownPeopleThumbnailLoadService()
 
+    // Provider reads and image decoding can block; retain the original task on a
+    // Dispatch worker so cancellation and task-local values survive the hop.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: KnownPeopleThumbnailFileAccess
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
         category: "KnownPeopleThumbnailLoad"
     )
 
-    init(access: KnownPeopleThumbnailFileAccess = .system) {
+    init(access: KnownPeopleThumbnailFileAccess = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.known-people.thumbnail-read", qos: .utility
+         )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func load(fileURL: URL, requestID: UUID, prepareForReplacement: Bool = false) -> KnownPeopleThumbnailLoadResult {

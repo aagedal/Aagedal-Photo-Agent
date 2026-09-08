@@ -83,6 +83,14 @@ actor AtomicJSONDocumentStore<Document: VersionedJSONDocument> {
     let documentURL: URL
     let backupURL: URL
 
+    // Reads, fsync and atomic replacement may block on storage. The actor retains
+    // a Dispatch executor for the complete transaction, including schema validation.
+    // Admitted saves still finish despite cancellation so callers receive durable evidence.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     /// Runs on this actor against the exact bytes being decoded or replaced. A compatibility
     /// rejection is read-only evidence, never corruption eligible for backup recovery.
     private let validateCompatibility: @Sendable (Data) throws -> Void
@@ -90,11 +98,15 @@ actor AtomicJSONDocumentStore<Document: VersionedJSONDocument> {
     init(
         documentURL: URL,
         backupURL: URL? = nil,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.atomic-json", qos: .utility
+        ),
         validateCompatibility: @escaping @Sendable (Data) throws -> Void = { _ in }
     ) {
         self.documentURL = documentURL
         self.backupURL = backupURL ?? documentURL.appendingPathExtension("backup")
         self.validateCompatibility = validateCompatibility
+        self.filesystemQueue = filesystemQueue
     }
 
     func load() throws -> AtomicJSONDocumentLoad<Document> {
