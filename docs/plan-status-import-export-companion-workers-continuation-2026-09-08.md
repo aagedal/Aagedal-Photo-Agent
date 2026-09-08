@@ -73,6 +73,26 @@ Implementation commits: `5cbf37a` (export), `dfac334` (import), `e708124`
 No manual interaction, physical-volume performance, production-server or signed-release
 validation is claimed.
 
+## Current-source unsigned Release candidate
+
+A clean-source candidate built from `9dfbbe95a08b16d77bf1de0013a48dcf95e3511f`, version
+**3.0.0 (738)**, with Xcode 26.6 (17F113) on arm64 macOS
+27.0 (26A5425a). Model omission passed and all **79** ZIP payload
+entries match the built application. The bundle contains 73 regular files totaling
+145,368,274 bytes; the ZIP is 49,758,432 bytes.
+ZIP SHA-256: `d1d6eb925e0087314fdb7f8728fd74095d4fae37c7f86394a9a66dde3878b5a7`.
+
+```sh
+python3 -B scripts/ci/build_model_free_candidate.py \
+  build/model-omission-candidate-import-export-workers-2026-09-08
+```
+
+The application, ZIP, build log and `measurement.json` are retained in that ignored
+output directory. Xcode used approved access to existing caches. This proves unsigned
+build/package consistency only; launch, signing, notarization, distribution and
+production-server model validation remain open. This subsequent documentation-only
+commit does not change candidate application source.
+
 ## Remaining work
 
 1. **Storage ownership:** Known People cold root/database loading, migrations,

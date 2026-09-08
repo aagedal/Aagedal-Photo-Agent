@@ -19,7 +19,8 @@ validation records do not justify closing any of those 23 items.
 Twenty-nine filesystem actors retain Dispatch workers across import, export, bookmarks,
 face storage, text/LUT access, cloud downloads and folder monitoring. Cancelling a backup
 copy preserves committed primary progress; cancelled Advanced Export loupe work cannot
-populate its cache or publish. The unfiltered suite passed 2,313 tests. Broad storage
+populate its cache or publish. The unfiltered suite passed 2,313 tests; an unsigned
+Release candidate passed model-omission and ZIP payload verification. Broad storage
 ownership and manual/device/release gates remain open.
 ([validation and remaining work](../plan-status-import-export-companion-workers-continuation-2026-09-08.md))
 
