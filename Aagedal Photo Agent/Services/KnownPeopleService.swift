@@ -219,6 +219,10 @@ nonisolated private enum KnownPeopleArchiveProcess {
 actor KnownPeopleArchiveService {
     static let shared = KnownPeopleArchiveService()
 
+    private let deletionLog = Logger(
+        subsystem: "com.aagedal.photo-agent", category: "KnownPeopleDeletion"
+    )
+
     private let access: KnownPeopleArchiveFileAccess
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
@@ -315,7 +319,7 @@ actor KnownPeopleArchiveService {
                     removedThumbnailURLs.append(url)
                 } catch {
                     // A failed derived-file cleanup does not undo the authoritative deletion.
-                    knownPeopleLog.debug("Could not remove deleted person's thumbnail: \(url.path, privacy: .private)")
+                    deletionLog.debug("Could not remove deleted person's thumbnail: \(url.path, privacy: .private)")
                 }
             }
         }
