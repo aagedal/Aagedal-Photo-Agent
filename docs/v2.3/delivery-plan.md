@@ -15,6 +15,13 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Routing, thumbnail preparation, and export layout continuation (2026-09-08):**
+structured imports resolve destinations after source reads; stale-root loads retry and routing
+failures disable editing. Known People prepares replacement thumbnail bytes on its worker with
+cancellation/revision checks. Advanced Export sizes itself from its hosting display and updates
+loupe crops for display scale. Broad storage and manual/device/release gates remain open.
+([validation and remaining work](../plan-status-routing-thumbnail-layout-continuation-2026-09-08.md))
+
 **Export packaging and deferred cleanup continuation (2026-09-07):** keyword exports capture
 managed files without suspension, then release the shared storage actor during manifest creation,
 compression, atomic destination replacement, and private staging cleanup. Known People imports

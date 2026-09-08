@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Routing, thumbnail preparation, and export layout continuation (2026-09-08):**
+structured imports resolve destinations after source reads; stale-root loads retry and routing
+failures disable editing. Known People prepares replacement thumbnail bytes on its worker with
+cancellation/revision checks. Advanced Export sizes itself from its hosting display and updates
+loupe crops for display scale. Broad storage and manual/device/release gates remain open.
+([validation and remaining work](plan-status-routing-thumbnail-layout-continuation-2026-09-08.md))
+
 **Export packaging and deferred cleanup continuation (2026-09-07):** keyword exports capture
 managed files without suspension, then release the shared storage actor during manifest creation,
 compression, atomic destination replacement, and private staging cleanup. Known People imports
@@ -1873,7 +1880,8 @@ These are worthwhile after the higher-risk phases unless user research promotes 
 
 - Recoverable/undoable deletion for metadata and Develop templates.
 - Separate Workspace switching from pane Layout and add an explicit exit from Metadata Review.
-- Adaptive Advanced Export layout based on the presenting window/display rather than `NSScreen.main`.
+- Advanced Export presenting-display layout is implemented; manual small-screen and display-change
+  validation remains. ([validation](plan-status-routing-thumbnail-layout-continuation-2026-09-08.md))
 - A strings catalog, pseudolocalization, and layout tests if multilingual distribution is planned.
 - A project-wide audit replacing production forced casts with typed boundaries where practical.
 
