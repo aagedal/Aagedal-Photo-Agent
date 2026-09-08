@@ -27,6 +27,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     let filenameLowercased: String
     let fileType: UTType?
     let fileSize: Int64
+    let dateCreated: Date
     let dateModified: Date
     let dateAdded: Date
     let isICloudDownloadPending: Bool
@@ -82,8 +83,9 @@ struct ImageFile: Identifiable, Hashable, Sendable {
 
         let values = isICloudDownloadPending
             ? nil
-            : try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .addedToDirectoryDateKey])
+            : try? url.resourceValues(forKeys: [.fileSizeKey, .creationDateKey, .contentModificationDateKey, .addedToDirectoryDateKey])
         self.fileSize = Int64(values?.fileSize ?? 0)
+        self.dateCreated = values?.creationDate ?? Date.distantPast
         self.dateModified = values?.contentModificationDate ?? Date.distantPast
         self.dateAdded = values?.addedToDirectoryDate ?? Date.distantPast
         self.isICloudDownloadPending = isICloudDownloadPending
@@ -114,8 +116,9 @@ struct ImageFile: Identifiable, Hashable, Sendable {
 
         let values = source.isICloudDownloadPending
             ? nil
-            : try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .addedToDirectoryDateKey])
+            : try? url.resourceValues(forKeys: [.fileSizeKey, .creationDateKey, .contentModificationDateKey, .addedToDirectoryDateKey])
         self.fileSize = Int64(values?.fileSize ?? 0)
+        self.dateCreated = values?.creationDate ?? Date.distantPast
         self.dateModified = values?.contentModificationDate ?? Date.distantPast
         self.dateAdded = values?.addedToDirectoryDate ?? Date.distantPast
         self.isICloudDownloadPending = source.isICloudDownloadPending
@@ -152,6 +155,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.fileType = UTType(filenameExtension: url.pathExtension)
 
         self.fileSize = source.fileSize
+        self.dateCreated = source.dateCreated
         self.dateModified = source.dateModified
         self.dateAdded = source.dateAdded
         self.isICloudDownloadPending = source.isICloudDownloadPending

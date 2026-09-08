@@ -211,6 +211,7 @@ actor FileSystemService {
                 at: url,
                 includingPropertiesForKeys: [
                     .fileSizeKey,
+                    .creationDateKey,
                     .contentModificationDateKey,
                     .addedToDirectoryDateKey,
                     .isRegularFileKey,

@@ -336,6 +336,8 @@ final class BrowserViewModel {
             switch sortOrder {
             case .name:
                 sorted = images.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+            case .dateCreated:
+                sorted = images.sorted { $0.dateCreated > $1.dateCreated }
             case .dateModified:
                 sorted = images.sorted { $0.dateModified > $1.dateModified }
             case .dateAdded:
@@ -957,9 +959,13 @@ final class BrowserViewModel {
             // RAWs on our own sidecar writes (rotate/rating/caption), which also bump
             // the sidecar mtime.
             var sidecarChangedURLs: [URL] = []
+            var creationDatesChanged = false
 
             for item in scanned {
                 if let existing = existingByURL[item.url] {
+                    if existing.dateCreated != item.dateCreated {
+                        creationDatesChanged = true
+                    }
                     let contentModified = existing.fileSize != item.fileSize
                         || existing.dateModified != item.dateModified
                     let sidecarChanged = !contentModified
@@ -1004,7 +1010,7 @@ final class BrowserViewModel {
             }
 
             let removedURLs = existingURLs.subtracting(scannedURLs)
-            if newURLs.isEmpty && modifiedURLs.isEmpty && sidecarChangedURLs.isEmpty && removedURLs.isEmpty {
+            if newURLs.isEmpty && modifiedURLs.isEmpty && sidecarChangedURLs.isEmpty && removedURLs.isEmpty && !creationDatesChanged {
                 return
             }
             guard self.currentFolderURL == folderURL else { return }
@@ -1047,6 +1053,9 @@ final class BrowserViewModel {
             }
 
             self.images = merged
+            if creationDatesChanged && sortOrder == .dateCreated {
+                setNeedsSortRebuild(forceSort: true)
+            }
 
             // Invalidate thumbnail + full-screen caches for changed files so they
             // regenerate with the current pixels/orientation (a sidecar rotation
@@ -3859,6 +3868,7 @@ final class BrowserViewModel {
 
     enum SortOrder: String, CaseIterable {
         case name = "Name"
+        case dateCreated = "Date Created"
         case dateModified = "Date Modified"
         case dateAdded = "Date Added"
         case rating = "Rating"
@@ -3869,6 +3879,7 @@ final class BrowserViewModel {
         func overlayDescription(reversed: Bool) -> String {
             switch self {
             case .name: return reversed ? "Name Z → A" : "Name A → Z"
+            case .dateCreated: return reversed ? "Date Created Oldest First" : "Date Created Newest First"
             case .dateModified: return reversed ? "Date Modified Oldest First" : "Date Modified Newest First"
             case .dateAdded: return reversed ? "Date Added Oldest First" : "Date Added Newest First"
             case .rating: return reversed ? "Rating Lowest First" : "Rating Highest First"
