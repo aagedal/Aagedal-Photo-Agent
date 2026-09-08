@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Person merging, backup retention, and cloud workers continuation (2026-09-08):**
+production person merging uses the serialized worker with reservations, partial-result evidence,
+and retry-safe thumbnail cleanup. Backup retention scans run away from managed keyword transactions.
+iCloud routing and keyword root resolution use dedicated Dispatch executors that preserve task context.
+Broad storage ownership and manual/device/release gates remain open.
+([validation and remaining work](plan-status-merge-retention-routing-continuation-2026-09-08.md))
+
 **Person deletion, thumbnail preparation, and keyword executor continuation (2026-09-08):**
 production person deletion uses the serialized worker with durable rollback and reservation
 semantics. Face-group additions prepare oriented thumbnails off MainActor. Managed keyword
