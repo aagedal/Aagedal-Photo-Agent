@@ -2961,3 +2961,104 @@ private func makeSolarOverlay(
         calculationMethod: .meeusNOAAV1
     )
 }
+
+@Suite("Analysis repository Dispatch executor")
+struct AnalysisCaseRepositoryExecutorTests {
+    @Test("case enumeration preserves caller task context on the filesystem worker")
+    @MainActor
+    func enumerationTaskContext() async throws {
+        let fixture = try AnalysisFixture(contents: "analysis executor source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let analysisCase = AnalysisCase.create(for: revision)
+        let queue = DispatchSerialQueue(label: "test.analysis-repository.enumeration")
+        let canonicalRoot = fixture.directoryURL.standardizedFileURL.resolvingSymlinksInPath()
+        let repository = AnalysisCaseRepository(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: fixture.directoryURL.appendingPathComponent("support"),
+            sourceFolderIsWritable: true,
+            fileIO: AnalysisCaseRepositoryFileIO(directoryContents: { url in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(!Thread.isMainThread)
+                #expect(AnalysisRepositoryExecutorContext.marker == "analysis-files")
+                #expect(url == canonicalRoot.appendingPathComponent(".photo_analysis/cases", isDirectory: true))
+                return try AnalysisCaseRepositoryFileIO.system.directoryContents(url)
+            }, isKnownReadOnly: { _ in
+                Issue.record("An explicit writable override must not probe the provider")
+                return false
+            }),
+            filesystemQueue: queue
+        )
+        try await repository.save(analysisCase)
+        let cases = await AnalysisRepositoryExecutorContext.$marker.withValue("analysis-files") {
+            await repository.loadAllCases()
+        }
+        #expect(cases.map(\.id) == [analysisCase.id])
+    }
+
+    @Test("provider writability probing preserves task context and chooses the durable store", arguments: [false, true])
+    @MainActor
+    func writabilityTaskContext(readOnly: Bool) async throws {
+        let fixture = try AnalysisFixture(contents: "analysis writable source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let analysisCase = AnalysisCase.create(for: revision)
+        let queue = DispatchSerialQueue(label: "test.analysis-repository.writability")
+        let canonicalRoot = fixture.directoryURL.standardizedFileURL.resolvingSymlinksInPath()
+        let repository = AnalysisCaseRepository(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: fixture.directoryURL.appendingPathComponent("support"),
+            fileIO: AnalysisCaseRepositoryFileIO(
+                directoryContents: AnalysisCaseRepositoryFileIO.system.directoryContents,
+                isKnownReadOnly: { url in
+                    #expect(queue.isIsolatingCurrentContext() == true)
+                    #expect(!Thread.isMainThread)
+                    #expect(AnalysisRepositoryExecutorContext.marker == "analysis-files")
+                    #expect(url == canonicalRoot)
+                    return readOnly
+                }
+            ),
+            filesystemQueue: queue
+        )
+        let storage = try await AnalysisRepositoryExecutorContext.$marker.withValue("analysis-files") {
+            try await repository.save(analysisCase)
+        }
+        #expect(storage == (readOnly ? .applicationSupport : .folderLocal))
+        let reopened = await repository.loadMostRelevantCaseWithStorage(for: revision)
+        #expect(reopened.storage == storage)
+        guard case .exact(let saved) = reopened.match else {
+            Issue.record("Expected the durable case to reopen from the selected store")
+            return
+        }
+        #expect(saved.id == analysisCase.id)
+    }
+
+    @Test("repository initialization keeps its captured root when a symlink is retargeted")
+    func canonicalRootCaptureRemainsStable() async throws {
+        let fixture = try AnalysisFixture(contents: "analysis canonical source")
+        defer { fixture.remove() }
+        let manager = FileManager.default
+        let link = fixture.directoryURL.appendingPathComponent("source-link", isDirectory: true)
+        let other = fixture.directoryURL.appendingPathComponent("other-folder", isDirectory: true)
+        try manager.createDirectory(at: other, withIntermediateDirectories: true)
+        try manager.createSymbolicLink(at: link, withDestinationURL: fixture.directoryURL)
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let analysisCase = AnalysisCase.create(for: revision)
+        let repository = AnalysisCaseRepository(
+            sourceFolderURL: link,
+            applicationSupportURL: fixture.directoryURL.appendingPathComponent("support"),
+            sourceFolderIsWritable: true
+        )
+        try manager.removeItem(at: link)
+        try manager.createSymbolicLink(at: link, withDestinationURL: other)
+        #expect(try await repository.save(analysisCase) == .folderLocal)
+        let filename = "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+        #expect(manager.fileExists(atPath: fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases").appendingPathComponent(filename).path))
+        #expect(!manager.fileExists(atPath: other.appendingPathComponent(".photo_analysis").path))
+    }
+}
+
+private nonisolated enum AnalysisRepositoryExecutorContext {
+    @TaskLocal static var marker: String?
+}

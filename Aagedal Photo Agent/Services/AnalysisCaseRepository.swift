@@ -30,6 +30,28 @@ nonisolated struct AnalysisFolderMapLoad: Sendable {
     let storage: AnalysisCaseStorage?
 }
 
+/// Synchronous provider access kept inside the repository's retained filesystem executor.
+nonisolated struct AnalysisCaseRepositoryFileIO: Sendable {
+    let directoryContents: @Sendable (URL) throws -> [URL]
+    let isKnownReadOnly: @Sendable (URL) -> Bool
+
+    static let system = AnalysisCaseRepositoryFileIO(
+        directoryContents: {
+            try FileManager.default.contentsOfDirectory(
+                at: $0,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+            )
+        },
+        isKnownReadOnly: {
+            guard let values = try? $0.resourceValues(forKeys: [
+                .isWritableKey, .volumeIsReadOnlyKey
+            ]) else { return false }
+            return values.isWritable == false || values.volumeIsReadOnly == true
+        }
+    )
+}
+
 /// Source-bound analysis persistence that prefers the portable `.photo_analysis` store and falls
 /// back to Application Support only when the photo folder cannot be written.
 ///
@@ -37,6 +59,14 @@ nonisolated struct AnalysisFolderMapLoad: Sendable {
 /// XMP sidecar. The fallback index retains the original source/folder identity and is deliberately
 /// local-only so sensitive investigation data is not added to portable settings sync.
 actor AnalysisCaseRepository {
+    // Directory enumeration, provider resource values and path identity comparisons may block.
+    // Retain this worker for every actor-isolated operation while preserving task context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    private let fileIO: AnalysisCaseRepositoryFileIO
     private let sourceFolderURL: URL
     private let casesDirectoryURL: URL
     private let folderMapDocumentURL: URL
@@ -48,8 +78,16 @@ actor AnalysisCaseRepository {
     init(
         sourceFolderURL: URL,
         applicationSupportURL: URL? = nil,
-        sourceFolderIsWritable: Bool? = nil
+        sourceFolderIsWritable: Bool? = nil,
+        fileIO: AnalysisCaseRepositoryFileIO = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.analysis-case-repository", qos: .utility
+        )
     ) {
+        self.fileIO = fileIO
+        self.filesystemQueue = filesystemQueue
+        // Initialization still captures the canonical root synchronously; moving that capture
+        // requires a separate async construction boundary so a retargeted symlink cannot reroute it.
         self.sourceFolderURL = sourceFolderURL.standardizedFileURL.resolvingSymlinksInPath()
         sourceFolderIsWritableOverride = sourceFolderIsWritable
 
@@ -283,11 +321,8 @@ actor AnalysisCaseRepository {
     }
 
     private func caseURLs(in directory: URL) -> [URL] {
-        (try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
-        ))?.filter { $0.lastPathComponent.hasSuffix(".analysis.json") } ?? []
+        (try? fileIO.directoryContents(directory))?
+            .filter { $0.lastPathComponent.hasSuffix(".analysis.json") } ?? []
     }
 
     private func caseURL(for id: UUID, in directory: URL) -> URL {
@@ -307,13 +342,7 @@ actor AnalysisCaseRepository {
 
     private var folderIsKnownReadOnly: Bool {
         if let sourceFolderIsWritableOverride { return !sourceFolderIsWritableOverride }
-        guard let values = try? sourceFolderURL.resourceValues(forKeys: [
-            .isWritableKey,
-            .volumeIsReadOnlyKey
-        ]) else {
-            return false
-        }
-        return values.isWritable == false || values.volumeIsReadOnly == true
+        return fileIO.isKnownReadOnly(sourceFolderURL)
     }
 
     private func loadFallbackIndex() async throws -> AnalysisCaseFallbackIndex {
