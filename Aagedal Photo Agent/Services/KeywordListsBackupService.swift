@@ -221,16 +221,13 @@ nonisolated struct KeywordListBackupFileIO: Sendable {
     )
 }
 
-/// Serializes keyword-backup enumeration, retention, snapshot writes, and restore commits away
-/// from MainActor. Directory reads and coordinated writes are synchronous Foundation operations;
-/// cancellation is therefore checked between calls, with durable-after-cancel evidence for restore.
-@KeywordListsFilesystemActor
-final class KeywordListBackupFileService {
-    nonisolated static let shared = KeywordListBackupFileService()
-
+/// Backup history is advisory: a version removed during enumeration is reported as unreadable.
+/// Keep its potentially lengthy local reads independent of managed-list transactions, just like
+/// individual backup previews, so opening history cannot stall edits or route reconciliation.
+actor KeywordListBackupInventoryService {
     private let io: KeywordListBackupFileIO
 
-    nonisolated init(io: KeywordListBackupFileIO = .system) {
+    init(io: KeywordListBackupFileIO) {
         self.io = io
     }
 
@@ -291,6 +288,30 @@ final class KeywordListBackupFileService {
             requestID: requestID,
             directories: snapshots
         ))
+    }
+
+}
+
+/// Serializes keyword-backup retention, snapshot writes, and restore commits away
+/// from MainActor. Directory reads and coordinated writes are synchronous Foundation operations;
+/// cancellation is therefore checked between calls, with durable-after-cancel evidence for restore.
+@KeywordListsFilesystemActor
+final class KeywordListBackupFileService {
+    nonisolated static let shared = KeywordListBackupFileService()
+
+    private let io: KeywordListBackupFileIO
+    nonisolated private let inventoryService: KeywordListBackupInventoryService
+
+    nonisolated init(io: KeywordListBackupFileIO = .system) {
+        self.io = io
+        self.inventoryService = KeywordListBackupInventoryService(io: io)
+    }
+
+    nonisolated func inventory(
+        directories: [KeywordListBackupDirectoryRequest],
+        requestID: UUID
+    ) async -> KeywordListBackupInventoryResult {
+        await inventoryService.inventory(directories: directories, requestID: requestID)
     }
 
     /// Reads managed source files on the same executor as backup writes. Missing files are

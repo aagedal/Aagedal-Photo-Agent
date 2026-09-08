@@ -535,6 +535,40 @@ struct KeywordListBackupFileServiceTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("blocked backup history enumeration allows managed-list writes")
+    func blockedInventoryAllowsManagedWrites() async throws {
+        let probe = BlockingKeywordListBackupFileIOProbe()
+        let service = KeywordListBackupFileService(io: probe.fileIO)
+        let inventory = Task {
+            await service.inventory(directories: [KeywordListBackupDirectoryRequest(
+                identifier: "quick/keywords.txt",
+                directoryURL: URL(fileURLWithPath: "/virtual/backups")
+            )], requestID: UUID())
+        }
+        defer { probe.releaseFirstEnumeration() }
+        try await probe.waitUntilFirstEnumerationStarts()
+        // Bound a regression that queues the write behind blocked history I/O.
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled { probe.releaseFirstEnumeration() }
+        }
+        defer { timeout.cancel() }
+        let writer = KeywordListBackupFileIOProbe(files: [])
+        writer.readDataResult = Data("restored".utf8)
+        let result = try await KeywordListBackupFileService(io: writer.fileIO).restore(
+            from: URL(fileURLWithPath: "/virtual/version.txt"),
+            to: URL(fileURLWithPath: "/virtual/list.txt"), requestID: UUID()
+        )
+        guard case .restored = result else {
+            Issue.record("Expected managed-list restore to commit")
+            return
+        }
+        #expect(writer.writeInvocationCount == 1)
+        #expect(!probe.isFirstEnumerationReleased)
+        probe.releaseFirstEnumeration()
+        _ = await inventory.value
+    }
+
     @Test("a cancelled queued inventory does not enter filesystem enumeration")
     func queuedInventoryCancellation() async throws {
         let probe = BlockingKeywordListBackupFileIOProbe()
@@ -789,6 +823,12 @@ private nonisolated final class BlockingKeywordListBackupFileIOProbe: @unchecked
         condition.lock()
         defer { condition.unlock() }
         return contentsCount
+    }
+
+    var isFirstEnumerationReleased: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return firstEnumerationReleased
     }
 
     var maximumConcurrentEnumerations: Int {
