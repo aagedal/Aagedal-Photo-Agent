@@ -16,6 +16,27 @@ private nonisolated let copyLog = Logger(subsystem: "com.aagedal.photo-agent", c
 /// the primary import still completes successfully. The `CopyResult` carries
 /// the per-leg outcome so the UI can surface what happened.
 actor ImportCopyService {
+    /// Keep blocking volume reads and writes on a Dispatch worker while retaining the caller's task
+    /// locals, priority, and cancellation state across the actor boundary.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    typealias VerificationHasher = @Sendable (URL) throws -> Data
+    private let verificationHasher: VerificationHasher
+
+    init(
+        verificationHasher: @escaping VerificationHasher = { url in
+            try HashStream.hashFileSynchronously(at: url)
+        },
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.import-copy", qos: .utility
+        )
+    ) {
+        self.filesystemQueue = filesystemQueue
+        self.verificationHasher = verificationHasher
+    }
 
     // MARK: - Public Types
 
@@ -82,7 +103,8 @@ actor ImportCopyService {
     // MARK: - Run
 
     /// Execute all jobs sequentially, calling `progress` after each file completes.
-    /// Throws `CancellationError` if the surrounding `Task` is cancelled.
+    /// Throws `CancellationError` if the surrounding `Task` is cancelled, after publishing
+    /// any committed primary copy through `progress`, including when its backup was cancelled.
     func run(
         jobs: [CopyJob],
         conflictPolicy: ImportConflictPolicy,
@@ -90,6 +112,7 @@ actor ImportCopyService {
         verifyBackup: Bool,
         progress: @Sendable (CopyResult) async -> Void
     ) async throws -> [CopyResult] {
+        try Task.checkCancellation()
         if conflictPolicy == .overwrite {
             try Self.validateOverwritePreflight(jobs: jobs)
         }
@@ -111,16 +134,19 @@ actor ImportCopyService {
                 let result = Self.skippedResult(for: job, reason: reason)
                 results.append(result)
                 await progress(result)
+                try Task.checkCancellation()
                 continue
             }
-            let result = try await processJob(
+            let result = try processJob(
                 job,
                 conflictPolicy: conflictPolicy,
                 verificationMode: verificationMode,
                 verifyBackup: verifyBackup
             )
             results.append(result)
+            // A committed primary must reach the caller even if cancellation stopped its backup.
             await progress(result)
+            try Task.checkCancellation()
         }
         return results
     }
@@ -173,7 +199,7 @@ actor ImportCopyService {
         conflictPolicy: ImportConflictPolicy,
         verificationMode: CopyVerificationMode,
         verifyBackup: Bool
-    ) async throws -> CopyResult {
+    ) throws -> CopyResult {
         if let reason = job.preflightSkipReason {
             return CopyResult(
                 id: job.id,
@@ -225,7 +251,7 @@ actor ImportCopyService {
             )
         }
 
-        let (primaryOutcome, primaryVerification) = try await copyLeg(
+        let (primaryOutcome, primaryVerification) = try copyLeg(
             source: job.source,
             destination: primaryURL,
             wasRenamed: wasRenamed,
@@ -265,7 +291,7 @@ actor ImportCopyService {
                 backupVerification = .skipped
             case .resolved(let backupURL, let backupWasRenamed):
                 do {
-                    (backupOutcome, backupVerification) = try await copyLeg(
+                    (backupOutcome, backupVerification) = try copyLeg(
                         source: job.source,
                         destination: backupURL,
                         wasRenamed: backupWasRenamed,
@@ -276,7 +302,10 @@ actor ImportCopyService {
                                 ?? FileManager.default.fileExists(atPath: desiredBackup.path))
                     )
                 } catch is CancellationError {
-                    throw CancellationError()
+                    // Primary promotion is durable. Publish it before `run` propagates
+                    // cancellation, so callers can reconcile files that already exist on disk.
+                    backupOutcome = .failed("Backup cancelled.")
+                    backupVerification = .failed("Backup cancelled.")
                 } catch {
                     copyLog.warning("Backup copy failed for \(job.source.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                     backupOutcome = .failed(error.localizedDescription)
@@ -312,7 +341,8 @@ actor ImportCopyService {
         shouldVerify: Bool,
         allowOverwrite: Bool,
         wasReplaced: Bool
-    ) async throws -> (DestinationOutcome, VerificationOutcome) {
+    ) throws -> (DestinationOutcome, VerificationOutcome) {
+        try Task.checkCancellation()
         if Self.filesReferToSameItem(source, destination) {
             return (
                 .failed("Source and destination refer to the same file."),
@@ -322,7 +352,7 @@ actor ImportCopyService {
 
         let staged: StagedCopy
         do {
-            staged = try await stageCopy(source: source, destination: destination)
+            staged = try stageCopy(source: source, destination: destination)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -331,9 +361,11 @@ actor ImportCopyService {
 
         let verification: VerificationOutcome
         do {
+            try Task.checkCancellation()
             verification = shouldVerify
-                ? try await verify(url: staged.temporaryURL, expected: staged.hash)
+                ? try verify(url: staged.temporaryURL, expected: staged.hash)
                 : .skipped
+            try Task.checkCancellation()
         } catch {
             try? FileManager.default.removeItem(at: staged.temporaryURL)
             throw error
@@ -368,7 +400,7 @@ actor ImportCopyService {
 
     /// Copy `source` into a unique hidden sibling of `destination`, hashing as bytes flow.
     /// The caller owns promotion and cleanup after this method succeeds.
-    private func stageCopy(source: URL, destination: URL) async throws -> StagedCopy {
+    private func stageCopy(source: URL, destination: URL) throws -> StagedCopy {
         let fm = FileManager.default
         let partialURL = destination.deletingLastPathComponent().appendingPathComponent(
             ".\(destination.lastPathComponent).\(UUID().uuidString).partial"
@@ -438,9 +470,9 @@ actor ImportCopyService {
 
     // MARK: - Verification
 
-    private func verify(url: URL, expected: Data) async throws -> VerificationOutcome {
+    private func verify(url: URL, expected: Data) throws -> VerificationOutcome {
         do {
-            let actual = try await HashStream.hashFile(at: url)
+            let actual = try verificationHasher(url)
             if actual == expected {
                 return .verified
             }

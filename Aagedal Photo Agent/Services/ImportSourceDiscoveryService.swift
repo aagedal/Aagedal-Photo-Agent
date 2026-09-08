@@ -26,11 +26,24 @@ nonisolated struct ImportSourceSecurityScopeAccess: Sendable {
 /// instead of walking a card or network volume from UI-isolated code. Results are immutable and
 /// cancellation is observed throughout the walk, before any result can be published.
 actor ImportSourceDiscoveryService {
+    /// Keep blocking volume reads on a Dispatch worker while retaining the caller's task
+    /// locals, priority, and cancellation state across the actor boundary.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     nonisolated static let defaultProgressUpdateInterval: Duration = .seconds(5)
 
     private let securityScopeAccess: ImportSourceSecurityScopeAccess
 
-    init(securityScopeAccess: ImportSourceSecurityScopeAccess = .system) {
+    init(
+        securityScopeAccess: ImportSourceSecurityScopeAccess = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.import-source-discovery", qos: .utility
+        )
+    ) {
+        self.filesystemQueue = filesystemQueue
         self.securityScopeAccess = securityScopeAccess
     }
 
@@ -109,6 +122,7 @@ actor ImportSourceDiscoveryService {
             if let onProgress, lastReportedProgress != progress {
                 await onProgress(progress)
             }
+            try Task.checkCancellation()
             signposter.endInterval(
                 "RecursiveSourceScan",
                 interval,

@@ -6,6 +6,13 @@ import Foundation
 /// collisions are frozen together so the main actor can present the exact plan that execution
 /// later revalidates before its first destination mutation.
 actor ImportPreflightService {
+    /// Keep blocking volume reads on a Dispatch worker while retaining the caller's task
+    /// locals, priority, and cancellation state across the actor boundary.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     typealias DuplicateSourceFinder = @Sendable (
         [PreviousImportDetector.Candidate],
         URL
@@ -89,8 +96,12 @@ actor ImportPreflightService {
         },
         fileExists: @escaping FileExistenceProbe = { path in
             FileManager.default.fileExists(atPath: path)
-        }
+        },
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.import-preflight", qos: .utility
+        )
     ) {
+        self.filesystemQueue = filesystemQueue
         self.findDuplicateSources = findDuplicateSources
         self.fileExists = fileExists
     }
@@ -150,6 +161,7 @@ actor ImportPreflightService {
             }
         }
 
+        try Task.checkCancellation()
         let signature = jobs.map { job in
             ImportOverwriteExpectation(
                 primaryPath: job.desiredPrimaryDest.standardizedFileURL.path,

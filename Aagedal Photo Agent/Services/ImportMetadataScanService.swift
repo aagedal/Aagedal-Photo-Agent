@@ -7,6 +7,13 @@ import SwiftMediaMetadata
 /// before and after each file. The main actor receives immutable evidence and publishes only a
 /// complete result belonging to its current request.
 actor ImportCaptureDateScanService {
+    /// Keep blocking volume reads on a Dispatch worker while retaining the caller's task
+    /// locals, priority, and cancellation state across the actor boundary.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     typealias CaptureDateReader = @Sendable (URL) -> String?
     typealias ModificationDateReader = @Sendable (URL) -> Date?
 
@@ -39,8 +46,12 @@ actor ImportCaptureDateScanService {
         },
         modificationDateReader: @escaping ModificationDateReader = { url in
             (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
-        }
+        },
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.import-capture-dates", qos: .utility
+        )
     ) {
+        self.filesystemQueue = filesystemQueue
         self.captureDateReader = captureDateReader
         self.modificationDateReader = modificationDateReader
     }
@@ -150,6 +161,13 @@ actor ImportCaptureDateScanService {
 
 /// Serialized, cancellable inventory of existing Import destination folders.
 actor ImportFolderSuggestionService {
+    /// Keep blocking volume reads on a Dispatch worker while retaining the caller's task
+    /// locals, priority, and cancellation state across the actor boundary.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     typealias FolderFinder = @Sendable (String, URL) -> [URL]
 
     struct Evidence: Sendable, Equatable {
@@ -165,9 +183,15 @@ actor ImportFolderSuggestionService {
 
     private let folderFinder: FolderFinder
 
-    init(folderFinder: @escaping FolderFinder = { date, destinationBaseURL in
-        PreviousImportDetector.matchingDateFolders(named: date, under: destinationBaseURL)
-    }) {
+    init(
+        folderFinder: @escaping FolderFinder = { date, destinationBaseURL in
+            PreviousImportDetector.matchingDateFolders(named: date, under: destinationBaseURL)
+        },
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.import-folder-suggestions", qos: .utility
+        )
+    ) {
+        self.filesystemQueue = filesystemQueue
         self.folderFinder = folderFinder
     }
 

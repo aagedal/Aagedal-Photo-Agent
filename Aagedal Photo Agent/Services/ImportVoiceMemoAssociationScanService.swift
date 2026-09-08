@@ -7,6 +7,13 @@ import SwiftMediaMetadata
 /// before and after every read, and the main actor receives either a complete immutable report or
 /// an exact processed prefix that it must not present as complete association evidence.
 actor ImportVoiceMemoAssociationScanService {
+    /// Keep blocking volume reads on a Dispatch worker while retaining the caller's task
+    /// locals, priority, and cancellation state across the actor boundary.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     typealias ImageEvidenceReader = @Sendable (URL) -> SonyVoiceMemoImageEvidence
     typealias MemoDateReader = @Sendable (URL) -> Date
 
@@ -50,8 +57,12 @@ actor ImportVoiceMemoAssociationScanService {
         },
         memoDateReader: @escaping MemoDateReader = {
             ImportVoiceMemoAssociationScanService.readMemoDate(from: $0)
-        }
+        },
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.import-voice-memo-association", qos: .utility
+        )
     ) {
+        self.filesystemQueue = filesystemQueue
         self.imageEvidenceReader = imageEvidenceReader
         self.memoDateReader = memoDateReader
     }
