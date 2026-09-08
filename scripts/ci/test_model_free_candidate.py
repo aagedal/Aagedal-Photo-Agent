@@ -3,9 +3,11 @@
 import subprocess
 from contextlib import nullcontext
 import os
+import plistlib
 import stat
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 from pathlib import Path
 
@@ -65,6 +67,31 @@ class CandidateTests(unittest.TestCase):
         (self.repo / 'build').mkdir()
         (self.repo / 'build/log').write_text('output')
         candidate.verify_source(self.repo, self.revision)
+
+    def test_corrupt_packaging_never_publishes_success_manifest(self):
+        output = self.repo / 'build/candidate'
+        original_run = subprocess.run
+
+        def run(command, **kwargs):
+            if command[0] == 'git':
+                return original_run(command, **kwargs)
+            elif command[0] == 'xcodebuild':
+                app = output / 'products/Aagedal Photo Agent.app'
+                (app / 'Contents/MacOS').mkdir(parents=True)
+                (app / 'Contents/MacOS/Photo').write_bytes(b'original')
+                (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({
+                    'CFBundleExecutable': 'Photo',
+                }))
+            elif command[0] == '/usr/bin/ditto':
+                with zipfile.ZipFile(Path(command[-1]), 'w') as archive:
+                    archive.writestr('unexpected-file', b'corrupt packaging')
+            else:
+                self.fail(f'unexpected command: {command}')
+
+        with patch.object(candidate.subprocess, 'run', side_effect=run):
+            with self.assertRaisesRegex(ValueError, 'unexpected archive payload'):
+                candidate.build_candidate(self.repo, output)
+        self.assertFalse((output / 'measurement.json').exists())
 
 
 class ArchiveTests(unittest.TestCase):
