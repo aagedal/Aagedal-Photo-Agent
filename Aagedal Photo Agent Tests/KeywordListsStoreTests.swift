@@ -236,6 +236,53 @@ struct KeywordListBackupPreviewServiceTests {
 
 @Suite("Keyword-list backup inventory and restore filesystem boundary")
 struct KeywordListBackupFileServiceTests {
+    @Test("same-millisecond and backwards-clock backup names remain unique and ordered")
+    func backupNamesPreserveRequestOrder() {
+        let date = Date(timeIntervalSince1970: 1_783_000_000.123)
+        var generator = KeywordListBackupFileNameGenerator()
+        var names = (0..<1_000).map { _ in generator.next(for: date) }
+        names.append(generator.next(for: date.addingTimeInterval(-3_600)))
+        #expect(Set(names).count == names.count)
+        #expect(names.sorted() == names)
+        // Strictly increasing timestamp prefixes, independent of the random uniqueness suffix.
+        let timestamps = names.map { String($0.prefix(22)) }
+        #expect(Set(timestamps).count == names.count)
+        #expect(timestamps.sorted() == timestamps)
+        #expect(names.allSatisfy { $0.hasSuffix(".txt") })
+    }
+
+    @Test("colliding snapshot dates preserve both versions and latest-content deduplication")
+    func collidingSnapshotDatesKeepHistory() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let date = Date(timeIntervalSince1970: 1_783_000_000)
+        var generator = KeywordListBackupFileNameGenerator()
+        let first = directory.appendingPathComponent(generator.next(for: date))
+        let second = directory.appendingPathComponent(generator.next(for: date))
+        // Historical unsuffixed names remain part of the same timestamp ordering.
+        let legacy = directory.appendingPathComponent("2020-01-01T000000.000Z.txt")
+        try Data("legacy".utf8).write(to: legacy)
+        let service = KeywordListBackupFileService()
+        for (url, text) in [(first, "first"), (second, "second")] {
+            let written = try await service.snapshot(
+                text: text, directoryURL: directory, destinationURL: url,
+                retentionCutoff: .distantPast, minimumVersionCount: 5
+            )
+            #expect(written)
+        }
+        let duplicate = try await service.snapshot(
+            text: "second", directoryURL: directory,
+            destinationURL: directory.appendingPathComponent(generator.next(for: date)),
+            retentionCutoff: .distantPast, minimumVersionCount: 5
+        )
+        #expect(!duplicate)
+        #expect(try String(contentsOf: first, encoding: .utf8) == "first")
+        #expect(try String(contentsOf: second, encoding: .utf8) == "second")
+        #expect(try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .map(\.lastPathComponent).sorted() == [legacy, first, second].map(\.lastPathComponent))
+    }
+
     @Test("unchanged snapshot reads only the newest timestamped backup")
     func unchangedSnapshotReadsOnlyNewest() async throws {
         let directory = URL(fileURLWithPath: "/virtual/backups")

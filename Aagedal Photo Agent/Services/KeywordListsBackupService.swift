@@ -4,6 +4,25 @@ import os
 
 private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "KeywordListsBackupService")
 
+/// Preserve timestamp ordering even when multiple snapshots are requested in one millisecond
+/// or the system clock moves backwards. The UUID also prevents collisions across service
+/// instances/relaunches without depending on a filesystem existence check before writing.
+nonisolated struct KeywordListBackupFileNameGenerator {
+    private var lastMilliseconds: Int64?
+
+    mutating func next(for date: Date) -> String {
+        let requested = Int64((date.timeIntervalSince1970 * 1_000).rounded(.down))
+        let milliseconds = max(requested, lastMilliseconds.map { $0 + 1 } ?? requested)
+        lastMilliseconds = milliseconds
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        let stamp = formatter.string(from: Date(timeIntervalSince1970: Double(milliseconds) / 1_000))
+            .replacingOccurrences(of: ":", with: "")
+        return stamp + "-" + UUID().uuidString + ".txt"
+    }
+}
+
 nonisolated struct KeywordListBackupPreviewSnapshot: Equatable, Sendable {
     let requestID: UUID
     let sourceURL: URL
@@ -551,6 +570,7 @@ final class KeywordListsBackupService {
     private var recoverableRequestID: UUID?
     private let filesystem: KeywordListBackupFileService
     private let store: KeywordListsStore
+    private var fileNameGenerator = KeywordListBackupFileNameGenerator()
 
     /// Every list the store manages. Same enumeration the archive uses.
     private static let allKeys: [KeywordListKey] = {
@@ -633,7 +653,7 @@ final class KeywordListsBackupService {
             return try await filesystem.snapshot(
                 sourceURL: sourceURL,
                 directoryURL: dir,
-                destinationURL: dir.appendingPathComponent(Self.snapshotFileName(for: now)),
+                destinationURL: dir.appendingPathComponent(fileNameGenerator.next(for: now)),
                 retentionCutoff: now.addingTimeInterval(-Double(retentionDays) * 86_400),
                 minimumVersionCount: minVersionsPerKey
             )
@@ -708,7 +728,7 @@ final class KeywordListsBackupService {
             to: destinationURL,
             requestID: requestID,
             previousContentBackupURL: directory(for: version.key).appendingPathComponent(
-                Self.snapshotFileName(for: Date()).replacingOccurrences(of: ".txt", with: "-\(UUID().uuidString).txt")
+                fileNameGenerator.next(for: Date())
             )
         )
         if case .restored = result {
@@ -774,16 +794,6 @@ final class KeywordListsBackupService {
         key.relativePath
             .replacingOccurrences(of: ".txt", with: "")
             .replacingOccurrences(of: "/", with: "-")
-    }
-
-    /// UTC timestamp filename with fractional seconds (collision-resistant) and
-    /// colons stripped so it reads cleanly in Finder, e.g. `2026-06-08T143000.123Z.txt`.
-    private static func snapshotFileName(for date: Date) -> String {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        f.timeZone = TimeZone(identifier: "UTC")
-        let stamp = f.string(from: date).replacingOccurrences(of: ":", with: "")
-        return stamp + ".txt"
     }
 
     private static func entryCount(for key: KeywordListKey, text: String) -> Int {
