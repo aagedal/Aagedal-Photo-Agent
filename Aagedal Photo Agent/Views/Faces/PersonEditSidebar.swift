@@ -18,7 +18,8 @@ struct PersonEditSidebar: View {
     @State private var editedRole: String = ""
     @State private var editedNotes: String = ""
     @State private var hasChanges = false
-    @State private var isSaving = false
+    @State private var saveRequestID: UUID?
+    private var isSaving: Bool { saveRequestID != nil }
     @State private var saveErrorMessage: String?
     @State private var thumbnail: NSImage?
 
@@ -121,6 +122,11 @@ struct PersonEditSidebar: View {
         .onChange(of: person.id) {
             resetFields()
         }
+        .onDisappear {
+            // The admitted write may finish, but its old editor must not publish into a new one.
+            saveRequestID = nil
+            saveErrorMessage = nil
+        }
         .task(id: person.id) { await loadThumbnail() }
         .onChange(of: editedName) { checkForChanges() }
         .onChange(of: editedRole) { checkForChanges() }
@@ -165,6 +171,8 @@ struct PersonEditSidebar: View {
     }
 
     private func resetFields() {
+        saveRequestID = nil
+        saveErrorMessage = nil
         editedName = person.name
         editedRole = person.role ?? ""
         editedNotes = person.notes ?? ""
@@ -184,20 +192,23 @@ struct PersonEditSidebar: View {
         edited.name = editedName
         edited.role = editedRole.isEmpty ? nil : editedRole
         edited.notes = editedNotes.isEmpty ? nil : editedNotes
-        isSaving = true
+        let requestID = UUID()
+        saveRequestID = requestID
         saveErrorMessage = nil
         Task {
-            defer { isSaving = false }
+            defer {
+                if saveRequestID == requestID { saveRequestID = nil }
+            }
             do {
                 try await onSave(edited)
-                guard person.id == edited.id else { return }
+                guard saveRequestID == requestID, person.id == edited.id else { return }
                 // Compare with the submitted fields; publication may reach the binding later.
                 hasChanges = editedName != edited.name || editedRole != (edited.role ?? "") ||
                     editedNotes != (edited.notes ?? "")
             } catch is CancellationError {
                 // Storage replacement invalidates this editor's completion.
             } catch {
-                guard person.id == edited.id else { return }
+                guard saveRequestID == requestID, person.id == edited.id else { return }
                 saveErrorMessage = error.localizedDescription
                 checkForChanges()
             }
