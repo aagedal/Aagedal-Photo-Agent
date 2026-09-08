@@ -55,16 +55,28 @@ nonisolated struct KeywordListBackupPreviewReader: Sendable {
     }
 }
 
-/// Serializes backup-preview reads away from MainActor. The Foundation read cannot be preempted
+/// Serializes backup-preview reads on a dedicated Dispatch worker, keeping blocking Foundation
+/// work off MainActor and the cooperative pool while retaining the caller's task context.
+/// The Foundation read cannot be preempted
 /// once entered, so cancellation after that point returns byte-count evidence but never publishes
 /// text that belongs to a superseded preview request.
 actor KeywordListBackupPreviewService {
     static let shared = KeywordListBackupPreviewService()
 
     private let reader: KeywordListBackupPreviewReader
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
 
-    init(reader: KeywordListBackupPreviewReader = .system) {
+    init(
+        reader: KeywordListBackupPreviewReader = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.keyword-lists.backup-preview", qos: .utility
+        )
+    ) {
         self.reader = reader
+        self.filesystemQueue = filesystemQueue
     }
 
     func loadPreview(
@@ -243,11 +255,23 @@ nonisolated struct KeywordListBackupFileIO: Sendable {
 /// Backup history is advisory: a version removed during enumeration is reported as unreadable.
 /// Keep its potentially lengthy local reads independent of managed-list transactions, just like
 /// individual backup previews, so opening history cannot stall edits or route reconciliation.
+/// The dedicated Dispatch executor keeps enumeration and decoding off the cooperative pool
+/// without replacing the caller's task, cancellation state, or task-local storage route.
 actor KeywordListBackupInventoryService {
     private let io: KeywordListBackupFileIO
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
 
-    init(io: KeywordListBackupFileIO) {
+    init(
+        io: KeywordListBackupFileIO,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.keyword-lists.backup-inventory", qos: .utility
+        )
+    ) {
         self.io = io
+        self.filesystemQueue = filesystemQueue
     }
 
     func inventory(

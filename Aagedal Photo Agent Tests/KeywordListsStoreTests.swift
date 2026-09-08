@@ -103,6 +103,41 @@ struct KeywordListsStoreTests {
 
 @Suite("Keyword-list backup preview filesystem boundary")
 struct KeywordListBackupPreviewServiceTests {
+    @Test("Preview Dispatch worker retains caller context and read cancellation", arguments: [false, true])
+    @MainActor
+    func dispatchPreviewContext(cancelDuringRead: Bool) async throws {
+        let root = URL(fileURLWithPath: "/virtual/backup-preview-worker")
+        let source = root.appendingPathComponent("version.txt")
+        let requestID = UUID()
+        let bytes = Data("backup text".utf8)
+        let queue = DispatchSerialQueue(label: "test.backup-preview.\(cancelDuringRead)")
+        let service = KeywordListBackupPreviewService(reader: KeywordListBackupPreviewReader { url in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(KeywordListsStoreStorageOverride.current == root)
+            #expect(Task.currentPriority >= .userInitiated)
+            #expect(url == source)
+            if cancelDuringRead { withUnsafeCurrentTask { $0?.cancel() } }
+            return bytes
+        }, filesystemQueue: queue)
+
+        let result = try await Task(priority: .userInitiated) {
+            try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+                try await service.loadPreview(from: source, requestID: requestID)
+            }
+        }.value
+
+        if cancelDuringRead {
+            #expect(result == .cancelledAfterRead(
+                requestID: requestID, sourceURL: source, byteCount: bytes.count
+            ))
+        } else {
+            #expect(result == .loaded(KeywordListBackupPreviewSnapshot(
+                requestID: requestID, sourceURL: source, text: "backup text", byteCount: bytes.count
+            )))
+        }
+    }
+
     @Test("a complete immutable preview is read away from the main actor")
     @MainActor
     func completePreviewRunsOffMainActor() async throws {
@@ -721,6 +756,68 @@ struct KeywordListBackupFileServiceTests {
             }
         )
         #expect(identifiers == ["missing", "empty"])
+    }
+
+    @Test("Inventory Dispatch worker retains caller context and stops after cancelled I/O", arguments: [0, 1, 2])
+    @MainActor
+    func dispatchInventoryContext(cancellationStage: Int) async {
+        let root = URL(fileURLWithPath: "/virtual/backup-inventory-worker")
+        let first = root.appendingPathComponent("first.txt")
+        let second = root.appendingPathComponent("second.txt")
+        let requestID = UUID()
+        let queue = DispatchSerialQueue(label: "test.backup-inventory.\(cancellationStage)")
+        let check: @Sendable () -> Void = {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(KeywordListsStoreStorageOverride.current == root)
+            #expect(Task.currentPriority >= .userInitiated)
+        }
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { directory in
+                check()
+                #expect(directory == root)
+                if cancellationStage == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+                return [first, second]
+            },
+            inspectTextFile: { url in
+                check()
+                #expect(cancellationStage != 1)
+                if cancellationStage == 2 {
+                    #expect(url == first)
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                return KeywordListBackupFileSnapshot(
+                    url: url, date: .distantPast, text: "backup", byteCount: 6
+                )
+            },
+            createDirectory: { _ in Issue.record("History must not create directories") },
+            readData: { _ in Issue.record("History must not read managed sources"); return Data() },
+            writeData: { _, _ in Issue.record("History must not write files") },
+            removeItem: { _ in Issue.record("History must not delete files") }
+        )
+        let service = KeywordListBackupInventoryService(io: io, filesystemQueue: queue)
+        let result = await Task(priority: .userInitiated) {
+            await KeywordListsStoreStorageOverride.$current.withValue(root) {
+                await service.inventory(directories: [KeywordListBackupDirectoryRequest(
+                    identifier: "keywords", directoryURL: root
+                )], requestID: requestID)
+            }
+        }.value
+
+        if cancellationStage > 0 {
+            #expect(result == .cancelled(
+                requestID: requestID, completedDirectoryCount: 0,
+                discoveredVersionCount: cancellationStage == 2 ? 1 : 0
+            ))
+        } else {
+            guard case .loaded(let snapshot) = result else {
+                Issue.record("Expected complete inventory"); return
+            }
+            #expect(snapshot.requestID == requestID)
+            #expect(snapshot.directories.count == 1)
+            #expect(snapshot.directories.first?.identifier == "keywords")
+            #expect(Set(snapshot.directories.flatMap(\.versions).map(\.url)) == Set([first, second]))
+        }
     }
 
     @Test("inventory returns an immutable sorted snapshot away from the main actor")
