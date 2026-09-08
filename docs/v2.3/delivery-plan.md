@@ -15,6 +15,13 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Person deletion, thumbnail preparation, and keyword executor continuation (2026-09-08):**
+production person deletion uses the serialized worker with durable rollback and reservation
+semantics. Face-group additions prepare oriented thumbnails off MainActor. Managed keyword
+transactions use a dedicated Dispatch executor while preserving task context and ordering.
+Broad storage ownership and manual/device/release gates remain open.
+([validation and remaining work](../plan-status-deletion-thumbnail-executor-continuation-2026-09-08.md))
+
 **Known People additions, backup snapshots, and package verification continuation (2026-09-08):**
 production add/merge writes run on the serialized worker with queued-name checks and durable
 partial-result publication. Unchanged keyword snapshots read only the newest history body;
