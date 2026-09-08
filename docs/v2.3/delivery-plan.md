@@ -15,6 +15,14 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Import, export and companion storage workers continuation (2026-09-08):**
+Twenty-nine filesystem actors retain Dispatch workers across import, export, bookmarks,
+face storage, text/LUT access, cloud downloads and folder monitoring. Cancelling a backup
+copy preserves committed primary progress; cancelled Advanced Export loupe work cannot
+populate its cache or publish. The unfiltered suite passed 2,313 tests. Broad storage
+ownership and manual/device/release gates remain open.
+([validation and remaining work](../plan-status-import-export-companion-workers-continuation-2026-09-08.md))
+
 **Metadata and library storage executors continuation (2026-09-08):**
 Teams, Watermarks, templates, atomic JSON persistence, Known People thumbnail/size reads,
 and Browser/FTP/Raw Metadata inspection retain Dispatch workers with existing task context
