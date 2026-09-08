@@ -434,13 +434,13 @@ struct CompanionFilesystemExecutorTests {
         let requestID = UUID()
         let queue = DispatchSerialQueue(label: "test.bookmarks.resolve")
         let check = contextCheck(queue, root: root)
-        let scopes = BrowserFolderSecurityScopeStore(accessStarter: { _ in
+        let scopes = BrowserFolderSecurityScopeStore(accessStarter: { @Sendable _ in
             check()
             return true
-        }, bookmarkCreator: { _ in
+        }, bookmarkCreator: { @Sendable _ in
             check()
             return Data([2])
-        }, bookmarkResolver: { _ in
+        }, bookmarkResolver: { @Sendable _ in
             check()
             if cancel { withUnsafeCurrentTask { $0?.cancel() } }
             return .init(url: root, isStale: true)
@@ -493,14 +493,14 @@ struct CompanionFilesystemExecutorTests {
         let root = URL(fileURLWithPath: "/virtual/bookmark-create")
         let queue = DispatchSerialQueue(label: "test.bookmarks.create")
         let check = contextCheck(queue, root: root)
-        let scopes = BrowserFolderSecurityScopeStore(accessStarter: { _ in
+        let scopes = BrowserFolderSecurityScopeStore(accessStarter: { @Sendable _ in
             check()
             return true
-        }, bookmarkCreator: { _ in
+        }, bookmarkCreator: { @Sendable _ in
             check()
             withUnsafeCurrentTask { $0?.cancel() }
             return Data([3])
-        }, bookmarkResolver: { _ in nil })
+        }, bookmarkResolver: { @Sendable _ in nil })
         await Task {
             await CompanionFilesystemContext.$marker.withValue(root) {
                 let id = UUID()
