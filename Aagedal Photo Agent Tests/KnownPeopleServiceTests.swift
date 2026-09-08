@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import AppKit
+import SwiftUI
 @testable import Aagedal_Photo_Agent
 
 /// Tests for the per-person file store in `KnownPeopleService`.
@@ -12,6 +13,193 @@ import AppKit
 @Suite("KnownPeopleService", .serialized)
 @MainActor
 struct KnownPeopleServiceTests {
+
+    @Test("Person editor bindings follow identity across reorder and ignore deleted records")
+    func personEditorBindingSurvivesListChanges() {
+        let first = KnownPerson(name: "First")
+        let second = KnownPerson(name: "Second")
+        var people = [first, second]
+        let binding = knownPersonBinding(for: first, in: Binding(
+            get: { people }, set: { people = $0 }
+        ))
+        people.reverse()
+        var edited = binding.wrappedValue
+        edited.name = "Edited"
+        binding.wrappedValue = edited
+        #expect(people.map(\.name) == ["Second", "Edited"])
+        people.removeLast()
+        #expect(binding.wrappedValue.id == first.id)
+        binding.wrappedValue = edited
+        #expect(people.map(\.id) == [second.id])
+        people.removeAll()
+        #expect(binding.wrappedValue.id == first.id)
+        binding.wrappedValue = edited
+        #expect(people.isEmpty)
+    }
+
+    @Test("Person detail edits reserve records and publish durable worker writes",
+          arguments: ["success", "cancel", "storageChange", "writeFailure", "storageChangeWriteFailure"])
+    func asynchronousPersonDetailEdit(outcome: String) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        let queue = DispatchSerialQueue(label: "test.known-people.detail-edit")
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+            writeCoordinatedData: { data, url in
+                #expect(!Thread.isMainThread)
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(KnownPeopleEditTaskContext.root == directory)
+                _ = gate.read(url)
+                if outcome.lowercased().contains("writefailure") { throw CocoaError(.fileWriteNoPermission) }
+                try system.writeCoordinatedData(data, url)
+            }, runDitto: system.runDitto
+        )
+        let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access, filesystemQueue: queue))
+        let sample = embedding(81)
+        let original = try service.addPerson(name: "Original", embeddings: [sample])
+        let peer = KnownPeopleService()
+        #expect(peer.person(byID: original.id)?.name == "Original")
+        var edited = original
+        edited.name = "Edited"
+        edited.role = "Photographer"
+        edited.notes = "Saved note"
+        // Only the form fields are writable through this API.
+        edited.embeddings = []
+        edited.representativeThumbnailID = nil
+        let task = Task {
+            try await KnownPeopleEditTaskContext.$root.withValue(directory) {
+                try await service.updatePersonDetailsInBackground(edited)
+            }
+        }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(gate.entered)
+        #expect(throws: (any Error).self) { try peer.updatePerson(original) }
+        #expect(throws: (any Error).self) { try peer.removePerson(id: original.id) }
+        #expect(throws: (any Error).self) { try peer.clearDatabase() }
+        let unrelated = try peer.addPerson(name: "Unrelated", embeddings: [])
+        if outcome == "cancel" { task.cancel() }
+        if outcome.hasPrefix("storageChange") {
+            service.reloadAfterStorageChange(resolvedStorageURL: directory.appendingPathComponent("other"))
+        }
+        gate.resume()
+        if outcome == "success" {
+            try await task.value
+        } else if outcome == "cancel" || outcome.hasPrefix("storageChange") {
+            await #expect(throws: CancellationError.self) { try await task.value }
+        } else {
+            await #expect(throws: (any Error).self) { try await task.value }
+        }
+        let failed = outcome.lowercased().contains("writefailure")
+        let durable = try JSONDecoder().decode(KnownPerson.self,
+            from: Data(contentsOf: personFileURL(original.id, in: directory)))
+        #expect(durable.name == (failed ? "Original" : "Edited"))
+        #expect(durable.role == (failed ? nil : "Photographer"))
+        #expect(durable.notes == (failed ? nil : "Saved note"))
+        #expect(durable.embeddings.map(\.id) == [sample.id])
+        #expect(durable.representativeThumbnailID == sample.id)
+        #expect(durable.createdAt == original.createdAt)
+        #expect(peer.person(byID: original.id)?.name == durable.name)
+        #expect(peer.person(byID: unrelated.id) != nil)
+        if outcome.hasPrefix("storageChange") {
+            #expect(service.person(byID: original.id) == nil)
+        } else {
+            #expect(service.person(byID: unrelated.id) != nil)
+        }
+        // Every completion releases the path reservation.
+        try peer.updatePerson(original)
+    }
+
+    @Test("Queued detail edits preserve newly selected samples and reject cancellation or replacement roots",
+          arguments: ["success", "cancel", "storageChange"])
+    func queuedPersonDetailEdit(outcome: String) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+            writeCoordinatedData: { data, url in
+                _ = gate.read(url)
+                try system.writeCoordinatedData(data, url)
+            }, runDitto: system.runDitto
+        )
+        let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        let samples = [embedding(82), embedding(83)]
+        let original = try service.addPerson(name: "Original", embeddings: samples)
+        let selection = Task { try await service.updateRepresentativeInBackground(samples[1].id, for: original.id) }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(gate.entered)
+        var edited = original
+        edited.name = "Queued edit"
+        let queuedService = KnownPeopleService()
+        var queuedStarted = false
+        let queued = Task {
+            queuedStarted = true
+            try await queuedService.updatePersonDetailsInBackground(edited)
+        }
+        // Let the queued caller capture its revision and suspend at mutation admission.
+        while !queuedStarted { await Task.yield() }
+        if outcome == "cancel" { queued.cancel() }
+        if outcome == "storageChange" {
+            let otherRoot = directory.appendingPathComponent("other")
+            try CloudCoordinatedIO.writeData(encode(original), to: personFileURL(original.id, in: otherRoot))
+            queuedService.reloadAfterStorageChange(resolvedStorageURL: otherRoot)
+        }
+        gate.resume()
+        try await selection.value
+        if outcome == "success" {
+            try await queued.value
+        } else {
+            await #expect(throws: CancellationError.self) { try await queued.value }
+        }
+        #expect(service.person(byID: original.id)?.representativeThumbnailID == samples[1].id)
+        #expect(service.person(byID: original.id)?.name == (outcome == "success" ? "Queued edit" : "Original"))
+        if outcome == "storageChange" {
+            #expect(queuedService.person(byID: original.id)?.name == "Original")
+            #expect(queuedService.person(byID: original.id)?.representativeThumbnailID == samples[0].id)
+        }
+    }
+
+    @Test("Detail editing cancellation and missing samples leave records intact and release admission")
+    func personDetailEditRejectedBeforeWrite() async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let service = KnownPeopleService()
+        var edited = try service.addPerson(name: "Original", embeddings: [embedding(84)])
+        edited.name = "Cancelled"
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await service.updatePersonDetailsInBackground(edited)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        await #expect(throws: (any Error).self) {
+            try await service.updateRepresentativeInBackground(UUID(), for: edited.id)
+        }
+        await #expect(throws: (any Error).self) {
+            try await service.updatePersonDetailsInBackground(KnownPerson(name: "Missing"))
+        }
+        #expect(service.person(byID: edited.id)?.name == "Original")
+        edited.name = "Saved"
+        try await service.updatePersonDetailsInBackground(edited)
+        #expect(service.person(byID: edited.id)?.name == "Saved")
+    }
 
     @Test("Person merges own both records, publish durable prefixes and preserve transferred thumbnails",
           arguments: ["success", "cancel", "storageChange", "targetFailure", "markerFailure", "recordFailure", "rollbackFailure", "cleanupFailure", "storageChangeMarkerFailure"])
@@ -2675,4 +2863,8 @@ private nonisolated final class KnownPeopleDeferredRemovalGate: @unchecked Senda
         }
         try CloudCoordinatedIO.removeItem(at: url)
     }
+}
+
+private nonisolated enum KnownPeopleEditTaskContext {
+    @TaskLocal static var root: URL?
 }

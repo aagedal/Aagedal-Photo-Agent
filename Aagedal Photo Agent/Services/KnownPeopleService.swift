@@ -239,8 +239,19 @@ actor KnownPeopleArchiveService {
     private var hasExclusiveAccess = false
     private var accessWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(access: KnownPeopleArchiveFileAccess = .system) {
+    // Coordinated reads and writes can block on providers. Retain a Dispatch worker
+    // while preserving the original task's cancellation and task-local context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    init(access: KnownPeopleArchiveFileAccess = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.known-people.archive", qos: .utility
+         )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     /// Cleanup is part of an admitted import transaction and must finish even when its
@@ -1745,6 +1756,61 @@ final class KnownPeopleService {
             existing.representativeThumbnailID = person.representativeThumbnailID
             return true
         }
+    }
+
+    /// Edit only the form's fields against the current admitted record. Face samples may
+    /// have changed since the editor opened or while this request waited for another writer.
+    func updatePersonDetailsInBackground(_ edited: KnownPerson) async throws {
+        try await persistPersonEditInBackground(id: edited.id) { current in
+            current.name = edited.name
+            current.role = edited.role
+            current.notes = edited.notes
+        }
+    }
+
+    func updateRepresentativeInBackground(_ embeddingID: UUID, for personID: UUID) async throws {
+        try await persistPersonEditInBackground(id: personID) { current in
+            guard current.embeddings.contains(where: { $0.id == embeddingID }) else {
+                throw NSError(domain: "KnownPeopleService", code: 10,
+                    userInfo: [NSLocalizedDescriptionKey: "The selected face sample no longer exists."])
+            }
+            current.representativeThumbnailID = embeddingID
+        }
+    }
+
+    private func persistPersonEditInBackground(
+        id: UUID, edit: (inout KnownPerson) throws -> Void
+    ) async throws {
+        let revision = storageRevision
+        await beginImport()
+        defer { endImport() }
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
+        guard var current = person(byID: id) else {
+            throw NSError(domain: "KnownPeopleService", code: 10,
+                userInfo: [NSLocalizedDescriptionKey: "Person no longer exists."])
+        }
+        try edit(&current)
+        current.updatedAt = Date()
+        let root = knownPeopleDirectory
+        let recordURL = personFileURL(for: id)
+        reserveImportDestinations([current], root: root)
+        let result = await archiveService.addOrMerge(person: current, personURL: recordURL,
+            thumbnails: [:], recordFirst: true)
+        if result.personWritten {
+            invalidatePeerDatabases(at: root)
+            if revision == storageRevision {
+                // Another record may have changed while the worker was writing.
+                database = nil
+                clearFeaturePrintCache()
+                stampLocalWrite(recordURL)
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+            }
+        }
+        await releaseImportDestinations()
+        guard revision == storageRevision else { throw CancellationError() }
+        try result.completion.get()
+        try Task.checkCancellation()
     }
 
     /// Production deletion keeps coordinated tombstone, record and thumbnail I/O off MainActor.

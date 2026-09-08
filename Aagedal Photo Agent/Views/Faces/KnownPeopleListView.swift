@@ -79,12 +79,12 @@ struct KnownPeopleListView: View {
             .navigationSplitViewColumnWidth(min: 250, ideal: 280, max: 350)
         } detail: {
             if let selectedID = selectedPersonID,
-               let personIndex = people.firstIndex(where: { $0.id == selectedID }) {
+               let selectedPerson = people.first(where: { $0.id == selectedID }) {
                 KnownPersonDetailView(
-                    person: $people[personIndex],
-                    onSave: { savePerson(people[personIndex]) },
+                    person: knownPersonBinding(for: selectedPerson, in: $people),
+                    onSave: { try await savePerson($0) },
                     onDelete: {
-                        personToDelete = people[personIndex]
+                        personToDelete = selectedPerson
                         showDeleteConfirmation = true
                     }
                 )
@@ -172,8 +172,8 @@ struct KnownPeopleListView: View {
         }
     }
 
-    private func savePerson(_ person: KnownPerson) {
-        try? KnownPeopleService.shared.updatePerson(person)
+    private func savePerson(_ person: KnownPerson) async throws {
+        try await KnownPeopleService.shared.updatePersonDetailsInBackground(person)
     }
 
     private func deletePerson(_ person: KnownPerson) {
@@ -260,7 +260,7 @@ struct KnownPersonRow: View {
 
 struct KnownPersonDetailView: View {
     @Binding var person: KnownPerson
-    let onSave: () -> Void
+    let onSave: (KnownPerson) async throws -> Void
     let onDelete: () -> Void
 
     @State private var thumbnail: NSImage?
@@ -268,6 +268,8 @@ struct KnownPersonDetailView: View {
     @State private var editedRole: String = ""
     @State private var editedNotes: String = ""
     @State private var hasChanges = false
+    @State private var isSaving = false
+    @State private var saveErrorMessage: String?
 
     var body: some View {
         ScrollView {
@@ -366,7 +368,7 @@ struct KnownPersonDetailView: View {
                     applyChanges()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!hasChanges)
+                .disabled(!hasChanges || isSaving)
             }
             .padding()
             .background(.bar)
@@ -381,6 +383,14 @@ struct KnownPersonDetailView: View {
         .onChange(of: editedName) { checkForChanges() }
         .onChange(of: editedRole) { checkForChanges() }
         .onChange(of: editedNotes) { checkForChanges() }
+        .alert("Save Not Completed", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("OK") { saveErrorMessage = nil }
+        } message: {
+            Text(saveErrorMessage ?? "")
+        }
     }
 
     private func loadThumbnail() async {
@@ -405,10 +415,42 @@ struct KnownPersonDetailView: View {
     }
 
     private func applyChanges() {
-        person.name = editedName
-        person.role = editedRole.isEmpty ? nil : editedRole
-        person.notes = editedNotes.isEmpty ? nil : editedNotes
-        onSave()
-        hasChanges = false
+        guard !isSaving else { return }
+        var edited = person
+        edited.name = editedName
+        edited.role = editedRole.isEmpty ? nil : editedRole
+        edited.notes = editedNotes.isEmpty ? nil : editedNotes
+        isSaving = true
+        saveErrorMessage = nil
+        Task {
+            defer { isSaving = false }
+            do {
+                try await onSave(edited)
+                guard person.id == edited.id else { return }
+                // Compare with the submitted fields; publication may reach the binding later.
+                hasChanges = editedName != edited.name || editedRole != (edited.role ?? "") ||
+                    editedNotes != (edited.notes ?? "")
+            } catch is CancellationError {
+                // Storage replacement invalidates this editor's completion.
+            } catch {
+                guard person.id == edited.id else { return }
+                saveErrorMessage = error.localizedDescription
+                checkForChanges()
+            }
+        }
     }
+}
+
+/// Async editors can outlive removal or reordering of their original array element.
+/// Retain a display fallback for that disappearing view and ignore writes to missing identities.
+@MainActor
+func knownPersonBinding(for person: KnownPerson, in people: Binding<[KnownPerson]>) -> Binding<KnownPerson> {
+    Binding(
+        get: { people.wrappedValue.first(where: { $0.id == person.id }) ?? person },
+        set: { updated in
+            guard updated.id == person.id,
+                  let index = people.wrappedValue.firstIndex(where: { $0.id == person.id }) else { return }
+            people.wrappedValue[index] = updated
+        }
+    )
 }

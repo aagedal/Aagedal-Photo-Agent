@@ -66,8 +66,8 @@ struct ExpandedKnownPeopleView: View {
     private var selectedPersonBinding: Binding<KnownPerson>? {
         guard selectedPersonIDs.count == 1,
               let id = selectedPersonIDs.first,
-              let index = people.firstIndex(where: { $0.id == id }) else { return nil }
-        return $people[index]
+              let person = people.first(where: { $0.id == id }) else { return nil }
+        return knownPersonBinding(for: person, in: $people)
     }
 
     private var canMerge: Bool {
@@ -263,7 +263,7 @@ struct ExpandedKnownPeopleView: View {
                 Divider()
                 PersonEditSidebar(
                     person: binding,
-                    onSave: { savePerson(binding.wrappedValue) },
+                    onSave: { try await savePerson($0) },
                     onDelete: {
                         personToDelete = binding.wrappedValue
                         showDeleteConfirmation = true
@@ -426,8 +426,8 @@ struct ExpandedKnownPeopleView: View {
         }
     }
 
-    private func savePerson(_ person: KnownPerson) {
-        try? KnownPeopleService.shared.updatePerson(person)
+    private func savePerson(_ person: KnownPerson) async throws {
+        try await KnownPeopleService.shared.updatePersonDetailsInBackground(person)
     }
 
     private func deletePerson(_ person: KnownPerson) {
@@ -696,10 +696,9 @@ struct PersonContactCard: View {
                     )
                 }
                 guard person.id == personID, !Task.isCancelled,
-                      var updated = KnownPeopleService.shared.person(byID: personID),
+                      let updated = KnownPeopleService.shared.person(byID: personID),
                       updated.embeddings.contains(where: { $0.id == embeddingID }) else { return }
-                updated.representativeThumbnailID = embeddingID
-                try KnownPeopleService.shared.updatePerson(updated)
+                try await KnownPeopleService.shared.updateRepresentativeInBackground(embeddingID, for: personID)
                 await loadThumbnail()
             } catch {
                 knownPeopleViewLog.error("Failed to set representative: \(error.localizedDescription, privacy: .private)")

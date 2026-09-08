@@ -11,13 +11,15 @@ nonisolated private let knownPeopleSidebarLog = Logger(
 
 struct PersonEditSidebar: View {
     @Binding var person: KnownPerson
-    let onSave: () -> Void
+    let onSave: (KnownPerson) async throws -> Void
     let onDelete: () -> Void
 
     @State private var editedName: String = ""
     @State private var editedRole: String = ""
     @State private var editedNotes: String = ""
     @State private var hasChanges = false
+    @State private var isSaving = false
+    @State private var saveErrorMessage: String?
     @State private var thumbnail: NSImage?
 
     var body: some View {
@@ -108,7 +110,7 @@ struct PersonEditSidebar: View {
                     applyChanges()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!hasChanges)
+                .disabled(!hasChanges || isSaving)
             }
             .padding()
         }
@@ -123,6 +125,14 @@ struct PersonEditSidebar: View {
         .onChange(of: editedName) { checkForChanges() }
         .onChange(of: editedRole) { checkForChanges() }
         .onChange(of: editedNotes) { checkForChanges() }
+        .alert("Save Not Completed", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("OK") { saveErrorMessage = nil }
+        } message: {
+            Text(saveErrorMessage ?? "")
+        }
     }
 
     // MARK: - Helpers
@@ -169,11 +179,29 @@ struct PersonEditSidebar: View {
     }
 
     private func applyChanges() {
-        person.name = editedName
-        person.role = editedRole.isEmpty ? nil : editedRole
-        person.notes = editedNotes.isEmpty ? nil : editedNotes
-        onSave()
-        hasChanges = false
+        guard !isSaving else { return }
+        var edited = person
+        edited.name = editedName
+        edited.role = editedRole.isEmpty ? nil : editedRole
+        edited.notes = editedNotes.isEmpty ? nil : editedNotes
+        isSaving = true
+        saveErrorMessage = nil
+        Task {
+            defer { isSaving = false }
+            do {
+                try await onSave(edited)
+                guard person.id == edited.id else { return }
+                // Compare with the submitted fields; publication may reach the binding later.
+                hasChanges = editedName != edited.name || editedRole != (edited.role ?? "") ||
+                    editedNotes != (edited.notes ?? "")
+            } catch is CancellationError {
+                // Storage replacement invalidates this editor's completion.
+            } catch {
+                guard person.id == edited.id else { return }
+                saveErrorMessage = error.localizedDescription
+                checkForChanges()
+            }
+        }
     }
 
     private func deleteEmbedding(_ embeddingID: UUID) {
@@ -215,11 +243,11 @@ struct PersonEditSidebar: View {
                     )
                 }
                 guard person.id == personID, !Task.isCancelled,
-                      var updated = KnownPeopleService.shared.person(byID: personID),
+                      let updated = KnownPeopleService.shared.person(byID: personID),
                       updated.embeddings.contains(where: { $0.id == embeddingID }) else { return }
-                updated.representativeThumbnailID = embeddingID
-                try KnownPeopleService.shared.updatePerson(updated)
-                person = updated
+                try await KnownPeopleService.shared.updateRepresentativeInBackground(embeddingID, for: personID)
+                guard person.id == personID, !Task.isCancelled else { return }
+                if let current = KnownPeopleService.shared.person(byID: personID) { person = current }
                 await loadThumbnail()
             } catch {
                 knownPeopleSidebarLog.error("Failed to set representative: \(error.localizedDescription, privacy: .private)")
