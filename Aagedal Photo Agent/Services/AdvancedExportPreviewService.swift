@@ -24,6 +24,13 @@ nonisolated enum AdvancedExportPreviewCleanupResult: Equatable, Sendable {
 /// and must therefore never run from `deinit`. Cancellation is sampled before the non-preemptible
 /// removal and after its durable commit so explicit callers can reconcile the actual disk state.
 actor AdvancedExportPreviewCleanupService {
+    /// Keep synchronous volume access on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and serialized durable-operation boundaries.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = AdvancedExportPreviewCleanupService()
 
     private let access: AdvancedExportPreviewCleanupFileAccess
@@ -32,7 +39,13 @@ actor AdvancedExportPreviewCleanupService {
         category: "AdvancedExportPreviewCleanup"
     )
 
-    init(access: AdvancedExportPreviewCleanupFileAccess = .system) {
+    init(
+        access: AdvancedExportPreviewCleanupFileAccess = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.advanced-export-preview-cleanup", qos: .utility
+        )
+    ) {
+        self.filesystemQueue = filesystemQueue
         self.access = access
     }
 
@@ -117,6 +130,13 @@ nonisolated struct AdvancedExportLoupe: @unchecked Sendable {
 /// Creates real, full-resolution export artifacts in a private temporary folder,
 /// then decodes display-sized versions for side-by-side inspection.
 actor AdvancedExportPreviewService {
+    /// Keep synchronous volume access on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and serialized durable-operation boundaries.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private struct ReferenceCacheKey: Hashable {
         let sourceURL: URL
         let signature: String
@@ -127,6 +147,14 @@ actor AdvancedExportPreviewService {
         let normalizedX: Double
         let normalizedY: Double
         let pixelSize: Int
+    }
+
+    init(
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.advanced-export-preview", qos: .utility
+        )
+    ) {
+        self.filesystemQueue = filesystemQueue
     }
 
     private let maxDisplayPixelSize: CGFloat = 1_600

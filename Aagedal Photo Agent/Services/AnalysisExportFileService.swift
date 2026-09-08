@@ -24,11 +24,24 @@ nonisolated struct AnalysisExportFileWriter: Sendable {
 /// Rendering remains independently cancellable; once an atomic write has committed, the immutable
 /// result reports that fact even if cancellation arrived during the synchronous Foundation call.
 actor AnalysisExportFileService {
+    /// Keep synchronous volume access on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and serialized durable-operation boundaries.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = AnalysisExportFileService()
 
     private let writer: AnalysisExportFileWriter
 
-    init(writer: AnalysisExportFileWriter = .system) {
+    init(
+        writer: AnalysisExportFileWriter = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.analysis-export-file", qos: .utility
+        )
+    ) {
+        self.filesystemQueue = filesystemQueue
         self.writer = writer
     }
 

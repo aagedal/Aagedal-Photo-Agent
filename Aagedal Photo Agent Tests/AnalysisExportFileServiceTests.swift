@@ -1452,3 +1452,115 @@ private nonisolated struct QuickListFileFixture {
         try? FileManager.default.removeItem(at: root)
     }
 }
+
+@Suite("Export filesystem Dispatch executors")
+struct ExportFilesystemExecutorTests {
+    @Test("Filesystem callbacks retain task context and durable cancellation evidence",
+          arguments: ["analysis", "directory", "directory-batch", "finalization", "camera-raw", "scope", "signing-cleanup", "preview-cleanup"])
+    @MainActor
+    func taskContextAndCommitEvidence(operation: String) async throws {
+        let queue = DispatchSerialQueue(label: "test.export-filesystem.\(operation)")
+        let requestID = UUID()
+        let source = URL(fileURLWithPath: "/virtual/source.CR3")
+        let destination = URL(fileURLWithPath: "/virtual/export/output.jpg")
+        let check: @Sendable () -> Void = {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(ExportFilesystemExecutorContext.requestID == requestID)
+        }
+        let cancel: @Sendable () -> Void = {
+            check()
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+
+        try await Task {
+            try await ExportFilesystemExecutorContext.$requestID.withValue(requestID) {
+                switch operation {
+                case "analysis":
+                    let service = AnalysisExportFileService(writer: .init(write: { _, _ in
+                        cancel()
+                    }), filesystemQueue: queue)
+                    let result = try await service.write(Data([1, 2]), to: destination, requestID: requestID)
+                    #expect(result == .committed(.init(
+                        requestID: requestID, destinationURL: destination, byteCount: 2,
+                        cancellationRequestedAfterCommit: true
+                    )))
+                case "directory", "directory-batch":
+                    let service = ExportDirectoryService(writer: .init(ensureDirectory: { _ in
+                        cancel()
+                    }), filesystemQueue: queue)
+                    if operation == "directory" {
+                        let result = try await service.ensureDirectory(at: destination)
+                        #expect(result == .init(directoryURL: destination, cancellationRequestedAfterCommit: true))
+                    } else {
+                        let result = await service.ensureDirectories(at: [destination, source])
+                        #expect(result == .cancelled(committedDirectoryURLs: [destination]))
+                    }
+                case "finalization":
+                    let service = ExportArtifactFinalizationService(io: .init(
+                        copyRAWArchiveSidecar: { _, _ in cancel() },
+                        removeRenderedArtifact: { _ in Issue.record("Successful finalization must retain its artifact") },
+                        isHidden: { _ in check(); return true },
+                        makeVisible: { _ in check() }
+                    ), filesystemQueue: queue)
+                    let result = try await service.finalize(.init(
+                        requestID: requestID, sourceURL: source, renderedURL: destination,
+                        copiesRAWArchiveSidecar: true
+                    ))
+                    #expect(result.finalizedRAWArchiveSidecar)
+                    #expect(result.madeArtifactVisible)
+                    #expect(!result.cancellationObservedBeforeFinalization)
+                    #expect(result.cancellationObservedAfterFinalization)
+                case "camera-raw":
+                    let service = ExportCameraRawResolutionService(access: .init(load: { _ in
+                        cancel()
+                        return nil
+                    }), filesystemQueue: queue)
+                    let second = URL(fileURLWithPath: "/virtual/second.CR3")
+                    let result = await service.resolve(.init(
+                        requestID: requestID, imageURLs: [source, second], liveSettingsByImageURL: [:]
+                    ))
+                    #expect(result == .cancelledAfterPartialRead(.init(
+                        requestID: requestID, requestedSidecarImageURLs: [source, second],
+                        inspectedImageURLs: [source], settingsByImageURL: [:]
+                    )))
+                case "scope":
+                    let service = RAWArchiveSecurityScopeService(access: .init(
+                        start: { _ in cancel(); return true },
+                        stop: { root in check(); #expect(root == source) }
+                    ), filesystemQueue: queue)
+                    let result = await service.acquire(.init(
+                        requestID: requestID, ingestRoot: source, archiveRoot: destination
+                    ))
+                    #expect(result == .cancelledAfterAccess(
+                        requestID: requestID, inspectedRootCount: 1, releasedStartedRoots: [source]
+                    ))
+                case "signing-cleanup":
+                    let service = RAWArchiveSigningFailureCleanupService(io: .init(
+                        fileExists: { _ in check(); return true },
+                        removeItem: { _ in cancel() }
+                    ), filesystemQueue: queue)
+                    let result = await service.cleanup(.init(
+                        requestID: requestID, archiveURL: destination, sourceURL: source
+                    ))
+                    #expect(result.archive.outcome == .removed)
+                    #expect(result.archiveSidecar.outcome == .removed)
+                    #expect(!result.cancellationObservedBeforeCleanup)
+                    #expect(result.cancellationObservedAfterCleanup)
+                case "preview-cleanup":
+                    let service = AdvancedExportPreviewCleanupService(access: .init(removeItem: { _ in
+                        cancel()
+                    }), filesystemQueue: queue)
+                    let result = await service.removePreviewFolder(at: destination)
+                    #expect(result == .removed(destination, cancellationRequestedAfterCommit: true))
+                default:
+                    Issue.record("Unexpected export filesystem operation")
+                }
+            }
+        }.value
+    }
+}
+
+private nonisolated enum ExportFilesystemExecutorContext {
+    @TaskLocal static var requestID: UUID?
+}

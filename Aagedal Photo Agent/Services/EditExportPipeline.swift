@@ -98,6 +98,13 @@ nonisolated struct ExportArtifactFinalizationIO: Sendable {
 /// Serializes post-render filesystem work away from MainActor. There is no suspension point inside
 /// `finalize`, so one artifact reaches a truthful durable outcome before the next begins.
 actor ExportArtifactFinalizationService {
+    /// Keep synchronous volume access on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and serialized durable-operation boundaries.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = ExportArtifactFinalizationService()
 
     private let io: ExportArtifactFinalizationIO
@@ -106,7 +113,13 @@ actor ExportArtifactFinalizationService {
         category: "ExportArtifactFinalization"
     )
 
-    init(io: ExportArtifactFinalizationIO = .system) {
+    init(
+        io: ExportArtifactFinalizationIO = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.export-artifact-finalization", qos: .utility
+        )
+    ) {
+        self.filesystemQueue = filesystemQueue
         self.io = io
     }
 
@@ -185,6 +198,13 @@ nonisolated struct ExportCameraRawSidecarAccess: Sendable {
 /// local Save/Export/Archive and FTP preview/render preparation, so queued work can be cancelled
 /// before it touches a slow card, network volume, or iCloud placeholder.
 actor ExportCameraRawResolutionService {
+    /// Keep synchronous volume access on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and serialized durable-operation boundaries.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = ExportCameraRawResolutionService()
 
     private let access: ExportCameraRawSidecarAccess
@@ -193,7 +213,13 @@ actor ExportCameraRawResolutionService {
         category: "ExportCameraRawResolution"
     )
 
-    init(access: ExportCameraRawSidecarAccess = .system) {
+    init(
+        access: ExportCameraRawSidecarAccess = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.export-camera-raw-resolution", qos: .utility
+        )
+    ) {
+        self.filesystemQueue = filesystemQueue
         self.access = access
     }
 

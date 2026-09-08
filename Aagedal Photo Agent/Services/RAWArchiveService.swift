@@ -76,6 +76,13 @@ nonisolated struct RAWArchiveSecurityScopeReleaseEvidence: Equatable, Sendable {
 /// rendering runs on its existing executors, then an explicit release returns exact balanced-root
 /// evidence. Cancellation during a synchronous acquisition releases every successful prefix.
 actor RAWArchiveSecurityScopeService {
+    /// Keep synchronous volume access on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and serialized durable-operation boundaries.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = RAWArchiveSecurityScopeService()
 
     private let access: RAWArchiveSecurityScopeAccess
@@ -84,8 +91,12 @@ actor RAWArchiveSecurityScopeService {
 
     init(
         access: RAWArchiveSecurityScopeAccess = .system,
-        cancellationRequested: @escaping @Sendable () -> Bool = { Task.isCancelled }
+        cancellationRequested: @escaping @Sendable () -> Bool = { Task.isCancelled },
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.raw-archive-security-scope", qos: .utility
+        )
     ) {
+        self.filesystemQueue = filesystemQueue
         self.access = access
         self.cancellationRequested = cancellationRequested
     }
@@ -201,11 +212,24 @@ nonisolated struct RAWArchiveSigningFailureCleanupIO: Sendable {
 /// suspension point inside `cleanup`: once a request begins, both artifacts receive a removal
 /// attempt and the caller gets truthful partial-cleanup evidence even if cancellation arrives.
 actor RAWArchiveSigningFailureCleanupService {
+    /// Keep synchronous volume access on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and serialized durable-operation boundaries.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = RAWArchiveSigningFailureCleanupService()
 
     private let io: RAWArchiveSigningFailureCleanupIO
 
-    init(io: RAWArchiveSigningFailureCleanupIO = .system) {
+    init(
+        io: RAWArchiveSigningFailureCleanupIO = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.raw-archive-signing-cleanup", qos: .utility
+        )
+    ) {
+        self.filesystemQueue = filesystemQueue
         self.io = io
     }
 

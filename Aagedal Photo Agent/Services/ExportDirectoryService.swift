@@ -29,11 +29,24 @@ nonisolated struct ExportDirectoryWriter: Sendable {
 /// creation is synchronous and cannot be interrupted after it begins, so a cancellation that
 /// arrives during the call is reported alongside the durable commit rather than hiding it.
 actor ExportDirectoryService {
+    /// Keep synchronous volume access on a retained Dispatch worker while preserving the
+    /// caller's task locals, cancellation, and serialized durable-operation boundaries.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = ExportDirectoryService()
 
     private let writer: ExportDirectoryWriter
 
-    init(writer: ExportDirectoryWriter = .system) {
+    init(
+        writer: ExportDirectoryWriter = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.export-directory", qos: .utility
+        )
+    ) {
+        self.filesystemQueue = filesystemQueue
         self.writer = writer
     }
 
