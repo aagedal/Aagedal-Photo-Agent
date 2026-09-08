@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-struct ImportSourceDiscoveryProgress: Equatable, Sendable {
+nonisolated struct ImportSourceDiscoveryProgress: Equatable, Sendable {
     var discoveredFileCount: Int = 0
     var supportedImageCount: Int = 0
     var wavFileCount: Int = 0
