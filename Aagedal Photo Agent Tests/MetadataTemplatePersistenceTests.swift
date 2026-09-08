@@ -1057,3 +1057,186 @@ nonisolated private final class BlockingMetadataTemplateCRUDProbe: @unchecked Se
     var loadCount: Int { condition.withLock { loads } }
     var maximumConcurrentOperations: Int { condition.withLock { maximumActiveOperations } }
 }
+
+@Suite("Template Dispatch executors")
+struct TemplateExecutorTests {
+    @Test("CRUD keeps task context on its worker and reports cancellation at the durable boundary",
+          arguments: [0, 1, 2, 3], [false, true])
+    @MainActor
+    func crudTaskContext(kind: Int, cancelDuringOperation: Bool) async throws {
+        let source = URL(fileURLWithPath: "/virtual/template-executor.json")
+        let template = MetadataTemplate(name: "Agency")
+        let requestID = UUID()
+        let queue = DispatchSerialQueue(label: "test.templates.crud.\(kind)")
+        let check: @Sendable () -> Void = {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(TemplateExecutorContext.source == source)
+        }
+        let finishOperation: @Sendable () -> Void = {
+            check()
+            if cancelDuringOperation { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+        let access = TemplateCRUDAccess<MetadataTemplate>(
+            loadAll: {
+                check()
+                if kind == 0 { finishOperation() }
+                return [template]
+            },
+            save: { value in
+                #expect(value.id == template.id)
+                finishOperation()
+            },
+            delete: { value in
+                #expect(value.id == template.id)
+                finishOperation()
+            },
+            exportAll: { url in
+                #expect(url == source)
+                finishOperation()
+                return 1
+            },
+            shortcutSlot: { $0.shortcutSlot },
+            clearingShortcutSlot: { $0 },
+            sorted: { $0 }
+        )
+        let service = TemplateCRUDService(access: access, filesystemQueue: queue)
+        try await Task {
+            try await TemplateExecutorContext.$source.withValue(source) {
+                switch kind {
+                case 0:
+                    let result = try await service.load(requestID: requestID)
+                    if cancelDuringOperation {
+                        guard case .cancelledAfterRead(let returnedID, let count) = result else {
+                            Issue.record("Expected cancellation evidence after the inventory read")
+                            return
+                        }
+                        #expect(returnedID == requestID)
+                        #expect(count == 1)
+                    } else {
+                        guard case .loaded(let snapshot) = result else {
+                            Issue.record("Expected inventory snapshot")
+                            return
+                        }
+                        #expect(snapshot.requestID == requestID)
+                        #expect(snapshot.templates.map(\.id) == [template.id])
+                    }
+                case 1, 2:
+                    let result = if kind == 1 {
+                        try await service.save(template, requestID: requestID)
+                    } else {
+                        try await service.delete(template, requestID: requestID)
+                    }
+                    guard case .committed(let evidence) = result else {
+                        Issue.record("A completed write must retain durable evidence")
+                        return
+                    }
+                    #expect(evidence.requestID == requestID)
+                    #expect(evidence.requestedTemplateCommitted)
+                    #expect(evidence.durableTemplateIDs == [template.id])
+                    #expect(evidence.cancellationObservedAfterCommit == cancelDuringOperation)
+                default:
+                    let result = try await service.exportAll(to: source, requestID: requestID)
+                    guard case .exported(let evidence) = result else {
+                        Issue.record("A completed export must retain durable evidence")
+                        return
+                    }
+                    #expect(evidence.requestID == requestID)
+                    #expect(evidence.exportedTemplateCount == 1)
+                    #expect(evidence.cancellationObservedAfterCommit == cancelDuringOperation)
+                }
+            }
+        }.value
+    }
+
+    @Test("Import preview keeps task context on its worker and reports post-read cancellation",
+          arguments: [false, true])
+    @MainActor
+    func previewTaskContext(cancelDuringRead: Bool) async throws {
+        let source = URL(fileURLWithPath: "/virtual/template-preview.json")
+        let requestID = UUID()
+        let queue = DispatchSerialQueue(label: "test.templates.preview")
+        let service = TemplateImportPreviewService(access: .init(readPreview: { url in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(TemplateExecutorContext.source == source)
+            if cancelDuringRead { withUnsafeCurrentTask { $0?.cancel() } }
+            return TemplateImportPreview(
+                source: url,
+                bundle: TemplateBundle(templates: [MetadataTemplate(name: "Agency")]),
+                newCount: 1,
+                overwriteCount: 0
+            )
+        }), filesystemQueue: queue)
+        let result = try await Task {
+            try await TemplateExecutorContext.$source.withValue(source) {
+                try await service.preparePreview(from: source, requestID: requestID)
+            }
+        }.value
+        if cancelDuringRead {
+            guard case .cancelledAfterRead(let returnedID, let url, let count, let newCount, _) = result else {
+                Issue.record("Expected post-read cancellation evidence")
+                return
+            }
+            #expect(returnedID == requestID)
+            #expect(url == source)
+            #expect(count == 1)
+            #expect(newCount == 1)
+        } else {
+            guard case .prepared(let evidence) = result else {
+                Issue.record("Expected preview evidence")
+                return
+            }
+            #expect(evidence.requestID == requestID)
+            #expect(evidence.inspectedBundleTemplateCount == 1)
+        }
+    }
+
+    @Test("Import commit retains caller context and stops after the first durable save when cancelled",
+          arguments: [false, true])
+    @MainActor
+    func importCommitTaskContext(cancelDuringSave: Bool) async throws {
+        let source = URL(fileURLWithPath: "/virtual/template-commit.json")
+        let first = MetadataTemplate(name: "First")
+        let second = MetadataTemplate(name: "Second")
+        let requestID = UUID()
+        let queue = DispatchSerialQueue(label: "test.templates.commit")
+        let check: @Sendable () -> Void = {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(TemplateExecutorContext.source == source)
+        }
+        let service = TemplateImportCommitService(access: .init(loadAll: {
+            check()
+            return []
+        }, save: { template in
+            check()
+            if cancelDuringSave {
+                #expect(template.id == first.id)
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        }), filesystemQueue: queue)
+        let result = try await Task {
+            try await TemplateExecutorContext.$source.withValue(source) {
+                try await service.commit(
+                    TemplateBundle(templates: [first, second]),
+                    sourceURL: source,
+                    requestID: requestID
+                )
+            }
+        }.value
+        guard case .committed(let evidence) = result else {
+            Issue.record("Expected durable import evidence")
+            return
+        }
+        #expect(evidence.requestID == requestID)
+        #expect(evidence.sourceURL == source)
+        #expect(evidence.committedTemplateIDs == (cancelDuringSave ? [first.id] : [first.id, second.id]))
+        #expect(evidence.addedCount == (cancelDuringSave ? 1 : 2))
+        #expect(evidence.cancellationObservedAfterCommit == cancelDuringSave)
+    }
+}
+
+private nonisolated enum TemplateExecutorContext {
+    @TaskLocal static var source: URL?
+}

@@ -103,13 +103,22 @@ nonisolated extension TemplateCRUDAccess where Value == DevelopTemplate {
     }
 }
 
-/// Owns all synchronous template filesystem work on one serialized actor executor.
+/// Owns synchronous template filesystem work on a retained Dispatch serial executor.
+/// Blocking provider calls preserve caller task context without occupying cooperative threads.
 /// Each method returns immutable evidence so MainActor clients can reject stale completions.
 actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID {
     private let access: TemplateCRUDAccess<Value>
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
 
-    init(access: TemplateCRUDAccess<Value>) {
+    init(access: TemplateCRUDAccess<Value>,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.templates.crud", qos: .utility
+         )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func load(requestID: UUID) throws -> TemplateInventoryOperationResult<Value> {

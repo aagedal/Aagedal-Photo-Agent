@@ -190,13 +190,26 @@ nonisolated struct TemplateImportPreviewAccess: Sendable {
 /// before and after the synchronous operation is returned as distinct immutable evidence.
 actor TemplateImportPreviewService {
     private let access: TemplateImportPreviewAccess
-
-    init(access: TemplateImportPreviewAccess) {
-        self.access = access
+    // Retain a dedicated worker for blocking provider calls while preserving task context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
     }
 
-    init(storage: TemplateStorageService) {
+    init(access: TemplateImportPreviewAccess,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.templates.import-preview", qos: .utility
+         )) {
+        self.access = access
+        self.filesystemQueue = filesystemQueue
+    }
+
+    init(storage: TemplateStorageService,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.templates.import-preview", qos: .utility
+         )) {
         self.access = .storage(storage)
+        self.filesystemQueue = filesystemQueue
     }
 
     func preparePreview(
@@ -278,13 +291,26 @@ nonisolated struct TemplateImportCommitAccess: Sendable {
 /// save prevents mutation; cancellation after any save reports the exact durable partial commit.
 actor TemplateImportCommitService {
     private let access: TemplateImportCommitAccess
-
-    init(access: TemplateImportCommitAccess) {
-        self.access = access
+    // Retain a dedicated worker for blocking provider calls while preserving task context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
     }
 
-    init(storage: TemplateStorageService) {
+    init(access: TemplateImportCommitAccess,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.templates.import-commit", qos: .utility
+         )) {
+        self.access = access
+        self.filesystemQueue = filesystemQueue
+    }
+
+    init(storage: TemplateStorageService,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.templates.import-commit", qos: .utility
+         )) {
         self.access = .storage(storage)
+        self.filesystemQueue = filesystemQueue
     }
 
     func commit(
