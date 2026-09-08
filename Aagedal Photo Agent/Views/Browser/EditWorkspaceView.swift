@@ -3524,12 +3524,10 @@ struct EditWorkspaceView: View {
     }
 
     private func publishDevelopPreviewToScope(_ image: CGImage?, isHDR: Bool) {
-        var userInfo: [String: Any] = ["isHDR": isHDR]
-        userInfo["cgImage"] = image
         NotificationCenter.default.post(
             name: .scopeSourceImageDidChange,
             object: nil,
-            userInfo: userInfo
+            userInfo: ScopeSourceImageUpdate(image: image, isHDR: isHDR).userInfo
         )
     }
 

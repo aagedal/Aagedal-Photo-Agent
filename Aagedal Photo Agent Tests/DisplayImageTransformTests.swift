@@ -1,6 +1,48 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
+
+@Suite("Scope source notification boundary")
+struct ScopeSourceImageUpdateTests {
+    @Test("typed image and HDR state survive notification bridging")
+    func imageRoundTrip() throws {
+        let context = try #require(CGContext(
+            data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let image = try #require(context.makeImage())
+        let notification = Notification(
+            name: Notification.Name("scopeSourceImageDidChange"),
+            userInfo: ScopeSourceImageUpdate(image: image, isHDR: true).userInfo
+        )
+        let decoded = try #require(ScopeSourceImageUpdate(notification: notification))
+        #expect(decoded.image === image)
+        #expect(decoded.isHDR)
+    }
+
+    @Test("clearing the image preserves SDR state")
+    func clearRoundTrip() throws {
+        let notification = Notification(
+            name: Notification.Name("scopeSourceImageDidChange"),
+            userInfo: ScopeSourceImageUpdate(image: nil, isHDR: false).userInfo
+        )
+        let decoded = try #require(ScopeSourceImageUpdate(notification: notification))
+        #expect(decoded.image == nil)
+        #expect(!decoded.isHDR)
+    }
+
+    @Test("missing and malformed untyped payloads are rejected")
+    func malformedPayloads() {
+        for userInfo: [String: Any] in [[:], ["scopeSource": "invalid"], ["scopeSource": 42]] {
+            let notification = Notification(
+                name: Notification.Name("scopeSourceImageDidChange"), userInfo: userInfo
+            )
+            #expect(ScopeSourceImageUpdate(notification: notification) == nil)
+        }
+    }
+}
 
 @Suite("Display image transform")
 struct DisplayImageTransformTests {

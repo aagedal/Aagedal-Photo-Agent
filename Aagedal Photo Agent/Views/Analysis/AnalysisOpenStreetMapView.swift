@@ -234,8 +234,9 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
-            guard !isApplyingRegion else { return }
-            parent.onCameraChanged(mapView.region, mapView.camera.copy() as! MKMapCamera)
+            guard !isApplyingRegion,
+                  let camera = mapView.camera.copy() as? MKMapCamera else { return }
+            parent.onCameraChanged(mapView.region, camera)
         }
 
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {

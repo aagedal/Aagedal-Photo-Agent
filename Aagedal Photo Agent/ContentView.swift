@@ -1178,7 +1178,7 @@ struct ContentView: View {
         openEditWorkspace()
     }
 
-    /// Toolbar and layout-menu transitions live outside `EditWorkspaceView`, so they cannot use
+    /// Toolbar and workspace-menu transitions live outside `EditWorkspaceView`, so they cannot use
     /// its local exit button. Route them through the same registered flush handler and leave the
     /// editor visible when persistence fails.
     private func leaveEditWorkspaceIfNeeded(_ transition: @escaping @MainActor () -> Void) {
@@ -1231,7 +1231,7 @@ struct ContentView: View {
             return
         }
         if browserViewModel.selectedImageIDs.isEmpty,
-           let firstVisible = browserViewModel.visibleImages.first {
+           let firstVisible = browserViewModel.visibleImages.first(where: \.isImageFile) {
             browserViewModel.selectedImageIDs = [firstVisible.url]
             browserViewModel.lastClickedImageURL = firstVisible.url
         }
@@ -1778,9 +1778,28 @@ struct ContentView: View {
         )
     }
 
-    /// Layout switcher for the thumbnail area (single / side-by-side / top-bottom / tabs).
-    private var paneLayoutMenu: some View {
+    private func returnToBrowserWorkspace() {
+        leaveEditWorkspaceIfNeeded {
+            mainViewMode = .browser
+            browserViewModel.shouldRestoreGridFocus = true
+        }
+    }
+
+    /// Workspace navigation is independent of the browser's saved pane layout.
+    private var workspaceMenu: some View {
         Menu {
+            Button(action: returnToBrowserWorkspace) {
+                Label("Browser", systemImage: mainViewMode == .browser ? "checkmark" : "photo.on.rectangle")
+            }
+
+            Button {
+                openEditWorkspace()
+            } label: {
+                Label("Develop", systemImage: mainViewMode == .editing ? "checkmark" : "slider.horizontal.3")
+            }
+            .disabled(browserViewModel.visibleImages.first(where: \.isImageFile) == nil)
+
+            Divider()
             Button {
                 openCaptionWorkspace()
             } label: {
@@ -1832,35 +1851,40 @@ struct ContentView: View {
             } label: {
                 Label("Metadata Review", systemImage: mainViewMode == .metadataReview ? "checkmark" : "list.bullet.rectangle")
             }
-            Divider()
-            paneLayoutButton(.single, "Single", "rectangle")
-            paneLayoutButton(.splitHorizontal, "Split Side by Side", "rectangle.split.2x1")
-            paneLayoutButton(.splitVertical, "Split Top and Bottom", "rectangle.split.1x2")
-            paneLayoutButton(.tabs, "Tabs", "square.on.square")
         } label: {
-            Image(systemName: {
+            Label("Workspace", systemImage: {
                 switch mainViewMode {
                 case .caption: "text.below.photo"
                 case .deadline: "paperplane"
                 case .imageAnalysis: "waveform.path.ecg.rectangle"
                 case .comparison: "rectangle.split.2x1"
                 case .metadataReview: "list.bullet.rectangle"
-                default: paneLayoutIcon
+                case .editing: "slider.horizontal.3"
+                default: "photo.on.rectangle"
                 }
             }())
         }
-        .help("Switch view or thumbnail area layout")
+        .help("Switch workspace")
+        .accessibilityLabel("Workspace")
+    }
+
+    /// Layout changes only rearrange the browser panes; they never switch workspaces.
+    private var paneLayoutMenu: some View {
+        Menu {
+            paneLayoutButton(.single, "Single", "rectangle")
+            paneLayoutButton(.splitHorizontal, "Split Side by Side", "rectangle.split.2x1")
+            paneLayoutButton(.splitVertical, "Split Top and Bottom", "rectangle.split.1x2")
+            paneLayoutButton(.tabs, "Tabs", "square.on.square")
+        } label: {
+            Label("Layout", systemImage: paneLayoutIcon)
+        }
+        .help("Arrange browser panes")
+        .accessibilityLabel("Layout")
     }
 
     private func paneLayoutButton(_ layout: BrowserPaneLayout, _ title: String, _ icon: String) -> some View {
         Button {
-            // Pane layouts are all Thumbnail Browser variants. Selecting any of them
-            // also exits Metadata Review; "Single" is therefore the intuitive return
-            // to the ordinary one-pane browser without a redundant browser command.
-            leaveEditWorkspaceIfNeeded {
-                mainViewMode = .browser
-                panes.setLayout(layout)
-            }
+            panes.setLayout(layout)
         } label: {
             Label(
                 title,
@@ -1883,6 +1907,14 @@ struct ContentView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if mainViewMode == .metadataReview {
+            ToolbarItem(placement: .navigation) {
+                Button(action: returnToBrowserWorkspace) {
+                    Label("Back to Browser", systemImage: "chevron.left")
+                }
+                .help("Exit Metadata Review and return to the browser")
+                .accessibilityLabel("Exit Metadata Review")
+            }
+
             ToolbarItemGroup(placement: .automatic) {
                 ColorLabelFilterBar(selectedLabels: Bindable(browserViewModel).selectedColorLabels)
                     .disabled(browserViewModel.images.isEmpty)
@@ -1950,7 +1982,14 @@ struct ContentView: View {
                 || mainViewMode == .deadline
                 || mainViewMode == .metadataReview
                 || mainViewMode == .imageAnalysis
-                || mainViewMode == .comparison {
+                || mainViewMode == .comparison
+                || mainViewMode == .editing {
+                workspaceMenu
+            }
+        }
+
+        ToolbarItem(placement: .automatic) {
+            if mainViewMode == .browser {
                 paneLayoutMenu
             }
         }
@@ -2334,18 +2373,10 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .onReceive(NotificationCenter.default.publisher(for: .scopeSourceImageDidChange)) { notification in
-                    // The internal notification always posts a CGImage; cast defensively
-                    // (a missing/wrong-type payload clears the scope instead of crashing).
-                    // CGImage is a CoreFoundation type, so `as?` isn't allowed — verify
-                    // the type id before the forced bridge.
-                    if let payload = notification.userInfo?["cgImage"],
-                       CFGetTypeID(payload as CFTypeRef) == CGImage.typeID {
-                        scopeViewModel.updateImage((payload as! CGImage))
-                    } else {
-                        scopeViewModel.updateImage(nil)
-                    }
+                    let update = ScopeSourceImageUpdate(notification: notification)
+                    scopeViewModel.updateImage(update?.image)
                     // Auto-select waveform scale and display gamut from settings
-                    if let isHDR = notification.userInfo?["isHDR"] as? Bool {
+                    if let isHDR = update?.isHDR {
                         scopeViewModel.waveformScale = isHDR ? .nits : .percentage
                         scopeViewModel.displayGamut = isHDR
                             ? settingsViewModel.exportColorGamutHDR

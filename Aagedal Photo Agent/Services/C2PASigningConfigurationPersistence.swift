@@ -26,6 +26,9 @@ nonisolated struct SecurityPKCS12IdentityImporter: C2PAIdentityImporting {
               CFGetTypeID(identityValue as CFTypeRef) == SecIdentityGetTypeID() else {
             throw C2PASigningError.processFailed("PKCS#12 file did not contain a signing identity")
         }
+        // Security exposes this CF object through an untyped dictionary. Swift does
+        // not support a conditional SecIdentity downcast; the exact CF type check
+        // above is the required validation before this bridge.
         let identity = identityValue as! SecIdentity
 
         var certRef: SecCertificate?
