@@ -2075,16 +2075,18 @@ struct ContentView: View {
             TextField("Search", text: Bindable(browserViewModel).searchText)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 200)
-            if !browserViewModel.searchText.isEmpty {
-                Button {
-                    browserViewModel.searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Clear search")
+                .accessibilityIdentifier("browser.search")
+            Button {
+                browserViewModel.searchText = ""
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
             }
+            .buttonStyle(.plain)
+            .help("Clear search")
+            .opacity(browserViewModel.searchText.isEmpty ? 0 : 1)
+            .disabled(browserViewModel.searchText.isEmpty)
+            .accessibilityHidden(browserViewModel.searchText.isEmpty)
         }
         .disabled(browserViewModel.images.isEmpty)
     }

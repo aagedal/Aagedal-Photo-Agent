@@ -93,8 +93,13 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        // Make collection view first responder for keyboard events
-        view.window?.makeFirstResponder(collectionView)
+        // Filtering can recreate the grid when results reappear. Preserve an active
+        // text editor (especially toolbar search) instead of interrupting typing.
+        if let window = view.window,
+           !(window.firstResponder is NSText),
+           !(window.firstResponder is NSTextField) {
+            window.makeFirstResponder(collectionView)
+        }
         if viewModel.shouldRestoreGridFocus {
             viewModel.shouldRestoreGridFocus = false
         }

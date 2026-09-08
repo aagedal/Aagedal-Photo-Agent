@@ -31,6 +31,30 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testSearchKeepsFocusWhenResultsReappear() throws {
+        let photos = try makePhotoFolder(count: 2)
+        launch(workflow: "open-folder", folder: photos)
+
+        let search = app.textFields["browser.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 12))
+        search.click()
+        search.typeText("smoke")
+        XCTAssertEqual(search.value as? String, "smoke")
+
+        search.typeText("zzzz")
+        XCTAssertTrue(app.staticTexts["No Results"].waitForExistence(timeout: 5))
+        // Send keys to the current responder, without clicking/refocusing the field.
+        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 4))
+        let resultsReturned = NSPredicate { _, _ in
+            !self.app.staticTexts["No Results"].exists
+        }
+        expectation(for: resultsReturned, evaluatedWith: app)
+        waitForExpectations(timeout: 5)
+        app.typeText("-1")
+        XCTAssertEqual(search.value as? String, "smoke-1")
+    }
+
+    @MainActor
     func testImportOverwriteRequiresExplicitPreflightConfirmation() throws {
         let source = try makePhotoFolder(count: 1)
         let destination = fixtureRoot.appendingPathComponent("Destination", isDirectory: true)

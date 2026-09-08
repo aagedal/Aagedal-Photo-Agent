@@ -294,18 +294,20 @@ struct BrowserView: View {
             TextField("Search", text: $viewModel.searchText)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 200)
+                .accessibilityIdentifier("browser.search")
 
-            if !viewModel.searchText.isEmpty {
-                Button {
-                    viewModel.searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Clear search")
-                .accessibilityLabel("Clear image search")
+            Button {
+                viewModel.searchText = ""
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
             }
+            .buttonStyle(.plain)
+            .help("Clear search")
+            .accessibilityLabel("Clear image search")
+            .opacity(viewModel.searchText.isEmpty ? 0 : 1)
+            .disabled(viewModel.searchText.isEmpty)
+            .accessibilityHidden(viewModel.searchText.isEmpty)
         }
         .disabled(viewModel.images.isEmpty)
     }
