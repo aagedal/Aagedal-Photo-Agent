@@ -60,6 +60,24 @@ caches after the sandboxed attempt failed. A subsequent initial build caught the
 isolation error described above; the successful unfiltered run includes its correction.
 No manual interaction, physical-volume performance or production-server evidence is claimed.
 
+## Current-source unsigned candidate
+
+The clean-source Release build succeeded from `933d9b895a5c276507b32b687a86f560eaf95a24`,
+version **3.0.0 (738)**, using Xcode 26.6 (17F113) on arm64 macOS 27.0 (26A5425a).
+Model omission passed and all **79** archive payload entries match the built application.
+The bundle contains 73 regular files totaling 145,189,778 bytes; the ZIP is 49,712,198 bytes.
+ZIP SHA-256: `80a189b062ec33c78bd4f6894516b4155b808ebd6b993ec1a186d19c32265d6b`.
+
+```sh
+python3 -B scripts/ci/build_model_free_candidate.py \
+  build/model-omission-candidate-deletion-thumbnail-2026-09-08
+```
+
+The application, ZIP, build log and `measurement.json` are retained in that ignored output
+directory. Xcode used approved access to its existing caches. This is unsigned build/package
+evidence only; no launch, signing, notarization, distribution or production-server validation
+is claimed. The subsequent documentation-only commit does not change candidate application source.
+
 ## Remaining work
 
 1. **Storage ownership:** Known People cold root/database loading, migrations, low-level
@@ -78,8 +96,8 @@ No manual interaction, physical-volume performance or production-server evidence
    privacy/legal review; real FTP/FTPS/SFTP certificate, host-key and failure exercises.
 4. **Model and release:** production-server installation, offline use, update, rollback,
    removal/relaunch and interrupted/corrupt downloads on supported macOS versions;
-   a candidate rebuilt from the new application source, signing, notarization and
-   distribution. The previous unsigned candidate predates these source changes.
+   signing, notarization and distribution. The current-source unsigned candidate above
+   supplies local build/package evidence only.
    Conditional AI-origin analysis still requires model/license/corpus decisions and
    explicit product approval.
 5. **Conditional follow-ups:** multilingual strings catalog, pseudolocalization and
