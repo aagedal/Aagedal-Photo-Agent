@@ -15,6 +15,13 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Known People additions, backup snapshots, and package verification continuation (2026-09-08):**
+production add/merge writes run on the serialized worker with queued-name checks and durable
+partial-result publication. Unchanged keyword snapshots read only the newest history body;
+unique ordered filenames preserve same-millisecond versions. Candidate ZIPs are checked against
+the built application before success evidence is published. Broad storage and external gates remain open.
+([validation and remaining work](../plan-status-addition-backup-package-continuation-2026-09-08.md))
+
 **Embedding removal, backup history, and candidate continuation (2026-09-08):**
 Known People embedding-removal record/image writes now run on the archive worker with
 reservations, durable failure evidence, and cache invalidation even for already-missing images.

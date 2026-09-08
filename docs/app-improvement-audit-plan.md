@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Known People additions, backup snapshots, and package verification continuation (2026-09-08):**
+production add/merge writes run on the serialized worker with queued-name checks and durable
+partial-result publication. Unchanged keyword snapshots read only the newest history body;
+unique ordered filenames preserve same-millisecond versions. Candidate ZIPs are checked against
+the built application before success evidence is published. Broad storage and external gates remain open.
+([validation and remaining work](plan-status-addition-backup-package-continuation-2026-09-08.md))
+
 **Embedding removal, backup history, and candidate continuation (2026-09-08):**
 Known People embedding-removal record/image writes now run on the archive worker with
 reservations, durable failure evidence, and cache invalidation even for already-missing images.
