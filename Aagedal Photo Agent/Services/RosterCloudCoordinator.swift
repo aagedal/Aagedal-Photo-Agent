@@ -14,6 +14,12 @@ nonisolated struct CloudDownloadResult: Equatable, Sendable {
 /// one executor; no suspension inside the loop allows overlapping updates to interleave access.
 /// Each coordinator owns a service so independent libraries can initiate downloads independently.
 actor CloudDownloadService {
+    // Provider download requests can block independently of Swift task scheduling.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let startDownloading: @Sendable (URL) throws -> Void
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
@@ -22,8 +28,11 @@ actor CloudDownloadService {
 
     init(startDownloading: @escaping @Sendable (URL) throws -> Void = {
         try FileManager.default.startDownloadingUbiquitousItem(at: $0)
-    }) {
+    }, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.cloud-download", qos: .utility
+    )) {
         self.startDownloading = startDownloading
+        self.filesystemQueue = filesystemQueue
     }
 
     func requestDownloads(for urls: [URL]) -> CloudDownloadResult {

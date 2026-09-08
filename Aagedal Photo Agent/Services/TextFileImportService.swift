@@ -50,12 +50,21 @@ nonisolated struct TextFileImportReader: Sendable {
 /// preempted once entered, so cancellation before and after the synchronous read are distinct,
 /// immutable results and callers never receive a partial text snapshot.
 actor TextFileImportService {
+    // Retain the task on a Dispatch worker while synchronous storage access blocks.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = TextFileImportService()
 
     private let reader: TextFileImportReader
 
-    init(reader: TextFileImportReader = .system) {
+    init(reader: TextFileImportReader = .system, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.text-import", qos: .utility
+    )) {
         self.reader = reader
+        self.filesystemQueue = filesystemQueue
     }
 
     func loadText(
@@ -150,12 +159,21 @@ nonisolated struct BundleTextResourceAccess: Sendable {
 /// synchronous lookup/read calls are non-preemptible, so cancellation is reported only at stable
 /// boundaries and no partial bytes are published to the settings view.
 actor BundleTextResourceService {
+    // Retain the task on a Dispatch worker while synchronous storage access blocks.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = BundleTextResourceService()
 
     private let access: BundleTextResourceAccess
 
-    init(access: BundleTextResourceAccess = .system) {
+    init(access: BundleTextResourceAccess = .system, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.bundle-text", qos: .utility
+    )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func loadText(
@@ -238,12 +256,21 @@ nonisolated struct TextFileExportWriter: Sendable {
 /// cannot be preempted once entered, so a cancellation observed after it returns is reported as a
 /// durable commit instead of being mistaken for a write that never happened.
 actor TextFileExportService {
+    // Retain the task on a Dispatch worker while synchronous storage access blocks.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = TextFileExportService()
 
     private let writer: TextFileExportWriter
 
-    init(writer: TextFileExportWriter = .system) {
+    init(writer: TextFileExportWriter = .system, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.text-export", qos: .utility
+    )) {
         self.writer = writer
+        self.filesystemQueue = filesystemQueue
     }
 
     func writeText(
@@ -303,12 +330,21 @@ nonisolated struct QuickListFileAccess: Sendable {
 /// therefore observed around the non-preemptible calls, while a completed write always returns
 /// immutable commit evidence even if cancellation arrived while the write was in flight.
 actor QuickListFileCreationService {
+    // Retain the task on a Dispatch worker while synchronous storage access blocks.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = QuickListFileCreationService()
 
     private let access: QuickListFileAccess
 
-    init(access: QuickListFileAccess = .system) {
+    init(access: QuickListFileAccess = .system, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.quick-list-create", qos: .utility
+    )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func createIfNeeded(

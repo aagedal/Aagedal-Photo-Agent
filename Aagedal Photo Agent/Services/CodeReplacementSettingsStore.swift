@@ -113,11 +113,20 @@ nonisolated enum CodeReplacementSourceOperationResult: Equatable, Sendable {
 /// MainActor. Those Foundation calls cannot be interrupted once entered, so cancellation is
 /// checked between them and returned as immutable evidence instead of partial publishable state.
 actor CodeReplacementSourceService {
+    // Retain the task on a Dispatch worker while synchronous storage access blocks.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: CodeReplacementSourceAccess
     private let parser = CodeReplacementParser()
 
-    init(access: CodeReplacementSourceAccess = .live) {
+    init(access: CodeReplacementSourceAccess = .live, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.code-replacement-source", qos: .utility
+    )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func selectSource(

@@ -143,12 +143,21 @@ nonisolated struct ColorLUTImportReader: Sendable {
 /// preempted once entered, so cancellation before and after that synchronous operation returns
 /// distinct immutable evidence and never publishes bytes for a superseded layer request.
 actor ColorLUTImportService {
+    // Retain the task on a Dispatch worker while synchronous storage access blocks.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = ColorLUTImportService()
 
     private let reader: ColorLUTImportReader
 
-    init(reader: ColorLUTImportReader = .system) {
+    init(reader: ColorLUTImportReader = .system, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.color-lut-import", qos: .utility
+    )) {
         self.reader = reader
+        self.filesystemQueue = filesystemQueue
     }
 
     func loadLUT(

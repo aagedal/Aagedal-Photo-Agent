@@ -25,6 +25,8 @@
 		AB0200000000000000000002 /* KeywordListsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0200000000000000000001 /* KeywordListsStoreTests.swift */; };
 		AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0300000000000000000001 /* StructuredKeywordParserTests.swift */; };
 		AB0400000000000000000002 /* StructuredKeywordSerializerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */; };
+		AF5200000000000000000002 /* ImportFilesystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */; };
+		AF5300000000000000000002 /* TextAndCloudExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5300000000000000000001 /* TextAndCloudExecutorTests.swift */; };
 		AF5100000000000000000002 /* FileSystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5100000000000000000001 /* FileSystemExecutorTests.swift */; };
 		AB0500000000000000000002 /* KeywordListsArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0500000000000000000001 /* KeywordListsArchiveTests.swift */; };
 		AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */; };
@@ -173,6 +175,8 @@
 		AB0200000000000000000001 /* KeywordListsStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListsStoreTests.swift; sourceTree = "<group>"; };
 		AB0300000000000000000001 /* StructuredKeywordParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordParserTests.swift; sourceTree = "<group>"; };
 		AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordSerializerTests.swift; sourceTree = "<group>"; };
+		AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportFilesystemExecutorTests.swift; sourceTree = "<group>"; };
+		AF5300000000000000000001 /* TextAndCloudExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TextAndCloudExecutorTests.swift; sourceTree = "<group>"; };
 		AF5100000000000000000001 /* FileSystemExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FileSystemExecutorTests.swift; sourceTree = "<group>"; };
 		AB0500000000000000000001 /* KeywordListsArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListsArchiveTests.swift; sourceTree = "<group>"; };
 		AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEngineConcurrencyTests.swift; sourceTree = "<group>"; };
@@ -354,6 +358,8 @@
 				AB1600000000000000000001 /* FaceEmbeddingTests.swift */,
 				AB0300000000000000000001 /* StructuredKeywordParserTests.swift */,
 				AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */,
+				AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */,
+				AF5300000000000000000001 /* TextAndCloudExecutorTests.swift */,
 				AF5100000000000000000001 /* FileSystemExecutorTests.swift */,
 				AB0500000000000000000001 /* KeywordListsArchiveTests.swift */,
 				AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */,
@@ -664,6 +670,8 @@
 				AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */,
 				AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */,
 				AB0400000000000000000002 /* StructuredKeywordSerializerTests.swift in Sources */,
+				AF5200000000000000000002 /* ImportFilesystemExecutorTests.swift in Sources */,
+				AF5300000000000000000002 /* TextAndCloudExecutorTests.swift in Sources */,
 				AF5100000000000000000002 /* FileSystemExecutorTests.swift in Sources */,
 				AB0500000000000000000002 /* KeywordListsArchiveTests.swift in Sources */,
 				AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */,

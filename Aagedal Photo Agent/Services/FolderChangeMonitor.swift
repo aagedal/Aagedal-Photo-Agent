@@ -99,6 +99,12 @@ extension Notification.Name {
 /// FSEventStream creation are synchronous and cannot be interrupted once entered, so cancellation
 /// is sampled on both sides and a monitor created by stale work is stopped before returning.
 actor FolderChangeMonitorService {
+    // Provider access and monitor setup can block independently of Swift task scheduling.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     static let shared = FolderChangeMonitorService()
 
     typealias Factory = @Sendable (FolderChangeMonitorRequest) -> FolderChangeMonitor?
@@ -111,8 +117,11 @@ actor FolderChangeMonitorService {
 
     init(factory: @escaping Factory = { request in
         FolderChangeMonitor(url: request.folderURL, onChange: request.onChange)
-    }) {
+    }, filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.folder-monitor-setup", qos: .utility
+    )) {
         self.factory = factory
+        self.filesystemQueue = filesystemQueue
     }
 
     func createMonitor(

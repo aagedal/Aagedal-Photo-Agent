@@ -26,7 +26,8 @@ struct ImportFilesystemExecutorTests {
                 await Task.yield()
             }
         }
-        #expect(files == [image])
+        // Foundation enumeration can canonicalize macOS's /var -> /private/var alias.
+        #expect(files.map { $0.resolvingSymlinksInPath() } == [image.resolvingSymlinksInPath()])
     }
 
     @Test("Cancellation during source access remains visible and releases the scope")
