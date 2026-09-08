@@ -39,14 +39,24 @@ nonisolated struct FTPUploadSidecarAccess: Sendable {
 actor FTPUploadSidecarLoadService {
     static let shared = FTPUploadSidecarLoadService()
 
+    // Keep blocking provider reads on a retained worker with the caller's task context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: FTPUploadSidecarAccess
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
         category: "FTPUploadSidecarLoad"
     )
 
-    init(access: FTPUploadSidecarAccess = .system) {
+    init(access: FTPUploadSidecarAccess = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.ftp.sidecar-read", qos: .utility
+         )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func load(

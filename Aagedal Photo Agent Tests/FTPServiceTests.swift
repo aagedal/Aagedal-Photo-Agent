@@ -425,11 +425,19 @@ struct FTPUploadSidecarLoadServiceTests {
         let probe = FTPSidecarLoadProbe(metadataByURL: [
             first: IPTCMetadata(title: "First")
         ])
+        let queue = DispatchSerialQueue(label: "test.ftp.sidecar.completeSnapshot")
         let service = FTPUploadSidecarLoadService(
-            access: FTPUploadSidecarAccess(load: probe.load)
+            access: FTPUploadSidecarAccess(load: { url in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(!Thread.isMainThread)
+                #expect(FTPSidecarExecutorContext.marker == first)
+                return probe.load(url)
+            }), filesystemQueue: queue
         )
 
-        let result = await service.load(imageURLs: [first, second], requestID: requestID)
+        let result = await FTPSidecarExecutorContext.$marker.withValue(first) {
+            await service.load(imageURLs: [first, second], requestID: requestID)
+        }
         guard case .complete(let snapshot) = result else {
             Issue.record("Expected a complete sidecar snapshot")
             return
@@ -451,12 +459,20 @@ struct FTPUploadSidecarLoadServiceTests {
             metadataByURL: [first: IPTCMetadata(title: "First")],
             cancelsAfterLoadCount: 1
         )
+        let queue = DispatchSerialQueue(label: "test.ftp.sidecar.cancellationAfterRead")
         let service = FTPUploadSidecarLoadService(
-            access: FTPUploadSidecarAccess(load: probe.load)
+            access: FTPUploadSidecarAccess(load: { url in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(!Thread.isMainThread)
+                #expect(FTPSidecarExecutorContext.marker == first)
+                return probe.load(url)
+            }), filesystemQueue: queue
         )
 
         let result = await Task {
-            await service.load(imageURLs: [first, second], requestID: UUID())
+            await FTPSidecarExecutorContext.$marker.withValue(first) {
+                await service.load(imageURLs: [first, second], requestID: UUID())
+            }
         }.value
 
         guard case .cancelledAfterPartialRead(let snapshot) = result else {
@@ -842,4 +858,8 @@ struct FTPViewModelTransportAcknowledgementTests {
         #expect(!viewModel.isRendering)
         #expect(viewModel.uploadHistory.entries.isEmpty)
     }
+}
+
+private nonisolated enum FTPSidecarExecutorContext {
+    @TaskLocal static var marker: URL?
 }

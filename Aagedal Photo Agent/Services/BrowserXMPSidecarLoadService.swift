@@ -37,10 +37,20 @@ nonisolated struct BrowserXMPSidecarAccess: Sendable {
 /// unbounded task per file, and queued Browser requests can be cancelled before touching a slow
 /// card, network volume, or iCloud placeholder.
 actor BrowserXMPSidecarLoadService {
+    // Keep blocking provider reads on a retained worker with the caller's task context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: BrowserXMPSidecarAccess
 
-    init(access: BrowserXMPSidecarAccess = .system) {
+    init(access: BrowserXMPSidecarAccess = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.browser.xmp-read", qos: .utility
+         )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func load(
@@ -146,14 +156,24 @@ nonisolated struct BrowserHDRClassificationAccess: Sendable {
 actor BrowserHDRClassificationService {
     static let shared = BrowserHDRClassificationService()
 
+    // Keep blocking provider reads on a retained worker with the caller's task context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: BrowserHDRClassificationAccess
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
         category: "BrowserHDRClassification"
     )
 
-    init(access: BrowserHDRClassificationAccess = .system) {
+    init(access: BrowserHDRClassificationAccess = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.browser.hdr-classification", qos: .utility
+         )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func classify(

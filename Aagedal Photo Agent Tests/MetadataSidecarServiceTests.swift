@@ -12,16 +12,24 @@ struct RawMetadataSidecarLoadServiceTests {
         let requestID = UUID()
         let bytes = Data("{\n  \"title\" : \"News\"\n}".utf8)
         let probe = RawMetadataSidecarAccessProbe(data: bytes)
+        let queue = DispatchSerialQueue(label: "test.raw-metadata.completeSnapshotRunsOffMainActor")
         let service = RawMetadataSidecarLoadService(access: RawMetadataSidecarAccess(
-            readEncodedSidecar: probe.read
-        ))
+            readEncodedSidecar: { image, folder in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(!Thread.isMainThread)
+                #expect(RawMetadataReadExecutorContext.marker == imageURL)
+                return try probe.read(imageURL: image, folderURL: folder)
+            }
+        ), filesystemQueue: queue)
 
         let result = try await Task {
-            try await service.load(
-                imageURL: imageURL,
-                folderURL: folderURL,
-                requestID: requestID
-            )
+            try await RawMetadataReadExecutorContext.$marker.withValue(imageURL) {
+                try await service.load(
+                    imageURL: imageURL,
+                    folderURL: folderURL,
+                    requestID: requestID
+                )
+            }
         }.value
 
         #expect(result == .loaded(RawMetadataSidecarSnapshot(
@@ -43,7 +51,7 @@ struct RawMetadataSidecarLoadServiceTests {
             readEncodedSidecar: probe.read
         ))
         let task = Task {
-            await Task.yield()
+            withUnsafeCurrentTask { $0?.cancel() }
             return try await service.load(
                 imageURL: URL(fileURLWithPath: "/virtual/cancelled.raw"),
                 folderURL: URL(fileURLWithPath: "/virtual/folder"),
@@ -61,17 +69,23 @@ struct RawMetadataSidecarLoadServiceTests {
         let imageURL = URL(fileURLWithPath: "/virtual/slow.raw")
         let bytes = Data("{}".utf8)
         let requestID = UUID()
+        let queue = DispatchSerialQueue(label: "test.raw-metadata.cancellationAfterRead")
         let service = RawMetadataSidecarLoadService(access: RawMetadataSidecarAccess { _, _ in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(RawMetadataReadExecutorContext.marker == imageURL)
             withUnsafeCurrentTask { $0?.cancel() }
             return bytes
-        })
+        }, filesystemQueue: queue)
 
         let result = try await Task {
-            try await service.load(
-                imageURL: imageURL,
-                folderURL: URL(fileURLWithPath: "/virtual/folder"),
-                requestID: requestID
-            )
+            try await RawMetadataReadExecutorContext.$marker.withValue(imageURL) {
+                try await service.load(
+                    imageURL: imageURL,
+                    folderURL: URL(fileURLWithPath: "/virtual/folder"),
+                    requestID: requestID
+                )
+            }
         }.value
 
         #expect(result == .cancelledAfterRead(
@@ -107,12 +121,20 @@ struct RawMetadataSidecarLoadServiceTests {
         let requestID = UUID()
         let text = "<x:xmpmeta>News</x:xmpmeta>"
         let probe = RawMetadataXMPAccessProbe(text: text)
+        let queue = DispatchSerialQueue(label: "test.raw-metadata.xmpSnapshotRunsOffMainActor")
         let service = RawMetadataXMPSidecarLoadService(access: .init(
-            readPrettyPrintedSidecar: probe.read
-        ))
+            readPrettyPrintedSidecar: { image in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(!Thread.isMainThread)
+                #expect(RawMetadataReadExecutorContext.marker == imageURL)
+                return probe.read(imageURL: image)
+            }
+        ), filesystemQueue: queue)
 
         let result = await Task {
-            await service.load(imageURL: imageURL, requestID: requestID)
+            await RawMetadataReadExecutorContext.$marker.withValue(imageURL) {
+                await service.load(imageURL: imageURL, requestID: requestID)
+            }
         }.value
 
         #expect(result == .loaded(RawMetadataXMPSidecarSnapshot(
@@ -132,7 +154,7 @@ struct RawMetadataSidecarLoadServiceTests {
             readPrettyPrintedSidecar: probe.read
         ))
         let task = Task {
-            await Task.yield()
+            withUnsafeCurrentTask { $0?.cancel() }
             return await service.load(
                 imageURL: URL(fileURLWithPath: "/virtual/cancelled.raw"),
                 requestID: requestID
@@ -148,13 +170,19 @@ struct RawMetadataSidecarLoadServiceTests {
     func xmpCancellationAfterRead() async {
         let imageURL = URL(fileURLWithPath: "/virtual/slow.raw")
         let requestID = UUID()
+        let queue = DispatchSerialQueue(label: "test.raw-metadata.xmpCancellationAfterRead")
         let service = RawMetadataXMPSidecarLoadService(access: .init { _ in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(RawMetadataReadExecutorContext.marker == imageURL)
             withUnsafeCurrentTask { $0?.cancel() }
             return "<x:xmpmeta/>"
-        })
+        }, filesystemQueue: queue)
 
         let result = await Task {
-            await service.load(imageURL: imageURL, requestID: requestID)
+            await RawMetadataReadExecutorContext.$marker.withValue(imageURL) {
+                await service.load(imageURL: imageURL, requestID: requestID)
+            }
         }.value
 
         #expect(result == .cancelledAfterRead(requestID: requestID, imageURL: imageURL))
@@ -1466,4 +1494,8 @@ struct BatchMetadataBaselineTransactionTests {
         #expect(installed.imageMetadataSnapshot?.keywords == installed.metadata.keywords)
         #expect(!installed.pendingChanges)
     }
+}
+
+private nonisolated enum RawMetadataReadExecutorContext {
+    @TaskLocal static var marker: URL?
 }

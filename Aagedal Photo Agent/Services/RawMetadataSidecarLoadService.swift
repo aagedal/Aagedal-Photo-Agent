@@ -46,10 +46,20 @@ nonisolated struct RawMetadataSidecarAccess: Sendable {
 actor RawMetadataSidecarLoadService {
     static let shared = RawMetadataSidecarLoadService()
 
+    // Keep blocking provider reads on a retained worker with the caller's task context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: RawMetadataSidecarAccess
 
-    init(access: RawMetadataSidecarAccess = .system) {
+    init(access: RawMetadataSidecarAccess = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.raw-metadata.app-sidecar-read", qos: .utility
+         )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func load(
@@ -118,10 +128,20 @@ nonisolated struct RawMetadataXMPSidecarAccess: Sendable {
 actor RawMetadataXMPSidecarLoadService {
     static let shared = RawMetadataXMPSidecarLoadService()
 
+    // Keep blocking provider reads on a retained worker with the caller's task context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: RawMetadataXMPSidecarAccess
 
-    init(access: RawMetadataXMPSidecarAccess = .system) {
+    init(access: RawMetadataXMPSidecarAccess = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.raw-metadata.xmp-sidecar-read", qos: .utility
+         )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func load(

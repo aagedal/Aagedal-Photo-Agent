@@ -19,10 +19,18 @@ struct BrowserXMPSidecarLoadServiceTests {
             urls[0]: firstData,
             urls[2]: thirdData
         ])
-        let service = BrowserXMPSidecarLoadService(access: .init(read: probe.read))
+        let queue = DispatchSerialQueue(label: "test.BrowserXMPSidecarLoadService.completeBatchRunsOffMainActor")
+        let service = BrowserXMPSidecarLoadService(access: .init(read: { url in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(BrowserReadExecutorContext.marker == requestID)
+            return probe.read(imageURL: url)
+        }), filesystemQueue: queue)
 
         let result = await Task {
-            await service.load(imageURLs: urls, requestID: requestID)
+            await BrowserReadExecutorContext.$marker.withValue(requestID) {
+                await service.load(imageURLs: urls, requestID: requestID)
+            }
         }.value
 
         #expect(result == .complete(BrowserXMPSidecarBatchSnapshot(
@@ -42,7 +50,7 @@ struct BrowserXMPSidecarLoadServiceTests {
         let probe = BrowserXMPSidecarAccessProbe(dataByURL: [:])
         let service = BrowserXMPSidecarLoadService(access: .init(read: probe.read))
         let task = Task {
-            await Task.yield()
+            withUnsafeCurrentTask { $0?.cancel() }
             return await service.load(imageURLs: urls, requestID: requestID)
         }
         task.cancel()
@@ -67,10 +75,18 @@ struct BrowserXMPSidecarLoadServiceTests {
             dataByURL: [urls[0]: data, urls[1]: data],
             cancelAtInvocation: 2
         )
-        let service = BrowserXMPSidecarLoadService(access: .init(read: probe.read))
+        let queue = DispatchSerialQueue(label: "test.BrowserXMPSidecarLoadService.partialCancellation")
+        let service = BrowserXMPSidecarLoadService(access: .init(read: { url in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(BrowserReadExecutorContext.marker == requestID)
+            return probe.read(imageURL: url)
+        }), filesystemQueue: queue)
 
         let result = await Task {
-            await service.load(imageURLs: urls, requestID: requestID)
+            await BrowserReadExecutorContext.$marker.withValue(requestID) {
+                await service.load(imageURLs: urls, requestID: requestID)
+            }
         }.value
         let expected = BrowserXMPSidecarBatchSnapshot(
             requestID: requestID,
@@ -156,18 +172,26 @@ struct BrowserHDRClassificationServiceTests {
             hdrURLs: [firstURLs[1], secondURLs[0]],
             inspectionDelay: 0.005
         )
-        let service = BrowserHDRClassificationService(access: .init(isHDR: probe.isHDR))
+        let queue = DispatchSerialQueue(label: "test.BrowserHDRClassificationService.completeBatchRunsOffMainActor")
+        let service = BrowserHDRClassificationService(access: .init(isHDR: { url in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(BrowserReadExecutorContext.marker == firstRequestID)
+            return probe.isHDR(imageURL: url)
+        }), filesystemQueue: queue)
 
         let results = await Task {
-            async let first = service.classify(
-                imageURLs: firstURLs,
-                requestID: firstRequestID
-            )
-            async let second = service.classify(
-                imageURLs: secondURLs,
-                requestID: secondRequestID
-            )
-            return await (first, second)
+            await BrowserReadExecutorContext.$marker.withValue(firstRequestID) {
+                async let first = service.classify(
+                    imageURLs: firstURLs,
+                    requestID: firstRequestID
+                )
+                async let second = service.classify(
+                    imageURLs: secondURLs,
+                    requestID: secondRequestID
+                )
+                return await (first, second)
+            }
         }.value
 
         #expect(results.0 == .complete(BrowserHDRClassificationSnapshot(
@@ -201,7 +225,7 @@ struct BrowserHDRClassificationServiceTests {
         let probe = BrowserHDRClassificationAccessProbe(hdrURLs: [])
         let service = BrowserHDRClassificationService(access: .init(isHDR: probe.isHDR))
         let task = Task {
-            await Task.yield()
+            withUnsafeCurrentTask { $0?.cancel() }
             return await service.classify(imageURLs: urls, requestID: requestID)
         }
         task.cancel()
@@ -225,10 +249,18 @@ struct BrowserHDRClassificationServiceTests {
             hdrURLs: [urls[0]],
             cancelAtInvocation: 2
         )
-        let service = BrowserHDRClassificationService(access: .init(isHDR: probe.isHDR))
+        let queue = DispatchSerialQueue(label: "test.BrowserHDRClassificationService.partialCancellation")
+        let service = BrowserHDRClassificationService(access: .init(isHDR: { url in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(BrowserReadExecutorContext.marker == requestID)
+            return probe.isHDR(imageURL: url)
+        }), filesystemQueue: queue)
 
         let result = await Task {
-            await service.classify(imageURLs: urls, requestID: requestID)
+            await BrowserReadExecutorContext.$marker.withValue(requestID) {
+                await service.classify(imageURLs: urls, requestID: requestID)
+            }
         }.value
         let expected = BrowserHDRClassificationSnapshot(
             requestID: requestID,
@@ -342,4 +374,8 @@ private nonisolated final class BrowserHDRClassificationAccessProbe: @unchecked 
     var inspectedURLs: [URL] { lock.withLock { urls } }
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
     var maximumConcurrentInspections: Int { lock.withLock { maximumInspections } }
+}
+
+private nonisolated enum BrowserReadExecutorContext {
+    @TaskLocal static var marker: UUID?
 }
