@@ -118,11 +118,30 @@ actor ComparisonDecodeGate {
 }
 
 /// Reuses the bounded full-screen caches and decode pipeline so Compare does not establish a
-/// second unbounded pool of high-resolution images.
-nonisolated struct ComparisonRenderService: Sendable {
+/// second unbounded pool of high-resolution images. Its Dispatch executor owns source probes,
+/// cached-image resampling and final live-edit materialization across async suspension points.
+actor ComparisonRenderService {
     private static let rawDecodeGate = ComparisonDecodeGate(limit: 1)
+    private static let sharedRenderQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.comparison-render", qos: .userInitiated
+    )
+    nonisolated let renderQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        renderQueue.asUnownedSerialExecutor()
+    }
 
-    @concurrent
+    private let pixelSizeReader: @Sendable (URL) -> CGSize?
+
+    init(
+        pixelSizeReader: @escaping @Sendable (URL) -> CGSize? = {
+            FullScreenImageCache.nativePixelSize(of: $0)
+        },
+        renderQueue: DispatchSerialQueue = ComparisonRenderService.sharedRenderQueue
+    ) {
+        self.pixelSizeReader = pixelSizeReader
+        self.renderQueue = renderQueue
+    }
+
     func render(
         imageFile: ImageFile,
         settings: CameraRawSettings?,
@@ -137,7 +156,8 @@ nonisolated struct ComparisonRenderService: Sendable {
 
         let boundedMaxPixelSize = ComparisonRenderPolicy.boundedLongEdge(maxPixelSize)
 
-        let pixelSize = FullScreenImageCache.nativePixelSize(of: imageFile.url)
+        let pixelSize = pixelSizeReader(imageFile.url)
+        try Task.checkCancellation()
         let revision = try await SourceImageRevision.capture(
             at: imageFile.url,
             pixelWidth: pixelSize.map { Int($0.width) },
@@ -196,6 +216,7 @@ nonisolated struct ComparisonRenderService: Sendable {
             rendered = decoded
         }
 
+        try Task.checkCancellation()
         return ComparisonRenderedSource(
             source: ComparisonSource(
                 revision: revision,
@@ -209,7 +230,6 @@ nonisolated struct ComparisonRenderService: Sendable {
     /// Produces a bounded snapshot of the current in-memory Develop buffer. This deliberately
     /// uses the same Metal edit graph as the live editor instead of exporting or reading the XMP
     /// sidecar, so uncommitted adjustments are represented honestly as `Live Edit`.
-    @concurrent
     func renderLiveEdit(
         imageFile: ImageFile,
         sourceImage: CIImage,
@@ -231,7 +251,8 @@ nonisolated struct ComparisonRenderService: Sendable {
                 == imageFile.url.standardizedFileURL {
             revision = existingRevision
         } else {
-            let pixelSize = FullScreenImageCache.nativePixelSize(of: imageFile.url)
+            let pixelSize = pixelSizeReader(imageFile.url)
+            try Task.checkCancellation()
             revision = try await SourceImageRevision.capture(
                 at: imageFile.url,
                 pixelWidth: pixelSize.map { Int($0.width) },
@@ -284,6 +305,7 @@ nonisolated struct ComparisonRenderService: Sendable {
             throw ComparisonRenderError.decodeFailed(imageFile.filename)
         }
 
+        try Task.checkCancellation()
         return ComparisonRenderedSource(
             source: ComparisonSource(
                 revision: revision,

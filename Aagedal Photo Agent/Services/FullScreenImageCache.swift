@@ -69,10 +69,20 @@ nonisolated struct FullScreenImagePresentationFactsAccess: Sendable {
 actor FullScreenImagePresentationFactsService {
     static let shared = FullScreenImagePresentationFactsService()
 
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
     private let access: FullScreenImagePresentationFactsAccess
 
-    init(access: FullScreenImagePresentationFactsAccess = .system) {
+    init(
+        access: FullScreenImagePresentationFactsAccess = .system,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.presentation-facts", qos: .userInitiated
+        )
+    ) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func load(imageURL: URL, requestID: UUID) -> FullScreenImagePresentationFactsResult {
@@ -588,15 +598,17 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// result engages EDR on display (matches the foreground render path). Returns nil if the
     /// decode fails or the task is cancelled. Shared by `startPrefetch` and `warmEditedPreviews`
     /// so both render edited previews identically — keep this the single edited-decode path.
-    // This is also called by MainActor thumbnail requests. Explicitly leave that
-    // actor before ImageIO initializes RAW support or reads source orientation.
-    @concurrent
-    nonisolated static func decodedEditedPreview(
+    // This is also called by MainActor thumbnail requests. Bind the complete operation to
+    // Dispatch so ImageIO, RAW decoding and final materialization cannot block the main
+    // actor or the cooperative pool. An isolated parameter retains the original task.
+    static func decodedEditedPreview(
         for url: URL,
         settings: CameraRawSettings?,
         orientation: Int,
-        screenMaxPx: CGFloat
+        screenMaxPx: CGFloat,
+        isolation: isolated EditedPreviewRenderWorker = .shared
     ) async -> CGImage? {
+        guard !Task.isCancelled else { return nil }
         var settings = settings
         var image: CGImage?
         let isRAW = isRawFile(url)
@@ -612,7 +624,8 @@ final class FullScreenImageCache: @unchecked Sendable {
         // Passing the target orientation to applyWithCrop instead mis-framed the crop and
         // left the pixels unrotated: cropped-RAW grid thumbnails rendered 180° off from
         // the edit view for sidecar-rotated files.
-        let rawFileOrientation = fileEXIFOrientation(at: url)
+        let rawFileOrientation = isolation.fileOrientation(at: url)
+        guard !Task.isCancelled else { return nil }
         let sourceMaxPx: CGFloat
         if settings?.crop?.isEffectiveCrop == true {
             sourceMaxPx = cropAwareSourceMaxPixelSize(
@@ -645,8 +658,8 @@ final class FullScreenImageCache: @unchecked Sendable {
             if let ciImage {
                 var processed: CIImage
                 if let settings {
-                    // Async: suspends on the dedicated render queue rather than blocking this
-                    // task's cooperative-pool thread across the GPU wait.
+                    // Suspend while the dedicated Metal queue waits for the GPU so this
+                    // preview executor can accept the next request.
                     processed = await CameraRawApproximation.applyWithCropAsync(to: ciImage, settings: settings, exifOrientation: rawFileOrientation)
                 } else {
                     processed = ciImage
@@ -681,7 +694,7 @@ final class FullScreenImageCache: @unchecked Sendable {
             }
             image = loaded
         }
-        return image
+        return Task.isCancelled ? nil : image
     }
 
     /// Chooses the pre-crop decode size needed for a requested final preview size.
@@ -1172,5 +1185,33 @@ final class FullScreenImageCache: @unchecked Sendable {
         case forward
         case backward
         case none
+    }
+}
+
+/// Shared execution boundary for edited browser, comparison and prefetch previews.
+/// Serial synchronous segments keep expensive RAW decodes off the cooperative pool.
+actor EditedPreviewRenderWorker {
+    static let shared = EditedPreviewRenderWorker()
+    nonisolated let renderQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        renderQueue.asUnownedSerialExecutor()
+    }
+
+    private let orientationReader: @Sendable (URL) -> Int
+
+    init(
+        orientationReader: @escaping @Sendable (URL) -> Int = {
+            FullScreenImageCache.fileEXIFOrientation(at: $0)
+        },
+        renderQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.edited-preview-render", qos: .userInitiated
+        )
+    ) {
+        self.orientationReader = orientationReader
+        self.renderQueue = renderQueue
+    }
+
+    func fileOrientation(at url: URL) -> Int {
+        orientationReader(url)
     }
 }

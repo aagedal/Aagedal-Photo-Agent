@@ -25,6 +25,11 @@ actor DevelopSourceDecodeService {
 
     static let shared = DevelopSourceDecodeService()
 
+    nonisolated let renderQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        renderQueue.asUnownedSerialExecutor()
+    }
+
     private let rawDecoder: RAWDecoder
     private let orientationReader: OrientationReader
 
@@ -38,8 +43,12 @@ actor DevelopSourceDecodeService {
         },
         orientationReader: @escaping OrientationReader = {
             FullScreenImageCache.fileEXIFOrientation(at: $0)
-        }
+        },
+        renderQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.develop-source-decode", qos: .userInitiated
+        )
     ) {
+        self.renderQueue = renderQueue
         self.rawDecoder = rawDecoder
         self.orientationReader = orientationReader
     }
@@ -91,7 +100,7 @@ actor DevelopSourceDecodeService {
     ) -> FullScreenImageCache.RAWDecodeResult? {
         guard !Task.isCancelled else { return nil }
         let fileOrientation = orientationReader(url)
-        guard let result = rawDecoder(url, false, maxPixelSize),
+        guard !Task.isCancelled, let result = rawDecoder(url, false, maxPixelSize),
               !Task.isCancelled else { return nil }
         let oriented = Self.orientedToTarget(
             ciImage: result.image,

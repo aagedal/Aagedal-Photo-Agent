@@ -103,7 +103,7 @@ final class ScopeViewModel {
     // MARK: - CPU Scope
 
     @ObservationIgnored private var computeTask: Task<Void, Never>?
-    @ObservationIgnored private let service = ScopeRenderService()
+    @ObservationIgnored private let service = ScopeRenderWorker.shared
     @ObservationIgnored private var lastCGImage: CGImage?
     @ObservationIgnored private let persistsScopeMode: Bool
 
@@ -161,10 +161,8 @@ final class ScopeViewModel {
             displayGamut: dispGamut
         )
 
-        computeTask = Task {
-            let result = await Task.detached(priority: .utility) { () -> CGImage? in
-                svc.render(request, from: cgImage)
-            }.value
+        computeTask = Task(priority: .utility) {
+            let result = await svc.render(request, from: cgImage)
 
             guard !Task.isCancelled else { return }
 

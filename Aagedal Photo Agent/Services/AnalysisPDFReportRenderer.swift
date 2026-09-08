@@ -182,27 +182,28 @@ private final class Renderer {
                    sourceURL: snapshot.source.canonicalURL,
                    maxPixelSize: 2_048
                ) {
-            let renderedScopes = await Task.detached(priority: .utility) {
-                let service = ScopeRenderService()
-                let requests: [(ScopeViewModel.ScopeMode, CGSize)] = [
-                    (.waveform, CGSize(width: 1_200, height: 720)),
-                    (.parade, CGSize(width: 1_200, height: 720)),
-                    (.vectorscope, CGSize(width: 720, height: 720)),
-                    (.chromaticity, CGSize(width: 720, height: 720)),
-                ]
-                return requests.compactMap { mode, size -> (ScopeViewModel.ScopeMode, CGImage)? in
-                    let request = ScopeRenderRequest(
-                        mode: mode,
-                        outputSize: size,
-                        waveformScale: .percentage,
-                        showClippedGamut: false,
-                        targetGamut: .sRGB,
-                        displayGamut: .sRGB
-                    )
-                    guard let image = service.render(request, from: scopeSource) else { return nil }
-                    return (mode, image)
+            let requests: [(ScopeViewModel.ScopeMode, CGSize)] = [
+                (.waveform, CGSize(width: 1_200, height: 720)),
+                (.parade, CGSize(width: 1_200, height: 720)),
+                (.vectorscope, CGSize(width: 720, height: 720)),
+                (.chromaticity, CGSize(width: 720, height: 720)),
+            ]
+            var renderedScopes: [(ScopeViewModel.ScopeMode, CGImage)] = []
+            for (mode, size) in requests {
+                try Task.checkCancellation()
+                let request = ScopeRenderRequest(
+                    mode: mode,
+                    outputSize: size,
+                    waveformScale: .percentage,
+                    showClippedGamut: false,
+                    targetGamut: .sRGB,
+                    displayGamut: .sRGB
+                )
+                if let image = await ScopeRenderWorker.shared.render(request, from: scopeSource) {
+                    renderedScopes.append((mode, image))
                 }
-            }.value
+            }
+            try Task.checkCancellation()
             analyticalScopeFigures = renderedScopes.map { mode, image in
                 AnalysisReportScopeFigure(
                     mode: mode,

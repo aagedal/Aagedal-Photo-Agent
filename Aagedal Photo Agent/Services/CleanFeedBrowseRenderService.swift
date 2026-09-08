@@ -35,14 +35,25 @@ actor CleanFeedBrowseRenderService {
 
     static let shared = CleanFeedBrowseRenderService()
 
-    private let renderer: Renderer
+    nonisolated let renderQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        renderQueue.asUnownedSerialExecutor()
+    }
+
+    private let renderer: Renderer?
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
         category: "CleanFeedBrowseRender"
     )
 
-    init(renderer: @escaping Renderer = CleanFeedBrowseRenderService.renderSystemSource) {
+    init(
+        renderer: Renderer? = nil,
+        renderQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.clean-feed-browse-render", qos: .userInitiated
+        )
+    ) {
         self.renderer = renderer
+        self.renderQueue = renderQueue
     }
 
     func render(_ request: CleanFeedBrowseRenderRequest) async -> CleanFeedBrowseRenderSnapshot {
@@ -60,7 +71,12 @@ actor CleanFeedBrowseRenderService {
             )
         }
 
-        let image = await renderer(request)
+        let image: CIImage?
+        if let renderer {
+            image = await renderer(request)
+        } else {
+            image = await renderSystemSource(request)
+        }
         guard !Task.isCancelled else {
             signposter.endInterval("BrowseRender", interval, "result=cancelled stage=after")
             return CleanFeedBrowseRenderSnapshot(
@@ -84,7 +100,7 @@ actor CleanFeedBrowseRenderService {
         )
     }
 
-    nonisolated private static func renderSystemSource(
+    private func renderSystemSource(
         _ request: CleanFeedBrowseRenderRequest
     ) async -> CIImage? {
         let factsResult = await FullScreenImagePresentationFactsService.shared.load(

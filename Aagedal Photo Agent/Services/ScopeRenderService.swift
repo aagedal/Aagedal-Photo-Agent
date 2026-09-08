@@ -124,6 +124,35 @@ nonisolated enum ScopePresentationSizing {
     }
 }
 
+/// Runs CPU rasterization and the chromaticity disk cache on a serial Dispatch executor.
+/// An actor hop preserves the caller's cancellation, priority and task-local values.
+actor ScopeRenderWorker {
+    typealias Renderer = @Sendable (ScopeRenderRequest, CGImage) -> CGImage?
+
+    static let shared = ScopeRenderWorker()
+    nonisolated let renderQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        renderQueue.asUnownedSerialExecutor()
+    }
+    private let renderer: Renderer
+
+    init(
+        renderer: @escaping Renderer = { ScopeRenderService().render($0, from: $1) },
+        renderQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.scope-render", qos: .utility
+        )
+    ) {
+        self.renderer = renderer
+        self.renderQueue = renderQueue
+    }
+
+    func render(_ request: ScopeRenderRequest, from image: CGImage) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        let rendered = renderer(request, image)
+        return Task.isCancelled ? nil : rendered
+    }
+}
+
 /// Renders waveform, parade, and vectorscope displays from a CGImage.
 /// Thread-safe: all methods operate on local state and CoreGraphics contexts.
 nonisolated struct ScopeRenderService: Sendable {
@@ -1010,8 +1039,7 @@ nonisolated struct ScopeRenderService: Sendable {
     nonisolated(unsafe) private static var _bgCache: (w: Int, h: Int, img: CGImage)?
 
     /// Serializes access to `_bgCache` and its backing disk file. Scope rendering and the
-    /// launch-time precompute both run on detached background tasks, and superseded renders
-    /// keep running (detached tasks don't inherit cancellation), so without this two threads
+    /// precompute can also be called by synchronous render clients, so without this two threads
     /// could race on the non-atomic `_bgCache` reference — an ARC retain/release race on the
     /// cached CGImage, i.e. a use-after-free — and clobber each other's PNG write.
     private static let _bgCacheLock = NSLock()
@@ -1033,7 +1061,7 @@ nonisolated struct ScopeRenderService: Sendable {
         // Held across the whole body: read/write of `_bgCache` and the disk file must not
         // race across concurrent renders. Only ever contended on a cold cache — once warm
         // (the launch precompute primes it) this is a fast read. Never called on the main
-        // actor (only from detached scope-render / precompute tasks), so blocking is benign.
+        // actor; asynchronous scope clients use ScopeRenderWorker's Dispatch executor.
         Self._bgCacheLock.lock()
         defer { Self._bgCacheLock.unlock() }
 
