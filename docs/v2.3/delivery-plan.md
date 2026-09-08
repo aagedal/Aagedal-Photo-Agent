@@ -15,6 +15,14 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Person editing and storage workers continuation (2026-09-08):**
+production details and representative edits await reserved worker writes against the current record;
+forms retain failed edits and resolve people by identity across list changes. Known People archives,
+general filesystem operations, keyword archive transport, and backup preview/history retain dedicated
+Dispatch executors with caller cancellation and task-local context. Broad storage ownership and
+manual/device/release gates remain open.
+([validation and remaining work](../plan-status-person-edit-storage-workers-continuation-2026-09-08.md))
+
 **Person merging, backup retention, and cloud workers continuation (2026-09-08):**
 production person merging uses the serialized worker with reservations, partial-result evidence,
 and retry-safe thumbnail cleanup. Backup retention scans run away from managed keyword transactions.
