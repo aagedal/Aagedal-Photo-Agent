@@ -3054,3 +3054,33 @@ private nonisolated final class BlockingAdvancedExportPreviewCleanupProbe: @unch
         return observedMainThread
     }
 }
+
+@Suite("Advanced Export presenting-display layout")
+struct AdvancedExportLayoutTests {
+    @Test func smallDisplayKeepsSheetInsideUsableArea() {
+        let layout = AdvancedExportLayout(visibleSize: CGSize(width: 1024, height: 640))
+        #expect(layout.size.width <= 1024 * 0.9)
+        #expect(layout.size.height <= 640 * 0.9)
+        #expect(layout.comparisonWidth >= 780)
+    }
+
+    @Test func largeDisplayUsesBoundedComfortableSheet() {
+        let layout = AdvancedExportLayout(visibleSize: CGSize(width: 3840, height: 2160))
+        #expect(layout.size == CGSize(width: 1320, height: 1000))
+        #expect(layout.comparisonWidth == 1019)
+    }
+
+    @Test func movingBetweenDisplaysRecomputesBothDimensions() {
+        let laptop = AdvancedExportLayout(visibleSize: CGSize(width: 1280, height: 720))
+        let external = AdvancedExportLayout(visibleSize: CGSize(width: 2560, height: 1440))
+        #expect(laptop.size.width < external.size.width)
+        #expect(laptop.size.height < external.size.height)
+    }
+
+    @Test func missingOrInvalidDisplayHasFiniteFallback() {
+        let fallback = AdvancedExportLayout(visibleSize: nil)
+        #expect(fallback.size == CGSize(width: 1060, height: 720))
+        #expect(AdvancedExportLayout(visibleSize: .zero) == fallback)
+        #expect(AdvancedExportLayout(visibleSize: CGSize(width: CGFloat.infinity, height: 800)) == fallback)
+    }
+}

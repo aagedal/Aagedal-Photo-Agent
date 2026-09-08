@@ -9,6 +9,7 @@ struct AdvancedExportView: View {
     @State private var configurations: [AdvancedExportConfiguration]
     @State private var selectedConfigurationIndex = 0
     @State private var previewService = AdvancedExportPreviewService()
+    @State private var layout = AdvancedExportLayout(visibleSize: nil)
 
     init(
         session: AdvancedExportSession,
@@ -43,18 +44,20 @@ struct AdvancedExportView: View {
         )
     }
 
-    private var sheetHeight: CGFloat {
-        (NSScreen.main?.visibleFrame.height ?? 900) * 0.9
-    }
-
     var body: some View {
         HStack(spacing: 0) {
-            comparisonList
+            ScrollView(.horizontal) {
+                comparisonList
+                    .frame(width: layout.comparisonWidth)
+            }
             Divider()
             settingsInspector
         }
-        .frame(minWidth: 1_180, idealWidth: 1_320)
-        .frame(height: sheetHeight)
+        .frame(width: layout.size.width, height: layout.size.height)
+        .background(AdvancedExportDisplayReader { visibleSize in
+            let nextLayout = AdvancedExportLayout(visibleSize: visibleSize)
+            if layout != nextLayout { layout = nextLayout }
+        })
     }
 
     private var comparisonList: some View {
@@ -733,6 +736,8 @@ private struct AdvancedExportLoupeView: View {
     let normalizedPoint: CGPoint
     let previewLoadingIndexes: Set<Int>
 
+    @Environment(\.displayScale) private var backingScale
+    @State private var loadedPixelSize: Int?
     @State private var loupes: [Int: AdvancedExportLoupe] = [:]
     @State private var loadedOutputURLs: [Int: URL] = [:]
     @State private var errorMessages: [Int: String] = [:]
@@ -740,10 +745,6 @@ private struct AdvancedExportLoupeView: View {
 
     private var displaySize: CGFloat {
         configurations.count > 1 ? 230 : 280
-    }
-
-    private var backingScale: CGFloat {
-        NSScreen.main?.backingScaleFactor ?? 2
     }
 
     private var pixelSize: Int {
@@ -756,7 +757,7 @@ private struct AdvancedExportLoupeView: View {
             let outputURL = preview(at: index)?.storage.outputURL.path ?? "pending"
             return "\(signature)|\(outputURL)"
         }
-        .joined(separator: "||")
+        .joined(separator: "||") + "|pixels=\(pixelSize)"
     }
 
     var body: some View {
@@ -830,6 +831,11 @@ private struct AdvancedExportLoupeView: View {
 
     @MainActor
     private func refreshLoupes() async {
+        if loadedPixelSize != pixelSize {
+            loupes.removeAll()
+            loadedOutputURLs.removeAll()
+            loadedPixelSize = pixelSize
+        }
         let validIndexes = Set(configurations.indices)
         loupes = loupes.filter { validIndexes.contains($0.key) }
         loadedOutputURLs = loadedOutputURLs.filter { validIndexes.contains($0.key) }
@@ -867,6 +873,7 @@ private struct AdvancedExportLoupeView: View {
             } catch is CancellationError {
                 return
             } catch {
+                guard !Task.isCancelled else { return }
                 errorMessages[index] = error.localizedDescription
                 loadingIndexes.remove(index)
             }
