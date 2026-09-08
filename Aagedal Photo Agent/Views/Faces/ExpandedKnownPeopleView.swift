@@ -667,8 +667,6 @@ struct PersonContactCard: View {
                     for: embeddingID
                 )
                 guard person.id == personID, !Task.isCancelled else { return }
-                var updated = person
-                updated.representativeThumbnailID = embeddingID
                 if let embeddingThumbnail,
                    let tiffData = embeddingThumbnail.tiffRepresentation,
                    let bitmap = NSBitmapImageRep(data: tiffData),
@@ -676,11 +674,15 @@ struct PersonContactCard: View {
                     using: .jpeg,
                     properties: [.compressionFactor: 0.85]
                    ) {
-                    try KnownPeopleService.shared.replaceThumbnail(
+                    try await KnownPeopleService.shared.replaceThumbnail(
                         for: personID,
                         newThumbnailData: jpegData
                     )
                 }
+                guard person.id == personID, !Task.isCancelled,
+                      var updated = KnownPeopleService.shared.person(byID: personID),
+                      updated.embeddings.contains(where: { $0.id == embeddingID }) else { return }
+                updated.representativeThumbnailID = embeddingID
                 try KnownPeopleService.shared.updatePerson(updated)
                 await loadThumbnail()
             } catch {

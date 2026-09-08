@@ -13,6 +13,74 @@ import AppKit
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Thumbnail replacement reserves its record and publishes durable worker writes", arguments: ["success", "cancel", "storageChange", "recordFailure"])
+    func asynchronousThumbnailReplacement(outcome: String) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+            writeCoordinatedData: { data, url in
+                #expect(!Thread.isMainThread)
+                if url.pathExtension == "jpg" { _ = gate.read(url) }
+                if outcome == "recordFailure", url.pathExtension == "json" {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                try system.writeCoordinatedData(data, url)
+            }, runDitto: system.runDitto
+        )
+        let writer = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        let person = try writer.addPerson(name: "Original", embeddings: [])
+        let peer = KnownPeopleService()
+        #expect(peer.person(byID: person.id) != nil)
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32
+        ))
+        try peer.saveThumbnail(try #require(bitmap.representation(using: .png, properties: [:])), for: person.id)
+        #expect(peer.cachedThumbnail(for: person.id) != nil)
+        let replacement = Data([3, 2, 1])
+        let operation = Task { try await writer.replaceThumbnail(for: person.id, newThumbnailData: replacement) }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(gate.entered)
+        #expect(throws: (any Error).self) { try peer.removePerson(id: person.id) }
+        #expect(throws: (any Error).self) { try peer.saveThumbnail(Data(), for: person.id) }
+        #expect(throws: (any Error).self) { try peer.clearDatabase() }
+        let unrelated = try peer.addPerson(name: "Unrelated", embeddings: [])
+        if outcome == "cancel" { operation.cancel() }
+        if outcome == "storageChange" {
+            writer.reloadAfterStorageChange(resolvedStorageURL: directory.appendingPathComponent("other"))
+        }
+        gate.resume()
+        if outcome == "success" {
+            try await operation.value
+        } else if outcome == "recordFailure" {
+            await #expect(throws: (any Error).self) { try await operation.value }
+        } else {
+            await #expect(throws: CancellationError.self) { try await operation.value }
+        }
+        #expect(try Data(contentsOf: directory.appendingPathComponent("thumbnails/\(person.id.uuidString).jpg")) == replacement)
+        #expect(peer.cachedThumbnail(for: person.id) == nil)
+        #expect(peer.person(byID: unrelated.id) != nil)
+        if outcome != "recordFailure" {
+            #expect(try #require(peer.person(byID: person.id)).updatedAt >= person.updatedAt)
+        }
+        if outcome == "storageChange" { #expect(writer.person(byID: person.id) == nil) }
+        // The admitted mutation releases ownership on every outcome.
+        try peer.removePerson(id: person.id)
+    }
+
     @Test("Peer databases follow durable CRUD without losing unrelated additions")
     func peerDatabaseCRUD() throws {
         try withIsolatedEmbeddingMigration { directory in

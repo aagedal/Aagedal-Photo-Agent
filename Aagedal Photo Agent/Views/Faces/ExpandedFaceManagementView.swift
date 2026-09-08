@@ -1737,16 +1737,18 @@ struct ReplaceThumbnailCard: View {
         }
 
         isReplacing = true
+        let requestedIdentity = thumbnailRequestIdentity
 
-        do {
-            try KnownPeopleService.shared.replaceThumbnail(for: personID, newThumbnailData: jpegData)
-            // Clear selection after successful replacement
-            viewModel.clearThumbnailReplacementSelection()
-        } catch {
-            // Handle error silently
+        Task {
+            defer { isReplacing = false }
+            do {
+                try await KnownPeopleService.shared.replaceThumbnail(for: personID, newThumbnailData: jpegData)
+                guard requestedIdentity == thumbnailRequestIdentity, !Task.isCancelled else { return }
+                viewModel.clearThumbnailReplacementSelection()
+            } catch {
+                // Preserve the selection so replacement can be retried.
+            }
         }
-
-        isReplacing = false
     }
 }
 

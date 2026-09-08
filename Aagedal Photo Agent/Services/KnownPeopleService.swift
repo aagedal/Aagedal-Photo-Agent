@@ -91,6 +91,12 @@ actor KnownPeopleThumbnailLoadService {
     }
 }
 
+nonisolated struct KnownPeopleThumbnailReplacementResult: Sendable {
+    let thumbnailWritten: Bool
+    let personWritten: Bool
+    let completion: Result<Void, any Error>
+}
+
 nonisolated struct KnownPeopleArchiveImportPayload: Sendable {
     let people: [KnownPerson]
     let personThumbnails: [UUID: Data]
@@ -213,6 +219,29 @@ actor KnownPeopleArchiveService {
         for url in urls {
             try? access.removeCoordinatedItem(url)
         }
+    }
+
+    /// Finish the admitted thumbnail/record pair once the image write starts. Cancellation
+    /// before admission writes nothing; cancellation during I/O still returns durable evidence.
+    func replaceThumbnail(data: Data, thumbnailURL: URL, person: KnownPerson?, personURL: URL) async -> KnownPeopleThumbnailReplacementResult {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        var thumbnailWritten = false
+        var personWritten = false
+        let completion = Result { () throws -> Void in
+            try Task.checkCancellation()
+            try access.writeCoordinatedData(data, thumbnailURL)
+            thumbnailWritten = true
+            if let person {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                try access.writeCoordinatedData(encoder.encode(person), personURL)
+                personWritten = true
+            }
+        }
+        return KnownPeopleThumbnailReplacementResult(
+            thumbnailWritten: thumbnailWritten, personWritten: personWritten, completion: completion
+        )
     }
 
     func export(
@@ -672,7 +701,7 @@ final class KnownPeopleService {
 
     private func importBusyError() -> NSError {
         NSError(domain: "KnownPeopleService", code: 11, userInfo: [
-            NSLocalizedDescriptionKey: "A Known People import is updating this data. Try again when the import finishes."
+            NSLocalizedDescriptionKey: "A Known People update is in progress. Try again when it finishes."
         ])
     }
 
@@ -958,8 +987,8 @@ final class KnownPeopleService {
 
     // MARK: - Write
 
-    /// Encodes one person to its own file. The single entry point for persisting
-    /// a person, so self-write stamping and change notification live here.
+    /// Persists ordinary synchronous CRUD and publishes self-write/change evidence.
+    /// Worker-owned archive and thumbnail transactions publish their durable results separately.
     private func writePerson(_ person: KnownPerson) throws {
         try requireLocalWriteAdmission(to: personFileURL(for: person.id))
         let encoder = JSONEncoder()
@@ -1760,12 +1789,45 @@ final class KnownPeopleService {
     }
 
     /// Replace the thumbnail for a known person
-    func replaceThumbnail(for personID: UUID, newThumbnailData: Data) throws {
-        try saveThumbnail(newThumbnailData, for: personID)
-
-        guard peopleIndex[personID] != nil else { return }
-        // Bump updatedAt (writes the file) so the change syncs and wins on merge.
-        try mutatePerson(id: personID) { _ in true }
+    func replaceThumbnail(for personID: UUID, newThumbnailData: Data) async throws {
+        let revision = storageRevision
+        await beginImport()
+        defer { endImport() }
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
+        var person = person(byID: personID)
+        person?.updatedAt = Date()
+        let root = knownPeopleDirectory
+        let thumbnailURL = thumbnailURL(for: personID)
+        let recordURL = personFileURL(for: personID)
+        // Reuse process-wide storage ownership so imports, synchronous writers and whole-store
+        // resets cannot overlap this suspended mutation, even across injected service instances.
+        reserveImportDestinations([person ?? KnownPerson(id: personID, name: "")], root: root)
+        let result = await archiveService.replaceThumbnail(
+            data: newThumbnailData, thumbnailURL: thumbnailURL, person: person, personURL: recordURL
+        )
+        if result.thumbnailWritten {
+            invalidatePeerThumbnails(at: root)
+            if revision == storageRevision {
+                thumbnailContentRevision &+= 1
+                personThumbnailCache.removeObject(forKey: personID as NSUUID)
+                stampLocalWrite(thumbnailURL)
+            }
+        }
+        if result.personWritten {
+            invalidatePeerDatabases(at: root)
+            if revision == storageRevision {
+                // Reload on demand so unrelated writes admitted during suspension survive.
+                database = nil
+                clearFeaturePrintCache()
+                stampLocalWrite(recordURL)
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+            }
+        }
+        await releaseImportDestinations()
+        try result.completion.get()
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
     }
 
     /// Delete a single embedding from a person

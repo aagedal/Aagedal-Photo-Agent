@@ -202,7 +202,6 @@ struct PersonEditSidebar: View {
                     for: embeddingID
                 )
                 guard person.id == personID, !Task.isCancelled else { return }
-                person.representativeThumbnailID = embeddingID
                 if let embeddingThumbnail,
                    let tiffData = embeddingThumbnail.tiffRepresentation,
                    let bitmap = NSBitmapImageRep(data: tiffData),
@@ -210,12 +209,17 @@ struct PersonEditSidebar: View {
                     using: .jpeg,
                     properties: [.compressionFactor: 0.85]
                    ) {
-                    try KnownPeopleService.shared.replaceThumbnail(
+                    try await KnownPeopleService.shared.replaceThumbnail(
                         for: personID,
                         newThumbnailData: jpegData
                     )
                 }
-                try KnownPeopleService.shared.updatePerson(person)
+                guard person.id == personID, !Task.isCancelled,
+                      var updated = KnownPeopleService.shared.person(byID: personID),
+                      updated.embeddings.contains(where: { $0.id == embeddingID }) else { return }
+                updated.representativeThumbnailID = embeddingID
+                try KnownPeopleService.shared.updatePerson(updated)
+                person = updated
                 await loadThumbnail()
             } catch {
                 knownPeopleSidebarLog.error("Failed to set representative: \(error.localizedDescription, privacy: .private)")
