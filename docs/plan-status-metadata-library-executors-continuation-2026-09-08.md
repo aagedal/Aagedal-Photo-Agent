@@ -69,6 +69,25 @@ Repository checks passed in `/private/tmp/aagedal-storage-executors-repository.l
 No manual interaction, physical-volume performance, production-server or signed-release
 validation is claimed.
 
+## Current-source unsigned candidate
+
+A clean-source Release candidate built from `33b96ff60f1727fdc532fdd3780d4f8be04d5f20`,
+version **3.0.0 (738)**, with Xcode 26.6 (17F113) on arm64 macOS
+27.0 (26A5425a). Model omission passed and all **79** ZIP payload
+entries match the built application. The bundle contains 73 regular files totaling
+145,342,482 bytes; the ZIP is 49,752,213 bytes.
+ZIP SHA-256: `9cbb38923550b547258f6a788191b47ecb214940d975ba679bf26fd9bab604de`.
+
+```sh
+python3 -B scripts/ci/build_model_free_candidate.py \
+  build/model-omission-candidate-metadata-library-executors-2026-09-08
+```
+
+The application, ZIP, build log and `measurement.json` are retained in that ignored output
+directory. Xcode used approved access to existing caches. This is unsigned build/package
+evidence only; no launch, signing, notarization, distribution or production-server validation
+is claimed. The subsequent documentation-only commit does not change candidate application source.
+
 ## Remaining work
 
 1. **Storage ownership:** Known People cold root/database loading, migrations, compatibility

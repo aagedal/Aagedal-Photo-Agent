@@ -20,8 +20,9 @@ Teams, Watermarks, templates, atomic JSON persistence, Known People thumbnail/si
 and Browser/FTP/Raw Metadata inspection retain Dispatch workers with existing task context
 and cancellation evidence. Every async JSON/XMP sidecar operation moves key resolution and
 actual admitted I/O onto the shared metadata worker, retaining revision retries and
-photo/folder barriers. The unfiltered suite passed 2,289 tests. Broad storage ownership
-and manual/device/release gates remain open.
+photo/folder barriers. The unfiltered suite passed 2,289 tests; an unsigned Release candidate
+passed model-omission and ZIP payload verification. Broad storage ownership and manual/device/release
+gates remain open.
 ([validation and remaining work](../plan-status-metadata-library-executors-continuation-2026-09-08.md))
 
 **Person editing and storage workers continuation (2026-09-08):**
