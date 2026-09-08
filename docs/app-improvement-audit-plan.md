@@ -6,6 +6,16 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Storage cleanup, repository and render workers continuation (2026-09-08):**
+Known People clearing owns whole-root reservations and durable partial-failure cache
+invalidation. History deletion no longer occupies managed keyword transactions. Roster,
+portable profile/recipe and analysis repository operations retain Dispatch workers,
+as do scope, comparison, Clean Feed, Develop and edited-preview rendering. The final
+unfiltered suite passed 2,338 tests; an unsigned Release candidate passed model-omission
+and ZIP payload verification. Broad storage ownership and manual/device/release gates
+remain open.
+([validation and remaining work](plan-status-storage-cleanup-repository-render-continuation-2026-09-08.md))
+
 **Import, export and companion storage workers continuation (2026-09-08):**
 Twenty-nine filesystem actors retain Dispatch workers across import, export, bookmarks,
 face storage, text/LUT access, cloud downloads and folder monitoring. Cancelling a backup
