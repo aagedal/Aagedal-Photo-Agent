@@ -229,3 +229,168 @@ struct MetadataIOCoordinatorTests {
         #expect(MetadataSidecarService().loadSidecar(for: imageURL, in: folder)?.metadata.title == "Durable history")
     }
 }
+
+@Suite("Metadata sidecar Dispatch executors")
+struct MetadataSidecarExecutorTests {
+    @Test("Editor source reads retain task context and exact cancellation evidence", arguments: [false, true])
+    @MainActor
+    func editorReadContext(cancelDuringRead: Bool) async {
+        let imageURL = URL(fileURLWithPath: "/virtual/editor-executor.raw")
+        let queue = DispatchSerialQueue(label: "test.metadata-editor.read")
+        let service = MetadataEditorReadService(access: .init { url, _, _, _ in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(MetadataSidecarExecutorContext.marker == imageURL)
+            if cancelDuringRead { withUnsafeCurrentTask { $0?.cancel() } }
+            return MetadataEditorSourceFacts(
+                imageURL: url, xmpMetadata: IPTCMetadata(title: "Read"),
+                appSidecar: nil, reconciliationVerdict: nil
+            )
+        }, filesystemQueue: queue)
+        let request = MetadataEditorReadRequest(
+            id: UUID(), imageURLs: [imageURL], folderURL: nil,
+            embeddedMetadataByImageURL: [:]
+        )
+        let result = await Task {
+            await MetadataSidecarExecutorContext.$marker.withValue(imageURL) {
+                await service.load(request)
+            }
+        }.value
+        let snapshot: MetadataEditorReadSnapshot
+        switch result {
+        case .complete(let value):
+            #expect(!cancelDuringRead)
+            snapshot = value
+        case .cancelledAfterCompleteRead(let value):
+            #expect(cancelDuringRead)
+            snapshot = value
+        default:
+            Issue.record("Expected complete read evidence")
+            return
+        }
+        #expect(snapshot.request.id == request.id)
+        #expect(snapshot.inspectedImageURLs == [imageURL])
+        #expect(snapshot.factsByImageURL[imageURL]?.xmpMetadata?.title == "Read")
+    }
+
+    @Test("Admitted JSON and XMP work stays on Dispatch and finishes after caller cancellation", arguments: [false, true])
+    @MainActor
+    func admittedTransactionContext(xmp: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let imageURL = folder.appendingPathComponent("sample.jpg")
+        let gate = MetadataSidecarExecutorGate()
+        defer { gate.release() }
+        let queue = MetadataSidecarFilesystemActor.shared.filesystemQueue
+        let check: @Sendable (Int) -> Void = { attempt in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(MetadataSidecarExecutorContext.marker == imageURL)
+            #expect(attempt == 0)
+            gate.enter()
+            // The coordinator owns the admitted operation independently of caller cancellation.
+            #expect(!Task.isCancelled)
+        }
+        let task = Task {
+            try await MetadataSidecarExecutorContext.$marker.withValue(imageURL) {
+                if xmp {
+                    let installed = try await XMPSidecarService().saveSidecarPreservingDevelopSettingsSerialized(
+                        metadata: IPTCMetadata(title: "Durable XMP"), for: imageURL,
+                        beforeRevisionCheck: check
+                    )
+                    #expect(installed)
+                } else {
+                    let installed = try await MetadataSidecarService().saveSidecarMergingHistorySerialized(
+                        MetadataSidecar(sourceFile: imageURL.lastPathComponent,
+                                        metadata: IPTCMetadata(title: "Durable history")),
+                        for: imageURL, in: folder, beforeRevisionCheck: check
+                    )
+                    #expect(installed.metadata.title == "Durable history")
+                }
+            }
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.hasEntered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(gate.hasEntered)
+        task.cancel()
+        gate.release()
+        try await task.value
+        if xmp {
+            #expect(XMPSidecarService().loadSidecar(for: imageURL)?.title == "Durable XMP")
+        } else {
+            #expect(MetadataSidecarService().loadSidecar(for: imageURL, in: folder)?.metadata.title == "Durable history")
+        }
+    }
+
+    @Test("Revision retries resume on the metadata Dispatch worker", arguments: [false, true])
+    @MainActor
+    func revisionRetryContext(xmp: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let imageURL = folder.appendingPathComponent("retry.jpg")
+        let queue = MetadataSidecarFilesystemActor.shared.filesystemQueue
+        let check: @Sendable (Int) -> Void = { attempt in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(MetadataSidecarExecutorContext.marker == imageURL)
+            guard attempt == 0 else { return }
+            do {
+                if xmp {
+                    try XMPSidecarService().saveSidecar(
+                        metadata: IPTCMetadata(keywords: ["External"]), for: imageURL
+                    )
+                } else {
+                    try MetadataSidecarService().saveSidecar(
+                        MetadataSidecar(sourceFile: imageURL.lastPathComponent,
+                                        metadata: IPTCMetadata(keywords: ["External"])),
+                        for: imageURL, in: folder
+                    )
+                }
+            } catch { Issue.record(error) }
+        }
+        try await MetadataSidecarExecutorContext.$marker.withValue(imageURL) {
+            if xmp {
+                try await XMPSidecarService().saveSidecarPreservingDevelopSettingsSerialized(
+                    metadata: IPTCMetadata(title: "Requested"), for: imageURL,
+                    mergeWithExisting: true, beforeRevisionCheck: check
+                )
+                let result = XMPSidecarService().loadSidecar(for: imageURL)
+                #expect(result?.title == "Requested")
+                #expect(result?.keywords == ["External"])
+            } else {
+                let history = MetadataHistoryEntry.changes(
+                    from: IPTCMetadata(), to: IPTCMetadata(title: "Requested"), timestamp: Date()
+                )
+                let result = try await MetadataSidecarService().saveSidecarMergingHistorySerialized(
+                    MetadataSidecar(sourceFile: imageURL.lastPathComponent,
+                                    metadata: IPTCMetadata(title: "Requested"), history: history),
+                    for: imageURL, in: folder, beforeRevisionCheck: check
+                )
+                #expect(result.metadata.title == "Requested")
+                #expect(result.metadata.keywords == ["External"])
+            }
+        }
+    }
+}
+
+private nonisolated enum MetadataSidecarExecutorContext {
+    @TaskLocal static var marker: URL?
+}
+
+private nonisolated final class MetadataSidecarExecutorGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var entered = false
+    var hasEntered: Bool { lock.withLock { entered } }
+
+    func enter() {
+        lock.withLock { entered = true }
+        semaphore.wait()
+    }
+
+    func release() { semaphore.signal() }
+}

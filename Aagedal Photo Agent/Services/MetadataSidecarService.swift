@@ -350,17 +350,20 @@ struct MetadataSidecarService: Sendable {
     /// by Caption/Metadata/face workflows are treated as field mutations and replayed onto the
     /// latest on-disk record. This prevents a complete-but-stale draft from erasing an unrelated
     /// field saved while that draft was queued.
-    nonisolated func saveSidecarMergingHistorySerialized(
+    @MetadataSidecarFilesystemActor
+    func saveSidecarMergingHistorySerialized(
         _ sidecar: MetadataSidecar,
         for imageURL: URL,
-        in folderURL: URL
+        in folderURL: URL,
+        beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
     ) async throws -> MetadataSidecar {
-        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
-            for _ in 0..<4 {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
+            for attempt in 0..<4 {
                 let sourceTokens = try self.contentTokens(for: imageURL, in: folderURL)
                 let current = self.loadSidecar(for: imageURL, in: folderURL)
                 let merged = Self.mergingHistory(sidecar, onto: current)
 
+                beforeRevisionCheck(attempt)
                 await Task.yield()
                 guard try self.contentTokens(for: imageURL, in: folderURL) == sourceTokens else {
                     continue
@@ -875,11 +878,31 @@ nonisolated struct MetadataSidecarPersistenceResult: Sendable {
     }
 }
 
+/// Shared worker for admitted JSON-history and XMP transactions. The per-photo coordinator
+/// retains ownership across suspension/revision retries; its admitted task explicitly hops here
+/// before touching storage. A custom executor on the orchestrator alone would leave nonisolated
+/// async helpers running their blocking reads and writes on the cooperative pool.
+@globalActor
+actor MetadataSidecarFilesystemActor {
+    static let shared = MetadataSidecarFilesystemActor()
+
+    nonisolated let filesystemQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.metadata-sidecar.filesystem", qos: .utility
+    )
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+}
+
 /// Off-main orchestration for the metadata JSON + XMP transaction. Each artifact retains the
 /// existing per-photo `MetadataIOCoordinator` serialization and atomic-install behavior. The
 /// actor adds one async boundary for the view model and makes the only partial-commit point
 /// observable: JSON history installed, then cancellation/XMP failure before the mirror commits.
 actor MetadataSidecarPersistenceService {
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        MetadataSidecarFilesystemActor.shared.filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let metadataSidecarService: MetadataSidecarService
     private let xmpSidecarService: XMPSidecarService
 

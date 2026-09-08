@@ -93,14 +93,25 @@ nonisolated struct MetadataEditorReadAccess: Sendable {
 actor MetadataEditorReadService {
     static let shared = MetadataEditorReadService()
 
+    /// Keep blocking provider reads off the cooperative pool while executing the caller's
+    /// original task, including its cancellation state and task-local context.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let access: MetadataEditorReadAccess
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
         category: "MetadataEditorRead"
     )
 
-    init(access: MetadataEditorReadAccess = .system) {
+    init(access: MetadataEditorReadAccess = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.metadata-editor.read", qos: .utility
+         )) {
         self.access = access
+        self.filesystemQueue = filesystemQueue
     }
 
     func load(_ request: MetadataEditorReadRequest) -> MetadataEditorReadResult {

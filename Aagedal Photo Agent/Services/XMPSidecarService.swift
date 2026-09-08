@@ -231,7 +231,8 @@ struct XMPSidecarService: Sendable {
     /// Embedded read-back mirrors may retain missing orientation from the current source revision;
     /// explicit embedded orientation still wins. Camera Raw properties always remain untouched.
     @discardableResult
-    nonisolated func saveSidecarPreservingDevelopSettingsSerialized(
+    @MetadataSidecarFilesystemActor
+    func saveSidecarPreservingDevelopSettingsSerialized(
         metadata: IPTCMetadata,
         for imageURL: URL,
         mergeWithExisting: Bool = false,
@@ -241,7 +242,7 @@ struct XMPSidecarService: Sendable {
         expectedSnapshot: XMPSidecarWriteSnapshot? = nil,
         beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
     ) async throws -> Bool {
-        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             try await self.updateXMPTransaction(
                 for: imageURL,
                 expectedSnapshot: expectedSnapshot,
@@ -539,7 +540,8 @@ struct XMPSidecarService: Sendable {
     /// entry point. `Task.yield()` is intentional: it gives file presenters and external editors a
     /// chance to publish a pending replacement before the content-token check.
     @discardableResult
-    nonisolated private func updateXMPTransaction(
+    @MetadataSidecarFilesystemActor
+    private func updateXMPTransaction(
         for imageURL: URL,
         expectedSnapshot: XMPSidecarWriteSnapshot? = nil,
         onlyIfExisting: Bool = false,
