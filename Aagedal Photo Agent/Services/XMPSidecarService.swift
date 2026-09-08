@@ -115,10 +115,14 @@ struct XMPSidecarService: Sendable {
     /// Serialized destructive counterpart used by Metadata's remove-IPTC workflow. It keeps the
     /// complete read/strip/install (or delete) decision inside the same URL boundary as caption,
     /// face, and Develop mutations and retries if an external editor changes the source revision.
-    nonisolated func stripIPTCFromSidecarSerialized(for imageURL: URL) async throws {
-        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+    @MetadataSidecarFilesystemActor
+    func stripIPTCFromSidecarSerialized(
+        for imageURL: URL,
+        beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
+    ) async throws {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             let url = self.sidecarURL(for: imageURL)
-            for _ in 0..<Self.transactionRetryLimit {
+            for attempt in 0..<Self.transactionRetryLimit {
                 guard let sourceData = try Self.currentData(at: url) else { return }
                 var xmp = try XMPReader.readFromXML(sourceData)
                 let metadata = self.parseMetadata(from: xmp, imageAspect: { nil })
@@ -146,6 +150,7 @@ struct XMPSidecarService: Sendable {
                     stagedData = nil
                 }
 
+                beforeRevisionCheck(attempt)
                 await Task.yield()
                 guard try Self.currentData(at: url) == sourceData else { continue }
 
@@ -288,14 +293,15 @@ struct XMPSidecarService: Sendable {
     /// Reads the batch baseline inside the per-photo transaction and replays the captured
     /// mutation after an external revision change. A queued edit cannot replace newer fields
     /// or Develop settings with the UI's stale batch record.
-    nonisolated func updateSidecarSerialized(
+    @MetadataSidecarFilesystemActor
+    func updateSidecarSerialized(
         for imageURL: URL,
         fallback: IPTCMetadata,
         beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in },
         mutation: @escaping @Sendable (inout IPTCMetadata) -> Void
     ) async throws -> IPTCMetadata {
         try Task.checkCancellation()
-        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             let url = self.sidecarURL(for: imageURL)
             for attempt in 0..<Self.transactionRetryLimit {
                 let sourceData = try Self.currentData(at: url)
@@ -339,11 +345,12 @@ struct XMPSidecarService: Sendable {
 
     /// Complete serialized full-record transaction for workflows that intentionally own both the
     /// descriptive and Develop portions of the sidecar.
-    nonisolated func saveSidecarSerialized(
+    @MetadataSidecarFilesystemActor
+    func saveSidecarSerialized(
         metadata: IPTCMetadata,
         for imageURL: URL
     ) async throws {
-        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             _ = try await self.updateXMPTransaction(for: imageURL) { xmp in
                 XMPDataBuilder.applyDescriptive(metadata, into: &xmp)
                 if let localizedTitles = metadata.localizedTitles {
@@ -375,12 +382,13 @@ struct XMPSidecarService: Sendable {
 
     /// Complete serialized Develop transaction. Descriptive and third-party namespaces are
     /// retained from the source revision used for this attempt.
-    nonisolated func saveCameraRawOnlySerialized(
+    @MetadataSidecarFilesystemActor
+    func saveCameraRawOnlySerialized(
         _ settings: CameraRawSettings?,
         orientation: Int?,
         for imageURL: URL
     ) async throws {
-        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             _ = try await self.updateXMPTransaction(for: imageURL) { xmp in
                 if let settings, !settings.isEmpty {
                     XMPDataBuilder.applyCameraRaw(

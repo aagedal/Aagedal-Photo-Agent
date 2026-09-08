@@ -394,3 +394,138 @@ private nonisolated final class MetadataSidecarExecutorGate: @unchecked Sendable
 
     func release() { semaphore.signal() }
 }
+
+@Suite("Remaining metadata sidecar worker paths")
+struct MetadataSidecarWorkerPathTests {
+    @Test("Bulk sidecar reads use Dispatch across admission windows", arguments: [false, true], [false, true])
+    @MainActor
+    func bulkReads(allFiles: Bool, cancelled: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let service = MetadataSidecarService()
+        let urls = (0..<17).map { folder.appendingPathComponent("image-\($0).jpg") }
+        for url in urls {
+            try service.saveSidecar(MetadataSidecar(
+                sourceFile: url.lastPathComponent, pendingChanges: true,
+                metadata: IPTCMetadata(title: url.lastPathComponent)
+            ), for: url, in: folder)
+        }
+        let check: @Sendable (URL) -> Void = { _ in
+            #expect(!cancelled)
+            #expect(!Thread.isMainThread)
+            #expect(MetadataSidecarFilesystemActor.shared.filesystemQueue.isIsolatingCurrentContext() == true)
+            #expect(MetadataSidecarExecutorContext.marker == folder)
+        }
+        let result = await Task {
+            if cancelled { withUnsafeCurrentTask { $0?.cancel() } }
+            return await MetadataSidecarExecutorContext.$marker.withValue(folder) {
+                if allFiles { return await service.loadAllSidecars(in: folder, beforeRead: check) }
+                return await service.loadSidecars(for: urls, in: folder, beforeRead: check)
+            }
+        }.value
+        #expect(Set(result.keys) == (cancelled ? [] : Set(urls)))
+        #expect(result.allSatisfy { $0.value.metadata.title == $0.key.lastPathComponent })
+    }
+
+    @Test("JSON update, history replacement, cleanup snapshots and deletion run on Dispatch")
+    @MainActor
+    func jsonLifecycle() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("lifecycle.jpg")
+        let service = MetadataSidecarService()
+        let check: @Sendable () -> Void = {
+            #expect(!Thread.isMainThread)
+            #expect(MetadataSidecarFilesystemActor.shared.filesystemQueue.isIsolatingCurrentContext() == true)
+            #expect(MetadataSidecarExecutorContext.marker == folder)
+        }
+        try await MetadataSidecarExecutorContext.$marker.withValue(folder) {
+            let updated = try await service.updateMetadataSerialized(
+                for: url, in: folder, fallback: IPTCMetadata(title: "Before"), pendingChanges: true,
+                beforeRevisionCheck: { _ in check() }
+            ) { metadata in
+                check()
+                metadata.title = "After"
+            }
+            #expect(updated.metadata.title == "After")
+            #expect(!updated.history.isEmpty)
+            var clear = updated
+            clear.history = []
+            let replaced = try await service.saveSidecarReplacingHistorySerialized(
+                clear, for: url, in: folder, beforeRevisionCheck: { _ in check() }
+            )
+            #expect(replaced.history.isEmpty)
+            #expect(replaced.metadata.title == "After")
+            let snapshot = try await service.captureWriteCleanupSnapshot(
+                for: url, in: folder, expected: replaced, beforeRead: check
+            )
+            let deleted = try await service.deleteSidecarAfterWriteSerialized(snapshot, beforeRevisionCheck: check)
+            #expect(deleted)
+            #expect(service.loadSidecar(for: url, in: folder) == nil)
+        }
+    }
+
+    @Test("Refresh cleanup and explicit photo/folder discard retain worker ownership", arguments: [0, 1, 2])
+    @MainActor
+    func cleanupAndDiscard(kind: Int) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("discard.jpg")
+        let service = MetadataSidecarService()
+        try service.saveSidecar(MetadataSidecar(sourceFile: url.lastPathComponent,
+                                                metadata: IPTCMetadata(title: "Saved")), for: url, in: folder)
+        let check: @Sendable () -> Void = {
+            #expect(!Thread.isMainThread)
+            #expect(MetadataSidecarFilesystemActor.shared.filesystemQueue.isIsolatingCurrentContext() == true)
+            #expect(MetadataSidecarExecutorContext.marker == folder)
+        }
+        try await MetadataSidecarExecutorContext.$marker.withValue(folder) {
+            switch kind {
+            case 0:
+                let deleted = try await service.deleteUnneededSidecarSerialized(
+                    for: url, in: folder, beforeRevisionCheck: { _ in check() }
+                )
+                #expect(deleted)
+            case 1:
+                try await service.deleteSidecarSerialized(for: url, in: folder, beforeDelete: check)
+            default:
+                try await service.deleteAllSidecarsSerialized(in: folder, beforeDelete: check)
+            }
+        }
+        #expect(service.loadSidecar(for: url, in: folder) == nil)
+    }
+
+    @Test("XMP update and strip retain descriptive/Develop separation on the worker")
+    @MainActor
+    func xmpLifecycle() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("develop.jpg")
+        let service = XMPSidecarService()
+        let check: @Sendable (Int) -> Void = { _ in
+            #expect(!Thread.isMainThread)
+            #expect(MetadataSidecarFilesystemActor.shared.filesystemQueue.isIsolatingCurrentContext() == true)
+            #expect(MetadataSidecarExecutorContext.marker == folder)
+        }
+        try await MetadataSidecarExecutorContext.$marker.withValue(folder) {
+            var settings = CameraRawSettings()
+            settings.exposure2012 = 0.75
+            try await service.saveSidecarSerialized(metadata: IPTCMetadata(title: "Before"), for: url)
+            try await service.saveCameraRawOnlySerialized(settings, orientation: 6, for: url)
+            let updated = try await service.updateSidecarSerialized(
+                for: url, fallback: IPTCMetadata(), beforeRevisionCheck: check
+            ) { metadata in metadata.title = "After" }
+            #expect(updated.title == "After")
+            #expect(updated.cameraRaw?.exposure2012 == 0.75)
+            try await service.stripIPTCFromSidecarSerialized(for: url, beforeRevisionCheck: check)
+            let stripped = try #require(service.loadSidecar(for: url))
+            #expect(stripped.title.isEmpty)
+            #expect(stripped.cameraRaw?.exposure2012 == 0.75)
+            #expect(stripped.exifOrientation == 6)
+        }
+    }
+}

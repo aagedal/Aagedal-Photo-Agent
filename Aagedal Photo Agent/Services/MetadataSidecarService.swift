@@ -7,9 +7,9 @@ struct MetadataSidecarService: Sendable {
 
     nonisolated static let sidecarDirectoryName = ".photo_metadata"
     /// Small JSON reads are cheap individually, but one task per sidecar creates thousands
-    /// of runnable jobs for large event folders. A bounded pool keeps I/O parallel without
-    /// overwhelming the cooperative executor or the filesystem.
-    private nonisolated static let maxConcurrentReads = 12
+    /// of queued jobs for large event folders. Bound admission to the Dispatch worker so
+    /// cancellation stops queued reads and other metadata transactions can make progress.
+    private nonisolated static let maxPendingReads = 12
 
     // MARK: - Directory Helpers
 
@@ -74,7 +74,12 @@ struct MetadataSidecarService: Sendable {
         return nil
     }
 
-    nonisolated func loadAllSidecars(in folderURL: URL) async -> [URL: MetadataSidecar] {
+    @MetadataSidecarFilesystemActor
+    func loadAllSidecars(
+        in folderURL: URL,
+        beforeRead: @escaping @Sendable (URL) -> Void = { _ in }
+    ) async -> [URL: MetadataSidecar] {
+        guard !Task.isCancelled else { return [:] }
         let dir = sidecarDirectory(for: folderURL)
         guard FileManager.default.fileExists(atPath: dir.path) else { return [:] }
 
@@ -90,10 +95,11 @@ struct MetadataSidecarService: Sendable {
 
         return await withTaskGroup(of: (URL, MetadataSidecar)?.self) { group in
             var iterator = jsonFiles.makeIterator()
-            for _ in 0..<min(Self.maxConcurrentReads, jsonFiles.count) {
+            for _ in 0..<min(Self.maxPendingReads, jsonFiles.count) {
                 guard let file = iterator.next() else { break }
-                group.addTask {
+                group.addTask { @MetadataSidecarFilesystemActor in
                     guard !Task.isCancelled else { return nil }
+                    beforeRead(file)
                     return Self.decodeSidecar(at: file, folderURL: folderURL)
                 }
             }
@@ -103,9 +109,10 @@ struct MetadataSidecarService: Sendable {
                 if let (imageURL, sidecar) = item {
                     result[imageURL] = sidecar
                 }
-                if let file = iterator.next() {
-                    group.addTask {
+                if !Task.isCancelled, let file = iterator.next() {
+                    group.addTask { @MetadataSidecarFilesystemActor in
                         guard !Task.isCancelled else { return nil }
+                        beforeRead(file)
                         return Self.decodeSidecar(at: file, folderURL: folderURL)
                     }
                 }
@@ -114,16 +121,21 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
-    nonisolated func loadSidecars(for imageURLs: [URL], in folderURL: URL) async -> [URL: MetadataSidecar] {
-        guard !imageURLs.isEmpty else { return [:] }
+    @MetadataSidecarFilesystemActor
+    func loadSidecars(
+        for imageURLs: [URL], in folderURL: URL,
+        beforeRead: @escaping @Sendable (URL) -> Void = { _ in }
+    ) async -> [URL: MetadataSidecar] {
+        guard !Task.isCancelled, !imageURLs.isEmpty else { return [:] }
         let requests = imageURLs.map { ($0, sidecarCandidateURLs(for: $0, in: folderURL)) }
         return await withTaskGroup(of: (URL, MetadataSidecar)?.self) { group in
             var iterator = requests.makeIterator()
-            for _ in 0..<min(Self.maxConcurrentReads, requests.count) {
+            for _ in 0..<min(Self.maxPendingReads, requests.count) {
                 guard let request = iterator.next() else { break }
                 let (imageURL, candidates) = request
-                group.addTask {
+                group.addTask { @MetadataSidecarFilesystemActor in
                     guard !Task.isCancelled else { return nil }
+                    beforeRead(imageURL)
                     for fileURL in candidates {
                         guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
                         if let (_, sidecar) = Self.decodeSidecar(at: fileURL, folderURL: folderURL) {
@@ -139,10 +151,11 @@ struct MetadataSidecarService: Sendable {
                 if let (imageURL, sidecar) = item {
                     result[imageURL] = sidecar
                 }
-                if let request = iterator.next() {
+                if !Task.isCancelled, let request = iterator.next() {
                     let (imageURL, candidates) = request
-                    group.addTask {
+                    group.addTask { @MetadataSidecarFilesystemActor in
                         guard !Task.isCancelled else { return nil }
+                        beforeRead(imageURL)
                         for fileURL in candidates {
                             guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
                             if let (_, sidecar) = Self.decodeSidecar(at: fileURL, folderURL: folderURL) {
@@ -157,7 +170,8 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
-    nonisolated func imagesWithPendingChanges(in folderURL: URL) async -> Set<URL> {
+    @MetadataSidecarFilesystemActor
+    func imagesWithPendingChanges(in folderURL: URL) async -> Set<URL> {
         let sidecars = await loadAllSidecars(in: folderURL)
         return Set(sidecars.filter { $0.value.pendingChanges }.keys)
     }
@@ -299,7 +313,8 @@ struct MetadataSidecarService: Sendable {
 
     /// Builds batch metadata and its history from the same revision under the photo lock.
     /// The fallback is used only when no current or legacy record exists.
-    nonisolated func updateMetadataSerialized(
+    @MetadataSidecarFilesystemActor
+    func updateMetadataSerialized(
         for imageURL: URL,
         in folderURL: URL,
         fallback: IPTCMetadata,
@@ -309,7 +324,7 @@ struct MetadataSidecarService: Sendable {
         mutation: @escaping @Sendable (inout IPTCMetadata) -> Void
     ) async throws -> MetadataSidecar {
         try Task.checkCancellation()
-        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             for attempt in 0..<4 {
                 let tokens = try self.contentTokens(for: imageURL, in: folderURL)
                 let current = self.loadSidecar(for: imageURL, in: folderURL)
@@ -386,18 +401,21 @@ struct MetadataSidecarService: Sendable {
     /// Serializes an intentional history replacement. The latest metadata record remains
     /// authoritative so clearing history cannot erase a face/caption mutation that reached the
     /// shared boundary first.
-    nonisolated func saveSidecarReplacingHistorySerialized(
+    @MetadataSidecarFilesystemActor
+    func saveSidecarReplacingHistorySerialized(
         _ sidecar: MetadataSidecar,
         for imageURL: URL,
-        in folderURL: URL
+        in folderURL: URL,
+        beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
     ) async throws -> MetadataSidecar {
-        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
-            for _ in 0..<4 {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
+            for attempt in 0..<4 {
                 let sourceTokens = try self.contentTokens(for: imageURL, in: folderURL)
                 let current = self.loadSidecar(for: imageURL, in: folderURL)
                 var replacement = current ?? sidecar
                 replacement.history = sidecar.history
 
+                beforeRevisionCheck(attempt)
                 await Task.yield()
                 guard try self.contentTokens(for: imageURL, in: folderURL) == sourceTokens else {
                     continue
@@ -426,7 +444,8 @@ struct MetadataSidecarService: Sendable {
         fileprivate let matchesEditor: Bool
     }
 
-    nonisolated func captureWriteCleanupSnapshot(
+    @MetadataSidecarFilesystemActor
+    func captureWriteCleanupSnapshot(
         for imageURL: URL,
         in folderURL: URL,
         expected: MetadataSidecar? = nil,
@@ -435,7 +454,7 @@ struct MetadataSidecarService: Sendable {
         beforeRead: @escaping @Sendable () throws -> Void = {}
     ) async throws -> WriteCleanupSnapshot {
         try Task.checkCancellation()
-        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             try beforeRead()
             let tokens = try self.contentTokens(for: imageURL, in: folderURL)
             let decoder = JSONDecoder()
@@ -470,12 +489,13 @@ struct MetadataSidecarService: Sendable {
 
     /// Returns false when a later sidecar revision must be retained. No retry may adopt
     /// that revision: the image write only committed the originally captured metadata.
-    nonisolated func deleteSidecarAfterWriteSerialized(
+    @MetadataSidecarFilesystemActor
+    func deleteSidecarAfterWriteSerialized(
         _ snapshot: WriteCleanupSnapshot,
         beforeRevisionCheck: @escaping @Sendable () throws -> Void = {}
     ) async throws -> Bool {
         try Task.checkCancellation()
-        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: snapshot.imageURL)) {
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: snapshot.imageURL)) { @MetadataSidecarFilesystemActor in
             try beforeRevisionCheck()
             guard snapshot.matchesEditor,
                   try self.contentTokens(for: snapshot.imageURL, in: snapshot.folderURL) == snapshot.tokens else {
@@ -492,13 +512,14 @@ struct MetadataSidecarService: Sendable {
     /// Inspect both naming generations before removing either, and leave unreadable/newer-schema
     /// documents in place. Once admitted, the transaction follows the coordinator's existing
     /// run-to-completion contract; cancellation can only prevent entry.
-    nonisolated func deleteUnneededSidecarSerialized(
+    @MetadataSidecarFilesystemActor
+    func deleteUnneededSidecarSerialized(
         for imageURL: URL,
         in folderURL: URL,
         beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
     ) async throws -> Bool {
         try Task.checkCancellation()
-        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             for attempt in 0..<4 {
                 let tokens = try self.contentTokens(for: imageURL, in: folderURL)
                 guard tokens.contains(where: { $0 != nil }) else { return false }
@@ -525,13 +546,14 @@ struct MetadataSidecarService: Sendable {
 
     /// Explicit user discard is serialized with photo writes. Unlike refresh cleanup it
     /// intentionally removes pending edits/history. Cancellation prevents admission only.
-    nonisolated func deleteSidecarSerialized(
+    @MetadataSidecarFilesystemActor
+    func deleteSidecarSerialized(
         for imageURL: URL,
         in folderURL: URL,
         beforeDelete: @escaping @Sendable () throws -> Void = {}
     ) async throws {
         try Task.checkCancellation()
-        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             try beforeDelete()
             try self.deleteSidecar(for: imageURL, in: folderURL)
         }
@@ -545,13 +567,14 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
-    nonisolated func deleteAllSidecarsSerialized(
+    @MetadataSidecarFilesystemActor
+    func deleteAllSidecarsSerialized(
         in folderURL: URL,
         beforeDelete: @escaping @Sendable () throws -> Void = {}
     ) async throws {
         try Task.checkCancellation()
         let folderKey = folderURL.resolvingSymlinksInPath().path.lowercased()
-        try await MetadataIOCoordinator.shared.withFolderLock(folderKey) {
+        try await MetadataIOCoordinator.shared.withFolderLock(folderKey) { @MetadataSidecarFilesystemActor in
             try beforeDelete()
             try self.deleteAllSidecars(in: folderURL)
         }
@@ -878,7 +901,7 @@ nonisolated struct MetadataSidecarPersistenceResult: Sendable {
     }
 }
 
-/// Shared worker for admitted JSON-history and XMP transactions. The per-photo coordinator
+/// Shared worker for bulk reads and admitted JSON/XMP transactions. The per-photo coordinator
 /// retains ownership across suspension/revision retries; its admitted task explicitly hops here
 /// before touching storage. A custom executor on the orchestrator alone would leave nonisolated
 /// async helpers running their blocking reads and writes on the cooperative pool.
