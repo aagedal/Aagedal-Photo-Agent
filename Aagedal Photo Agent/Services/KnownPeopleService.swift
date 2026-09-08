@@ -97,6 +97,13 @@ nonisolated struct KnownPeopleThumbnailReplacementResult: Sendable {
     let completion: Result<Void, any Error>
 }
 
+nonisolated struct KnownPeopleEmbeddingRemovalResult: Sendable {
+    let personWritten: Bool
+    let changedThumbnailURLs: [URL]
+    let thumbnailFailures: [URL: String]
+    let completion: Result<Void, any Error>
+}
+
 nonisolated struct KnownPeopleArchiveImportPayload: Sendable {
     let people: [KnownPerson]
     let personThumbnails: [UUID: Data]
@@ -242,6 +249,43 @@ actor KnownPeopleArchiveService {
         return KnownPeopleThumbnailReplacementResult(
             thumbnailWritten: thumbnailWritten, personWritten: personWritten, completion: completion
         )
+    }
+
+    /// The record is authoritative: only remove its image after the record commits. Once
+    /// admitted, finish the companion image changes even if cancellation arrives during I/O.
+    func removeEmbedding(person: KnownPerson, personURL: URL, embeddingURL: URL,
+                         replacementData: Data?, thumbnailURL: URL) async -> KnownPeopleEmbeddingRemovalResult {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        var personWritten = false
+        var changedThumbnailURLs: [URL] = []
+        var thumbnailFailures: [URL: String] = [:]
+        let completion = Result { () throws -> Void in
+            try Task.checkCancellation()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try access.writeCoordinatedData(encoder.encode(person), personURL)
+            personWritten = true
+            // Thumbnail cleanup/replacement remains best effort, as in synchronous CRUD.
+            do {
+                try access.removeCoordinatedItem(embeddingURL)
+                changedThumbnailURLs.append(embeddingURL)
+            } catch {
+                let failure = error as NSError
+                if failure.domain != NSCocoaErrorDomain ||
+                    ![NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(failure.code) {
+                    thumbnailFailures[embeddingURL] = error.localizedDescription
+                }
+            }
+            if let replacementData {
+                do {
+                    try access.writeCoordinatedData(replacementData, thumbnailURL)
+                    changedThumbnailURLs.append(thumbnailURL)
+                } catch { thumbnailFailures[thumbnailURL] = error.localizedDescription }
+            }
+        }
+        return KnownPeopleEmbeddingRemovalResult(personWritten: personWritten,
+            changedThumbnailURLs: changedThumbnailURLs, thumbnailFailures: thumbnailFailures, completion: completion)
     }
 
     func export(
@@ -1835,7 +1879,7 @@ final class KnownPeopleService {
         try Task.checkCancellation()
         let expectedStorageRevision = storageRevision
         guard let currentPerson = person(byID: personID) else { return }
-        var replacementThumbnail: (id: UUID, data: Data)?
+        var replacementThumbnail: (id: UUID, data: Data, revision: UInt64)?
         if currentPerson.representativeThumbnailID == embeddingID,
            let replacementID = currentPerson.embeddings.first(where: { $0.id != embeddingID })?.id,
            let request = await thumbnailReadRequest(itemID: replacementID, directoryName: "embedding_thumbnails") {
@@ -1850,34 +1894,62 @@ final class KnownPeopleService {
                request.contentRevision == thumbnailContentRevision,
                snapshot.requestID == request.requestID, snapshot.fileURL == request.fileURL,
                let data = snapshot.data {
-                replacementThumbnail = (id: replacementID, data: data)
+                replacementThumbnail = (id: replacementID, data: data, revision: thumbnailContentRevision)
             }
         }
         try Task.checkCancellation()
         guard expectedStorageRevision == storageRevision else { throw CancellationError() }
-        // A peer write can invalidate our database while the worker is suspended. Reload
-        // the current person before deciding whether it survived and applying the mutation.
-        guard person(byID: personID) != nil else { return }
-
-        var wasRepresentative = false
-
-        try mutatePerson(id: personID) { person in
-            wasRepresentative = person.representativeThumbnailID == embeddingID
-            person.embeddings.removeAll { $0.id == embeddingID }
-            if wasRepresentative {
-                person.representativeThumbnailID = person.embeddings.first?.id
+        await beginImport()
+        defer { endImport() }
+        try Task.checkCancellation()
+        guard expectedStorageRevision == storageRevision else { throw CancellationError() }
+        // Reload after admission: a peer or a preceding async mutation may have edited
+        // this person while either thumbnail preparation or transaction admission suspended.
+        guard var person = person(byID: personID) else { return }
+        let root = knownPeopleDirectory
+        let recordURL = personFileURL(for: personID)
+        let embeddingURL = embeddingThumbnailURL(for: embeddingID)
+        let personThumbnailURL = thumbnailURL(for: personID)
+        reserveImportDestinations([person], root: root)
+        Self.importReservedURLs.insert(embeddingURL.standardizedFileURL)
+        let wasRepresentative = person.representativeThumbnailID == embeddingID
+        person.embeddings.removeAll { $0.id == embeddingID }
+        if wasRepresentative { person.representativeThumbnailID = person.embeddings.first?.id }
+        person.updatedAt = Date()
+        let replacementData = wasRepresentative && person.representativeThumbnailID == replacementThumbnail?.id
+            && replacementThumbnail?.revision == thumbnailContentRevision
+            ? replacementThumbnail?.data : nil
+        let result = await archiveService.removeEmbedding(person: person, personURL: recordURL,
+            embeddingURL: embeddingURL, replacementData: replacementData, thumbnailURL: personThumbnailURL)
+        if result.personWritten {
+            invalidatePeerDatabases(at: root)
+            if expectedStorageRevision == storageRevision {
+                database = nil
+                clearFeaturePrintCache()
+                stampLocalWrite(recordURL)
             }
-            return true
         }
-
-        featurePrintCache.removeObject(forKey: embeddingID as NSUUID)
-        deleteEmbeddingThumbnail(for: embeddingID)
-
-        // If deleted embedding was the representative, update person thumbnail to new representative's
-        if wasRepresentative, let replacementThumbnail,
-           person(byID: personID)?.representativeThumbnailID == replacementThumbnail.id {
-            try? saveThumbnail(replacementThumbnail.data, for: personID)
+        // A committed removal invalidates the embedding itself, even when its file was
+        // already absent or cleanup failed. Cached bytes and suspended reads must expire.
+        if result.personWritten {
+            invalidatePeerThumbnails(at: root)
+            if expectedStorageRevision == storageRevision {
+                thumbnailContentRevision &+= 1
+                embeddingThumbnailCache.removeObject(forKey: embeddingID as NSUUID)
+                personThumbnailCache.removeObject(forKey: personID as NSUUID)
+                for url in result.changedThumbnailURLs { stampLocalWrite(url) }
+            }
         }
+        for (url, message) in result.thumbnailFailures {
+            knownPeopleLog.error("Embedding removal committed its record but could not update thumbnail: \(url.path, privacy: .private); \(message, privacy: .private)")
+        }
+        if result.personWritten, expectedStorageRevision == storageRevision {
+            NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        }
+        await releaseImportDestinations()
+        try result.completion.get()
+        try Task.checkCancellation()
+        guard expectedStorageRevision == storageRevision else { throw CancellationError() }
     }
 
     /// Get a person by ID

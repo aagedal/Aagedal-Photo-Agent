@@ -13,6 +13,151 @@ import AppKit
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Embedding removal invalidates cached and suspended images when its thumbnail is already missing", arguments: [false, true])
+    func embeddingRemovalMissingThumbnailInvalidation(pendingRead: Bool) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32
+        ))
+        let image = try #require(bitmap.representation(using: .png, properties: [:]))
+        let writer = KnownPeopleService()
+        let first = embedding(93)
+        let removed = embedding(94)
+        let person = try writer.addPerson(name: "Missing image", embeddings: [first, removed],
+            embeddingThumbnails: [removed.id: image])
+        #expect(writer.cachedEmbeddingThumbnail(for: removed.id) != nil)
+        let gate = KnownPeopleThumbnailPublicationGate(data: image)
+        defer { gate.resume() }
+        let peer = pendingRead ? KnownPeopleService(thumbnailLoader: KnownPeopleThumbnailLoadService(
+            access: KnownPeopleThumbnailFileAccess(readData: { gate.read($0) })
+        )) : KnownPeopleService()
+        let read: Task<NSImage?, Never>?
+        if pendingRead {
+            read = Task { await peer.loadEmbeddingThumbnail(for: removed.id) }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !gate.entered, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            try #require(gate.entered)
+        } else {
+            read = nil
+            #expect(await peer.loadEmbeddingThumbnail(for: removed.id) != nil)
+            #expect(peer.cachedEmbeddingThumbnail(for: removed.id) != nil)
+        }
+        try FileManager.default.removeItem(at: directory.appendingPathComponent(
+            "embedding_thumbnails/\(removed.id.uuidString).jpg"))
+        try await writer.removeEmbedding(removed.id, fromPersonID: person.id)
+        gate.resume()
+        if let read { #expect(await read.value == nil) }
+        #expect(writer.cachedEmbeddingThumbnail(for: removed.id) == nil)
+        #expect(peer.cachedEmbeddingThumbnail(for: removed.id) == nil)
+        #expect(writer.person(byID: person.id)?.embeddings.map(\.id) == [first.id])
+    }
+
+    @Test("Embedding removal reports failed replacement without undoing its durable record")
+    func embeddingRemovalReplacementFailure() async throws {
+        let directory = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let system = KnownPeopleArchiveFileAccess.system
+        let recordURL = directory.appendingPathComponent("person.json")
+        let embeddingURL = directory.appendingPathComponent("embedding.jpg")
+        let thumbnailURL = directory.appendingPathComponent("person.jpg")
+        try Data([1]).write(to: embeddingURL)
+        try Data([2]).write(to: thumbnailURL)
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+            writeCoordinatedData: { data, url in
+                #expect(!Thread.isMainThread)
+                if url == thumbnailURL { throw CocoaError(.fileWriteNoPermission) }
+                try system.writeCoordinatedData(data, url)
+            }, runDitto: system.runDitto
+        )
+        let person = KnownPerson(name: "Committed")
+        let result = await KnownPeopleArchiveService(access: access).removeEmbedding(
+            person: person, personURL: recordURL, embeddingURL: embeddingURL,
+            replacementData: Data([3]), thumbnailURL: thumbnailURL)
+        try result.completion.get()
+        #expect(result.personWritten)
+        #expect(result.changedThumbnailURLs == [embeddingURL])
+        #expect(Set(result.thumbnailFailures.keys) == [thumbnailURL])
+        #expect(try JSONDecoder().decode(KnownPerson.self, from: Data(contentsOf: recordURL)).id == person.id)
+        #expect(try Data(contentsOf: thumbnailURL) == Data([2]))
+    }
+
+    @Test("Embedding removal reserves its destinations and publishes durable writes after suspension", arguments: ["success", "cancel", "storageChange", "recordFailure", "thumbnailFailure", "deferredDeletion"])
+    func asynchronousEmbeddingRemoval(outcome: String) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        var access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+            writeCoordinatedData: { data, url in
+                #expect(!Thread.isMainThread)
+                _ = gate.read(url)
+                if outcome == "recordFailure" { throw CocoaError(.fileWriteNoPermission) }
+                try system.writeCoordinatedData(data, url)
+            }, runDitto: system.runDitto
+        )
+        access.removeCoordinatedItem = { url in
+            #expect(!Thread.isMainThread)
+            if outcome == "thumbnailFailure" { throw CocoaError(.fileWriteNoPermission) }
+            try system.removeCoordinatedItem(url)
+        }
+        let writer = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        let first = embedding(91)
+        let second = embedding(92)
+        let person = try writer.addPerson(name: "Original", embeddings: [first, second],
+            embeddingThumbnails: [first.id: Data([2]), second.id: Data([1])])
+        let peer = KnownPeopleService()
+        #expect(peer.person(byID: person.id) != nil)
+        let operation = Task { try await writer.removeEmbedding(second.id, fromPersonID: person.id) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(gate.entered)
+        #expect(throws: (any Error).self) { try peer.removePerson(id: person.id) }
+        #expect(throws: (any Error).self) { try peer.saveEmbeddingThumbnail(Data(), for: second.id) }
+        #expect(throws: (any Error).self) { try peer.clearDatabase() }
+        let unrelated = try peer.addPerson(name: "Unrelated", embeddings: [])
+        if outcome == "deferredDeletion" { peer.deleteEmbeddingThumbnail(for: first.id) }
+        if outcome == "cancel" { operation.cancel() }
+        if outcome == "storageChange" {
+            writer.reloadAfterStorageChange(resolvedStorageURL: directory.appendingPathComponent("other"))
+        }
+        gate.resume()
+        if ["success", "thumbnailFailure", "deferredDeletion"].contains(outcome) { try await operation.value }
+        else if outcome == "recordFailure" {
+            await #expect(throws: (any Error).self) { try await operation.value }
+        } else {
+            await #expect(throws: CancellationError.self) { try await operation.value }
+        }
+        let expected = outcome == "recordFailure" ? [first.id, second.id] : [first.id]
+        #expect(peer.person(byID: person.id)?.embeddings.map(\.id) == expected)
+        #expect(peer.person(byID: unrelated.id) != nil)
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent(
+            "embedding_thumbnails/\(second.id.uuidString).jpg").path) == (["recordFailure", "thumbnailFailure"].contains(outcome)))
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent(
+            "embedding_thumbnails/\(first.id.uuidString).jpg").path) == (outcome != "deferredDeletion"))
+        if outcome == "storageChange" { #expect(writer.person(byID: person.id) == nil) }
+        try peer.removePerson(id: person.id)
+    }
+
     @Test("Thumbnail replacement reserves its record and publishes durable worker writes", arguments: ["success", "cancel", "storageChange", "recordFailure"])
     func asynchronousThumbnailReplacement(outcome: String) async throws {
         let directory = makeTempDir()
