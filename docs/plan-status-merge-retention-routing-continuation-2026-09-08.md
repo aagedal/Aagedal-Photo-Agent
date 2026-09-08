@@ -70,6 +70,24 @@ Final logs: `/private/tmp/aagedal-merge-retention-routing-final-tests.log` and
 existing DerivedData test logs with timestamp `2026.09.08_20-47-16-+0200`. The earlier failing
 run is retained in `/private/tmp/aagedal-merge-retention-routing-tests.log`.
 
+## Current-source unsigned candidate
+
+A clean-source Release candidate built from `b32b4f31e5f6ace384b86fca3d8b6cbef9b671b1`,
+version **3.0.0 (738)**, with Xcode 26.6 (17F113) on arm64 macOS 27.0 (26A5425a).
+Model omission passed and all **79** ZIP payload entries match the built application.
+The bundle has 73 regular files totaling 145,217,218 bytes; the ZIP is 49,723,822 bytes.
+ZIP SHA-256: `00730bab74130fc545597bdb90fb3cde37e3159a55819d210d7e4dbea9629539`.
+
+```sh
+python3 -B scripts/ci/build_model_free_candidate.py \
+  build/model-omission-candidate-merge-retention-2026-09-08
+```
+
+The application, ZIP, build log and `measurement.json` are retained in that ignored output
+directory. Xcode used approved access to existing caches. This is unsigned build/package
+evidence only; no launch, signing, notarization, distribution or production-server validation
+is claimed. The subsequent documentation-only commit does not change candidate application source.
+
 ## Remaining work
 
 1. **Storage ownership:** Known People cold root/database loading, migrations, low-level CRUD,
