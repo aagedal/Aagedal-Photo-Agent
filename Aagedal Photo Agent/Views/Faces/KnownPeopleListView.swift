@@ -24,6 +24,7 @@ struct KnownPeopleListView: View {
     @State private var searchText = ""
     @State private var showDeleteConfirmation = false
     @State private var personToDelete: KnownPerson?
+    @State private var deletingPersonIDs: Set<UUID> = []
     @State private var sortMode: KnownPeopleSortMode = .name
     @State private var deletionErrorMessage: String?
 
@@ -139,6 +140,7 @@ struct KnownPeopleListView: View {
             Button("Delete", role: .destructive) {
                 deletePerson(person)
             }
+            .disabled(deletingPersonIDs.contains(person.id))
         } message: { person in
             Text("Are you sure you want to delete \"\(person.name)\"? This will remove all \(person.embeddings.count) face sample(s). This cannot be undone.")
         }
@@ -175,14 +177,20 @@ struct KnownPeopleListView: View {
     }
 
     private func deletePerson(_ person: KnownPerson) {
-        do {
-            try KnownPeopleService.shared.removePerson(id: person.id)
-            people.removeAll { $0.id == person.id }
-            if selectedPersonID == person.id {
-                selectedPersonID = nil
+        guard deletingPersonIDs.insert(person.id).inserted else { return }
+        Task {
+            defer { deletingPersonIDs.remove(person.id) }
+            do {
+                try await KnownPeopleService.shared.removePersonInBackground(id: person.id)
+                people.removeAll { $0.id == person.id }
+                if selectedPersonID == person.id {
+                    selectedPersonID = nil
+                }
+            } catch is CancellationError {
+                // Durable changes are published by the service; storage changes cancel this view's request.
+            } catch {
+                deletionErrorMessage = error.localizedDescription
             }
-        } catch {
-            deletionErrorMessage = error.localizedDescription
         }
     }
 }

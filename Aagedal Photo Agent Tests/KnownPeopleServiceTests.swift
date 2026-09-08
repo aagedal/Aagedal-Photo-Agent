@@ -13,6 +13,94 @@ import AppKit
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Cancelled person deletion writes no tombstone and releases admission")
+    func cancelledPersonDeletionBeforeAdmission() async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let service = KnownPeopleService()
+        let person = try service.addPerson(name: "Keep me", embeddings: [])
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await service.removePersonInBackground(id: person.id)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(service.person(byID: person.id) != nil)
+        #expect(!FileManager.default.fileExists(atPath: tombstoneURL(person.id, in: directory).path))
+        try await service.removePersonInBackground(id: person.id)
+        #expect(service.person(byID: person.id) == nil)
+    }
+
+    @Test("Async person deletion preserves rollback and publishes admitted deletion", arguments: [
+        "success", "cancel", "storageChange", "markerFailure", "recordFailure", "rollbackFailure"
+    ])
+    func asynchronousPersonDeletion(outcome: String) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let writer = KnownPeopleService()
+        let sample = embedding(8)
+        let person = try writer.addPerson(name: "Delete me", embeddings: [sample],
+            thumbnailData: Data([1, 2]), embeddingThumbnails: [sample.id: Data([3, 4])])
+        let peer = KnownPeopleService()
+        #expect(peer.person(byID: person.id) != nil)
+        let live = DurableDeletionIO.live
+        KnownPeopleService.deletionIO = DurableDeletionIO(
+            writeData: { data, url in
+                #expect(!Thread.isMainThread)
+                _ = gate.read(url)
+                if outcome == "markerFailure" { throw CocoaError(.fileWriteNoPermission) }
+                try live.writeData(data, url)
+            },
+            readData: { url in
+                #expect(!Thread.isMainThread)
+                return try live.readData(url)
+            },
+            removeItem: { url in
+                #expect(!Thread.isMainThread)
+                if outcome == "rollbackFailure" || (outcome == "recordFailure" && url.pathExtension == "json") {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                try live.removeItem(url)
+            }
+        )
+        let task = Task { try await writer.removePersonInBackground(id: person.id) }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(gate.entered)
+        #expect(throws: (any Error).self) { try peer.removePerson(id: person.id) }
+        #expect(throws: (any Error).self) { try peer.saveEmbeddingThumbnail(Data(), for: sample.id) }
+        #expect(throws: (any Error).self) { try peer.clearDatabase() }
+        let unrelated = try peer.addPerson(name: "Unrelated", embeddings: [])
+        if outcome == "cancel" { task.cancel() }
+        if outcome == "storageChange" {
+            writer.reloadAfterStorageChange(resolvedStorageURL: directory.appendingPathComponent("other"))
+        }
+        gate.resume()
+        if outcome == "success" {
+            try await task.value
+        } else if outcome == "cancel" || outcome == "storageChange" {
+            await #expect(throws: CancellationError.self) { try await task.value }
+        } else {
+            await #expect(throws: DurableDeletionError.self) { try await task.value }
+        }
+        let committed = ["success", "cancel", "storageChange"].contains(outcome)
+        #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: directory).path) == !committed)
+        #expect(FileManager.default.fileExists(atPath: tombstoneURL(person.id, in: directory).path) == (committed || outcome == "rollbackFailure"))
+        for path in ["thumbnails/\(person.id.uuidString).jpg", "embedding_thumbnails/\(sample.id.uuidString).jpg"] {
+            #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent(path).path) == !committed)
+        }
+        #expect((peer.person(byID: person.id) == nil) == (committed || outcome == "rollbackFailure"))
+        #expect(peer.person(byID: unrelated.id) != nil)
+        if outcome != "storageChange" { #expect(writer.person(byID: unrelated.id) != nil) }
+        // Every outcome releases reservations, permitting subsequent ordinary writes.
+        try peer.saveThumbnail(Data([9]), for: person.id)
+    }
+
     @Test("Queued ordinary additions recheck names after admission")
     func queuedOrdinaryAdditions() async throws {
         let directory = makeTempDir()

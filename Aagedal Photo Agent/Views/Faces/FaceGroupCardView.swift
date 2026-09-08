@@ -1034,6 +1034,8 @@ final class FaceGroupCardView: NSView {
             defer { isAddingToKnownPeople = false }
             do {
                 _ = try await viewModel.addGroupToKnownPeople(groupID: group.id, name: name)
+            } catch is CancellationError {
+                // Navigation or changed source data invalidated this request.
             } catch {
                 Logger(subsystem: "com.aagedal.photo-agent", category: "FaceGroupCard")
                     .error("Failed to add to Known People: \(error.localizedDescription)")

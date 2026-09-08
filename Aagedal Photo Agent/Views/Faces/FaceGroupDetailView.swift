@@ -499,6 +499,8 @@ struct FaceGroupDetailView: View {
                     try? await Task.sleep(for: .seconds(2))
                     if knownPeopleRequestID == requestID { knownPeopleMessage = nil }
                 }
+            } catch is CancellationError {
+                isAddingToKnownPeople = false
             } catch {
                 isAddingToKnownPeople = false
                 guard knownPeopleRequestID == requestID, trimmedName == trimmed else { return }

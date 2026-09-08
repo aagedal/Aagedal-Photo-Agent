@@ -26,6 +26,18 @@ enum AddToKnownPeopleError: LocalizedError {
     }
 }
 
+/// Retain encoded bytes with their display image so background preparation never reads a
+/// mutable AppKit image. Both representations share the same bounded cache lifetime.
+private final class FaceThumbnailCacheEntry: NSObject {
+    let image: NSImage
+    let data: Data
+
+    init(image: NSImage, data: Data) {
+        self.image = image
+        self.data = data
+    }
+}
+
 /// Value returned by the off-main scan worker. The contained model values are immutable at the
 /// actor boundary and become the visible folder state only after the worker has finished.
 nonisolated private struct FaceScanWorkerResult: @unchecked Sendable {
@@ -125,8 +137,8 @@ final class FaceRecognitionViewModel {
     var errorMessage: String?
 
     // Thumbnail cache: faceID -> NSImage (NSCache with eviction, not observed to avoid re-render loops)
-    @ObservationIgnored nonisolated(unsafe) private let thumbnailCache: NSCache<NSUUID, NSImage> = {
-        let cache = NSCache<NSUUID, NSImage>()
+    @ObservationIgnored nonisolated(unsafe) private let thumbnailCache: NSCache<NSUUID, FaceThumbnailCacheEntry> = {
+        let cache = NSCache<NSUUID, FaceThumbnailCacheEntry>()
         cache.countLimit = 500
         return cache
     }()
@@ -833,7 +845,7 @@ final class FaceRecognitionViewModel {
         thumbnailCache.removeAllObjects()
         for (faceID, data) in thumbnailData {
             if let image = NSImage(data: data) {
-                thumbnailCache.setObject(image, forKey: faceID as NSUUID)
+                thumbnailCache.setObject(FaceThumbnailCacheEntry(image: image, data: data), forKey: faceID as NSUUID)
             }
         }
     }
@@ -1041,7 +1053,7 @@ final class FaceRecognitionViewModel {
             let reportThumbnail: @MainActor @Sendable (UUID, Data) -> Void = { [self] faceID, data in
                 guard self.displayedFolderURL == folderURL.standardizedFileURL,
                       let image = NSImage(data: data) else { return }
-                self.thumbnailCache.setObject(image, forKey: faceID as NSUUID)
+                self.thumbnailCache.setObject(FaceThumbnailCacheEntry(image: image, data: data), forKey: faceID as NSUUID)
             }
 
             // Keep detection, disk writes, and clustering off the main actor. `Task {}` inherits
@@ -1656,20 +1668,18 @@ final class FaceRecognitionViewModel {
             )
         }
 
-        // Build per-embedding thumbnail map (embedding ID → small JPEG)
-        var embeddingThumbnails: [UUID: Data] = [:]
-        for (index, face) in faces.enumerated() {
-            if let thumbImage = thumbnailImage(for: face.id),
-               let smallData = generateSmallThumbnailData(from: thumbImage) {
-                embeddingThumbnails[embeddings[index].id] = smallData
-            }
-        }
-
-        var thumbnailData: Data?
-        if let thumbImage = thumbnailImage(for: group.representativeFaceID),
-           let tiffData = thumbImage.tiffRepresentation,
-           let bitmap = NSBitmapImageRep(data: tiffData) {
-            thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+        let expectedRevision = faceDataRevision
+        let expectedFolder = displayedFolderURL
+        let sourceThumbnails = Dictionary(uniqueKeysWithValues: faces.enumerated().compactMap { index, face in
+            thumbnailCache.object(forKey: face.id as NSUUID).map { (embeddings[index].id, $0.data) }
+        })
+        let representativeData = thumbnailCache.object(forKey: group.representativeFaceID as NSUUID)?.data
+        let prepared = try await KnownPeopleAdditionThumbnailService.shared.prepare(
+            embeddingSources: sourceThumbnails, representativeSource: representativeData
+        )
+        try Task.checkCancellation()
+        guard faceDataRevision == expectedRevision, displayedFolderURL == expectedFolder else {
+            throw CancellationError()
         }
 
         let representativeFace = faces.first { $0.id == group.representativeFaceID } ?? faces.first
@@ -1685,13 +1695,28 @@ final class FaceRecognitionViewModel {
             duplicateCheck = .noDuplicate
         }
 
-        let (person, addedToExisting) = try await KnownPeopleService.shared.addOrMergePerson(
-            name: name,
-            embeddings: embeddings,
-            thumbnailData: thumbnailData,
-            embeddingThumbnails: embeddingThumbnails,
-            duplicateCheck: duplicateCheck
-        )
+        let person: KnownPerson
+        let addedToExisting: Bool
+        do {
+            (person, addedToExisting) = try await KnownPeopleService.shared.addOrMergePerson(
+                name: name,
+                embeddings: embeddings,
+                thumbnailData: prepared.representative,
+                embeddingThumbnails: prepared.embeddings,
+                duplicateCheck: duplicateCheck
+            )
+        } catch {
+            guard !Task.isCancelled, faceDataRevision == expectedRevision,
+                  displayedFolderURL == expectedFolder else { throw CancellationError() }
+            throw error
+        }
+
+        // A completed durable write survives navigation, but its result must not update
+        // a different folder or a group that changed while storage was suspended.
+        try Task.checkCancellation()
+        guard faceDataRevision == expectedRevision, displayedFolderURL == expectedFolder else {
+            throw CancellationError()
+        }
 
         return AddToKnownPeopleResult(
             addedToExisting: addedToExisting,
@@ -1699,32 +1724,6 @@ final class FaceRecognitionViewModel {
             name: name,
             personID: person.id
         )
-    }
-
-    /// Generate a small thumbnail (80×80) for embedding storage in the Known People database.
-    private func generateSmallThumbnailData(from image: NSImage, size: Int = 80) -> Data? {
-        let targetSize = NSSize(width: size, height: size)
-        let smallImage = NSImage(size: targetSize)
-        smallImage.lockFocus()
-
-        let sourceSize = image.size
-        let scale = max(targetSize.width / sourceSize.width, targetSize.height / sourceSize.height)
-        let scaledWidth = sourceSize.width * scale
-        let scaledHeight = sourceSize.height * scale
-        let drawRect = NSRect(
-            x: (targetSize.width - scaledWidth) / 2,
-            y: (targetSize.height - scaledHeight) / 2,
-            width: scaledWidth,
-            height: scaledHeight
-        )
-
-        NSGraphicsContext.current?.imageInterpolation = .high
-        image.draw(in: drawRect, from: .zero, operation: .copy, fraction: 1.0)
-        smallImage.unlockFocus()
-
-        guard let tiffData = smallImage.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
-        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.7])
     }
 
     /// Select a group for thumbnail replacement. Only shows in suggestions panel if the group
@@ -3445,6 +3444,6 @@ final class FaceRecognitionViewModel {
     }
 
     func thumbnailImage(for faceID: UUID) -> NSImage? {
-        thumbnailCache.object(forKey: faceID as NSUUID)
+        thumbnailCache.object(forKey: faceID as NSUUID)?.image
     }
 }

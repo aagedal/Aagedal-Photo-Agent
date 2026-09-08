@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreGraphics
+import ImageIO
 import CryptoKit
 @testable import Aagedal_Photo_Agent
 
@@ -1659,5 +1660,82 @@ nonisolated private final class AuraFacePublishedURLProbe: @unchecked Sendable {
 
     func record(_ url: URL?) {
         lock.withLock { recordedURLs.append(url) }
+    }
+}
+
+@Suite("Known People addition thumbnail preparation")
+struct KnownPeopleAdditionThumbnailTests {
+    @Test func preparesCenteredSquareAndPreservesRepresentativeDimensions() async throws {
+        let context = try #require(CGContext(data: nil, width: 240, height: 80,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 240, height: 80))
+        context.setFillColor(CGColor(red: 0, green: 1, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 80, y: 0, width: 80, height: 80))
+        let image = try #require(context.makeImage())
+        let encoded = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(encoded, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        let id = UUID()
+        let prepared = try await KnownPeopleAdditionThumbnailService().prepare(
+            embeddingSources: [id: encoded as Data], representativeSource: encoded as Data)
+        let thumbnail = try #require(prepared.embeddings[id])
+        let source = try #require(CGImageSourceCreateWithData(thumbnail as CFData, nil))
+        let resized = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(resized.width == 80)
+        #expect(resized.height == 80)
+        let pixelContext = try #require(CGContext(data: nil, width: 1, height: 1,
+            bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        pixelContext.draw(resized, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let pixels = try #require(pixelContext.data).assumingMemoryBound(to: UInt8.self)
+        #expect(pixels[0] < 20)
+        #expect(pixels[1] > 230)
+        let representative = try #require(prepared.representative)
+        let representativeSource = try #require(CGImageSourceCreateWithData(representative as CFData, nil))
+        let full = try #require(CGImageSourceCreateImageAtIndex(representativeSource, 0, nil))
+        #expect(full.width == 240)
+        #expect(full.height == 80)
+    }
+
+    @Test func appliesExifOrientationToRepresentative() async throws {
+        let context = try #require(CGContext(data: nil, width: 120, height: 60,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let image = try #require(context.makeImage())
+        let encoded = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(encoded, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+        let prepared = try await KnownPeopleAdditionThumbnailService().prepare(
+            embeddingSources: [:], representativeSource: encoded as Data)
+        let data = try #require(prepared.representative)
+        let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+        let output = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(output.width == 60)
+        #expect(output.height == 120)
+    }
+
+    @Test func invalidAndMissingSourcesRemainBestEffort() async throws {
+        let result = try await KnownPeopleAdditionThumbnailService().prepare(
+            embeddingSources: [UUID(): Data("invalid".utf8)], representativeSource: nil)
+        #expect(result.embeddings.isEmpty)
+        #expect(result.representative == nil)
+    }
+
+    @Test func cancellationRejectsPreparation() async {
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await KnownPeopleAdditionThumbnailService().prepare(
+                embeddingSources: [:], representativeSource: nil)
+        }
+        do {
+            _ = try await task.value
+            Issue.record("Cancelled preparation should not publish a result")
+        } catch {
+            #expect(error is CancellationError)
+        }
     }
 }

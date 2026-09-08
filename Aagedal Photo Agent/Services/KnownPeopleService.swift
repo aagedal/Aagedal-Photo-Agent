@@ -103,6 +103,13 @@ nonisolated struct KnownPeopleAdditionResult: Sendable {
     let completion: Result<Void, any Error>
 }
 
+nonisolated struct KnownPeoplePersonRemovalResult: Sendable {
+    let personRemoved: Bool
+    let markerRollbackFailed: Bool
+    let removedThumbnailURLs: [URL]
+    let completion: Result<Void, any Error>
+}
+
 nonisolated struct KnownPeopleEmbeddingRemovalResult: Sendable {
     let personWritten: Bool
     let changedThumbnailURLs: [URL]
@@ -285,6 +292,42 @@ actor KnownPeopleArchiveService {
         }
         return KnownPeopleAdditionResult(personWritten: personWritten,
             writtenThumbnailURLs: writtenThumbnailURLs, completion: completion)
+    }
+
+    /// Complete the marker/record transition once admitted, including rollback on failure.
+    /// Derived files are disposable and may only be removed after the durable delete succeeds.
+    func removePerson(id: UUID, markerURL: URL, recordURL: URL,
+                      thumbnailURLs: [URL], deletionIO: DurableDeletionIO) async -> KnownPeoplePersonRemovalResult {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        var personRemoved = false
+        var removedThumbnailURLs: [URL] = []
+        let completion = Result { () throws -> Void in
+            try Task.checkCancellation()
+            try DurableDeletionTransaction.execute(
+                marker: KnownPersonTombstone(id: id), markerURL: markerURL,
+                recordURL: recordURL, markerMatches: { $0.id == id }, io: deletionIO
+            )
+            personRemoved = true
+            for url in thumbnailURLs {
+                do {
+                    try access.removeCoordinatedItem(url)
+                    removedThumbnailURLs.append(url)
+                } catch {
+                    // A failed derived-file cleanup does not undo the authoritative deletion.
+                    knownPeopleLog.debug("Could not remove deleted person's thumbnail: \(url.path, privacy: .private)")
+                }
+            }
+        }
+        let markerRollbackFailed: Bool
+        if case .failure(let error) = completion,
+           case .markerRollbackFailed = error as? DurableDeletionError {
+            markerRollbackFailed = true
+        } else {
+            markerRollbackFailed = false
+        }
+        return KnownPeoplePersonRemovalResult(personRemoved: personRemoved,
+            markerRollbackFailed: markerRollbackFailed, removedThumbnailURLs: removedThumbnailURLs, completion: completion)
     }
 
     /// The record is authoritative: only remove its image after the record commits. Once
@@ -1646,6 +1689,56 @@ final class KnownPeopleService {
             existing.representativeThumbnailID = person.representativeThumbnailID
             return true
         }
+    }
+
+    /// Production deletion keeps coordinated tombstone, record and thumbnail I/O off MainActor.
+    func removePersonInBackground(id: UUID) async throws {
+        let revision = storageRevision
+        await beginImport()
+        defer { endImport() }
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
+        let person = person(byID: id)
+        let root = knownPeopleDirectory
+        let recordURL = personFileURL(for: id)
+        let markerURL = tombstoneURL(for: id)
+        let thumbnailURLs = [thumbnailURL(for: id)] + (person?.embeddings.map {
+            embeddingThumbnailURL(for: $0.id)
+        } ?? [])
+        reserveImportDestinations([person ?? KnownPerson(id: id, name: "")], root: root)
+        let result = await archiveService.removePerson(id: id, markerURL: markerURL,
+            recordURL: recordURL, thumbnailURLs: thumbnailURLs, deletionIO: Self.deletionIO)
+        if result.markerRollbackFailed {
+            // A surviving marker suppresses the record on disk, even though deletion failed.
+            invalidatePeerDatabases(at: root)
+            if revision == storageRevision {
+                database = nil
+                clearFeaturePrintCache()
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+            }
+        }
+        if result.personRemoved {
+            invalidatePeerDatabases(at: root)
+            invalidatePeerThumbnails(at: root)
+            if revision == storageRevision {
+                // Unrelated records may have changed while deletion was suspended.
+                database = nil
+                clearFeaturePrintCache()
+                thumbnailContentRevision &+= 1
+                personThumbnailCache.removeObject(forKey: id as NSUUID)
+                for embedding in person?.embeddings ?? [] {
+                    embeddingThumbnailCache.removeObject(forKey: embedding.id as NSUUID)
+                }
+                stampLocalWrite(markerURL)
+                stampLocalWrite(recordURL)
+                for url in result.removedThumbnailURLs { stampLocalWrite(url) }
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+            }
+        }
+        await releaseImportDestinations()
+        try result.completion.get()
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
     }
 
     func removePerson(id: UUID) throws {
