@@ -19,8 +19,9 @@ validation records do not justify closing any of those 23 items.
 production details and representative edits await reserved worker writes against the current record;
 forms retain failed edits and resolve people by identity across list changes. Known People archives,
 general filesystem operations, keyword archive transport, and backup preview/history retain dedicated
-Dispatch executors with caller cancellation and task-local context. Broad storage ownership and
-manual/device/release gates remain open.
+Dispatch executors with caller cancellation and task-local context. The final-source suite passed
+2,273 tests; an unsigned Release candidate passed model-omission and ZIP payload verification.
+Broad storage ownership and manual/device/release gates remain open.
 ([validation and remaining work](../plan-status-person-edit-storage-workers-continuation-2026-09-08.md))
 
 **Person merging, backup retention, and cloud workers continuation (2026-09-08):**

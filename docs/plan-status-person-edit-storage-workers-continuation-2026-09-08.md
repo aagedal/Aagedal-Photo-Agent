@@ -71,6 +71,24 @@ scripts/ci/validate_repository.sh
 git diff --check
 ```
 
+## Current-source unsigned candidate
+
+A clean-source Release candidate built from `08d486d2708f6ab1422574b064cd0159f4e54ea9`,
+version **3.0.0 (738)**, with Xcode 26.6 (17F113) on arm64 macOS 27.0 (26A5425a).
+Model omission passed and all **79** ZIP payload entries match the built application.
+The bundle has 73 regular files totaling 145,272,754 bytes; the ZIP is 49,733,280 bytes.
+ZIP SHA-256: `5f240af9cee11a66c6534ef3c196d4686f6a17055f115cffac98951100bc7cfc`.
+
+```sh
+python3 -B scripts/ci/build_model_free_candidate.py \
+  build/model-omission-candidate-person-edit-workers-2026-09-08
+```
+
+The application, ZIP, build log and `measurement.json` are retained in that ignored output
+directory. Xcode used approved access to existing caches. This is unsigned build/package
+evidence only; no launch, signing, notarization, distribution or production-server validation
+is claimed. The subsequent documentation-only commit does not change candidate application source.
+
 ## Remaining work
 
 1. **Storage ownership:** Known People cold root/database loading, migrations, compatibility CRUD,
