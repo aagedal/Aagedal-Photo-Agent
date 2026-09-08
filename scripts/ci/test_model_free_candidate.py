@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Check candidate provenance guards using real temporary Git repositories."""
 import subprocess
+from contextlib import nullcontext
+import os
+import stat
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 import build_model_free_candidate as candidate
@@ -61,6 +65,84 @@ class CandidateTests(unittest.TestCase):
         (self.repo / 'build').mkdir()
         (self.repo / 'build/log').write_text('output')
         candidate.verify_source(self.repo, self.revision)
+
+
+class ArchiveTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.app = self.root / 'Photo.app'
+        (self.app / 'Contents/MacOS').mkdir(parents=True)
+        self.executable = self.app / 'Contents/MacOS/Photo'
+        self.executable.write_bytes(b'original executable')
+        self.executable.chmod(0o755)
+        (self.app / 'Contents/current').symlink_to('MacOS/Photo')
+        self.archive = self.root / 'candidate.zip'
+
+    def package(self, *, omit=None, replace=None, extra=None):
+        with zipfile.ZipFile(self.archive, 'w') as archive:
+            for path in self.app.rglob('*'):
+                name = path.relative_to(self.root).as_posix()
+                if name == omit or path.is_dir():
+                    continue
+                data = os.fsencode(os.readlink(path)) if path.is_symlink() else path.read_bytes()
+                mode = path.lstat().st_mode
+                if replace and name == replace[0]:
+                    data, mode = replace[1:]
+                entry = zipfile.ZipInfo(name)
+                entry.create_system = 3
+                entry.external_attr = mode << 16
+                archive.writestr(entry, data)
+            if extra:
+                archive.writestr(*extra)
+
+    def test_complete_bundle_and_internal_link_are_verified(self):
+        self.package()
+        self.assertEqual(candidate.verify_archive(self.app, self.archive), {
+            'archivePayloadVerified': True, 'archivePayloadEntryCount': 2,
+        })
+
+    def test_missing_changed_link_and_executable_payloads_fail(self):
+        name = 'Photo.app/Contents/MacOS/Photo'
+        link = 'Photo.app/Contents/current'
+        cases = [
+            {'omit': name},
+            {'replace': (name, b'changed executable', stat.S_IFREG | 0o755)},
+            {'replace': (name, b'original executable', stat.S_IFREG | 0o644)},
+            {'replace': (link, b'../elsewhere', stat.S_IFLNK | 0o777)},
+            {'replace': (link, b'MacOS/Photo', stat.S_IFREG | 0o644)},
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                self.package(**case)
+                with self.assertRaises(ValueError):
+                    candidate.verify_archive(self.app, self.archive)
+
+    def test_unexpected_unsafe_and_duplicate_entries_fail(self):
+        for name in ('Photo.app/extra', '../outside', '/absolute',
+                     'Photo.app/./extra', 'Photo.app//extra',
+                     'Photo.app/Contents/MacOS/Photo', '__MACOSX/extra'):
+            with self.subTest(name=name):
+                with self.assertWarns(UserWarning) if name.endswith('/MacOS/Photo') else nullcontext():
+                    self.package(extra=(name, b'extra'))
+                with self.assertRaises(ValueError):
+                    candidate.verify_archive(self.app, self.archive)
+
+    def test_appledouble_requires_corresponding_payload_and_magic(self):
+        for prefix in ('', '__MACOSX/'):
+            name = prefix + 'Photo.app/Contents/MacOS/._Photo'
+            self.package(extra=(name, b'\x00\x05\x16\x07metadata'))
+            self.assertTrue(candidate.verify_archive(self.app, self.archive)['archivePayloadVerified'])
+            self.package(extra=(name, b'invalid'))
+            with self.assertRaisesRegex(ValueError, 'metadata'):
+                candidate.verify_archive(self.app, self.archive)
+
+    @unittest.skipUnless(Path('/usr/bin/ditto').exists(), 'macOS ditto required')
+    def test_real_ditto_archive_matches_bundle(self):
+        subprocess.run(['/usr/bin/ditto', '-c', '-k', '--keepParent', str(self.app),
+                        str(self.archive)], check=True)
+        self.assertTrue(candidate.verify_archive(self.app, self.archive)['archivePayloadVerified'])
 
 
 if __name__ == '__main__':
