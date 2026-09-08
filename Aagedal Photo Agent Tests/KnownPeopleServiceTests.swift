@@ -367,6 +367,132 @@ struct KnownPeopleServiceTests {
         #expect(service.person(byID: source.id) == nil)
     }
 
+    @Test("Whole-database clear reserves all identities and publishes partial filesystem outcomes",
+          arguments: ["success", "cancel", "storageChange", "removeFailure", "partialRemoval", "recreateFailure"])
+    func asynchronousDatabaseClear(outcome: String) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        let queue = DispatchSerialQueue(label: "test.known-people.clear")
+        var access = system
+        access.removeCoordinatedItem = { url in
+            #expect(!Thread.isMainThread)
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(KnownPeopleEditTaskContext.root == directory)
+            _ = gate.read(url)
+            if outcome == "removeFailure" { throw CocoaError(.fileWriteNoPermission) }
+            if outcome == "partialRemoval" {
+                try system.removeCoordinatedItem(url.appendingPathComponent("people"))
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            try system.removeCoordinatedItem(url)
+        }
+        access.ensureCoordinatedDirectory = { url in
+            #expect(!Thread.isMainThread)
+            #expect(queue.isIsolatingCurrentContext() == true)
+            if outcome == "recreateFailure", url.lastPathComponent == "thumbnails" {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            try system.ensureCoordinatedDirectory(url)
+        }
+        let writer = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access, filesystemQueue: queue))
+        let sample = embedding(91)
+        let person = try writer.addPerson(name: "Clear me", embeddings: [sample],
+            thumbnailData: Data([1]), embeddingThumbnails: [sample.id: Data([2])])
+        let peer = KnownPeopleService()
+        #expect(peer.person(byID: person.id) != nil)
+        let task = Task {
+            try await KnownPeopleEditTaskContext.$root.withValue(directory) {
+                try await writer.clearDatabaseInBackground()
+            }
+        }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(gate.entered)
+        #expect(throws: (any Error).self) { try peer.addPerson(name: "New identity", embeddings: []) }
+        #expect(throws: (any Error).self) { try peer.updatePerson(person) }
+        #expect(throws: (any Error).self) { try peer.removePerson(id: person.id) }
+        #expect(throws: (any Error).self) { try peer.saveThumbnail(Data(), for: UUID()) }
+        #expect(throws: (any Error).self) { try peer.saveEmbeddingThumbnail(Data(), for: UUID()) }
+        #expect(throws: (any Error).self) { try peer.clearDatabase() }
+        let coldPeer = KnownPeopleService()
+        #expect(coldPeer.loadDatabase().people.isEmpty)
+        #expect(throws: (any Error).self) { try coldPeer.addPerson(name: "Cold identity", embeddings: []) }
+        if outcome == "cancel" { task.cancel() }
+        let otherRoot = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: otherRoot) }
+        var otherPerson: KnownPerson?
+        if outcome == "storageChange" {
+            writer.reloadAfterStorageChange(resolvedStorageURL: otherRoot)
+            otherPerson = try writer.addPerson(name: "Other root", embeddings: [])
+        }
+        gate.resume()
+        if outcome == "success" || outcome == "cancel" {
+            try await task.value
+        } else if outcome == "storageChange" {
+            await #expect(throws: CancellationError.self) { try await task.value }
+        } else {
+            await #expect(throws: CocoaError.self) { try await task.value }
+        }
+        #expect((peer.person(byID: person.id) != nil) == (outcome == "removeFailure"))
+        #expect((coldPeer.person(byID: person.id) != nil) == (outcome == "removeFailure"))
+        if let otherPerson {
+            #expect(writer.person(byID: otherPerson.id) != nil)
+            #expect(FileManager.default.fileExists(atPath: personFileURL(otherPerson.id, in: otherRoot).path))
+        } else {
+            #expect((writer.person(byID: person.id) != nil) == (outcome == "removeFailure"))
+        }
+        let added = try peer.addPerson(name: "After clear", embeddings: [])
+        #expect(peer.person(byID: added.id) != nil)
+    }
+
+    @Test("Clear worker reports completed removal and the durable recreation prefix")
+    func databaseClearWorkerEvidence() async throws {
+        let directory = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var access = KnownPeopleArchiveFileAccess.system
+        access.ensureCoordinatedDirectory = { url in
+            #expect(!Thread.isMainThread)
+            if url.lastPathComponent == "thumbnails" { throw CocoaError(.fileWriteNoPermission) }
+            try CloudCoordinatedIO.ensureDirectory(url)
+        }
+        let result = await KnownPeopleArchiveService(access: access).clearDatabase(root: directory)
+        #expect(result.removalAttempted)
+        #expect(result.rootRemoved)
+        #expect(result.recreatedDirectoryURLs.map(\.lastPathComponent) == ["people"])
+        #expect(throws: CocoaError.self) { try result.completion.get() }
+    }
+
+    @Test("Clear cancelled before admission leaves disk untouched and releases ownership")
+    func cancelledDatabaseClearBeforeAdmission() async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let service = KnownPeopleService()
+        let person = try service.addPerson(name: "Keep me", embeddings: [])
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await service.clearDatabaseInBackground()
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(service.person(byID: person.id) != nil)
+        try await service.clearDatabaseInBackground()
+        #expect(service.loadDatabase().people.isEmpty)
+        let worker = KnownPeopleArchiveService()
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await worker.clearDatabase(root: directory)
+        }
+        let result = await cancelled.value
+        #expect(!result.removalAttempted)
+        #expect(!result.rootRemoved)
+        #expect(result.recreatedDirectoryURLs.isEmpty)
+        #expect(throws: CancellationError.self) { try result.completion.get() }
+    }
+
     @Test("Cancelled person deletion writes no tombstone and releases admission")
     func cancelledPersonDeletionBeforeAdmission() async throws {
         let directory = makeTempDir()

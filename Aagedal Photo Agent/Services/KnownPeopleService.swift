@@ -121,6 +121,15 @@ nonisolated struct KnownPeoplePersonRemovalResult: Sendable {
     let completion: Result<Void, any Error>
 }
 
+nonisolated struct KnownPeopleDatabaseClearResult: Sendable {
+    // Recursive removal may delete a prefix before throwing. Even an unsuccessful
+    // attempt invalidates snapshots, while rootRemoved proves the entire reset.
+    let removalAttempted: Bool
+    let rootRemoved: Bool
+    let recreatedDirectoryURLs: [URL]
+    let completion: Result<Void, any Error>
+}
+
 nonisolated struct KnownPeopleMergeResult: Sendable {
     let targetWritten: Bool
     let sourceRemoved: Bool
@@ -180,6 +189,8 @@ nonisolated struct KnownPeopleArchiveFileAccess: Sendable {
     let runDitto: @Sendable ([String]) async throws -> Void
     var destinationExists: @Sendable (URL) -> Bool = { CloudCoordinatedIO.itemExists(at: $0) }
     var removeCoordinatedItem: @Sendable (URL) throws -> Void = { try CloudCoordinatedIO.removeItem(at: $0) }
+
+    var ensureCoordinatedDirectory: @Sendable (URL) throws -> Void = { try CloudCoordinatedIO.ensureDirectory($0) }
 
     static let system = KnownPeopleArchiveFileAccess(
         temporaryDirectory: FileManager.default.temporaryDirectory,
@@ -362,6 +373,30 @@ actor KnownPeopleArchiveService {
         }
         return KnownPeoplePersonRemovalResult(personRemoved: personRemoved,
             markerRollbackFailed: markerRollbackFailed, removedThumbnailURLs: removedThumbnailURLs, completion: completion)
+    }
+
+    /// Finish an admitted reset even if cancellation arrives during recursive removal.
+    /// Report partial removal/recreation so callers cannot publish a false empty snapshot.
+    func clearDatabase(root: URL) async -> KnownPeopleDatabaseClearResult {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        var removalAttempted = false
+        var rootRemoved = false
+        var recreatedDirectoryURLs: [URL] = []
+        let completion = Result { () throws -> Void in
+            try Task.checkCancellation()
+            removalAttempted = true
+            try access.removeCoordinatedItem(root)
+            rootRemoved = true
+            for name in ["people", "thumbnails", "embedding_thumbnails"] {
+                let url = root.appendingPathComponent(name, isDirectory: true)
+                try access.ensureCoordinatedDirectory(url)
+                recreatedDirectoryURLs.append(url)
+            }
+        }
+        return KnownPeopleDatabaseClearResult(removalAttempted: removalAttempted,
+            rootRemoved: rootRemoved, recreatedDirectoryURLs: recreatedDirectoryURLs,
+            completion: completion)
     }
 
     /// Preserve the target-first recovery contract across the entire admitted merge. Once
@@ -891,11 +926,20 @@ final class KnownPeopleService {
     private static weak var importCommitOwner: KnownPeopleService?
     private static var importCommitRoot: URL?
     private static var importReservedURLs: Set<URL> = []
+    // Whole-store deletion must exclude new identities as well as existing paths.
+    private static var clearReservedRoot: URL?
+
+    private static func isReservedDestination(_ url: URL) -> Bool {
+        let normalized = url.standardizedFileURL
+        if let root = clearReservedRoot,
+           normalized == root || normalized.path.hasPrefix(root.path + "/") { return true }
+        return importReservedURLs.contains(normalized)
+    }
     private static var deferredThumbnailDeletions: Set<URL> = []
     private static var deferredImportActions: [() -> Void] = []
 
     private func requireLocalWriteAdmission(to url: URL) throws {
-        guard !Self.importReservedURLs.contains(url.standardizedFileURL) else {
+        guard !Self.isReservedDestination(url) else {
             throw importBusyError()
         }
     }
@@ -941,6 +985,7 @@ final class KnownPeopleService {
         Self.importCommitOwner = nil
         Self.importCommitRoot = nil
         Self.importReservedURLs.removeAll()
+        Self.clearReservedRoot = nil
         let actions = Self.deferredImportActions
         Self.deferredImportActions.removeAll()
         // Replay each originating instance's invalidation/events after durable publication.
@@ -984,10 +1029,12 @@ final class KnownPeopleService {
         // Ensure the root and all subfolders once, here, so the per-access
         // accessors below can stay coordination-free. (Writes additionally
         // ensure their own parent via CloudCoordinatedIO.writeData.)
-        try? CloudCoordinatedIO.ensureDirectory(url)
-        try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("people", isDirectory: true))
-        try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("thumbnails", isDirectory: true))
-        try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("embedding_thumbnails", isDirectory: true))
+        if !Self.isReservedDestination(url) {
+            try? CloudCoordinatedIO.ensureDirectory(url)
+            try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("people", isDirectory: true))
+            try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("thumbnails", isDirectory: true))
+            try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("embedding_thumbnails", isDirectory: true))
+        }
         cachedDirectory = url
         return url
     }
@@ -1124,6 +1171,12 @@ final class KnownPeopleService {
             return cached
         }
 
+        // A cold peer must not run repair/GC writes or cache an intermediate listing
+        // while a whole-root reset owns the filesystem. Existing snapshots remain
+        // available until its durable result invalidates them.
+        guard Self.clearReservedRoot != knownPeopleDirectory.standardizedFileURL else {
+            return KnownPeopleDatabase()
+        }
         migrateLegacyDatabaseIfNeeded()
         migrateEmbeddingVersionIfNeeded()
 
@@ -1436,7 +1489,7 @@ final class KnownPeopleService {
         for change in changes {
             let url = change.url
             guard KnownPeopleCloudCoordinator.acceptsChange(at: url, root: knownPeopleDirectory) else { continue }
-            if Self.importReservedURLs.contains(url.standardizedFileURL) {
+            if Self.isReservedDestination(url) {
                 let importOwner = Self.importCommitOwner
                 Self.deferredImportActions.append { [weak self, weak importOwner] in
                     self?.applyRemoteChanges([change], ignoringLocalWriteEchoes: true)
@@ -1592,7 +1645,7 @@ final class KnownPeopleService {
         thumbnailContentRevision &+= 1
         personThumbnailCache.removeObject(forKey: personID as NSUUID)
         let url = thumbnailURL(for: personID)
-        if Self.importReservedURLs.contains(url.standardizedFileURL) {
+        if Self.isReservedDestination(url) {
             deferThumbnailDeletion(at: url)
             return
         }
@@ -1698,7 +1751,7 @@ final class KnownPeopleService {
         thumbnailContentRevision &+= 1
         embeddingThumbnailCache.removeObject(forKey: embeddingID as NSUUID)
         let url = embeddingThumbnailURL(for: embeddingID)
-        if Self.importReservedURLs.contains(url.standardizedFileURL) {
+        if Self.isReservedDestination(url) {
             deferThumbnailDeletion(at: url)
             return
         }
@@ -2426,30 +2479,64 @@ final class KnownPeopleService {
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
-    func clearDatabase() throws {
-        guard Self.importCommitRoot != knownPeopleDirectory.standardizedFileURL else {
-            throw importBusyError()
+    /// Settings uses this entry point so recursive deletion and recreation run on the
+    /// serialized filesystem worker, with process-wide exclusion for the entire root.
+    func clearDatabaseInBackground() async throws {
+        let revision = storageRevision
+        await beginImport()
+        defer { endImport() }
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
+        let root = knownPeopleDirectory
+        reserveImportDestinations([], root: root)
+        Self.clearReservedRoot = root.standardizedFileURL
+        let result = await archiveService.clearDatabase(root: root)
+        if result.removalAttempted {
+            invalidatePeerDatabases(at: root)
+            invalidatePeerThumbnails(at: root)
+            if revision == storageRevision, cachedDirectory?.standardizedFileURL == root.standardizedFileURL {
+                invalidateClearedDatabaseState()
+                // Keep the cache cold on partial failure; the next load observes disk.
+                if result.rootRemoved, result.recreatedDirectoryURLs.count == 3 {
+                    database = KnownPeopleDatabase()
+                }
+            }
         }
-        let emptyDB = KnownPeopleDatabase()
-        featurePrintCache.removeAllObjects()
+        await releaseImportDestinations()
+        if result.removalAttempted, revision == storageRevision {
+            NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        }
+        try result.completion.get()
+        // An admitted clear completes its destructive transaction despite cancellation.
+        // Report that durable success to Settings instead of claiming the clear failed.
+        guard revision == storageRevision else { throw CancellationError() }
+    }
+
+    private func invalidateClearedDatabaseState() {
+        database = nil
+        clearFeaturePrintCache()
+        thumbnailContentRevision &+= 1
         personThumbnailCache.removeAllObjects()
         embeddingThumbnailCache.removeAllObjects()
         recentLocalWrites.removeAll()
+    }
 
-        // Remove all files (people/, thumbnails, embedding thumbnails, any
-        // tombstones). This is a local nuke — tombstones go with it.
-        try CloudCoordinatedIO.removeItem(at: knownPeopleDirectory)
-        database = nil
-        invalidatePeerDatabases(at: knownPeopleDirectory)
-        thumbnailContentRevision &+= 1
-        invalidatePeerThumbnails(at: knownPeopleDirectory)
-
-        // Recreate empty directory structure
-        try CloudCoordinatedIO.ensureDirectory(peopleDirectory)
-        try CloudCoordinatedIO.ensureDirectory(thumbnailsDirectory)
-        try CloudCoordinatedIO.ensureDirectory(embeddingThumbnailsDirectory)
-        database = emptyDB
-        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+    /// Synchronous compatibility entry point. Production callers use the worker above.
+    func clearDatabase() throws {
+        let root = knownPeopleDirectory
+        guard Self.importCommitRoot != root.standardizedFileURL else { throw importBusyError() }
+        // A recursive removal can partially succeed before throwing. Always invalidate
+        // derived state after an attempted reset, including recreation failures.
+        defer {
+            invalidateClearedDatabaseState()
+            invalidatePeerDatabases(at: root)
+            invalidatePeerThumbnails(at: root)
+            NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        }
+        try CloudCoordinatedIO.removeItem(at: root)
+        for name in ["people", "thumbnails", "embedding_thumbnails"] {
+            try CloudCoordinatedIO.ensureDirectory(root.appendingPathComponent(name, isDirectory: true))
+        }
     }
 
     // MARK: - Matching

@@ -20,6 +20,8 @@ struct SettingsView: View {
     @State private var knownPeopleStats: (peopleCount: Int, embeddingCount: Int) = (0, 0)
     @State private var isImporting = false
     @State private var isExporting = false
+    @State private var isClearingKnownPeople = false
+    @State private var knownPeopleClearNoticeID: UUID?
     @State private var showClearConfirmation = false
     @State private var knownPeopleMessage: String?
     @State private var knownPeopleDataSummary = KnownPeopleDataSummary(
@@ -713,19 +715,19 @@ struct SettingsView: View {
                         Button("Import...") {
                             importKnownPeople()
                         }
-                        .disabled(isImporting)
+                        .disabled(isImporting || isClearingKnownPeople)
 
                         Button("Export...") {
                             exportKnownPeople()
                         }
-                        .disabled(isExporting || knownPeopleStats.peopleCount == 0)
+                        .disabled(isExporting || isClearingKnownPeople || knownPeopleStats.peopleCount == 0)
 
                         Spacer()
 
                         Button("Clear Database", role: .destructive) {
                             showClearConfirmation = true
                         }
-                        .disabled(knownPeopleStats.peopleCount == 0)
+                        .disabled(isClearingKnownPeople || isImporting || isExporting || knownPeopleStats.peopleCount == 0)
                     }
 
                     Text("Import is additive and does not replace or merge existing people.")
@@ -1934,6 +1936,7 @@ struct SettingsView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         isImporting = true
+        knownPeopleClearNoticeID = nil
         knownPeopleMessage = nil
 
         Task {
@@ -1961,6 +1964,7 @@ struct SettingsView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         isExporting = true
+        knownPeopleClearNoticeID = nil
         knownPeopleMessage = nil
 
         Task {
@@ -1980,18 +1984,27 @@ struct SettingsView: View {
     }
 
     private func clearKnownPeopleDatabase() {
-        do {
-            try KnownPeopleService.shared.clearDatabase()
-            refreshKnownPeopleStats()
-            knownPeopleMessage = "Database cleared"
-
-            // Clear message after delay
-            Task {
+        guard !isClearingKnownPeople else { return }
+        let noticeID = UUID()
+        knownPeopleClearNoticeID = noticeID
+        isClearingKnownPeople = true
+        knownPeopleMessage = "Clearing database…"
+        Task {
+            do {
+                try await KnownPeopleService.shared.clearDatabaseInBackground()
+                refreshKnownPeopleStats()
+                isClearingKnownPeople = false
+                knownPeopleMessage = "Database cleared"
                 try? await Task.sleep(for: .seconds(3))
-                knownPeopleMessage = nil
+                if knownPeopleClearNoticeID == noticeID {
+                    knownPeopleMessage = nil
+                    knownPeopleClearNoticeID = nil
+                }
+            } catch {
+                isClearingKnownPeople = false
+                refreshKnownPeopleStats()
+                knownPeopleMessage = "Clear failed: \(error.localizedDescription)"
             }
-        } catch {
-            knownPeopleMessage = "Clear failed: \(error.localizedDescription)"
         }
     }
 
