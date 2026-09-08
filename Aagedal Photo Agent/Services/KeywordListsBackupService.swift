@@ -335,8 +335,8 @@ actor KeywordListBackupInventoryService {
 
 }
 
-/// History bodies are immutable, uniquely named local files. Inspect them outside the managed
-/// executor, then serialize deletion with snapshot and restore transactions. Newly added history
+/// History bodies are immutable, uniquely named local files. Inspect and delete them outside the
+/// managed executor. Newly added history
 /// is absent from the deletion plan, so a concurrent snapshot only makes retention conservative.
 /// Admission spans the scan/commit suspension: a second pass must observe the first pass's
 /// deletions before deciding which readable versions satisfy the retained minimum.
@@ -353,7 +353,7 @@ actor KeywordListBackupRetentionService {
     private var isPruning = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    /// Internal contention diagnostic; admission remains held while deletion awaits the managed executor.
+    /// Internal contention diagnostic; admission remains held while deletion awaits its worker.
     var queuedRequestCount: Int { waiters.count }
 
     func prune(
@@ -386,7 +386,7 @@ actor KeywordListBackupRetentionService {
             let expiredURLs = versions.filter {
                 !protectedURLs.contains($0.url) && $0.date < retentionCutoff
             }.map(\.url)
-            await Self.removeVersions(expiredURLs, io: io)
+            await KeywordListBackupDeletionService.shared.removeVersions(expiredURLs, io: io)
         }
     }
 
@@ -406,8 +406,27 @@ actor KeywordListBackupRetentionService {
         }
     }
 
-    @KeywordListsFilesystemActor
-    private static func removeVersions(_ urls: [URL], io: KeywordListBackupFileIO) {
+}
+
+/// Only removes immutable local history selected by the admitted retention pass. It never writes
+/// managed lists. A concurrent restore either reads the complete history body or reports a missing
+/// source before changing its destination; a newly written snapshot has a unique, unselected URL.
+/// Keep this separate from the scanner so retention admission remains responsive during slow unlinks.
+actor KeywordListBackupDeletionService {
+    static let shared = KeywordListBackupDeletionService()
+
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    init(filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.keyword-lists.backup-deletion", qos: .utility
+    )) {
+        self.filesystemQueue = filesystemQueue
+    }
+
+    func removeVersions(_ urls: [URL], io: KeywordListBackupFileIO) {
         for url in urls {
             guard !Task.isCancelled else { return }
             try? io.removeItem(url)

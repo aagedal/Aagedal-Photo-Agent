@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Synchronization
 @testable import Aagedal_Photo_Agent
 
 @Suite("KeywordListsStore")
@@ -575,6 +576,23 @@ struct KeywordListBackupFileServiceTests {
         // First pass is suspended awaiting its deletion transaction. Actor reentrancy must not
         // let the next pass inspect history that the admitted transaction is about to remove.
         #expect(probe.scanCount == 1)
+        // A slow history unlink must not monopolize managed list edits/restores.
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled { probe.releaseDeletion() }
+        }
+        defer { timeout.cancel() }
+        let writer = KeywordListBackupFileIOProbe(files: [])
+        writer.readDataResult = Data("restored".utf8)
+        let restored = try await KeywordListBackupFileService(io: writer.fileIO).restore(
+            from: URL(fileURLWithPath: "/virtual/version.txt"),
+            to: URL(fileURLWithPath: "/virtual/list.txt"), requestID: UUID()
+        )
+        guard case .restored = restored else {
+            Issue.record("Expected unrelated restore to finish while history deletion is blocked")
+            return
+        }
+        #expect(!probe.isDeletionReleased)
         probe.releaseDeletion()
         await first.value
         await second.value
@@ -582,6 +600,79 @@ struct KeywordListBackupFileServiceTests {
         #expect(probe.scannedVersionCounts == [4, 2])
         #expect(probe.remainingNames == ["002.txt", "003.txt"])
         #expect(await retention.queuedRequestCount == 0)
+    }
+
+    @Test("Retention deletion retains task context and stops at the committed cancellation prefix")
+    @MainActor
+    func retentionDeletionCancellation() async {
+        let root = URL(fileURLWithPath: "/virtual/history-context")
+        let queue = DispatchSerialQueue(label: "test.keyword.retention-deletion")
+        let worker = KeywordListBackupDeletionService(filesystemQueue: queue)
+        let removed = Mutex<[URL]>([])
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { _ in [] },
+            inspectTextFile: { url in .init(url: url, date: .distantPast, text: "old", byteCount: 3) },
+            createDirectory: { _ in }, readData: { _ in Data() }, writeData: { _, _ in },
+            removeItem: { url in
+                removed.withLock { $0.append(url) }
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(!Thread.isMainThread)
+                #expect(KeywordListsStoreStorageOverride.current == root)
+                #expect(Task.currentPriority == .userInitiated)
+                #expect(url.lastPathComponent == "first.txt")
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        )
+        await Task(priority: .userInitiated) {
+            await KeywordListsStoreStorageOverride.$current.withValue(root) {
+                await worker.removeVersions([
+                    root.appendingPathComponent("first.txt"), root.appendingPathComponent("second.txt")
+                ], io: io)
+            }
+        }.value
+        #expect(removed.withLock { $0 } == [root.appendingPathComponent("first.txt")])
+    }
+
+    @Test("A retention unlink racing restore either preserves the destination or restores complete bytes", arguments: [false, true])
+    func retentionUnlinkRacingRestore(deleteBeforeRead: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("history.txt")
+        let destination = root.appendingPathComponent("list.txt")
+        let previousBackup = root.appendingPathComponent("previous.txt")
+        let history = Data("complete history".utf8)
+        let previous = Data("current list".utf8)
+        try history.write(to: source)
+        try previous.write(to: destination)
+        let system = KeywordListBackupFileIO.system
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: system.contentsOfDirectory, inspectTextFile: system.inspectTextFile,
+            createDirectory: system.createDirectory,
+            readData: { url in
+                guard url == source else { return try system.readData(url) }
+                if deleteBeforeRead { try FileManager.default.removeItem(at: url) }
+                let bytes = try system.readData(url)
+                if !deleteBeforeRead { try FileManager.default.removeItem(at: url) }
+                return bytes
+            },
+            writeData: system.writeData, removeItem: system.removeItem
+        )
+        let service = KeywordListBackupFileService(io: io)
+        if deleteBeforeRead {
+            await #expect(throws: (any Error).self) {
+                try await service.restore(from: source, to: destination, requestID: UUID(),
+                                          previousContentBackupURL: previousBackup)
+            }
+            #expect(try Data(contentsOf: destination) == previous)
+            #expect(!FileManager.default.fileExists(atPath: previousBackup.path))
+        } else {
+            let result = try await service.restore(from: source, to: destination, requestID: UUID(),
+                                                   previousContentBackupURL: previousBackup)
+            guard case .restored = result else { Issue.record("Expected complete restore"); return }
+            #expect(try Data(contentsOf: destination) == history)
+            #expect(try Data(contentsOf: previousBackup) == previous)
+        }
     }
 
     @Test("Restore rejects damaged UTF-8 without changing the destination")
@@ -1126,7 +1217,7 @@ private nonisolated final class KeywordListBackupRetentionIOProbe: @unchecked Se
             },
             createDirectory: { _ in }, readData: { _ in Data() }, writeData: { _, _ in },
             removeItem: { [self] url in
-                #expect(KeywordListsFilesystemActor.shared.filesystemQueue.isIsolatingCurrentContext() == true)
+                #expect(KeywordListBackupDeletionService.shared.filesystemQueue.isIsolatingCurrentContext() == true)
                 condition.lock()
                 defer { condition.unlock() }
                 deletionStarted = true
@@ -1155,6 +1246,12 @@ private nonisolated final class KeywordListBackupRetentionIOProbe: @unchecked Se
         condition.lock()
         defer { condition.unlock() }
         return deletionStarted
+    }
+
+    var isDeletionReleased: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return deletionReleased
     }
 
     var scanCount: Int { scannedVersionCounts.count }
