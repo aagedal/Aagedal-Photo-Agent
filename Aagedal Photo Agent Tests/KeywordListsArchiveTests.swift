@@ -1186,6 +1186,86 @@ struct KeywordArchiveRootRoutingTests {
 
 @Suite("Keyword-list archive staging isolation")
 struct KeywordListsSharedFilesystemTests {
+    @Test("Archive workers preserve task context and cancellation on their Dispatch executors", arguments: [0, 1, 2], [false, true])
+    @MainActor
+    func dispatchWorkerContext(kind: Int, cancel: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let queue = DispatchSerialQueue(label: "test.keyword-archive.worker.\(kind)")
+        let check: @Sendable () -> Void = {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(KeywordListsStoreStorageOverride.current == root)
+            if cancel { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+        try await Task {
+            try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+                switch kind {
+                case 0:
+                    let payload = KeywordListsArchivePreviewPayload(
+                        entries: [.init(path: "keywords.txt", kind: "quick.keywords", entryCount: 1)],
+                        schemaVersion: 1, exportedAt: .distantPast
+                    )
+                    let service = KeywordListsArchivePreviewService(reader: .init { _ in
+                        check()
+                        return payload
+                    }, filesystemQueue: queue)
+                    let id = UUID()
+                    let source = root.appendingPathComponent("source.zip")
+                    let result = try await service.loadPreview(from: source, requestID: id)
+                    #expect(result == (cancel
+                        ? .cancelledAfterInspection(requestID: id, sourceURL: source, discoveredEntryCount: 1)
+                        : .loaded(.init(requestID: id, sourceURL: source, payload: payload))))
+                case 1:
+                    let observedStaging = root.appendingPathComponent("observed-staging.txt")
+                    let service = KeywordListsArchivePreparationService(filesystemQueue: queue) { _, staging in
+                        check()
+                        try Data(staging.path.utf8).write(to: observedStaging)
+                        let manifest = KeywordListsArchive.Manifest(schemaVersion: 1, exportedAt: .distantPast, files: [])
+                        let encoder = JSONEncoder()
+                        encoder.dateEncodingStrategy = .iso8601
+                        try encoder.encode(manifest).write(to: staging.appendingPathComponent("manifest.json"))
+                    }
+                    if cancel {
+                        await #expect(throws: CancellationError.self) {
+                            try await service.prepare(root.appendingPathComponent("source.zip"))
+                        }
+                    } else {
+                        let prepared = try await service.prepare(root.appendingPathComponent("source.zip"))
+                        #expect(FileManager.default.fileExists(atPath: prepared.stagingRoot.path))
+                        await service.discard(prepared)
+                    }
+                    let stagingPath = try String(contentsOf: observedStaging, encoding: .utf8)
+                    #expect(!FileManager.default.fileExists(atPath: stagingPath))
+                default:
+                    let destination = root.appendingPathComponent("export.zip")
+                    let previous = Data("previous archive".utf8)
+                    try previous.write(to: destination)
+                    let staging = root.appendingPathComponent("staging", isDirectory: true)
+                    try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+                    let service = KeywordListsArchivePackagingService(filesystemQueue: queue) { _, archive in
+                        check()
+                        try Data("new archive".utf8).write(to: archive)
+                    }
+                    let request = KeywordListsArchiveExportRequest(requestID: UUID(), destinationURL: destination, items: [])
+                    let result = try await service.package(request, stagingRoot: staging, files: [])
+                    if cancel {
+                        #expect(result == .cancelledBeforeCommit(requestID: request.requestID,
+                            destinationURL: destination, preparedFileCount: 0))
+                    } else {
+                        guard case .exported(let commit) = result else {
+                            Issue.record("Expected durable export"); return
+                        }
+                        #expect(!commit.cancellationObservedAfterCommit)
+                    }
+                    #expect(try Data(contentsOf: destination) == (cancel ? previous : Data("new archive".utf8)))
+                    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["export.zip"])
+                }
+            }
+        }.value
+    }
+
     @Test("Blocked compression allows edits and preserves the captured export; cancellation and failures clean staging", arguments: [0, 1, 2])
     func compressionDoesNotHoldManagedFilesystem(outcome: Int) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

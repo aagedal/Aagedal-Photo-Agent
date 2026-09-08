@@ -44,10 +44,19 @@ nonisolated struct KeywordListsArchivePreviewReader: Sendable {
 actor KeywordListsArchivePreviewService {
     static let shared = KeywordListsArchivePreviewService()
 
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let reader: KeywordListsArchivePreviewReader
 
-    init(reader: KeywordListsArchivePreviewReader = .system) {
+    init(reader: KeywordListsArchivePreviewReader = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.keyword-archive.preview", qos: .utility
+         )) {
         self.reader = reader
+        self.filesystemQueue = filesystemQueue
     }
 
     func loadPreview(
@@ -321,12 +330,22 @@ nonisolated struct KeywordListsArchivePreparedImport: Sendable {
 actor KeywordListsArchivePreparationService {
     static let shared = KeywordListsArchivePreparationService()
 
+    // Process waits and provider reads must not occupy Swift's cooperative pool. The retained
+    // executor runs the caller's original task, including cancellation and task-local routes.
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
     private let extract: @Sendable (URL, URL) throws -> Void
 
-    init(extract: @escaping @Sendable (URL, URL) throws -> Void = {
+    init(filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.keyword-archive.preparation", qos: .utility
+    ), extract: @escaping @Sendable (URL, URL) throws -> Void = {
         try KeywordListsArchive.ditto(unzip: $0, into: $1)
     }) {
         self.extract = extract
+        self.filesystemQueue = filesystemQueue
     }
 
     func prepare(_ sourceURL: URL) throws -> KeywordListsArchivePreparedImport {
@@ -357,12 +376,19 @@ actor KeywordListsArchivePreparationService {
 /// replacement are serialized here without holding the managed-list filesystem actor.
 actor KeywordListsArchivePackagingService {
     static let shared = KeywordListsArchivePackagingService()
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
     private let compress: @Sendable (URL, URL) throws -> Void
 
-    init(compress: @escaping @Sendable (URL, URL) throws -> Void = {
+    init(filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.keyword-archive.packaging", qos: .utility
+    ), compress: @escaping @Sendable (URL, URL) throws -> Void = {
         try KeywordListsArchive.ditto(zip: $0, into: $1)
     }) {
         self.compress = compress
+        self.filesystemQueue = filesystemQueue
     }
 
     func package(
