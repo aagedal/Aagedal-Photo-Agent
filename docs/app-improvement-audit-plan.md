@@ -6,6 +6,14 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Embedding removal, backup history, and candidate continuation (2026-09-08):**
+Known People embedding-removal record/image writes now run on the archive worker with
+reservations, durable failure evidence, and cache invalidation even for already-missing images.
+Backup-history reads no longer occupy the managed keyword actor. A reproducible repository
+command built and verified a fresh unsigned model-free Release candidate from current source.
+Broad storage and manual/device/release gates remain open.
+([validation and remaining work](plan-status-embedding-history-candidate-continuation-2026-09-08.md))
+
 **Template recovery, workspace navigation, and thumbnail writes continuation (2026-09-08):**
 metadata and Develop template deletion now preserves original files in Trash. Workspace and Layout
 are separate controls, with an explicit Metadata Review exit. The production forced-cast audit

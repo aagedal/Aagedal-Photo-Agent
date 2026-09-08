@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-05
+**Last reviewed:** 2026-09-08
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -20,6 +20,8 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   boundaries.
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
+
+**Latest improvement continuation:** [Embedding removal, backup history, and current-source candidate](plan-status-embedding-history-candidate-continuation-2026-09-08.md).
 
 ## Portfolio
 

@@ -15,6 +15,14 @@ validation passes in Phases 3/4/8, all eight unapproved conditional-analyzer ste
 Phase 12 performance, device, privacy, accessibility, recovery, and release tasks. Current source and dated
 validation records do not justify closing any of those 23 items.
 
+**Embedding removal, backup history, and candidate continuation (2026-09-08):**
+Known People embedding-removal record/image writes now run on the archive worker with
+reservations, durable failure evidence, and cache invalidation even for already-missing images.
+Backup-history reads no longer occupy the managed keyword actor. A reproducible repository
+command built and verified a fresh unsigned model-free Release candidate from current source.
+Broad storage and manual/device/release gates remain open.
+([validation and remaining work](../plan-status-embedding-history-candidate-continuation-2026-09-08.md))
+
 **Template recovery, workspace navigation, and thumbnail writes continuation (2026-09-08):**
 metadata and Develop template deletion now preserves original files in Trash. Workspace and Layout
 are separate controls, with an explicit Metadata Review exit. The production forced-cast audit
