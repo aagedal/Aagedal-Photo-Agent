@@ -272,6 +272,163 @@ struct KeywordListBackupPreviewServiceTests {
 
 @Suite("Keyword-list backup inventory and restore filesystem boundary")
 struct KeywordListBackupFileServiceTests {
+    @Test("blocked snapshot history access allows managed restore commits")
+    func blockedSnapshotAllowsManagedRestore() async throws {
+        let probe = BlockingKeywordListBackupFileIOProbe()
+        let directory = URL(fileURLWithPath: "/virtual/snapshot-history")
+        let snapshot = Task {
+            try await KeywordListBackupFileService(io: probe.fileIO).snapshot(
+                text: "new version", directoryURL: directory,
+                destinationURL: directory.appendingPathComponent("new.txt"),
+                retentionCutoff: .distantPast, minimumVersionCount: 1
+            )
+        }
+        defer { probe.releaseFirstEnumeration() }
+        try await probe.waitUntilFirstEnumerationStarts()
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled { probe.releaseFirstEnumeration() }
+        }
+        defer { timeout.cancel() }
+        let writer = KeywordListBackupFileIOProbe(files: [])
+        writer.readDataResult = Data("restored".utf8)
+        let result = try await KeywordListBackupFileService(io: writer.fileIO).restore(
+            from: URL(fileURLWithPath: "/virtual/version.txt"),
+            to: URL(fileURLWithPath: "/virtual/list.txt"), requestID: UUID()
+        )
+        guard case .restored = result else {
+            Issue.record("Expected managed restore to commit"); return
+        }
+        #expect(!probe.isFirstEnumerationReleased)
+        #expect(writer.writtenData == Data("restored".utf8))
+        probe.releaseFirstEnumeration()
+        #expect(try await snapshot.value)
+    }
+
+    @Test("snapshot writer retains task context and cancellation at each I/O boundary", arguments: [0, 1, 2, 3, 4])
+    @MainActor
+    func snapshotWriterContext(cancellationStage: Int) async throws {
+        let root = URL(fileURLWithPath: "/virtual/snapshot-worker")
+        let queue = DispatchSerialQueue(label: "test.snapshot-worker.\(cancellationStage)")
+        let worker = KeywordListBackupSnapshotService(filesystemQueue: queue)
+        let check: @Sendable (Int) -> Void = { stage in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(KeywordListsStoreStorageOverride.current == root)
+            #expect(Task.currentPriority >= .userInitiated)
+            #expect(cancellationStage == 0 || stage <= cancellationStage)
+            if stage == cancellationStage { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { _ in check(1); return [root.appendingPathComponent("old.txt")] },
+            inspectTextFile: { url in
+                check(2)
+                return .init(url: url, date: .distantPast, text: "old", byteCount: 3)
+            },
+            createDirectory: { _ in check(3) },
+            readData: { _ in Issue.record("Captured text needs no managed source read"); return Data() },
+            writeData: { data, _ in check(4); #expect(data == Data("new".utf8)) },
+            removeItem: { _ in Issue.record("Snapshot capture must not delete history") }
+        )
+        let written = try await Task(priority: .userInitiated) {
+            try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+                try await worker.writeSnapshot(text: "new", directoryURL: root,
+                                               destinationURL: root.appendingPathComponent("new.txt"), io: io)
+            }
+        }.value
+        #expect(written == (cancellationStage == 0 || cancellationStage == 4))
+    }
+
+    @Test("snapshot deduplication spans separate backup service instances")
+    func snapshotDeduplicationAcrossInstances() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = KeywordListBackupFileService()
+        let second = KeywordListBackupFileService()
+        async let firstWrite = first.snapshot(text: "same", directoryURL: root,
+                                             destinationURL: root.appendingPathComponent("001.txt"),
+                                             retentionCutoff: .distantPast, minimumVersionCount: 1)
+        async let secondWrite = second.snapshot(text: "same", directoryURL: root,
+                                               destinationURL: root.appendingPathComponent("002.txt"),
+                                               retentionCutoff: .distantPast, minimumVersionCount: 1)
+        let results = try await [firstWrite, secondWrite]
+        #expect(results.filter { $0 }.count == 1)
+        let files = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        #expect(files.count == 1)
+        #expect(try String(contentsOf: #require(files.first), encoding: .utf8) == "same")
+    }
+
+    @Test("cancelled queued snapshots skip I/O and leave the writer reusable")
+    func queuedSnapshotCancellation() async throws {
+        let worker = KeywordListBackupSnapshotService()
+        let blocking = BlockingKeywordListBackupFileIOProbe()
+        let root = URL(fileURLWithPath: "/virtual/queued-snapshot")
+        let first = Task {
+            try await worker.writeSnapshot(text: "first", directoryURL: root,
+                                           destinationURL: root.appendingPathComponent("001.txt"),
+                                           io: blocking.fileIO)
+        }
+        defer { blocking.releaseFirstEnumeration() }
+        try await blocking.waitUntilFirstEnumerationStarts()
+        let probe = KeywordListBackupFileIOProbe(files: [])
+        let queued = Task {
+            try await worker.writeSnapshot(text: "cancelled", directoryURL: root,
+                                           destinationURL: root.appendingPathComponent("002.txt"),
+                                           io: probe.fileIO)
+        }
+        queued.cancel()
+        blocking.releaseFirstEnumeration()
+        #expect(try await first.value)
+        #expect(try await !queued.value)
+        #expect(probe.contentsInvocationCount == 0)
+        #expect(probe.writeInvocationCount == 0)
+        #expect(try await worker.writeSnapshot(text: "later", directoryURL: root,
+                                              destinationURL: root.appendingPathComponent("003.txt"),
+                                              io: probe.fileIO))
+        #expect(probe.writtenData == Data("later".utf8))
+    }
+
+    @Test("a source snapshot retains captured bytes while a restore changes the managed list")
+    func sourceSnapshotPreservesCapturedText() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.txt")
+        let history = root.appendingPathComponent("history")
+        let version = history.appendingPathComponent("001.txt")
+        let restoreSource = root.appendingPathComponent("restore.txt")
+        try CloudCoordinatedIO.writeText("captured", to: source)
+        try CloudCoordinatedIO.writeText("restored", to: restoreSource)
+        let blocking = BlockingKeywordListBackupFileIOProbe()
+        let system = KeywordListBackupFileIO.system
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: blocking.fileIO.contentsOfDirectory,
+            inspectTextFile: system.inspectTextFile, createDirectory: system.createDirectory,
+            readData: system.readData, writeData: system.writeData, removeItem: system.removeItem
+        )
+        let snapshot = Task {
+            try await KeywordListBackupFileService(io: io).snapshot(
+                sourceURL: source, directoryURL: history, destinationURL: version,
+                retentionCutoff: .distantPast, minimumVersionCount: 1
+            )
+        }
+        defer { blocking.releaseFirstEnumeration() }
+        try await blocking.waitUntilFirstEnumerationStarts()
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled { blocking.releaseFirstEnumeration() }
+        }
+        defer { timeout.cancel() }
+        let result = try await KeywordListBackupFileService().restore(
+            from: restoreSource, to: source, requestID: UUID()
+        )
+        guard case .restored = result else { Issue.record("Expected restore"); return }
+        #expect(!blocking.isFirstEnumerationReleased)
+        blocking.releaseFirstEnumeration()
+        #expect(try await snapshot.value)
+        #expect(try String(contentsOf: version, encoding: .utf8) == "captured")
+        #expect(try String(contentsOf: source, encoding: .utf8) == "restored")
+    }
+
     @Test("same-millisecond and backwards-clock backup names remain unique and ordered")
     func backupNamesPreserveRequestOrder() {
         let date = Date(timeIntervalSince1970: 1_783_000_000.123)

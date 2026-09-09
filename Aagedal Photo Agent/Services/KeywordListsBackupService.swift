@@ -434,8 +434,49 @@ actor KeywordListBackupDeletionService {
     }
 }
 
-/// Snapshot read/deduplication/write and restore commits remain synchronous managed-list
-/// transactions. Full retention scans run independently after a durable snapshot write.
+/// Deduplicate and write immutable local history independently of managed-list transactions.
+/// All service instances share the same writer so two snapshots cannot both observe the same
+/// old history and create duplicate versions. There are no suspensions between inspection and
+/// the atomic write. Retention may remove the inspected version concurrently; an unavailable
+/// body conservatively produces a new copy. Restore safety copies have unique destinations.
+actor KeywordListBackupSnapshotService {
+    static let shared = KeywordListBackupSnapshotService()
+
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    init(filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.keyword-lists.backup-snapshot", qos: .utility
+    )) {
+        self.filesystemQueue = filesystemQueue
+    }
+
+    func writeSnapshot(
+        text: String, directoryURL: URL, destinationURL: URL, io: KeywordListBackupFileIO
+    ) throws -> Bool {
+        guard !Task.isCancelled else { return false }
+        let urls = (try? io.contentsOfDirectory(directoryURL)) ?? []
+        guard !Task.isCancelled else { return false }
+        // Notification-driven snapshots commonly contain unchanged text. Read only the
+        // newest timestamped body; unavailable history never suppresses a fresh safety copy.
+        if let newest = urls.filter({ $0.pathExtension == "txt" })
+            .max(by: { $0.lastPathComponent < $1.lastPathComponent }),
+           io.inspectTextFile(newest).text == text {
+            return false
+        }
+        guard !Task.isCancelled else { return false }
+        try io.createDirectory(directoryURL)
+        guard !Task.isCancelled else { return false }
+        try io.writeData(Data(text.utf8), destinationURL)
+        // A completed write remains successful if cancellation arrived during blocking I/O.
+        return true
+    }
+}
+
+/// Managed source reads and restore commits remain synchronous managed-list transactions.
+/// Immutable snapshot history writes and retention run independently after source capture.
 /// Cancellation is checked between Foundation calls, with durable-after-cancel evidence for restore.
 @KeywordListsFilesystemActor
 final class KeywordListBackupFileService {
@@ -493,60 +534,31 @@ final class KeywordListBackupFileService {
         retentionCutoff: Date,
         minimumVersionCount: Int
     ) async throws -> Bool {
-        let written = try writeSnapshot(
-            sourceURL: sourceURL, directoryURL: directoryURL, destinationURL: destinationURL
-        )
-        if written {
-            await prune(directories: [directoryURL], retentionCutoff: retentionCutoff,
-                        minimumVersionCount: minimumVersionCount)
-        }
-        return written
-    }
-
-    private func writeSnapshot(sourceURL: URL, directoryURL: URL, destinationURL: URL) throws -> Bool {
         try Task.checkCancellation()
         let text = try KeywordListsStore.decodeManagedText(io.readData(sourceURL))
         try Task.checkCancellation()
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        return try writeSnapshot(text: text, directoryURL: directoryURL, destinationURL: destinationURL)
+        return try await snapshot(text: text, directoryURL: directoryURL,
+                                  destinationURL: destinationURL, retentionCutoff: retentionCutoff,
+                                  minimumVersionCount: minimumVersionCount)
     }
 
     @discardableResult
-    func snapshot(
+    nonisolated func snapshot(
         text: String,
         directoryURL: URL,
         destinationURL: URL,
         retentionCutoff: Date,
         minimumVersionCount: Int
     ) async throws -> Bool {
-        let written = try writeSnapshot(
-            text: text, directoryURL: directoryURL, destinationURL: destinationURL
+        let written = try await KeywordListBackupSnapshotService.shared.writeSnapshot(
+            text: text, directoryURL: directoryURL, destinationURL: destinationURL, io: io
         )
         if written {
             await prune(directories: [directoryURL], retentionCutoff: retentionCutoff,
                         minimumVersionCount: minimumVersionCount)
         }
         return written
-    }
-
-    private func writeSnapshot(text: String, directoryURL: URL, destinationURL: URL) throws -> Bool {
-        guard !Task.isCancelled else { return false }
-        // Notification-driven snapshots commonly contain unchanged text. Read only the newest
-        // timestamped version for deduplication; reading every historical body here monopolizes
-        // the managed-list executor, then repeats the same reads during retention after a write.
-        let urls = (try? io.contentsOfDirectory(directoryURL)) ?? []
-        guard !Task.isCancelled else { return false }
-        if let newest = urls.filter({ $0.pathExtension == "txt" })
-            .max(by: { $0.lastPathComponent < $1.lastPathComponent }),
-           io.inspectTextFile(newest).text == text {
-            return false
-        }
-
-        guard !Task.isCancelled else { return false }
-        try io.createDirectory(directoryURL)
-        guard !Task.isCancelled else { return false }
-        try io.writeData(Data(text.utf8), destinationURL)
-        return true
     }
 
     nonisolated func prune(
