@@ -14,9 +14,10 @@ import SwiftUI
 @MainActor
 struct KnownPeopleServiceTests {
 
-    @Test("Cold background edits migrate legacy records on the retained worker and release root ownership",
-          arguments: ["success", "cancel", "storageChange", "readFailure", "writeFailure", "removeFailure"])
-    func backgroundLegacyMigration(outcome: String) async throws {
+    @Test("Cold background edits, embedding removal and export migrate legacy records on the retained worker",
+          arguments: ["edit", "removeEmbedding", "export"],
+          ["success", "cancel", "storageChange", "readFailure", "writeFailure", "removeFailure"])
+    func backgroundLegacyMigration(operation: String, outcome: String) async throws {
         let directory = makeTempDir()
         activate(directory)
         let versionKey = UserDefaultsKeys.knownPeopleEmbeddingVersion
@@ -28,6 +29,13 @@ struct KnownPeopleServiceTests {
         }
         let peer = KnownPeopleService()
         let original = try peer.addPerson(name: "Existing", embeddings: [embedding(91)])
+        let archiveURL = directory.appendingPathComponent("export.zip")
+        let personThumbnail = Data([91, 92])
+        let embeddingThumbnail = Data([93, 94])
+        try CloudCoordinatedIO.writeData(personThumbnail,
+            to: directory.appendingPathComponent("thumbnails/\(original.id.uuidString).jpg"))
+        try CloudCoordinatedIO.writeData(embeddingThumbnail,
+            to: directory.appendingPathComponent("embedding_thumbnails/\(original.embeddings[0].id.uuidString).jpg"))
         var older = original
         older.name = "Obsolete legacy name"
         let first = KnownPerson(name: "First legacy", embeddings: [embedding(92)])
@@ -81,7 +89,14 @@ struct KnownPeopleServiceTests {
         edited.name = "Edited"
         let task = Task {
             try await KnownPeopleEditTaskContext.$root.withValue(directory) {
-                try await service.updatePersonDetailsInBackground(edited)
+                switch operation {
+                case "removeEmbedding":
+                    try await service.removeEmbedding(original.embeddings[0].id, fromPersonID: original.id)
+                case "export":
+                    try await service.exportToZip(destinationURL: archiveURL, exportedBy: "Migration regression")
+                default:
+                    try await service.updatePersonDetailsInBackground(edited)
+                }
             }
         }
         let deadline = ContinuousClock.now + .seconds(4)
@@ -111,8 +126,18 @@ struct KnownPeopleServiceTests {
         #expect(FileManager.default.fileExists(atPath: legacyURL.path) == outcome.hasSuffix("Failure"))
         let durable = try JSONDecoder().decode(KnownPerson.self,
             from: Data(contentsOf: personFileURL(original.id, in: directory)))
-        #expect(durable.name == (outcome == "success" ? "Edited" : "Existing"))
-        #expect(durable.embeddings.map(\.id) == original.embeddings.map(\.id))
+        #expect(durable.name == (outcome == "success" && operation == "edit" ? "Edited" : "Existing"))
+        #expect(durable.embeddings.map(\.id) ==
+            (outcome == "success" && operation == "removeEmbedding" ? [] : original.embeddings.map(\.id)))
+        #expect(FileManager.default.fileExists(atPath: archiveURL.path) ==
+            (operation == "export" && outcome == "success"))
+        if operation == "export", outcome == "success" {
+            let payload = try await KnownPeopleArchiveService().prepareImport(sourceURL: archiveURL)
+            #expect(Set(payload.people.map(\.id)) == Set([original.id, first.id, second.id]))
+            #expect(payload.people.first(where: { $0.id == original.id })?.name == "Existing")
+            #expect(payload.personThumbnails[original.id] == personThumbnail)
+            #expect(payload.embeddingThumbnails[original.embeddings[0].id] == embeddingThumbnail)
+        }
         #expect(UserDefaults.standard.integer(forKey: versionKey) == 1)
         if outcome == "storageChange" {
             #expect(service.getAllPeople().isEmpty)
@@ -2407,6 +2432,50 @@ struct KnownPeopleServiceTests {
         #expect(try Data(contentsOf: importStore.appendingPathComponent(
             "embedding_thumbnails/\(sample.id.uuidString).jpg"
         )) == Data([13, 14, 15]))
+    }
+
+    @Test("An export retains its captured route and completed ZIP after storage changes during thumbnail copy")
+    func archiveExportRetainsSnapshotDuringStorageChange() async throws {
+        let directory = makeTempDir()
+        let replacementDirectory = makeTempDir()
+        activate(directory)
+        defer {
+            teardown(directory)
+            try? FileManager.default.removeItem(at: replacementDirectory)
+        }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data([31, 32]))
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        let access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: { url in
+                #expect(!Thread.isMainThread)
+                if url.pathExtension == "jpg" { _ = gate.read(url) }
+                return try system.readCoordinatedData(url)
+            }, writeData: system.writeData, writeCoordinatedData: system.writeCoordinatedData,
+            runDitto: system.runDitto
+        )
+        let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access))
+        let original = try service.addPerson(name: "Original route", embeddings: [], thumbnailData: Data([31, 32]))
+        let replacement = KnownPerson(name: "New route")
+        try writePersonFile(replacement, into: replacementDirectory)
+        let archiveURL = directory.appendingPathComponent("export.zip")
+        let task = Task { try await service.exportToZip(destinationURL: archiveURL) }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        try #require(gate.entered)
+        service.reloadAfterStorageChange(resolvedStorageURL: replacementDirectory)
+        gate.resume()
+        try await task.value
+        #expect(service.getAllPeople().map(\.id) == [replacement.id])
+        // The completed archive uses its originally captured records and thumbnails, while
+        // the service continues to display the new route without an inaccurate failure.
+        let payload = try await KnownPeopleArchiveService().prepareImport(sourceURL: archiveURL)
+        #expect(payload.people.map(\.id) == [original.id])
+        #expect(payload.personThumbnails[original.id] == Data([31, 32]))
     }
 
     @Test("Known People archive destination commit runs off MainActor and returns its durable prefix")

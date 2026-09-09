@@ -2376,6 +2376,12 @@ final class KnownPeopleService {
     func removeEmbedding(_ embeddingID: UUID, fromPersonID personID: UUID) async throws {
         try Task.checkCancellation()
         let expectedStorageRevision = storageRevision
+        // Cold lookups can migrate the entire legacy store. Prepare them under mutation
+        // admission before the initial thumbnail lookup, then release admission so thumbnail
+        // decoding cannot hold up unrelated edits. Revalidate the record after reacquiring it.
+        try await prepareLegacyDatabaseBeforeBackgroundRead(expectedStorageRevision: expectedStorageRevision)
+        try Task.checkCancellation()
+        guard expectedStorageRevision == storageRevision else { throw CancellationError() }
         guard let currentPerson = person(byID: personID) else { return }
         var replacementThumbnail: (id: UUID, data: Data, revision: UInt64)?
         if currentPerson.representativeThumbnailID == embeddingID,
@@ -2401,6 +2407,7 @@ final class KnownPeopleService {
         defer { endImport() }
         try Task.checkCancellation()
         guard expectedStorageRevision == storageRevision else { throw CancellationError() }
+        try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: expectedStorageRevision)
         // Reload after admission: a peer or a preceding async mutation may have edited
         // this person while either thumbnail preparation or transaction admission suspended.
         guard var person = person(byID: personID) else { return }
@@ -2874,14 +2881,31 @@ final class KnownPeopleService {
     // MARK: - Export
 
     func exportToZip(destinationURL: URL, exportedBy: String? = nil) async throws {
+        let expectedStorageRevision = storageRevision
+        try await prepareLegacyDatabaseBeforeBackgroundRead(expectedStorageRevision: expectedStorageRevision)
+        try Task.checkCancellation()
+        guard expectedStorageRevision == storageRevision else { throw CancellationError() }
         let db = loadDatabase()
+        // Keep paths from the same route as the captured records. A storage toggle during
+        // archive work cannot change this snapshot or turn its completed ZIP into a failure.
+        let root = knownPeopleDirectory
         try await archiveService.export(
             people: db.people,
-            thumbnailsDirectory: thumbnailsDirectory,
-            embeddingThumbnailsDirectory: embeddingThumbnailsDirectory,
+            thumbnailsDirectory: root.appendingPathComponent("thumbnails", isDirectory: true),
+            embeddingThumbnailsDirectory: root.appendingPathComponent("embedding_thumbnails", isDirectory: true),
             destinationURL: destinationURL,
             exportedBy: exportedBy
         )
+    }
+
+    /// Read entry points also need migration admission: the first lookup is a write when
+    /// database.json still exists. Later record assembly retains the compatibility load path.
+    private func prepareLegacyDatabaseBeforeBackgroundRead(expectedStorageRevision revision: UInt64) async throws {
+        await beginImport()
+        defer { endImport() }
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
+        try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: revision)
     }
 
     // MARK: - Import
