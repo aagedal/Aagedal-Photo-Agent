@@ -34,22 +34,43 @@ nonisolated struct AnalysisFolderMapLoad: Sendable {
 nonisolated struct AnalysisCaseRepositoryFileIO: Sendable {
     let directoryContents: @Sendable (URL) throws -> [URL]
     let isKnownReadOnly: @Sendable (URL) -> Bool
+    let canonicalSourceFolder: @Sendable (URL) -> URL
+    let defaultApplicationSupportURL: @Sendable () -> URL
 
-    static let system = AnalysisCaseRepositoryFileIO(
-        directoryContents: {
+    init(
+        directoryContents: @escaping @Sendable (URL) throws -> [URL] = {
             try FileManager.default.contentsOfDirectory(
                 at: $0,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
             )
         },
-        isKnownReadOnly: {
+        isKnownReadOnly: @escaping @Sendable (URL) -> Bool = {
             guard let values = try? $0.resourceValues(forKeys: [
                 .isWritableKey, .volumeIsReadOnlyKey
             ]) else { return false }
             return values.isWritable == false || values.volumeIsReadOnly == true
+        },
+        canonicalSourceFolder: @escaping @Sendable (URL) -> URL = {
+            $0.standardizedFileURL.resolvingSymlinksInPath()
+        },
+        defaultApplicationSupportURL: @escaping @Sendable () -> URL = {
+            if AppPaths.isTestProcess {
+                return FileManager.default.temporaryDirectory.appendingPathComponent(
+                    "apa-analysis-case-tests-\(ProcessInfo.processInfo.processIdentifier)",
+                    isDirectory: true
+                )
+            }
+            return AppPaths.applicationSupport
         }
-    )
+    ) {
+        self.directoryContents = directoryContents
+        self.isKnownReadOnly = isKnownReadOnly
+        self.canonicalSourceFolder = canonicalSourceFolder
+        self.defaultApplicationSupportURL = defaultApplicationSupportURL
+    }
+
+    static let system = AnalysisCaseRepositoryFileIO()
 }
 
 /// Source-bound analysis persistence that prefers the portable `.photo_analysis` store and falls
@@ -75,7 +96,9 @@ actor AnalysisCaseRepository {
     private let fallbackIndexURL: URL
     private let sourceFolderIsWritableOverride: Bool?
 
-    init(
+    /// Capture the source root before publishing the repository. The captured URL stays stable
+    /// if a presented symlink is later retargeted, while provider access never blocks the caller.
+    nonisolated static func open(
         sourceFolderURL: URL,
         applicationSupportURL: URL? = nil,
         sourceFolderIsWritable: Bool? = nil,
@@ -83,22 +106,44 @@ actor AnalysisCaseRepository {
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.analysis-case-repository", qos: .utility
         )
+    ) async throws -> AnalysisCaseRepository {
+        try Task.checkCancellation()
+        let preparation = AnalysisCaseRepositoryPreparation(filesystemQueue: filesystemQueue)
+        let roots = try await preparation.prepare(
+            sourceFolderURL: sourceFolderURL,
+            applicationSupportURL: applicationSupportURL,
+            fileIO: fileIO
+        )
+        try Task.checkCancellation()
+        return AnalysisCaseRepository(
+            canonicalSourceFolderURL: roots.sourceFolderURL,
+            applicationSupportURL: roots.applicationSupportURL,
+            sourceFolderIsWritable: sourceFolderIsWritable,
+            fileIO: fileIO,
+            filesystemQueue: filesystemQueue
+        )
+    }
+
+    private init(
+        canonicalSourceFolderURL: URL,
+        applicationSupportURL: URL,
+        sourceFolderIsWritable: Bool?,
+        fileIO: AnalysisCaseRepositoryFileIO,
+        filesystemQueue: DispatchSerialQueue
     ) {
         self.fileIO = fileIO
         self.filesystemQueue = filesystemQueue
-        // Initialization still captures the canonical root synchronously; moving that capture
-        // requires a separate async construction boundary so a retargeted symlink cannot reroute it.
-        self.sourceFolderURL = sourceFolderURL.standardizedFileURL.resolvingSymlinksInPath()
+        sourceFolderURL = canonicalSourceFolderURL
         sourceFolderIsWritableOverride = sourceFolderIsWritable
 
-        let analysisDirectoryURL = self.sourceFolderURL
+        let analysisDirectoryURL = canonicalSourceFolderURL
             .appendingPathComponent(".photo_analysis", isDirectory: true)
         casesDirectoryURL = analysisDirectoryURL
             .appendingPathComponent("cases", isDirectory: true)
         folderMapDocumentURL = analysisDirectoryURL
             .appendingPathComponent("folder-map.analysis.json")
 
-        let fallbackRoot = (applicationSupportURL ?? Self.defaultApplicationSupportURL)
+        let fallbackRoot = applicationSupportURL
             .appendingPathComponent("AnalysisCases", isDirectory: true)
         fallbackCasesDirectoryURL = fallbackRoot
             .appendingPathComponent("cases", isDirectory: true)
@@ -371,16 +416,6 @@ actor AnalysisCaseRepository {
         try await store.save(index)
     }
 
-    private nonisolated static var defaultApplicationSupportURL: URL {
-        if AppPaths.isTestProcess {
-            return FileManager.default.temporaryDirectory.appendingPathComponent(
-                "apa-analysis-case-tests-\(ProcessInfo.processInfo.processIdentifier)",
-                isDirectory: true
-            )
-        }
-        return AppPaths.applicationSupport
-    }
-
     private static func shouldUseFallback(for error: Error) -> Bool {
         let nsError = error as NSError
         if nsError.domain == NSCocoaErrorDomain,
@@ -394,6 +429,32 @@ actor AnalysisCaseRepository {
             return shouldUseFallback(for: underlying)
         }
         return false
+    }
+}
+
+/// Preparation and later repository operations share the same retained serial executor.
+/// This separate actor keeps the repository's initializer entirely free of filesystem access.
+private actor AnalysisCaseRepositoryPreparation {
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    init(filesystemQueue: DispatchSerialQueue) {
+        self.filesystemQueue = filesystemQueue
+    }
+
+    func prepare(
+        sourceFolderURL: URL,
+        applicationSupportURL: URL?,
+        fileIO: AnalysisCaseRepositoryFileIO
+    ) throws -> (sourceFolderURL: URL, applicationSupportURL: URL) {
+        try Task.checkCancellation()
+        let canonicalRoot = fileIO.canonicalSourceFolder(sourceFolderURL)
+        try Task.checkCancellation()
+        let fallbackRoot = applicationSupportURL ?? fileIO.defaultApplicationSupportURL()
+        try Task.checkCancellation()
+        return (canonicalRoot, fallbackRoot)
     }
 }
 

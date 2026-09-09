@@ -576,7 +576,7 @@ struct BatchRenameSheetStateTests {
             ]
         ))
 
-        let analysisRepository = AnalysisCaseRepository(sourceFolderURL: folder)
+        let analysisRepository = try await AnalysisCaseRepository.open(sourceFolderURL: folder)
         let analysisA = AnalysisCase.create(for: revisionA)
         let analysisB = AnalysisCase.create(for: revisionB)
         try await analysisRepository.save(analysisA)

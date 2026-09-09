@@ -706,7 +706,7 @@ struct ComparisonCoordinatorTests {
         try Data("right".utf8).write(to: linkedRight)
         let leftRevision = try await SourceImageRevision.capture(at: linkedLeft)
         let rightRevision = try await SourceImageRevision.capture(at: linkedRight)
-        let analysisRepository = AnalysisCaseRepository(sourceFolderURL: linkedFolder)
+        let analysisRepository = try await AnalysisCaseRepository.open(sourceFolderURL: linkedFolder)
         let analysisCase = AnalysisCase.create(for: leftRevision)
         try await analysisRepository.save(analysisCase)
         let left = ComparisonSource(revision: leftRevision, representation: .original)

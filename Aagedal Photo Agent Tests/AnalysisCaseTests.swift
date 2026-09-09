@@ -106,7 +106,7 @@ struct AnalysisCaseTests {
         let thirdURL = fixture.directoryURL.appendingPathComponent("third.jpg")
         try Data("second analysis image".utf8).write(to: secondURL)
         try Data("third analysis image".utf8).write(to: thirdURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         let revision = try await SourceImageRevision.capture(at: thirdURL)
         var savedCase = AnalysisCase.create(for: revision)
         savedCase.setWorkspaceMode(mode == .pixelAnalysis ? .osint : .pixelAnalysis)
@@ -286,7 +286,7 @@ struct AnalysisCaseTests {
         defer { fixture.remove() }
         let before = try Data(contentsOf: fixture.fileURL)
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
 
         try await repository.save(analysisCase)
@@ -309,7 +309,7 @@ struct AnalysisCaseTests {
         let fixture = try AnalysisFixture(contents: "case recovery source")
         defer { fixture.remove() }
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         var analysisCase = AnalysisCase.create(
             for: revision,
             appBuild: "test",
@@ -331,7 +331,7 @@ struct AnalysisCaseTests {
         let interruptedPrimary = Data(#"{"schemaVersion":9,"title":"partial""#.utf8)
         try interruptedPrimary.write(to: caseURL)
 
-        let reopenedRepository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let reopenedRepository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         let load = await reopenedRepository.loadMostRelevantCaseWithStorage(for: revision)
 
         guard case .exact(let recovered) = load.match else {
@@ -357,7 +357,7 @@ struct AnalysisCaseTests {
         let sourceBefore = try Data(contentsOf: fixture.fileURL)
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
         let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
-        let repository = AnalysisCaseRepository(
+        let repository = try await AnalysisCaseRepository.open(
             sourceFolderURL: fixture.directoryURL,
             applicationSupportURL: applicationSupportURL,
             sourceFolderIsWritable: false
@@ -391,7 +391,7 @@ struct AnalysisCaseTests {
         let indexedSource = try #require(entries.first?["source"] as? [String: Any])
         #expect(indexedSource["sha256"] as? String == revision.sha256)
 
-        let reopenedRepository = AnalysisCaseRepository(
+        let reopenedRepository = try await AnalysisCaseRepository.open(
             sourceFolderURL: fixture.directoryURL,
             applicationSupportURL: applicationSupportURL,
             sourceFolderIsWritable: false
@@ -418,7 +418,7 @@ struct AnalysisCaseTests {
             isDirectory: true
         )
         defer { try? FileManager.default.removeItem(at: applicationSupportURL) }
-        let repository = AnalysisCaseRepository(
+        let repository = try await AnalysisCaseRepository.open(
             sourceFolderURL: fixture.directoryURL,
             applicationSupportURL: applicationSupportURL,
             sourceFolderIsWritable: false
@@ -432,7 +432,7 @@ struct AnalysisCaseTests {
         )), now: Date(timeIntervalSince1970: 2))
 
         let storage = try await repository.saveFolderMapDocument(document)
-        let reopenedRepository = AnalysisCaseRepository(
+        let reopenedRepository = try await AnalysisCaseRepository.open(
             sourceFolderURL: fixture.directoryURL,
             applicationSupportURL: applicationSupportURL,
             sourceFolderIsWritable: false
@@ -460,14 +460,14 @@ struct AnalysisCaseTests {
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
         let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
 
-        let fallbackRepository = AnalysisCaseRepository(
+        let fallbackRepository = try await AnalysisCaseRepository.open(
             sourceFolderURL: fixture.directoryURL,
             applicationSupportURL: applicationSupportURL,
             sourceFolderIsWritable: false
         )
         #expect(try await fallbackRepository.save(analysisCase) == .applicationSupport)
 
-        let writableRepository = AnalysisCaseRepository(
+        let writableRepository = try await AnalysisCaseRepository.open(
             sourceFolderURL: fixture.directoryURL,
             applicationSupportURL: applicationSupportURL,
             sourceFolderIsWritable: true
@@ -496,7 +496,7 @@ struct AnalysisCaseTests {
         try Data(#"{"schemaVersion":2,"cases":[],"folderMaps":[]}"#.utf8)
             .write(to: indexURL)
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
-        let repository = AnalysisCaseRepository(
+        let repository = try await AnalysisCaseRepository.open(
             sourceFolderURL: fixture.directoryURL,
             applicationSupportURL: applicationSupportURL,
             sourceFolderIsWritable: false
@@ -523,7 +523,7 @@ struct AnalysisCaseTests {
         let model = AnalysisWorkspaceModel(
             analyzers: [ImmediateAnalysisAnalyzer(counter: counter)],
             repositoryFactory: { folderURL in
-                AnalysisCaseRepository(
+                try await AnalysisCaseRepository.open(
                     sourceFolderURL: folderURL,
                     applicationSupportURL: applicationSupportURL,
                     sourceFolderIsWritable: false
@@ -538,6 +538,50 @@ struct AnalysisCaseTests {
         #expect(model.caseStorage == .applicationSupport)
         #expect(model.storagePortabilityWarning?.contains("Application Support") == true)
         #expect(counter.count == 1)
+    }
+
+    @Test("a superseded repository construction cannot replace the same-source workspace", arguments: [false, true])
+    @MainActor
+    func supersededRepositoryConstruction(failsAfterRelease: Bool) async throws {
+        let fixture = try AnalysisFixture(contents: "workspace construction source")
+        defer { fixture.remove() }
+        let abandonedRoot = fixture.directoryURL.appendingPathComponent("abandoned", isDirectory: true)
+        let abandonedRepository = try await AnalysisCaseRepository.open(sourceFolderURL: abandonedRoot)
+        let activeRepository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        let gate = AnalysisRepositoryConstructionGate()
+        var constructions = 0
+        var firstConstructionReturned = false
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { _ in
+            constructions += 1
+            if constructions == 1 {
+                await gate.wait()
+                firstConstructionReturned = true
+                if failsAfterRelease { throw AnalysisTestTimeout.timedOut }
+                return abandonedRepository
+            }
+            return activeRepository
+        })
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { constructions == 1 }
+        #expect(model.loadState == .loading)
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        let revision = try #require(model.currentRevision)
+        let caseID = try #require(model.analysisCase?.id)
+
+        await gate.open()
+        try await waitForAnalysisState { firstConstructionReturned }
+        model.selectWorkspaceMode(.osint)
+        await model.flushPendingSaves()
+
+        #expect(model.loadState == .ready)
+        #expect(model.analysisCase?.id == caseID)
+        guard case .exact(let persisted) = await activeRepository.loadMostRelevantCase(for: revision) else {
+            Issue.record("The active workspace must retain its prepared repository")
+            return
+        }
+        #expect(persisted.workspaceMode == .osint)
+        #expect(!FileManager.default.fileExists(atPath: abandonedRoot.path))
     }
 
     @Test("photo annotation lookup stays cached after a presented folder symlink disappears")
@@ -568,7 +612,7 @@ struct AnalysisCaseTests {
         let annotatedRevision = try await SourceImageRevision.capture(at: annotatedSource)
         var annotatedCase = AnalysisCase.create(for: annotatedRevision, appBuild: "test")
         annotatedCase.setAnnotation(annotation)
-        let repository = AnalysisCaseRepository(sourceFolderURL: sourceFolder)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: sourceFolder)
         try await repository.save(annotatedCase)
 
         let presentedOpened = presentedFolder.appendingPathComponent("opened.jpg")
@@ -619,7 +663,7 @@ struct AnalysisCaseTests {
         let fixture = try AnalysisFixture(contents: "before")
         defer { fixture.remove() }
         let originalRevision = try await SourceImageRevision.capture(at: fixture.fileURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         let originalCase = AnalysisCase.create(for: originalRevision, appBuild: "test")
         try await repository.save(originalCase)
 
@@ -697,7 +741,7 @@ struct AnalysisCaseTests {
         )
         try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
 
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         let match = await repository.loadMostRelevantCase(for: revision)
         guard case .exact(let migrated) = match else {
             Issue.record("Expected the version one case to migrate")
@@ -734,7 +778,7 @@ struct AnalysisCaseTests {
         )
         try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
 
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         let match = await repository.loadMostRelevantCase(for: revision)
         guard case .exact(let migrated) = match else {
             Issue.record("Expected the version two case to migrate")
@@ -777,7 +821,7 @@ struct AnalysisCaseTests {
         )
         try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
 
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         let match = await repository.loadMostRelevantCase(for: revision)
         guard case .exact(let migrated) = match else {
             Issue.record("Expected the version three case to migrate")
@@ -822,7 +866,7 @@ struct AnalysisCaseTests {
         )
         try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
 
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         let match = await repository.loadMostRelevantCase(for: revision)
         guard case .exact(let migrated) = match else {
             Issue.record("Expected the version four case to migrate")
@@ -842,7 +886,7 @@ struct AnalysisCaseTests {
         defer { fixture.remove() }
         let before = try Data(contentsOf: fixture.fileURL)
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         var analysisCase = AnalysisCase.create(
             for: revision,
             appBuild: "test",
@@ -884,7 +928,7 @@ struct AnalysisCaseTests {
         defer { fixture.remove() }
         let before = try Data(contentsOf: fixture.fileURL)
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         var analysisCase = AnalysisCase.create(
             for: revision,
             appBuild: "test",
@@ -938,7 +982,7 @@ struct AnalysisCaseTests {
         )
         try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
 
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         guard case .exact(let migrated) = await repository.loadMostRelevantCase(for: revision) else {
             Issue.record("Expected the version five case to migrate")
             return
@@ -955,7 +999,7 @@ struct AnalysisCaseTests {
         defer { fixture.remove() }
         let before = try Data(contentsOf: fixture.fileURL)
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         var analysisCase = AnalysisCase.create(
             for: revision,
             appBuild: "test",
@@ -1007,7 +1051,7 @@ struct AnalysisCaseTests {
         defer { fixture.remove() }
         let sourceBytes = try Data(contentsOf: fixture.fileURL)
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         let evidenceID = UUID()
         let overlay = makeSolarOverlay(linkedTimestampEvidenceID: evidenceID)
         var analysisCase = AnalysisCase.create(
@@ -1061,7 +1105,7 @@ struct AnalysisCaseTests {
         )
         try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
 
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         guard case .exact(let migrated) = await repository.loadMostRelevantCase(for: revision) else {
             Issue.record("Expected the version eight case to migrate")
             return
@@ -1152,7 +1196,7 @@ struct AnalysisCaseTests {
         model.open(image)
         try await waitForAnalysisState { model.loadState == .ready }
         let originalRevision = try #require(model.currentRevision)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
 
         model.setSolarOverlay(overlay)
         #expect(model.mapState.solarOverlay == overlay)
@@ -1194,7 +1238,7 @@ struct AnalysisCaseTests {
         let source = fixture.fileURL
         let destination = fixture.directoryURL.appendingPathComponent("renamed.jpg")
         let model = AnalysisWorkspaceModel(analyzers: [])
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
 
         model.open(ImageFile(url: source))
         try await waitForAnalysisState { model.loadState == .ready }
@@ -1350,7 +1394,7 @@ struct AnalysisCaseTests {
         )
         try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
 
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         guard case .exact(let migrated) = await repository.loadMostRelevantCase(for: revision) else {
             Issue.record("Expected the version six case to migrate")
             return
@@ -1390,7 +1434,7 @@ struct AnalysisCaseTests {
         )
         try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
 
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         guard case .exact(let migrated) = await repository.loadMostRelevantCase(for: revision) else {
             Issue.record("Expected the version seven case to migrate")
             return
@@ -1409,7 +1453,7 @@ struct AnalysisCaseTests {
         defer { fixture.remove() }
         let before = try Data(contentsOf: fixture.fileURL)
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
         let photoLabel = AnalysisAnnotation(
             kind: .rectangle,
@@ -1475,7 +1519,7 @@ struct AnalysisCaseTests {
         try Data("second image".utf8).write(to: secondURL)
         let firstBytes = try Data(contentsOf: fixture.fileURL)
         let secondBytes = try Data(contentsOf: secondURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
 
         var firstCase = AnalysisCase.create(
             for: try await SourceImageRevision.capture(at: fixture.fileURL),
@@ -1839,7 +1883,7 @@ struct AnalysisCaseTests {
         let fixture = try AnalysisFixture(contents: "annotated source")
         defer { fixture.remove() }
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         var analysisCase = AnalysisCase.create(
             for: revision,
             appBuild: "test",
@@ -2508,7 +2552,7 @@ struct AnalysisCaseTests {
             text: "Existing map context"
         )
         targetCase.setMapAnnotation(existingPhotoMapMarker)
-        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         try await repository.save(targetCase)
 
         let source = AnalysisAnnotation(
@@ -2964,6 +3008,107 @@ private func makeSolarOverlay(
 
 @Suite("Analysis repository Dispatch executor")
 struct AnalysisCaseRepositoryExecutorTests {
+    @Test("repository construction resolves roots and prepares fallback storage on its retained worker")
+    @MainActor
+    func constructionTaskContext() async throws {
+        let fixture = try AnalysisFixture(contents: "analysis construction source")
+        defer { fixture.remove() }
+        let queue = DispatchSerialQueue(label: "test.analysis-repository.construction")
+        let canonicalRoot = fixture.directoryURL.standardizedFileURL.resolvingSymlinksInPath()
+        let support = fixture.directoryURL.appendingPathComponent("prepared-support", isDirectory: true)
+        let fileIO = AnalysisCaseRepositoryFileIO(
+            canonicalSourceFolder: { url in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(!Thread.isMainThread)
+                #expect(AnalysisRepositoryExecutorContext.marker == "analysis-construction")
+                #expect(url == fixture.directoryURL)
+                return canonicalRoot
+            },
+            defaultApplicationSupportURL: {
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(!Thread.isMainThread)
+                #expect(AnalysisRepositoryExecutorContext.marker == "analysis-construction")
+                try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+                return support
+            }
+        )
+        let repository = try await AnalysisRepositoryExecutorContext.$marker.withValue("analysis-construction") {
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: fixture.directoryURL,
+                sourceFolderIsWritable: false,
+                fileIO: fileIO,
+                filesystemQueue: queue
+            )
+        }
+        #expect(repository.filesystemQueue === queue)
+        #expect(FileManager.default.fileExists(atPath: support.path))
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let analysisCase = AnalysisCase.create(for: revision)
+        #expect(try await repository.save(analysisCase) == .applicationSupport)
+        #expect(await repository.loadMostRelevantCase(for: revision) == .exact(analysisCase))
+        #expect(FileManager.default.fileExists(atPath: support
+            .appendingPathComponent("AnalysisCases/cases")
+            .appendingPathComponent("\(analysisCase.id.uuidString.lowercased()).analysis.json").path))
+    }
+
+    @Test("an explicit fallback root skips default Application Support preparation")
+    func explicitSupportSkipsDefaultPreparation() async throws {
+        let fixture = try AnalysisFixture(contents: "explicit support source")
+        defer { fixture.remove() }
+        _ = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: fixture.directoryURL.appendingPathComponent("support"),
+            fileIO: AnalysisCaseRepositoryFileIO(defaultApplicationSupportURL: {
+                Issue.record("Explicit support must not prepare the default directory")
+                return fixture.directoryURL
+            })
+        )
+    }
+
+    @Test("pre-cancelled construction performs no provider access")
+    func constructionPreCancellation() async {
+        let root = URL(fileURLWithPath: "/virtual/analysis-root")
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await AnalysisCaseRepository.open(
+                sourceFolderURL: root,
+                fileIO: AnalysisCaseRepositoryFileIO(
+                    canonicalSourceFolder: { url in
+                        Issue.record("Cancelled construction must not resolve its source")
+                        return url
+                    },
+                    defaultApplicationSupportURL: {
+                        Issue.record("Cancelled construction must not prepare fallback storage")
+                        return root
+                    }
+                )
+            )
+        }
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+    }
+
+    @Test("cancellation during root preparation does not publish a repository", arguments: [false, true])
+    func constructionCancellationDuringProviderAccess(cancelDuringSupport: Bool) async {
+        let root = URL(fileURLWithPath: "/virtual/analysis-root")
+        let task = Task {
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: root,
+                fileIO: AnalysisCaseRepositoryFileIO(
+                    canonicalSourceFolder: { url in
+                        if !cancelDuringSupport { withUnsafeCurrentTask { $0?.cancel() } }
+                        return url
+                    },
+                    defaultApplicationSupportURL: {
+                        #expect(cancelDuringSupport, "Cancellation after canonicalization must skip fallback preparation")
+                        withUnsafeCurrentTask { $0?.cancel() }
+                        return root
+                    }
+                )
+            )
+        }
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+    }
+
     @Test("case enumeration preserves caller task context on the filesystem worker")
     @MainActor
     func enumerationTaskContext() async throws {
@@ -2973,7 +3118,7 @@ struct AnalysisCaseRepositoryExecutorTests {
         let analysisCase = AnalysisCase.create(for: revision)
         let queue = DispatchSerialQueue(label: "test.analysis-repository.enumeration")
         let canonicalRoot = fixture.directoryURL.standardizedFileURL.resolvingSymlinksInPath()
-        let repository = AnalysisCaseRepository(
+        let repository = try await AnalysisCaseRepository.open(
             sourceFolderURL: fixture.directoryURL,
             applicationSupportURL: fixture.directoryURL.appendingPathComponent("support"),
             sourceFolderIsWritable: true,
@@ -3005,7 +3150,7 @@ struct AnalysisCaseRepositoryExecutorTests {
         let analysisCase = AnalysisCase.create(for: revision)
         let queue = DispatchSerialQueue(label: "test.analysis-repository.writability")
         let canonicalRoot = fixture.directoryURL.standardizedFileURL.resolvingSymlinksInPath()
-        let repository = AnalysisCaseRepository(
+        let repository = try await AnalysisCaseRepository.open(
             sourceFolderURL: fixture.directoryURL,
             applicationSupportURL: fixture.directoryURL.appendingPathComponent("support"),
             fileIO: AnalysisCaseRepositoryFileIO(
@@ -3044,7 +3189,7 @@ struct AnalysisCaseRepositoryExecutorTests {
         try manager.createSymbolicLink(at: link, withDestinationURL: fixture.directoryURL)
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
         let analysisCase = AnalysisCase.create(for: revision)
-        let repository = AnalysisCaseRepository(
+        let repository = try await AnalysisCaseRepository.open(
             sourceFolderURL: link,
             applicationSupportURL: fixture.directoryURL.appendingPathComponent("support"),
             sourceFolderIsWritable: true
@@ -3061,4 +3206,21 @@ struct AnalysisCaseRepositoryExecutorTests {
 
 private nonisolated enum AnalysisRepositoryExecutorContext {
     @TaskLocal static var marker: String?
+}
+
+private actor AnalysisRepositoryConstructionGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
 }

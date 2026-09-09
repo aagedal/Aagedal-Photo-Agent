@@ -77,9 +77,8 @@ nonisolated struct RenameReassociationService: Sendable {
         }
 
         do {
-            analysisCaseCount = try await AnalysisCaseRepository(
-                sourceFolderURL: folderURL
-            ).relocateSourceHints(using: mappings)
+            let repository = try await AnalysisCaseRepository.open(sourceFolderURL: folderURL)
+            analysisCaseCount = try await repository.relocateSourceHints(using: mappings)
         } catch {
             issues.append(RenameReassociationIssue(
                 subsystem: .imageAnalysis,

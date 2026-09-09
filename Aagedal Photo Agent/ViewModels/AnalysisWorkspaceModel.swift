@@ -59,7 +59,7 @@ final class AnalysisWorkspaceModel {
     @ObservationIgnored private var renameQuiescenceFolderURL: URL?
     @ObservationIgnored private var renameQuiescenceNeedsCaseSave = false
     @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
-    @ObservationIgnored private let repositoryFactory: (URL) -> AnalysisCaseRepository
+    @ObservationIgnored private let repositoryFactory: (URL) async throws -> AnalysisCaseRepository
     private var photoAnnotationHistory = AnalysisAnnotationUndoHistory()
     private var mapAnnotationHistory = AnalysisMapAnnotationUndoHistory()
     private var globalMapAnnotationHistory = AnalysisGlobalMapAnnotationUndoHistory()
@@ -67,12 +67,12 @@ final class AnalysisWorkspaceModel {
 
     init(
         analyzers: [any AnalysisAnalyzer]? = nil,
-        repositoryFactory: ((URL) -> AnalysisCaseRepository)? = nil
+        repositoryFactory: ((URL) async throws -> AnalysisCaseRepository)? = nil
     ) {
         analysisRunner = AnalysisRunner()
         self.analyzers = analyzers ?? [SourceFactsAnalyzer()]
         self.repositoryFactory = repositoryFactory ?? {
-            AnalysisCaseRepository(sourceFolderURL: $0)
+            try await AnalysisCaseRepository.open(sourceFolderURL: $0)
         }
         analysisRunner.onPersistableRunChanged = { [weak self] run in
             self?.persistAnalyzerRun(run)
@@ -138,8 +138,13 @@ final class AnalysisWorkspaceModel {
             at: image.url,
             exifOrientation: image.exifOrientation
         )
-        let targetRepository = repository
-            ?? repositoryFactory(image.url.deletingLastPathComponent())
+        let targetRepository: AnalysisCaseRepository
+        if let repository {
+            targetRepository = repository
+        } else {
+            targetRepository = try await repositoryFactory(image.url.deletingLastPathComponent())
+            try Task.checkCancellation()
+        }
         let isCurrentSource = sourceURL?.standardizedFileURL == image.url.standardizedFileURL
         var targetCase: AnalysisCase
         if isCurrentSource,
@@ -506,13 +511,18 @@ final class AnalysisWorkspaceModel {
 
         let url = image.url
         let orientation = image.exifOrientation
-        let repository = repositoryFactory(url.deletingLastPathComponent())
-        self.repository = repository
+        let repositoryFactory = repositoryFactory
+        let generation = workspaceGeneration
+        repository = nil
 
         loadTask = Task { [weak self] in
             do {
                 await pendingFolderMapSaveTask?.value
                 try Task.checkCancellation()
+                let repository = try await repositoryFactory(url.deletingLastPathComponent())
+                try Task.checkCancellation()
+                guard let self, self.workspaceGeneration == generation else { return }
+                self.repository = repository
                 let revision = try await SourceImageRevision.capture(
                     at: url,
                     exifOrientation: orientation
@@ -521,7 +531,7 @@ final class AnalysisWorkspaceModel {
                 let caseLoad = await repository.loadMostRelevantCaseWithStorage(for: revision)
                 try Task.checkCancellation()
 
-                guard let self, self.sourceURL == url else { return }
+                guard self.workspaceGeneration == generation else { return }
                 self.currentRevision = revision
 
                 self.caseStorage = caseLoad.storage
@@ -539,7 +549,7 @@ final class AnalysisWorkspaceModel {
                         )
                         self.caseStorage = try await repository.save(existing)
                         try Task.checkCancellation()
-                        guard self.sourceURL == url else { return }
+                        guard self.workspaceGeneration == generation else { return }
                     }
                     self.analysisCase = existing
                     self.sourceChanged = false
@@ -568,7 +578,7 @@ final class AnalysisWorkspaceModel {
                 let folderCases = await repository.loadAllCases()
                 let folderMapLoad = await repository.loadFolderMapDocumentWithStorage()
                 try Task.checkCancellation()
-                guard self.sourceURL == url else { return }
+                guard self.workspaceGeneration == generation else { return }
                 self.folderAnalysisCases = folderCases
                 self.folderMapDocument = folderMapLoad.document
                 self.folderMapStorage = folderMapLoad.storage
@@ -576,7 +586,7 @@ final class AnalysisWorkspaceModel {
             } catch is CancellationError {
                 return
             } catch {
-                guard let self, self.sourceURL == url else { return }
+                guard !Task.isCancelled, let self, self.workspaceGeneration == generation else { return }
                 self.loadState = .failed(
                     error.localizedDescription.isEmpty
                         ? "The analysis case could not be opened."
