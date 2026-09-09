@@ -475,41 +475,31 @@ actor KeywordListBackupSnapshotService {
     }
 }
 
-/// Managed source reads and restore commits remain synchronous managed-list transactions.
-/// Immutable snapshot history writes and retention run independently after source capture.
-/// Cancellation is checked between Foundation calls, with durable-after-cancel evidence for restore.
-@KeywordListsFilesystemActor
-final class KeywordListBackupFileService {
-    nonisolated static let shared = KeywordListBackupFileService()
-
-    nonisolated private let io: KeywordListBackupFileIO
-    nonisolated private let inventoryService: KeywordListBackupInventoryService
-    nonisolated private let retentionService: KeywordListBackupRetentionService
-
-    nonisolated init(
-        io: KeywordListBackupFileIO = .system,
-        retentionService: KeywordListBackupRetentionService = .shared
-    ) {
-        self.io = io
-        self.inventoryService = KeywordListBackupInventoryService(io: io)
-        self.retentionService = retentionService
+/// Recovery is advisory and never changes a managed file. Keep provider reads independent of
+/// managed-list transactions so a slow recovery scan cannot delay an edit or restore. The UI
+/// compares the captured route and store version before publishing this immutable result.
+actor KeywordListBackupRecoveryService {
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
     }
 
-    nonisolated func inventory(
-        directories: [KeywordListBackupDirectoryRequest],
-        requestID: UUID
-    ) async -> KeywordListBackupInventoryResult {
-        await inventoryService.inventory(directories: directories, requestID: requestID)
+    init(filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.keyword-lists.backup-recovery", qos: .utility
+    )) {
+        self.filesystemQueue = filesystemQueue
     }
 
-    /// Reads managed source files on the same executor as backup writes. Missing files are
-    /// recoverable; permission/provider failures are unknown and must not be presented as empty.
-    func emptySourceIdentifiers(_ sources: [KeywordListBackupSourceRequest]) throws -> Set<String> {
+    /// Missing files are recoverable; permission, encoding and provider failures are unknown.
+    func emptySourceIdentifiers(
+        _ sources: [KeywordListBackupSourceRequest], io: KeywordListBackupFileIO
+    ) throws -> Set<String> {
         var empty: Set<String> = []
         for source in sources {
             try Task.checkCancellation()
             do {
                 let data = try io.readData(source.sourceURL)
+                try Task.checkCancellation()
                 if try KeywordListsStore.decodeManagedText(data)
                     .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     empty.insert(source.identifier)
@@ -524,6 +514,43 @@ final class KeywordListBackupFileService {
         }
         try Task.checkCancellation()
         return empty
+    }
+}
+
+/// Snapshot source capture and restore commits remain synchronous managed-list transactions.
+/// Immutable snapshot history writes and retention run independently after source capture.
+/// Cancellation is checked between Foundation calls, with durable-after-cancel evidence for restore.
+@KeywordListsFilesystemActor
+final class KeywordListBackupFileService {
+    nonisolated static let shared = KeywordListBackupFileService()
+
+    nonisolated private let io: KeywordListBackupFileIO
+    nonisolated private let inventoryService: KeywordListBackupInventoryService
+    nonisolated private let retentionService: KeywordListBackupRetentionService
+    nonisolated private let recoveryService: KeywordListBackupRecoveryService
+
+    nonisolated init(
+        io: KeywordListBackupFileIO = .system,
+        retentionService: KeywordListBackupRetentionService = .shared,
+        recoveryService: KeywordListBackupRecoveryService = KeywordListBackupRecoveryService()
+    ) {
+        self.io = io
+        self.inventoryService = KeywordListBackupInventoryService(io: io)
+        self.retentionService = retentionService
+        self.recoveryService = recoveryService
+    }
+
+    nonisolated func inventory(
+        directories: [KeywordListBackupDirectoryRequest],
+        requestID: UUID
+    ) async -> KeywordListBackupInventoryResult {
+        await inventoryService.inventory(directories: directories, requestID: requestID)
+    }
+
+    nonisolated func emptySourceIdentifiers(
+        _ sources: [KeywordListBackupSourceRequest]
+    ) async throws -> Set<String> {
+        try await recoveryService.emptySourceIdentifiers(sources, io: io)
     }
 
     @discardableResult

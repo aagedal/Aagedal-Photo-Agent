@@ -990,6 +990,7 @@ struct KeywordListBackupFileServiceTests {
                 case "missing": throw CocoaError(.fileReadNoSuchFile)
                 case "unreadable": throw CocoaError(.fileReadNoPermission)
                 case "empty": return Data(" \n".utf8)
+                case "damaged": return Data([0xff])
                 default: return Data("Berlin".utf8)
                 }
             },
@@ -997,13 +998,140 @@ struct KeywordListBackupFileServiceTests {
         )
         let service = KeywordListBackupFileService(io: io)
         let identifiers = try await service.emptySourceIdentifiers(
-            ["missing", "unreadable", "empty", "populated"].map {
+            ["missing", "unreadable", "empty", "damaged", "populated"].map {
                 KeywordListBackupSourceRequest(
                     identifier: $0, sourceURL: URL(fileURLWithPath: "/virtual/\($0)")
                 )
             }
         )
         #expect(identifiers == ["missing", "empty"])
+    }
+
+    @Test("Recovery worker retains caller context and stops at cancelled reads", arguments: [0, 1, 2])
+    @MainActor
+    func recoveryWorkerContext(cancellationStage: Int) async throws {
+        let root = URL(fileURLWithPath: "/virtual/recovery-worker")
+        let queue = DispatchSerialQueue(label: "test.backup-recovery.\(cancellationStage)")
+        let reads = Mutex<[URL]>([])
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { _ in [] },
+            inspectTextFile: { _ in fatalError("Unexpected backup inspection") },
+            createDirectory: { _ in Issue.record("Recovery must not create files") },
+            readData: { url in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(!Thread.isMainThread)
+                #expect(KeywordListsStoreStorageOverride.current == root)
+                #expect(Task.currentPriority >= .userInitiated)
+                reads.withLock { $0.append(url) }
+                if cancellationStage == 2 { withUnsafeCurrentTask { $0?.cancel() } }
+                return Data()
+            },
+            writeData: { _, _ in Issue.record("Recovery must not write files") },
+            removeItem: { _ in Issue.record("Recovery must not remove files") }
+        )
+        let service = KeywordListBackupFileService(
+            io: io, recoveryService: KeywordListBackupRecoveryService(filesystemQueue: queue)
+        )
+        let sources = ["first", "second"].map {
+            KeywordListBackupSourceRequest(identifier: $0, sourceURL: root.appendingPathComponent($0))
+        }
+        let task = Task(priority: .userInitiated) {
+            try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+                if cancellationStage == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+                return try await service.emptySourceIdentifiers(sources)
+            }
+        }
+        if cancellationStage == 0 {
+            #expect(try await task.value == ["first", "second"])
+        } else {
+            await #expect(throws: CancellationError.self) { try await task.value }
+        }
+        #expect(reads.withLock { $0.count } == (cancellationStage == 0 ? 2 : cancellationStage == 1 ? 0 : 1))
+    }
+
+    @Test("Blocked recovery reads allow managed restores and reject queued cancellation")
+    func blockedRecoveryAllowsRestore() async throws {
+        let probe = BlockingKeywordListBackupPreviewReaderProbe()
+        let recovery = KeywordListBackupFileService(io: KeywordListBackupFileIO(
+            contentsOfDirectory: { _ in [] },
+            inspectTextFile: { _ in fatalError("Unexpected backup inspection") },
+            createDirectory: { _ in }, readData: { try probe.read($0) },
+            writeData: { _, _ in }, removeItem: { _ in }
+        ))
+        let sources = [KeywordListBackupSourceRequest(
+            identifier: "keywords", sourceURL: URL(fileURLWithPath: "/virtual/list.txt")
+        )]
+        let first = Task { try await recovery.emptySourceIdentifiers(sources) }
+        defer { probe.releaseFirstRead() }
+        try await probe.waitUntilFirstReadStarts()
+        let second = Task { try await recovery.emptySourceIdentifiers(sources) }
+        second.cancel()
+        let watchdogReleased = Mutex(false)
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled {
+                watchdogReleased.withLock { $0 = true }
+                probe.releaseFirstRead()
+            }
+        }
+        defer { timeout.cancel() }
+        let writer = KeywordListBackupFileIOProbe(files: [])
+        writer.readDataResult = Data("restored".utf8)
+        let result = try await KeywordListBackupFileService(io: writer.fileIO).restore(
+            from: URL(fileURLWithPath: "/virtual/backup.txt"),
+            to: sources[0].sourceURL, requestID: UUID()
+        )
+        guard case .restored = result else {
+            Issue.record("Expected managed restore to commit"); return
+        }
+        #expect(!watchdogReleased.withLock { $0 })
+        #expect(writer.writtenData == Data("restored".utf8))
+        probe.releaseFirstRead()
+        #expect(try await first.value.isEmpty)
+        await #expect(throws: CancellationError.self) { try await second.value }
+        #expect(probe.invocationCount == 1)
+        #expect(try await recovery.emptySourceIdentifiers(sources).isEmpty)
+        #expect(probe.invocationCount == 2)
+    }
+
+    @Test("A managed write during recovery prevents stale empty-list publication")
+    @MainActor
+    func recoveryRejectsConcurrentWrite() async throws {
+        let root = URL(fileURLWithPath: "/virtual/recovery-publication")
+        let blocker = BlockingKeywordListBackupPreviewReaderProbe()
+        let empty = Mutex(false)
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { directory in [directory.appendingPathComponent("version.txt")] },
+            inspectTextFile: { url in
+                .init(url: url, date: .now, text: "Berlin", byteCount: 6)
+            },
+            createDirectory: { _ in },
+            readData: { url in
+                guard !empty.withLock({ $0 }) else { return Data() }
+                _ = try blocker.read(url)
+                return Data("Berlin".utf8)
+            },
+            writeData: { _, _ in }, removeItem: { _ in }
+        )
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let store = KeywordListsStore()
+            let service = KeywordListsBackupService(filesystem: KeywordListBackupFileService(io: io), store: store)
+            empty.withLock { $0 = true }
+            await service.refreshRecoverable()
+            #expect(!service.recoverableKeys.isEmpty)
+            let originalKeys = service.recoverableKeys
+            empty.withLock { $0 = false }
+            let scan = Task { await service.refreshRecoverable() }
+            defer { blocker.releaseFirstRead() }
+            try await blocker.waitUntilFirstReadStarts()
+            store.recordExternalWrite(to: .quick(.keywords),
+                                      destinationURL: root.appendingPathComponent("quick/keywords.txt"))
+            blocker.releaseFirstRead()
+            await scan.value
+            #expect(service.recoverableKeys == originalKeys)
+            await service.refreshRecoverable()
+            #expect(service.recoverableKeys.isEmpty)
+        }
     }
 
     @Test("Inventory Dispatch worker retains caller context and stops after cancelled I/O", arguments: [0, 1, 2])
