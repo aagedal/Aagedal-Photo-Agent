@@ -114,6 +114,12 @@ nonisolated struct KnownPeopleAdditionResult: Sendable {
     let completion: Result<Void, any Error>
 }
 
+nonisolated struct KnownPeopleLegacyMigrationResult: Sendable {
+    let writtenPersonURLs: [URL]
+    let legacyRemoved: Bool
+    let completion: Result<Void, any Error>
+}
+
 nonisolated struct KnownPeoplePersonRemovalResult: Sendable {
     let personRemoved: Bool
     let markerRollbackFailed: Bool
@@ -284,6 +290,37 @@ actor KnownPeopleArchiveService {
         for url in urls {
             try? access.removeCoordinatedItem(url)
         }
+    }
+
+    /// Preserve newer per-person records and retire the legacy file only after every
+    /// missing record is durable. Once reading starts, finish the admitted migration even
+    /// if cancellation arrives; a failed prefix keeps database.json available for retry.
+    func migrateLegacyDatabase(root: URL) async -> KnownPeopleLegacyMigrationResult {
+        await beginExclusiveAccess()
+        defer { endExclusiveAccess() }
+        var writtenPersonURLs: [URL] = []
+        var legacyRemoved = false
+        let completion = Result { () throws -> Void in
+            try Task.checkCancellation()
+            let legacyURL = root.appendingPathComponent("database.json")
+            guard access.destinationExists(legacyURL) else { return }
+            try Task.checkCancellation()
+            let legacy = try JSONDecoder().decode(KnownPeopleDatabase.self,
+                from: access.readCoordinatedData(legacyURL))
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            for person in legacy.people {
+                let destination = root.appendingPathComponent("people", isDirectory: true)
+                    .appendingPathComponent("\(person.id.uuidString).json")
+                guard !access.destinationExists(destination) else { continue }
+                try access.writeCoordinatedData(encoder.encode(person), destination)
+                writtenPersonURLs.append(destination)
+            }
+            try access.removeCoordinatedItem(legacyURL)
+            legacyRemoved = true
+        }
+        return KnownPeopleLegacyMigrationResult(writtenPersonURLs: writtenPersonURLs,
+            legacyRemoved: legacyRemoved, completion: completion)
     }
 
     /// Finish the admitted thumbnail/record pair once the image write starts. Cancellation
@@ -926,7 +963,7 @@ final class KnownPeopleService {
     private static weak var importCommitOwner: KnownPeopleService?
     private static var importCommitRoot: URL?
     private static var importReservedURLs: Set<URL> = []
-    // Whole-store deletion must exclude new identities as well as existing paths.
+    // Whole-store deletion and legacy migration exclude new identities as well as existing paths.
     private static var clearReservedRoot: URL?
 
     private static func isReservedDestination(_ url: URL) -> Bool {
@@ -1172,7 +1209,7 @@ final class KnownPeopleService {
         }
 
         // A cold peer must not run repair/GC writes or cache an intermediate listing
-        // while a whole-root reset owns the filesystem. Existing snapshots remain
+        // while a whole-root reset or migration owns the filesystem. Existing snapshots remain
         // available until its durable result invalidates them.
         guard Self.clearReservedRoot != knownPeopleDirectory.standardizedFileURL else {
             return KnownPeopleDatabase()
@@ -1464,6 +1501,40 @@ final class KnownPeopleService {
         }
     }
 
+    /// The caller holds process-wide mutation admission. Reserve the entire root while
+    /// its legacy records are read and copied, since synchronous peers cannot await the
+    /// archive worker and must not create, remove or repair those destinations meanwhile.
+    /// Embedding-space migration and per-person assembly remain with loadDatabase().
+    private func prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision revision: UInt64) async throws {
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
+        guard database == nil else { return }
+        let root = try await resolveDirectoryInBackground()
+        guard database == nil else { return }
+        reserveImportDestinations([], root: root)
+        Self.clearReservedRoot = root.standardizedFileURL
+        let result = await archiveService.migrateLegacyDatabase(root: root)
+        if !result.writtenPersonURLs.isEmpty {
+            invalidatePeerDatabases(at: root)
+            if revision == storageRevision {
+                database = nil
+                clearFeaturePrintCache()
+                for url in result.writtenPersonURLs { stampLocalWrite(url) }
+            }
+        }
+        if result.legacyRemoved, revision == storageRevision {
+            stampLocalWrite(root.appendingPathComponent("database.json"))
+        }
+        await releaseImportDestinations()
+        guard revision == storageRevision else { throw CancellationError() }
+        if !result.writtenPersonURLs.isEmpty {
+            NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        }
+        guard revision == storageRevision else { throw CancellationError() }
+        try result.completion.get()
+        try Task.checkCancellation()
+    }
+
     // MARK: - Remote changes
 
     /// Applies remote changes to individual person files (from the iCloud
@@ -1707,17 +1778,10 @@ final class KnownPeopleService {
         return image
     }
 
-    private struct ThumbnailReadRequest {
-        let requestID: UUID
-        let fileURL: URL
-        let storageRevision: UInt64
-        let contentRevision: UInt64
-    }
-
-    private func thumbnailReadRequest(
-        itemID: UUID,
-        directoryName: String
-    ) async -> ThumbnailReadRequest? {
+    /// Capture preference state on MainActor; provider lookup and fallback directory
+    /// creation stay on the retained routing worker. Never cache a superseded root.
+    private func resolveDirectoryInBackground() async throws -> URL {
+        try Task.checkCancellation()
         let revision = storageRevision
         let root: URL
         if let cachedDirectory {
@@ -1730,12 +1794,27 @@ final class KnownPeopleService {
             let syncEnabled = UserDefaults.standard.bool(
                 forKey: UserDefaultsKeys.knownPeopleICloudEnabled
             )
-            root = await KnownPeopleICloudRoutingService.shared.storageURL(
-                syncEnabled: syncEnabled
-            )
+            root = await KnownPeopleICloudRoutingService.shared.storageURL(syncEnabled: syncEnabled)
         }
-        guard revision == storageRevision, !Task.isCancelled else { return nil }
+        try Task.checkCancellation()
+        guard revision == storageRevision else { throw CancellationError() }
         cachedDirectory = root
+        return root
+    }
+
+    private struct ThumbnailReadRequest {
+        let requestID: UUID
+        let fileURL: URL
+        let storageRevision: UInt64
+        let contentRevision: UInt64
+    }
+
+    private func thumbnailReadRequest(
+        itemID: UUID,
+        directoryName: String
+    ) async -> ThumbnailReadRequest? {
+        let revision = storageRevision
+        guard let root = try? await resolveDirectoryInBackground() else { return nil }
         let fileURL = root
             .appendingPathComponent(directoryName, isDirectory: true)
             .appendingPathComponent("\(itemID.uuidString).jpg")
@@ -1850,6 +1929,7 @@ final class KnownPeopleService {
         defer { endImport() }
         try Task.checkCancellation()
         guard revision == storageRevision else { throw CancellationError() }
+        try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: revision)
         guard var current = person(byID: id) else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                 userInfo: [NSLocalizedDescriptionKey: "Person no longer exists."])
@@ -1884,6 +1964,7 @@ final class KnownPeopleService {
         defer { endImport() }
         try Task.checkCancellation()
         guard revision == storageRevision else { throw CancellationError() }
+        try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: revision)
         let person = person(byID: id)
         let root = knownPeopleDirectory
         let recordURL = personFileURL(for: id)
@@ -2040,6 +2121,7 @@ final class KnownPeopleService {
         defer { endImport() }
         try Task.checkCancellation()
         guard revision == storageRevision else { throw CancellationError() }
+        try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: revision)
         // Assemble cold storage before reserving paths; migrations must finish first.
         _ = loadDatabase()
         let root = knownPeopleDirectory
@@ -2190,6 +2272,7 @@ final class KnownPeopleService {
         defer { endImport() }
         try Task.checkCancellation()
         guard revision == storageRevision else { throw CancellationError() }
+        try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: revision)
         // Admission may wait behind another mutation. Resolve both people from current storage.
         guard let source = person(byID: sourceID), var target = person(byID: intoTargetID) else { return }
         let existingData = Set(target.embeddings.map(\.featurePrintData))
@@ -2253,6 +2336,7 @@ final class KnownPeopleService {
         defer { endImport() }
         try Task.checkCancellation()
         guard revision == storageRevision else { throw CancellationError() }
+        try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: revision)
         var person = person(byID: personID)
         person?.updatedAt = Date()
         let root = knownPeopleDirectory
@@ -2487,7 +2571,7 @@ final class KnownPeopleService {
         defer { endImport() }
         try Task.checkCancellation()
         guard revision == storageRevision else { throw CancellationError() }
-        let root = knownPeopleDirectory
+        let root = try await resolveDirectoryInBackground()
         reserveImportDestinations([], root: root)
         Self.clearReservedRoot = root.standardizedFileURL
         let result = await archiveService.clearDatabase(root: root)
@@ -2814,6 +2898,7 @@ final class KnownPeopleService {
             throw CancellationError()
         }
 
+        try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: expectedStorageRevision)
         // Filter out people whose UUIDs already exist to prevent duplicates on re-import
         let db = loadDatabase()
         var admittedIDs = Set(db.people.map(\.id))

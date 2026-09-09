@@ -14,6 +14,180 @@ import SwiftUI
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Cold background edits migrate legacy records on the retained worker and release root ownership",
+          arguments: ["success", "cancel", "storageChange", "readFailure", "writeFailure", "removeFailure"])
+    func backgroundLegacyMigration(outcome: String) async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        let versionKey = UserDefaultsKeys.knownPeopleEmbeddingVersion
+        let previousVersion = UserDefaults.standard.object(forKey: versionKey)
+        defer {
+            if let previousVersion { UserDefaults.standard.set(previousVersion, forKey: versionKey) }
+            else { UserDefaults.standard.removeObject(forKey: versionKey) }
+            teardown(directory)
+        }
+        let peer = KnownPeopleService()
+        let original = try peer.addPerson(name: "Existing", embeddings: [embedding(91)])
+        var older = original
+        older.name = "Obsolete legacy name"
+        let first = KnownPerson(name: "First legacy", embeddings: [embedding(92)])
+        let second = KnownPerson(name: "Second legacy", embeddings: [embedding(93)])
+        let legacyURL = directory.appendingPathComponent("database.json")
+        let legacyData = try JSONEncoder().encode(KnownPeopleDatabase(people: [older, first, second]))
+        try CloudCoordinatedIO.writeData(legacyData, to: legacyURL)
+        // Legacy migration must not require or stamp readiness for a different embedding model.
+        UserDefaults.standard.set(1, forKey: versionKey)
+        KnownPeopleService.embeddingMigrationModelReadiness = { false }
+        let gate = KnownPeopleThumbnailPublicationGate(data: legacyData)
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        let queue = DispatchSerialQueue(label: "test.known-people.legacy-migration")
+        var access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: { url in
+                #expect(!Thread.isMainThread)
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(KnownPeopleEditTaskContext.root == directory)
+                if url == legacyURL {
+                    _ = gate.read(url)
+                    if outcome == "readFailure" { throw CocoaError(.fileReadNoPermission) }
+                }
+                return try system.readCoordinatedData(url)
+            }, writeData: system.writeData,
+            writeCoordinatedData: { data, url in
+                #expect(!Thread.isMainThread)
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(KnownPeopleEditTaskContext.root == directory)
+                if outcome == "writeFailure", url.lastPathComponent == "\(second.id.uuidString).json" {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                try system.writeCoordinatedData(data, url)
+            }, runDitto: system.runDitto
+        )
+        access.destinationExists = { url in
+            #expect(!Thread.isMainThread)
+            return system.destinationExists(url)
+        }
+        access.removeCoordinatedItem = { url in
+            #expect(!Thread.isMainThread)
+            if outcome == "removeFailure", url == legacyURL { throw CocoaError(.fileWriteNoPermission) }
+            try system.removeCoordinatedItem(url)
+        }
+        let service = KnownPeopleService(archiveService: KnownPeopleArchiveService(access: access, filesystemQueue: queue))
+        var edited = original
+        edited.name = "Edited"
+        let task = Task {
+            try await KnownPeopleEditTaskContext.$root.withValue(directory) {
+                try await service.updatePersonDetailsInBackground(edited)
+            }
+        }
+        let deadline = ContinuousClock.now + .seconds(4)
+        while !gate.entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(gate.entered)
+        #expect(throws: (any Error).self) { try peer.updatePerson(original) }
+        #expect(throws: (any Error).self) { try peer.addPerson(name: "Overlapping", embeddings: []) }
+        #expect(throws: (any Error).self) { try peer.clearDatabase() }
+        let coldPeer = KnownPeopleService()
+        #expect(coldPeer.loadDatabase().people.isEmpty)
+        if outcome == "cancel" { task.cancel() }
+        if outcome == "storageChange" {
+            service.reloadAfterStorageChange(resolvedStorageURL: directory.appendingPathComponent("other"))
+        }
+        gate.resume()
+        switch outcome {
+        case "success": try await task.value
+        case "cancel", "storageChange":
+            await #expect(throws: CancellationError.self) { try await task.value }
+        default:
+            await #expect(throws: (any Error).self) { try await task.value }
+        }
+        let migratedFirst = outcome != "readFailure"
+        let migratedSecond = migratedFirst && outcome != "writeFailure"
+        #expect(FileManager.default.fileExists(atPath: personFileURL(first.id, in: directory).path) == migratedFirst)
+        #expect(FileManager.default.fileExists(atPath: personFileURL(second.id, in: directory).path) == migratedSecond)
+        #expect(FileManager.default.fileExists(atPath: legacyURL.path) == outcome.hasSuffix("Failure"))
+        let durable = try JSONDecoder().decode(KnownPerson.self,
+            from: Data(contentsOf: personFileURL(original.id, in: directory)))
+        #expect(durable.name == (outcome == "success" ? "Edited" : "Existing"))
+        #expect(durable.embeddings.map(\.id) == original.embeddings.map(\.id))
+        #expect(UserDefaults.standard.integer(forKey: versionKey) == 1)
+        if outcome == "storageChange" {
+            #expect(service.getAllPeople().isEmpty)
+        }
+        // Keep failed migrations from being retried by the synchronous assertion helpers.
+        try? FileManager.default.removeItem(at: legacyURL)
+        #expect((peer.person(byID: first.id) != nil) == migratedFirst)
+        #expect((coldPeer.person(byID: second.id) != nil) == migratedSecond)
+        // Every completion, including a durable prefix followed by failure, releases admission.
+        try peer.updatePerson(original)
+    }
+
+    @Test("Legacy migration cancellation before the source read leaves the store untouched",
+          arguments: [false, true])
+    func backgroundLegacyMigrationCancelledBeforeRead(duringProbe: Bool) async throws {
+        let directory = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let gate = KnownPeopleThumbnailPublicationGate(data: Data())
+        defer { gate.resume() }
+        let system = KnownPeopleArchiveFileAccess.system
+        var access = KnownPeopleArchiveFileAccess(
+            temporaryDirectory: directory,
+            createDirectory: system.createDirectory, removeItem: system.removeItem,
+            contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+            itemExists: system.itemExists, readData: system.readData,
+            readCoordinatedData: { _ in
+                Issue.record("A cancelled legacy migration must not start reading")
+                throw CocoaError(.fileReadUnknown)
+            }, writeData: system.writeData, writeCoordinatedData: system.writeCoordinatedData,
+            runDitto: system.runDitto
+        )
+        access.destinationExists = { url in
+            _ = gate.read(url)
+            return true
+        }
+        let worker = KnownPeopleArchiveService(access: access)
+        let task = Task {
+            if !duringProbe { withUnsafeCurrentTask { $0?.cancel() } }
+            return await worker.migrateLegacyDatabase(root: directory)
+        }
+        if duringProbe {
+            let deadline = ContinuousClock.now + .seconds(4)
+            while !gate.entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+            #expect(gate.entered)
+            task.cancel()
+            gate.resume()
+        }
+        let result = await task.value
+        #expect(result.writtenPersonURLs.isEmpty)
+        #expect(!result.legacyRemoved)
+        #expect(throws: CancellationError.self) { try result.completion.get() }
+        #expect(gate.entered == duringProbe)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    @Test("Cold asynchronous additions retain tombstone suppression after legacy migration")
+    func backgroundLegacyMigrationRetainsTombstones() async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let deleted = KnownPerson(name: "Deleted legacy person", embeddings: [embedding(94)])
+        let legacyURL = directory.appendingPathComponent("database.json")
+        try CloudCoordinatedIO.writeData(
+            JSONEncoder().encode(KnownPeopleDatabase(people: [deleted])), to: legacyURL)
+        let markerURL = directory.appendingPathComponent("people/\(deleted.id.uuidString).deleted")
+        try CloudCoordinatedIO.writeData(JSONEncoder().encode(KnownPersonTombstone(id: deleted.id)), to: markerURL)
+        let service = KnownPeopleService()
+        let addition = try await service.addOrMergePerson(name: "New person", embeddings: [],
+            thumbnailData: nil, duplicateCheck: .noDuplicate)
+        #expect(service.getAllPeople().map(\.id) == [addition.person.id])
+        #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+        #expect(!FileManager.default.fileExists(atPath: personFileURL(deleted.id, in: directory).path))
+        #expect(FileManager.default.fileExists(atPath: markerURL.path))
+    }
+
     @Test("Person editor bindings follow identity across reorder and ignore deleted records")
     func personEditorBindingSurvivesListChanges() {
         let first = KnownPerson(name: "First")
