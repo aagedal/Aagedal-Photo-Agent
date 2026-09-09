@@ -39,7 +39,14 @@ not infer an association merely because a WAV has a similar filename.
 **Duplicate** preserves a proven memo and its relationship as independent copies. When a RAW
 and JPEG share a source memo, duplicating either creates its own WAV without changing the
 source pair. Missing/invalid companions block duplication; existing output files are preserved.
-Other move/reject/archive/delete paths, transcription and delivery integration remain under
+**Add to Subfolder**, **Move to Folder** and **Move Rejected to Folder** also carry the proven
+WAV and saved relationship. Moving one photo from a shared memo group keeps the source memo
+for the photos left behind and gives the moved photo its own copy. Missing/invalid records,
+linked audio and existing destination companions fail closed. A cleanup warning can mean the
+photo moved successfully but private source backups remain; follow the reported paths before
+retrying. General Move reports XMP/editorial sidecar failures separately from the moved photo.
+
+Archive/delete/source reassociation, transcription and delivery integration remain under
 development; consult the limitations before using those operations on memo-bearing photos.
 
 ## Recover a deleted template

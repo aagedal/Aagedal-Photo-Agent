@@ -26,14 +26,14 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Coordinator cycle 1: voice memos, thumbnail I/O and native testing](release/cycle-01-voice-memo-thumbnail-2026-09-09.md).
+**Latest improvement continuation:** [Coordinator cycle 2: memo moves and toolbar identity](release/cycle-02-memo-moves-toolbar-2026-09-09.md).
 
 ## Portfolio
 
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; automated orientation/view/report transform coverage expanded; release hardening remains | Close manual fixture/color, accessibility, display/HDR, performance, security, recovery, and packaging gates |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, unified metadata-field customization, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline and every localized Title alternative round-trip independently; ILCE-1 v4.00 one/two-source RAW/JPEG voice-memo ingest, persisted relationships, transactional rename, independent Duplicate and explicit Caption playback are implemented with fail-closed evidence | Complete remaining archive/move/reject/reassociation lifecycle, transcription and delivery plus broader Sony samples, external interoperability, real-server, device, accessibility, and first-use Deadline drills |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, unified metadata-field customization, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline and every localized Title alternative round-trip independently; ILCE-1 v4.00 one/two-source RAW/JPEG voice-memo ingest, persisted relationships, transactional rename, independent Duplicate, companion-aware Move/Reject and explicit Caption playback are implemented with fail-closed evidence | Complete remaining archive/Trash/reassociation lifecycle, transcription and delivery plus broader Sony samples, external interoperability, real-server, device, accessibility, and first-use Deadline drills |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, immutable report evidence, and the supported-arm64 automated boundary matrix are implemented; interactive release validation remains | Validate live and reported rays across actual map styles, camera interactions, rapid time changes, offline behavior, and accessibility paths |
 
 ## Default delivery order

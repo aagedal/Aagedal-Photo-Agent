@@ -65,8 +65,12 @@ These are material product and evidence boundaries, not a list of unfinished int
   supports password/netrc authentication, not SSH private keys, and a narrow local path
   time-of-check/time-of-use interval remains before `curl` opens a verified staged file.
 - Persisted voice memos support explicit Caption playback and companion-preserving Duplicate,
-  alongside ingest and transactional rename. General move/reject/archive/delete/reassociation,
-  transcription, reviewed transcript variables and delivery integration remain incomplete.
+  alongside ingest, transactional rename and companion-aware Move/Reject. Archive/delete/source
+  reassociation, transcription, reviewed transcript variables and delivery integration remain
+  incomplete. Move/Reject stage verified copies before retiring originals; this requires temporary
+  disk space and is not a process-crash-atomic multi-file operation. Physical cross-volume/recovery
+  and broader camera workflows remain unverified. General Move reports separate XMP/editorial
+  failures as partial success, and retained source backups are explicit cleanup warnings.
   Playback detects ordinary file-revision changes while loading and before starting; persisted
   schema-1 relationships are filename based and are not cryptographic source provenance.
   Validation does not cover every Sony camera/firmware layout.

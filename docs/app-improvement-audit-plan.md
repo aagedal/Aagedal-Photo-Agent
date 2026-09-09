@@ -6,6 +6,12 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Autonomous coordinator cycle 2 (2026-09-09):** Move/Reject now prepare verified companion
+bundles, retain rollback originals and report cleanup residuals. Independent review closed
+orphan destination metadata overwrite, linked-memo ownership and cross-volume partial-move
+ambiguities in these paths. Folder toolbar actions now have separate native identities/labels.
+Broad audit gates stay open; see [cycle 2 evidence](release/cycle-02-memo-moves-toolbar-2026-09-09.md).
+
 **Autonomous coordinator cycle 1 (2026-09-09):** Thumbnail iCloud availability probes and
 sidecar/header/orientation materialization now retain utility Dispatch context and cancellation.
 Caption adds explicit persisted-memo playback; Duplicate carries verified photo/WAV relationships.

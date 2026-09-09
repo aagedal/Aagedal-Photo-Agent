@@ -10,6 +10,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Move and Reject now preserve proven voice-memo companions with verified staging, rollback and
+  shared-memo handling. Destination metadata is protected from orphan-sidecar collisions, and
+  toolbar actions have independent accessibility identities.
 - Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel
   inspection, photo/map annotations, measurement, timeline evidence, map context, offline
   solar-position directions, portable projects, and immutable PDF reports.

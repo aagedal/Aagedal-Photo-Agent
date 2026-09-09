@@ -704,6 +704,15 @@ native evidence plus accessibility fixes. The broad lifecycle and end-to-end gat
 move/reject/archive/delete/reassociation, reviewed local transcription/variables/delivery and
 real Sony card-to-caption validation remain required.
 
+**Coordinator cycle 2 — 2026-09-09:** General Move/Add to Subfolder and Move Rejected now carry
+proven image/WAV/record bundles with verified staging, source retirement, rollback and explicit
+cleanup receipts. Shared source memos remain available to photos left behind; moving both variants
+creates collision-free destination associations. Orphan metadata reservations and exclusive JSON
+installation preserve unrelated destination bytes; linked audio is rejected before destructive
+operations. See [cycle 2 evidence](release/cycle-02-memo-moves-toolbar-2026-09-09.md). The lifecycle
+checkbox stays open for archive, Trash, source reassociation and real camera end-to-end evidence.
+[Local transcription design](release/voice-memo-transcription-design.md) is preparatory only.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.
