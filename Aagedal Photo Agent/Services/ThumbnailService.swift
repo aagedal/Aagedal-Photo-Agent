@@ -5,6 +5,74 @@ import os
 
 nonisolated private let thumbnailLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ThumbnailService")
 
+nonisolated struct ThumbnailImageRenderAccess: Sendable {
+    let decode: @Sendable (URL, CGFloat) -> CGImage?
+    let edit: @Sendable (CIImage, CameraRawSettings, Int) async -> CIImage
+    let materialize: @Sendable (CIImage) -> CGImage?
+
+    static let system = Self(
+        decode: { url, maxPixelSize in
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+            let options: [CFString: Any] = [
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+            ]
+            return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        },
+        edit: { image, settings, orientation in
+            await CameraRawApproximation.applyWithCropAsync(
+                to: image, settings: settings, exifOrientation: orientation
+            )
+        },
+        materialize: { edited in
+            let extent = edited.extent
+            guard extent.width > 0, extent.height > 0 else { return nil }
+            return CameraRawApproximation.ciContext.createCGImage(
+                edited, from: extent, format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB()
+            )
+        }
+    )
+}
+
+/// Each thumbnail request keeps its Swift task on an enforced-utility Dispatch executor for
+/// ImageIO decoding and final Core Image materialization. The awaited Metal edit releases the
+/// executor, then resumes here before producing pixels. Independent requests keep their own
+/// serial executor; the service's existing admission gate still caps original thumbnail loads.
+actor ThumbnailImageRenderWorker {
+    nonisolated let executor: FullScreenImageDecodeExecutor
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        executor.asUnownedSerialExecutor()
+    }
+    private let access: ThumbnailImageRenderAccess
+
+    init(
+        access: ThumbnailImageRenderAccess = .system,
+        executor: FullScreenImageDecodeExecutor = FullScreenImageDecodeExecutor(
+            label: "com.aagedal.photo-agent.thumbnail-image-render.request"
+        )
+    ) {
+        self.access = access
+        self.executor = executor
+    }
+
+    func load(from url: URL, maxPixelSize: CGFloat) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        let image = access.decode(url, maxPixelSize)
+        return Task.isCancelled ? nil : image
+    }
+
+    func renderEdited(
+        cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int
+    ) async -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        let edited = await access.edit(CIImage(cgImage: cgImage), settings, exifOrientation)
+        guard !Task.isCancelled else { return nil }
+        let rendered = access.materialize(edited)
+        return Task.isCancelled ? nil : rendered
+    }
+}
+
 @Observable
 final class ThumbnailService {
     typealias OriginalThumbnailLoader = @Sendable (URL) async -> NSImage?
@@ -369,27 +437,10 @@ final class ThumbnailService {
 
     nonisolated private func loadCGImageSourceThumbnail(for url: URL) async -> NSImage? {
         let maxPixelSize = max(thumbnailSize.width, thumbnailSize.height) * 2
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-
-                let options: [CFString: Any] = [
-                    kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                ]
-
-                guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-
-                continuation.resume(returning: NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height)))
-            }
-        }
+        guard let cgImage = await ThumbnailImageRenderWorker().load(
+            from: url, maxPixelSize: maxPixelSize
+        ) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
     /// Applies the full develop pipeline (tonal + masks + crop/rotation) to a
@@ -400,22 +451,13 @@ final class ThumbnailService {
     /// because their QL preview is the camera-baked JPEG and diverges from the RAW
     /// decode the edit/export renders use.)
     ///
-    /// Explicitly leave the caller's actor for CoreImage rendering, including the
-    /// synchronous final image creation after the awaited develop pipeline.
-    @concurrent
+    /// Keep final Core Image materialization on the utility Dispatch worker after the
+    /// awaited develop pipeline, preserving caller cancellation across both boundaries.
     nonisolated private static func renderEditedThumbnail(
         cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int
     ) async -> CGImage? {
-        let ciImage = CIImage(cgImage: cgImage)
-        // Async: suspends on the dedicated render queue instead of blocking this thumbnail
-        // task's cooperative-pool thread — grid scrolling can spawn many of these at once.
-        let edited = await CameraRawApproximation.applyWithCropAsync(
-            to: ciImage, settings: settings, exifOrientation: exifOrientation)
-        let editedExtent = edited.extent
-        guard editedExtent.width > 0, editedExtent.height > 0 else { return nil }
-
-        return CameraRawApproximation.ciContext.createCGImage(
-            edited, from: editedExtent, format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB()
+        await ThumbnailImageRenderWorker().renderEdited(
+            cgImage: cgImage, settings: settings, exifOrientation: exifOrientation
         )
     }
 
