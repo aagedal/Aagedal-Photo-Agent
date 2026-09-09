@@ -25,10 +25,6 @@
 		AB0200000000000000000002 /* KeywordListsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0200000000000000000001 /* KeywordListsStoreTests.swift */; };
 		AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0300000000000000000001 /* StructuredKeywordParserTests.swift */; };
 		AB0400000000000000000002 /* StructuredKeywordSerializerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */; };
-		AF5200000000000000000002 /* ImportFilesystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */; };
-		AF5300000000000000000002 /* TextAndCloudExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5300000000000000000001 /* TextAndCloudExecutorTests.swift */; };
-		AF5400000000000000000002 /* RenderExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5400000000000000000001 /* RenderExecutorTests.swift */; };
-		AF5100000000000000000002 /* FileSystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5100000000000000000001 /* FileSystemExecutorTests.swift */; };
 		AB0500000000000000000002 /* KeywordListsArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0500000000000000000001 /* KeywordListsArchiveTests.swift */; };
 		AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */; };
 		AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0700000000000000000001 /* StructuredKeywordServiceTests.swift */; };
@@ -78,6 +74,10 @@
 		AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */; };
 		AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5200000000000000000001 /* MetadataValidationTests.swift */; };
 		AE3A10000000000000000002 /* AnalysisExportFileServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */; };
+		AF5100000000000000000002 /* FileSystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5100000000000000000001 /* FileSystemExecutorTests.swift */; };
+		AF5200000000000000000002 /* ImportFilesystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */; };
+		AF5300000000000000000002 /* TextAndCloudExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5300000000000000000001 /* TextAndCloudExecutorTests.swift */; };
+		AF5400000000000000000002 /* RenderExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5400000000000000000001 /* RenderExecutorTests.swift */; };
 		B0A0E1000000000000000002 /* BrowserXMPSidecarLoadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */; };
 		B0A0E2000000000000000002 /* KeywordListEditorPersistenceServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
@@ -176,10 +176,6 @@
 		AB0200000000000000000001 /* KeywordListsStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListsStoreTests.swift; sourceTree = "<group>"; };
 		AB0300000000000000000001 /* StructuredKeywordParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordParserTests.swift; sourceTree = "<group>"; };
 		AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordSerializerTests.swift; sourceTree = "<group>"; };
-		AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportFilesystemExecutorTests.swift; sourceTree = "<group>"; };
-		AF5300000000000000000001 /* TextAndCloudExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TextAndCloudExecutorTests.swift; sourceTree = "<group>"; };
-		AF5400000000000000000001 /* RenderExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenderExecutorTests.swift; sourceTree = "<group>"; };
-		AF5100000000000000000001 /* FileSystemExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FileSystemExecutorTests.swift; sourceTree = "<group>"; };
 		AB0500000000000000000001 /* KeywordListsArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListsArchiveTests.swift; sourceTree = "<group>"; };
 		AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEngineConcurrencyTests.swift; sourceTree = "<group>"; };
 		AB0700000000000000000001 /* StructuredKeywordServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordServiceTests.swift; sourceTree = "<group>"; };
@@ -229,6 +225,10 @@
 		AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisSolarPositionCalculatorTests.swift; sourceTree = "<group>"; };
 		AB5200000000000000000001 /* MetadataValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataValidationTests.swift; sourceTree = "<group>"; };
 		AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisExportFileServiceTests.swift; sourceTree = "<group>"; };
+		AF5100000000000000000001 /* FileSystemExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FileSystemExecutorTests.swift; sourceTree = "<group>"; };
+		AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportFilesystemExecutorTests.swift; sourceTree = "<group>"; };
+		AF5300000000000000000001 /* TextAndCloudExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TextAndCloudExecutorTests.swift; sourceTree = "<group>"; };
+		AF5400000000000000000001 /* RenderExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenderExecutorTests.swift; sourceTree = "<group>"; };
 		B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserXMPSidecarLoadServiceTests.swift; sourceTree = "<group>"; };
 		B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListEditorPersistenceServiceTests.swift; sourceTree = "<group>"; };
 		BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameRecipeTests.swift; sourceTree = "<group>"; };
