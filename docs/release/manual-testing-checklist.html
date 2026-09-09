@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Aagedal Photo Agent 3.0 — draft manual testing checklist</title>
+<style>
+:root{color-scheme:light;--ink:#172b3a;--muted:#50606c;--line:#ced8df;--accent:#145979;--paper:#fff;--bg:#eef3f5}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,sans-serif}main{max-width:1120px;margin:auto;padding:34px 24px 80px}h1{font-size:clamp(27px,4vw,42px);line-height:1.15;margin:12px 0}h2{font-size:25px;margin:30px 0 12px}h3{font-size:19px;line-height:1.35;margin:0}p{margin:9px 0 16px}a{color:var(--accent)}.eyebrow{font-size:13px;letter-spacing:.09em;text-transform:uppercase;font-weight:700}.banner{border-left:5px solid #b27712;background:#fff4d9;padding:16px 20px;margin:22px 0}.panel,.case{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:22px;margin:14px 0}.muted,small{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.field label,.result label{display:block;font-weight:650;margin:0 0 5px}input[type=text],input[type=date],textarea,select{width:100%;font:inherit;background:white;color:var(--ink);border:1px solid #8396a4;border-radius:5px;padding:9px}textarea{min-height:90px;resize:vertical}button{font:inherit;border:1px solid var(--accent);border-radius:5px;color:var(--accent);background:white;padding:9px 14px;cursor:pointer}button.primary{background:var(--accent);color:white}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid #c46b00;outline-offset:3px}.toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:14px 0}.pill{display:inline-block;border:1px solid #718a9a;border-radius:20px;padding:2px 10px;font-size:12px;font-weight:750;margin:0 5px 8px 0}.case dl{margin:16px 0}.case dt{font-weight:750;margin-top:12px}.case dd{margin:3px 0 0}.result{border-top:1px solid var(--line);padding-top:15px;margin-top:16px}.result-row{display:grid;grid-template-columns:220px 1fr;gap:16px}.evidence{font-size:13px;margin:10px 0 0}.stale{color:#9a320e;font-weight:700}.summary{font-weight:650}.notice{min-height:1.5em;color:#725200}.print-value{display:none}nav ul{display:flex;gap:16px;flex-wrap:wrap;padding-left:20px}.lane-intro{color:var(--muted)}.case[data-outcome=fail]{border-left:5px solid #b13527}.case[data-outcome=pass]{border-left:5px solid #337747}.case[data-outcome=blocked]{border-left:5px solid #b27712}footer{border-top:1px solid var(--line);margin-top:35px;padding-top:20px;font-size:14px}@media(max-width:650px){main{padding:24px 14px}.grid,.result-row{grid-template-columns:1fr}.panel,.case{padding:17px}}@media print{@page{margin:15mm}body{font-size:10pt;background:white}main{padding:0;max-width:none}h1{font-size:24pt}h2{break-after:avoid;font-size:17pt}.case,.panel{border-radius:0;padding:12px;box-shadow:none}.case h3{break-after:avoid}.case dt{break-after:avoid}.case dd{orphans:3;widows:3}.case .result{break-inside:avoid}.no-print,button,nav,.result select,.result textarea{display:none!important}.print-value{display:block;white-space:pre-wrap;overflow-wrap:anywhere}.banner{background:white;border:2px solid #b27712}.result-row{display:block}a{color:inherit}input[type=text],input[type=date],textarea{border:0;padding:0;min-height:0}.field{break-inside:avoid}.field input,.field textarea{display:none}.pill{margin-bottom:3px}.lane-intro{color:inherit}footer{break-inside:avoid}}
+</style>
+</head>
+<body><main>
+<header><div class="eyebrow">Aagedal Photo Agent / 3.0 release preparation</div><h1>Manual testing checklist</h1><p class="muted">Offline working document · initial scope reviewed 9 September 2026 · all results start untested</p></header>
+<div class="banner"><strong>DRAFT — pending coordinator verification. The app is not yet declared ready.</strong><p>This checklist records evidence; it does not claim that any app test, external review or human acceptance has occurred. The coordinator must reconcile it with the current authoritative plans, finish implementation and validate the exact candidate before inviting final user testing. Unavailable prerequisites remain blocked. Passing this document never authorizes publication.</p></div>
+<section class="panel" aria-labelledby="how"><h2 id="how">How to use this document</h2><ol><li>The coordinator records the candidate identity, fixture inventory, approved scope and evidence links. Work only on disposable copies in an isolated profile; preserve originals and existing user settings.</li><li>Run the <strong>agent computer-use</strong> cases through the actual application and capture dated observations. Unit tests or source inspection cannot substitute for visual interaction. Record the executing agent or tester and tool/version in notes.</li><li>Complete the <strong>external / hardware</strong> prerequisites with the required samples, endpoints, reviewers and devices. An unavailable prerequisite is blocked, never automatically waived. Record any explicit scope decision and its owner.</li><li>Once the coordinator has verified the candidate and accounted for every mandatory gate, hand the user this candidate and the <strong>final user acceptance</strong> cases. Agent observations never count as the user’s acceptance.</li><li>For each result, include actual outcome, evidence location, fixture ID, environment and defect reference. Fail and blocked need a reason. Pass requires observed evidence. Revalidate affected cases after fixes; a new candidate identity marks old observations stale.</li></ol><p><strong>Priority:</strong> P0 protects data, release trust or the core workflow. P1 is still a required quality gate. This is a starting test inventory, not a replacement for the plans; add cases when implementation or scope changes.</p><p><strong>Storage:</strong> Results stay in this page’s memory unless you opt in below. Local browser storage may be unavailable or isolated per file path/browser. Export before closing. The export contains notes and environment details: use sanitized fixture IDs, never credentials or private photo/audio content.</p><nav aria-label="Checklist sections"><ul><li><a href="#agent">Agent computer use</a></li><li><a href="#user">Final user acceptance</a></li><li><a href="#external">External / hardware gates</a></li></ul></nav></section>
+<section class="panel" aria-labelledby="candidate-heading"><h2 id="candidate-heading">Candidate and evidence record</h2><p class="muted">Required identity fields bind every observation to a candidate. Placeholder text is not a completed identity.</p><div class="grid" id="identity">
+<div class="field"><label for="commit">Candidate commit (full 40-character SHA)</label><input id="commit" data-meta type="text" placeholder="Pending coordinator candidate freeze" autocomplete="off" spellcheck="false" maxlength="40" pattern="[0-9a-fA-F]{40}"></div>
+<div class="field"><label for="build">App version, build and artifact checksum</label><input id="build" data-meta type="text" placeholder="e.g. 3.0 / build … / SHA-256 …" autocomplete="off"></div>
+<div class="field"><label for="environment">macOS, Mac / architecture and displays</label><input id="environment" data-meta type="text" placeholder="Record the actual testing environment" autocomplete="off"></div>
+<div class="field"><label for="tester">Session recorder / role</label><input id="tester" data-meta type="text" placeholder="Name or agent ID and role" autocomplete="off"></div>
+<div class="field"><label for="sessionDate">Session date</label><input id="sessionDate" data-meta type="date"></div>
+<div class="field"><label for="evidenceRoot">Evidence folder or dated validation document</label><input id="evidenceRoot" data-meta type="text" placeholder="Sanitized path or reference; keep artifacts tied to this candidate"></div>
+</div><div class="field"><label for="coordinator">Coordinator handoff evidence (initially pending)</label><textarea id="coordinator" data-meta placeholder="Pending: candidate scope; authoritative gate reconciliation; automated and GUI evidence; known issues and explicit dispositions; prerequisite owners; final user testing handoff decision. Do not equate checked implementation boxes with release evidence."></textarea></div>
+<div class="toolbar no-print"><label><input type="checkbox" id="persist"> Save results locally in this browser (optional)</label><button type="button" id="load">Load saved results</button><button type="button" id="forget">Delete browser-saved copy</button></div><p id="storageNotice" class="notice no-print" role="status">Local saving is off. Closing or reloading loses unsaved changes; export results first.</p>
+<div class="toolbar no-print"><button type="button" class="primary" id="export">Export results (.json)</button><button type="button" id="print">Print / save PDF</button></div><p id="message" class="notice" role="status"></p><p class="summary" id="summary" aria-live="polite"></p><p><strong>Readiness remains pending coordinator review and explicit final user acceptance.</strong> Totals are observations, not a release decision. E09 is a later release-owner gate after acceptance.</p></section>
+<noscript><div class="banner">JavaScript is disabled: the interactive checklist and result export require JavaScript. Enable it to load the test cases, or use the authoritative Markdown plans below. No test results have been recorded.</div></noscript>
+<div id="cases"></div>
+<footer><strong>Authoritative sources and support records</strong><ul><li><a href="../README.md">Planning index</a> and <a href="../app-improvement-audit-plan.md">cross-cutting improvement audit</a></li><li><a href="../v2.3/README.md">3.0 investigation scope (historical v2.3 path)</a> and <a href="../v2.3/delivery-plan.md">investigation delivery plan</a></li><li><a href="../journalistic-metadata-workflow-plan.md">Journalistic metadata workflow plan</a></li><li><a href="../suncalc-plan.md">Solar overlay plan</a></li><li><a href="../manual-release-prerequisite-audit.md">Manual prerequisite audit</a> · <a href="../accessibility-keyboard-audit-validation.md">accessibility audit</a> · <a href="../metadata-field-support.md">metadata carrier/write-mode support</a></li><li><a href="../feature-help-3.0.md">Feature guide</a> · <a href="../limitations-3.0.md">known limitations</a></li></ul><p>Source links use repository-relative paths and work best with this file kept in <code>docs/release/</code>. If copied elsewhere, include the repository docs or consult their matching candidate revision. Before handoff, update this checklist for completed Sony functionality and any newly approved scope; never silently remove an open mandatory gate.</p></footer>
+</main>
+<script id="case-data" type="application/json">[
+  {
+    "id": "A01",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Launch, browse and return to the right workspace",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Use a candidate app and a disposable folder with JPEG, RAW + XMP, PNG, TIFF, AVIF, JXL and licensed HEIC samples; record unavailable formats.",
+    "steps": "Launch the candidate. Open the folder, select an image, visit Caption, Metadata Review, Analysis, Develop and Deadline, then return to Browser. Try each Browser layout and reopen the app.",
+    "expected": "No crash, unexpected write or lost selection; readable loading/error states; Browser layout and supported persisted settings survive. Unsupported inputs are explained.",
+    "cleanup": "Quit normally; preserve screenshots and fixture inventory. Delete only this session’s disposable outputs."
+  },
+  {
+    "id": "A02",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Caption save, write, navigation and failed-write recovery",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "Use three disposable JPEG/RAW images and sidecars. Record before-file hashes and existing caption values. Have a designated unwritable test destination; do not change system permissions.",
+    "steps": "Enter a unique caption; Save & Next, return, and relaunch. Then Write & Next and read the supported metadata carrier. Attempt a write to the unwritable target and cancel/retry from its error. Navigate rapidly while a save is pending.",
+    "expected": "Save persists the app edit; Write advances only after successful supported write. Failure stays actionable with the edit retained. No caption appears on the wrong image and unrelated metadata stays intact.",
+    "cleanup": "Restore test-folder permissions if changed; keep before/after read-back evidence and remove disposable copies."
+  },
+  {
+    "id": "A03",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Metadata fields, mixed selection and explicit clears",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "Prepare copied images with distinct Title, Headline, localized Title alternatives, ordered creators, capture times, keywords and unrelated metadata. Consult the generated metadata support table for carrier/write mode.",
+    "steps": "Edit Headline alone, then one Title alternative. Apply a field to a mixed selection; clear one field explicitly. Use Copy Previous with capture-specific exclusions. Save, write and reopen each supported carrier.",
+    "expected": "Independent fields and localized alternatives remain independent; untouched values and creator order survive. Mixed values are visible, explicit clear is durable, and excluded capture-specific values are preserved.",
+    "cleanup": "Retain a sanitized field comparison; remove the disposable carriers after evidence capture."
+  },
+  {
+    "id": "A04",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Batch Rename preview, collisions and Compare identity",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "Copy two differently oriented images with XMP, an Analysis annotation, a named version and a proven companion if available. Include a deliberate target-name collision.",
+    "steps": "Open exactly two images in Compare, then use Batch Rename. Inspect every proposed file/companion action, resolve the collision, run the rename, navigate both Compare panes and reopen Analysis and Develop. Try cancellation on a second disposable batch.",
+    "expected": "Blocked collisions do not move files. Successful rename preserves selection, pane identity, annotations and versions; companions move only under supported rules. Cancelled/failed work reports the actual completed or rolled-back state.",
+    "cleanup": "Retain rename plan and before/after file inventory; remove test copies, not originals."
+  },
+  {
+    "id": "A05",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Develop versions and safe promotion",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Use one disposable RAW + XMP image. Record initial Primary settings.",
+    "steps": "Create a named version, edit crop and tone, save, switch away and back, duplicate and rename it. Compare Primary and named versions. Promote the named version to Primary through the confirmation flow; reopen the folder.",
+    "expected": "Each saved version restores its own crop/tone; dirty or failed saves cannot be silently lost. Promotion creates a recovery version and verified Primary state. Compare uses the intended versions.",
+    "cleanup": "Restore from the recovery version only in the test copy if desired; retain screenshots and remove copies."
+  },
+  {
+    "id": "A06",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Analysis source identity, annotation persistence and no source writes",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Use disposable originals with recorded hashes, orientation fixtures and a separate replacement file.",
+    "steps": "Open Analysis; add a line, calibrated measurement, label and colored counters. Hide a layer, delete a counter and Undo. Relaunch. Replace only the disposable source with different bytes at the same path, then reopen the case.",
+    "expected": "Annotations persist and remain spatially aligned; hidden counters still count, deleted counters do not and Undo restores them. Source hashes are unchanged by analysis. Changed-source evidence is marked stale/unavailable and never silently rebound.",
+    "cleanup": "Preserve hash/evidence records; restore or delete the disposable source and case."
+  },
+  {
+    "id": "A07",
+    "lane": "Agent computer use",
+    "priority": "P1",
+    "title": "Pixel view alignment, color and true-pixel inspection",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Use the documented licensed analysis corpus, orientations 1–8, transparency, SDR/HDR, tiny and panoramic images; include representative real RAW/HEIC where available.",
+    "steps": "At Fit and 100%, cycle Normal, channels/luminance, Alpha, Edges and Compression / Residual. Hover distinctive points and toggle the loupe. Repeat after rotation and straightened crop with original/developed representations.",
+    "expected": "The same source feature aligns across views, hover sample and loupe; no unexpected clipping/rotation. Residual limitations and benign counterexamples are visible. Record subjective color differences for human/display confirmation.",
+    "cleanup": "Restore view settings; retain side-by-side screenshots and exact fixture IDs. Do not label missing formats as passed."
+  },
+  {
+    "id": "A08",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Project archive and frozen PDF reports",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Create a disposable case with annotations, notes, sensitive example fields, map/solar state and a named version. Prepare an empty import folder.",
+    "steps": "Export a .pint project; import into the empty folder and reopen. Export PDF with selected sensitive fields excluded; change the live case afterward and inspect the saved PDF. Attempt importing a deliberately corrupted copy of the archive into another empty folder.",
+    "expected": "Valid archive restores intended images and records; corrupt archive is rejected without a partial success claim. Saved report remains frozen, contains the selected evidence and limitations, and omits excluded sensitive content.",
+    "cleanup": "Remove only test imports/archives/reports after storing redacted evidence; keep original fixture copies unchanged."
+  },
+  {
+    "id": "A09",
+    "lane": "Agent computer use",
+    "priority": "P1",
+    "title": "Solar map controls, camera interactions and persistence",
+    "source": "../suncalc-plan.md",
+    "setup": "Use a disposable case with known coordinate and explicit fixed UTC offset; record chosen date/time and expected displayed values.",
+    "steps": "Enable solar overlay in OSINT. Pan, zoom, rotate, pitch, change selection and switch every available Apple/OSM style. Drag time rapidly, hide/show the overlay, edit offset and reopen the case.",
+    "expected": "Latest time/location values own the displayed rays; no stale geometry or lost map input. Supported styles render equivalent derived directions; saved inputs restore with timezone/model disclosure.",
+    "cleanup": "Restore networking/map style if changed; record values and screenshots per style. Remove the disposable case."
+  },
+  {
+    "id": "A10",
+    "lane": "Agent computer use",
+    "priority": "P1",
+    "title": "Solar offline fallback and report parity",
+    "source": "../suncalc-plan.md",
+    "setup": "Use a case with solar inputs and record its values. Use an isolated/offline test environment or explicit network controls, with an area whose imagery is not cached.",
+    "steps": "Without network access and with unavailable map imagery, adjust solar inputs. Export A4 and US Letter reports. Restore networking and visually compare the report rays, values, labels and attribution/fallback with the live calculation.",
+    "expected": "Solar calculation remains usable offline; unavailable imagery is clearly represented without indefinite loading. Both report sizes show the frozen values and equivalent geometry without cropped labels or unsupported imagery claims.",
+    "cleanup": "Restore networking; retain PDFs and live comparison screenshots. Mark blocked if uncached offline state cannot be established."
+  },
+  {
+    "id": "A11",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Deadline blockers, stale preflight and output-size limits",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "Use copied mixed JPEG/RAW images, one incomplete caption, missing sidecar, a signed-C2PA sample if available and a disposable Deadline profile. Set a small explicit output-size limit.",
+    "steps": "Preflight the selection; use Fix Next Issue; inspect warnings and planned SDR JPEG/TIFF or supported HDR derivatives. Change metadata/selection after preflight and verify revalidation. Try original-file or sidecar-only delivery and an over-limit output.",
+    "expected": "Current blockers route to the correct image/field and disable Send; stale plans cannot send. Unsupported output modes and final bytes above the limit are rejected. C2PA validity is not implied for a new rendition.",
+    "cleanup": "Remove the disposable profile/staging after preserving sanitized preflight evidence. Do not send to any external endpoint in this case."
+  },
+  {
+    "id": "A12",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Sony memo lifecycle and review-before-apply",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "Requires completed 3.0 memo implementation plus authorized real ILCE-1 v4.00 samples, one/two-source layouts and documented edge fixtures. If features are absent, mark blocked; do not treat ingest-only support as completion.",
+    "steps": "Ingest RAW, JPEG and Both with backup. Refresh/relaunch, copy/archive, rename, move/reject and reassociate only disposable files. Inspect playback, duration/identity and missing/ambiguous states. Transcribe locally, cancel once, review/edit the transcript, then explicitly apply through the metadata-variable workflow. Inspect planned WAV delivery policy and receipt representation.",
+    "expected": "Companion bytes and identities survive every supported lifecycle operation. WAVs never appear as photos; ambiguity fails closed. No implicit transcription or metadata overwrite; offline/model/language state is clear; approved text and explicit WAV policy match the approved specification.",
+    "cleanup": "Stop playback/transcription; remove test copies and transcripts after evidence. Never commit private Sony media or audio to the repository."
+  },
+  {
+    "id": "A13",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Process interruption and backup/restore",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Use an isolated app profile and disposable case/version/template/metadata data with verified backups. Use documented recovery drill checkpoints.",
+    "steps": "Start a save/import or rename in a sufficiently large test batch; terminate only the candidate test process at a documented checkpoint. Relaunch; inspect recovery, remaining work and files. Restore the test backup to a separate destination and reopen.",
+    "expected": "No silent truncation, corrupt-success report or overwrite of newer valid data. Recovery is actionable and records actual committed work; restored files and cases match the backup. A non-reproduced checkpoint is not passing evidence.",
+    "cleanup": "Quit test processes normally afterward; retain logs without sensitive data and restore the isolated profile. Do not interrupt the user’s production app."
+  },
+  {
+    "id": "A14",
+    "lane": "Agent computer use",
+    "priority": "P1",
+    "title": "Optional model availability and honest product boundaries",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Inspect the candidate’s documented packaging configuration; use a build omitting AuraFace if provided.",
+    "steps": "Open face recognition/scanning controls and settings. Inspect help, Analysis findings and report wording for unavailable features and evidence limitations.",
+    "expected": "A missing packaged model gives an explicit unavailable state; no fictitious successful scan. No unapproved AI-origin detector, aggregate authenticity verdict or shadow-analysis claim is presented. Experimental C2PA remains labelled accurately.",
+    "cleanup": "Restore the intended candidate build and record which packaging variant was checked."
+  },
+  {
+    "id": "U01",
+    "lane": "Final user acceptance",
+    "priority": "P0",
+    "title": "First-use Deadline assignment",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "After coordinator handoff, use the exact candidate and a small disposable assignment with one ready image, one incomplete image and a profile requiring caption/credit. Do not consult implementation notes.",
+    "steps": "Enter Deadline for the first time. Explain in notes the selected profile, readiness, planned output and next action. Use Fix Next Issue until ready; inspect Send eligibility and the post-send Activity entry using an authorized test destination from E02.",
+    "expected": "You can identify the next action and why Send is enabled/disabled without guessing. Record every confusing label or detour; successful delivery has a comprehensible receipt.",
+    "cleanup": "Remove test staging/profile and remote test outputs after retaining results. If E02 has no authorized endpoint, assess preflight and mark the send portion blocked."
+  },
+  {
+    "id": "U02",
+    "lane": "Final user acceptance",
+    "priority": "P0",
+    "title": "100-image keyboard captioning workflow",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "Use 100 disposable images, a familiar culling shortcut preset, a metadata template, code replacements and Unicode/long-caption examples.",
+    "steps": "Without a mouse, caption all 100 images with Save & Next/Write & Next, Previous, Copy Previous, templates, keyword/people autocomplete and Fix Next Issue. Open/escape popovers, switch workspaces and resume. Type digits and label keys inside text and an IME composition.",
+    "expected": "No missing or cross-image edits; focus remains predictable, text input never accidentally rates/labels an image, errors keep the draft, and the workflow is usable at deadline pace. Record image count and any lost focus.",
+    "cleanup": "Reopen a sample of first/middle/last images for read-back; restore your shortcut preset and remove disposable images."
+  },
+  {
+    "id": "U03",
+    "lane": "Final user acceptance",
+    "priority": "P0",
+    "title": "VoiceOver and Full Keyboard Access across workspaces",
+    "source": "../accessibility-keyboard-audit-validation.md",
+    "setup": "Use an isolated test session, VoiceOver and Full Keyboard Access. Cover Browser, Metadata Review, Caption, Deadline, Activity, Analysis/OSINT, Compare, Develop, Full Screen and Settings.",
+    "steps": "Navigate controls in each workspace; identify selected image, mixed values, issues and disabled actions by speech. Create/edit an annotation and solar calculation with keyboard controls. Exercise Save/Write success/failure, cancellation and recovery; escape each modal/popover.",
+    "expected": "All essential workflows have an operable focus path and meaningful labels/states; announcements are understandable and privacy-safe. No focus trap or pointer-only release-critical action. Record actual speech and failures rather than assuming accessibility labels are sufficient.",
+    "cleanup": "Restore VoiceOver and Full Keyboard Access to their prior state; keep a sanitized workspace-by-workspace observation log."
+  },
+  {
+    "id": "U04",
+    "lane": "Final user acceptance",
+    "priority": "P1",
+    "title": "Window sizes, localization, contrast and motion",
+    "source": "../accessibility-keyboard-audit-validation.md",
+    "setup": "Use small and large windows, long Unicode captions and many named people. Record supported localization and accessibility settings being exercised.",
+    "steps": "Resize Caption, Deadline, Analysis and Activity to practical minimum/maximum sizes. Enable larger text where supported, increased contrast and reduced motion; test a supported long-string localization and live IME entry.",
+    "expected": "Required controls and messages remain visible or reachable by scrolling, text does not overlap, focus remains visible, motion settings are respected and composition is preserved.",
+    "cleanup": "Restore language, window and accessibility settings; capture only non-sensitive screenshots."
+  },
+  {
+    "id": "U05",
+    "lane": "Final user acceptance",
+    "priority": "P1",
+    "title": "Photographer review of edits, comparison and analysis",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Use candidate-verified reference fixtures plus disposable photographs familiar to you; include crop, rotation, SDR/HDR and two differing aspect ratios.",
+    "steps": "Review Browser/Develop/Analysis at Fit and 100%. Compare side-by-side, stacked and wipe; unlock/relock pan/zoom, reset alignment, compare named versions and return to the originating workspace. Inspect residual/edge views and a saved report.",
+    "expected": "Rendering and control behavior are credible and comfortable for your work; no unexpected color shifts, misalignment or misleading evidence wording. Any display-dependent concern links to E05 instead of being dismissed.",
+    "cleanup": "Restore alignment/view settings and retain only authorized review samples."
+  },
+  {
+    "id": "U06",
+    "lane": "Final user acceptance",
+    "priority": "P0",
+    "title": "Final end-to-end card-to-caption-to-delivery rehearsal",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "Requires completed agent gates and authorized test fixtures/endpoints. Use the exact handoff candidate, a realistic disposable assignment and representative Sony memos if in approved scope.",
+    "steps": "Import with backup; cull, caption, rename and edit a named version. Verify memo review/apply where supported. Resolve Deadline issues, deliver, reopen output in external metadata tools and inspect Activity receipt. Quit/relaunch midway once at an ordinary safe point.",
+    "expected": "You can finish the assignment without workaround, lost data or unexplained state. Backup, names, captions, intended output and receipt agree; limitations are understandable. Record time, friction and any failed case IDs before acceptance.",
+    "cleanup": "Remove remote/disposable assignment outputs; export this checklist. Final product acceptance is an explicit human decision, not the pass count."
+  },
+  {
+    "id": "E01",
+    "lane": "External / hardware gates",
+    "priority": "P0",
+    "title": "IPTC, Bridge and Photo Mechanic interoperability",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "Requires licensed/activated current Bridge and Photo Mechanic plus authorized IPTC reference images, real RAW/XMP and decodable HEIC/HEIF fixtures. Availability in the August audit is not current activation evidence.",
+    "steps": "Run the documented IPTC Interoperability Tests 1, 2 and 3. For each supported carrier, write in Photo Agent and inspect in both tools; edit a distinct field there and reopen here. Include Headline/Title alternatives, UTF-8, creator order, capture-date timezone, controlled fields and renamed Original Filename.",
+    "expected": "Each supported claim has a dated carrier/tool-version/field comparison; unrelated metadata is preserved and discrepancies are resolved or explicitly dispositioned before readiness. A repository serializer test does not close this gate.",
+    "cleanup": "Use disposable media only. Save sanitized results and confirm redistribution terms before adding any external fixture to the repository."
+  },
+  {
+    "id": "E02",
+    "lane": "External / hardware gates",
+    "priority": "P0",
+    "title": "Real FTP, explicit FTPS and SFTP delivery",
+    "source": "../manual-release-prerequisite-audit.md",
+    "setup": "Requires explicitly authorized disposable endpoints for all three protocols and credentials entered through the app’s Keychain UI. Never use a saved production destination merely because it exists.",
+    "steps": "Send a supported derivative through each endpoint, download/inspect it in Bridge and Photo Mechanic, and compare with the staged file. Test wrong credentials, certificate failure for FTPS, disconnect, cancellation, relaunch and retry on the disposable workflow.",
+    "expected": "No premature success, duplicate/reordered retry or upload of stale bytes. Failures are actionable. Receipt accurately describes protocol acknowledgement/remote size rather than claiming a remote cryptographic hash. Credentials never appear in logs or export.",
+    "cleanup": "Delete only the designated remote test paths and local staging; remove temporary credentials/configuration when approved. Retain sanitized evidence without hosts, users or secrets."
+  },
+  {
+    "id": "E03",
+    "lane": "External / hardware gates",
+    "priority": "P0",
+    "title": "Signed older-binary upgrade/downgrade drill",
+    "source": "../manual-release-prerequisite-audit.md",
+    "setup": "Requires verified signed 2.0.0, 2.1.0 and 2.2.0 apps plus isolated macOS profiles/data clones and recoverable backups. Never point older apps at a live library.",
+    "steps": "For each historic binary, create representative metadata/templates/keywords/settings in the isolated profile, upgrade the clone to the candidate and inspect it. Clone upgraded state again, attempt documented downgrade, then reopen that clone with the candidate. Include newer-schema and corrupted-primary/valid-backup samples.",
+    "expected": "Upgrade preserves intended data. Actual older-binary behavior is recorded, including any unsafe downgrade boundary; current code never overwrites unknown newer schemas or valid newer records. A tag-derived unit test is not this drill.",
+    "cleanup": "Quit all isolated apps; restore the test profile from backup and retain before/after hashes. Keep released signed binaries unchanged."
+  },
+  {
+    "id": "E04",
+    "lane": "External / hardware gates",
+    "priority": "P0",
+    "title": "Permission, removable volume, iCloud and disk-capacity failures",
+    "source": "../manual-release-prerequisite-audit.md",
+    "setup": "Requires designated disposable removable and read-only volumes, revoked test bookmarks, an actual evicted iCloud image, and a bounded disposable disk image for capacity testing. Never exhaust the host disk or use system/recovery volumes.",
+    "steps": "Reopen a bookmarked folder after revoking access; retry through the chooser. Disconnect/reconnect the test removable volume during work. Access the read-only target. In an isolated offline state open the evicted file then restore network. Fill only the bounded test disk image and try a save/delivery staging operation.",
+    "expected": "Launch and navigation stay responsive; errors identify actual access/offline/capacity state, preserve drafts and recover without silent loss. No false claim that an unmaterialized iCloud item was read/written.",
+    "cleanup": "Restore network/permissions; reconnect/eject volumes safely and remove the disposable disk image. Preserve sanitized evidence and original backup."
+  },
+  {
+    "id": "E05",
+    "lane": "External / hardware gates",
+    "priority": "P1",
+    "title": "Clean Feed, external displays and HDR/SDR pairing",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Requires designated external display(s), HDR and SDR pairing, Retina/non-Retina where in supported target matrix, and representative RAW/HDR fixtures. Record display models/modes.",
+    "steps": "Start Clean Feed and Compare during live Develop edits. Move between displays, change full-screen state, disconnect/reconnect the test display and continue navigation. Review tone, alignment, focused pane and return focus.",
+    "expected": "No stale frame, crash, clipped control or lost input focus. HDR/SDR output and color behavior match approved expectations, with no indefinite render load after reconnect.",
+    "cleanup": "Restore display arrangement, modes and Clean Feed state. Save display-specific observations; unavailable hardware is blocked."
+  },
+  {
+    "id": "E06",
+    "lane": "External / hardware gates",
+    "priority": "P1",
+    "title": "Target-tier performance, GPU and cancellation",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Coordinator must first record target Apple Silicon tiers and explicit memory/latency budgets. Requires representative hardware, Instruments/Thread Performance Checker and GPU validation; use disposable large/RAW batches.",
+    "steps": "Measure cold launch, preview/RAW decode, scopes, hashing and two-RAW Compare on every tier. Run prolonged Analysis, rapidly change selections and cancel. Exercise 10,000-file rename preview, incremental preflight, live Develop and a large delivery batch.",
+    "expected": "Measurements meet the approved budgets, cancellation stays responsive and no sustained memory growth, main-thread I/O stall, GPU validation error or stale render occurs. Without defined budgets or a tier, mark blocked, not pass.",
+    "cleanup": "Stop profilers and test tasks; retain sanitized traces, hardware/OS identity, timing and peak memory. Remove generated batches."
+  },
+  {
+    "id": "E07",
+    "lane": "External / hardware gates",
+    "priority": "P0",
+    "title": "Runtime privacy, security and license review",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "Requires a designated isolated profile with synthetic captions/people/GPS, approved network-capture tooling, and the release component/license inventory. Legal approval must come from its actual reviewer.",
+    "steps": "Exercise map/search, report redaction, optional sync, delivery and failure/recovery. Inspect runtime logs, temporary/staged files, retained receipts, deletion behavior and network requests for the synthetic markers. Review component provenance, required license notices and source offer.",
+    "expected": "Only intended data is persisted/transmitted, secrets and sensitive values stay out of logs/receipts, exclusion/deletion controls behave as documented, and dated security/privacy/legal decisions identify their reviewers. Code checks alone do not count as external approval.",
+    "cleanup": "Stop capture; securely handle/delete captures containing any private data. Restore sync/network settings and document remaining external decisions."
+  },
+  {
+    "id": "E08",
+    "lane": "External / hardware gates",
+    "priority": "P0",
+    "title": "Representative Sony camera/firmware compatibility",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "Requires authorized private real camera samples for every claimed body/firmware and one/two-card layout, including duplicate, rollover, orphan and missing-image cases. Synthetic fixtures do not broaden the camera claim.",
+    "steps": "Repeat A12 for each claimed combination and RAW/JPEG/Both choice. Inspect ambiguous/duplicate groups, no-earlier-than-image timing, delayed memos and shared RAW/JPEG associations; compare imported and backup WAV bytes.",
+    "expected": "The documented support matrix exactly matches evidence. Unproven associations fail closed and appear clearly; no audio is attached to the wrong exposure or silently omitted by an approved lifecycle/delivery action.",
+    "cleanup": "Keep private fixtures outside git and exported reports; retain only sanitized sample IDs and hashes with owner authorization."
+  },
+  {
+    "id": "E09",
+    "lane": "External / hardware gates",
+    "priority": "P0",
+    "title": "Candidate packaging and release authorization",
+    "source": "../v2.3/delivery-plan.md",
+    "setup": "A coordinator-verified candidate and explicit final human acceptance are prerequisites for version/build bump, signing/notarization and distribution. This case tracks a later release gate, not permission to publish.",
+    "steps": "Before handoff, record candidate commit/build, architecture, test and GUI evidence and all blocker dispositions. After explicit acceptance/authorization, the release owner verifies version metadata, notarized artifact, launch/Gatekeeper behavior and authorized Sparkle/appcast/Homebrew steps.",
+    "expected": "Candidate evidence matches the delivered build. No draft, incomplete checklist or automated pass count triggers distribution. Signed packaging and publication are recorded by the authorized release owner only after sign-off.",
+    "cleanup": "Retain immutable candidate evidence and release artifact checksums. Remove disposable installs only; do not alter production release channels from this checklist."
+  }
+]</script>
+<script>
+'use strict';
+const cases=JSON.parse(document.getElementById('case-data').textContent);
+const storageKey='aagedal-photo-agent-3.0-manual-checklist-v1';
+const fields=[...document.querySelectorAll('[data-meta]')];
+for(const field of fields){const printed=document.createElement('p');printed.className='print-value';printed.id=field.id+'-print-meta';field.insertAdjacentElement('afterend',printed);}
+const outcomes=['not-run','pass','fail','blocked'];
+const labels={'not-run':'Not run',pass:'Pass',fail:'Fail',blocked:'Blocked'};
+const records={};
+const meta=()=>Object.fromEntries(fields.map(f=>[f.id,f.value.trim()]));
+const binding=m=>JSON.stringify({commit:m.commit,build:m.build,environment:m.environment});
+const validIdentity=()=>{const m=meta();return /^[a-f0-9]{40}$/i.test(m.commit)&&m.build&&m.environment&&m.tester&&m.sessionDate;};
+const node=(tag,text,className)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(className)e.className=className;return e;};
+const notice=document.getElementById('message');
+function resultFor(id){return records[id]||(records[id]={outcome:'not-run',notes:'',observedAt:null,identity:null});}
+function render(){
+ const host=document.getElementById('cases');host.replaceChildren();
+ const lanes=[['Agent computer use','agent','Coordinator-owned UI observations. Run the actual candidate and retain screenshots or dated interaction notes. These passes do not constitute final human acceptance.'],['Final user acceptance','user','Reserved for the user after coordinator handoff. The user evaluates usability and the complete workflow; record the actual human tester separately from the coordinator.'],['External / hardware gates','external','Run only with the stated real prerequisites and authorized test resources. Provisioning gaps remain blocked. E09 tracks post-acceptance release work separately from readiness for final testing.']];
+ for(const [lane,anchor,intro] of lanes){const section=node('section');section.id=anchor;section.append(node('h2',lane),node('p',intro,'lane-intro'));
+  for(const c of cases.filter(c=>c.lane===lane)){const card=node('article',undefined,'case');card.id=c.id;card.setAttribute('aria-labelledby',c.id+'-title');card.append(node('span',c.id,'pill'),node('span',c.priority,'pill'));const title=node('h3',c.title);title.id=c.id+'-title';card.append(title);const source=node('a','Plan / prerequisite source');source.href=c.source;card.append(source);const dl=node('dl');for(const [label,key] of [['Setup','setup'],['Steps','steps'],['Expected outcome','expected'],['Cleanup','cleanup']]){const detail=node('dd');if(key==='steps'){const list=node('ol');for(const step of c[key].split(/(?<=[.!?])\s+(?=[A-Z])/))list.append(node('li',step));detail.append(list);}else detail.textContent=c[key];dl.append(node('dt',label),detail);}card.append(dl);
+   const result=node('div',undefined,'result');const row=node('div',undefined,'result-row');const statusField=node('div');const label=node('label','Result');label.htmlFor=c.id+'-result';const select=node('select');select.id=c.id+'-result';for(const value of outcomes){const opt=node('option',labels[value]);opt.value=value;select.append(opt);}select.value=resultFor(c.id).outcome;statusField.append(label,select);const notesField=node('div');const nl=node('label','Actual observations, evidence, tester and defects');nl.htmlFor=c.id+'-notes';const notes=node('textarea');notes.id=c.id+'-notes';notes.value=resultFor(c.id).notes;notes.placeholder='What happened; steps/fixtures actually covered; evidence path; actual tester; defect or blocker and owner. Never include secrets.';notesField.append(nl,notes);row.append(statusField,notesField);const printed=node('p',undefined,'print-value');printed.id=c.id+'-print';const info=node('p',undefined,'evidence');info.id=c.id+'-evidence';result.append(row,printed,info);card.append(result);section.append(card);
+   select.addEventListener('change',()=>{const r=resultFor(c.id);if(select.value!=='not-run'&&!validIdentity()){select.value=r.outcome;notice.textContent='Complete candidate SHA, build, environment, recorder and session date before recording a test result.';return;}if(select.value!=='not-run'&&!notes.value.trim()){select.value=r.outcome;notice.textContent='Add observed evidence or a blocker reason before setting a result.';notes.focus();return;}r.outcome=select.value;r.identity=select.value==='not-run'?null:meta();r.observedAt=select.value==='not-run'?null:new Date().toISOString();notice.textContent='Result recorded. Readiness still requires coordinator review and final user acceptance.';refresh();save();});
+   notes.addEventListener('input',()=>{const r=resultFor(c.id);r.notes=notes.value;if(!r.notes.trim()&&r.outcome!=='not-run'){r.outcome='not-run';r.identity=null;r.observedAt=null;notice.textContent='Result reset to Not run because its evidence notes were cleared. Add evidence before recording another result.';}refresh();save();});
+  }host.append(section);
+ }refresh();
+}
+function refresh(){for(const field of fields)document.getElementById(field.id+'-print-meta').textContent=field.value||'Pending / not recorded';let counts={'not-run':0,pass:0,fail:0,blocked:0,stale:0};for(const c of cases){const r=resultFor(c.id);const stale=r.outcome!=='not-run'&&(!r.identity||binding(r.identity)!==binding(meta()));counts[stale?'stale':r.outcome]++;const card=document.getElementById(c.id);document.getElementById(c.id+'-result').value=stale?'not-run':r.outcome;card.dataset.outcome=stale?'not-run':r.outcome;const ev=document.getElementById(c.id+'-evidence');ev.className='evidence'+(stale?' stale':'');ev.textContent=stale?'STALE — recorded for a different candidate/build/environment. Re-run and select a result to bind new evidence.':r.observedAt?'Recorded '+r.observedAt+' by '+r.identity.tester+' · candidate '+r.identity.commit:'No observation recorded.';document.getElementById(c.id+'-print').textContent='Result: '+labels[r.outcome]+(stale?' (STALE)':'')+'\nNotes: '+(r.notes||'None recorded.');}document.getElementById('summary').textContent=cases.length+' cases · '+counts.pass+' passed · '+counts.fail+' failed · '+counts.blocked+' blocked · '+counts['not-run']+' not run · '+counts.stale+' stale. No automatic readiness decision.';}
+function payload(){return{schemaVersion:1,document:'Aagedal Photo Agent 3.0 manual testing checklist',readiness:'DRAFT — pending coordinator verification and explicit user acceptance; no automatic release approval',exportedAt:new Date().toISOString(),session:meta(),cases:cases.map(c=>({...c,...resultFor(c.id),stale:resultFor(c.id).outcome!=='not-run'&&binding(resultFor(c.id).identity||{})!==binding(meta())}))};}
+function save(){if(!document.getElementById('persist').checked)return;try{localStorage.setItem(storageKey,JSON.stringify(payload()));document.getElementById('storageNotice').textContent='Saved locally in this browser. Export a separate copy before closing or changing candidate.';}catch(e){document.getElementById('storageNotice').textContent='Browser saving unavailable or full. Results remain in memory; export now to retain them.';}}
+fields.forEach(f=>f.addEventListener('input',()=>{refresh();save();}));
+document.getElementById('persist').addEventListener('change',e=>{if(e.target.checked)save();else document.getElementById('storageNotice').textContent='Local saving is off. An existing browser-saved copy is retained until you delete it; export current changes before closing.';});
+document.getElementById('load').addEventListener('click',()=>{try{const raw=localStorage.getItem(storageKey);if(!raw){notice.textContent='No saved results found in this browser for this file.';return;}const data=JSON.parse(raw);if(data.schemaVersion!==1||!data.session||!Array.isArray(data.cases))throw new Error('Unsupported saved data');if(!confirm('Replace this page’s current identity and observations with the browser-saved copy? Export current work first.'))return;for(const f of fields)f.value=typeof data.session[f.id]==='string'?data.session[f.id]:'';for(const c of cases){const r=data.cases.find(x=>x.id===c.id);records[c.id]=r&&outcomes.includes(r.outcome)&&typeof r.notes==='string'&&(r.outcome==='not-run'||(r.notes.trim()&&r.identity&&r.observedAt))?{outcome:r.outcome,notes:typeof r.notes==='string'?r.notes:'',observedAt:r.observedAt||null,identity:r.identity||null}:{outcome:'not-run',notes:'',observedAt:null,identity:null};}render();notice.textContent='Loaded saved results. Review their candidate identity and evidence before reuse.';}catch(e){notice.textContent='Could not load browser results. Existing page data is retained where possible; use your exported JSON evidence.';}});
+document.getElementById('forget').addEventListener('click',()=>{if(!confirm('Delete only the browser-saved checklist? Current page observations stay available for export.'))return;try{localStorage.removeItem(storageKey);document.getElementById('persist').checked=false;document.getElementById('storageNotice').textContent='Browser-saved copy deleted. Current page observations remain in memory; local saving is off.';}catch(e){notice.textContent='Browser storage could not be accessed. Current page results remain available for export.';}});
+document.getElementById('export').addEventListener('click',()=>{try{const blob=new Blob([JSON.stringify(payload(),null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=node('a');a.href=url;const sha=meta().commit.match(/^[a-f0-9]{40}$/i)?meta().commit.slice(0,12):'unbound';a.download='photo-agent-3.0-checklist-'+sha+'-'+new Date().toISOString().slice(0,10)+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);notice.textContent='Results export requested. Check your browser downloads; the file contains notes and candidate-bound observations.';}catch(e){notice.textContent='Export failed in this browser. Use Print / save PDF to retain the current results.';}});
+document.getElementById('print').addEventListener('click',()=>{refresh();window.print();});
+render();
+</script>
+</body>
+</html>

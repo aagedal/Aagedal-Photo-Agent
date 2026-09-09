@@ -9,6 +9,11 @@ and solar-position overlay form a major product expansion rather than a 2.3 poin
 All three portfolio initiatives below are intended for 3.0. The Xcode marketing version remains at
 its development value until the release-packaging gate.
 
+The [autonomous release coordinator](release/coordinator.md) continues implementation and
+verification under explicit readiness gates. Its [current state](release/readiness.md) tracks
+evidence, blockers and next actions; the [manual testing checklist](release/manual-testing-checklist.html)
+is a draft until the coordinator identifies and verifies the candidate for final user acceptance.
+
 This document is the top-level index for product and implementation planning. It tracks the major
 initiatives, their order and dependencies, while each linked sub-plan remains authoritative for its
 own scope, tasks, exit gates, and technical decisions.
