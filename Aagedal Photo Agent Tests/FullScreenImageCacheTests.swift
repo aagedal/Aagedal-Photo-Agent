@@ -341,8 +341,9 @@ struct FullScreenImageCacheTests {
         #expect(hdrFull.orientation == 6)
         #expect(rasterPreview.orientation == 6)
         #expect(rasterFull.orientation == 6)
-        #expect(abs(hdrPreview.image.extent.width - 80.0 / 3) < 0.01)
-        #expect(abs(hdrPreview.image.extent.height - 40) < 0.01)
+        // The 80 × 120 display frame scales to 26⅔ × 40; Core Image reports
+        // the enclosing whole-pixel extent of the transformed image.
+        #expect(hdrPreview.image.extent.size == CGSize(width: 27, height: 40))
         #expect(hdrFull.image.extent.size == CGSize(width: 80, height: 120))
         #expect(abs(rasterPreview.image.width - 27) <= 1)
         #expect(rasterPreview.image.height == 40)
