@@ -6,6 +6,15 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Storage construction, backup snapshots and decode context continuation (2026-09-09):**
+Analysis construction resolves roots asynchronously; shared fallback-index transactions preserve
+concurrent case/map writes and keep queued saves on their captured storage root. Legacy Known
+People migration and keyword snapshot history writes use dedicated workers. General image decodes
+retain caller context and enforced utility QoS while preserving independent concurrency. The final
+unfiltered suite passed 2,360 tests; an unsigned Release candidate passed model-omission and ZIP
+payload verification. Broad storage ownership and manual/device/release gates remain open.
+([validation and remaining work](plan-status-storage-construction-decode-continuation-2026-09-09.md))
+
 **Storage cleanup, repository and render workers continuation (2026-09-08):**
 Known People clearing owns whole-root reservations and durable partial-failure cache
 invalidation. History deletion no longer occupies managed keyword transactions. Roster,
