@@ -95,6 +95,7 @@ actor AnalysisCaseRepository {
     private let fallbackFolderMapsDirectoryURL: URL
     private let fallbackIndexURL: URL
     private let sourceFolderIsWritableOverride: Bool?
+    private let didLoadFallbackIndexForWriting: @Sendable () async throws -> Void
 
     /// Capture the source root before publishing the repository. The captured URL stays stable
     /// if a presented symlink is later retargeted, while provider access never blocks the caller.
@@ -105,7 +106,8 @@ actor AnalysisCaseRepository {
         fileIO: AnalysisCaseRepositoryFileIO = .system,
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.analysis-case-repository", qos: .utility
-        )
+        ),
+        didLoadFallbackIndexForWriting: @escaping @Sendable () async throws -> Void = {}
     ) async throws -> AnalysisCaseRepository {
         try Task.checkCancellation()
         let preparation = AnalysisCaseRepositoryPreparation(filesystemQueue: filesystemQueue)
@@ -120,7 +122,8 @@ actor AnalysisCaseRepository {
             applicationSupportURL: roots.applicationSupportURL,
             sourceFolderIsWritable: sourceFolderIsWritable,
             fileIO: fileIO,
-            filesystemQueue: filesystemQueue
+            filesystemQueue: filesystemQueue,
+            didLoadFallbackIndexForWriting: didLoadFallbackIndexForWriting
         )
     }
 
@@ -129,8 +132,10 @@ actor AnalysisCaseRepository {
         applicationSupportURL: URL,
         sourceFolderIsWritable: Bool?,
         fileIO: AnalysisCaseRepositoryFileIO,
-        filesystemQueue: DispatchSerialQueue
+        filesystemQueue: DispatchSerialQueue,
+        didLoadFallbackIndexForWriting: @escaping @Sendable () async throws -> Void
     ) {
+        self.didLoadFallbackIndexForWriting = didLoadFallbackIndexForWriting
         self.fileIO = fileIO
         self.filesystemQueue = filesystemQueue
         sourceFolderURL = canonicalSourceFolderURL
@@ -223,7 +228,17 @@ actor AnalysisCaseRepository {
             }
         }
 
+        // Canonicalization runs on this repository's filesystem executor, never on admission's
+        // cooperative executor. All repositories and symlink aliases share the same index key.
+        let indexKey = fallbackIndexURL.standardizedFileURL.resolvingSymlinksInPath()
+        return try await AnalysisCaseFallbackWriteAdmission.shared.withAccess(to: indexKey) {
+            try await self.saveCaseInFallback(analysisCase)
+        }
+    }
+
+    private func saveCaseInFallback(_ analysisCase: AnalysisCase) async throws -> AnalysisCaseStorage {
         var fallbackIndex = try await loadFallbackIndex()
+        try await didLoadFallbackIndexForWriting()
         fallbackIndex.record(analysisCase)
         let fallbackStore = AtomicJSONDocumentStore<AnalysisCase>(
             documentURL: caseURL(for: analysisCase.id, in: fallbackCasesDirectoryURL)
@@ -286,7 +301,17 @@ actor AnalysisCaseRepository {
             }
         }
 
+        let indexKey = fallbackIndexURL.standardizedFileURL.resolvingSymlinksInPath()
+        return try await AnalysisCaseFallbackWriteAdmission.shared.withAccess(to: indexKey) {
+            try await self.saveFolderMapInFallback(document)
+        }
+    }
+
+    private func saveFolderMapInFallback(
+        _ document: AnalysisFolderMapDocument
+    ) async throws -> AnalysisCaseStorage {
         var fallbackIndex = try await loadFallbackIndex()
+        try await didLoadFallbackIndexForWriting()
         let filename = fallbackIndex.recordFolderMap(for: sourceFolderURL)
         let fallbackStore = AtomicJSONDocumentStore<AnalysisFolderMapDocument>(
             documentURL: fallbackFolderMapsDirectoryURL.appendingPathComponent(filename)
@@ -432,6 +457,48 @@ actor AnalysisCaseRepository {
     }
 }
 
+/// One owner spans the fallback document and its index update across actor suspension. Different
+/// roots and portable folder-local writes remain independent. No task wrappers are needed, so the
+/// admitted operation retains caller task locals and returns durable evidence despite cancellation.
+actor AnalysisCaseFallbackWriteAdmission {
+    static let shared = AnalysisCaseFallbackWriteAdmission()
+    private var activeKeys: Set<URL> = []
+    private var waiters: [URL: [CheckedContinuation<Void, Never>]] = [:]
+
+    func withAccess<Value: Sendable>(
+        to canonicalIndexURL: URL,
+        operation: @Sendable () async throws -> Value
+    ) async throws -> Value {
+        try Task.checkCancellation()
+        if activeKeys.contains(canonicalIndexURL) {
+            await withCheckedContinuation {
+                waiters[canonicalIndexURL, default: []].append($0)
+            }
+        } else {
+            activeKeys.insert(canonicalIndexURL)
+        }
+        defer { release(canonicalIndexURL) }
+        // A cancelled waiter releases its transferred ownership before doing any storage work.
+        try Task.checkCancellation()
+        return try await operation()
+    }
+
+    func waiterCount(for canonicalIndexURL: URL) -> Int {
+        waiters[canonicalIndexURL]?.count ?? 0
+    }
+
+    private func release(_ key: URL) {
+        guard var pending = waiters[key], !pending.isEmpty else {
+            waiters[key] = nil
+            activeKeys.remove(key)
+            return
+        }
+        let next = pending.removeFirst()
+        waiters[key] = pending.isEmpty ? nil : pending
+        next.resume()
+    }
+}
+
 /// Preparation and later repository operations share the same retained serial executor.
 /// This separate actor keeps the repository's initializer entirely free of filesystem access.
 private actor AnalysisCaseRepositoryPreparation {
@@ -454,7 +521,11 @@ private actor AnalysisCaseRepositoryPreparation {
         try Task.checkCancellation()
         let fallbackRoot = applicationSupportURL ?? fileIO.defaultApplicationSupportURL()
         try Task.checkCancellation()
-        return (canonicalRoot, fallbackRoot)
+        // Bind storage itself to the same captured root used by fallback admission. A custom
+        // Application Support symlink must not reroute a queued transaction to another index.
+        let canonicalFallbackRoot = fallbackRoot.standardizedFileURL.resolvingSymlinksInPath()
+        try Task.checkCancellation()
+        return (canonicalRoot, canonicalFallbackRoot)
     }
 }
 

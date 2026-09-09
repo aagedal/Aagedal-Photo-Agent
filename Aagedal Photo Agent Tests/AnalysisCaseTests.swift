@@ -549,6 +549,7 @@ struct AnalysisCaseTests {
         let abandonedRepository = try await AnalysisCaseRepository.open(sourceFolderURL: abandonedRoot)
         let activeRepository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
         let gate = AnalysisRepositoryConstructionGate()
+        defer { Task { await gate.open() } }
         var constructions = 0
         var firstConstructionReturned = false
         let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { _ in
@@ -3045,7 +3046,12 @@ struct AnalysisCaseRepositoryExecutorTests {
         let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
         let analysisCase = AnalysisCase.create(for: revision)
         #expect(try await repository.save(analysisCase) == .applicationSupport)
-        #expect(await repository.loadMostRelevantCase(for: revision) == .exact(analysisCase))
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the saved case in the prepared fallback store")
+            return
+        }
+        #expect(persisted.id == analysisCase.id)
+        #expect(persisted.source.sha256 == revision.sha256)
         #expect(FileManager.default.fileExists(atPath: support
             .appendingPathComponent("AnalysisCases/cases")
             .appendingPathComponent("\(analysisCase.id.uuidString.lowercased()).analysis.json").path))
@@ -3107,6 +3113,148 @@ struct AnalysisCaseRepositoryExecutorTests {
             )
         }
         await #expect(throws: CancellationError.self) { _ = try await task.value }
+    }
+
+    @Test("fallback transactions preserve cases and folder maps when a shared index alias is retargeted")
+    @MainActor
+    func sharedFallbackIndexTransactions() async throws {
+        let fixture = try AnalysisFixture(contents: "shared fallback index")
+        defer { fixture.remove() }
+        let support = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let supportAlias = fixture.directoryURL.appendingPathComponent("support-alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: supportAlias, withDestinationURL: support)
+        let gate = AnalysisRepositoryConstructionGate()
+        defer { Task { await gate.open() } }
+        let admission = AnalysisCaseFallbackWriteAdmission.shared
+        let queue = DispatchSerialQueue(label: "test.analysis-repository.fallback-transaction")
+        let firstRepository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: support,
+            sourceFolderIsWritable: false,
+            filesystemQueue: queue,
+            didLoadFallbackIndexForWriting: {
+                #expect(AnalysisRepositoryExecutorContext.marker == "fallback-transaction")
+                await gate.wait()
+            }
+        )
+        let peerRepository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportAlias,
+            sourceFolderIsWritable: false
+        )
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let firstCase = AnalysisCase.create(for: revision)
+        let peerCase = AnalysisCase.create(for: revision)
+        let map = AnalysisFolderMapDocument.create(now: Date(timeIntervalSince1970: 100))
+        let firstWrite = Task {
+            try await AnalysisRepositoryExecutorContext.$marker.withValue("fallback-transaction") {
+                try await firstRepository.save(firstCase)
+            }
+        }
+        await gate.waitUntilEntered()
+        let peerWrite = Task { try await peerRepository.save(peerCase) }
+        let mapWrite = Task { try await peerRepository.saveFolderMapDocument(map) }
+        let key = support.appendingPathComponent("AnalysisCases/index.analysis.json")
+            .standardizedFileURL.resolvingSymlinksInPath()
+        try await waitForAnalysisStateAsync { await admission.waiterCount(for: key) == 2 }
+        // Neither the queued writes nor later reads may follow a new target under another key.
+        let retargetedSupport = fixture.directoryURL.appendingPathComponent("other-support", isDirectory: true)
+        try FileManager.default.createDirectory(at: retargetedSupport, withIntermediateDirectories: true)
+        try FileManager.default.removeItem(at: supportAlias)
+        try FileManager.default.createSymbolicLink(at: supportAlias, withDestinationURL: retargetedSupport)
+        await gate.open()
+        #expect(try await firstWrite.value == .applicationSupport)
+        #expect(try await peerWrite.value == .applicationSupport)
+        #expect(try await mapWrite.value == .applicationSupport)
+        #expect(Set(await peerRepository.loadAllCases().map(\.id)) == [firstCase.id, peerCase.id])
+        #expect(await peerRepository.loadFolderMapDocument() == map)
+        #expect(!FileManager.default.fileExists(atPath: retargetedSupport
+            .appendingPathComponent("AnalysisCases").path))
+    }
+
+    @Test("cancelled fallback waiters write nothing while separate roots and local stores remain usable")
+    @MainActor
+    func fallbackAdmissionCancellationAndIndependentRoots() async throws {
+        let fixture = try AnalysisFixture(contents: "fallback cancellation")
+        defer { fixture.remove() }
+        let support = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let gate = AnalysisRepositoryConstructionGate()
+        defer { Task { await gate.open() } }
+        let firstRepository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: support,
+            sourceFolderIsWritable: false,
+            didLoadFallbackIndexForWriting: { await gate.wait() }
+        )
+        let peerRepository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: support,
+            sourceFolderIsWritable: false
+        )
+        let independentRepository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: fixture.directoryURL.appendingPathComponent("independent-support"),
+            sourceFolderIsWritable: false
+        )
+        let localRepository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: support,
+            sourceFolderIsWritable: true
+        )
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let firstCase = AnalysisCase.create(for: revision)
+        let cancelledCase = AnalysisCase.create(for: revision)
+        let laterCase = AnalysisCase.create(for: revision)
+        let firstWrite = Task { try await firstRepository.save(firstCase) }
+        await gate.waitUntilEntered()
+        let cancelledWrite = Task { try await peerRepository.save(cancelledCase) }
+        let key = support.appendingPathComponent("AnalysisCases/index.analysis.json")
+            .standardizedFileURL.resolvingSymlinksInPath()
+        try await waitForAnalysisStateAsync {
+            await AnalysisCaseFallbackWriteAdmission.shared.waiterCount(for: key) == 1
+        }
+        cancelledWrite.cancel()
+        #expect(try await independentRepository.save(laterCase) == .applicationSupport)
+        #expect(try await localRepository.save(laterCase) == .folderLocal)
+        // An already admitted transaction must still finish its index after cancellation.
+        firstWrite.cancel()
+        await gate.open()
+        #expect(try await firstWrite.value == .applicationSupport)
+        await #expect(throws: CancellationError.self) { _ = try await cancelledWrite.value }
+        #expect(try await peerRepository.save(laterCase) == .applicationSupport)
+        #expect(Set(await peerRepository.loadAllCases().map(\.id)) == [firstCase.id, laterCase.id])
+        #expect(!FileManager.default.fileExists(atPath: support
+            .appendingPathComponent("AnalysisCases/cases")
+            .appendingPathComponent("\(cancelledCase.id.uuidString.lowercased()).analysis.json").path))
+    }
+
+    @Test("a failed fallback transaction releases its index for the next writer")
+    func failedFallbackTransactionReleasesAdmission() async throws {
+        let fixture = try AnalysisFixture(contents: "fallback admission failure")
+        defer { fixture.remove() }
+        let support = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let failingRepository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: support,
+            sourceFolderIsWritable: false,
+            didLoadFallbackIndexForWriting: { throw AnalysisTestTimeout.timedOut }
+        )
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let analysisCase = AnalysisCase.create(for: revision)
+        await #expect(throws: AnalysisTestTimeout.self) { try await failingRepository.save(analysisCase) }
+        let reopened = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: support,
+            sourceFolderIsWritable: false
+        )
+        #expect(try await reopened.save(analysisCase) == .applicationSupport)
+        guard case .exact(let persisted) = await reopened.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the next writer to persist after failed admission")
+            return
+        }
+        #expect(persisted.id == analysisCase.id)
+        #expect(persisted.source.sha256 == revision.sha256)
     }
 
     @Test("case enumeration preserves caller task context on the filesystem worker")
@@ -3211,10 +3359,21 @@ private nonisolated enum AnalysisRepositoryExecutorContext {
 private actor AnalysisRepositoryConstructionGate {
     private var isOpen = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var hasEntered = false
 
     func wait() async {
+        hasEntered = true
+        let pending = enteredWaiters
+        enteredWaiters.removeAll()
+        pending.forEach { $0.resume() }
         if isOpen { return }
         await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func waitUntilEntered() async {
+        if hasEntered { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
     }
 
     func open() {
@@ -3223,4 +3382,14 @@ private actor AnalysisRepositoryConstructionGate {
         waiters.removeAll()
         pending.forEach { $0.resume() }
     }
+}
+
+private func waitForAnalysisStateAsync(
+    _ condition: @MainActor () async -> Bool
+) async throws {
+    for _ in 0..<200 {
+        if await condition() { return }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    throw AnalysisTestTimeout.timedOut
 }
