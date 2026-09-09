@@ -684,15 +684,16 @@ actor FileSystemService {
         )
     }
 
-    /// Copies primary images using collision-free names selected inside this actor, then preserves
-    /// the existing editorial JSON-sidecar behavior. Sidecar failures are reported without hiding
-    /// a successfully-created primary duplicate.
+    /// Copies images with their proven voice memos and relationship records as complete bundles
+    /// using collision-free names selected inside this actor, then preserves the existing editorial
+    /// JSON-sidecar behavior. Editorial sidecar failures remain explicit partial successes.
     func duplicateImages(
         _ requests: [DuplicateRequest],
         in folderURL: URL,
         metadataSidecarService: MetadataSidecarService
     ) -> DuplicateResult {
         let fileManager = FileManager.default
+        let voiceMemoRepository = VoiceMemoCompanionRepository()
         var completed: [DuplicateCompletion] = []
         var failures: [ItemFailure] = []
         var cancellationStoppedRemainingItems = false
@@ -708,20 +709,21 @@ actor FileSystemService {
             var copyName = "\(baseName) copy"
             var destinationURL = folderURL.appendingPathComponent(copyName)
                 .appendingPathExtension(fileExtension)
-            var counter = 2
-            while fileManager.fileExists(atPath: destinationURL.path) {
-                copyName = "\(baseName) copy \(counter)"
-                destinationURL = folderURL.appendingPathComponent(copyName)
-                    .appendingPathExtension(fileExtension)
-                counter += 1
-            }
-            if Task.isCancelled {
+            do {
+                var counter = 2
+                while try voiceMemoRepository.copyDestinationURLs(for: source.url, to: destinationURL)
+                    .contains(where: { fileManager.fileExists(atPath: $0.path) }) {
+                    try Task.checkCancellation()
+                    copyName = "\(baseName) copy \(counter)"
+                    destinationURL = folderURL.appendingPathComponent(copyName)
+                        .appendingPathExtension(fileExtension)
+                    counter += 1
+                }
+                try Task.checkCancellation()
+                try voiceMemoRepository.copyImagePreservingCompanion(from: source.url, to: destinationURL)
+            } catch is CancellationError {
                 cancellationStoppedRemainingItems = true
                 break
-            }
-
-            do {
-                try fileManager.copyItem(at: source.url, to: destinationURL)
             } catch {
                 failures.append(ItemFailure(
                     sourceURL: source.url,

@@ -396,7 +396,7 @@ final class ThumbnailItemView: NSView {
         filenameField.stringValue = data.filename
         setAccessibilityLabel(data.filename)
         setAccessibilityIdentifier(data.url.path)
-        setAccessibilityValue(Self.accessibilitySummary(for: data))
+        refreshAccessibilityValue()
 
         // Star rating
         if data.starRating != .none {
@@ -443,11 +443,19 @@ final class ThumbnailItemView: NSView {
         }
 
         CATransaction.commit()
-        if accessibilitySelectedState != isSelected {
-            accessibilitySelectedState = isSelected
-            setAccessibilitySelected(isSelected)
+        let selectionChanged = accessibilitySelectedState != isSelected
+        accessibilitySelectedState = isSelected
+        setAccessibilitySelected(isSelected)
+        refreshAccessibilityValue()
+        if selectionChanged {
             NSAccessibility.post(element: self, notification: .valueChanged)
         }
+    }
+
+    private func refreshAccessibilityValue() {
+        let selection = accessibilitySelectedState ? "Selected" : "Not selected"
+        let summary = currentData.map(Self.accessibilitySummary(for:))
+        setAccessibilityValue([selection, summary].compactMap { $0 }.joined(separator: ", "))
     }
 
     // MARK: - Thumbnail

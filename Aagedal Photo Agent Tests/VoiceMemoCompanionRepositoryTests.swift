@@ -4,6 +4,224 @@ import Testing
 
 @Suite("Voice memo companion persistence")
 struct VoiceMemoCompanionRepositoryTests {
+    @Test("Source or relationship changes during copy discard staging before installation", arguments: ["image", "image-preserved-stat", "memo", "record", "added-record"])
+    func changedCopySourcesFailClosed(kind: String) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        if kind != "added-record" { try repository.save(fixture.association) }
+        let sourceRecord = repository.recordURL(for: fixture.image)
+        let changedBytes = Data("externally changed bytes".utf8)
+        var io = VoiceMemoCompanionCopyIO.system
+        io.copy = { source, destination in
+            try FileManager.default.copyItem(at: source, to: destination)
+            guard source.pathExtension == "ARW" else { return }
+            switch kind {
+            case "image": try changedBytes.write(to: source)
+            case "image-preserved-stat":
+                let originalDate = try FileManager.default.attributesOfItem(atPath: source.path)[.modificationDate]
+                try Data("RAW".utf8).write(to: source)
+                if let originalDate {
+                    try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: source.path)
+                }
+            case "memo": try changedBytes.write(to: fixture.memo)
+            case "record":
+                var bytes = try Data(contentsOf: sourceRecord)
+                bytes.append(Data("\n".utf8)) // Valid but changed persisted evidence.
+                try bytes.write(to: sourceRecord)
+            default: try repository.save(fixture.association)
+            }
+        }
+        let destination = fixture.root.appendingPathComponent("duplicate.ARW")
+
+        #expect(throws: VoiceMemoCompanionRepository.RepositoryError.copySourceChanged) {
+            try VoiceMemoCompanionRepository(copyIO: io)
+                .copyImagePreservingCompanion(from: fixture.image, to: destination)
+        }
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: fixture.root.path)
+        #expect(!names.contains { $0.contains("duplicate") || $0.hasPrefix(".voice-memo-copy-") })
+        let expectedImage = kind == "image" ? changedBytes : Data((kind == "image-preserved-stat" ? "RAW" : "raw").utf8)
+        #expect(try Data(contentsOf: fixture.image) == expectedImage)
+        #expect(try Data(contentsOf: fixture.memo) == (kind == "memo" ? changedBytes : Data("wav".utf8)))
+        if kind == "record" { #expect(try Data(contentsOf: sourceRecord).last == 10) }
+        if kind == "added-record" { #expect(try repository.lookup(for: fixture.image) == .available(fixture.association)) }
+    }
+
+    @Test("An orphan relationship arriving during unassociated copy is never adopted", arguments: [false, true])
+    func lateOrphanRecordRejectsUnassociatedCopy(duringInstall: Bool) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        let destination = fixture.root.appendingPathComponent("duplicate.ARW")
+        let destinationRecord = repository.recordURL(for: destination)
+        let unrelated = Data("unrelated record".utf8)
+        var io = VoiceMemoCompanionCopyIO.system
+        io.copy = { source, target in
+            try FileManager.default.copyItem(at: source, to: target)
+            if !duringInstall { try unrelated.write(to: destinationRecord) }
+        }
+        io.install = { source, target in
+            try FileManager.default.moveItem(at: source, to: target)
+            if duringInstall { try unrelated.write(to: destinationRecord) }
+        }
+
+        #expect(throws: VoiceMemoCompanionRepository.RepositoryError.copyDestinationExists(destinationRecord.lastPathComponent)) {
+            try VoiceMemoCompanionRepository(copyIO: io)
+                .copyImagePreservingCompanion(from: fixture.image, to: destination)
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(try Data(contentsOf: destinationRecord) == unrelated)
+        #expect(try Data(contentsOf: fixture.image) == Data("raw".utf8))
+    }
+
+    @Test("Copying a shared memo creates an independent durable relationship without changing either source")
+    func copySharedMemoIsIndependent() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(fixture.association)
+        let jpeg = fixture.root.appendingPathComponent("DSC00001.JPG")
+        try Data("jpeg".utf8).write(to: jpeg)
+        let jpegAssociation = VoiceMemoAssociation(
+            profileIdentifier: fixture.association.profileIdentifier, imageURL: jpeg, memoURL: fixture.memo
+        )
+        try repository.save(jpegAssociation)
+        let originalRecord = try Data(contentsOf: repository.recordURL(for: fixture.image))
+        let destination = fixture.root.appendingPathComponent("independent.ARW")
+
+        try repository.copyImagePreservingCompanion(from: fixture.image, to: destination)
+
+        let copiedMemo = fixture.root.appendingPathComponent("independent.WAV")
+        #expect(try Data(contentsOf: destination) == Data(contentsOf: fixture.image))
+        #expect(try Data(contentsOf: copiedMemo) == Data(contentsOf: fixture.memo))
+        #expect(try VoiceMemoCompanionRepository().lookup(for: destination) == .available(VoiceMemoAssociation(
+            profileIdentifier: fixture.association.profileIdentifier, imageURL: destination, memoURL: copiedMemo
+        )))
+        #expect(try repository.lookup(for: fixture.image) == .available(fixture.association))
+        #expect(try repository.lookup(for: jpeg) == .available(jpegAssociation))
+        #expect(try Data(contentsOf: repository.recordURL(for: fixture.image)) == originalRecord)
+        // The duplicate has its own audio and can be renamed independently of the shared source.
+        #expect(try repository.planningArtifacts(for: destination).count == 2)
+    }
+
+    @Test("Copying after a prior rename resolves effective memo names")
+    func copyAfterRename() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(fixture.association)
+        let renamed = fixture.root.appendingPathComponent("renamed.ARW")
+        try FileManager.default.moveItem(at: fixture.image, to: renamed)
+        try FileManager.default.moveItem(at: fixture.memo, to: fixture.root.appendingPathComponent("renamed.WAV"))
+        try FileManager.default.moveItem(at: repository.recordURL(for: fixture.image), to: repository.recordURL(for: renamed))
+        let destination = fixture.root.appendingPathComponent("duplicate.ARW")
+        try repository.copyImagePreservingCompanion(from: renamed, to: destination)
+        guard case .available(let association) = try repository.lookup(for: destination) else {
+            Issue.record("Copied relationship was not available")
+            return
+        }
+        #expect(association.memoURL.lastPathComponent == "duplicate.WAV")
+        #expect(try Data(contentsOf: association.memoURL) == Data("wav".utf8))
+    }
+
+    @Test("Copy preflight leaves orphan image, memo, and record collisions untouched", arguments: [0, 1, 2])
+    func copyCollisionFailsBeforeMutation(artifact: Int) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(fixture.association)
+        let destination = fixture.root.appendingPathComponent("duplicate.ARW")
+        let targets = try repository.copyDestinationURLs(for: fixture.image, to: destination)
+        let collision = targets[artifact]
+        let existing = Data("unrelated-existing-data".utf8)
+        try existing.write(to: collision)
+
+        #expect(throws: VoiceMemoCompanionRepository.RepositoryError.copyDestinationExists(collision.lastPathComponent)) {
+            try repository.copyImagePreservingCompanion(from: fixture.image, to: destination)
+        }
+        #expect(try Data(contentsOf: collision) == existing)
+        for target in targets where target != collision {
+            #expect(!FileManager.default.fileExists(atPath: target.path))
+        }
+        #expect(try repository.lookup(for: fixture.image) == .available(fixture.association))
+    }
+
+    @Test("Copy staging and installation failures roll back all owned artifacts", arguments: ["copy-image", "copy-memo", "install-memo", "install-record"])
+    func copyFailureRollsBack(stage: String) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let system = VoiceMemoCompanionCopyIO.system
+        var io = system
+        io.copy = { source, destination in
+            if (stage == "copy-image" && source.pathExtension == "ARW")
+                || (stage == "copy-memo" && source.pathExtension == "WAV") {
+                // Emulate a partial staging write, which must be removed too.
+                try Data("partial".utf8).write(to: destination)
+                throw CocoaError(.fileWriteUnknown)
+            }
+            try system.copy(source, destination)
+        }
+        io.install = { source, destination in
+            if (stage == "install-memo" && destination.pathExtension == "WAV")
+                || (stage == "install-record" && destination.pathExtension == "json") {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            try system.install(source, destination)
+        }
+        let repository = VoiceMemoCompanionRepository(copyIO: io)
+        try repository.save(fixture.association)
+        let initialNames = try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).sorted()
+        let destination = fixture.root.appendingPathComponent("duplicate.ARW")
+        #expect(throws: CocoaError.self) {
+            try repository.copyImagePreservingCompanion(from: fixture.image, to: destination)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).sorted() == initialNames)
+        #expect(try repository.lookup(for: fixture.image) == .available(fixture.association))
+    }
+
+    @Test("A late destination collision is preserved while already installed copies roll back")
+    func lateCopyCollisionPreservesUnrelatedFile() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        var io = VoiceMemoCompanionCopyIO.system
+        let existing = Data("late unrelated file".utf8)
+        io.install = { source, destination in
+            if destination.pathExtension == "WAV" { try existing.write(to: destination) }
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
+        let repository = VoiceMemoCompanionRepository(copyIO: io)
+        try repository.save(fixture.association)
+        let destination = fixture.root.appendingPathComponent("duplicate.ARW")
+        #expect(throws: CocoaError.self) {
+            try repository.copyImagePreservingCompanion(from: fixture.image, to: destination)
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(!FileManager.default.fileExists(atPath: repository.recordURL(for: destination).path))
+        #expect(try Data(contentsOf: fixture.root.appendingPathComponent("duplicate.WAV")) == existing)
+    }
+
+    @Test("Failed copy rollback reports the exact residual path without modifying sources")
+    func copyRollbackFailureReportsResidual() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        var io = VoiceMemoCompanionCopyIO.system
+        io.install = { source, destination in
+            if destination.pathExtension == "WAV" { throw CocoaError(.fileWriteUnknown) }
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
+        io.remove = { _ in throw CocoaError(.fileWriteNoPermission) }
+        let repository = VoiceMemoCompanionRepository(copyIO: io)
+        try repository.save(fixture.association)
+        let destination = fixture.root.appendingPathComponent("duplicate.ARW")
+        #expect(throws: VoiceMemoCompanionRepository.RepositoryError.copyRollbackFailed([destination.path])) {
+            try repository.copyImagePreservingCompanion(from: fixture.image, to: destination)
+        }
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        #expect(try repository.lookup(for: fixture.image) == .available(fixture.association))
+    }
+
     @Test("Rename relationship planning is serialized off the main actor")
     @MainActor
     func renameRelationshipPlanningIsSerializedOffMainActor() async {

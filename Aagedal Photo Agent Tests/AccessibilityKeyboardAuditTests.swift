@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import CoreGraphics
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -6,6 +7,85 @@ import Testing
 @Suite("Accessibility and keyboard audit")
 @MainActor
 struct AccessibilityKeyboardAuditTests {
+    @Test("Thumbnail selection follows source identity across insertion, reorder and cell reuse")
+    func thumbnailSelectionDuringSnapshotInsertion() {
+        let originalURL = URL(fileURLWithPath: "/synthetic-caption/available.png")
+        let existingCopyURL = URL(fileURLWithPath: "/synthetic-caption/available copy.png")
+        let insertedCopyURL = URL(fileURLWithPath: "/synthetic-caption/available copy 2.png")
+        let service = ThumbnailService()
+
+        func configure(_ item: ThumbnailCollectionViewItem, url: URL, selected: Bool) {
+            // Pending inputs avoid filesystem probes and asynchronous image decoding.
+            let image = ImageFile(url: url, isICloudDownloadPending: true)
+            _ = item.view
+            item.configure(
+                with: ThumbnailCellData(from: image),
+                thumbnailService: service,
+                showOriginals: true,
+                imageFile: image,
+                isSelected: selected,
+                isActive: selected
+            )
+        }
+
+        let original = ThumbnailCollectionViewItem()
+        let existingCopy = ThumbnailCollectionViewItem()
+        configure(original, url: originalURL, selected: true)
+        configure(existingCopy, url: existingCopyURL, selected: false)
+
+        // The model has inserted a selected duplicate at index 1, but the displayed
+        // index 1 still contains the pre-existing copy from the preceding snapshot.
+        ThumbnailCollectionView.refreshSelection(
+            in: [original, existingCopy], selectedIDs: [insertedCopyURL], activeURL: insertedCopyURL
+        )
+        #expect(!original.thumbnailView.isAccessibilitySelected())
+        #expect(!existingCopy.thumbnailView.isAccessibilitySelected())
+        #expect((existingCopy.thumbnailView.accessibilityValue() as? String)?.hasPrefix("Not selected,") == true)
+
+        let insertedCopy = ThumbnailCollectionViewItem()
+        configure(insertedCopy, url: insertedCopyURL, selected: true)
+        // Completion must reconcile every visible cell, independent of display order.
+        ThumbnailCollectionView.refreshSelection(
+            in: [existingCopy, insertedCopy, original],
+            selectedIDs: [insertedCopyURL], activeURL: insertedCopyURL
+        )
+        #expect(insertedCopy.thumbnailView.isAccessibilitySelected())
+        #expect(!existingCopy.thumbnailView.isAccessibilitySelected())
+        #expect(!original.thumbnailView.isAccessibilitySelected())
+        #expect((insertedCopy.thumbnailView.accessibilityValue() as? String)?.hasPrefix("Selected,") == true)
+
+        insertedCopy.prepareForReuse()
+        #expect(insertedCopy.currentURL == nil)
+        configure(insertedCopy, url: existingCopyURL, selected: false)
+        ThumbnailCollectionView.refreshSelection(
+            in: [insertedCopy], selectedIDs: [insertedCopyURL], activeURL: insertedCopyURL
+        )
+        #expect(insertedCopy.currentURL == existingCopyURL)
+        #expect(!insertedCopy.thumbnailView.isAccessibilitySelected())
+        #expect((insertedCopy.thumbnailView.accessibilityValue() as? String)?.hasPrefix("Not selected,") == true)
+    }
+
+    @Test("Thumbnail accessibility selection values stay current without cell reconfiguration")
+    func thumbnailSelectionAccessibility() {
+        var image = ImageFile(url: URL(fileURLWithPath: "/synthetic-caption/accessibility.png"))
+        image.hasPendingMetadataChanges = true
+        let view = ThumbnailItemView(frame: .zero)
+        view.configure(with: ThumbnailCellData(from: image))
+        view.updateSelection(isSelected: false, isActive: false)
+        #expect(!view.isAccessibilitySelected())
+        #expect(view.accessibilityValue() as? String == "Not selected, Unrated, Pending metadata changes")
+        view.updateSelection(isSelected: true, isActive: true)
+        #expect(view.isAccessibilitySelected())
+        #expect(view.accessibilityValue() as? String == "Selected, Unrated, Pending metadata changes")
+        // Duplicate changes model selection while leaving the original's payload unchanged.
+        view.updateSelection(isSelected: false, isActive: false)
+        #expect(!view.isAccessibilitySelected())
+        #expect(view.accessibilityValue() as? String == "Not selected, Unrated, Pending metadata changes")
+        view.reset()
+        view.configure(with: ThumbnailCellData(from: image))
+        #expect(view.accessibilityValue() as? String == "Not selected, Unrated, Pending metadata changes")
+    }
+
     @Test("shared announcements are typed fixed copy with no private interpolation surface")
     func privacySafeAccessibilityAnnouncements() throws {
         let announcements = AppAccessibilityAnnouncement.allFixedCopy

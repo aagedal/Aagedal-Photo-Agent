@@ -3,6 +3,270 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
+@Suite("Caption voice memo playback")
+struct CaptionVoiceMemoPlaybackTests {
+    private let association = VoiceMemoAssociation(
+        profileIdentifier: "test-only", imageURL: URL(fileURLWithPath: "/caption/a.jpg"),
+        memoURL: URL(fileURLWithPath: "/caption/a.WAV")
+    )
+    private let revision = CaptionVoiceMemoFileRevision(size: 10, modified: .distantPast, device: 1, inode: 2)
+
+    @Test("Leaving the photo cancels a playback command blocked in source validation", arguments: [false, true])
+    @MainActor
+    func navigationCancelsPendingPlay(loadNext: Bool) async throws {
+        let probe = CaptionVoiceMemoProbe()
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let found = association
+        let version = revision
+        let service = CaptionVoiceMemoPlaybackService(
+            lookup: { _ in
+                probe.record("lookup")
+                if probe.events.filter({ $0 == "lookup" }).count == 3 {
+                    probe.record("blocked")
+                    _ = gate.wait(timeout: .now() + 10)
+                }
+                return .available(found)
+            },
+            makePlayer: { _ in CaptionVoiceMemoTestPlayer(probe: probe) },
+            readRevision: { _ in version }
+        )
+        let model = CaptionVoiceMemoPlaybackModel(service: service)
+        await model.load(found.imageURL)
+        let playing = Task { await model.toggle() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !probe.events.contains("blocked"), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(probe.events.contains("blocked"))
+        if loadNext {
+            let transition = Task { await model.load(nil) }
+            while model.state != .loading, ContinuousClock.now < deadline { await Task.yield() }
+            gate.signal()
+            await transition.value
+            #expect(model.state == .none)
+        } else {
+            model.stop()
+            gate.signal()
+            #expect(model.state == .idle)
+        }
+        await playing.value
+        #expect(!probe.events.contains("play"))
+        #expect(!model.isChangingPlayback)
+    }
+
+    @Test("Pre-cancelled load cannot supersede a newer selected photo")
+    @MainActor
+    func cancelledModelLoadPreservesSelection() async {
+        let service = CaptionVoiceMemoPlaybackService(lookup: { _ in .none })
+        let model = CaptionVoiceMemoPlaybackModel(service: service)
+        await model.load(association.imageURL)
+        #expect(model.state == .none)
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await model.load(nil)
+        }
+        await cancelled.value
+        #expect(model.state == .none)
+    }
+
+    @Test("Player teardown happens before releasing folder access")
+    func playerTeardownPrecedesAccessRelease() async throws {
+        let probe = CaptionVoiceMemoProbe()
+        let found = association
+        let version = revision
+        var service: CaptionVoiceMemoPlaybackService? = CaptionVoiceMemoPlaybackService(
+            lookup: { _ in .available(found) },
+            makePlayer: { _ in CaptionVoiceMemoTestPlayer(probe: probe) },
+            readRevision: { _ in version },
+            startAccess: { _ in true },
+            stopAccess: { _ in probe.record("release") }
+        )
+        _ = await service?.load(imageURL: found.imageURL, generation: 1)
+        service = nil
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !probe.events.contains("release"), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(probe.events == ["stop", "destroy", "release"])
+    }
+
+    @Test("Persisted WAV loads without playing or changing any source bytes")
+    func realWAVPreparation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("photo.JPG")
+        let memo = root.appendingPathComponent("photo.WAV")
+        let imageBytes = Data("synthetic photo identity".utf8)
+        try imageBytes.write(to: image)
+        var wav = Data()
+        func text(_ value: String) { wav.append(contentsOf: value.utf8) }
+        func word(_ value: UInt32, count: Int) {
+            for offset in 0..<count { wav.append(UInt8(truncatingIfNeeded: value >> (offset * 8))) }
+        }
+        text("RIFF"); word(36 + 1600, count: 4); text("WAVEfmt ")
+        word(16, count: 4); word(1, count: 2); word(1, count: 2)
+        word(8000, count: 4); word(16000, count: 4); word(2, count: 2); word(16, count: 2)
+        text("data"); word(1600, count: 4); wav.append(Data(repeating: 0, count: 1600))
+        try wav.write(to: memo)
+        let association = VoiceMemoAssociation(profileIdentifier: "synthetic-wav", imageURL: image, memoURL: memo)
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(association)
+        let recordBefore = try Data(contentsOf: repository.recordURL(for: image))
+        let service = CaptionVoiceMemoPlaybackService()
+        guard case .available(let ready) = await service.load(imageURL: image, generation: 1) else {
+            Issue.record("A persisted PCM WAV should prepare for explicit playback")
+            return
+        }
+        #expect(ready.association == association)
+        #expect(abs(ready.duration - 0.1) < 0.001)
+        #expect(!ready.isPlaying)
+        #expect(try Data(contentsOf: image) == imageBytes)
+        #expect(try Data(contentsOf: memo) == wav)
+        #expect(try Data(contentsOf: repository.recordURL(for: image)) == recordBefore)
+        await service.clear(generation: 2)
+    }
+
+    @Test("Worker retains task context, balances access, and ignores stale controls")
+    func playbackOwnership() async {
+        let probe = CaptionVoiceMemoProbe()
+        let found = association
+        let version = revision
+        let service = CaptionVoiceMemoPlaybackService(
+            lookup: { _ in
+                probe.record("lookup")
+                #expect(!Thread.isMainThread)
+                #expect(CaptionVoiceMemoTestContext.marker == "caption-request")
+                return .available(found)
+            },
+            makePlayer: { _ in CaptionVoiceMemoTestPlayer(probe: probe) },
+            readRevision: { _ in version },
+            startAccess: { _ in probe.record("access"); return true },
+            stopAccess: { _ in probe.record("release") }
+        )
+        await CaptionVoiceMemoTestContext.$marker.withValue("caption-request") {
+            _ = await service.load(imageURL: found.imageURL, generation: 2)
+            #expect(!probe.events.contains("play"))
+            #expect(await service.load(imageURL: found.imageURL, generation: 1) == nil)
+            #expect(await service.toggle(generation: 1) == nil)
+            guard case .available(let playing) = await service.toggle(generation: 2) else {
+                Issue.record("Expected explicit playback"); return
+            }
+            #expect(playing.isPlaying)
+            await service.clear(generation: 1)
+            guard case .available(let paused) = await service.toggle(generation: 2) else {
+                Issue.record("Stale clear must not destroy current playback"); return
+            }
+            #expect(!paused.isPlaying)
+        }
+        await service.clear(generation: 3)
+        #expect(await service.progress(generation: 2) == nil)
+        #expect(probe.events.filter { $0 == "access" }.count == 1)
+        #expect(probe.events.filter { $0 == "release" }.count == 1)
+        #expect(probe.events.filter { $0 == "play" }.count == 1)
+    }
+
+    @Test("Cancellation before and during relationship lookup never creates a player", arguments: [false, true])
+    func cancellationSkipsAudio(before: Bool) async {
+        let probe = CaptionVoiceMemoProbe()
+        let found = association
+        let version = revision
+        let service = CaptionVoiceMemoPlaybackService(
+            lookup: { _ in
+                probe.record("lookup")
+                withUnsafeCurrentTask { $0?.cancel() }
+                return .available(found)
+            },
+            makePlayer: { _ in probe.record("prepare"); return CaptionVoiceMemoTestPlayer(probe: probe) },
+            readRevision: { _ in version },
+            startAccess: { _ in probe.record("access"); return true },
+            stopAccess: { _ in probe.record("release") }
+        )
+        let task = Task {
+            if before { withUnsafeCurrentTask { $0?.cancel() } }
+            return await service.load(imageURL: found.imageURL, generation: 1)
+        }
+        #expect(await task.value == nil)
+        #expect(!probe.events.contains("prepare"))
+        #expect(probe.events.filter { $0 == "access" }.count == (before ? 0 : 1))
+        #expect(probe.events.filter { $0 == "release" }.count == (before ? 0 : 1))
+    }
+
+    @Test("Missing, unknown-schema, unassociated and unsupported audio do not prepare playback", arguments: [0, 1, 2, 3])
+    func unavailableStates(kind: Int) async {
+        let probe = CaptionVoiceMemoProbe()
+        let found = association
+        let service = CaptionVoiceMemoPlaybackService(
+            lookup: { _ in
+                switch kind {
+                case 0: return .none
+                case 1: return .missing(VoiceMemoCompanionRecord(profileIdentifier: "test", imageFilename: "a.jpg", memoFilename: "a.WAV"))
+                case 2: throw VoiceMemoCompanionRepository.RepositoryError.unsupportedSchema(99)
+                default: return .available(VoiceMemoAssociation(profileIdentifier: "test", imageURL: found.imageURL, memoURL: URL(fileURLWithPath: "/caption/a.mp3")))
+                }
+            },
+            makePlayer: { _ in probe.record("prepare"); return CaptionVoiceMemoTestPlayer(probe: probe) }
+        )
+        let state = await service.load(imageURL: found.imageURL, generation: 1)
+        if kind == 0 { #expect(state == CaptionVoiceMemoState.none) }
+        else if kind == 1 { #expect(state == .missing("a.WAV")) }
+        else { guard case .unavailable = state else { Issue.record("Expected unavailable state"); return } }
+        #expect(probe.events.isEmpty)
+    }
+
+    @Test("Changing either source after preparation blocks playback", arguments: ["image", "memo", "association"])
+    func sourceChangeBlocksPlayback(changed: String) async {
+        let probe = CaptionVoiceMemoProbe()
+        let found = association
+        let version = revision
+        let service = CaptionVoiceMemoPlaybackService(
+            lookup: { _ in
+                if changed == "association", probe.events.contains("changed") { return .none }
+                return .available(found)
+            },
+            makePlayer: { _ in CaptionVoiceMemoTestPlayer(probe: probe) },
+            readRevision: { url in
+                if probe.events.contains("changed"),
+                   (changed == "image" && url == found.imageURL) || (changed == "memo" && url == found.memoURL) {
+                    return CaptionVoiceMemoFileRevision(size: 11, modified: .now, device: 1, inode: 3)
+                }
+                return version
+            }
+        )
+        _ = await service.load(imageURL: found.imageURL, generation: 1)
+        probe.record("changed")
+        guard case .unavailable = await service.toggle(generation: 1) else {
+            Issue.record("Changed source must require refresh"); return
+        }
+        #expect(!probe.events.contains("play"))
+        #expect(probe.events.contains("stop"))
+    }
+}
+
+nonisolated private enum CaptionVoiceMemoTestContext {
+    @TaskLocal static var marker: String?
+}
+
+nonisolated private final class CaptionVoiceMemoProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+    var events: [String] { lock.withLock { storage } }
+    func record(_ event: String) { lock.withLock { storage.append(event) } }
+}
+
+nonisolated private final class CaptionVoiceMemoTestPlayer: CaptionVoiceMemoAudioPlayer {
+    let probe: CaptionVoiceMemoProbe
+    let duration: TimeInterval = 10
+    var currentTime: TimeInterval = 0
+    var isPlaying = false
+    init(probe: CaptionVoiceMemoProbe) { self.probe = probe }
+    deinit { probe.record("destroy") }
+    func play() -> Bool { probe.record("play"); isPlaying = true; return true }
+    func pause() { probe.record("pause"); isPlaying = false }
+    func stop() { probe.record("stop"); isPlaying = false }
+}
+
 @Suite("Caption Workspace speed tools")
 @MainActor
 struct CaptionWorkspaceSpeedToolsTests {

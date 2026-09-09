@@ -23,20 +23,30 @@ final class ThumbnailCollectionView: NSCollectionView {
     func refreshVisibleSelections(selectedIDs: Set<URL>, activeURL: URL?) {
         guard let viewModel else { return }
 
-        for item in visibleItems() {
-            guard let thumbnailItem = item as? ThumbnailCollectionViewItem,
-                  let indexPath = indexPath(for: item),
-                  indexPath.item < viewModel.visibleImages.count else { continue }
-            let url = viewModel.visibleImages[indexPath.item].url
-            let isSelected = selectedIDs.contains(url)
-            let isActive = isSelected && url == activeURL
-            thumbnailItem.thumbnailView.updateSelection(isSelected: isSelected, isActive: isActive)
-        }
+        Self.refreshSelection(in: Array(visibleItems()), selectedIDs: selectedIDs, activeURL: activeURL)
 
         // Scroll to active item if needed
         if let activeURL, let index = viewModel.urlToVisibleIndex[activeURL] {
             let indexPath = IndexPath(item: index, section: 0)
             scrollToItemIfNeeded(at: indexPath)
+        }
+    }
+
+    /// Selection belongs to the configured source, not its possibly stale index in
+    /// an animated diffable snapshot. Also covers outgoing and newly inserted cells.
+    static func refreshSelection(
+        in items: [NSCollectionViewItem],
+        selectedIDs: Set<URL>,
+        activeURL: URL?
+    ) {
+        for item in items {
+            guard let thumbnailItem = item as? ThumbnailCollectionViewItem,
+                  let url = thumbnailItem.currentURL else { continue }
+            let isSelected = selectedIDs.contains(url)
+            thumbnailItem.thumbnailView.updateSelection(
+                isSelected: isSelected,
+                isActive: isSelected && url == activeURL
+            )
         }
     }
 
@@ -46,23 +56,10 @@ final class ThumbnailCollectionView: NSCollectionView {
         refreshVisibleSelections(selectedIDs: viewModel.selectedImageIDs, activeURL: viewModel.lastClickedImageURL)
     }
 
-    /// Fast-path for single-selection keyboard navigation: updates only the 2 affected cells
-    /// (deselect old, select new) instead of iterating all visible cells.
-    private func fastUpdateSelection(from oldURL: URL?, to newURL: URL) {
-        if let oldURL, oldURL != newURL,
-           let oldIndex = viewModel?.urlToVisibleIndex[oldURL] {
-            let ip = IndexPath(item: oldIndex, section: 0)
-            if let old = item(at: ip) as? ThumbnailCollectionViewItem {
-                old.thumbnailView.updateSelection(isSelected: false, isActive: false)
-            }
-        }
-        if let newIndex = viewModel?.urlToVisibleIndex[newURL] {
-            let ip = IndexPath(item: newIndex, section: 0)
-            if let new = item(at: ip) as? ThumbnailCollectionViewItem {
-                new.thumbnailView.updateSelection(isSelected: true, isActive: true)
-            }
-            scrollToItemIfNeeded(at: ip)
-        }
+    /// Update the visible cells by source identity even while a snapshot insertion
+    /// is in flight. Looking up the old/new model indexes can select a different cell.
+    private func updateSingleSelection(to newURL: URL) {
+        refreshVisibleSelections(selectedIDs: [newURL], activeURL: newURL)
     }
 
     /// Scrolls to the item only if it is more than half outside the visible area.
@@ -247,37 +244,33 @@ final class ThumbnailCollectionView: NSCollectionView {
 
         switch Int(event.keyCode) {
         case 123: // Left arrow
-            let oldActive = viewModel.lastClickedImageURL
             guard let sel = viewModel.computePreviousSelection(extending: shift) else { break }
             if !shift, let newActive = sel.active {
-                fastUpdateSelection(from: oldActive, to: newActive)
+                updateSingleSelection(to: newActive)
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
             viewModel.applySelection(ids: sel.ids, active: sel.active)
         case 124: // Right arrow
-            let oldActive = viewModel.lastClickedImageURL
             guard let sel = viewModel.computeNextSelection(extending: shift) else { break }
             if !shift, let newActive = sel.active {
-                fastUpdateSelection(from: oldActive, to: newActive)
+                updateSingleSelection(to: newActive)
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
             viewModel.applySelection(ids: sel.ids, active: sel.active)
         case 125: // Down arrow
-            let oldActive = viewModel.lastClickedImageURL
             guard let sel = viewModel.computeDownSelection(columns: columnCount, extending: shift) else { break }
             if !shift, let newActive = sel.active {
-                fastUpdateSelection(from: oldActive, to: newActive)
+                updateSingleSelection(to: newActive)
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
             viewModel.applySelection(ids: sel.ids, active: sel.active)
         case 126: // Up arrow
-            let oldActive = viewModel.lastClickedImageURL
             guard let sel = viewModel.computeUpSelection(columns: columnCount, extending: shift) else { break }
             if !shift, let newActive = sel.active {
-                fastUpdateSelection(from: oldActive, to: newActive)
+                updateSingleSelection(to: newActive)
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }

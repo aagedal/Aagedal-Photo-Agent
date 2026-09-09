@@ -119,14 +119,15 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
             ) as? ThumbnailCollectionViewItem
             guard let item else { return nil }
 
-            self.configureItem(item, at: indexPath, url: url)
+            self.configureItem(item, url: url)
             return item
         }
     }
 
-    private func configureItem(_ item: ThumbnailCollectionViewItem, at indexPath: IndexPath, url: URL) {
-        guard indexPath.item < viewModel.visibleImages.count else { return }
-        let imageFile = viewModel.visibleImages[indexPath.item]
+    private func configureItem(_ item: ThumbnailCollectionViewItem, url: URL) {
+        guard let index = viewModel.urlToVisibleIndex[url],
+              index < viewModel.visibleImages.count else { return }
+        let imageFile = viewModel.visibleImages[index]
         guard imageFile.url == url else { return }
 
         let data = ThumbnailCellData(from: imageFile)
@@ -273,7 +274,15 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
             // hosting view is still in its layout pass. Forcing AppKit layout here re-enters
             // NSHostingView. Let AppKit finish naturally, then restore the scroll position.
             DispatchQueue.main.async { [weak self] in
-                self?.restoreInitialSelectionIfPossible()
+                guard let self else { return }
+                // Reconcile selection without scrolling back to it when a metadata
+                // refresh updates a snapshot while the user is browsing elsewhere.
+                ThumbnailCollectionView.refreshSelection(
+                    in: Array(self.collectionView.visibleItems()),
+                    selectedIDs: self.viewModel.selectedImageIDs,
+                    activeURL: self.viewModel.lastClickedImageURL
+                )
+                self.restoreInitialSelectionIfPossible()
             }
         }
 
@@ -303,21 +312,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     }
 
     private func updateVisibleSelections(selectedIDs: Set<URL>, lastClicked: URL?) {
-        for item in collectionView.visibleItems() {
-            guard let thumbnailItem = item as? ThumbnailCollectionViewItem,
-                  let indexPath = collectionView.indexPath(for: item),
-                  indexPath.item < viewModel.visibleImages.count else { continue }
-            let url = viewModel.visibleImages[indexPath.item].url
-            let isSelected = selectedIDs.contains(url)
-            let isActive = isSelected && url == lastClicked
-            thumbnailItem.thumbnailView.updateSelection(isSelected: isSelected, isActive: isActive)
-        }
-
-        // Scroll to last clicked if needed
-        if let lastClicked, let index = viewModel.urlToVisibleIndex[lastClicked] {
-            let indexPath = IndexPath(item: index, section: 0)
-            collectionView.scrollToItemIfNeeded(at: indexPath)
-        }
+        collectionView.refreshVisibleSelections(selectedIDs: selectedIDs, activeURL: lastClicked)
     }
 
     // MARK: - Layout Updates

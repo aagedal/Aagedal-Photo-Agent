@@ -4,6 +4,108 @@ import Testing
 
 @Suite("Filesystem Dispatch executor")
 struct FileSystemExecutorTests {
+    @Test("Browser duplicate skips orphan WAV and relationship collisions and persists independent shared memos")
+    func duplicatePreservesVoiceMemoBundles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = root.appendingPathComponent("photo.ARW")
+        let jpeg = root.appendingPathComponent("photo.JPG")
+        let memo = root.appendingPathComponent("photo.WAV")
+        try Data("raw".utf8).write(to: raw)
+        try Data("jpeg".utf8).write(to: jpeg)
+        try Data("memo bytes".utf8).write(to: memo)
+        let repository = VoiceMemoCompanionRepository()
+        for source in [raw, jpeg] {
+            try repository.save(VoiceMemoAssociation(
+                profileIdentifier: "sony-ilce-1-v4", imageURL: source, memoURL: memo
+            ))
+        }
+        let orphanMemo = root.appendingPathComponent("photo copy.WAV")
+        let orphanRecord = repository.recordURL(for: root.appendingPathComponent("photo copy 2.ARW"))
+        let unrelated = Data("unrelated".utf8)
+        try unrelated.write(to: orphanMemo)
+        try unrelated.write(to: orphanRecord)
+
+        let result = await FileSystemService().duplicateImages(
+            [raw, jpeg].map { .init(source: ImageFile(url: $0)) },
+            in: root, metadataSidecarService: MetadataSidecarService()
+        )
+
+        #expect(result.failures.isEmpty)
+        #expect(!result.cancellationStoppedRemainingItems)
+        #expect(result.completed.map { $0.duplicate.filename } == ["photo copy 3.ARW", "photo copy 2.JPG"])
+        var copiedMemos: Set<URL> = []
+        for completion in result.completed {
+            guard case .available(let association) = try repository.lookup(for: completion.duplicate.url) else {
+                Issue.record("Duplicate lost its persisted voice memo")
+                continue
+            }
+            #expect(try Data(contentsOf: association.memoURL) == Data(contentsOf: memo))
+            #expect(association.memoURL != memo)
+            copiedMemos.insert(association.memoURL)
+        }
+        #expect(copiedMemos.count == 2)
+        #expect(try Data(contentsOf: orphanMemo) == unrelated)
+        #expect(try Data(contentsOf: orphanRecord) == unrelated)
+        #expect(FileManager.default.fileExists(atPath: raw.path))
+        #expect(FileManager.default.fileExists(atPath: jpeg.path))
+    }
+
+    @Test("Browser duplicate fails closed for missing and unsupported relationships", arguments: [false, true])
+    func duplicateRejectsUnavailableVoiceMemo(unsupported: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("photo.ARW")
+        let memo = root.appendingPathComponent("photo.WAV")
+        try Data("image".utf8).write(to: image)
+        try Data("memo".utf8).write(to: memo)
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(VoiceMemoAssociation(profileIdentifier: "sony-ilce-1-v4", imageURL: image, memoURL: memo))
+        if unsupported {
+            try Data(#"{"schemaVersion":99}"#.utf8).write(to: repository.recordURL(for: image))
+        } else {
+            try FileManager.default.removeItem(at: memo)
+        }
+        let initialNames = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+
+        let result = await FileSystemService().duplicateImages(
+            [.init(source: ImageFile(url: image))], in: root,
+            metadataSidecarService: MetadataSidecarService()
+        )
+
+        #expect(result.completed.isEmpty)
+        #expect(result.failures.count == 1)
+        #expect(result.failures.first?.sourceURL == image)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted() == initialNames)
+    }
+
+    @Test("An unassociated photo skips an orphan relationship and never guesses a same-stem WAV")
+    func duplicateWithoutProvenMemo() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("photo.JPG")
+        try Data("image".utf8).write(to: image)
+        try Data("unproven".utf8).write(to: root.appendingPathComponent("photo.WAV"))
+        let repository = VoiceMemoCompanionRepository()
+        let orphan = repository.recordURL(for: root.appendingPathComponent("photo copy.JPG"))
+        try Data("unrelated".utf8).write(to: orphan)
+
+        let result = await FileSystemService().duplicateImages(
+            [.init(source: ImageFile(url: image))], in: root,
+            metadataSidecarService: MetadataSidecarService()
+        )
+
+        #expect(result.failures.isEmpty)
+        let duplicate = try #require(result.completed.first?.duplicate.url)
+        #expect(duplicate.lastPathComponent == "photo copy 2.JPG")
+        #expect(try repository.lookup(for: duplicate) == .none)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("photo copy 2.WAV").path))
+        #expect(try Data(contentsOf: orphan) == Data("unrelated".utf8))
+    }
+
     @Test("Browser scan runs on its Dispatch worker with the caller's task context")
     @MainActor
     func scanTaskContext() async throws {

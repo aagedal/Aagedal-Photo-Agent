@@ -6,7 +6,9 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
 
     private(set) var thumbnailView: ThumbnailItemView!
     var thumbnailLoadTask: Task<Void, Never>?
-    private var currentURL: URL?
+    /// Identity of the image actually represented by this cell. During a diffable
+    /// insertion its collection index can still belong to the previous snapshot.
+    private(set) var currentURL: URL?
 
     override func loadView() {
         let itemView = ThumbnailItemView(frame: .zero)
@@ -39,7 +41,6 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
         thumbnailView.setAccessibilityElement(true)
         thumbnailView.setAccessibilityRole(.button)
         thumbnailView.setAccessibilityLabel(imageFile.filename)
-        thumbnailView.setAccessibilityValue(isSelected ? "Selected" : "Not selected")
         thumbnailView.setAccessibilityHelp(
             "Rating \(imageFile.starRating.rawValue) of 5, \(imageFile.colorLabel.displayName) label. Use arrow keys to navigate and Space to open Full Screen."
         )

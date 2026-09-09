@@ -406,6 +406,8 @@ struct CaptionWorkspaceView: View {
             }
 
             Divider()
+            CaptionVoiceMemoPlayerView(imageURL: session.currentURL)
+            Divider()
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 8) {
                     ForEach(visibleImages) { image in

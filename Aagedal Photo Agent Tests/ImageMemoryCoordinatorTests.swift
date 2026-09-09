@@ -304,6 +304,144 @@ struct ThumbnailImageRenderWorkerTests {
         case none, beforeRequest, duringEdit, duringMaterialization
     }
 
+    @Test("Sidecar and header reads and orientation pixels retain utility task context and stop on cancellation",
+          arguments: 0...4)
+    @MainActor
+    func orientationContext(cancelAt: Int) async throws {
+        let executor = FullScreenImageDecodeExecutor()
+        let marker = UUID()
+        let url = URL(fileURLWithPath: "/virtual/orientation.tiff")
+        let image = NSImage(cgImage: try makeImage(), size: NSSize(width: 16, height: 8))
+        let output = try makeImage(width: 8, height: 16)
+        let worker = ThumbnailImageRenderWorker(sourceAccess: .init(
+            sidecarOrientation: { actualURL in
+                ThumbnailRenderContext.check(executor, marker)
+                #expect(actualURL == url)
+                #expect(cancelAt != 1)
+                if cancelAt == 2 { withUnsafeCurrentTask { $0?.cancel() } }
+                return 6
+            },
+            fileOrientation: { actualURL in
+                ThumbnailRenderContext.check(executor, marker)
+                #expect(actualURL == url)
+                #expect(cancelAt == 0 || cancelAt > 2)
+                if cancelAt == 3 { withUnsafeCurrentTask { $0?.cancel() } }
+                return 1
+            },
+            materializeOrientation: { rotated in
+                ThumbnailRenderContext.check(executor, marker)
+                #expect(cancelAt == 0 || cancelAt == 4)
+                #expect(rotated.extent.size == CGSize(width: 8, height: 16))
+                if cancelAt == 4 { withUnsafeCurrentTask { $0?.cancel() } }
+                return output
+            }
+        ), executor: executor)
+        let result = await Task(priority: .userInitiated) {
+            await ThumbnailRenderContext.$marker.withValue(marker) {
+                if cancelAt == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+                return await worker.orientedToSidecar(image, fileURL: url)
+            }
+        }.value
+        #expect((result != nil) == (cancelAt == 0))
+        if let result { #expect(result.size == NSSize(width: 8, height: 16)) }
+    }
+
+    @Test("Thumbnail cloud probes preserve context, defer placeholders and stop at cancelled boundaries",
+          arguments: 0...4, [false, true])
+    @MainActor
+    func availabilityContext(cancelAt: Int, placeholder: Bool) async {
+        let executor = FullScreenImageDecodeExecutor()
+        let marker = UUID()
+        let url = URL(fileURLWithPath: "/virtual/cloud.tiff")
+        let worker = ThumbnailImageRenderWorker(sourceAccess: .init(
+            isUbiquitous: { actualURL in
+                ThumbnailRenderContext.check(executor, marker)
+                #expect(actualURL == url)
+                #expect(cancelAt != 1)
+                if cancelAt == 2 { withUnsafeCurrentTask { $0?.cancel() } }
+                return true
+            },
+            isNotDownloaded: { actualURL in
+                ThumbnailRenderContext.check(executor, marker)
+                #expect(actualURL == url)
+                #expect(cancelAt == 0 || cancelAt > 2)
+                if cancelAt == 3 { withUnsafeCurrentTask { $0?.cancel() } }
+                return placeholder
+            },
+            startDownload: { actualURL in
+                ThumbnailRenderContext.check(executor, marker)
+                #expect(actualURL == url)
+                #expect(placeholder)
+                #expect(cancelAt == 0 || cancelAt == 4)
+                if cancelAt == 4 { withUnsafeCurrentTask { $0?.cancel() } }
+            }
+        ), executor: executor)
+        let result = await Task(priority: .userInitiated) {
+            await ThumbnailRenderContext.$marker.withValue(marker) {
+                if cancelAt == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+                return await worker.isLocallyAvailable(url)
+            }
+        }.value
+        // A downloaded cloud file never reaches the download cancellation boundary.
+        #expect(result == (!placeholder && (cancelAt == 0 || cancelAt == 4)))
+    }
+
+    @Test("Local thumbnails skip cloud status and download calls")
+    func localAvailability() async {
+        let worker = ThumbnailImageRenderWorker(sourceAccess: .init(
+            isUbiquitous: { _ in false },
+            isNotDownloaded: { _ in Issue.record("Local file queried cloud status"); return true },
+            startDownload: { _ in Issue.record("Local file requested download") }
+        ))
+        #expect(await worker.isLocallyAvailable(URL(fileURLWithPath: "/virtual/local.tiff")))
+    }
+
+    @Test("A blocked cloud probe does not hold independent thumbnails and queued cancellation skips sidecar I/O")
+    @MainActor
+    func queuedSourceCancellation() async throws {
+        let image = NSImage(cgImage: try makeImage(), size: NSSize(width: 16, height: 8))
+        let url = URL(fileURLWithPath: "/virtual/blocked-cloud.tiff")
+        let entered = AsyncStream<Void>.makeStream()
+        let submitted = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let executor = FullScreenImageDecodeExecutor(didEnqueue: { submitted.continuation.yield(()) })
+        let worker = ThumbnailImageRenderWorker(sourceAccess: .init(
+            sidecarOrientation: { _ in Issue.record("Cancelled queued request read a sidecar"); return nil },
+            isUbiquitous: { _ in
+                entered.continuation.yield(())
+                #expect(release.wait(timeout: .now() + 5) == .success)
+                #expect(Task.isCancelled)
+                return false
+            }
+        ), executor: executor)
+        let first = Task { await worker.isLocallyAvailable(url) }
+        var entries = entered.stream.makeAsyncIterator()
+        _ = await entries.next()
+        var submissions = submitted.stream.makeAsyncIterator()
+        _ = await submissions.next()
+        let queued = Task { await worker.orientedToSidecar(image, fileURL: url) }
+        _ = await submissions.next()
+        first.cancel()
+        queued.cancel()
+        let independent = ThumbnailImageRenderWorker(sourceAccess: .init(isUbiquitous: { _ in
+            release.signal()
+            return false
+        }))
+        #expect(await independent.isLocallyAvailable(url))
+        #expect(await first.value == false)
+        #expect(await queued.value == nil)
+    }
+
+    @Test("Orientation materialization failure preserves the original thumbnail")
+    func failedOrientationMaterialization() async throws {
+        let image = NSImage(cgImage: try makeImage(), size: NSSize(width: 16, height: 8))
+        let worker = ThumbnailImageRenderWorker(sourceAccess: .init(
+            sidecarOrientation: { _ in 6 }, fileOrientation: { _ in 1 },
+            materializeOrientation: { _ in nil }
+        ))
+        #expect(await worker.orientedToSidecar(image, fileURL: URL(fileURLWithPath: "/virtual/fallback.tiff")) === image)
+    }
+
     @Test("Thumbnail decode retains context at utility QoS and discards cancelled pixels",
           arguments: CancellationPoint.allCases)
     @MainActor
@@ -444,6 +582,40 @@ struct ThumbnailImageRenderWorkerTests {
         #expect(rendered.width == 320)
         #expect(rendered.height == 480)
         #expect(rendered.bitsPerComponent == 8)
+    }
+
+    @Test("Real sidecar orientation corrects a file-oriented thumbnail and preserves no-op identity",
+          arguments: [0, 6, 3])
+    func systemSidecarOrientation(sidecarOrientation: Int) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("sidecar.tiff")
+        let image = try makeImage(width: 600, height: 400)
+        let destination = try #require(CGImageDestinationCreateWithURL(
+            url as CFURL, UTType.tiff.identifier as CFString, 1, nil
+        ))
+        CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+        if sidecarOrientation != 0 {
+            let xml = """
+            <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="\(sidecarOrientation)"/>
+            </rdf:RDF></x:xmpmeta>
+            """
+            try Data(xml.utf8).write(to: url.deletingPathExtension().appendingPathExtension("xmp"))
+        }
+        let worker = ThumbnailImageRenderWorker()
+        #expect(await worker.isLocallyAvailable(url))
+        let decoded = try #require(await worker.load(from: url, maxPixelSize: 480))
+        let original = NSImage(cgImage: decoded, size: NSSize(width: decoded.width, height: decoded.height))
+        let result = try #require(await worker.orientedToSidecar(original, fileURL: url))
+        if sidecarOrientation == 3 {
+            #expect(result.size == NSSize(width: 480, height: 320))
+        } else {
+            #expect(result === original)
+            #expect(result.size == NSSize(width: 320, height: 480))
+        }
     }
 
     private func makeImage(width: Int = 16, height: Int = 8) throws -> CGImage {

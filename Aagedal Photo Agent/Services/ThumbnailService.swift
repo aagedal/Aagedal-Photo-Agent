@@ -5,6 +5,22 @@ import os
 
 nonisolated private let thumbnailLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ThumbnailService")
 
+nonisolated struct ThumbnailSourceAccess: Sendable {
+    var sidecarOrientation: @Sendable (URL) -> Int? = { XMPSidecarService().sidecarOrientation(for: $0) }
+    var fileOrientation: @Sendable (URL) -> Int = { FullScreenImageCache.fileEXIFOrientation(at: $0) }
+    var materializeOrientation: @Sendable (CIImage) -> CGImage? = {
+        CameraRawApproximation.ciContext.createCGImage($0, from: $0.extent)
+    }
+    var isUbiquitous: @Sendable (URL) -> Bool = { FileManager.default.isUbiquitousItem(at: $0) }
+    var isNotDownloaded: @Sendable (URL) -> Bool = {
+        (try? $0.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?
+            .ubiquitousItemDownloadingStatus == .notDownloaded
+    }
+    var startDownload: @Sendable (URL) -> Void = { try? FileManager.default.startDownloadingUbiquitousItem(at: $0) }
+
+    static let system = Self()
+}
+
 nonisolated struct ThumbnailImageRenderAccess: Sendable {
     let decode: @Sendable (URL, CGFloat) -> CGImage?
     let edit: @Sendable (CIImage, CameraRawSettings, Int) async -> CIImage
@@ -45,15 +61,55 @@ actor ThumbnailImageRenderWorker {
         executor.asUnownedSerialExecutor()
     }
     private let access: ThumbnailImageRenderAccess
+    private let sourceAccess: ThumbnailSourceAccess
 
     init(
         access: ThumbnailImageRenderAccess = .system,
+        sourceAccess: ThumbnailSourceAccess = .system,
         executor: FullScreenImageDecodeExecutor = FullScreenImageDecodeExecutor(
             label: "com.aagedal.photo-agent.thumbnail-image-render.request"
         )
     ) {
         self.access = access
+        self.sourceAccess = sourceAccess
         self.executor = executor
+    }
+
+    /// Keep placeholder probes out of the cooperative pool as even metadata queries may
+    /// block in a file provider. Cancellation stops between calls; an initiated download
+    /// is left to the provider and a later thumbnail request retries the materialized file.
+    func isLocallyAvailable(_ url: URL) -> Bool {
+        guard !Task.isCancelled else { return false }
+        let ubiquitous = sourceAccess.isUbiquitous(url)
+        guard !Task.isCancelled else { return false }
+        guard ubiquitous else { return true }
+        let notDownloaded = sourceAccess.isNotDownloaded(url)
+        guard !Task.isCancelled else { return false }
+        guard notDownloaded else { return true }
+        sourceAccess.startDownload(url)
+        thumbnailLogger.info("Deferred thumbnail for not-downloaded iCloud item: \(url.lastPathComponent, privacy: .private(mask: .hash))")
+        return false
+    }
+
+    /// QuickLook and ImageIO bake the embedded tag into their pixels. Apply only the
+    /// remaining sidecar correction, retaining the original image on a no-op or failure.
+    func orientedToSidecar(_ image: NSImage, fileURL: URL) -> NSImage? {
+        guard !Task.isCancelled else { return nil }
+        let sidecarOrientation = sourceAccess.sidecarOrientation(fileURL)
+        guard !Task.isCancelled else { return nil }
+        guard let sidecarOrientation else { return image }
+        let fileOrientation = sourceAccess.fileOrientation(fileURL)
+        guard !Task.isCancelled else { return nil }
+        let correction = ImageFile.orientationCorrection(from: fileOrientation, to: sidecarOrientation)
+        guard correction != .up else { return image }
+        let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        guard !Task.isCancelled else { return nil }
+        guard let cg else { return image }
+        let rotated = CIImage(cgImage: cg).oriented(correction)
+        let output = sourceAccess.materializeOrientation(rotated)
+        guard !Task.isCancelled else { return nil }
+        guard let output else { return image }
+        return NSImage(cgImage: output, size: NSSize(width: output.width, height: output.height))
     }
 
     func load(from url: URL, maxPixelSize: CGFloat) -> CGImage? {
@@ -145,7 +201,7 @@ final class ThumbnailService {
     /// authoritative display orientation lives in an XMP sidecar instead — a RAW (always) or a
     /// C2PA file rotated without touching the original — the file tag is unchanged, so the grid
     /// (and the full-screen instant preview, which reuses this cached thumbnail) would show the
-    /// wrong orientation. `orientedToTarget` rotates the bitmap to the sidecar orientation when it
+    /// wrong orientation. `orientedToSidecar` rotates the bitmap to the sidecar orientation when it
     /// differs. Reading the sidecar at generation time keeps this correct regardless of when the
     /// in-memory orientation is populated, and is a no-op for files with no sidecar (normal JPEG).
     func loadThumbnail(for url: URL) async -> NSImage? {
@@ -191,14 +247,9 @@ final class ThumbnailService {
         )
     }
 
-    /// Decodes the thumbnail and applies sidecar-orientation correction entirely off the main
-    /// actor, behind the shared `decodeGate` concurrency cap. The decode (`generateQLThumbnail` /
-    /// `loadCGImageSourceThumbnail`) was already off-main, but `loadThumbnail`'s enclosing `Task`
-    /// is MainActor-isolated, so the orientation finalize used to run on the main thread — for a
-    /// RAW folder, where every file carries a sidecar, that meant a sidecar read plus a full
-    /// `CIImage` rotation on the main thread per thumbnail. With approachable concurrency,
-    /// `nonisolated async` inherits the caller's executor; `@concurrent` explicitly moves
-    /// this entire pipeline off MainActor, including ImageIO's lazy RAW initialization.
+    /// Coordinates decoding off MainActor behind the shared concurrency cap. Blocking
+    /// provider probes, ImageIO, sidecar/header reads and orientation materialization each
+    /// retain the task on a utility Dispatch worker; QuickLook remains asynchronous.
     @concurrent
     nonisolated private func generateOrientedThumbnail(for url: URL) async -> NSImage? {
         if let originalThumbnailLoader {
@@ -212,34 +263,13 @@ final class ThumbnailService {
         }
         var oriented: NSImage?
         if let ql = await generateQLThumbnail(for: url) {
-            oriented = Self.orientedToSidecar(ql, fileURL: url)
+            oriented = await ThumbnailImageRenderWorker().orientedToSidecar(ql, fileURL: url)
         } else if !Task.isCancelled,
                   let cg = await loadCGImageSourceThumbnail(for: url) {
-            oriented = Self.orientedToSidecar(cg, fileURL: url)
+            oriented = await ThumbnailImageRenderWorker().orientedToSidecar(cg, fileURL: url)
         }
         await decodeGate.release()
         return Task.isCancelled ? nil : oriented
-    }
-
-    /// Rotate a freshly generated (file-oriented) thumbnail to the orientation recorded
-    /// in the image's XMP sidecar, when that differs from the file's embedded tag (which
-    /// QuickLook already baked in). No-op when there's no sidecar orientation or it matches
-    /// the file — so normal JPEGs (orientation in the file) are untouched, while sidecar-only
-    /// rotations (RAW, C2PA) are corrected. Authoritative at generation time, so it doesn't
-    /// depend on when `ImageFile.exifOrientation` gets populated during folder load.
-    nonisolated private static func orientedToSidecar(_ image: NSImage, fileURL: URL) -> NSImage {
-        guard let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: fileURL) else {
-            return image
-        }
-        let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: fileURL)
-        let correction = ImageFile.orientationCorrection(from: fileOrientation, to: sidecarOrientation)
-        guard correction != .up,
-              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return image }
-        let rotated = CIImage(cgImage: cg).oriented(correction)
-        guard let out = CameraRawApproximation.ciContext.createCGImage(rotated, from: rotated.extent) else {
-            return image
-        }
-        return NSImage(cgImage: out, size: NSSize(width: out.width, height: out.height))
     }
 
     /// Renders an edited thumbnail by applying CameraRaw settings to the original thumbnail.
@@ -571,17 +601,8 @@ final class ThumbnailService {
     /// enter the shared decode gate, thumbnails for unrelated local folders stall.
     /// Kick the download and let a later visible or prefetch request retry
     /// after iCloud has materialized the file.
-    @concurrent
     nonisolated private static func isLocallyAvailableForThumbnail(_ url: URL) async -> Bool {
-        let fileManager = FileManager.default
-        guard fileManager.isUbiquitousItem(at: url) else { return true }
-
-        let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-        guard values?.ubiquitousItemDownloadingStatus == .notDownloaded else { return true }
-
-        try? fileManager.startDownloadingUbiquitousItem(at: url)
-        thumbnailLogger.info("Deferred thumbnail for not-downloaded iCloud item: \(url.lastPathComponent, privacy: .private(mask: .hash))")
-        return false
+        await ThumbnailImageRenderWorker().isLocallyAvailable(url)
     }
 }
 
