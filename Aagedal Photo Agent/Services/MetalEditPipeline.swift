@@ -10,6 +10,27 @@ nonisolated private let metalPipelineLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "MetalEditPipeline"
 )
 
+/// Executes asynchronous offscreen requests on the same serial queue as the synchronous
+/// facade. Actor jobs retain caller priority, task-local values and cancellation while GPU
+/// waits occupy a Dispatch thread. Already-running GPU commands finish before the next
+/// request may reuse the pipeline; cancelled pixels never leave this boundary.
+actor MetalOffscreenRenderWorker {
+    nonisolated let renderQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        renderQueue.asUnownedSerialExecutor()
+    }
+
+    init(renderQueue: DispatchSerialQueue) {
+        self.renderQueue = renderQueue
+    }
+
+    func render(_ operation: @Sendable () -> CIImage?) -> CIImage? {
+        guard !Task.isCancelled else { return nil }
+        let rendered = operation()
+        return Task.isCancelled ? nil : rendered
+    }
+}
+
 /// GPU mask parameters matching the Metal `MaskParams` struct.
 struct MaskParams {
     var center: SIMD2<Float> = .zero
@@ -1230,23 +1251,17 @@ final class MetalEditPipeline: @unchecked Sendable {
             let image: CIImage?
         }
 
-        /// Thread-safe cancellation state for queued async work.
-        private final class CancelFlag: @unchecked Sendable {
-            private let lock = NSLock()
-            private var cancelled = false
-            var isCancelled: Bool { lock.withLock { cancelled } }
-            func cancel() { lock.withLock { cancelled = true } }
-        }
-
-        private let queue: DispatchQueue
+        private let queue: DispatchSerialQueue
+        private let worker: MetalOffscreenRenderWorker
         private let pipeline: MetalEditPipeline?
 
         init() {
-            let ownerQueue = DispatchQueue(
+            let ownerQueue = DispatchSerialQueue(
                 label: "com.aagedal.photo-agent.offscreen-render",
                 qos: .userInitiated
             )
             queue = ownerQueue
+            worker = MetalOffscreenRenderWorker(renderQueue: ownerQueue)
             if let device = MTLCreateSystemDefaultDevice(),
                let commandQueue = device.makeCommandQueue() {
                 pipeline = MetalEditPipeline(
@@ -1290,28 +1305,15 @@ final class MetalEditPipeline: @unchecked Sendable {
         ) async -> CIImage? {
             if Task.isCancelled { return nil }
             let input = CIImageBox(image: source)
-            let flag = CancelFlag()
-            let output: CIImageBox = await withTaskCancellationHandler {
-                await withCheckedContinuation { continuation in
-                    queue.async {
-                        dispatchPrecondition(condition: .onQueue(self.queue))
-                        guard !flag.isCancelled else {
-                            continuation.resume(returning: CIImageBox(image: nil))
-                            return
-                        }
-                        let result = self.pipeline?.renderOffscreenSerial(
-                            source: input.image,
-                            settings: settings,
-                            exifOrientation: exifOrientation,
-                            cropToOutput: cropToOutput
-                        )
-                        continuation.resume(returning: CIImageBox(image: result))
-                    }
-                }
-            } onCancel: {
-                flag.cancel()
+            return await worker.render {
+                dispatchPrecondition(condition: .onQueue(self.queue))
+                return self.pipeline?.renderOffscreenSerial(
+                    source: input.image,
+                    settings: settings,
+                    exifOrientation: exifOrientation,
+                    cropToOutput: cropToOutput
+                )
             }
-            return output.image
         }
     }
 
@@ -3535,7 +3537,8 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Honors cancellation: because the queue is FIFO and unbounded, a cancelled job (e.g. a
     /// prefetch the user navigated past) would otherwise still run its full GPU render once it
     /// reached the head, letting a backlog of stale renders starve the foreground. We instead
-    /// short-circuit such jobs in µs when they dequeue.
+    /// short-circuit such jobs when they dequeue. Cancellation during a GPU wait discards the
+    /// completed pixels after the command buffer has finished and released reusable state.
     nonisolated static func renderOffscreenAsync(
         source: CIImage,
         settings: CameraRawSettings?,

@@ -73,13 +73,15 @@ enum CameraRawApproximation {
     /// Async sibling of `apply`. Suspends on the dedicated render queue instead of blocking the
     /// caller's thread — use this from `Task`s (prefetch, thumbnail generation) so a slow GPU
     /// render can't starve the cooperative thread pool. Produces identical pixels to `apply`.
+    /// Cancellation returns the unchanged input; callers discard their cancelled request.
     nonisolated static func applyAsync(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) async -> CIImage {
-        guard let settings else { return input }
+        guard !Task.isCancelled, let settings else { return input }
         if let metalResult = await MetalEditPipeline.renderOffscreenAsync(
             source: input, settings: settings, exifOrientation: exifOrientation
         ) {
             return metalResult
         }
+        guard !Task.isCancelled else { return input }
         return metalUnavailableFallback(to: input, settings: settings)
     }
 
@@ -225,7 +227,7 @@ enum CameraRawApproximation {
     /// Async sibling of `applyWithCrop` — suspends on the render queue for the tonal pass, then
     /// applies the (cheap, CPU-only) crop/rotation. Use from `Task`s to avoid blocking the pool.
     nonisolated static func applyWithCropAsync(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) async -> CIImage {
-        guard let settings else { return input }
+        guard !Task.isCancelled, let settings else { return input }
         if settings.crop?.isEffectiveCrop == true,
            settings.watermarkLayers?.contains(where: { $0.enabled }) == true,
            let croppedMetalResult = await MetalEditPipeline.renderOffscreenCroppedAsync(
@@ -233,8 +235,10 @@ enum CameraRawApproximation {
            ) {
             return croppedMetalResult
         }
+        guard !Task.isCancelled else { return input }
         let originalExtent = input.extent
         let adjusted = await applyAsync(to: input, settings: settings, exifOrientation: exifOrientation)
+        guard !Task.isCancelled else { return input }
         return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)
     }
 

@@ -216,7 +216,7 @@ struct FullScreenImageCacheTests {
 
     /// Writes a two-image TIFF that ImageIO can decode through the same embedded-preview
     /// API used for RAW files, allowing the async boundary to be tested without a fixture.
-    private func makeTempMultiImageTIFF() throws -> URL {
+    private func makeTempMultiImageTIFF(primaryOrientation: Int = 1) throws -> URL {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         func makeImage(width: Int, height: Int, red: CGFloat) throws -> CGImage {
             guard let context = CGContext(
@@ -237,7 +237,11 @@ struct FullScreenImageCacheTests {
         guard let destination = CGImageDestinationCreateWithURL(
             url as CFURL, UTType.tiff.identifier as CFString, 2, nil
         ) else { throw CocoaError(.fileWriteUnknown) }
-        CGImageDestinationAddImage(destination, try makeImage(width: 64, height: 48, red: 0.2), nil)
+        CGImageDestinationAddImage(
+            destination,
+            try makeImage(width: 64, height: 48, red: 0.2),
+            [kCGImagePropertyOrientation: primaryOrientation] as CFDictionary
+        )
         CGImageDestinationAddImage(destination, try makeImage(width: 32, height: 24, red: 0.8), nil)
         guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
         return url
@@ -321,6 +325,20 @@ struct FullScreenImageCacheTests {
             return await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(from: url)
         }.value
         #expect(result == nil)
+    }
+
+    @Test("Embedded preview worker preserves ImageIO's baked orientation and geometry")
+    func embeddedPreviewOrientationGeometry() async throws {
+        let url = try makeTempMultiImageTIFF(primaryOrientation: 6)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let result = try #require(await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(
+            from: url
+        ))
+
+        #expect(result.orientation == 6)
+        #expect(result.image.width == 48)
+        #expect(result.image.height == 64)
     }
 
     @Test("Async preview and full-resolution workers preserve decoded orientation and size")

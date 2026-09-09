@@ -215,6 +215,241 @@ private nonisolated enum RenderWorkerContext {
     }
 }
 
+@Suite("Metal offscreen task boundary")
+struct MetalOffscreenRenderWorkerTests {
+    @Test("Offscreen work retains caller context and discards cancelled renders", arguments: [false, true])
+    @MainActor
+    func renderContext(cancel: Bool) async {
+        let queue = DispatchSerialQueue(label: "test.metal.offscreen.context")
+        let worker = MetalOffscreenRenderWorker(renderQueue: queue)
+        let marker = UUID()
+        let image = CIImage(color: .gray).cropped(to: CGRect(x: 0, y: 0, width: 16, height: 8))
+
+        let result = await Task(priority: .userInitiated) {
+            await RenderWorkerContext.$marker.withValue(marker) {
+                await worker.render {
+                    RenderWorkerContext.check(queue, marker)
+                    if cancel { withUnsafeCurrentTask { $0?.cancel() } }
+                    return image
+                }
+            }
+        }.value
+
+        #expect((result == nil) == cancel)
+        if !cancel { #expect(result === image) }
+    }
+
+    @Test("Queued and running cancellation share the synchronous offscreen queue")
+    @MainActor
+    func queuedAndRunningCancellation() async {
+        let queue = DispatchSerialQueue(label: "test.metal.offscreen.cancellation")
+        let worker = MetalOffscreenRenderWorker(renderQueue: queue)
+        let entered = AsyncStream<Void>.makeStream()
+        let submitted = AsyncStream<Void>.makeStream()
+        let syncFinished = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let image = CIImage(color: .gray).cropped(to: CGRect(x: 0, y: 0, width: 16, height: 8))
+        let first = Task {
+            await worker.render {
+                entered.continuation.yield(())
+                #expect(release.wait(timeout: .now() + 5) == .success)
+                #expect(Task.isCancelled)
+                return image
+            }
+        }
+        var entries = entered.stream.makeAsyncIterator()
+        _ = await entries.next()
+        let second = Task {
+            // This MainActor task submits its actor hop before the MainActor observer below
+            // can resume, so cancellation happens after the request has been queued.
+            submitted.continuation.yield(())
+            return await worker.render {
+                Issue.record("Cancelled queued request reached the Metal renderer")
+                return image
+            }
+        }
+        var submissions = submitted.stream.makeAsyncIterator()
+        _ = await submissions.next()
+        first.cancel()
+        second.cancel()
+        release.signal()
+        #expect(await first.value == nil)
+        #expect(await second.value == nil)
+
+        // Compatibility callers use sync on the same underlying queue. The actor must
+        // release that owner after cancellation, and a later request must still render.
+        let sync = Task.detached {
+            queue.sync {
+                dispatchPrecondition(condition: .onQueue(queue))
+                syncFinished.continuation.yield(())
+            }
+        }
+        var completions = syncFinished.stream.makeAsyncIterator()
+        _ = await completions.next()
+        await sync.value
+        let resumed = await worker.render { image }
+        #expect(resumed === image)
+    }
+
+    @Test("Pre-cancelled offscreen work does not invoke the renderer")
+    @MainActor
+    func preCancellation() async {
+        let worker = MetalOffscreenRenderWorker(
+            renderQueue: DispatchSerialQueue(label: "test.metal.offscreen.pre-cancelled")
+        )
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await worker.render {
+                Issue.record("Pre-cancelled request reached the Metal renderer")
+                return nil
+            }
+        }.value
+        #expect(result == nil)
+    }
+
+    @Test("Cancelled Camera Raw requests leave input unchanged before fallback or crop", arguments: [false, true])
+    @MainActor
+    func cancelledCameraRawApproximation(crop: Bool) async {
+        let input = CIImage(color: .gray).cropped(to: CGRect(x: 0, y: 0, width: 16, height: 8))
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 2
+        settings.crop = CameraRawCrop(top: 0, left: 0, bottom: 0.5, right: 0.5, hasCrop: true)
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            if crop {
+                return await CameraRawApproximation.applyWithCropAsync(to: input, settings: settings)
+            }
+            return await CameraRawApproximation.applyAsync(to: input, settings: settings)
+        }.value
+        #expect(result === input)
+    }
+}
+
+@Suite("Embedded RAW decode task and QoS boundary")
+struct EmbeddedRAWPreviewDecodeWorkerTests {
+    @Test("Embedded extraction keeps caller context at default QoS and rejects cancelled pixels",
+          arguments: [false, true])
+    @MainActor
+    func decodeContext(cancel: Bool) async throws {
+        let executor = FullScreenImageDecodeExecutor(profile: .embeddedRAWPreview)
+        let marker = UUID()
+        let url = URL(fileURLWithPath: "/virtual/preview.arw")
+        let image = try makeImage()
+        let worker = EmbeddedRAWPreviewDecodeWorker(decoder: { actualURL in
+            #expect(executor.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(qos_class_self() == QOS_CLASS_DEFAULT)
+            #expect(RenderWorkerContext.marker == marker)
+            #expect(Task.currentPriority >= .userInitiated)
+            #expect(actualURL == url)
+            if cancel { withUnsafeCurrentTask { $0?.cancel() } }
+            return (image, 6)
+        }, executor: executor)
+
+        let result = await Task(priority: .userInitiated) {
+            await RenderWorkerContext.$marker.withValue(marker) {
+                await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(from: url, worker: worker)
+            }
+        }.value
+        #expect(result?.orientation == (cancel ? nil : 6))
+        if !cancel { #expect(result?.image === image) }
+    }
+
+    @Test("Pre-cancelled embedded extraction never opens the source")
+    @MainActor
+    func preCancellation() async {
+        let worker = EmbeddedRAWPreviewDecodeWorker(decoder: { _ in
+            Issue.record("Cancelled embedded request reached ImageIO")
+            return nil
+        })
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(
+                from: URL(fileURLWithPath: "/virtual/cancelled.arw"), worker: worker
+            )
+        }.value
+        #expect(result == nil)
+    }
+
+    @Test("Independent embedded decodes progress while another source is blocked")
+    @MainActor
+    func independentDecodeConcurrency() async throws {
+        let image = try makeImage()
+        let entered = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let firstWorker = EmbeddedRAWPreviewDecodeWorker(decoder: { _ in
+            entered.continuation.yield(())
+            #expect(release.wait(timeout: .now() + 5) == .success)
+            return (image, 6)
+        })
+        let secondWorker = EmbeddedRAWPreviewDecodeWorker(decoder: { _ in
+            release.signal()
+            return (image, 8)
+        })
+        let url = URL(fileURLWithPath: "/virtual/concurrent.arw")
+        let first = Task {
+            await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(from: url, worker: firstWorker)
+        }
+        var entries = entered.stream.makeAsyncIterator()
+        _ = await entries.next()
+        let second = await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(
+            from: url, worker: secondWorker
+        )
+        #expect(second?.orientation == 8)
+        #expect(await first.value?.orientation == 6)
+    }
+
+    @Test("Embedded cancellation skips queued providers and discards a running decode")
+    @MainActor
+    func queuedAndRunningCancellation() async throws {
+        let image = try makeImage()
+        let entered = AsyncStream<Void>.makeStream()
+        let queued = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let executor = FullScreenImageDecodeExecutor(
+            profile: .embeddedRAWPreview, didEnqueue: { queued.continuation.yield(()) }
+        )
+        let firstURL = URL(fileURLWithPath: "/virtual/first.arw")
+        let worker = EmbeddedRAWPreviewDecodeWorker(decoder: { url in
+            guard url == firstURL else {
+                Issue.record("Cancelled queued embedded decode opened its source")
+                return nil
+            }
+            entered.continuation.yield(())
+            #expect(release.wait(timeout: .now() + 5) == .success)
+            #expect(Task.isCancelled)
+            return (image, 6)
+        }, executor: executor)
+        let first = Task {
+            await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(from: firstURL, worker: worker)
+        }
+        var entries = entered.stream.makeAsyncIterator()
+        _ = await entries.next()
+        var submissions = queued.stream.makeAsyncIterator()
+        _ = await submissions.next()
+        let second = Task {
+            await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(
+                from: URL(fileURLWithPath: "/virtual/cancelled.arw"), worker: worker
+            )
+        }
+        _ = await submissions.next()
+        first.cancel()
+        second.cancel()
+        release.signal()
+        #expect(await second.value == nil)
+        #expect(await first.value == nil)
+    }
+
+    private func makeImage() throws -> CGImage {
+        let context = try #require(CGContext(
+            data: nil, width: 16, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        return try #require(context.makeImage())
+    }
+}
+
 @Suite("Full-screen decode task and QoS boundary")
 struct FullScreenImageDecodeWorkerTests {
     nonisolated enum DecodeKind: CaseIterable, Sendable {

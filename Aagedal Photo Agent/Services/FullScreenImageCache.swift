@@ -776,16 +776,6 @@ final class FullScreenImageCache: @unchecked Sendable {
         return (ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale)), orientation)
     }
 
-    /// Embedded RAW preview extraction must run at the same QoS as ImageIO's own
-    /// default-QoS workers. An enforced work-item QoS prevents a foreground caller's
-    /// priority from being inferred by GCD, while the continuation lets that caller
-    /// suspend instead of synchronously waiting on ImageIO.
-    nonisolated private static let embeddedPreviewDecodeQueue = DispatchQueue(
-        label: "com.aagedal.photo-agent.embedded-preview-decode",
-        qos: .default,
-        attributes: .concurrent
-    )
-
     /// Async boundary for Core Image preview initialization. Prefer this from foreground Tasks;
     /// the synchronous variant remains available to already-utility background work.
     nonisolated static func loadHDRPreviewOffPool(
@@ -1073,21 +1063,15 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     nonisolated static func extractEmbeddedPreviewOffPoolWithOrientation(
-        from url: URL
+        from url: URL,
+        worker: EmbeddedRAWPreviewDecodeWorker = EmbeddedRAWPreviewDecodeWorker()
     ) async -> (image: CGImage, orientation: Int)? {
-        guard !Task.isCancelled else { return nil }
-        let result: (image: CGImage, orientation: Int)? = await withCheckedContinuation { continuation in
-            let workItem = DispatchWorkItem(qos: .default, flags: .enforceQoS) {
-                continuation.resume(returning: extractEmbeddedPreviewWithOrientation(from: url))
-            }
-            embeddedPreviewDecodeQueue.async(execute: workItem)
-        }
-        return Task.isCancelled ? nil : result
+        await worker.load(from: url)
     }
 
     /// Synchronous ImageIO implementation, reachable only through the default-QoS async
     /// boundary above so foreground Tasks never perform this blocking call directly.
-    nonisolated private static func extractEmbeddedPreviewWithOrientation(
+    nonisolated fileprivate static func extractEmbeddedPreviewWithOrientation(
         from url: URL
     ) -> (image: CGImage, orientation: Int)? {
         let filename = url.lastPathComponent
@@ -1163,29 +1147,53 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 }
 
-/// Runs the original Swift task on a utility-QoS Dispatch thread. Core Image can wait on its
-/// own utility workers while opening a file, so the work item must enforce utility QoS even
-/// when the retained task has user-initiated priority. Each request retains its own serial
+/// Runs the original Swift task on a Dispatch thread matching the decoder's internal workers:
+/// utility for general Core Image/raster loads, default for embedded RAW extraction. Enforced
+/// work-item QoS prevents GCD from inferring a foreground caller's higher priority while
+/// preserving the Swift task's priority, local values and cancellation. Each request has a serial
 /// executor targeting the shared concurrent decode queue, preserving both actor isolation
 /// and independent foreground/prefetch decode concurrency.
 nonisolated final class FullScreenImageDecodeExecutor: SerialExecutor {
+    enum Profile: Sendable {
+        case generalImage
+        case embeddedRAWPreview
+
+        var qos: DispatchQoS {
+            switch self {
+            case .generalImage: .utility
+            case .embeddedRAWPreview: .default
+            }
+        }
+    }
+
     private static let decodeQueue = DispatchQueue(
         label: "com.aagedal.photo-agent.preview-decode", qos: .utility, attributes: .concurrent
     )
+    private static let embeddedPreviewQueue = DispatchQueue(
+        label: "com.aagedal.photo-agent.embedded-preview-decode", qos: .default,
+        attributes: .concurrent
+    )
     private let queue: DispatchSerialQueue
+    private let qos: DispatchQoS
     private let didEnqueue: @Sendable () -> Void
 
     init(
         label: String = "com.aagedal.photo-agent.preview-decode.request",
+        profile: Profile = .generalImage,
         didEnqueue: @escaping @Sendable () -> Void = {}
     ) {
-        queue = DispatchSerialQueue(label: label, qos: .utility, target: Self.decodeQueue)
+        qos = profile.qos
+        let target = switch profile {
+        case .generalImage: Self.decodeQueue
+        case .embeddedRAWPreview: Self.embeddedPreviewQueue
+        }
+        queue = DispatchSerialQueue(label: label, qos: profile.qos, target: target)
         self.didEnqueue = didEnqueue
     }
 
     func enqueue(_ job: consuming ExecutorJob) {
         let unownedJob = UnownedJob(job)
-        queue.async(execute: DispatchWorkItem(qos: .utility, flags: .enforceQoS) {
+        queue.async(execute: DispatchWorkItem(qos: qos, flags: .enforceQoS) {
             unownedJob.runSynchronously(on: self.asUnownedSerialExecutor())
         })
         didEnqueue()
@@ -1197,6 +1205,39 @@ nonisolated final class FullScreenImageDecodeExecutor: SerialExecutor {
 
     func isIsolatingCurrentContext() -> Bool? {
         queue.isIsolatingCurrentContext()
+    }
+}
+
+/// Embedded preview requests retain caller context while enforcing ImageIO's default thread
+/// QoS. Every request gets an independent serial executor; a cancelled request waiting on an
+/// occupied executor never touches the provider, and completed pixels are discarded if the
+/// caller cancels during a non-preemptible ImageIO call.
+actor EmbeddedRAWPreviewDecodeWorker {
+    typealias Decoder = @Sendable (URL) -> (image: CGImage, orientation: Int)?
+
+    nonisolated let executor: FullScreenImageDecodeExecutor
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        executor.asUnownedSerialExecutor()
+    }
+    private let decoder: Decoder
+
+    init(
+        decoder: @escaping Decoder = {
+            FullScreenImageCache.extractEmbeddedPreviewWithOrientation(from: $0)
+        },
+        executor: FullScreenImageDecodeExecutor = FullScreenImageDecodeExecutor(
+            label: "com.aagedal.photo-agent.embedded-preview-decode.request",
+            profile: .embeddedRAWPreview
+        )
+    ) {
+        self.decoder = decoder
+        self.executor = executor
+    }
+
+    func load(from url: URL) -> (image: CGImage, orientation: Int)? {
+        guard !Task.isCancelled else { return nil }
+        let result = decoder(url)
+        return Task.isCancelled ? nil : result
     }
 }
 
