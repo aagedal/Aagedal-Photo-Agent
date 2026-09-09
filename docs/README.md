@@ -26,14 +26,14 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Shared storage transactions, recovery and rendering](plan-status-shared-transactions-recovery-render-continuation-2026-09-09.md).
+**Latest improvement continuation:** [Coordinator cycle 1: voice memos, thumbnail I/O and native testing](release/cycle-01-voice-memo-thumbnail-2026-09-09.md).
 
 ## Portfolio
 
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; automated orientation/view/report transform coverage expanded; release hardening remains | Close manual fixture/color, accessibility, display/HDR, performance, security, recovery, and packaging gates |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, unified metadata-field customization, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline and every localized Title alternative round-trip independently; ILCE-1 v4.00 one/two-source RAW/JPEG voice-memo ingest and transactional rename foundations are implemented with fail-closed evidence | Persist voice-memo identity beyond ingest and complete playback/transcription/delivery plus broader Sony samples, external interoperability, real-server, device, accessibility, and first-use Deadline drills |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, unified metadata-field customization, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline and every localized Title alternative round-trip independently; ILCE-1 v4.00 one/two-source RAW/JPEG voice-memo ingest, persisted relationships, transactional rename, independent Duplicate and explicit Caption playback are implemented with fail-closed evidence | Complete remaining archive/move/reject/reassociation lifecycle, transcription and delivery plus broader Sony samples, external interoperability, real-server, device, accessibility, and first-use Deadline drills |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, immutable report evidence, and the supported-arm64 automated boundary matrix are implemented; interactive release validation remains | Validate live and reported rays across actual map styles, camera interactions, rapid time changes, offline behavior, and accessibility paths |
 
 ## Default delivery order
@@ -43,8 +43,8 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 2. Close journalistic workflow release hardening. Caption Workspace, Batch Rename, Deadline Mode,
    and verified delivery now share the field model, preservation policy, validation engine, and
    recovery boundaries; remaining work is the final support-ledger model decisions, Sony Alpha
-   voice-memo persistence/playback/transcription/delivery integration beyond the implemented
-   ILCE-1 v4.00 ingest and transactional-rename foundation, plus broader real-sample compatibility,
+   voice-memo lifecycle/transcription/delivery integration beyond the implemented
+   ILCE-1 v4.00 ingest, persisted relationships, rename, Duplicate and playback foundation, plus broader real-sample compatibility,
    external interoperability, real-environment, and manual accessibility evidence.
 3. Finish solar-overlay release validation after the implemented calculator, persistence, controls,
    live-map rendering, and report-evidence phases. It remains a bounded map/report feature and does

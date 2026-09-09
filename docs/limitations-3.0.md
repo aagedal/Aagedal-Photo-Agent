@@ -64,8 +64,12 @@ These are material product and evidence boundaries, not a list of unfinished int
 - FTP/FTPS/SFTP protocol success and remote existence/size are non-cryptographic acknowledgements. SFTP
   supports password/netrc authentication, not SSH private keys, and a narrow local path
   time-of-check/time-of-use interval remains before `curl` opens a verified staged file.
-- Sony voice-memo discovery and companion-safe ingest/rename foundations do not yet provide general
-  playback, transcription, or delivery, and validation does not cover every Sony camera/firmware layout.
+- Persisted voice memos support explicit Caption playback and companion-preserving Duplicate,
+  alongside ingest and transactional rename. General move/reject/archive/delete/reassociation,
+  transcription, reviewed transcript variables and delivery integration remain incomplete.
+  Playback detects ordinary file-revision changes while loading and before starting; persisted
+  schema-1 relationships are filename based and are not cryptographic source provenance.
+  Validation does not cover every Sony camera/firmware layout.
 
 ## Optional model availability
 

@@ -6,6 +6,13 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Autonomous coordinator cycle 1 (2026-09-09):** Thumbnail iCloud availability probes and
+sidecar/header/orientation materialization now retain utility Dispatch context and cancellation.
+Caption adds explicit persisted-memo playback; Duplicate carries verified photo/WAV relationships.
+Native testing found and drove fixes for inaccessible playback-time values and stale thumbnail
+selection values. Broad audit gates remain open; see the
+[cycle validation and remaining work](release/cycle-01-voice-memo-thumbnail-2026-09-09.md).
+
 **Shared storage transactions, recovery and rendering continuation (2026-09-09):**
 Atomic JSON and complete template operations share canonical-path admission across service
 instances. Keyword recovery reads use an independent worker; cold Known People removal/export

@@ -646,7 +646,7 @@ gated by additional samples and follow-up implementation.
   of the photo metadata pass.
 - [ ] Persist the relationship through browser refresh, copy/archive, rename, move/reject,
   rollback, and source reassociation without presenting the WAV as a photo.
-- [ ] Expose the associated memo in Caption Workspace with playback, duration/source identity, and
+- [x] Expose the associated memo in Caption Workspace with playback, duration/source identity, and
   clear missing/ambiguous/unsupported states. Never transcribe or mutate metadata implicitly.
 - [ ] Add cancellable local transcription with explicit language/model state, offline behavior, and
   review/edit-before-apply. Keep the audio source and generated transcript provenance distinguishable.
@@ -692,6 +692,17 @@ groups are not renamed until group-aware planning exists. Batch record creation 
 relationship before writing and rolls back earlier record bytes on an I/O failure. This is a
 bounded slice: the lifecycle checkbox remains open because generic copy/archive, move/reject,
 delete, and source-reassociation paths do not yet carry the record.
+
+**Coordinator continuation — 2026-09-09:** Browser Duplicate now creates independent photo/WAV/
+relationship bundles, verifies source/staged bytes and record stability, and preserves source
+groups and existing destinations on collision or rollback. Caption now offers explicit WAV
+playback, duration/filename, Refresh and missing/unavailable states; pending playback is cancelled
+on navigation and no transcription or metadata write occurs. Synthetic native UI checks covered
+play/pause, missing/unassociated photos and playback from a duplicated relationship. The
+[cycle validation](release/cycle-01-voice-memo-thumbnail-2026-09-09.md) records regression and
+native evidence plus accessibility fixes. The broad lifecycle and end-to-end gates stay open:
+move/reject/archive/delete/reassociation, reviewed local transcription/variables/delivery and
+real Sony card-to-caption validation remain required.
 
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text

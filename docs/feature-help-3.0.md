@@ -1,7 +1,7 @@
 # Aagedal Photo Agent 3.0 feature guide
 
 **Status:** release-candidate draft  
-**Last reviewed:** 2026-08-25
+**Last reviewed:** 2026-09-09
 
 This guide covers the new 3.0 investigation, comparison, versioning, caption, rename, and deadline
 workflows. It supplements the control-level hover help and accessibility hints in the app. Commands and
@@ -23,6 +23,24 @@ button for leaving the review table.
 - **Image Analysis** opens the selected image. Analysis work is bound to that source revision and never
   silently writes analysis locations, notes, annotations, or findings into IPTC/XMP.
 - **Compare Two Images** is enabled when exactly two images are selected.
+
+## Listen to an associated voice memo
+
+Caption Workspace shows a **Voice memo** panel beneath the preview. When an imported photo
+has a saved WAV relationship, the panel displays its filename and duration. Press **Play voice
+memo** to listen and **Pause voice memo** to pause. Selecting another photo or leaving Caption
+stops playback. Playback does not transcribe audio or alter metadata.
+
+If the memo is missing, restore the WAV beside its photo and press **Refresh voice memo**.
+Invalid records, unsupported relationship schemas and unplayable audio remain unavailable.
+Refresh also reloads a changed photo or memo before another playback attempt. The app does
+not infer an association merely because a WAV has a similar filename.
+
+**Duplicate** preserves a proven memo and its relationship as independent copies. When a RAW
+and JPEG share a source memo, duplicating either creates its own WAV without changing the
+source pair. Missing/invalid companions block duplication; existing output files are preserved.
+Other move/reject/archive/delete paths, transcription and delivery integration remain under
+development; consult the limitations before using those operations on memo-bearing photos.
 
 ## Recover a deleted template
 

@@ -1,77 +1,86 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — automation bootstrap; no new app validation performed.
+**State:** IMPLEMENTING — cycle 1 closes Caption playback and advances companion lifecycle and thumbnail I/O.
 **Updated:** 2026-09-09
-**Baseline:** `25da6c46ab5cc3b39c6021a25ab3df5e86d66322` on `main`; clean at inspection.
+**Latest implementation commit:** `dd4fd73504df7fcb02aa40843ed1f4b838d06631` (2,410 tests / 278 suites passed).
+**Cycle baseline:** `8f6f11f45d873861d22266206049f87219612ca1` on `main`.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
-**Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task.
+**Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 15 minutes in this task (verified saved schedule).
 
-## Evidence baseline
+## Current evidence
 
-The latest existing [validation](../plan-status-shared-transactions-recovery-render-continuation-2026-09-09.md)
-reports 2,383 passing tests in 277 suites and an unsigned 3.0.0 (738) package from
-`3bb954226e3b75c2f2e812e93dc02d0e898800ed`. These are historical recorded results,
-not checks performed by the coordinator during setup. The audit records 66/75 and
-investigation delivery 119/142 completed items; counts alone are not readiness evidence.
+The [cycle 1 record](cycle-01-voice-memo-thumbnail-2026-09-09.md) records implementation,
+independent review, automated results, native interactions, source identity and limitations.
+The [gate inventory](gate-inventory.md) preserves all 61 unchecked baseline criteria with
+classifications and concrete next actions. Caption playback's implementation criterion is
+now checked in the journalistic plan; broader real-sample and accessibility gates remain open.
+The audit remains 66/75 and investigation delivery 119/142; counts alone do not prove readiness.
+
+Cycle 1 implements explicit persisted WAV playback, independent Duplicate bundles with source
+verification and rollback, retained thumbnail provider/orientation I/O, and native-discovered
+accessibility fixes. No final release candidate was built, signed or offered for acceptance.
+An unrelated Xcode project reference-ordering change was preserved and excluded from the
+coordinator's commits. Inspect it on the next run; do not silently stage or revert it.
 
 ## Ordered next actions
 
-1. Reconcile each remaining criterion in the four authoritative plans with current
-   source and evidence, distinguishing unconditional, explicitly conditional,
-   final-user-acceptance, and post-acceptance distribution work. Add concrete owned
-   subtasks and links here; do not rely solely on historical continuation summaries.
-2. Close remaining storage/executor ownership items identified in the latest continuation
-   and complete Sony voice-memo persistence, playback, transcription, variables and
-   delivery integration required by the journalistic plan. Choose bounded independent
-   work for sub-agents, with explicit integration/review ownership.
-3. Build and launch the app on disposable fixtures; start actual UI testing early.
-   Recheck Bridge/Photo Mechanic, computer-use access, and other locally available tools.
-   Resolve interaction defects alongside implementation instead of postponing all UI QA.
-4. Execute recovery, permissions, accessibility, solar/report, performance and transport
-   validation required by the plans. Record actual hardware measurements and proposed
-   budgets; do not invent approved target tiers or external evidence.
-5. Complete an independent readiness audit, generate a current candidate, finalize the
-   [HTML checklist](manual-testing-checklist.html), and apply every gate in
-   [the coordinator protocol](coordinator.md).
+1. Reproduce the intermittent toolbar AX labels recorded in cycle 1 (several unrelated
+   toolbar buttons announced as Write All Pending after launch/open, later correct). Diagnose
+   source/VoiceOver behavior and fix a confirmed defect before closing accessibility gates.
+2. Complete the remaining Sony companion lifecycle through archive, move/reject/delete,
+   rollback and source reassociation. Inspect existing transaction plans and shared-WAV
+   ownership before mutations. Duplicate, persisted ingest and batch rename are implemented.
+3. Implement cancellable local transcription with explicit language/model/offline state,
+   review-before-apply and distinct transcript provenance; integrate reviewed transcript
+   variables and a visible Deadline WAV delivery policy/receipt. Keep these separate from
+   the completed playback criterion and preserve existing metadata.
+4. Finish the remaining storage/executor ownership audit and run affected recovery drills.
+   Select bounded sub-agent work using the inventory; one coordinator owns GUI/builds/commits.
+5. Continue actual UI testing early across required workspaces and failure cases. Native
+   access now works. Broaden to real Sony samples, Bridge/Photo Mechanic interoperability,
+   disposable transports, accessibility/IME/display, solar/report and measured performance.
+6. Establish missing hardware/model-lifecycle/privacy/remote-CI evidence. Qualified legal
+   review and protected remote branch enforcement are external prerequisites; local tests
+   cannot satisfy them. Complete independent work before an actionable blocker handoff.
+7. Once all unconditional gates pass, obtain independent readiness review, build and launch
+   the exact candidate, finalize the [HTML checklist](manual-testing-checklist.html), and
+   follow [the coordinator protocol](coordinator.md) before notifying for acceptance.
 
 ## Open gate groups
 
 | Gate | Current disposition | Required evidence |
 | --- | --- | --- |
-| Required feature implementation | Open | Four-plan reconciliation, implementation/test links; voice memo integration remains open |
-| Storage, cancellation and data integrity | Open | Remaining path audit, focused regressions and actual recovery drills |
-| Automated regression and candidate package | Historical pass only | Current integrated source results and identified candidate |
-| Computer-use workflow testing | Unverified | Dated observed steps/results for required workspaces and failure cases |
-| Accessibility, layout and display behavior | Open | Keyboard/VoiceOver, IME, contrast/motion, window and display evidence |
+| Required feature implementation | Open | Remaining companion lifecycle, transcription, variables and delivery; inventory dispositions |
+| Storage, cancellation and data integrity | Open | Remaining path audit and actual recovery drills; cycle 1 focused regressions passed |
+| Automated regression and candidate package | Integrated suite passing; no current candidate | Cycle record identifies checks; candidate packaging and launch remain |
+| Computer-use workflow testing | Started with native Caption and Duplicate | Remaining required workspaces, failure/recovery and persistence cases |
+| Accessibility, layout and display behavior | Open; targeted defects fixed | Full keyboard/VoiceOver, IME, contrast/motion, window and display evidence |
 | Performance and supported hardware | Open | Target tiers/budgets and measured workloads; unavailable hardware stays blocked |
 | External interoperability and transport | Open | Actual Bridge/Photo Mechanic and disposable FTP/FTPS/SFTP evidence |
-| Model distribution and offline lifecycle | Open | Required signed artifact/server/lifecycle evidence per authoritative plans |
+| Model distribution and offline lifecycle | Open | Required signed artifact/server/install/offline/update/rollback evidence |
 | Privacy/legal and remote CI enforcement | External dependency | Required qualified review and authorized remote configuration evidence |
 | Final user acceptance | Not started | Candidate-specific HTML results after coordinator readiness decision |
 | Signing/notarization/public distribution | After applicable release gates | Separate authorization and release-plan evidence |
 
 ## Blocker tracking
 
-During setup, the computer-use native app inventory reported that the Mac is locked
-and automatic unlock was unavailable. Native app QA needs the user to unlock the Mac;
-implementation and command-line validation can continue independently. Recheck on the
-next GUI attempt and do not mark any native UI case passed from this access probe.
-The older
-[prerequisite audit](../manual-release-prerequisite-audit.md) is a lead to investigate,
-not proof that tools, credentials or hardware are still unavailable.
+The Mac is unlocked and native CUA tests succeeded in cycle 1. The older locked-Mac setup
+observation no longer blocks this session. Recheck access when the next GUI work begins.
+Bridge is locally available; presence alone does not establish interoperability. Historical
+prerequisite reports remain leads to investigate, not permanent environment facts.
 
-Consecutive runs with no possible progress: 0.
+Browser visual QA of the checklist remains pending: browser URL policy rejected its local
+file URL during setup. Do not bypass this policy with another route. Static checks passed
+for 29 unique cases, complete instructions, source links, unique IDs and JavaScript syntax;
+these are not visual/interactive evidence. The draft remains unassigned to a candidate and
+all human test results remain unrun.
+
+Consecutive runs with no possible progress: 0. Substantive implementation and native testing
+progress occurred this cycle. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
 
-Automation setup adds a durable protocol, this state file and a draft offline HTML
-acceptance checklist. No application source was changed and no feature was marked done.
-Repository validation passed during setup (`scripts/ci/validate_repository.sh`, log:
-`/private/tmp/aagedal-coordinator-bootstrap-validation.log`). Independent protocol review
-added an aggregate no-progress stop condition and early external-dependency classification.
-Native computer-use access is currently blocked by the locked Mac. Browser visual QA of
-the checklist is also pending: the browser URL policy rejected its local file URL;
-no alternate route was attempted. Static HTML/JavaScript checks do not establish visual QA.
-Static checklist validation passed: 29 unique cases, complete setup/actions/expected
-outcome/cleanup fields, resolving source links, unique HTML IDs and `node --check`.
-Next scheduled run begins implementation/verification under the protocol.
+See the cycle 1 record for final validation and local commit identity. Disposable synthetic
+fixtures remain at `build/qa-voice-memo-cycle1/`, including native duplicates, for repeatable
+checks; original fixture hashes were preserved. The QA app was quit after native checks.
+No private photo metadata, remote configuration, production delivery or publication was changed.

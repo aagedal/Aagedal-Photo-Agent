@@ -64,6 +64,10 @@ upload the current image from Photo Agent.
   optional second media source. RAW Only, JPEG Only, and Both apply across both sources; matching
   image variants retain verified WAV companions. WAVs may be recorded arbitrarily later but are
   rejected if they predate capture or lack a matching image anchor on their own source.
+- Caption Workspace can explicitly play and pause a persisted WAV voice memo, displaying its
+  filename, duration and missing/unavailable state. Navigation stops playback; no transcription
+  or metadata mutation occurs implicitly. Duplicate preserves a verified image/WAV relationship
+  in independent copies with collision protection and rollback on failure.
 - Import now creates the destination reveal folder before handing it to the browser, preventing a
   transient “Couldn’t Open Folder” error at the start of a memory-card import.
 - Replaced the thumbnail toolbar's bound sort picker with an explicitly titled sort menu so the
