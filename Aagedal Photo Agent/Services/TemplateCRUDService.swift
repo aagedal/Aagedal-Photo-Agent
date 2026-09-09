@@ -55,11 +55,12 @@ nonisolated struct TemplateCRUDAccess<Value: Identifiable & Sendable>: Sendable 
     let shortcutSlot: @Sendable (Value) -> Int?
     let clearingShortcutSlot: @Sendable (Value) -> Value
     let sorted: @Sendable ([Value]) -> [Value]
+    var prepareTransaction: (@Sendable () -> TemplateStorageScope<Self>)? = nil
 }
 
 nonisolated extension TemplateCRUDAccess where Value == MetadataTemplate {
-    static func storage(_ storage: TemplateStorageService) -> Self {
-        Self(
+    static func storage(_ storage: TemplateStorageService, prepareTransaction: Bool = true) -> Self {
+        var access = Self(
             loadAll: { try storage.loadAll() },
             save: { try storage.save($0) },
             delete: { try storage.delete($0) },
@@ -74,12 +75,22 @@ nonisolated extension TemplateCRUDAccess where Value == MetadataTemplate {
                 $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             }
         )
+        if prepareTransaction {
+            access.prepareTransaction = {
+                let scope = storage.resolvedForTransaction()
+                return TemplateStorageScope(
+                    access: .storage(scope.access, prepareTransaction: false),
+                    directoryURL: scope.directoryURL, release: scope.release
+                )
+            }
+        }
+        return access
     }
 }
 
 nonisolated extension TemplateCRUDAccess where Value == DevelopTemplate {
-    static func storage(_ storage: DevelopTemplateStorageService) -> Self {
-        Self(
+    static func storage(_ storage: DevelopTemplateStorageService, prepareTransaction: Bool = true) -> Self {
+        var access = Self(
             loadAll: { try storage.loadAll() },
             save: { try storage.save($0) },
             delete: { try storage.delete($0) },
@@ -100,6 +111,16 @@ nonisolated extension TemplateCRUDAccess where Value == DevelopTemplate {
                 $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             }
         )
+        if prepareTransaction {
+            access.prepareTransaction = {
+                let scope = storage.resolvedForTransaction()
+                return TemplateStorageScope(
+                    access: .storage(scope.access, prepareTransaction: false),
+                    directoryURL: scope.directoryURL, release: scope.release
+                )
+            }
+        }
+        return access
     }
 }
 
@@ -121,7 +142,49 @@ actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID
         self.filesystemQueue = filesystemQueue
     }
 
-    func load(requestID: UUID) throws -> TemplateInventoryOperationResult<Value> {
+    private func withStorageTransaction<Result: Sendable>(
+        _ operation: @Sendable (TemplateCRUDService<Value>) async throws -> Result
+    ) async rethrows -> Result {
+        guard let prepare = access.prepareTransaction else {
+            return try await operation(self)
+        }
+        let scope = prepare()
+        defer { scope.release() }
+        let worker = TemplateCRUDService(access: scope.access, filesystemQueue: filesystemQueue)
+        return try await StorageTransactionAdmission.shared.withAccess(to: [scope.directoryURL]) {
+            try await operation(worker)
+        }
+    }
+
+    func load(requestID: UUID) async throws -> TemplateInventoryOperationResult<Value> {
+        guard !Task.isCancelled else { return .cancelledBeforeRead(requestID: requestID) }
+        return try await withStorageTransaction { try await $0.loadInTransaction(requestID: requestID) }
+    }
+
+    func save(_ template: Value, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
+        guard !Task.isCancelled else { return .cancelledBeforeCommit(requestID: requestID) }
+        return try await withStorageTransaction {
+            try await $0.saveInTransaction(template, requestID: requestID)
+        }
+    }
+
+    func delete(_ template: Value, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
+        guard !Task.isCancelled else { return .cancelledBeforeCommit(requestID: requestID) }
+        return try await withStorageTransaction {
+            try await $0.deleteInTransaction(template, requestID: requestID)
+        }
+    }
+
+    func exportAll(to destinationURL: URL, requestID: UUID) async throws -> TemplateExportOperationResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(requestID: requestID, destinationURL: destinationURL)
+        }
+        return try await withStorageTransaction {
+            try await $0.exportAllInTransaction(to: destinationURL, requestID: requestID)
+        }
+    }
+
+    private func loadInTransaction(requestID: UUID) throws -> TemplateInventoryOperationResult<Value> {
         guard !Task.isCancelled else {
             return .cancelledBeforeRead(requestID: requestID)
         }
@@ -132,7 +195,7 @@ actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID
         return .loaded(TemplateInventorySnapshot(requestID: requestID, templates: templates))
     }
 
-    func save(
+    private func saveInTransaction(
         _ template: Value,
         requestID: UUID
     ) throws -> TemplateMutationOperationResult<Value> {
@@ -216,7 +279,7 @@ actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID
         )
     }
 
-    func delete(
+    private func deleteInTransaction(
         _ template: Value,
         requestID: UUID
     ) throws -> TemplateMutationOperationResult<Value> {
@@ -256,7 +319,7 @@ actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID
         )
     }
 
-    func exportAll(
+    private func exportAllInTransaction(
         to destinationURL: URL,
         requestID: UUID
     ) throws -> TemplateExportOperationResult {

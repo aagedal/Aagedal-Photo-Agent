@@ -36,6 +36,16 @@ nonisolated struct TemplateTrashAccess: Sendable {
     }
 }
 
+/// Captures one security-scoped canonical root for the entire admitted operation.
+/// Keeping the release alive prevents a settings change from rerouting an in-flight transaction.
+nonisolated struct TemplateStorageScope<Access: Sendable>: Sendable {
+    let access: Access
+    let directoryURL: URL
+    let release: @Sendable () -> Void
+}
+
+/// Synchronous compatibility helpers; production callers use the CRUD/import actors below.
+/// Their captured-root admission owns complete transactions, including reads and inventory refresh.
 nonisolated struct TemplateStorageService: Sendable {
     private let directoryOverride: URL?
     private let trashAccess: TemplateTrashAccess
@@ -117,11 +127,12 @@ nonisolated struct TemplateStorageService: Sendable {
 
     func previewImport(from source: URL) throws -> TemplateImportPreview {
         let bundle = try loadBundle(from: source)
-        let existingIDs = Set(try loadAll().map(\.id))
+        var existingIDs = Set(try loadAll().map(\.id))
         var newCount = 0
         var overwriteCount = 0
         for t in bundle.templates {
             if existingIDs.contains(t.id) { overwriteCount += 1 } else { newCount += 1 }
+            existingIDs.insert(t.id)
         }
         return TemplateImportPreview(
             source: source,
@@ -133,7 +144,7 @@ nonisolated struct TemplateStorageService: Sendable {
 
     @discardableResult
     func importBundle(_ bundle: TemplateBundle, overwriteByID: Bool = true) throws -> TemplateImportResult {
-        let existingIDs = Set(try loadAll().map(\.id))
+        var existingIDs = Set(try loadAll().map(\.id))
         var added = 0
         var overwritten = 0
         for template in bundle.templates {
@@ -145,9 +156,20 @@ nonisolated struct TemplateStorageService: Sendable {
             } else {
                 try save(template)
                 added += 1
+                existingIDs.insert(template.id)
             }
         }
         return TemplateImportResult(added: added, overwritten: overwritten)
+    }
+
+    func resolvedForTransaction() -> TemplateStorageScope<Self> {
+        let (directory, release) = resolvedDirectory()
+        let canonical = SafePathComponent.resolvingExistingSymlinks(in: directory)
+        return TemplateStorageScope(
+            access: Self(directoryURL: canonical, trashAccess: trashAccess),
+            directoryURL: canonical,
+            release: release
+        )
     }
 
     private func resolvedDirectory() -> (url: URL, release: @Sendable () -> Void) {
@@ -180,8 +202,20 @@ nonisolated enum TemplateImportPreviewOperationResult: Sendable {
 nonisolated struct TemplateImportPreviewAccess: Sendable {
     let readPreview: @Sendable (URL) throws -> TemplateImportPreview
 
-    static func storage(_ storage: TemplateStorageService) -> Self {
-        Self(readPreview: { try storage.previewImport(from: $0) })
+    var prepareTransaction: (@Sendable () -> TemplateStorageScope<Self>)? = nil
+
+    static func storage(_ storage: TemplateStorageService, prepareTransaction: Bool = true) -> Self {
+        var access = Self(readPreview: { try storage.previewImport(from: $0) })
+        if prepareTransaction {
+            access.prepareTransaction = {
+                let scope = storage.resolvedForTransaction()
+                return TemplateStorageScope(
+                    access: .storage(scope.access, prepareTransaction: false),
+                    directoryURL: scope.directoryURL, release: scope.release
+                )
+            }
+        }
+        return access
     }
 }
 
@@ -212,7 +246,22 @@ actor TemplateImportPreviewService {
         self.filesystemQueue = filesystemQueue
     }
 
-    func preparePreview(
+    func preparePreview(from sourceURL: URL, requestID: UUID) async throws -> TemplateImportPreviewOperationResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeRead(requestID: requestID, sourceURL: sourceURL)
+        }
+        guard let prepare = access.prepareTransaction else {
+            return try preparePreviewInTransaction(from: sourceURL, requestID: requestID)
+        }
+        let scope = prepare()
+        defer { scope.release() }
+        let worker = TemplateImportPreviewService(access: scope.access, filesystemQueue: filesystemQueue)
+        return try await StorageTransactionAdmission.shared.withAccess(to: [scope.directoryURL]) {
+            try await worker.preparePreviewInTransaction(from: sourceURL, requestID: requestID)
+        }
+    }
+
+    private func preparePreviewInTransaction(
         from sourceURL: URL,
         requestID: UUID
     ) throws -> TemplateImportPreviewOperationResult {
@@ -278,11 +327,23 @@ nonisolated struct TemplateImportCommitAccess: Sendable {
     let loadAll: @Sendable () throws -> [MetadataTemplate]
     let save: @Sendable (MetadataTemplate) throws -> Void
 
-    static func storage(_ storage: TemplateStorageService) -> Self {
-        Self(
+    var prepareTransaction: (@Sendable () -> TemplateStorageScope<Self>)? = nil
+
+    static func storage(_ storage: TemplateStorageService, prepareTransaction: Bool = true) -> Self {
+        var access = Self(
             loadAll: { try storage.loadAll() },
             save: { try storage.save($0) }
         )
+        if prepareTransaction {
+            access.prepareTransaction = {
+                let scope = storage.resolvedForTransaction()
+                return TemplateStorageScope(
+                    access: .storage(scope.access, prepareTransaction: false),
+                    directoryURL: scope.directoryURL, release: scope.release
+                )
+            }
+        }
+        return access
     }
 }
 
@@ -313,7 +374,22 @@ actor TemplateImportCommitService {
         self.filesystemQueue = filesystemQueue
     }
 
-    func commit(
+    func commit(_ bundle: TemplateBundle, sourceURL: URL, requestID: UUID) async throws -> TemplateImportCommitOperationResult {
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(requestID: requestID, sourceURL: sourceURL)
+        }
+        guard let prepare = access.prepareTransaction else {
+            return try commitInTransaction(bundle, sourceURL: sourceURL, requestID: requestID)
+        }
+        let scope = prepare()
+        defer { scope.release() }
+        let worker = TemplateImportCommitService(access: scope.access, filesystemQueue: filesystemQueue)
+        return try await StorageTransactionAdmission.shared.withAccess(to: [scope.directoryURL]) {
+            try await worker.commitInTransaction(bundle, sourceURL: sourceURL, requestID: requestID)
+        }
+    }
+
+    private func commitInTransaction(
         _ bundle: TemplateBundle,
         sourceURL: URL,
         requestID: UUID
@@ -323,7 +399,7 @@ actor TemplateImportCommitService {
         }
 
         var refreshedTemplates = try access.loadAll()
-        let existingIDs = Set(refreshedTemplates.map(\.id))
+        var existingIDs = Set(refreshedTemplates.map(\.id))
         var addedCount = 0
         var overwrittenCount = 0
         var committedTemplateIDs: [UUID] = []
@@ -355,6 +431,7 @@ actor TemplateImportCommitService {
                 )
             }
             committedTemplateIDs.append(template.id)
+            existingIDs.insert(template.id)
             if let index = refreshedTemplates.firstIndex(where: { $0.id == template.id }) {
                 refreshedTemplates[index] = template
             } else {

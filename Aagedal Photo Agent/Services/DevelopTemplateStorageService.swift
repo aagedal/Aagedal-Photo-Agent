@@ -6,6 +6,8 @@ nonisolated private let developTemplateStorageLog = Logger(
     category: "DevelopTemplateStorageService"
 )
 
+/// Synchronous compatibility helpers. Production CRUD callers hold shared captured-root
+/// admission through TemplateCRUDService for each complete shortcut/mutation transaction.
 nonisolated struct DevelopTemplateStorageService: Sendable {
     private let directoryOverride: URL?
     private let trashAccess: TemplateTrashAccess
@@ -50,7 +52,17 @@ nonisolated struct DevelopTemplateStorageService: Sendable {
         try trashAccess.moveToTrash(at: url)
     }
 
-    private func resolvedDirectory() -> (url: URL, release: () -> Void) {
+    func resolvedForTransaction() -> TemplateStorageScope<Self> {
+        let (directory, release) = resolvedDirectory()
+        let canonical = SafePathComponent.resolvingExistingSymlinks(in: directory)
+        return TemplateStorageScope(
+            access: Self(directoryURL: canonical, trashAccess: trashAccess),
+            directoryURL: canonical,
+            release: release
+        )
+    }
+
+    private func resolvedDirectory() -> (url: URL, release: @Sendable () -> Void) {
         if let directoryOverride {
             return (directoryOverride, {})
         }

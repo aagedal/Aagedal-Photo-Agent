@@ -4,6 +4,101 @@ import Testing
 
 @Suite("Atomic JSON document store")
 struct AtomicJSONDocumentStoreTests {
+    @Test("Separate aliased stores serialize absent primary/backup transactions and retain captured paths",
+          arguments: [false, true])
+    @MainActor
+    func sharedTransactionAdmission(cancelQueuedSave: Bool) async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let actual = fixture.directoryURL.appendingPathComponent("actual")
+        let redirected = fixture.directoryURL.appendingPathComponent("redirected")
+        let alias = fixture.directoryURL.appendingPathComponent("alias")
+        try FileManager.default.createDirectory(at: actual, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: redirected, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: actual)
+        let documentURL = actual.appendingPathComponent("missing/record.json")
+        let canonicalDocument = SafePathComponent.resolvingExistingSymlinks(in: documentURL)
+        let barrier = AtomicJSONAdmissionBarrier()
+        let first = AtomicJSONDocumentStore<TestDocument>(
+            documentURL: documentURL,
+            validateCompatibility: { _ in barrier.pauseOnce() }
+        )
+        let second = AtomicJSONDocumentStore<TestDocument>(
+            documentURL: alias.appendingPathComponent("missing/record.json")
+        )
+        let firstTask = Task { try await first.save(TestDocument(value: "first")) }
+        defer { barrier.release() }
+        try await barrier.waitUntilEntered()
+        let secondTask = Task { try await second.save(TestDocument(value: "second")) }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while await StorageTransactionAdmission.shared.waiterCount(for: canonicalDocument) != 1 {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("The aliased save did not wait for ownership of the absent document")
+                barrier.release()
+                _ = try? await firstTask.value
+                _ = try? await secondTask.value
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        if cancelQueuedSave { secondTask.cancel() }
+        // A distinct document can finish while both jobs for the first document are pending.
+        let independent = AtomicJSONDocumentStore<TestDocument>(documentURL: fixture.documentURL)
+        try await independent.save(TestDocument(value: "independent"))
+        #expect(try fixture.decode(at: fixture.documentURL).value == "independent")
+        // Admission captures the resolved destination, even if its alias is retargeted while queued.
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: redirected)
+        barrier.release()
+        try await firstTask.value
+        try await secondTask.value
+        #expect(try fixture.decode(at: documentURL).value == "second")
+        #expect(try fixture.decode(at: documentURL.appendingPathExtension("backup")).value == "first")
+        #expect(!FileManager.default.fileExists(atPath: redirected.appendingPathComponent("missing").path))
+    }
+
+    @Test("Primary/backup overlap across document types cannot overwrite a newly committed future schema")
+    @MainActor
+    func overlappingBackupAcrossDocumentTypes() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let barrier = AtomicJSONAdmissionBarrier()
+        let future = AtomicJSONDocumentStore<VersionTwoDocument>(
+            documentURL: fixture.backupURL,
+            validateCompatibility: { _ in barrier.pauseOnce() }
+        )
+        let current = AtomicJSONDocumentStore<TestDocument>(documentURL: fixture.documentURL)
+        let futureTask = Task { try await future.save(VersionTwoDocument(value: "future backup")) }
+        defer { barrier.release() }
+        try await barrier.waitUntilEntered()
+        let currentTask = Task { try await current.save(TestDocument(value: "must not install")) }
+        let key = SafePathComponent.resolvingExistingSymlinks(in: fixture.backupURL)
+        let deadline = ContinuousClock.now + .seconds(10)
+        while await StorageTransactionAdmission.shared.waiterCount(for: key) != 1 {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Overlapping primary and backup paths were not serialized")
+                barrier.release()
+                _ = try? await futureTask.value
+                _ = try? await currentTask.value
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        barrier.release()
+        try await futureTask.value
+        await #expect(throws: AtomicJSONDocumentStoreError.newerSchemaRequiresReadOnly(found: 2, supported: 1)) {
+            try await currentTask.value
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.documentURL.path))
+        let saved = try JSONDecoder().decode(VersionTwoDocument.self, from: Data(contentsOf: fixture.backupURL))
+        #expect(saved.value == "future backup")
+        // Failure releases ownership so another read can recover the intact future backup.
+        guard case .newerSchema(2, _, .backup) = try await current.load() else {
+            Issue.record("Expected the preserved future backup after a rejected save")
+            return
+        }
+    }
+
     @Test("Atomic replacement retains task context and completes admitted saves after cancellation",
           arguments: [false, true])
     @MainActor
@@ -352,3 +447,30 @@ private struct StoreFixture {
 }
 
 private enum CompatibilityFailure: Error, Equatable { case futureVersion }
+
+nonisolated private final class AtomicJSONAdmissionBarrier: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entered = false
+    private let semaphore = DispatchSemaphore(value: 0)
+
+    func pauseOnce() {
+        let shouldPause = lock.withLock {
+            if entered { return false }
+            entered = true
+            return true
+        }
+        if shouldPause { #expect(semaphore.wait(timeout: .now() + 15) == .success) }
+    }
+
+    func release() { semaphore.signal() }
+
+    func waitUntilEntered() async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !lock.withLock({ entered }) {
+            guard ContinuousClock.now < deadline else {
+                throw CocoaError(.fileReadUnknown)
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}

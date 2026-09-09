@@ -4,6 +4,149 @@ import Testing
 
 @Suite("Metadata template persistence")
 struct MetadataTemplatePersistenceTests {
+    @Test("Separate template services share a captured canonical root for shortcut transactions",
+          arguments: [false, true])
+    @MainActor
+    func sharedRootShortcutTransactions(cancelQueuedSave: Bool) async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Templates")
+        let other = root.appendingPathComponent("Other")
+        let alias = root.appendingPathComponent("Alias")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: folder)
+        let canonicalPath = SafePathComponent.resolvingExistingSymlinks(in: folder).path
+        let key = URL(fileURLWithPath: canonicalPath, isDirectory: true)
+        let fileHintKey = URL(fileURLWithPath: canonicalPath, isDirectory: false)
+        #expect(key != fileHintKey)
+        let gate = TemplateRootAdmissionGate()
+        let owner = Task {
+            await StorageTransactionAdmission.shared.withAccess(to: [key]) { await gate.hold() }
+        }
+        defer { Task { await gate.open() } }
+        try await gate.waitUntilEntered()
+        let storage = TemplateStorageService(directoryURL: fileHintKey)
+        let firstService = TemplateCRUDService(access: .storage(storage))
+        let secondService = TemplateCRUDService<MetadataTemplate>(
+            access: .storage(TemplateStorageService(directoryURL: alias))
+        )
+        var first = MetadataTemplate(name: "First")
+        first.shortcutSlot = 1
+        var second = MetadataTemplate(name: "Second")
+        second.shortcutSlot = 1
+        let firstTask = Task { try await firstService.save(first, requestID: UUID()) }
+        try await waitForTemplateAdmission(key, count: 1)
+        #expect(await StorageTransactionAdmission.shared.waiterCount(for: fileHintKey) == 1)
+        let secondTask = Task { try await secondService.save(second, requestID: UUID()) }
+        try await waitForTemplateAdmission(key, count: 2)
+        if cancelQueuedSave { secondTask.cancel() }
+        // The captured root must survive a settings/alias change during admission.
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: other)
+        let independent = TemplateCRUDService<MetadataTemplate>(
+            access: .storage(TemplateStorageService(directoryURL: other))
+        )
+        _ = try await independent.save(MetadataTemplate(name: "Independent"), requestID: UUID())
+        await gate.open()
+        await owner.value
+        _ = try await firstTask.value
+        let secondResult = try await secondTask.value
+        let templates = try storage.loadAll()
+        if cancelQueuedSave {
+            guard case .cancelledBeforeCommit = secondResult else {
+                Issue.record("A cancelled queued save must not mutate the captured root")
+                return
+            }
+            #expect(templates.map(\.id) == [first.id])
+            #expect(templates.first?.shortcutSlot == 1)
+        } else {
+            guard case .committed(let commit) = secondResult else {
+                Issue.record("Expected a completed second shortcut transaction")
+                return
+            }
+            #expect(commit.durableTemplateIDs == [first.id, second.id])
+            #expect(templates.first(where: { $0.id == first.id })?.shortcutSlot == nil)
+            #expect(templates.first(where: { $0.id == second.id })?.shortcutSlot == 1)
+        }
+        #expect(try TemplateStorageService(directoryURL: other).loadAll().map(\.name) == ["Independent"])
+    }
+
+    @Test("Import commit and preview share root ownership with CRUD and report the committed inventory")
+    @MainActor
+    func importServicesShareCRUDRoot() async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let key = SafePathComponent.resolvingExistingSymlinks(in: root)
+        let storage = TemplateStorageService(directoryURL: root)
+        let original = MetadataTemplate(name: "Before")
+        var updated = original
+        updated.name = "Imported"
+        let bundle = TemplateBundle(templates: [updated])
+        let source = root.appendingPathComponent("bundle.templatebundle")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(bundle).write(to: source)
+        let gate = TemplateRootAdmissionGate()
+        let owner = Task {
+            await StorageTransactionAdmission.shared.withAccess(to: [key]) { await gate.hold() }
+        }
+        defer { Task { await gate.open() } }
+        try await gate.waitUntilEntered()
+        let crud = TemplateCRUDService<MetadataTemplate>(access: .storage(storage))
+        let importer = TemplateImportCommitService(storage: storage)
+        let previewer = TemplateImportPreviewService(storage: storage)
+        let save = Task { try await crud.save(original, requestID: UUID()) }
+        try await waitForTemplateAdmission(key, count: 1)
+        let imported = Task { try await importer.commit(bundle, sourceURL: source, requestID: UUID()) }
+        try await waitForTemplateAdmission(key, count: 2)
+        let preview = Task { try await previewer.preparePreview(from: source, requestID: UUID()) }
+        try await waitForTemplateAdmission(key, count: 3)
+        await gate.open()
+        await owner.value
+        _ = try await save.value
+        guard case .committed(let commit) = try await imported.value,
+              case .prepared(let prepared) = try await preview.value else {
+            Issue.record("Expected committed import and refreshed preview")
+            return
+        }
+        #expect(commit.addedCount == 0)
+        #expect(commit.overwrittenCount == 1)
+        #expect(commit.refreshedTemplates.map(\.name) == ["Imported"])
+        #expect(prepared.preview.newCount == 0)
+        #expect(prepared.preview.overwriteCount == 1)
+        #expect(try storage.loadAll().map(\.name) == ["Imported"])
+    }
+
+    @Test("Repeated import identities have matching preview and durable commit counts")
+    @MainActor
+    func repeatedImportIdentityCounts() async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = TemplateStorageService(directoryURL: root)
+        let original = MetadataTemplate(name: "First")
+        var replacement = original
+        replacement.name = "Replacement"
+        let bundle = TemplateBundle(templates: [original, replacement])
+        let source = root.appendingPathComponent("repeated.templatebundle")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(bundle).write(to: source)
+        let preview = try storage.previewImport(from: source)
+        #expect(preview.newCount == 1)
+        #expect(preview.overwriteCount == 1)
+        let service = TemplateImportCommitService(storage: storage)
+        guard case .committed(let commit) = try await service.commit(
+            bundle, sourceURL: source, requestID: UUID()
+        ) else {
+            Issue.record("Expected a completed repeated-identity import")
+            return
+        }
+        #expect(commit.addedCount == preview.newCount)
+        #expect(commit.overwrittenCount == preview.overwriteCount)
+        #expect(try storage.loadAll().map(\.name) == ["Replacement"])
+    }
+
     private func makeTempFolder() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("MetadataTemplateTests-\(UUID().uuidString)")
@@ -1239,4 +1382,42 @@ struct TemplateExecutorTests {
 
 private nonisolated enum TemplateExecutorContext {
     @TaskLocal static var source: URL?
+}
+
+actor TemplateRootAdmissionGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var entered = false
+    private var opened = false
+
+    func hold() async {
+        entered = true
+        guard !opened else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func open() {
+        opened = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func waitUntilEntered() async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !entered {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.fileReadUnknown) }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
+@MainActor
+func waitForTemplateAdmission(_ key: URL, count: Int) async throws {
+    let deadline = ContinuousClock.now + .seconds(10)
+    while await StorageTransactionAdmission.shared.waiterCount(for: key) != count {
+        guard ContinuousClock.now < deadline else {
+            Issue.record("Template transaction did not await shared root ownership")
+            throw CocoaError(.fileReadUnknown)
+        }
+        try await Task.sleep(for: .milliseconds(5))
+    }
 }

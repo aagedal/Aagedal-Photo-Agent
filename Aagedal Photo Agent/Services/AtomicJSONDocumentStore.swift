@@ -74,12 +74,116 @@ enum AtomicJSONDocumentStoreError: Error, Equatable, LocalizedError, Sendable {
     }
 }
 
-/// Serializes access to one versioned JSON document and its single bounded backup.
-///
-/// A save writes and validates a sibling staging file, synchronizes it to storage, preserves the
-/// previous valid primary as `<filename>.backup`, and only then atomically replaces the primary.
-/// A malformed primary is never allowed to displace a valid backup.
+/// Serializes the complete primary/backup transaction across all in-process store instances.
+/// Canonicalization and file operations run on the retained worker; admission only tracks paths.
 actor AtomicJSONDocumentStore<Document: VersionedJSONDocument> {
+    let documentURL: URL
+    let backupURL: URL
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+    private let validateCompatibility: @Sendable (Data) throws -> Void
+
+    init(
+        documentURL: URL,
+        backupURL: URL? = nil,
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.atomic-json", qos: .utility
+        ),
+        validateCompatibility: @escaping @Sendable (Data) throws -> Void = { _ in }
+    ) {
+        self.documentURL = documentURL
+        self.backupURL = backupURL ?? documentURL.appendingPathExtension("backup")
+        self.filesystemQueue = filesystemQueue
+        self.validateCompatibility = validateCompatibility
+    }
+
+    func load() async throws -> AtomicJSONDocumentLoad<Document> {
+        let transaction = makeTransaction()
+        return try await StorageTransactionAdmission.shared.withAccess(
+            to: [transaction.documentURL, transaction.backupURL]
+        ) {
+            try await transaction.load()
+        }
+    }
+
+    func save(_ document: Document) async throws {
+        let transaction = makeTransaction()
+        try await StorageTransactionAdmission.shared.withAccess(
+            to: [transaction.documentURL, transaction.backupURL]
+        ) {
+            // Preserve the durable-save contract, including callers already cancelled.
+            try await transaction.save(document)
+        }
+    }
+
+    private func makeTransaction() -> AtomicJSONDocumentTransaction<Document> {
+        AtomicJSONDocumentTransaction(
+            documentURL: SafePathComponent.resolvingExistingSymlinks(in: documentURL),
+            backupURL: SafePathComponent.resolvingExistingSymlinks(in: backupURL),
+            filesystemQueue: filesystemQueue,
+            validateCompatibility: validateCompatibility
+        )
+    }
+}
+
+/// Process-wide admission spans all overlapping primary/backup paths and template roots.
+/// Awaiting ownership does not block a worker or manufacture another task, so task locals,
+/// priority and cancellation survive admission. Callers decide their own cancellation policy.
+actor StorageTransactionAdmission {
+    static let shared = StorageTransactionAdmission()
+    private var activePaths: Set<String> = []
+    private var waiters: [Waiter] = []
+
+    private struct Waiter {
+        let paths: Set<String>
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    func withAccess<Value: Sendable>(
+        to canonicalURLs: Set<URL>,
+        operation: @Sendable () async throws -> Value
+    ) async rethrows -> Value {
+        // URL equality includes its directory hint; admission identifies the filesystem path.
+        let paths = Set(canonicalURLs.map(\.path))
+        if !activePaths.isDisjoint(with: paths)
+            || waiters.contains(where: { !$0.paths.isDisjoint(with: paths) }) {
+            await withCheckedContinuation {
+                waiters.append(Waiter(paths: paths, continuation: $0))
+            }
+        } else {
+            activePaths.formUnion(paths)
+        }
+        defer { release(paths) }
+        return try await operation()
+    }
+
+    func waiterCount(for path: URL) -> Int {
+        waiters.filter { $0.paths.contains(path.path) }.count
+    }
+
+    private func release(_ paths: Set<String>) {
+        activePaths.subtract(paths)
+        var blockedPaths: Set<String> = []
+        var remaining: [Waiter] = []
+        for waiter in waiters {
+            if activePaths.isDisjoint(with: waiter.paths)
+                && blockedPaths.isDisjoint(with: waiter.paths) {
+                activePaths.formUnion(waiter.paths)
+                waiter.continuation.resume()
+            } else {
+                blockedPaths.formUnion(waiter.paths)
+                remaining.append(waiter)
+            }
+        }
+        waiters = remaining
+    }
+}
+
+/// Writes and validates staging bytes, preserves the previous valid primary as a bounded
+/// backup, then atomically replaces the primary. There is no suspension inside the transaction.
+private actor AtomicJSONDocumentTransaction<Document: VersionedJSONDocument> {
     let documentURL: URL
     let backupURL: URL
 

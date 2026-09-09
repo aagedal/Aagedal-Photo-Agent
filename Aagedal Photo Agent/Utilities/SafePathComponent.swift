@@ -41,7 +41,7 @@ nonisolated enum SafePathComponent {
     /// `URL.resolvingSymlinksInPath()` stops short when the final item does not yet
     /// exist. Resolve the nearest existing ancestor first, then restore the missing
     /// suffix so an existing symlinked directory cannot hide an out-of-root target.
-    private static func resolvingExistingSymlinks(in url: URL) -> URL {
+    static func resolvingExistingSymlinks(in url: URL) -> URL {
         var existingAncestor = url.standardizedFileURL
         var missingComponents: [String] = []
         while !FileManager.default.fileExists(atPath: existingAncestor.path),

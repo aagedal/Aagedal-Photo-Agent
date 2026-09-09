@@ -4,6 +4,41 @@ import Testing
 
 @Suite("Develop templates")
 struct DevelopTemplateTests {
+    @Test("Develop services serialize complete shortcut transactions across instances")
+    @MainActor
+    func sharedRootShortcutTransactions() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = DevelopTemplateStorageService(directoryURL: root)
+        let key = SafePathComponent.resolvingExistingSymlinks(in: root)
+        let gate = TemplateRootAdmissionGate()
+        let owner = Task {
+            await StorageTransactionAdmission.shared.withAccess(to: [key]) { await gate.hold() }
+        }
+        defer { Task { await gate.open() } }
+        try await gate.waitUntilEntered()
+        let first = DevelopTemplate(name: "First", shortcutSlot: 1)
+        let second = DevelopTemplate(name: "Second", shortcutSlot: 1)
+        let firstService = TemplateCRUDService<DevelopTemplate>(access: .storage(storage))
+        let secondService = TemplateCRUDService<DevelopTemplate>(access: .storage(storage))
+        let firstTask = Task { try await firstService.save(first, requestID: UUID()) }
+        try await waitForTemplateAdmission(key, count: 1)
+        let secondTask = Task { try await secondService.save(second, requestID: UUID()) }
+        try await waitForTemplateAdmission(key, count: 2)
+        await gate.open()
+        await owner.value
+        _ = try await firstTask.value
+        guard case .committed(let commit) = try await secondTask.value else {
+            Issue.record("Expected the complete second Develop transaction")
+            return
+        }
+        #expect(commit.durableTemplateIDs == [first.id, second.id])
+        let templates = try storage.loadAll()
+        #expect(templates.first(where: { $0.id == first.id })?.shortcutSlot == nil)
+        #expect(templates.first(where: { $0.id == second.id })?.shortcutSlot == 1)
+    }
+
     @MainActor
     @Test("Develop deletion preserves exact bytes and failed trash preserves the template")
     func recoverableDeletion() async throws {
