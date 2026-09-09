@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreImage
+import Darwin
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -211,5 +212,171 @@ private nonisolated enum RenderWorkerContext {
         #expect(!Thread.isMainThread)
         #expect(marker == expectedMarker)
         #expect(Task.currentPriority >= .userInitiated)
+    }
+}
+
+@Suite("Full-screen decode task and QoS boundary")
+struct FullScreenImageDecodeWorkerTests {
+    nonisolated enum DecodeKind: CaseIterable, Sendable {
+        case hdrPreview, hdrFullResolution, rasterPreview, rasterFullResolution
+
+        var maxPixelSize: CGFloat? {
+            switch self {
+            case .hdrPreview, .rasterPreview: 128
+            case .hdrFullResolution, .rasterFullResolution: nil
+            }
+        }
+    }
+
+    @Test("Decode keeps caller context at utility QoS and rejects cancelled pixels",
+          arguments: DecodeKind.allCases, [false, true])
+    @MainActor
+    func decodeContext(kind: DecodeKind, cancel: Bool) async throws {
+        let executor = FullScreenImageDecodeExecutor(label: "test.full-screen.decode")
+        let marker = UUID()
+        let url = URL(fileURLWithPath: "/virtual/preview.tiff")
+        let image = try makeImage()
+        let check: @Sendable (URL, CGFloat?) -> Void = { actualURL, maxPixelSize in
+            #expect(executor.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(qos_class_self() == QOS_CLASS_UTILITY)
+            #expect(RenderWorkerContext.marker == marker)
+            #expect(Task.currentPriority >= .userInitiated)
+            #expect(actualURL == url)
+            #expect(maxPixelSize == kind.maxPixelSize)
+            if cancel { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+        let worker = FullScreenImageDecodeWorker(access: .init(
+            hdr: { actualURL, maxPixelSize in
+                check(actualURL, maxPixelSize)
+                return (CIImage(cgImage: image), 6)
+            },
+            raster: { actualURL, maxPixelSize in
+                check(actualURL, maxPixelSize)
+                return (image, 6)
+            }
+        ), executor: executor)
+
+        let orientation = await Task(priority: .userInitiated) {
+            await RenderWorkerContext.$marker.withValue(marker) {
+                await decode(kind, from: url, worker: worker)
+            }
+        }.value
+        #expect(orientation == (cancel ? nil : 6))
+    }
+
+    @Test("Pre-cancelled decode never opens the source", arguments: DecodeKind.allCases)
+    @MainActor
+    func cancelledBeforeDecode(kind: DecodeKind) async {
+        let worker = FullScreenImageDecodeWorker(access: .init(
+            hdr: { _, _ in
+                Issue.record("Cancelled request reached Core Image")
+                return nil
+            },
+            raster: { _, _ in
+                Issue.record("Cancelled request reached ImageIO")
+                return nil
+            }
+        ))
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await decode(kind, from: URL(fileURLWithPath: "/virtual/cancelled.tiff"), worker: worker)
+        }.value
+        #expect(result == nil)
+    }
+
+    @Test("Independent default decode executors can progress while another decode is blocked")
+    @MainActor
+    func independentDecodeConcurrency() async throws {
+        let image = try makeImage()
+        let entered = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let firstWorker = FullScreenImageDecodeWorker(access: .init(
+            hdr: { _, _ in nil },
+            raster: { _, _ in
+                entered.continuation.yield(())
+                #expect(release.wait(timeout: .now() + 5) == .success)
+                return (image, 6)
+            }
+        ))
+        let secondWorker = FullScreenImageDecodeWorker(access: .init(
+            hdr: { _, _ in nil },
+            raster: { _, _ in
+                release.signal()
+                return (image, 8)
+            }
+        ))
+        let url = URL(fileURLWithPath: "/virtual/concurrent.tiff")
+        let first = Task { await decode(.rasterPreview, from: url, worker: firstWorker) }
+        var entries = entered.stream.makeAsyncIterator()
+        _ = await entries.next()
+        #expect(await decode(.rasterPreview, from: url, worker: secondWorker) == 8)
+        #expect(await first.value == 6)
+    }
+
+    @Test("Cancellation while queued behind a decode skips the provider")
+    @MainActor
+    func queuedDecodeCancellation() async throws {
+        let image = try makeImage()
+        let entered = AsyncStream<Void>.makeStream()
+        let queued = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let executor = FullScreenImageDecodeExecutor(didEnqueue: { queued.continuation.yield(()) })
+        let firstURL = URL(fileURLWithPath: "/virtual/first.tiff")
+        let worker = FullScreenImageDecodeWorker(access: .init(
+            hdr: { _, _ in nil },
+            raster: { url, _ in
+                guard url == firstURL else {
+                    Issue.record("Cancelled queued decode opened its source")
+                    return nil
+                }
+                entered.continuation.yield(())
+                #expect(release.wait(timeout: .now() + 5) == .success)
+                return (image, 6)
+            }
+        ), executor: executor)
+        let first = Task { await decode(.rasterPreview, from: firstURL, worker: worker) }
+        var entries = entered.stream.makeAsyncIterator()
+        _ = await entries.next()
+        var submissions = queued.stream.makeAsyncIterator()
+        _ = await submissions.next()
+        let second = Task {
+            await decode(.rasterPreview, from: URL(fileURLWithPath: "/virtual/cancelled.tiff"), worker: worker)
+        }
+        _ = await submissions.next()
+        second.cancel()
+        release.signal()
+        #expect(await second.value == nil)
+        #expect(await first.value == 6)
+    }
+
+    private func decode(_ kind: DecodeKind, from url: URL, worker: FullScreenImageDecodeWorker) async -> Int? {
+        switch kind {
+        case .hdrPreview:
+            await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(
+                from: url, maxPixelSize: 128, worker: worker
+            )?.orientation
+        case .hdrFullResolution:
+            await FullScreenImageCache.loadHDRFullResolutionOffPoolWithOrientation(
+                from: url, worker: worker
+            )?.orientation
+        case .rasterPreview:
+            await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(
+                from: url, maxPixelSize: 128, worker: worker
+            )?.orientation
+        case .rasterFullResolution:
+            await FullScreenImageCache.loadFullResolutionOffPoolWithOrientation(
+                from: url, worker: worker
+            )?.orientation
+        }
+    }
+
+    private func makeImage() throws -> CGImage {
+        let context = try #require(CGContext(
+            data: nil, width: 16, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        return try #require(context.makeImage())
     }
 }

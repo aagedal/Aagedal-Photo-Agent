@@ -312,6 +312,44 @@ struct FullScreenImageCacheTests {
         #expect(result?.orientation == 1)
     }
 
+    @Test("Cancelled embedded extraction returns no pixels through its default-QoS boundary")
+    func cancelledEmbeddedPreviewExtraction() async throws {
+        let url = try makeTempMultiImageTIFF()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let result = await Task(priority: .userInitiated) {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(from: url)
+        }.value
+        #expect(result == nil)
+    }
+
+    @Test("Async preview and full-resolution workers preserve decoded orientation and size")
+    func asyncDecodeOrientationGeometry() async throws {
+        let url = try makeTempOrientedTIFF(orientation: 6)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let hdrPreview = try #require(await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(
+            from: url, maxPixelSize: 40
+        ))
+        let hdrFull = try #require(await FullScreenImageCache.loadHDRFullResolutionOffPoolWithOrientation(from: url))
+        let rasterPreview = try #require(await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(
+            from: url, maxPixelSize: 40
+        ))
+        let rasterFull = try #require(await FullScreenImageCache.loadFullResolutionOffPoolWithOrientation(from: url))
+
+        #expect(hdrPreview.orientation == 6)
+        #expect(hdrFull.orientation == 6)
+        #expect(rasterPreview.orientation == 6)
+        #expect(rasterFull.orientation == 6)
+        #expect(abs(hdrPreview.image.extent.width - 80.0 / 3) < 0.01)
+        #expect(abs(hdrPreview.image.extent.height - 40) < 0.01)
+        #expect(hdrFull.image.extent.size == CGSize(width: 80, height: 120))
+        #expect(abs(rasterPreview.image.width - 27) <= 1)
+        #expect(rasterPreview.image.height == 40)
+        #expect(rasterFull.image.width == 80)
+        #expect(rasterFull.image.height == 120)
+    }
+
     @Test("Adaptive HDR expansion is limited to gain-map-capable containers")
     func adaptiveHDRExpansionRouting() {
         for ext in ["jpg", "jpeg", "heic", "heif"] {

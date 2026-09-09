@@ -776,17 +776,6 @@ final class FullScreenImageCache: @unchecked Sendable {
         return (ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale)), orientation)
     }
 
-    /// Dedicated GCD queue for blocking Core Image and ImageIO file initialization.
-    /// Core Image can synchronously wait on its own utility-QoS workers while opening a file.
-    /// Running that call directly from a user-initiated Task both occupies a cooperative-pool
-    /// thread and triggers Thread Performance Checker's priority-inversion warning. Awaiting a
-    /// continuation from this matching utility queue suspends the caller instead.
-    nonisolated private static let backgroundDecodeQueue = DispatchQueue(
-        label: "com.aagedal.photo-agent.preview-decode",
-        qos: .utility,
-        attributes: .concurrent
-    )
-
     /// Embedded RAW preview extraction must run at the same QoS as ImageIO's own
     /// default-QoS workers. An enforced work-item QoS prevents a foreground caller's
     /// priority from being inferred by GCD, while the continuation lets that caller
@@ -808,33 +797,23 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     nonisolated static func loadHDRPreviewOffPoolWithOrientation(
         from url: URL,
-        maxPixelSize: CGFloat
+        maxPixelSize: CGFloat,
+        worker: FullScreenImageDecodeWorker = FullScreenImageDecodeWorker()
     ) async -> (image: CIImage, orientation: Int)? {
-        await withCheckedContinuation { continuation in
-            backgroundDecodeQueue.async {
-                continuation.resume(returning: loadHDRPreviewWithOrientation(
-                    from: url,
-                    maxPixelSize: maxPixelSize
-                ))
-            }
-        }
+        await worker.loadHDR(from: url, maxPixelSize: maxPixelSize)
     }
 
-    /// Run `loadDownsampled` off the Swift cooperative thread pool. See `backgroundDecodeQueue`.
+    /// Run `loadDownsampled` on the utility-QoS decode worker, away from the cooperative pool.
     nonisolated static func loadDownsampledOffPool(from url: URL, maxPixelSize: CGFloat) async -> CGImage? {
         await loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: maxPixelSize)?.image
     }
 
-    /// Run `loadDownsampledWithOrientation` off the Swift cooperative thread pool.
-    /// See `backgroundDecodeQueue`.
+    /// Run `loadDownsampledWithOrientation` on the utility-QoS decode worker.
     nonisolated static func loadDownsampledOffPoolWithOrientation(
-        from url: URL, maxPixelSize: CGFloat
+        from url: URL, maxPixelSize: CGFloat,
+        worker: FullScreenImageDecodeWorker = FullScreenImageDecodeWorker()
     ) async -> (image: CGImage, orientation: Int)? {
-        await withCheckedContinuation { continuation in
-            backgroundDecodeQueue.async {
-                continuation.resume(returning: loadDownsampledWithOrientation(from: url, maxPixelSize: maxPixelSize))
-            }
-        }
+        await worker.loadRaster(from: url, maxPixelSize: maxPixelSize)
     }
 
     nonisolated static func loadDownsampled(from url: URL, maxPixelSize: CGFloat) -> CGImage? {
@@ -1022,13 +1001,10 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     nonisolated static func loadHDRFullResolutionOffPoolWithOrientation(
-        from url: URL
+        from url: URL,
+        worker: FullScreenImageDecodeWorker = FullScreenImageDecodeWorker()
     ) async -> (image: CIImage, orientation: Int)? {
-        await withCheckedContinuation { continuation in
-            backgroundDecodeQueue.async {
-                continuation.resume(returning: loadHDRFullResolutionWithOrientation(from: url))
-            }
-        }
+        await worker.loadHDR(from: url, maxPixelSize: nil)
     }
 
     /// Load an image at full source resolution, preserving color space and bit depth.
@@ -1072,13 +1048,10 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     nonisolated static func loadFullResolutionOffPoolWithOrientation(
-        from url: URL
+        from url: URL,
+        worker: FullScreenImageDecodeWorker = FullScreenImageDecodeWorker()
     ) async -> (image: CGImage, orientation: Int)? {
-        await withCheckedContinuation { continuation in
-            backgroundDecodeQueue.async {
-                continuation.resume(returning: loadFullResolutionWithOrientation(from: url))
-            }
-        }
+        await worker.loadRaster(from: url, maxPixelSize: nil)
     }
 
     /// The file's current EXIF orientation tag (1 if absent or unreadable). For decodes
@@ -1102,12 +1075,14 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated static func extractEmbeddedPreviewOffPoolWithOrientation(
         from url: URL
     ) async -> (image: CGImage, orientation: Int)? {
-        await withCheckedContinuation { continuation in
+        guard !Task.isCancelled else { return nil }
+        let result: (image: CGImage, orientation: Int)? = await withCheckedContinuation { continuation in
             let workItem = DispatchWorkItem(qos: .default, flags: .enforceQoS) {
                 continuation.resume(returning: extractEmbeddedPreviewWithOrientation(from: url))
             }
             embeddedPreviewDecodeQueue.async(execute: workItem)
         }
+        return Task.isCancelled ? nil : result
     }
 
     /// Synchronous ImageIO implementation, reachable only through the default-QoS async
@@ -1185,6 +1160,98 @@ final class FullScreenImageCache: @unchecked Sendable {
         case forward
         case backward
         case none
+    }
+}
+
+/// Runs the original Swift task on a utility-QoS Dispatch thread. Core Image can wait on its
+/// own utility workers while opening a file, so the work item must enforce utility QoS even
+/// when the retained task has user-initiated priority. Each request retains its own serial
+/// executor targeting the shared concurrent decode queue, preserving both actor isolation
+/// and independent foreground/prefetch decode concurrency.
+nonisolated final class FullScreenImageDecodeExecutor: SerialExecutor {
+    private static let decodeQueue = DispatchQueue(
+        label: "com.aagedal.photo-agent.preview-decode", qos: .utility, attributes: .concurrent
+    )
+    private let queue: DispatchSerialQueue
+    private let didEnqueue: @Sendable () -> Void
+
+    init(
+        label: String = "com.aagedal.photo-agent.preview-decode.request",
+        didEnqueue: @escaping @Sendable () -> Void = {}
+    ) {
+        queue = DispatchSerialQueue(label: label, qos: .utility, target: Self.decodeQueue)
+        self.didEnqueue = didEnqueue
+    }
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let unownedJob = UnownedJob(job)
+        queue.async(execute: DispatchWorkItem(qos: .utility, flags: .enforceQoS) {
+            unownedJob.runSynchronously(on: self.asUnownedSerialExecutor())
+        })
+        didEnqueue()
+    }
+
+    func checkIsolated() {
+        dispatchPrecondition(condition: .onQueue(queue))
+    }
+
+    func isIsolatingCurrentContext() -> Bool? {
+        queue.isIsolatingCurrentContext()
+    }
+}
+
+/// A nil maximum size selects the original full-resolution loader. Each loader returns the
+/// orientation read adjacent to its pixels so callers keep their existing correction frame.
+nonisolated struct FullScreenImageDecodeAccess: Sendable {
+    let hdr: @Sendable (URL, CGFloat?) -> (image: CIImage, orientation: Int)?
+    let raster: @Sendable (URL, CGFloat?) -> (image: CGImage, orientation: Int)?
+
+    static let system = Self(
+        hdr: { url, maxPixelSize in
+            if let maxPixelSize {
+                FullScreenImageCache.loadHDRPreviewWithOrientation(from: url, maxPixelSize: maxPixelSize)
+            } else {
+                FullScreenImageCache.loadHDRFullResolutionWithOrientation(from: url)
+            }
+        },
+        raster: { url, maxPixelSize in
+            if let maxPixelSize {
+                FullScreenImageCache.loadDownsampledWithOrientation(from: url, maxPixelSize: maxPixelSize)
+            } else {
+                FullScreenImageCache.loadFullResolutionWithOrientation(from: url)
+            }
+        }
+    )
+}
+
+/// Retains task-local values and cancellation across the blocking decode boundary. A queued
+/// cancelled request never opens the file; cancellation during non-preemptible ImageIO work
+/// discards the completed pixels before they can enter a cache or presentation owner.
+actor FullScreenImageDecodeWorker {
+    nonisolated let executor: FullScreenImageDecodeExecutor
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        executor.asUnownedSerialExecutor()
+    }
+    private let access: FullScreenImageDecodeAccess
+
+    init(
+        access: FullScreenImageDecodeAccess = .system,
+        executor: FullScreenImageDecodeExecutor = FullScreenImageDecodeExecutor()
+    ) {
+        self.access = access
+        self.executor = executor
+    }
+
+    func loadHDR(from url: URL, maxPixelSize: CGFloat?) -> (image: CIImage, orientation: Int)? {
+        guard !Task.isCancelled else { return nil }
+        let result = access.hdr(url, maxPixelSize)
+        return Task.isCancelled ? nil : result
+    }
+
+    func loadRaster(from url: URL, maxPixelSize: CGFloat?) -> (image: CGImage, orientation: Int)? {
+        guard !Task.isCancelled else { return nil }
+        let result = access.raster(url, maxPixelSize)
+        return Task.isCancelled ? nil : result
     }
 }
 
