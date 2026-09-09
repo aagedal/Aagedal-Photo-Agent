@@ -4,6 +4,165 @@ import Testing
 
 @Suite("Filesystem Dispatch executor")
 struct FileSystemExecutorTests {
+    @Test("Browser move preserves shared voice memos for both variants and editorial sidecars")
+    func movePreservesSharedVoiceMemoBundles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("Moved")
+        let raw = root.appendingPathComponent("photo.ARW")
+        let jpeg = root.appendingPathComponent("photo.JPG")
+        let memo = root.appendingPathComponent("photo.WAV")
+        let memoBytes = Data("shared memo".utf8)
+        try memoBytes.write(to: memo)
+        let repository = VoiceMemoCompanionRepository()
+        let metadata = MetadataSidecarService()
+        for image in [raw, jpeg] {
+            try Data(image.lastPathComponent.utf8).write(to: image)
+            try repository.save(VoiceMemoAssociation(
+                profileIdentifier: "synthetic-move", imageURL: image, memoURL: memo
+            ))
+            try metadata.saveSidecar(
+                MetadataSidecar(sourceFile: image.lastPathComponent, metadata: IPTCMetadata(title: image.lastPathComponent)),
+                for: image, in: root
+            )
+        }
+        let result = try await FileSystemService().moveImageItems(
+            [raw, jpeg], into: destination, createDestinationIfNeeded: true,
+            xmpSidecarService: XMPSidecarService(), metadataSidecarService: metadata
+        )
+        #expect(result.movedSourceURLs == [raw, jpeg])
+        #expect(result.failures.isEmpty)
+        #expect(!result.cancellationStoppedRemainingItems)
+        for image in [raw, jpeg] {
+            let moved = destination.appendingPathComponent(image.lastPathComponent)
+            #expect(!FileManager.default.fileExists(atPath: image.path))
+            #expect(!FileManager.default.fileExists(atPath: repository.recordURL(for: image).path))
+            #expect(try Data(contentsOf: moved) == Data(image.lastPathComponent.utf8))
+            guard case .available(let association) = try repository.lookup(for: moved) else {
+                Issue.record("Moved image lost its voice memo")
+                continue
+            }
+            #expect(association.memoURL.deletingLastPathComponent().resolvingSymlinksInPath().path
+                    == destination.resolvingSymlinksInPath().path)
+            #expect(try Data(contentsOf: association.memoURL) == memoBytes)
+            #expect(metadata.loadSidecar(for: moved, in: destination)?.metadata.title == image.lastPathComponent)
+        }
+        #expect(!FileManager.default.fileExists(atPath: memo.path))
+    }
+
+    @Test("Browser move fails closed for unavailable voice memos while continuing independent images", arguments: [false, true])
+    func moveRejectsUnavailableVoiceMemo(unsupported: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("associated.JPG")
+        let independent = root.appendingPathComponent("independent.JPG")
+        let memo = root.appendingPathComponent("memo.WAV")
+        for url in [image, independent, memo] { try Data(url.lastPathComponent.utf8).write(to: url) }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(VoiceMemoAssociation(profileIdentifier: "synthetic-move", imageURL: image, memoURL: memo))
+        if unsupported {
+            try Data(#"{"schemaVersion":99}"#.utf8).write(to: repository.recordURL(for: image))
+        } else {
+            try FileManager.default.removeItem(at: memo)
+        }
+        let recordBefore = try Data(contentsOf: repository.recordURL(for: image))
+        let destination = root.appendingPathComponent("Moved")
+        let result = try await FileSystemService().moveImageItems(
+            [image, independent], into: destination, createDestinationIfNeeded: true,
+            xmpSidecarService: XMPSidecarService(), metadataSidecarService: MetadataSidecarService()
+        )
+        #expect(result.movedSourceURLs == [independent])
+        #expect(result.failures.count == 1)
+        #expect(result.failures.first?.sourceURL == image)
+        #expect(FileManager.default.fileExists(atPath: image.path))
+        #expect(try Data(contentsOf: repository.recordURL(for: image)) == recordBefore)
+        #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent(image.lastPathComponent).path))
+    }
+
+    @Test("Browser move cannot associate an unproven WAV or overwrite an orphan relationship")
+    func moveWithoutProvenMemoRejectsOrphanRecord() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let destination = root.appendingPathComponent("Moved")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("photo.JPG")
+        let unprovenMemo = root.appendingPathComponent("photo.WAV")
+        try Data("image".utf8).write(to: image)
+        try Data("unproven".utf8).write(to: unprovenMemo)
+        let repository = VoiceMemoCompanionRepository()
+        let orphan = repository.recordURL(for: destination.appendingPathComponent("photo.JPG"))
+        try Data("unrelated".utf8).write(to: orphan)
+        let service = FileSystemService()
+        let blocked = try await service.moveImageItems(
+            [image], into: destination, createDestinationIfNeeded: false,
+            xmpSidecarService: XMPSidecarService(), metadataSidecarService: MetadataSidecarService()
+        )
+        #expect(blocked.movedSourceURLs.isEmpty)
+        #expect(blocked.failures.count == 1)
+        #expect(try Data(contentsOf: orphan) == Data("unrelated".utf8))
+        let safeDestination = root.appendingPathComponent("Safe")
+        let moved = try await service.moveImageItems(
+            [image], into: safeDestination, createDestinationIfNeeded: true,
+            xmpSidecarService: XMPSidecarService(), metadataSidecarService: MetadataSidecarService()
+        )
+        #expect(moved.movedSourceURLs == [image])
+        #expect(moved.failures.isEmpty)
+        #expect(try repository.lookup(for: safeDestination.appendingPathComponent("photo.JPG")) == .none)
+        #expect(try Data(contentsOf: unprovenMemo) == Data("unproven".utf8))
+        #expect(!FileManager.default.fileExists(atPath: safeDestination.appendingPathComponent("photo.WAV").path))
+    }
+
+    @Test("Browser move reserves existing XMP and both editorial carrier names", arguments: ["photo.xmp", ".photo_metadata/photo.JPG.meta.json", ".photo_metadata/photo.meta.json"])
+    func movePreservesOrphanMetadata(relativePath: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let destination = root.appendingPathComponent("Moved")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("photo.JPG")
+        try Data("image".utf8).write(to: source)
+        let orphan = destination.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: orphan.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let original = Data("unrelated destination metadata".utf8)
+        try original.write(to: orphan)
+        let metadata = MetadataSidecarService()
+        try metadata.saveSidecar(MetadataSidecar(sourceFile: "photo.JPG", metadata: IPTCMetadata(title: "Source")), for: source, in: root)
+        let result = try await FileSystemService().moveImageItems(
+            [source], into: destination, createDestinationIfNeeded: false,
+            xmpSidecarService: XMPSidecarService(), metadataSidecarService: metadata
+        )
+        #expect(result.movedSourceURLs.isEmpty)
+        #expect(result.failures.count == 1)
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(try Data(contentsOf: orphan) == original)
+        #expect(metadata.loadSidecar(for: source, in: root)?.metadata.title == "Source")
+    }
+
+    @Test("Editorial move refuses existing destination data independently of photo preflight", arguments: [false, true])
+    func editorialMoveCannotOverwrite(legacy: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let destination = root.appendingPathComponent("Moved")
+        try FileManager.default.createDirectory(at: destination.appendingPathComponent(".photo_metadata"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        try service.saveSidecar(MetadataSidecar(sourceFile: "photo.JPG", metadata: IPTCMetadata(title: "Source")), for: image, in: root)
+        let orphan = destination.appendingPathComponent(".photo_metadata/" + (legacy ? "photo.meta.json" : "photo.JPG.meta.json"))
+        let original = Data("unrelated".utf8)
+        try original.write(to: orphan)
+        #expect(throws: (any Error).self) {
+            try service.moveSidecar(for: image, from: root, to: destination)
+        }
+        #expect(try Data(contentsOf: orphan) == original)
+        #expect(service.loadSidecar(for: image, in: root)?.metadata.title == "Source")
+        #expect(throws: (any Error).self) {
+            try service.relocateSidecar(for: image, to: destination.appendingPathComponent("photo.JPG"), from: root, to: destination)
+        }
+        #expect(try Data(contentsOf: orphan) == original)
+        #expect(service.loadSidecar(for: image, in: root)?.metadata.title == "Source")
+    }
+
     @Test("Browser duplicate skips orphan WAV and relationship collisions and persists independent shared memos")
     func duplicatePreservesVoiceMemoBundles() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

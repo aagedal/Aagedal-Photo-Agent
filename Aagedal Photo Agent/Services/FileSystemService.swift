@@ -58,6 +58,7 @@ actor FileSystemService {
             case primary
             case xmpSidecar
             case metadataSidecar
+            case cleanup
         }
 
         let sourceURL: URL
@@ -593,9 +594,9 @@ actor FileSystemService {
         )
     }
 
-    /// Moves primary images and their existing XMP/editorial sidecars. A primary move is a
-    /// committed success even when a companion move fails, matching the browser's existing
-    /// partial-success contract while making each companion failure explicit.
+    /// Moves each photo with its proven voice-memo relationship as one rollback-capable
+    /// operation, then preserves the existing explicit partial-success contract for
+    /// XMP/editorial sidecars. A failed voice-memo bundle is never reported as a moved photo.
     func moveImageItems(
         _ sourceURLs: [URL],
         into destinationFolder: URL,
@@ -605,6 +606,7 @@ actor FileSystemService {
     ) throws -> ImageMoveResult {
         try Task.checkCancellation()
         let fileManager = FileManager.default
+        let voiceMemoRepository = VoiceMemoCompanionRepository()
         var destinationWasCreated = false
         var isDirectory: ObjCBool = false
         if fileManager.fileExists(atPath: destinationFolder.path, isDirectory: &isDirectory) {
@@ -626,17 +628,30 @@ actor FileSystemService {
                 break
             }
             let destinationURL = destinationFolder.appendingPathComponent(sourceURL.lastPathComponent)
-            guard !fileManager.fileExists(atPath: destinationURL.path) else {
+            let reservedDestinations = [destinationURL, xmpSidecarService.sidecarURL(for: destinationURL)]
+                + metadataSidecarService.relocationDestinationURLs(for: destinationURL, in: destinationFolder)
+            guard !reservedDestinations.contains(where: { fileManager.fileExists(atPath: $0.path) }) else {
                 failures.append(ItemFailure(
                     sourceURL: sourceURL,
                     stage: .primary,
-                    message: "The destination already contains this filename."
+                    message: "The destination already contains this photo or one of its sidecars."
                 ))
                 continue
             }
             do {
-                try fileManager.moveItem(at: sourceURL, to: destinationURL)
+                let receipt = try voiceMemoRepository.moveImagePreservingCompanion(from: sourceURL, to: destinationURL)
                 moved.insert(sourceURL)
+                if !receipt.cleanupResidualURLs.isEmpty {
+                    failures.append(ItemFailure(
+                        sourceURL: sourceURL,
+                        stage: .cleanup,
+                        message: "The photo moved successfully, but source backup cleanup needs attention: "
+                            + receipt.cleanupResidualURLs.map(\.path).joined(separator: ", ")
+                    ))
+                }
+            } catch is CancellationError {
+                cancellationStoppedRemainingItems = true
+                break
             } catch {
                 failures.append(ItemFailure(
                     sourceURL: sourceURL,

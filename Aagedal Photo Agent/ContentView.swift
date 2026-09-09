@@ -1994,8 +1994,15 @@ struct ContentView: View {
             }
         }
 
-        ToolbarItem(placement: .secondaryAction) {
-            if metadataViewModel.isProcessingFolder {
+        folderActionToolbarContent
+    }
+
+    /// Give each action a native toolbar identity and explicit accessible name
+    /// instead of sharing one hosted item with an inferred group description.
+    @ToolbarContentBuilder
+    private var folderActionToolbarContent: some ToolbarContent {
+        if metadataViewModel.isProcessingFolder {
+            ToolbarItem(id: "folder-processing-status", placement: .secondaryAction) {
                 HStack(spacing: 4) {
                     ProgressView()
                         .controlSize(.small)
@@ -2003,65 +2010,83 @@ struct ContentView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            } else {
-                HStack {
-                    Button {
-                        let c2paPending = browserViewModel.images.filter { image in
-                            image.hasPendingMetadataChanges && image.hasC2PA
-                        }
-                        if !c2paPending.isEmpty {
-                            pendingWriteAllC2PACount = c2paPending.count
-                            isShowingWriteAllC2PAWarning = true
-                        } else {
-                            metadataViewModel.writeAllPendingChanges(
-                                in: browserViewModel.currentFolderURL,
-                                images: browserViewModel.images
-                            )
-                        }
-                    } label: {
-                        Label("Write All Pending", systemImage: "square.and.arrow.down.on.square")
+            }
+        } else {
+            ToolbarItem(id: "folder-write-pending", placement: .secondaryAction) {
+                Button {
+                    let c2paPending = browserViewModel.images.filter { image in
+                        image.hasPendingMetadataChanges && image.hasC2PA
                     }
-                    .help("Write all pending sidecar changes to image files")
-                    .disabled(browserViewModel.images.isEmpty)
-
-                    Button {
-                        metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
-                    } label: {
-                        Label("Process Variables in Folder", systemImage: "curlybraces")
-                    }
-                    .help("Resolve all {variable} placeholders in metadata across every image in the folder")
-                    .disabled(browserViewModel.images.isEmpty)
-
-                    Button {
-                        togglePeopleDatabase()
-                    } label: {
-                        Label("People Database", systemImage: "person.text.rectangle")
-                            .labelStyle(.iconOnly)
-                    }
-                    .help("Open Known People database")
-
-                    Button {
-                        toggleEditWorkspace()
-                    } label: {
-                        Label(
-                            "Edit Workspace",
-                            systemImage: mainViewMode == .editing
-                                ? "xmark.circle.fill"
-                                : "slider.horizontal.3"
+                    if !c2paPending.isEmpty {
+                        pendingWriteAllC2PACount = c2paPending.count
+                        isShowingWriteAllC2PAWarning = true
+                    } else {
+                        metadataViewModel.writeAllPendingChanges(
+                            in: browserViewModel.currentFolderURL,
+                            images: browserViewModel.images
                         )
-                        .labelStyle(.iconOnly)
                     }
-                    .help(mainViewMode == .editing ? "Return to browser workspace" : "Open edit workspace")
-                    .disabled(browserViewModel.visibleImages.isEmpty)
-
-                    Button {
-                        renderAndSaveEditedFolder()
-                    } label: {
-                        Label("Render and Save Folder", systemImage: "photo.badge.arrow.down")
-                    }
-                    .help("Render all images in the folder to Edited/ as sRGB JPEG")
-                    .disabled(browserViewModel.images.isEmpty || isRenderingEditedFolder)
+                } label: {
+                    Label("Write All Pending", systemImage: "square.and.arrow.down.on.square")
                 }
+                .accessibilityLabel("Write All Pending")
+                .accessibilityIdentifier("toolbar.writeAllPending")
+                .help("Write all pending sidecar changes to image files")
+                .disabled(browserViewModel.images.isEmpty)
+            }
+
+            ToolbarItem(id: "folder-process-variables", placement: .secondaryAction) {
+                Button {
+                    metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
+                } label: {
+                    Label("Process Variables in Folder", systemImage: "curlybraces")
+                }
+                .accessibilityLabel("Process Variables in Folder")
+                .accessibilityIdentifier("toolbar.processVariables")
+                .help("Resolve all {variable} placeholders in metadata across every image in the folder")
+                .disabled(browserViewModel.images.isEmpty)
+            }
+
+            ToolbarItem(id: "folder-people-database", placement: .secondaryAction) {
+                Button {
+                    togglePeopleDatabase()
+                } label: {
+                    Label("People Database", systemImage: "person.text.rectangle")
+                        .labelStyle(.iconOnly)
+                }
+                .accessibilityLabel("People Database")
+                .accessibilityIdentifier("toolbar.peopleDatabase")
+                .help("Open Known People database")
+            }
+
+            ToolbarItem(id: "folder-edit-workspace", placement: .secondaryAction) {
+                Button {
+                    toggleEditWorkspace()
+                } label: {
+                    Label(
+                        mainViewMode == .editing ? "Return to Browser" : "Edit Workspace",
+                        systemImage: mainViewMode == .editing
+                            ? "xmark.circle.fill"
+                            : "slider.horizontal.3"
+                    )
+                    .labelStyle(.iconOnly)
+                }
+                .accessibilityLabel(mainViewMode == .editing ? "Return to Browser" : "Edit Workspace")
+                .accessibilityIdentifier("toolbar.editWorkspace")
+                .help(mainViewMode == .editing ? "Return to browser workspace" : "Open edit workspace")
+                .disabled(browserViewModel.visibleImages.isEmpty)
+            }
+
+            ToolbarItem(id: "folder-render-save", placement: .secondaryAction) {
+                Button {
+                    renderAndSaveEditedFolder()
+                } label: {
+                    Label("Render and Save Folder", systemImage: "photo.badge.arrow.down")
+                }
+                .accessibilityLabel("Render and Save Folder")
+                .accessibilityIdentifier("toolbar.renderAndSave")
+                .help("Render all images in the folder to Edited/ as sRGB JPEG")
+                .disabled(browserViewModel.images.isEmpty || isRenderingEditedFolder)
             }
         }
     }

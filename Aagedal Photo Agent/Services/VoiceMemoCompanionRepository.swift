@@ -195,6 +195,8 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         case copyDestinationExists(String)
         case copyRollbackFailed([String])
         case copySourceChanged
+        case moveRollbackFailed([String])
+        case unsafeMemoFile(String)
 
         var errorDescription: String? {
             switch self {
@@ -207,7 +209,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             case .unsupportedSchema(let version):
                 return "Voice-memo relationship schema \(version) is newer than this app supports."
             case .memoMissing(let filename):
-                return "The saved voice memo \(filename) is missing. Restore it before renaming the photo."
+                return "The saved voice memo \(filename) is missing. Restore it before copying, moving, or renaming the photo."
             case .ambiguousImportedDestination(let filename):
                 return "The imported voice memo for \(filename) could not be identified unambiguously."
             case .sharedMemoRequiresGroupAction(let filename):
@@ -220,6 +222,10 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
                 return "Photo and voice-memo copy failed. Remove the incomplete copies before retrying: \(filenames.joined(separator: ", "))."
             case .copySourceChanged:
                 return "The photo, voice memo, or saved relationship changed during copying. Try again when the source is stable."
+            case .moveRollbackFailed(let paths):
+                return "The photo and voice-memo move failed and could not be fully rolled back. Recover these files before retrying: \(paths.joined(separator: ", "))."
+            case .unsafeMemoFile(let filename):
+                return "The saved voice memo \(filename) must be a regular file in the photo's folder before it can be moved. Symbolic links are left untouched."
             }
         }
     }
@@ -494,6 +500,215 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         case .none: return nil
         case .available(let association): return association
         case .missing(let record): throw RepositoryError.memoMissing(record.memoFilename)
+        }
+    }
+
+    /// Shared source memos receive an image-specific name at the destination. This lets a
+    /// sequential RAW+JPEG move preserve independent copies without the first consuming the
+    /// second photo's WAV name. Existing destination audio is never reused by filename alone.
+    func moveDestinationURLs(for sourceImageURL: URL, to destinationImageURL: URL) throws -> [URL] {
+        let companion = try moveCompanion(for: sourceImageURL, to: destinationImageURL)
+        return [destinationImageURL, recordURL(for: destinationImageURL)]
+            + [companion?.destinationMemo].compactMap { $0 }
+    }
+
+    struct MoveReceipt: Sendable {
+        /// Committed moves remain successes. These private original-byte backups need cleanup
+        /// after a failed post-commit deletion; callers must report the exact paths separately.
+        let cleanupResidualURLs: [URL]
+    }
+
+    /// Moves the photo, its proven memo, and its rewritten relationship as one transaction.
+    /// Shared source WAVs are copied; exclusive WAVs move. The optional tail lets a caller
+    /// transact additional artifacts, provided it rolls back its own partial changes if it
+    /// throws. Cancellation may discard preparation; installation and rollback do not suspend.
+    @discardableResult
+    func moveImagePreservingCompanion(
+        from sourceImageURL: URL,
+        to destinationImageURL: URL,
+        additionalChanges: () throws -> Void = {}
+    ) throws -> MoveReceipt {
+        let fm = FileManager.default
+        let sourceRecord = recordURL(for: sourceImageURL)
+        let destinationRecord = recordURL(for: destinationImageURL)
+        let originalRecord = try copyRecordBytes(for: sourceImageURL)
+        let imageRevision = try copyRevision(at: sourceImageURL)
+        let companion = try moveCompanion(for: sourceImageURL, to: destinationImageURL)
+        let memoRevision = try companion.map { try copyRevision(at: $0.association.memoURL) }
+        let destinations = [destinationImageURL, destinationRecord]
+            + [companion?.destinationMemo].compactMap { $0 }
+        try requireAvailableMoveDestinations(destinations)
+
+        let staging = destinationImageURL.deletingLastPathComponent()
+            .appendingPathComponent(".voice-memo-move-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: staging) }
+        let stagedRecord = staging.appendingPathComponent("relationship.json")
+        let stagedImage = staging.appendingPathComponent("image")
+        let stagedMemo = staging.appendingPathComponent("memo.wav")
+        try copyIO.copy(sourceImageURL, stagedImage)
+        if let companion {
+            try copyIO.copy(companion.association.memoURL, stagedMemo)
+            guard try memoRevision?.digest == SourceImageRevisionCaptureIO.system.hash(stagedMemo) else {
+                throw RepositoryError.copySourceChanged
+            }
+            let record = VoiceMemoCompanionRecord(
+                profileIdentifier: companion.association.profileIdentifier,
+                imageFilename: destinationImageURL.lastPathComponent,
+                memoFilename: companion.destinationMemo.lastPathComponent
+            )
+            try encoded(record).write(to: stagedRecord, options: .atomic)
+        }
+
+        guard try imageRevision.matches(copyRevision(at: sourceImageURL)),
+              imageRevision.digest == (try SourceImageRevisionCaptureIO.system.hash(stagedImage)),
+              originalRecord == (try copyRecordBytes(for: sourceImageURL)),
+              companion == (try moveCompanion(for: sourceImageURL, to: destinationImageURL)) else {
+            throw RepositoryError.copySourceChanged
+        }
+        if let companion, let memoRevision {
+            guard try memoRevision.matches(copyRevision(at: companion.association.memoURL)) else {
+                throw RepositoryError.copySourceChanged
+            }
+        }
+        guard try imageRevision.snapshot.matches(copyFileSnapshot(at: sourceImageURL)),
+              originalRecord == (try copyRecordBytes(for: sourceImageURL)),
+              companion == (try moveCompanion(for: sourceImageURL, to: destinationImageURL)) else {
+            throw RepositoryError.copySourceChanged
+        }
+        try requireAvailableMoveDestinations(destinations)
+        try Task.checkCancellation()
+
+        // Foundation moveItem copies then removes across volumes, and can throw after creating a
+        // destination. Avoid that ambiguous state entirely: stage verified destination copies,
+        // retire sources with same-directory renames, then install only same-volume staged files.
+        // Keep retirement backups if recovery fails; their names are never mistaken for records.
+        let recordBackup = sourceImageURL.deletingLastPathComponent()
+            .appendingPathComponent(".voice-memo-move-backup-\(UUID().uuidString)")
+        let imageBackup = sourceImageURL.deletingLastPathComponent()
+            .appendingPathComponent(".voice-memo-move-backup-\(UUID().uuidString)")
+        let memoBackup = sourceImageURL.deletingLastPathComponent()
+            .appendingPathComponent(".voice-memo-move-backup-\(UUID().uuidString)")
+        var recordRetired = false
+        var imageRetired = false
+        var memoRetired = false
+        var imageInstalled = false
+        var memoInstalled = false
+        var recordInstalled = false
+        do {
+            if companion != nil {
+                try copyIO.install(sourceRecord, recordBackup)
+                recordRetired = true
+                guard try Data(contentsOf: recordBackup) == originalRecord else {
+                    throw RepositoryError.copySourceChanged
+                }
+            }
+            try copyIO.install(sourceImageURL, imageBackup)
+            imageRetired = true
+            if let companion, !companion.isShared {
+                try copyIO.install(companion.association.memoURL, memoBackup)
+                memoRetired = true
+            }
+            // Retiring closes the source-name race: validate the actual original bytes now held
+            // in our backups before committing or deleting them. An external write immediately
+            // before a retirement rename must be restored, never discarded for an older copy.
+            guard try imageRevision.matches(copyRevision(at: imageBackup)) else {
+                throw RepositoryError.copySourceChanged
+            }
+            if let companion, let memoRevision {
+                guard try memoRevision.matches(copyRevision(
+                    at: memoRetired ? memoBackup : companion.association.memoURL
+                )) else {
+                    throw RepositoryError.copySourceChanged
+                }
+            }
+            try copyIO.install(stagedImage, destinationImageURL)
+            imageInstalled = true
+            if let companion {
+                try copyIO.install(stagedMemo, companion.destinationMemo)
+                memoInstalled = true
+                try copyIO.install(stagedRecord, destinationRecord)
+                recordInstalled = true
+            } else if fm.fileExists(atPath: destinationRecord.path)
+                || fm.fileExists(atPath: sourceRecord.path) {
+                throw RepositoryError.copySourceChanged
+            }
+            try additionalChanges()
+        } catch {
+            var recovery: [String] = []
+            if recordInstalled {
+                do { try copyIO.remove(destinationRecord) }
+                catch { recovery.append(destinationRecord.path) }
+            }
+            if memoInstalled, let companion {
+                do { try copyIO.remove(companion.destinationMemo) }
+                catch { recovery.append(companion.destinationMemo.path) }
+            }
+            if imageInstalled {
+                do { try copyIO.remove(destinationImageURL) }
+                catch { recovery.append(destinationImageURL.path) }
+            }
+            if memoRetired, let companion {
+                do { try copyIO.install(memoBackup, companion.association.memoURL) }
+                catch { recovery.append(memoBackup.path) }
+            }
+            if imageRetired {
+                do { try copyIO.install(imageBackup, sourceImageURL) }
+                catch { recovery.append(imageBackup.path) }
+            }
+            if recordRetired {
+                do { try copyIO.install(recordBackup, sourceRecord) }
+                catch { recovery.append(recordBackup.path) }
+            }
+            if !recovery.isEmpty { throw RepositoryError.moveRollbackFailed(recovery) }
+            throw error
+        }
+        // The installed bundle is authoritative. Report retained original bytes separately;
+        // throwing here would incorrectly label a fully committed photo as still unmoved.
+        var cleanupResiduals: [URL] = []
+        for backup in [recordRetired ? recordBackup : nil, imageRetired ? imageBackup : nil,
+                       memoRetired ? memoBackup : nil].compactMap({ $0 }) {
+            do { try copyIO.remove(backup) }
+            catch { cleanupResiduals.append(backup) }
+        }
+        return MoveReceipt(cleanupResidualURLs: cleanupResiduals)
+    }
+
+    private struct MoveCompanion: Equatable {
+        let association: VoiceMemoAssociation
+        let destinationMemo: URL
+        let isShared: Bool
+    }
+
+    private func moveCompanion(for source: URL, to destination: URL) throws -> MoveCompanion? {
+        guard let association = try copyAssociation(for: source) else { return nil }
+        // Lookup resolves canonical URLs for identity. Moving that canonical target would consume
+        // an external file if the saved folder entry were a symlink, leaving the link dangling.
+        // Moves require ownership of a regular adjacent entry, not merely readable linked bytes.
+        let record = try loadRecord(at: recordURL(for: source), expectedImageFilename: nil)
+        let memoFilename = effectiveMemoFilename(for: record, currentImageFilename: source.lastPathComponent)
+        let memoEntry = source.deletingLastPathComponent().appendingPathComponent(memoFilename)
+        let attributes = try FileManager.default.attributesOfItem(atPath: memoEntry.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              association.memoURL.deletingLastPathComponent()
+                == VoiceMemoAssociationService.canonicalURL(source.deletingLastPathComponent()) else {
+            throw RepositoryError.unsafeMemoFile(memoFilename)
+        }
+        let count = try memoReferenceCount(to: association.memoURL, in: source.deletingLastPathComponent())
+        guard count > 0 else { throw RepositoryError.invalidRecord }
+        let isShared = count > 1
+        let memoDestination = isShared
+            ? destination.appendingPathExtension(association.memoURL.pathExtension)
+            : copyMemoDestination(for: association, imageURL: destination)
+        return MoveCompanion(association: association, destinationMemo: memoDestination, isShared: isShared)
+    }
+
+    private func requireAvailableMoveDestinations(_ destinations: [URL]) throws {
+        guard Set(destinations.map(\.standardizedFileURL)).count == destinations.count else {
+            throw RepositoryError.invalidRecord
+        }
+        for destination in destinations where FileManager.default.fileExists(atPath: destination.path) {
+            throw RepositoryError.copyDestinationExists(destination.lastPathComponent)
         }
     }
 

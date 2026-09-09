@@ -3307,7 +3307,7 @@ final class BrowserViewModel {
             }
 
             if !result.failures.isEmpty {
-                presentMoveErrorAlert(message: "Failed to move \(result.failures.count) item(s).")
+                presentMoveIssues(result)
             }
 
             if result.destinationWasCreated || !moved.isEmpty {
@@ -3389,10 +3389,7 @@ final class BrowserViewModel {
                 }
 
                 if !result.failures.isEmpty {
-                    let details = result.failures.prefix(5).map {
-                        "\($0.sourceURL.lastPathComponent) \($0.stage.rawValue): \($0.message)"
-                    }
-                    presentMoveErrorAlert(message: "Failed to move \(result.failures.count) item(s):\n" + details.joined(separator: "\n"))
+                    presentMoveIssues(result)
                 }
             } catch is CancellationError {
                 return
@@ -3404,9 +3401,21 @@ final class BrowserViewModel {
 
     // MARK: - Metadata helpers
 
-    private func presentMoveErrorAlert(message: String) {
+    private func presentMoveIssues(_ result: FileSystemService.ImageMoveResult) {
+        let moved = result.movedSourceURLs.count
+        let details = result.failures.prefix(5).map {
+            "\($0.sourceURL.lastPathComponent): \($0.message)"
+        }.joined(separator: "\n")
+        let summary = "\(moved) photo(s) moved; \(result.failures.count) issue(s) need attention."
+        presentMoveErrorAlert(
+            message: summary + "\n\n" + details,
+            title: moved == 0 ? "Move Failed" : "Move Needs Attention"
+        )
+    }
+
+    private func presentMoveErrorAlert(message: String, title: String = "Move Failed") {
         let alert = NSAlert()
-        alert.messageText = "Move Failed"
+        alert.messageText = title
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.runModal()

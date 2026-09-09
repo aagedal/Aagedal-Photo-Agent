@@ -634,8 +634,9 @@ struct MetadataSidecarService: Sendable {
         try fm.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         let destinationURL = sidecarFileURL(for: imageURL, in: destinationFolderURL)
 
-        if fm.fileExists(atPath: destinationURL.path) {
-            try fm.removeItem(at: destinationURL)
+        for candidate in relocationDestinationURLs(for: imageURL, in: destinationFolderURL)
+            where fm.fileExists(atPath: candidate.path) {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: candidate.path])
         }
         if let first = sourceURLs.first {
             try fm.moveItem(at: first, to: destinationURL)
@@ -647,6 +648,12 @@ struct MetadataSidecarService: Sendable {
                 sidecarLogger.warning("Failed to remove extra sidecar \(extra.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             }
         }
+    }
+
+    /// Reserve both supported carrier names even when the source has no sidecar, so a
+    /// moved photo cannot adopt unrelated metadata already at its destination.
+    nonisolated func relocationDestinationURLs(for imageURL: URL, in folderURL: URL) -> [URL] {
+        sidecarCandidateURLs(for: imageURL, in: folderURL)
     }
 
     /// Moves a sidecar while allowing the image filename to change. The JSON's
@@ -673,10 +680,16 @@ struct MetadataSidecarService: Sendable {
         let destinationDirectory = sidecarDirectory(for: destinationFolderURL)
         try fm.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         let destinationURL = sidecarFileURL(for: destinationImageURL, in: destinationFolderURL)
-        guard !fm.fileExists(atPath: destinationURL.path) else {
-            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destinationURL.path])
+        for candidate in relocationDestinationURLs(for: destinationImageURL, in: destinationFolderURL)
+            where fm.fileExists(atPath: candidate.path) {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: candidate.path])
         }
-        try destinationData.write(to: destinationURL, options: .atomic)
+        // Install an already complete file without replacing a destination that arrived
+        // after preflight. Atomic Data writes alone are allowed to overwrite that file.
+        let stagingURL = destinationDirectory.appendingPathComponent(".relocate-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: stagingURL) }
+        try destinationData.write(to: stagingURL, options: .atomic)
+        try fm.moveItem(at: stagingURL, to: destinationURL)
 
         // The destination is safely on disk before any source artifact is removed.
         // A legacy duplicate may coexist with the current sidecar, so clean up both.

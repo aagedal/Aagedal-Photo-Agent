@@ -551,7 +551,12 @@ final class ThumbnailCollectionView: NSCollectionView {
     }
 
     @objc private func contextAddToSubfolder(_ sender: Any?) {
-        viewModel?.promptAddSelectedImagesToSubfolder()
+        // Return from the NSMenu action before starting NSAlert's modal loop so
+        // menu tracking can finish and the prompt can acquire focus/accessibility.
+        guard let viewModel else { return }
+        DispatchQueue.main.async { [weak viewModel] in
+            viewModel?.promptAddSelectedImagesToSubfolder()
+        }
     }
 
     @objc private func contextSetRating(_ sender: NSMenuItem) {
@@ -610,7 +615,11 @@ final class ThumbnailCollectionView: NSCollectionView {
     }
 
     @objc private func contextMoveToFolder(_ sender: Any?) {
-        viewModel?.promptMoveSelectedImagesToFolder()
+        // NSOpenPanel also starts a modal loop; present it after menu dismissal.
+        guard let viewModel else { return }
+        DispatchQueue.main.async { [weak viewModel] in
+            viewModel?.promptMoveSelectedImagesToFolder()
+        }
     }
 
     @objc private func contextDelete(_ sender: Any?) {

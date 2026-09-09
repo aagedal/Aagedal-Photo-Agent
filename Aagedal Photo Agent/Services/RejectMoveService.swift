@@ -23,7 +23,8 @@ nonisolated struct RejectMoveService: Sendable {
     static func moveRejected(
         urls: [URL],
         in folderURL: URL,
-        bundleDidCommit: @Sendable (URL) -> Void = { _ in }
+        bundleDidCommit: @Sendable (URL) -> Void = { _ in },
+        voiceMemoRepository: VoiceMemoCompanionRepository = VoiceMemoCompanionRepository()
     ) -> MoveResult {
         let fm = FileManager.default
         let sidecarService = MetadataSidecarService()
@@ -73,56 +74,58 @@ nonisolated struct RejectMoveService: Sendable {
                 cancellationStoppedRemainingItems = true
                 break
             }
-            guard let dest = uniqueBundleDestination(
-                for: url.lastPathComponent,
-                in: rejectedFolder,
-                fm: fm
-            ) else {
-                failed.append((url, "Could not find an available name in .Rejected"))
+            let dest: URL
+            do {
+                guard let available = try uniqueBundleDestination(
+                    for: url, in: rejectedFolder, fm: fm,
+                    voiceMemoRepository: voiceMemoRepository
+                ) else {
+                    failed.append((url, "Could not find an available name in .Rejected"))
+                    continue
+                }
+                dest = available
+            } catch {
+                failed.append((url, error.localizedDescription))
                 continue
             }
 
             let xmpSource = url.deletingPathExtension().appendingPathExtension("xmp")
             let xmpDestination = dest.deletingPathExtension().appendingPathExtension("xmp")
-            var imageMoved = false
             var xmpMoved = false
 
             do {
-                try fm.moveItem(at: url, to: dest)
-                imageMoved = true
-
-                if fm.fileExists(atPath: xmpSource.path) {
-                    try fm.moveItem(at: xmpSource, to: xmpDestination)
-                    xmpMoved = true
+                let receipt = try voiceMemoRepository.moveImagePreservingCompanion(from: url, to: dest) {
+                    do {
+                        if fm.fileExists(atPath: xmpSource.path) {
+                            try fm.moveItem(at: xmpSource, to: xmpDestination)
+                            xmpMoved = true
+                        }
+                        try sidecarService.relocateSidecar(
+                            for: url, to: dest, from: folderURL, to: rejectedFolder
+                        )
+                    } catch {
+                        let originalError = error
+                        if xmpMoved {
+                            do { try fm.moveItem(at: xmpDestination, to: xmpSource) }
+                            catch {
+                                throw NSError(domain: "RejectMoveService", code: 1, userInfo: [
+                                    NSLocalizedDescriptionKey: originalError.localizedDescription
+                                        + " (XMP rollback failed at \(xmpDestination.path): \(error.localizedDescription))"
+                                ])
+                            }
+                        }
+                        throw originalError
+                    }
                 }
-
-                try sidecarService.relocateSidecar(
-                    for: url,
-                    to: dest,
-                    from: folderURL,
-                    to: rejectedFolder
-                )
+                if !receipt.cleanupResidualURLs.isEmpty {
+                    failed.append((url, "Photo moved successfully; private source backups need cleanup: "
+                        + receipt.cleanupResidualURLs.map(\.path).joined(separator: ", ")))
+                }
+            } catch is CancellationError {
+                cancellationStoppedRemainingItems = true
+                break
             } catch {
-                var recoveryErrors: [String] = []
-                if xmpMoved {
-                    do {
-                        try fm.moveItem(at: xmpDestination, to: xmpSource)
-                    } catch {
-                        recoveryErrors.append("XMP rollback failed: \(error.localizedDescription)")
-                    }
-                }
-                if imageMoved {
-                    do {
-                        try fm.moveItem(at: dest, to: url)
-                    } catch {
-                        recoveryErrors.append("image rollback failed: \(error.localizedDescription)")
-                    }
-                }
-
-                let recoveryDetail = recoveryErrors.isEmpty
-                    ? ""
-                    : " (\(recoveryErrors.joined(separator: "; ")))"
-                let message = error.localizedDescription + recoveryDetail
+                let message = error.localizedDescription
                 failed.append((url, message))
                 rejectLog.error("Failed to move \(url.lastPathComponent, privacy: .private(mask: .hash)): \(message, privacy: .private)")
                 continue
@@ -147,11 +150,12 @@ nonisolated struct RejectMoveService: Sendable {
     /// available. Reserving the complete bundle prevents a stale sidecar from
     /// becoming associated with the newly moved image.
     private static func uniqueBundleDestination(
-        for filename: String,
+        for sourceImageURL: URL,
         in folder: URL,
-        fm: FileManager
-    ) -> URL? {
-        let asURL = URL(fileURLWithPath: filename)
+        fm: FileManager,
+        voiceMemoRepository: VoiceMemoCompanionRepository
+    ) throws -> URL? {
+        let asURL = sourceImageURL
         let basename = asURL.deletingPathExtension().lastPathComponent
         let ext = asURL.pathExtension
         for index in 0..<10_000 {
@@ -159,7 +163,8 @@ nonisolated struct RejectMoveService: Sendable {
             let candidate = ext.isEmpty
                 ? folder.appendingPathComponent(numberedBasename)
                 : folder.appendingPathComponent(numberedBasename).appendingPathExtension(ext)
-            if bundleDestinations(for: candidate, in: folder).allSatisfy({
+            let voiceMemoDestinations = try voiceMemoRepository.moveDestinationURLs(for: sourceImageURL, to: candidate)
+            if bundleDestinations(for: candidate, in: folder).union(voiceMemoDestinations).allSatisfy({
                 !fm.fileExists(atPath: $0.path)
             }) {
                 return candidate
