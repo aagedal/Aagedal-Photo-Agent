@@ -6,6 +6,15 @@
 **Scope:** application, tests, release process, bundled artifacts, and user-facing documentation  
 **Non-goal:** this document does not claim that any unchecked item has been implemented or manually validated
 
+**Shared storage transactions, recovery and rendering continuation (2026-09-09):**
+Atomic JSON and complete template operations share canonical-path admission across service
+instances. Keyword recovery reads use an independent worker; cold Known People removal/export
+prepare legacy migration asynchronously. RAW, Metal and thumbnail workers retain task context
+and reject cancelled pixels. The final unfiltered suite passed 2,383 tests; an unsigned Release
+candidate passed model-omission and ZIP payload verification. Broad storage ownership and
+manual/device/release gates remain open.
+([validation and remaining work](plan-status-shared-transactions-recovery-render-continuation-2026-09-09.md))
+
 **Storage construction, backup snapshots and decode context continuation (2026-09-09):**
 Analysis construction resolves roots asynchronously; shared fallback-index transactions preserve
 concurrent case/map writes and keep queued saves on their captured storage root. Legacy Known
