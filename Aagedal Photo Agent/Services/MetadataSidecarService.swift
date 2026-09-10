@@ -532,7 +532,8 @@ struct MetadataSidecarService: Sendable {
             } catch {
                 return .init(installedSidecar: installed, wroteXMPSidecar: xmpReceipt.snapshot != nil,
                     wasCancelled: error is CancellationError,
-                    failure: error is CancellationError ? nil : .init(stage: stage, message: error.localizedDescription),
+                    failure: error is CancellationError ? nil : .init(stage: stage, message: error.localizedDescription,
+                        kind: error is MetadataSidecarReplayConflict ? .replayConflict : .io),
                     committedButUnverifiedSidecarURL: committed && installed == nil
                         ? self.sidecarFileURL(for: request.imageURL, in: request.folderURL) : nil)
             }
@@ -659,9 +660,8 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
-    private nonisolated static func replayConflict() -> CocoaError {
-        CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
-            "This queued caption conflicts with newer saved metadata. Newer metadata was preserved, and the queued edit remains retained. Retrying or reloading alone will not resolve this conflict."])
+    private nonisolated static func replayConflict() -> MetadataSidecarReplayConflict {
+        MetadataSidecarReplayConflict()
     }
 
     private nonisolated static func eventPayload(_ entry: MetadataHistoryEntry) -> Data? {
@@ -1399,6 +1399,12 @@ nonisolated struct MetadataSidecarPersistenceRequest: Sendable {
 /// The JSON history record is installed before its Adobe-compatible XMP mirror. A failure or
 /// cancellation between those commits is therefore partial success, not an all-or-nothing error.
 /// The main actor consumes this value without needing to inspect the filesystem again.
+nonisolated struct MetadataSidecarReplayConflict: LocalizedError, Sendable {
+    var errorDescription: String? {
+        "This queued caption conflicts with newer saved metadata. Newer metadata was preserved, and the queued edit remains retained. Retrying or reloading alone will not resolve this conflict."
+    }
+}
+
 nonisolated struct MetadataSidecarPersistenceResult: Sendable {
     enum FailureStage: String, Sendable {
         case metadataSidecar
@@ -1406,8 +1412,15 @@ nonisolated struct MetadataSidecarPersistenceResult: Sendable {
     }
 
     struct Failure: Sendable, Equatable {
+        enum Kind: String, Codable, Sendable { case io, replayConflict }
         let stage: FailureStage
         let message: String
+        let kind: Kind
+        init(stage: FailureStage, message: String, kind: Kind = .io) {
+            self.stage = stage
+            self.message = message
+            self.kind = kind
+        }
     }
 
     let installedSidecar: MetadataSidecar?

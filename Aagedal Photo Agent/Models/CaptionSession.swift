@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// An immutable caption-sidecar write captured before navigation changes the metadata selection.
 ///
@@ -21,6 +22,9 @@ nonisolated struct CaptionDraftPersistence: Sendable {
             do {
                 let persistence = await MetadataSidecarService().replayHistoryAndMirrorXMP(request)
                 guard persistence.completed else {
+                    if persistence.failure?.kind == .replayConflict {
+                        throw CaptionWorkspaceFlushError.replayConflict(persistence.failure!.message)
+                    }
                     throw CaptionWorkspaceFlushError.persistenceFailed(
                         persistence.failure?.message ?? "The captured Caption draft did not finish saving."
                     )
@@ -49,99 +53,355 @@ nonisolated private final class CaptionPersistenceResult: @unchecked Sendable {
     }
 }
 
-/// FIFO persistence behind Caption navigation.
-///
-/// `enqueue` only appends work; it never waits for disk I/O. A failed item remains at the head of
-/// the queue so a later durable barrier can retry it without allowing newer drafts to overtake it.
-nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
-    private struct Item: @unchecked Sendable {
-        let operation: @Sendable () throws -> Void
-        let onFailure: @MainActor @Sendable (String) -> Void
-    }
+nonisolated struct CaptionQueueFailure: Identifiable, Sendable, Equatable {
+    enum Kind: String, Codable, Sendable { case replayConflict, transient }
+    let id: UUID
+    let photoURL: URL?
+    let message: String
+    let kind: Kind
+    let generation: UInt64
+    let affectedRequestCount: Int
+}
 
-    private let queue: DispatchQueue
-    private var items: [Item] = []
-    private var failure: (any Error)?
+nonisolated struct CaptionConflictSnapshot: Identifiable, Sendable {
+    let id: UUID
+    let photoURL: URL
+    let failure: CaptionQueueFailure
+    let requestIDs: [UUID]
+    let queueGeneration: UInt64
+    fileprivate let exportData: Data
+    var requestCount: Int { requestIDs.count }
+}
 
-    init(label: String = "com.aagedal.photo-agent.caption-persistence") {
-        queue = DispatchQueue(label: label, qos: .userInitiated)
-    }
+nonisolated struct CaptionConflictExportReceipt: Sendable {
+    let exportURL: URL
+    let sha256: String
+    let requestIDs: [UUID]
+    let queueGeneration: UInt64
+    let reviewID: UUID
+}
 
-    func enqueue(
-        _ persistence: CaptionDraftPersistence,
-        onFailure: @escaping @MainActor @Sendable (String) -> Void
-    ) {
-        enqueue(operation: { try persistence.persist() }, onFailure: onFailure)
-    }
+nonisolated struct CaptionConflictDiscardResult: Sendable {
+    let discardedCount: Int
+    let remainingFailure: CaptionQueueFailure?
+}
 
-    /// Internal operation injection keeps ordering and non-blocking behavior deterministic in
-    /// tests without introducing artificial delays into production persistence.
-    func enqueue(
-        operation: @escaping @Sendable () throws -> Void,
-        onFailure: @escaping @MainActor @Sendable (String) -> Void = { _ in }
-    ) {
-        let item = Item(operation: operation, onFailure: onFailure)
-        queue.async { [self] in
-            items.append(item)
-            process(retryingFailure: false)
+nonisolated enum CaptionConflictRecoveryError: LocalizedError, Sendable {
+    case obsoleteReview, reviewInProgress, unsafeExport, exportVerificationFailed
+    var errorDescription: String? {
+        switch self {
+        case .obsoleteReview: return "The queued requests changed. Review and export the current conflict again."
+        case .reviewInProgress: return "Queued edits for this photo are being reviewed. Finish or cancel the review first."
+        case .unsafeExport: return "Choose a separate recovery JSON file outside the photo metadata folder. Existing photo and sidecar files must be preserved."
+        case .exportVerificationFailed: return "The recovery export could not be verified. All queued edits were retained. Export again before discarding."
         }
     }
+}
 
-    /// Waits for every captured draft to reach disk. Failed work is retried in exact FIFO order.
-    /// This is intentionally reserved for explicit durable actions and workspace exit.
+/// Recovery carries the technical fields separately because ordinary editorial JSON omits them.
+nonisolated private struct CaptionRecoveryMetadata: Codable {
+    let editorial: IPTCMetadata
+    let cameraRaw: CameraRawSettings?
+    let orientation: Int?
+    init(_ metadata: IPTCMetadata) {
+        editorial = metadata
+        cameraRaw = metadata.cameraRaw
+        orientation = metadata.exifOrientation
+    }
+}
+
+nonisolated private struct CaptionRecoveryRequest: Encodable {
+    let requestID: UUID
+    let imageURL: URL
+    let folderURL: URL
+    let sidecar: MetadataSidecar
+    let capturedMetadata: CaptionRecoveryMetadata
+    let originalImageSnapshot: CaptionRecoveryMetadata?
+    let baselineMetadata: CaptionRecoveryMetadata
+    let baselineHistory: [MetadataHistoryEntry]
+    let baselineRecordExisted: Bool
+    let changes: [MetadataHistoryEntry]
+    let jsonWasCommitted: Bool
+    init(id: UUID, persistence: CaptionDraftPersistence) {
+        let request = persistence.request
+        requestID = id
+        imageURL = request.imageURL
+        folderURL = request.folderURL
+        sidecar = request.sidecar
+        capturedMetadata = .init(request.sidecar.metadata)
+        originalImageSnapshot = request.sidecar.imageMetadataSnapshot.map(CaptionRecoveryMetadata.init)
+        baselineMetadata = .init(request.baselineMetadata)
+        baselineHistory = request.baselineHistory
+        baselineRecordExisted = request.baselineRecordExisted
+        changes = request.changes
+        jsonWasCommitted = request.receipt.hasCommitted
+    }
+}
+
+nonisolated private struct CaptionRecoveryDocument: Encodable {
+    let formatVersion = 1
+    let reviewID: UUID
+    let photoURL: URL
+    let queueGeneration: UInt64
+    let conflictReason: String
+    let requests: [CaptionRecoveryRequest]
+}
+
+nonisolated struct CaptionConflictExportAccess: Sendable {
+    var writeAtomic: @Sendable (Data, URL) throws -> Void = { data, url in
+        let manager = FileManager.default
+        let stage = url.deletingLastPathComponent().appendingPathComponent(".caption-recovery-\(UUID().uuidString).json")
+        guard manager.createFile(atPath: stage.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? manager.removeItem(at: stage) }
+        guard try Data(contentsOf: stage) == data else { throw CaptionConflictRecoveryError.exportVerificationFailed }
+        if manager.fileExists(atPath: url.path) {
+            _ = try manager.replaceItemAt(url, withItemAt: stage)
+        } else {
+            try manager.moveItem(at: stage, to: url)
+        }
+        try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+    var read: @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) }
+}
+
+nonisolated struct CaptionQueueFailureDelivery: Sendable {
+    var schedule: @Sendable (@escaping @MainActor @Sendable () -> Void) -> Void = { callback in
+        Task { @MainActor in callback() }
+    }
+}
+
+/// FIFO queue with a retained request identity and an explicit, photo-scoped recovery boundary.
+nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
+    private struct Item: @unchecked Sendable {
+        let id: UUID
+        let persistence: CaptionDraftPersistence?
+        let operation: @Sendable () throws -> Void
+        let onFailure: @MainActor @Sendable (String) -> Void
+        let photoURL: URL?
+    }
+    private let queue: DispatchQueue
+    private let failureDelivery: CaptionQueueFailureDelivery
+    private var items: [Item] = []
+    private var failure: (any Error)?
+    private var failureID: UUID?
+    private var generation: UInt64 = 0
+    private var photoGenerations: [URL: UInt64] = [:]
+    private var review: CaptionConflictSnapshot?
+    private let publicationLock = NSLock()
+    private var publishedFailure: CaptionQueueFailure?
+    private var stateHandler: (@MainActor @Sendable (CaptionQueueFailure?) -> Void)?
+
+    init(label: String = "com.aagedal.photo-agent.caption-persistence",
+         failureDelivery: CaptionQueueFailureDelivery = .init()) {
+        queue = DispatchQueue(label: label, qos: .userInitiated)
+        self.failureDelivery = failureDelivery
+    }
+
+    func observeFailure(_ handler: @escaping @MainActor @Sendable (CaptionQueueFailure?) -> Void) {
+        publicationLock.withLock { stateHandler = handler }
+        queue.async { [self] in publish() }
+    }
+
+    @discardableResult
+    func enqueue(_ persistence: CaptionDraftPersistence,
+                 onFailure: @escaping @MainActor @Sendable (String) -> Void) -> UUID {
+        enqueue(persistence: persistence, operation: { try persistence.persist() }, onFailure: onFailure)
+    }
+
+    /// Retained-request operation injection exercises recovery without relying on filesystem faults.
+    @discardableResult
+    func enqueue(persistence: CaptionDraftPersistence? = nil,
+                 operation: @escaping @Sendable () throws -> Void,
+                 onFailure: @escaping @MainActor @Sendable (String) -> Void = { _ in }) -> UUID {
+        let item = Item(id: UUID(), persistence: persistence, operation: operation, onFailure: onFailure,
+            photoURL: persistence.map { $0.imageURL.standardizedFileURL.resolvingSymlinksInPath() })
+        queue.async { [self] in
+            // Normal admission is frozen before editor capture by the coordinator. A previously
+            // captured request arriving late must still be retained; it invalidates the export set.
+            items.append(item)
+            generation &+= 1
+            if let photo = item.photoURL { photoGenerations[photo, default: 0] &+= 1 }
+            process(retryingFailure: false)
+            publish()
+        }
+        return item.id
+    }
+
     func drain() throws {
-        var result: Result<Void, any Error> = .success(())
-        queue.sync { [self] in
+        let result: Result<Void, any Error> = queue.sync { [self] in
+            guard review == nil else { return .failure(CaptionConflictRecoveryError.reviewInProgress) }
             process(retryingFailure: true)
-            if let failure {
-                result = .failure(failure)
-            }
+            return failure.map(Result.failure) ?? .success(())
         }
         try result.get()
     }
 
-    /// Asynchronous durable barrier used during application termination. Work still executes on
-    /// the same FIFO queue, but the AppKit main actor remains free to service termination UI.
     func drainAsync() async throws {
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Void, any Error>) in
-            queue.async { [self] in
-                process(retryingFailure: true)
-                if let failure {
-                    continuation.resume(throwing: failure)
-                } else {
-                    continuation.resume()
-                }
-            }
+        try await perform { [self] in
+            guard review == nil else { throw CaptionConflictRecoveryError.reviewInProgress }
+            process(retryingFailure: true)
+            if let failure { throw failure }
         }
     }
 
-    var pendingCount: Int {
-        queue.sync { items.count }
+    var pendingCount: Int { queue.sync { items.count } }
+    var currentFailure: CaptionQueueFailure? { publicationLock.withLock { publishedFailure } }
+
+    func beginReview(_ expected: CaptionQueueFailure) async throws -> CaptionConflictSnapshot {
+        try await perform { [self] in
+            guard review == nil, failureID == expected.id,
+                  let current = failureRecord(), current.kind == .replayConflict,
+                  let photo = current.photoURL else { throw CaptionConflictRecoveryError.obsoleteReview }
+            let affected = items.filter { $0.photoURL == photo }
+            guard affected.allSatisfy({ $0.persistence != nil }) else { throw CaptionConflictRecoveryError.obsoleteReview }
+            let id = UUID()
+            let revision = photoGenerations[photo, default: 0]
+            let document = CaptionRecoveryDocument(reviewID: id, photoURL: photo,
+                queueGeneration: revision, conflictReason: current.message,
+                requests: affected.map { CaptionRecoveryRequest(id: $0.id, persistence: $0.persistence!) })
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .secondsSince1970
+            let snapshot = CaptionConflictSnapshot(id: id, photoURL: photo, failure: current,
+                requestIDs: affected.map(\.id), queueGeneration: revision, exportData: try encoder.encode(document))
+            review = snapshot
+            return snapshot
+        }
+    }
+
+    func endReview(_ snapshot: CaptionConflictSnapshot) async {
+        _ = try? await perform { [self] in
+            if review?.id == snapshot.id { review = nil }
+        }
+    }
+
+    func exportConflict(_ snapshot: CaptionConflictSnapshot, to url: URL,
+                        access: CaptionConflictExportAccess = .init()) async throws -> CaptionConflictExportReceipt {
+        try await perform { [self] in
+            try validate(snapshot)
+            try validateExportDestination(url)
+            try access.writeAtomic(snapshot.exportData, url)
+            let installed = try access.read(url)
+            guard installed == snapshot.exportData else { throw CaptionConflictRecoveryError.exportVerificationFailed }
+            return CaptionConflictExportReceipt(exportURL: url, sha256: Self.hash(installed),
+                requestIDs: snapshot.requestIDs, queueGeneration: snapshot.queueGeneration, reviewID: snapshot.id)
+        }
+    }
+
+    func discardExported(_ snapshot: CaptionConflictSnapshot,
+                         receipt: CaptionConflictExportReceipt) async throws -> CaptionConflictDiscardResult {
+        try await perform { [self] in
+            try validate(snapshot)
+            guard receipt.reviewID == snapshot.id, receipt.requestIDs == snapshot.requestIDs,
+                  receipt.queueGeneration == snapshot.queueGeneration else { throw CaptionConflictRecoveryError.obsoleteReview }
+            try validateExportDestination(receipt.exportURL)
+            let exported = try Data(contentsOf: receipt.exportURL)
+            guard Self.hash(exported) == receipt.sha256, exported == snapshot.exportData else {
+                throw CaptionConflictRecoveryError.exportVerificationFailed
+            }
+            let ids = Set(snapshot.requestIDs)
+            items.removeAll { ids.contains($0.id) }
+            generation &+= 1
+            photoGenerations[snapshot.photoURL, default: 0] &+= 1
+            failure = nil
+            failureID = nil
+            review = nil
+            publish()
+            process(retryingFailure: false)
+            return CaptionConflictDiscardResult(discardedCount: ids.count, remainingFailure: failureRecord())
+        }
+    }
+
+    private func validate(_ snapshot: CaptionConflictSnapshot) throws {
+        guard review?.id == snapshot.id, failureID == snapshot.failure.id,
+              photoGenerations[snapshot.photoURL, default: 0] == snapshot.queueGeneration,
+              items.filter({ $0.photoURL == snapshot.photoURL }).map(\.id) == snapshot.requestIDs else {
+            throw CaptionConflictRecoveryError.obsoleteReview
+        }
+    }
+
+    private func validateExportDestination(_ url: URL) throws {
+        guard url.isFileURL, url.pathExtension.lowercased() == "json" else { throw CaptionConflictRecoveryError.unsafeExport }
+        // Walk the spelling the caller selected. On macOS, standardizedFileURL can rewrite
+        // a physical /private/var path to the logical /var symlink before this safety check.
+        // Raw traversal both accepts physical paths and still observes actual linked components.
+        var cursor = url
+        while cursor.path != "/" {
+            if cursor.lastPathComponent.lowercased() == MetadataSidecarService.sidecarDirectoryName { throw CaptionConflictRecoveryError.unsafeExport }
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: cursor.path),
+               attributes[.type] as? FileAttributeType == .typeSymbolicLink { throw CaptionConflictRecoveryError.unsafeExport }
+            cursor.deleteLastPathComponent()
+        }
+        let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
+        guard !canonical.pathComponents.contains(where: {
+            $0.lowercased() == MetadataSidecarService.sidecarDirectoryName
+        }) else { throw CaptionConflictRecoveryError.unsafeExport }
+        for item in items {
+            guard let persistence = item.persistence else { continue }
+            let image = persistence.imageURL.standardizedFileURL.resolvingSymlinksInPath()
+            let xmp = XMPSidecarService().sidecarURL(for: persistence.imageURL).standardizedFileURL.resolvingSymlinksInPath()
+            guard canonical != image, canonical != item.photoURL, canonical != xmp else { throw CaptionConflictRecoveryError.unsafeExport }
+        }
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+           attributes[.type] as? FileAttributeType != .typeRegular { throw CaptionConflictRecoveryError.unsafeExport }
+    }
+
+    private static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+
+    private func perform<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { continuation.resume(with: Result { try body() }) }
+        }
+    }
+
+    private func failureRecord() -> CaptionQueueFailure? {
+        guard let failure, let first = items.first, failureID == first.id else { return nil }
+        let kind: CaptionQueueFailure.Kind
+        if let typed = failure as? CaptionWorkspaceFlushError, case .replayConflict = typed { kind = .replayConflict }
+        else { kind = .transient }
+        return .init(id: first.id, photoURL: first.photoURL, message: failure.localizedDescription,
+            kind: kind, generation: generation,
+            affectedRequestCount: first.photoURL.map { photo in items.filter { $0.photoURL == photo }.count } ?? 1)
+    }
+
+    private func publish() {
+        let state = failureRecord()
+        let handler = publicationLock.withLock { publishedFailure = state; return stateHandler }
+        failureDelivery.schedule { @MainActor [weak self] in
+            guard let self, self.currentFailure == state else { return }
+            handler?(state)
+        }
     }
 
     private func process(retryingFailure: Bool) {
         dispatchPrecondition(condition: .onQueue(queue))
-        if retryingFailure {
-            failure = nil
-        } else if failure != nil {
-            return
-        }
-
+        guard review == nil else { return }
+        if retryingFailure { failure = nil; failureID = nil }
+        else if failure != nil { return }
         while let item = items.first {
             do {
                 try item.operation()
                 items.removeFirst()
+                generation &+= 1
+                if let photo = item.photoURL { photoGenerations[photo, default: 0] &+= 1 }
             } catch {
                 failure = error
-                let message = error.localizedDescription
-                Task { @MainActor in
-                    item.onFailure(message)
+                failureID = item.id
+                generation &+= 1
+                publish()
+                let state = failureRecord()
+                failureDelivery.schedule { @MainActor [weak self] in
+                    guard self?.currentFailure == state else { return }
+                    item.onFailure(error.localizedDescription)
                 }
                 return
             }
         }
         failure = nil
+        failureID = nil
+        publish()
     }
 }
 
@@ -398,9 +658,14 @@ nonisolated enum CaptionSessionError: LocalizedError, Equatable, Sendable {
 /// the parent `ContentView` own transitions. Registering the panel's flush closure here lets both
 /// callers cross the same persistence barrier without duplicating metadata save logic.
 @MainActor
+@Observable
 final class CaptionWorkspaceFlushCoordinator {
     static let shared = CaptionWorkspaceFlushCoordinator()
 
+    private(set) var failure: CaptionQueueFailure?
+    private(set) var activeConflictReview: CaptionConflictSnapshot?
+    private var pendingReviewPhoto: URL?
+    @ObservationIgnored private var currentImageURLHandler: (() -> URL?)?
     private var owner: UUID?
     private var handler: (() throws -> Void)?
     private var compositionStateHandler: (() -> CodeReplacementCompositionState)?
@@ -409,19 +674,58 @@ final class CaptionWorkspaceFlushCoordinator {
     private let persistenceQueue: CaptionDraftPersistenceQueue
 
     var hasRegisteredHandler: Bool { handler != nil }
+    var currentQueueFailure: CaptionQueueFailure? { persistenceQueue.currentFailure }
 
     init(persistenceQueue: CaptionDraftPersistenceQueue = CaptionDraftPersistenceQueue()) {
         self.persistenceQueue = persistenceQueue
+        persistenceQueue.observeFailure { [weak self] in self?.failure = $0 }
+    }
+
+    func isReviewing(_ imageURL: URL) -> Bool {
+        let photo = imageURL.standardizedFileURL.resolvingSymlinksInPath()
+        return pendingReviewPhoto == photo || activeConflictReview?.photoURL == photo
+    }
+
+    func beginConflictReview(_ failure: CaptionQueueFailure) async throws -> CaptionConflictSnapshot {
+        pendingReviewPhoto = failure.photoURL
+        defer { pendingReviewPhoto = nil }
+        let snapshot = try await persistenceQueue.beginReview(failure)
+        activeConflictReview = snapshot
+        return snapshot
+    }
+
+    func endConflictReview(_ snapshot: CaptionConflictSnapshot) async {
+        await persistenceQueue.endReview(snapshot)
+        if activeConflictReview?.id == snapshot.id { activeConflictReview = nil }
+    }
+
+    func exportConflict(_ snapshot: CaptionConflictSnapshot, to url: URL) async throws -> CaptionConflictExportReceipt {
+        try await persistenceQueue.exportConflict(snapshot, to: url)
+    }
+
+    func discardExportedConflict(_ snapshot: CaptionConflictSnapshot,
+                                 receipt: CaptionConflictExportReceipt) async throws -> CaptionConflictDiscardResult {
+        let result = try await persistenceQueue.discardExported(snapshot, receipt: receipt)
+        if activeConflictReview?.id == snapshot.id { activeConflictReview = nil }
+        failure = result.remainingFailure
+        return result
+    }
+
+    func retryQueuedPersistence() async throws {
+        try await persistenceQueue.drainAsync()
+        failure = persistenceQueue.currentFailure
     }
 
     func register(
         owner: UUID,
+        currentImageURL: @escaping () -> URL? = { nil },
         compositionState: @escaping () -> CodeReplacementCompositionState = { .committed },
         capturePersistence: @escaping () throws -> CaptionDraftPersistence? = { nil },
         persistenceFailure: @escaping @MainActor @Sendable (String) -> Void = { _ in },
         handler: @escaping () throws -> Void
     ) {
         self.owner = owner
+        self.currentImageURLHandler = currentImageURL
         self.compositionStateHandler = compositionState
         self.persistenceCaptureHandler = capturePersistence
         self.persistenceFailureHandler = persistenceFailure
@@ -431,6 +735,7 @@ final class CaptionWorkspaceFlushCoordinator {
     func unregister(owner: UUID) {
         guard self.owner == owner else { return }
         self.owner = nil
+        currentImageURLHandler = nil
         compositionStateHandler = nil
         persistenceCaptureHandler = nil
         persistenceFailureHandler = nil
@@ -447,6 +752,9 @@ final class CaptionWorkspaceFlushCoordinator {
     /// Navigation flush: commits AppKit's buffered text and snapshots persistence without waiting
     /// for sidecar disk I/O. A capture failure still prevents navigation.
     func enqueueFlush() throws {
+        if let current = currentImageURLHandler?(), isReviewing(current) {
+            throw CaptionConflictRecoveryError.reviewInProgress
+        }
         guard let handler,
               let persistenceCaptureHandler,
               let persistenceFailureHandler else {
@@ -496,6 +804,7 @@ nonisolated enum CaptionWorkspaceFlushError: LocalizedError, Equatable, Sendable
     case handlerUnavailable
     case sidecarUnavailable
     case persistenceFailed(String)
+    case replayConflict(String)
 
     var errorDescription: String? {
         switch self {
@@ -503,7 +812,7 @@ nonisolated enum CaptionWorkspaceFlushError: LocalizedError, Equatable, Sendable
             return "The caption editor is not ready to commit changes."
         case .sidecarUnavailable:
             return "The current folder is unavailable, so caption changes could not be saved."
-        case let .persistenceFailed(message):
+        case let .persistenceFailed(message), let .replayConflict(message):
             return message
         }
     }

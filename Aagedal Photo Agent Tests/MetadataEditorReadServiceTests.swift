@@ -47,6 +47,79 @@ private actor HistoryRestoreSuspensionGate {
 
 @Suite("Metadata editor sidecar read boundary", .serialized)
 struct MetadataEditorReadServiceTests {
+    @Test("Scoped recovery clears only the resolved queue request's displayed error")
+    @MainActor
+    func conflictRecoveryClearsOnlyMatchingFailure() {
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: MetadataCleanupSuccessfulWriter())
+        let old = UUID()
+        let newer = UUID()
+        model.reportCaptionPersistenceFailure("Old queued failure", requestID: old)
+        model.clearCaptionPersistenceFailure(requestID: newer)
+        #expect(model.saveError == "Old queued failure")
+        model.reportCaptionPersistenceFailure("Later queued failure", requestID: newer)
+        model.clearCaptionPersistenceFailure(requestID: old)
+        #expect(model.saveError == "Later queued failure")
+        model.saveError = "Independent editor failure"
+        model.clearCaptionPersistenceFailure(requestID: newer)
+        #expect(model.saveError == "Independent editor failure")
+        model.reportCaptionPersistenceFailure("Resolved queued failure", requestID: old)
+        model.clearCaptionPersistenceFailure(requestID: old)
+        #expect(model.saveError == nil)
+    }
+
+    @Test("Scoped recovery reloads saved metadata only for the unchanged reviewed editor", arguments: [
+        "unchanged", "new edit", "other photo", "same-photo reload", "other folder", "same-stem sibling", "technical buffer"
+    ])
+    @MainActor
+    func conflictRecoveryReloadGuardsEditorIdentity(change: String) async throws {
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Saved C"))
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.title = "Queued B"
+        fixture.model.markChanged()
+        _ = try #require(try fixture.model.captureCaptionDraftPersistence())
+        if change == "technical buffer" {
+            var settings = CameraRawSettings()
+            settings.exposure2012 = 0.5
+            fixture.model.editingMetadata.cameraRaw = settings
+            fixture.model.markChanged()
+        }
+        let checkpoint = try #require(fixture.model.captionConflictEditorCheckpoint(for: fixture.image))
+        let sourceBefore = try Data(contentsOf: fixture.image)
+        let jsonURL = fixture.folder.appendingPathComponent(".photo_metadata/draft.jpg.meta.json")
+        let jsonBefore = try Data(contentsOf: jsonURL)
+        let xmpURL = XMPSidecarService().sidecarURL(for: fixture.image)
+        let xmpBefore = try Data(contentsOf: xmpURL)
+        switch change {
+        case "new edit": fixture.model.editingMetadata.title = "New buffer D"
+        case "other photo":
+            await loadCaptionFixture(fixture.model, image: fixture.folder.appendingPathComponent("other.jpg"), folder: fixture.folder)
+        case "same-photo reload":
+            await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        case "other folder": fixture.model.currentFolderURL = fixture.folder.appendingPathComponent("different")
+        case "same-stem sibling":
+            await loadCaptionFixture(fixture.model, image: fixture.folder.appendingPathComponent("draft.raw"), folder: fixture.folder)
+        default: break
+        }
+        let current = fixture.model.editingMetadata
+        let selection = fixture.model.selectedURLs
+        let reloaded = fixture.model.reloadAfterCaptionConflictRecovery(checkpoint, image: ImageFile(url: fixture.image))
+        #expect(reloaded == (change == "unchanged"))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while fixture.model.isLoading, ContinuousClock.now < deadline { await Task.yield() }
+        if change == "unchanged" {
+            #expect(fixture.model.editingMetadata.title == "Saved C")
+            #expect(!fixture.model.hasUnpersistedEditorChanges)
+        } else {
+            #expect(fixture.model.editingMetadata == current)
+            #expect(fixture.model.selectedURLs == selection)
+        }
+        #expect(try Data(contentsOf: fixture.image) == sourceBefore)
+        #expect(try Data(contentsOf: jsonURL) == jsonBefore)
+        #expect(try Data(contentsOf: xmpURL) == xmpBefore)
+    }
+
     @Test("Active headline buffer reaches the actual Caption Write before focus loss")
     @MainActor
     func activeHeadlineBufferReachesImmediateCaptionWrite() async throws {

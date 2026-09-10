@@ -1292,6 +1292,7 @@ struct MetadataPanel: View {
             }
             captionFlushCoordinator?.register(
                 owner: captionFlushOwner,
+                currentImageURL: { viewModel.selectedURLs.count == 1 ? viewModel.selectedURLs.first : nil },
                 compositionState: {
                     guard focusedField != nil,
                           let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
@@ -1302,7 +1303,8 @@ struct MetadataPanel: View {
                 },
                 capturePersistence: { try captureCaptionDraftPersistence() },
                 persistenceFailure: { message in
-                    viewModel.saveError = "Failed to save caption sidecar: \(message)"
+                    viewModel.reportCaptionPersistenceFailure("Failed to save caption sidecar: \(message)",
+                        requestID: captionFlushCoordinator?.currentQueueFailure?.id)
                 },
                 handler: { try flushCaptionEditorBuffer() }
             )

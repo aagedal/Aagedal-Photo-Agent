@@ -89,6 +89,14 @@ nonisolated enum MetadataCommitResult: Sendable, Equatable {
     case failed(message: String)
 }
 
+/// A scoped recovery may reload only the exact editor state that the user reviewed.
+nonisolated struct CaptionConflictEditorCheckpoint: Sendable {
+    let photoURL: URL
+    let folderURL: URL?
+    let loadID: UUID?
+    let metadata: IPTCMetadata
+}
+
 @Observable
 final class MetadataViewModel {
     var metadata: IPTCMetadata?
@@ -101,7 +109,10 @@ final class MetadataViewModel {
     var selectedURLs: [URL] = []
     var hasChanges = false
     var isInEditView = false
-    var saveError: String?
+    var saveError: String? {
+        didSet { captionPersistenceFailureRequestID = nil }
+    }
+    @ObservationIgnored private var captionPersistenceFailureRequestID: UUID?
     var variableProcessingStatus: String?
     var variableProcessingHadFailures = false
     var selectedHasC2PA = false
@@ -378,6 +389,35 @@ final class MetadataViewModel {
             resolved.exifOrientation = bestOrientation
         }
         return resolved
+    }
+
+    func reportCaptionPersistenceFailure(_ message: String, requestID: UUID?) {
+        saveError = message
+        captionPersistenceFailureRequestID = requestID
+    }
+
+    func clearCaptionPersistenceFailure(requestID: UUID) {
+        guard captionPersistenceFailureRequestID == requestID else { return }
+        saveError = nil
+    }
+
+    func captionConflictEditorCheckpoint(for photoURL: URL) -> CaptionConflictEditorCheckpoint? {
+        guard !isLoading, !isSaving, selectedURLs.count == 1,
+              selectedURLs[0].resolvingSymlinksInPath().path == photoURL.resolvingSymlinksInPath().path else { return nil }
+        return CaptionConflictEditorCheckpoint(photoURL: photoURL, folderURL: currentFolderURL,
+            loadID: metadataLoadRequestID, metadata: editingMetadata)
+    }
+
+    /// This only reloads saved files. Queue recovery never writes or deletes those files.
+    @discardableResult
+    func reloadAfterCaptionConflictRecovery(_ checkpoint: CaptionConflictEditorCheckpoint, image: ImageFile) -> Bool {
+        guard !isLoading, !isSaving, !hasUnpersistedEditorChanges, selectedURLs.count == 1,
+              selectedURLs[0].resolvingSymlinksInPath().path == checkpoint.photoURL.resolvingSymlinksInPath().path,
+              image.url.resolvingSymlinksInPath().path == checkpoint.photoURL.resolvingSymlinksInPath().path,
+              currentFolderURL == checkpoint.folderURL, metadataLoadRequestID == checkpoint.loadID,
+              editingMetadata == checkpoint.metadata else { return false }
+        loadMetadata(for: [image], folderURL: checkpoint.folderURL)
+        return true
     }
 
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {

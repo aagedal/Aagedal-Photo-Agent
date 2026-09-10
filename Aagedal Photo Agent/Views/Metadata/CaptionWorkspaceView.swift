@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum CaptionPreviewMode: Hashable {
     case fit
@@ -22,6 +23,20 @@ struct CaptionWorkspaceView: View {
     @State private var preview: NSImage?
     @State private var validationReport = MetadataValidationReport(issues: [])
     @State private var errorMessage: String?
+    @State private var isWorkspaceActive = false
+    @State private var workspaceLifetimeID: UUID?
+    @State private var conflictOperationID: UUID?
+    @State private var conflictReviewRequestID: UUID?
+    @State private var flushCoordinator = CaptionWorkspaceFlushCoordinator.shared
+    @State private var conflictReview: CaptionConflictSnapshot?
+    @State private var reviewedFailure: CaptionQueueFailure?
+    @State private var conflictExportReceipt: CaptionConflictExportReceipt?
+    @State private var conflictCheckpoint: CaptionConflictEditorCheckpoint?
+    @State private var conflictImage: ImageFile?
+    @State private var pendingReviewPhoto: URL?
+    @State private var isConflictRecoveryBusy = false
+    @State private var conflictRecoveryError: String?
+    @State private var conflictRecoveryNotice: String?
     @State private var isCopyingPrevious = false
     @State private var codeReplacementStore: CodeReplacementSettingsStore
     @State private var showingCodeReplacementSettings = false
@@ -112,6 +127,15 @@ struct CaptionWorkspaceView: View {
     var body: some View {
         VStack(spacing: 0) {
             statusBar
+            if let failure = flushCoordinator.failure { queuedFailureBanner(failure) }
+            if let conflictRecoveryNotice {
+                Text(conflictRecoveryNotice)
+                    .font(.callout)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .accessibilityIdentifier("caption.conflictRecovery.notice")
+            }
             Divider()
 
             if session.currentURL == nil {
@@ -177,6 +201,7 @@ struct CaptionWorkspaceView: View {
                         .frame(minHeight: 34)
                     }
                     .frame(minWidth: 340, idealWidth: 430, maxWidth: 560)
+                    .disabled(isCurrentPhotoUnderReview)
                 }
             }
 
@@ -186,11 +211,29 @@ struct CaptionWorkspaceView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityIdentifier("caption.workspace")
         .onAppear {
+            isWorkspaceActive = true
+            workspaceLifetimeID = UUID()
             synchronizeSessionWithBrowser()
             updateReadiness()
             installCaptionShortcutMonitor()
         }
-        .onDisappear { removeCaptionShortcutMonitor() }
+        .onDisappear {
+            isWorkspaceActive = false
+            workspaceLifetimeID = nil
+            conflictOperationID = nil
+            conflictReviewRequestID = nil
+            removeCaptionShortcutMonitor()
+            if let conflictReview {
+                Task { await flushCoordinator.endConflictReview(conflictReview) }
+            }
+            conflictReview = nil
+            pendingReviewPhoto = nil
+            reviewedFailure = nil
+            conflictExportReceipt = nil
+            conflictCheckpoint = nil
+            conflictImage = nil
+            isConflictRecoveryBusy = false
+        }
         .onChange(of: visibleURLs) { _, _ in
             synchronizeSessionWithBrowser()
         }
@@ -219,10 +262,17 @@ struct CaptionWorkspaceView: View {
             completeWriteAndNextIfPossible()
         }
         .onChange(of: metadataViewModel.saveError) { _, saveError in
-            if let saveError { errorMessage = saveError }
+            if let saveError, conflictReview == nil, pendingReviewPhoto == nil { errorMessage = saveError }
+        }
+        .onChange(of: flushCoordinator.failure) { _, failure in
+            guard let review = conflictReview, let failure else { return }
+            if failure.id != review.failure.id || failure.affectedRequestCount != review.requestCount {
+                conflictExportReceipt = nil
+                conflictRecoveryError = "The queued edits changed. Cancel this review and open Review Queued Conflict again to export the current set."
+            }
         }
         .onChange(of: commandRouter.latestDelivery) { _, delivery in
-            guard let delivery else { return }
+            guard let delivery, conflictReview == nil, pendingReviewPhoto == nil else { return }
             switch delivery.command {
             case .selectPreviousImage:
                 navigate(previous: true)
@@ -268,13 +318,232 @@ struct CaptionWorkspaceView: View {
                 }
             }
         }
+        .sheet(isPresented: Binding(
+            get: { conflictReview != nil },
+            set: { if !$0 { cancelConflictReview() } }
+        )) {
+            if let review = conflictReview, let failure = reviewedFailure {
+                CaptionConflictRecoveryView(photoURL: review.photoURL, reason: failure.message,
+                    requestCount: review.requestCount, exportURL: conflictExportReceipt?.exportURL,
+                    isBusy: isConflictRecoveryBusy, errorMessage: conflictRecoveryError,
+                    onExport: exportReviewedConflict, onDiscard: discardReviewedConflict,
+                    onCancel: cancelConflictReview)
+            }
+        }
         .alert("Caption Workspace", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
         )) {
             Button("OK", role: .cancel) { errorMessage = nil }
+            if let failure = flushCoordinator.failure, failure.kind == .replayConflict {
+                Button("Review Queued Conflict…") {
+                    errorMessage = nil
+                    Task { @MainActor in beginConflictReview(failure) }
+                }
+            }
         } message: {
             Text(errorMessage ?? "The transition was cancelled.")
+        }
+    }
+
+    private var isCurrentPhotoUnderReview: Bool {
+        guard let current = session.currentURL else { return false }
+        if let pendingReviewPhoto,
+           pendingReviewPhoto.resolvingSymlinksInPath().path == current.resolvingSymlinksInPath().path { return true }
+        return flushCoordinator.isReviewing(current)
+    }
+
+    private func queuedFailureBanner(_ failure: CaptionQueueFailure) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(failure.kind == .replayConflict ? "Queued Caption Conflict" : "Caption Save Needs Attention")
+                    .font(.headline)
+                if let photo = failure.photoURL { Text(photo.lastPathComponent).font(.caption) }
+                Text(failure.message).font(.callout).lineLimit(2)
+            }
+            Spacer()
+            if failure.kind == .replayConflict {
+                Button("Review Queued Conflict…") { beginConflictReview(failure) }
+                    .accessibilityIdentifier("caption.conflictRecovery.review")
+            } else {
+                Button("Retry Saving") { retryQueuedCaptionPersistence() }
+                    .accessibilityIdentifier("caption.conflictRecovery.retry")
+            }
+        }
+        .disabled(isConflictRecoveryBusy || metadataViewModel.isSaving)
+        .padding(12)
+        .background(.orange.opacity(0.08))
+    }
+
+    private func beginConflictReview(_ failure: CaptionQueueFailure) {
+        guard isWorkspaceActive, !isConflictRecoveryBusy,
+              conflictReview == nil, pendingReviewPhoto == nil, let photo = failure.photoURL,
+              !metadataViewModel.isSaving else { return }
+        errorMessage = nil
+        conflictRecoveryError = nil
+        conflictRecoveryNotice = nil
+        conflictExportReceipt = nil
+        do {
+            // Capture only this photo's live text and dependent request. Do not drain the failed
+            // FIFO, and do not touch another selected photo's editor merely to review its head.
+            if metadataViewModel.selectedURLs.count == 1,
+               metadataViewModel.selectedURLs[0].resolvingSymlinksInPath().path == photo.resolvingSymlinksInPath().path {
+                guard try flushCoordinator.editorCompositionState() == .committed else {
+                    throw CaptionWorkspaceFlushError.persistenceFailed("Finish the active text composition before reviewing queued edits.")
+                }
+                try flushCoordinator.enqueueFlush()
+            }
+            conflictCheckpoint = metadataViewModel.captionConflictEditorCheckpoint(for: photo)
+            conflictImage = visibleImages.first { $0.url.resolvingSymlinksInPath().path == photo.resolvingSymlinksInPath().path }
+            pendingReviewPhoto = photo
+            isConflictRecoveryBusy = true
+            let requestID = UUID()
+            conflictReviewRequestID = requestID
+            Task { @MainActor in
+                do {
+                    let snapshot = try await flushCoordinator.beginConflictReview(failure)
+                    guard isWorkspaceActive, conflictReviewRequestID == requestID else {
+                        await flushCoordinator.endConflictReview(snapshot)
+                        return
+                    }
+                    reviewedFailure = snapshot.failure
+                    conflictReview = snapshot
+                } catch {
+                    if isWorkspaceActive, conflictReviewRequestID == requestID { errorMessage = error.localizedDescription }
+                }
+                if conflictReviewRequestID == requestID {
+                    pendingReviewPhoto = nil
+                    isConflictRecoveryBusy = false
+                }
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func exportReviewedConflict() {
+        guard let review = conflictReview, let lifetimeID = workspaceLifetimeID,
+              isWorkspaceActive, !isConflictRecoveryBusy else { return }
+        let operationID = UUID()
+        conflictOperationID = operationID
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "\(review.photoURL.lastPathComponent) Caption Recovery.json"
+        panel.title = "Export Queued Caption Recovery"
+        panel.message = "Save a local copy of the queued metadata and history before discarding these edits."
+        isConflictRecoveryBusy = true
+        conflictRecoveryError = nil
+        let completion: (NSApplication.ModalResponse) -> Void = { response in
+            Task { @MainActor in
+                guard ownsConflictOperation(operationID, lifetimeID: lifetimeID), conflictReview?.id == review.id else { return }
+                defer { finishConflictOperation(operationID, lifetimeID: lifetimeID) }
+                guard response == .OK, let url = panel.url else { return }
+                do {
+                    let receipt = try await flushCoordinator.exportConflict(review, to: url)
+                    guard ownsConflictOperation(operationID, lifetimeID: lifetimeID), conflictReview?.id == review.id else { return }
+                    conflictExportReceipt = receipt
+                } catch {
+                    guard ownsConflictOperation(operationID, lifetimeID: lifetimeID), conflictReview?.id == review.id else { return }
+                    conflictExportReceipt = nil
+                    conflictRecoveryError = conflictReviewErrorDescription(error)
+                }
+            }
+        }
+        if let window = NSApp.keyWindow { panel.beginSheetModal(for: window, completionHandler: completion) }
+        else { panel.begin(completionHandler: completion) }
+    }
+
+    private func discardReviewedConflict() {
+        guard let review = conflictReview, let receipt = conflictExportReceipt,
+              let lifetimeID = workspaceLifetimeID, isWorkspaceActive, !isConflictRecoveryBusy else { return }
+        let operationID = UUID()
+        conflictOperationID = operationID
+        isConflictRecoveryBusy = true
+        conflictRecoveryError = nil
+        Task { @MainActor in
+            defer { finishConflictOperation(operationID, lifetimeID: lifetimeID) }
+            do {
+                let result = try await flushCoordinator.discardExportedConflict(review, receipt: receipt)
+                guard ownsConflictOperation(operationID, lifetimeID: lifetimeID), conflictReview?.id == review.id else { return }
+                metadataViewModel.clearCaptionPersistenceFailure(requestID: review.failure.id)
+                let reloaded = if let checkpoint = conflictCheckpoint, let image = conflictImage {
+                    metadataViewModel.reloadAfterCaptionConflictRecovery(checkpoint, image: image)
+                } else { false }
+                conflictRecoveryNotice = "Removed \(result.discardedCount) exported queued \(result.discardedCount == 1 ? "edit" : "edits"). Saved files were kept."
+                if conflictCheckpoint != nil, !reloaded {
+                    conflictRecoveryNotice = (conflictRecoveryNotice ?? "")
+                        + " The current editor was kept because it has unsaved changes or changed during review. Reopen the photo when you are ready to load its saved metadata."
+                }
+                browserViewModel.refreshPendingStatus()
+                conflictReview = nil
+                reviewedFailure = nil
+                conflictExportReceipt = nil
+                conflictCheckpoint = nil
+                conflictImage = nil
+                if let remaining = result.remainingFailure { errorMessage = remaining.message }
+            } catch {
+                guard ownsConflictOperation(operationID, lifetimeID: lifetimeID), conflictReview?.id == review.id else { return }
+                conflictExportReceipt = nil
+                conflictRecoveryError = conflictReviewErrorDescription(error)
+            }
+        }
+    }
+
+    private func ownsConflictOperation(_ operationID: UUID, lifetimeID: UUID) -> Bool {
+        isWorkspaceActive && workspaceLifetimeID == lifetimeID && conflictOperationID == operationID
+    }
+
+    private func finishConflictOperation(_ operationID: UUID, lifetimeID: UUID) {
+        guard ownsConflictOperation(operationID, lifetimeID: lifetimeID) else { return }
+        conflictOperationID = nil
+        isConflictRecoveryBusy = false
+    }
+
+    private func conflictReviewErrorDescription(_ error: any Error) -> String {
+        if let recoveryError = error as? CaptionConflictRecoveryError, case .obsoleteReview = recoveryError {
+            return "The queued edits changed. Cancel this review and open Review Queued Conflict again to export the current set."
+        }
+        return error.localizedDescription
+    }
+
+    private func cancelConflictReview() {
+        guard let review = conflictReview, let lifetimeID = workspaceLifetimeID,
+              isWorkspaceActive, !isConflictRecoveryBusy else { return }
+        let operationID = UUID()
+        conflictOperationID = operationID
+        isConflictRecoveryBusy = true
+        Task { @MainActor in
+            defer { finishConflictOperation(operationID, lifetimeID: lifetimeID) }
+            await flushCoordinator.endConflictReview(review)
+            guard ownsConflictOperation(operationID, lifetimeID: lifetimeID), conflictReview?.id == review.id else { return }
+            conflictReview = nil
+            reviewedFailure = nil
+            conflictExportReceipt = nil
+            conflictCheckpoint = nil
+            conflictImage = nil
+            conflictRecoveryError = nil
+        }
+    }
+
+    private func retryQueuedCaptionPersistence() {
+        guard let lifetimeID = workspaceLifetimeID, isWorkspaceActive, !isConflictRecoveryBusy else { return }
+        let operationID = UUID()
+        conflictOperationID = operationID
+        isConflictRecoveryBusy = true
+        let failureID = flushCoordinator.currentQueueFailure?.id
+        errorMessage = nil
+        Task { @MainActor in
+            defer { finishConflictOperation(operationID, lifetimeID: lifetimeID) }
+            do {
+                try await flushCoordinator.retryQueuedPersistence()
+                guard ownsConflictOperation(operationID, lifetimeID: lifetimeID) else { return }
+                if let failureID { metadataViewModel.clearCaptionPersistenceFailure(requestID: failureID) }
+            } catch {
+                guard ownsConflictOperation(operationID, lifetimeID: lifetimeID) else { return }
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -799,6 +1068,7 @@ struct CaptionWorkspaceView: View {
     private func installCaptionShortcutMonitor() {
         guard captionShortcutMonitor == nil else { return }
         captionShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard conflictReview == nil, pendingReviewPhoto == nil else { return event }
             let inputState = keyboardTextInputState(in: event.window)
             let modifiers = KeyboardShortcutModifiers(event.modifierFlags)
             if event.keyCode == 48,
