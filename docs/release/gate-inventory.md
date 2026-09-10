@@ -543,9 +543,9 @@ Do not spend release time implementing excluded conditional analyzers.
   rollback, and source reassociation without presenting the WAV as a photo.
 ```
 
-**Current status:** Import and rename foundations now also include production Duplicate, independently copied shared memos, hash/record stability checks and rollback. General Move and Reject are added in [cycle 2](cycle-02-memo-moves-toolbar-2026-09-09.md). Archive/delete/reassociation remain incomplete.
+**Current status:** Import and rename foundations now also include production Duplicate, independently copied shared memos, hash/record stability checks and rollback. General Move and Reject are added in [cycle 2](cycle-02-memo-moves-toolbar-2026-09-09.md). [Cycle 3](cycle-03-memo-trash-2026-09-10.md) adds recoverable memo Trash and sibling metadata preservation; see its separate verification status. Archive/reassociation remain incomplete.
 
-**Smallest next action/evidence:** Integrate companion records and WAVs into the remaining archive/delete/reassociation transactions with explicit shared/missing states and rollback. Duplicate has automated and synthetic native evidence; real-sample end-to-end validation remains.
+**Smallest next action/evidence:** Implement archive/reassociation using the [ownership design](voice-memo-archive-design.md). Cycle 3 passed automated and narrow native recovery checks; its [separate Caption correction](cycle-03-caption-baseline-2026-09-10.md) records remaining Restore/history baseline work. Preserve explicit shared/missing states and rollback. Real-sample end-to-end validation remains.
 
 ### J-VOICE-PLAYBACK
 

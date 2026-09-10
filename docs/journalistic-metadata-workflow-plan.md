@@ -713,6 +713,13 @@ operations. See [cycle 2 evidence](release/cycle-02-memo-moves-toolbar-2026-09-0
 checkbox stays open for archive, Trash, source reassociation and real camera end-to-end evidence.
 [Local transcription design](release/voice-memo-transcription-design.md) is preparatory only.
 
+2026-09-10 continuation adds recoverable companion Trash folders with shared-audio preservation,
+explicit JSON ownership, rollback/uncertain-outcome details and complete native error details.
+Move/Reject also preserve stem XMP and sibling-owned legacy JSON. See the separate implementation
+and verification status in [cycle 3 evidence](release/cycle-03-memo-trash-2026-09-10.md).
+Archive/reassociation are designed in [the lifecycle proposal](release/voice-memo-archive-design.md)
+but remain unimplemented. The broad lifecycle checkbox stays open.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

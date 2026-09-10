@@ -46,8 +46,8 @@
     "title": "Caption save, write, navigation and failed-write recovery",
     "source": "../journalistic-metadata-workflow-plan.md",
     "setup": "Use three disposable JPEG/RAW images and sidecars. Record before-file hashes and existing caption values. Have a designated unwritable test destination; do not change system permissions.",
-    "steps": "Enter a unique caption; Save & Next, return, and relaunch. Then Write & Next and read the supported metadata carrier. Attempt a write to the unwritable target and cancel/retry from its error. Navigate rapidly while a save is pending.",
-    "expected": "Save persists the app edit; Write advances only after successful supported write. Failure stays actionable with the edit retained. No caption appears on the wrong image and unrelated metadata stays intact.",
+    "steps": "Open an existing pending caption, focus and leave its fields without typing, then relaunch and compare the sidecar hashes. Enter a unique caption; Save & Next, return, and relaunch. Then Write & Next and read the supported metadata carrier. Attempt a write to the unwritable target and cancel/retry from its error. Navigate rapidly while a save is pending.",
+    "expected": "Untouched pending drafts retain their JSON timestamp and original snapshot without creating a new XMP file. Save persists a real edit while retaining its original baseline; Write advances only after successful supported write. Failure stays actionable with the edit retained. No caption appears on the wrong image and unrelated metadata stays intact.",
     "cleanup": "Restore test-folder permissions if changed; keep before/after read-back evidence and remove disposable copies."
   },
   {
@@ -156,7 +156,7 @@
     "title": "Sony memo lifecycle and review-before-apply",
     "source": "../journalistic-metadata-workflow-plan.md",
     "setup": "Requires completed 3.0 memo implementation plus authorized real ILCE-1 v4.00 samples, one/two-source layouts and documented edge fixtures. If features are absent, mark blocked; do not treat ingest-only support as completion.",
-    "steps": "Ingest RAW, JPEG and Both with backup. Refresh/relaunch, copy/archive, rename, move/reject and reassociate only disposable files. Inspect playback, duration/identity and missing/ambiguous states. Transcribe locally, cancel once, review/edit the transcript, then explicitly apply through the metadata-variable workflow. Inspect planned WAV delivery policy and receipt representation.",
+    "steps": "Ingest RAW, JPEG and Both with backup. Refresh/relaunch, copy/archive, rename, move/reject and reassociate only disposable files. Trash one photo sharing a memo and verify the survivor still plays its audio. Recover the entire named Photo Agent Trash folder through Finder, open that folder in the app and verify the restored photo, memo and metadata. Try Trash with a missing memo; open Details and confirm the source stays available and recovery text can be selected/copied. Inspect playback, duration/identity and missing/ambiguous states. Transcribe locally, cancel once, review/edit the transcript, then explicitly apply through the metadata-variable workflow. Inspect planned WAV delivery policy and receipt representation.",
     "expected": "Companion bytes and identities survive every supported lifecycle operation. WAVs never appear as photos; ambiguity fails closed. No implicit transcription or metadata overwrite; offline/model/language state is clear; approved text and explicit WAV policy match the approved specification.",
     "cleanup": "Stop playback/transcription; remove test copies and transcripts after evidence. Never commit private Sony media or audio to the repository."
   },
