@@ -1094,7 +1094,9 @@ struct MetadataPanel: View {
     private func commitEdits() {
         commitDebounceTask?.cancel()
         flushBufferedFields()
-        guard viewModel.hasChanges else { return }
+        // A pending draft loaded from disk is not a new edit. Moving focus (including to
+        // voice-memo playback) must not automatically rewrite that draft or its XMP mirror.
+        guard viewModel.hasUnpersistedEditorChanges else { return }
         if commitsToHistorySidecarOnly {
             viewModel.saveToSidecar()
             onPendingStatusChanged?()

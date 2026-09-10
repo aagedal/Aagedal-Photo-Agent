@@ -154,6 +154,29 @@ final class MetadataViewModel {
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataViewModel")
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
     private var previousEditingMetadata: IPTCMetadata?
+
+    /// Pending-on-disk metadata still needs an explicit Write, but merely reading it is not a
+    /// new editor change. Caption capture advances `previousEditingMetadata` optimistically;
+    /// its FIFO queue owns retries, so an unchanged exit must not enqueue the same draft again.
+    var hasUnpersistedEditorChanges: Bool {
+        guard hasChanges else { return false }
+        guard selectedCount == 1 else { return true }
+        return editingMetadata != previousEditingMetadata
+    }
+
+    /// The display reference may be the XMP copy of an existing pending draft. Keep that
+    /// reference separate from the historical baseline, including an explicitly absent baseline
+    /// in legacy JSON. The captured record is usable only for the current image and folder.
+    private var pendingDraftImageMetadataSnapshot: IPTCMetadata? {
+        if selectedURLs.count == 1,
+           let baseline = cleanupBaseline,
+           baseline.imageURL == selectedURLs.first,
+           baseline.folderURL == currentFolderURL,
+           let record = baseline.record, record.pendingChanges {
+            return record.imageMetadataSnapshot
+        }
+        return originalImageMetadata
+    }
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
     @ObservationIgnored private var metadataLoadRequestID: UUID?
     @ObservationIgnored private var writeTask: Task<Void, Never>?
@@ -2933,7 +2956,7 @@ final class MetadataViewModel {
                     imageURL: imageURL,
                     folderURL: folderURL,
                     pendingChanges: true,
-                    snapshot: originalImageMetadata
+                    snapshot: pendingDraftImageMetadataSnapshot
                 )
             } else if selectedCount > 1 {
                 // Batch mode - merge edits into each image's sidecar
@@ -2953,7 +2976,7 @@ final class MetadataViewModel {
         guard let folderURL = currentFolderURL else {
             throw CaptionWorkspaceFlushError.sidecarUnavailable
         }
-        guard hasChanges else { return nil }
+        guard hasUnpersistedEditorChanges else { return nil }
         guard selectedCount == 1, let imageURL = selectedURLs.first else {
             throw CaptionWorkspaceFlushError.persistenceFailed(
                 "Caption persistence requires exactly one selected photo."
@@ -2973,7 +2996,7 @@ final class MetadataViewModel {
             lastModified: now,
             pendingChanges: true,
             metadata: editingMetadata,
-            imageMetadataSnapshot: originalImageMetadata,
+            imageMetadataSnapshot: pendingDraftImageMetadataSnapshot,
             history: history
         )
 
@@ -3578,7 +3601,7 @@ final class MetadataViewModel {
     }
 
     var pendingFieldNames: [String] {
-        guard let original = originalImageMetadata else { return [] }
+        guard let original = pendingDraftImageMetadataSnapshot ?? originalImageMetadata else { return [] }
         var names: [String] = []
         if editingMetadata.title != original.title { names.append("Headline") }
         if editingMetadata.description != original.description { names.append("Description") }
@@ -3770,7 +3793,7 @@ final class MetadataViewModel {
             lastModified: Date(),
             pendingChanges: hasChanges,
             metadata: editingMetadata,
-            imageMetadataSnapshot: originalImageMetadata,
+            imageMetadataSnapshot: pendingDraftImageMetadataSnapshot,
             history: []
         )
         writeTask?.cancel()
@@ -3856,7 +3879,7 @@ final class MetadataViewModel {
                 lastModified: Date(),
                 pendingChanges: hasChanges,
                 metadata: editingMetadata,
-                imageMetadataSnapshot: originalImageMetadata,
+                imageMetadataSnapshot: pendingDraftImageMetadataSnapshot,
                 history: sidecarHistory
             )
             writeTask?.cancel()

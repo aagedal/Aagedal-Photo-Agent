@@ -109,7 +109,9 @@ actor MetadataIOCoordinator {
 /// Derives the serialization key for a photo. Keying by the extension-less, symlink-resolved,
 /// lowercased path means an image and its `.xmp` sidecar (`IMG.cr2` / `IMG.xmp`) — and any
 /// RAW/non-RAW siblings that intentionally share one sidecar — map to the same lock.
-enum MetadataIOKey {
+// Filesystem actors must derive keys without hopping to MainActor: Caption's synchronous
+// durable barrier may be waiting there for these same transactions to finish.
+nonisolated enum MetadataIOKey {
     static func key(for url: URL) -> String {
         url.resolvingSymlinksInPath()
             .deletingPathExtension()

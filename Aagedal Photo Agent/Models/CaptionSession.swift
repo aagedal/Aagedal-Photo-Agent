@@ -11,11 +11,12 @@ nonisolated struct CaptionDraftPersistence: Sendable {
     let sidecar: MetadataSidecar
 
     func persist() throws {
-        // Caption's FIFO is intentionally a background DispatchQueue. Bridge its synchronous
-        // durable-barrier contract to the shared async URL actor without blocking the main actor.
+        // DispatchQueue.sync may run a durable retry inline on the caller's MainActor task.
+        // Give this synchronous-to-async bridge an independent task context so the semaphore
+        // cannot block the executor needed by its own persistence work.
         let completion = DispatchSemaphore(value: 0)
         let result = CaptionPersistenceResult()
-        Task {
+        Task.detached {
             do {
                 let installed = try await MetadataSidecarService().saveSidecarMergingHistorySerialized(
                     sidecar,

@@ -2,8 +2,178 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
+private nonisolated final class CaptionBaselineRetryGate: @unchecked Sendable {
+    private enum Failure: Error { case injected }
+    private let lock = NSLock()
+    private var maySucceed = false
+    private var attempts = 0
+
+    var attemptCount: Int { lock.withLock { attempts } }
+    func allowSuccess() { lock.withLock { maySucceed = true } }
+    func attempt(_ request: CaptionDraftPersistence) throws {
+        let succeeds = lock.withLock {
+            attempts += 1
+            return maySucceed
+        }
+        guard succeeds else { throw Failure.injected }
+        try request.persist()
+    }
+}
+
 @Suite("Metadata editor sidecar read boundary", .serialized)
 struct MetadataEditorReadServiceTests {
+    @Test("Untouched pending Caption drafts never enqueue a write or change their baseline", arguments: [false, true])
+    @MainActor
+    func untouchedCaptionDraftIsReadOnly(hasMirroredXMP: Bool) async throws {
+        let fixture = try makePendingCaptionFixture(hasMirroredXMP: hasMirroredXMP)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let sidecarURL = fixture.folder.appendingPathComponent(".photo_metadata/draft.jpg.meta.json")
+        let before = try Data(contentsOf: sidecarURL)
+        let xmpURL = XMPSidecarService().sidecarURL(for: fixture.image)
+        let xmpBefore = try? Data(contentsOf: xmpURL)
+        for _ in 0..<2 {
+            await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+            #expect(fixture.model.hasChanges)
+            #expect(!fixture.model.hasUnpersistedEditorChanges)
+            #expect(fixture.model.pendingFieldNames.contains("Description"))
+            #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
+            #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
+        }
+        #expect(try Data(contentsOf: sidecarURL) == before)
+        #expect((try? Data(contentsOf: xmpURL)) == xmpBefore)
+    }
+
+    @Test("A new Caption edit preserves the pending snapshot across source switches and reloads", arguments: [false, true])
+    @MainActor
+    func changedCaptionDraftPreservesBaseline(legacyMissingSnapshot: Bool) async throws {
+        let fixture = try makePendingCaptionFixture(
+            hasMirroredXMP: true, legacyMissingSnapshot: legacyMissingSnapshot
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        #expect(fixture.model.originalImageMetadata?.description == "Pending caption")
+        fixture.model.applyReferenceSource(.embedded)
+        fixture.model.applyReferenceSource(.xmp)
+        fixture.model.editingMetadata.title = "New headline"
+        fixture.model.markChanged()
+        #expect(fixture.model.hasUnpersistedEditorChanges)
+        let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
+        #expect(captured.sidecar.imageMetadataSnapshot?.description == nil)
+        #expect((captured.sidecar.imageMetadataSnapshot == nil) == legacyMissingSnapshot)
+        #expect(captured.sidecar.metadata.description == "Pending caption")
+        #expect(captured.sidecar.history.count == 1)
+        #expect(captured.sidecar.history.first?.fieldID == .headline)
+        #expect(captured.sidecar.history.first?.newValue == "New headline")
+        #expect(!fixture.model.hasUnpersistedEditorChanges)
+        #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
+        try await Task.detached { try captured.persist() }.value
+        let installed = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(installed.pendingChanges)
+        #expect(installed.metadata.title == "New headline")
+        #expect(installed.imageMetadataSnapshot?.description == nil)
+        #expect((installed.imageMetadataSnapshot == nil) == legacyMissingSnapshot)
+
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        #expect(fixture.model.hasChanges)
+        #expect(!fixture.model.hasUnpersistedEditorChanges)
+        #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
+        if !legacyMissingSnapshot {
+            #expect(Set(fixture.model.pendingFieldNames).isSuperset(of: ["Description", "Headline"]))
+            #expect(Set(MetadataSidecarService().pendingFieldNames(for: fixture.image, in: fixture.folder))
+                .isSuperset(of: ["Description", "Headline"]))
+        }
+    }
+
+    @Test("An unchanged Caption capture still permits explicit Write")
+    @MainActor
+    func pendingCaptionStillAllowsExplicitWrite() async throws {
+        let fixture = try makePendingCaptionFixture(hasMirroredXMP: false)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
+        let result = await withCheckedContinuation { continuation in
+            fixture.model.commitEditsReportingResult(mode: .writeToXMPSidecar) {
+                continuation.resume(returning: $0)
+            }
+        }
+        guard case .succeeded = result else {
+            Issue.record("Explicit Write failed: \(result)")
+            return
+        }
+        #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.description == "Pending caption")
+        #expect(!fixture.model.hasChanges)
+    }
+
+    @Test("An unchanged capture does not suppress a failed queued draft retry")
+    @MainActor
+    func noOpCaptionCaptureStillDrainsFailedQueue() async throws {
+        let fixture = try makePendingCaptionFixture(hasMirroredXMP: false)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.title = "Queued headline"
+        fixture.model.markChanged()
+        let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
+        let gate = CaptionBaselineRetryGate()
+        let queue = CaptionDraftPersistenceQueue(label: "caption-baseline.failed-retry")
+        queue.enqueue(operation: { try gate.attempt(captured) })
+        #expect(queue.pendingCount == 1)
+        #expect(gate.attemptCount == 1)
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        coordinator.register(owner: UUID(), capturePersistence: {
+            try fixture.model.captureCaptionDraftPersistence()
+        }, handler: {})
+        #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
+        gate.allowSuccess()
+        try coordinator.flush()
+        #expect(queue.pendingCount == 0)
+        #expect(gate.attemptCount == 2)
+        let persisted = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(persisted.metadata.title == "Queued headline")
+        #expect(persisted.imageMetadataSnapshot?.description == nil)
+    }
+
+    @MainActor
+    private func makePendingCaptionFixture(
+        hasMirroredXMP: Bool,
+        legacyMissingSnapshot: Bool = false
+    ) throws -> (folder: URL, image: URL, model: MetadataViewModel) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("CaptionBaseline-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let image = folder.appendingPathComponent("draft.jpg")
+        var pending = IPTCMetadata()
+        pending.description = "Pending caption"
+        try MetadataSidecarService().saveSidecar(
+            MetadataSidecar(sourceFile: image.lastPathComponent,
+                lastModified: Date(timeIntervalSince1970: 100), pendingChanges: true,
+                metadata: pending, imageMetadataSnapshot: legacyMissingSnapshot ? nil : IPTCMetadata()),
+            for: image, in: folder
+        )
+        if hasMirroredXMP {
+            try XMPSidecarService().saveSidecar(metadata: pending, for: image)
+        }
+        let readBoundary = MetadataEditorReadService(access: .init(read: { url, folder, _, _ in
+            MetadataEditorSourceFacts(
+                imageURL: url,
+                xmpMetadata: XMPSidecarService().loadSidecar(for: url),
+                appSidecar: folder.flatMap { MetadataSidecarService().loadSidecar(for: url, in: $0) },
+                reconciliationVerdict: nil
+            )
+        }))
+        let model = MetadataViewModel(readService: SwiftExifReadService(),
+            writeEngine: MetadataCleanupSuccessfulWriter(), editorReadService: readBoundary)
+        return (folder, image, model)
+    }
+
+    @MainActor
+    private func loadCaptionFixture(_ model: MetadataViewModel, image: URL, folder: URL) async {
+        model.loadMetadata(for: [ImageFile(url: image)], folderURL: folder)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while model.isLoading, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.isLoading)
+    }
+
     @Test("complete immutable source facts are read serially away from MainActor")
     @MainActor
     func completeFactsRunOffMainActor() async {
