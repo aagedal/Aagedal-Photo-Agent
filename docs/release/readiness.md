@@ -1,13 +1,21 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — cycle 5 Caption retry, write-completion and active-field buffer integrity passed automated and native validation. Scoped conflict recovery is next.
+**State:** IMPLEMENTING — cycle 6 scoped Caption conflict recovery is committed and passes automated checks. Native recovery remains pending after the Mac locked.
 **Updated:** 2026-09-10
-**Latest implementation commit:** `42ace70ce67086bce6c5191697b5b8f329d57f65` (2,512 tests / 281 suites passed).
-**Cycle baseline:** `ea63df4` on `main`; clean checkout at cycle 5 start.
+**Latest implementation commit:** `7a503b3f3eedac35b12c70edaa5ee406e4aee075` (2,523 tests / 282 suites passed; native recovery pending).
+**Latest native-validated implementation:** `42ace70` (cycle 5).
+**Cycle baseline:** `fab8a0f` on `main`; clean checkout at cycle 6 start.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 6](cycle-06-caption-conflict-recovery-2026-09-10.md) implements scoped conflict review,
+verified private export and exact queued-set discard, preserving other photos and newer saved
+files. Independent source review passes; focused 138 tests / six suites and integrated 2,523 tests /
+282 suites pass, with repository validation. Two intermediate fixture-path failures are recorded
+and corrected. Final native recovery remains pending: the exact-build launch was blocked by the
+locked Mac. Baseline native reproduction proves the old limitation, not the new recovery path.
 
 [Cycle 5](cycle-05-caption-retry-intent-2026-09-10.md) records independently reviewed immutable
 Caption retry intent, guarded write completion/cleanup, and owned scalar/multiline buffer capture.
@@ -31,7 +39,8 @@ review, exact automated results, native interactions, artifact hashes and limita
 The [Caption follow-up](cycle-03-caption-baseline-2026-09-10.md) records cycle 3
 source, 111 focused tests, 2,449 full tests, native unchanged-draft byte checks and real edits.
 The [gate inventory](gate-inventory.md) preserves all 61 unchecked baseline criteria with
-classifications and concrete next actions. Playback's narrow implementation criterion is checked;
+classifications and concrete next actions. Current authoritative plans contain 60 unchecked criteria
+(9 audit, 23 investigation, 22 journalistic, 6 solar). Playback's narrow implementation criterion is checked;
 broad lifecycle, real-sample and accessibility gates remain open. The audit remains 66/75 and
 investigation delivery 119/142. No final release candidate was offered for acceptance.
 
@@ -48,11 +57,12 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Complete [scoped Caption conflict recovery](caption-conflict-recovery-design.md): permanent
-   conflicts now preserve newer files but retain an immutable FIFO head. Normal durable actions
-   remain blocked; the existing broad Quit Without Saving escape can lose unrelated queued edits.
-   Add review, verified export and explicit scoped discard/reload while preserving other photos'
-   queued work. Then migrate the [adjacent writer paths](cycle-05-caption-retry-intent-2026-09-10.md):
+1. Finish native verification of [scoped Caption conflict recovery](caption-conflict-recovery-design.md)
+   on committed `7a503b3`: actual A conflict, cancel/export/tamper rejection, explicit scoped discard,
+   actual B/C persistence, normal Close/Quit and relaunch. The implementation and automated tests
+   pass; native launch was blocked by the locked Mac. Recheck availability without bypass.
+   Then implement the [field-write and Metadata Review design](field-write-completion-design.md)
+   for the [adjacent writer paths](cycle-05-caption-retry-intent-2026-09-10.md):
    Browser rating/label/rotation and Metadata Review, Face person-name writes, batch XMP completion
    and non-displayed variable writes. Preserve unrelated pending drafts and report per-photo
    destination failures before clearing status. Cycle 5's new service alone does not fix these callers.
@@ -81,7 +91,7 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Archive/reassociation, transcription, reviewed variables and delivery; inventory dispositions |
 | Storage, cancellation and integrity | Open | Scoped FIFO conflict recovery, remaining writer completion/ownership, real-volume drills |
-| Automated regression and package | Cycle 5 regression/repository checks passed | Integrated checks, packaging and exact-candidate launch remain |
+| Automated regression and package | Cycle 6 regression/repository checks passed | Integrated checks, packaging and exact-candidate launch remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -92,6 +102,12 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | Signing/notarization/distribution | After applicable gates | Separate authorization and release-plan evidence |
 
 ## Blocker tracking
+
+Cycle 6's final recovery build could not launch through CUA because the Mac was locked. Automated
+checks, independent review and local commit work completed. Recovery native evidence remains
+mandatory, and the prepared final fixture is untouched. Recheck access next; no bypass is allowed.
+Other implementation work remains available, so this is not a total-progress blocker or a reason
+to notify the user yet.
 
 XCTest failed to establish its daemon control session twice before executing any tests.
 [Diagnostics](cycle-03-test-launch-diagnostics.md) distinguish this from product failures.
@@ -113,7 +129,7 @@ session. The final QA process was quit and native inventory confirmed it stopped
 returned to its original window. Bridge is available, but presence is not interoperability proof.
 
 Browser visual QA of the checklist remains pending: URL policy rejected its local file URL
-at setup. Do not bypass with another route. Static checks passed for 29 complete cases, unique
+at setup. Do not bypass with another route. Static checks passed for 30 complete cases, unique
 IDs, local source links and JavaScript syntax. It remains unassigned to a candidate and all
 human results are unrun.
 
@@ -142,3 +158,16 @@ and companion XMP; its JSON is absent after successful explicit Write cleanup. T
 untouched. Relaunch hash verification passed and native inventory confirmed the QA app stopped.
 Begin next cycle with the scoped conflict-recovery design, preserving all unrelated queued work;
 then address the inventoried adjacent writers. No broad gate or final user acceptance is closed.
+
+Cycle 6 recovery source is committed as `7a503b3` with focused/full/repository checks passing;
+its exact binary identity and failed native-launch evidence are in the dated report. Baseline
+native fixture `build/qa-caption-conflict-cycle6/` was intentionally ended using Quit Without
+Saving after proving the old permanent conflict; inventory confirmed that baseline app stopped.
+Fresh `build/qa-caption-conflict-cycle6-final/` is untouched and ready for final recovery testing.
+Do not report actual B/C resumed writes or recovery Close/Quit as passed until native testing runs.
+
+After independent commit/document work, a second CUA launch recheck still reported the Mac locked.
+The [field-write continuation design](field-write-completion-design.md) captures the independent
+source audit, concrete API/lock boundaries and tests for Browser/Face/Metadata Review; no new
+implementation is claimed for those paths. Useful source work remains, so the no-progress count
+stays zero and automation remains active.

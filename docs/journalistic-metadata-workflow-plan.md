@@ -4,13 +4,20 @@
 
 ## 2026-09-10 coordinator validation follow-up
 
-[Cycle 4](release/cycle-04-caption-restore-ownership-2026-09-10.md) corrects explicit metadata
-Restore/history, pending-field presentation, unintended lifecycle writes and JSON carrier
-ownership. Source `43ddf32` passes 2,479 integrated tests; native Restore/relaunch/deactivation
-preserves pending drafts and image bytes. Final Duplicate and ownership relaunch also preserve
-source bytes and opaque metadata. A distinct stale FIFO replay defect remains scheduled before
-further feature work. These
-bounded results do not close broad interoperability, integrity or Sony lifecycle gates.
+[Cycle 6](release/cycle-06-caption-conflict-recovery-2026-09-10.md) implements scoped review,
+verified private export and explicit queued-set discard for permanent Caption conflicts. Source
+`7a503b3` passes independent review and 2,523 integrated tests. Native recovery is still required;
+the exact-build launch was blocked by the locked Mac. No broader criterion is checked by this
+implementation result.
+
+[Cycle 5](release/cycle-05-caption-retry-intent-2026-09-10.md) adds immutable Caption retry
+intent, guarded write completion and active scalar/multiline buffer capture after native testing
+exposed stale replay and direct Write & Next loss. Source `42ace70` passes 2,512 integrated tests;
+native retry preserves newer saved fields, direct writes persist the actual focused text, and
+relaunch retains exact artifact hashes. [Cycle 4](release/cycle-04-caption-restore-ownership-2026-09-10.md)
+records prior Restore/history and ownership corrections. Native scoped FIFO conflict recovery verification
+and adjacent writer completion remain required. These bounded results do not close broad
+interoperability, integrity or Sony lifecycle gates.
 
 ## Objective
 

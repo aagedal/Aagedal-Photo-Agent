@@ -26,7 +26,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Coordinator cycle 3: recoverable memo Trash and shared metadata](release/cycle-03-memo-trash-2026-09-10.md); integrated tests and narrow native recovery checks passed. The follow-up [Caption baseline and failed-save retry correction](release/cycle-03-caption-baseline-2026-09-10.md) records its separate verification and remaining explicit Restore/history work.
+**Latest improvement continuation:** [Coordinator cycle 6: scoped Caption conflict recovery](release/cycle-06-caption-conflict-recovery-2026-09-10.md). Source `7a503b3` passes 2,523 integrated tests and independent review; actual recovery UI verification remains pending after the Mac locked. [Cycle 5](release/cycle-05-caption-retry-intent-2026-09-10.md) retains passing native retry/direct-write/relaunch evidence. Adjacent writer completion and broader release gates remain open.
 
 ## Portfolio
 

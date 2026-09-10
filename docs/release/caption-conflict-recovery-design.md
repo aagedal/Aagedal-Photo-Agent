@@ -1,7 +1,9 @@
 # Scoped Caption queue conflict recovery
 
-Proposed by independent cycle-5 review; **not implemented or verified**. This is the first
-required next integrity slice. Permanent replay conflicts preserve newer disk data but retain
+Proposed by independent cycle-5 review; implemented in `7a503b3` with independent review and
+passing automated checks. **Native recovery validation remains pending**, as recorded in
+[cycle 6](cycle-06-caption-conflict-recovery-2026-09-10.md). The criteria below remain the contract
+and include the required native gate. Permanent replay conflicts preserve newer disk data but retain
 an immutable FIFO head, blocking durable actions. Quit Without Saving can abandon all queued
 work; a scoped recovery path must preserve unrelated edits.
 

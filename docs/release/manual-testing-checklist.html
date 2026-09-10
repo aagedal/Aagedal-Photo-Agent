@@ -51,6 +51,17 @@
     "cleanup": "Restore test-folder permissions if changed; keep before/after read-back evidence and remove disposable copies."
   },
   {
+    "id": "A15",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Recover one queued Caption conflict without losing other photos",
+    "source": "caption-conflict-recovery-design.md",
+    "setup": "Use three disposable photos A, B and C with initial pending captions and recorded image/JSON/XMP hashes. Keep exports in a disposable local folder. Use a controlled partial-mirror failure followed by a newer saved A record whose history no longer contains the queued event; never alter user photos.",
+    "steps": "1. Queue an edit for A while its XMP mirror fails, then replace only its test JSON with the newer saved record and remove the empty mirror obstruction. 2. Queue unique edits for B and C; attempt Close to expose the permanent A conflict. 3. Open Review Queued Conflict while another photo is selected; cancel review and confirm all edits remain. 4. Reopen review, cancel the Save panel, then export Recovery JSON to the local folder. Inspect the exported photo, request IDs, full metadata/history and partial-commit receipt. 5. Explicitly discard only the exported queued A edits. Close Caption and quit normally without Quit Without Saving. 6. Relaunch and verify newer A plus B/C edits. Repeat with an unwritable export target and a modified exported file; discard must remain blocked until a fresh verified export.",
+    "expected": "Review remains reachable outside the failing save barrier. Cancel and failed or changed exports remove no queued work. Verified export precedes explicit scoped discard; newer A image/JSON/XMP bytes are preserved. Other photos and same-stem different-extension siblings retain their queued work and order. Late or new edits invalidate stale approval instead of being discarded. Normal Close and Quit succeed once conflicts are resolved; relaunch shows newer A and the saved B/C edits.",
+    "cleanup": "Keep sanitized export and before/after hash manifests as evidence. Quit the QA build and remove only the disposable fixture/export folder when evidence is no longer needed."
+  },
+  {
     "id": "A03",
     "lane": "Agent computer use",
     "priority": "P0",
