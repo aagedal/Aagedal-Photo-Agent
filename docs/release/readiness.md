@@ -1,13 +1,22 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — cycle 4 corrects Restore/history, pending markers, lifecycle writes and metadata ownership. 2,479 integrated tests and bounded native Restore/ownership workflows pass; stale FIFO replay remains next.
+**State:** IMPLEMENTING — cycle 5 Caption retry, write-completion and active-field buffer integrity passed automated and native validation. Scoped conflict recovery is next.
 **Updated:** 2026-09-10
-**Latest implementation commit:** `43ddf32e12c26d437598a565878c431b118fc251` (2,479 tests / 280 suites passed).
-**Cycle baseline:** `ff41d5e` on `main`; clean checkout at cycle 4 start.
+**Latest implementation commit:** `42ace70ce67086bce6c5191697b5b8f329d57f65` (2,512 tests / 281 suites passed).
+**Cycle baseline:** `ea63df4` on `main`; clean checkout at cycle 5 start.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 5](cycle-05-caption-retry-intent-2026-09-10.md) records independently reviewed immutable
+Caption retry intent, guarded write completion/cleanup, and owned scalar/multiline buffer capture.
+Final focused validation passes 165 tests / nine suites; full regression passes 2,512 tests /
+281 suites, with repository checks. Native partial-mirror retry preserved newer metadata without
+duplicate history. Native direct Write & Next from focused Headline and Description now writes
+the actual typed values, advances successfully and preserves the other photo and original pixels.
+Normal quit/relaunch retained the final values and exact artifact hashes. Earlier intermediate
+native failures and their corrections are explicitly recorded; no final readiness is claimed.
 
 The [cycle 4 record](cycle-04-caption-restore-ownership-2026-09-10.md) records native defects and
 corrections for explicit Restore, history buttons, pending markers and automatic lifecycle writes,
@@ -39,12 +48,14 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Fix the distinct stale FIFO replay defect independently of native host availability: an
-   already-applied event retry can overwrite a newer independent field when no new history identity exists. Add explicit
-   edit-replay versus technical/write-completion intent and exact-record CAS before clearing
-   pending state. Preserve Develop/orientation, original snapshots and newer unrelated changes;
-   a blanket keep-current rule would break legitimate technical-only and successful Write saves.
-   See the [cycle 4 integrity boundary](cycle-04-caption-restore-ownership-2026-09-10.md).
+1. Complete [scoped Caption conflict recovery](caption-conflict-recovery-design.md): permanent
+   conflicts now preserve newer files but retain an immutable FIFO head. Normal durable actions
+   remain blocked; the existing broad Quit Without Saving escape can lose unrelated queued edits.
+   Add review, verified export and explicit scoped discard/reload while preserving other photos'
+   queued work. Then migrate the [adjacent writer paths](cycle-05-caption-retry-intent-2026-09-10.md):
+   Browser rating/label/rotation and Metadata Review, Face person-name writes, batch XMP completion
+   and non-displayed variable writes. Preserve unrelated pending drafts and report per-photo
+   destination failures before clearing status. Cycle 5's new service alone does not fix these callers.
 2. Complete remaining Sony companion archive and source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Ingest, rename, Duplicate, Move, Reject and
    memo Trash now have implementation. Preserve explicit ownership through rendering/signing/
@@ -69,8 +80,8 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | Gate | Current disposition | Required evidence |
 | --- | --- | --- |
 | Required features | Open | Archive/reassociation, transcription, reviewed variables and delivery; inventory dispositions |
-| Storage, cancellation and integrity | Open | Stale FIFO replay, remaining writer ownership/recovery, real-volume drills |
-| Automated regression and package | Cycle 4 regression/repository checks passed | Integrated checks, packaging and exact-candidate launch remain |
+| Storage, cancellation and integrity | Open | Scoped FIFO conflict recovery, remaining writer completion/ownership, real-volume drills |
+| Automated regression and package | Cycle 5 regression/repository checks passed | Integrated checks, packaging and exact-candidate launch remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -122,3 +133,12 @@ Cycle 3's final QA process was quit normally. Other project processes and files 
 Cycle 4 fixture/evidence folders are documented in its dated report. Both final Restore and
 ownership sessions were quit after relaunch hash verification; all QA processes are stopped.
 Recheck native availability and checkout/task ownership next cycle.
+
+Cycle 5 source is committed as `42ace70`; its dated report contains final v5 binary identity,
+full/focused results and native hashes. Disposable baseline and final retry fixtures remain in
+`build/qa-caption-retry-cycle5-baseline/` and `build/qa-caption-retry-cycle5-final/`. The final
+first photo intentionally contains Headline F, Description V5 and independent credit C in embedded
+and companion XMP; its JSON is absent after successful explicit Write cleanup. The next photo is
+untouched. Relaunch hash verification passed and native inventory confirmed the QA app stopped.
+Begin next cycle with the scoped conflict-recovery design, preserving all unrelated queued work;
+then address the inventoried adjacent writers. No broad gate or final user acceptance is closed.
