@@ -1,8 +1,9 @@
 # Scoped Caption queue conflict recovery
 
 Proposed by independent cycle-5 review; implemented in `7a503b3` with independent review and
-passing automated checks. **Native recovery validation remains pending**, as recorded in
-[cycle 6](cycle-06-caption-conflict-recovery-2026-09-10.md). The criteria below remain the contract
+passing automated checks. **Native recovery validation passes** on the same source, as recorded in
+[cycle 7](cycle-07-field-write-completion-2026-09-10.md). [Cycle 6](cycle-06-caption-conflict-recovery-2026-09-10.md)
+retains the original automated results and temporary host-access limitation. The criteria below remain the contract
 and include the required native gate. Permanent replay conflicts preserve newer disk data but retain
 an immutable FIFO head, blocking durable actions. Quit Without Saving can abandon all queued
 work; a scoped recovery path must preserve unrelated edits.

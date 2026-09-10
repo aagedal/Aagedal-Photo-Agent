@@ -1,10 +1,14 @@
 # Field-only write completion and Metadata Review continuation
 
-Source-backed cycle-6 audit of `7a503b3`; **proposal, not implemented or verified**.
-This follows native verification of Caption scoped recovery. It is mandatory integrity work,
-not a final-user acceptance exception.
+Source-backed cycle-6 audit of `7a503b3`, with [cycle-7 implementation evidence](cycle-07-field-write-completion-2026-09-10.md).
+Browser rating/label and Face add-person service/callers are implemented with automated checks;
+Browser native checks pass on the recorded pre-Face-correction build. The Face directory-identity and
+error-presentation corrections are committed as `34a7313` with 2,547 integrated tests passing; final
+native Face retesting awaits desktop access. Orientation,
+Metadata Review, batch completion, non-displayed variables and effective XMP-only label clear
+remain mandatory work. This document retains the original observations and design boundaries.
 
-## Observed callers
+## Original caller audit on 7a503b3
 
 - `BrowserViewModel.applyMetadataField` (around line 2108) saves pending=false before embedded
   writes and refreshes status even after write failure. `applyFieldToSidecar` (around line 2189)

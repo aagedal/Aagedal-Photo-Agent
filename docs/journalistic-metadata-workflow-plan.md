@@ -6,17 +6,14 @@
 
 [Cycle 6](release/cycle-06-caption-conflict-recovery-2026-09-10.md) implements scoped review,
 verified private export and explicit queued-set discard for permanent Caption conflicts. Source
-`7a503b3` passes independent review and 2,523 integrated tests. Native recovery is still required;
-the exact-build launch was blocked by the locked Mac. No broader criterion is checked by this
-implementation result.
+`7a503b3` passes independent review and 2,523 integrated tests. [Cycle 7](release/cycle-07-field-write-completion-2026-09-10.md) now verifies native review/export cancellation, tampered-export rejection, scoped discard, continued writes and relaunch after desktop access resumed. Field-only Browser rating/label and Face add-person source `34a7313` passes 2,547 integrated tests and independent review. Browser native checks pass on its recorded pre-Face-correction build; final native Face retest awaits desktop access. No broader criterion is checked by these bounded results.
 
 [Cycle 5](release/cycle-05-caption-retry-intent-2026-09-10.md) adds immutable Caption retry
 intent, guarded write completion and active scalar/multiline buffer capture after native testing
 exposed stale replay and direct Write & Next loss. Source `42ace70` passes 2,512 integrated tests;
 native retry preserves newer saved fields, direct writes persist the actual focused text, and
 relaunch retains exact artifact hashes. [Cycle 4](release/cycle-04-caption-restore-ownership-2026-09-10.md)
-records prior Restore/history and ownership corrections. Native scoped FIFO conflict recovery verification
-and adjacent writer completion remain required. These bounded results do not close broad
+records prior Restore/history and ownership corrections. Adjacent writer completion remains required. These bounded results do not close broad
 interoperability, integrity or Sony lifecycle gates.
 
 ## Objective

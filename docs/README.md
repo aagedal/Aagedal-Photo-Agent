@@ -26,7 +26,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Coordinator cycle 6: scoped Caption conflict recovery](release/cycle-06-caption-conflict-recovery-2026-09-10.md). Source `7a503b3` passes 2,523 integrated tests and independent review; actual recovery UI verification remains pending after the Mac locked. [Cycle 5](release/cycle-05-caption-retry-intent-2026-09-10.md) retains passing native retry/direct-write/relaunch evidence. Adjacent writer completion and broader release gates remain open.
+**Latest improvement continuation:** [Coordinator cycle 7: native recovery and field-only writes](release/cycle-07-field-write-completion-2026-09-10.md). Scoped Caption conflict recovery now passes native cancel/export/tamper/discard, continued writes and relaunch on `7a503b3`. Field-only Browser rating/label and Face add-person source `34a7313` passes 2,547 integrated tests and independent review; Browser native checks pass on the recorded pre-Face-correction build. Final native Face retest awaits desktop access. [Cycle 6](release/cycle-06-caption-conflict-recovery-2026-09-10.md) retains its 2,523-test result; adjacent writer completion and broader release gates remain open.
 
 ## Portfolio
 

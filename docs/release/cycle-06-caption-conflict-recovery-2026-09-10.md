@@ -1,8 +1,9 @@
 # Coordinator cycle 6 — scoped Caption conflict recovery
 
-**Started:** 2026-09-10 12:38 UTC.  
-**Baseline:** clean `fab8a0f` on `main`; implementation `42ace70` passed 2,512 tests / 281 suites.  
-**State:** IMPLEMENTING; source independently reviewed and automated checks passed; native recovery remains pending.  
+**Started:** 2026-09-10 12:38 UTC.
+**Baseline:** clean `fab8a0f` on `main`; implementation `42ace70` passed 2,512 tests / 281 suites.
+**State at cycle end:** source independently reviewed and automated checks passed; native recovery was pending.
+**Later evidence:** [Cycle 7](cycle-07-field-write-completion-2026-09-10.md) passes native recovery on this unchanged implementation.
 **Implementation:** `7a503b3f3eedac35b12c70edaa5ee406e4aee075`.
 
 ## Scope and reconciliation
