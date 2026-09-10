@@ -1,7 +1,7 @@
 # Aagedal Photo Agent 3.0 feature guide
 
 **Status:** release-candidate draft  
-**Last reviewed:** 2026-09-09
+**Last reviewed:** 2026-09-10
 
 This guide covers the new 3.0 investigation, comparison, versioning, caption, rename, and deadline
 workflows. It supplements the control-level hover help and accessibility hints in the app. Commands and
@@ -23,6 +23,19 @@ button for leaving the review table.
 - **Image Analysis** opens the selected image. Analysis work is bound to that source revision and never
   silently writes analysis locations, notes, annotations, or findings into IPTC/XMP.
 - **Compare Two Images** is enabled when exactly two images are selected.
+
+## Restore metadata edits
+
+Open **Metadata editing history** to choose a retained history point or **Original State**.
+Original State uses the saved metadata snapshot from before the pending edits. Restoring saves
+an editorial draft and its XMP mirror; use **Write to Image** when you want to commit it to the
+image. Develop settings and orientation are preserved. Field markers compare the draft against
+the saved original; they can clear after Original State while the overall draft remains pending.
+
+An older record without an original snapshot cannot restore Original State. A history point
+cannot be reversed across later summarized or hidden values. The app explains those unavailable
+actions instead of inventing missing metadata. If restoration reports an incomplete mirror or
+changed files, follow its reload/retry guidance before another action.
 
 ## Listen to an associated voice memo
 
@@ -46,7 +59,12 @@ linked audio and existing destination companions fail closed. A cleanup warning 
 photo moved successfully but private source backups remain; follow the reported paths before
 retrying. General Move reports XMP/editorial sidecar failures separately from the moved photo.
 
-Archive/delete/source reassociation, transcription and delivery integration remain under
+**Move to Trash** places an associated photo, its WAV and owned metadata in one recoverable
+folder. Shared audio remains available to surviving photos. In Finder's Trash, use **Put Back**
+on the complete folder, keep its contents together, and open that folder in Photo Agent.
+If an operation reports an issue, open **Details** for all affected paths and recovery guidance.
+
+Archive/source reassociation, transcription and delivery integration remain under
 development; consult the limitations before using those operations on memo-bearing photos.
 
 ## Recover a deleted template

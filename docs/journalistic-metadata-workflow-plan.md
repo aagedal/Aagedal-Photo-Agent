@@ -2,6 +2,16 @@
 
 > Project planning index: [README.md](README.md)
 
+## 2026-09-10 coordinator validation follow-up
+
+[Cycle 4](release/cycle-04-caption-restore-ownership-2026-09-10.md) corrects explicit metadata
+Restore/history, pending-field presentation, unintended lifecycle writes and JSON carrier
+ownership. Source `43ddf32` passes 2,479 integrated tests; native Restore/relaunch/deactivation
+preserves pending drafts and image bytes. Final Duplicate and ownership relaunch also preserve
+source bytes and opaque metadata. A distinct stale FIFO replay defect remains scheduled before
+further feature work. These
+bounded results do not close broad interoperability, integrity or Sony lifecycle gates.
+
 ## Objective
 
 Make Aagedal Photo Agent a credible replacement for Adobe Bridge and Photo Mechanic for
@@ -239,10 +249,15 @@ ready.
 previously shipped label-only entries, renders canonical controlled values with human-readable
 labels, and stores repeatable fields as lossless JSON arrays instead of delimiter-dependent text.
 Long free text is summarized and identifiers, contact/location data, and GPS are redacted rather
-than copied into the audit trail. Restore is available only when every preceding entry is exact;
-unknown legacy events fail closed. Thirty-four focused history and sidecar tests pass, including
+than copied into the audit trail. At that checkpoint, Restore required an exact replayable
+prefix; unknown legacy events failed closed. Thirty-four focused history and sidecar tests pass, including
 legacy migration, comma-bearing repeatable values, privacy policy, and safe restore; see
 [the dated validation record](metadata-history-validation.md).
+
+**Correction — 2026-09-10:** [Cycle 4](release/cycle-04-caption-restore-ownership-2026-09-10.md)
+reconstructs a selected retained history point by reversing only later exact transitions from
+the saved current record. It validates each transition and retains edits older than a trimmed
+log. Original State requires the saved original snapshot; both actions produce a pending draft.
 
 ### Read/write boundary
 

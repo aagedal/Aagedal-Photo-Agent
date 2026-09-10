@@ -46,8 +46,8 @@
     "title": "Caption save, write, navigation and failed-write recovery",
     "source": "../journalistic-metadata-workflow-plan.md",
     "setup": "Use three disposable JPEG/RAW images and sidecars. Record before-file hashes and existing caption values. Have a designated unwritable test destination; do not change system permissions.",
-    "steps": "Open an existing pending caption, focus and leave its fields without typing, then relaunch and compare the sidecar hashes. Enter a unique caption; Save & Next, return, and relaunch. Then Write & Next and read the supported metadata carrier. Attempt a write to the unwritable target and cancel/retry from its error. Navigate rapidly while a save is pending.",
-    "expected": "Untouched pending drafts retain their JSON timestamp and original snapshot without creating a new XMP file. Save persists a real edit while retaining its original baseline; Write advances only after successful supported write. Failure stays actionable with the edit retained. No caption appears on the wrong image and unrelated metadata stays intact.",
+    "steps": "Open an existing pending caption, focus and leave its fields without typing, switch photos, deactivate the app, then relaunch and compare image and sidecar hashes. Enter a unique caption; Save & Next, return, and relaunch. Then Write & Next and read the supported metadata carrier. Attempt a write to the unwritable target and cancel/retry from its error. Navigate rapidly while a save is pending.",
+    "expected": "Untouched pending drafts retain their JSON timestamp and original snapshot without changing an existing XMP file or creating one. Save persists a real edit while retaining its original baseline; Write advances only after successful supported write. Failure stays actionable with the edit retained. No caption appears on the wrong image and unrelated metadata stays intact.",
     "cleanup": "Restore test-folder permissions if changed; keep before/after read-back evidence and remove disposable copies."
   },
   {
@@ -57,8 +57,8 @@
     "title": "Metadata fields, mixed selection and explicit clears",
     "source": "../journalistic-metadata-workflow-plan.md",
     "setup": "Prepare copied images with distinct Title, Headline, localized Title alternatives, ordered creators, capture times, keywords and unrelated metadata. Consult the generated metadata support table for carrier/write mode.",
-    "steps": "Edit Headline alone, then one Title alternative. Apply a field to a mixed selection; clear one field explicitly. Use Copy Previous with capture-specific exclusions. Save, write and reopen each supported carrier.",
-    "expected": "Independent fields and localized alternatives remain independent; untouched values and creator order survive. Mixed values are visible, explicit clear is durable, and excluded capture-specific values are preserved.",
+    "steps": "Edit Headline alone, then one Title alternative. Apply a field to a mixed selection; clear one field explicitly. Use Copy Previous with capture-specific exclusions. Restore an exact history point, then Original State; navigate, deactivate and reopen the app, then compare source-image hashes, the original snapshot, current draft and XMP. Check a same-stem JPEG and RAW with a JPEG-owned legacy record, then duplicate an image and verify its independent metadata. Save, write and reopen each supported carrier.",
+    "expected": "Independent fields and localized alternatives remain independent; untouched values and creator order survive. Mixed values are visible, explicit clear is durable, and excluded capture-specific values are preserved. A supported history restore survives reopening as a pending draft until Write to Image; Original State uses and retains the saved original snapshot. Develop settings, orientation and unrelated XMP survive. Missing original snapshots or non-reversible later history give an explicit unavailable result without changing files. A sibling-owned legacy record is neither adopted nor changed, and Duplicate preserves an independent copy of its owned metadata, including unknown fields.",
     "cleanup": "Retain a sanitized field comparison; remove the disposable carriers after evidence capture."
   },
   {

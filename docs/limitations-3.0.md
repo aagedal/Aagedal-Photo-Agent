@@ -1,7 +1,7 @@
 # Aagedal Photo Agent 3.0 known limitations
 
 **Status:** release-candidate draft  
-**Last reviewed:** 2026-08-25
+**Last reviewed:** 2026-09-10
 
 These are material product and evidence boundaries, not a list of unfinished internal tasks.
 
@@ -65,7 +65,8 @@ These are material product and evidence boundaries, not a list of unfinished int
   supports password/netrc authentication, not SSH private keys, and a narrow local path
   time-of-check/time-of-use interval remains before `curl` opens a verified staged file.
 - Persisted voice memos support explicit Caption playback and companion-preserving Duplicate,
-  alongside ingest, transactional rename and companion-aware Move/Reject. Archive/delete/source
+  alongside ingest, transactional rename, companion-aware Move/Reject and recoverable memo Trash.
+  Restore the entire Trash folder to retain its hidden relationship and metadata. Archive/source
   reassociation, transcription, reviewed transcript variables and delivery integration remain
   incomplete. Move/Reject stage verified copies before retiring originals; this requires temporary
   disk space and is not a process-crash-atomic multi-file operation. Physical cross-volume/recovery
