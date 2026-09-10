@@ -1,6 +1,26 @@
 import Foundation
 import os
 
+/// MainActor admission barrier for the brief interval in which an explicit Caption write removes
+/// its old JSON record. Existing load requests resume afterward and read the resulting revision.
+@MainActor
+private final class CaptionMetadataCleanupPhase {
+    private var finished = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitUntilFinished() async {
+        guard !finished else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func finish() {
+        finished = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
+
 enum MetadataReferenceSource: String, CaseIterable, Identifiable, Sendable {
     case embedded
     case xmp
@@ -94,13 +114,22 @@ final class MetadataViewModel {
     var originalImageMetadata: IPTCMetadata?
     var embeddedMetadata: IPTCMetadata?
     var xmpMetadata: IPTCMetadata?
-    private var cleanupBaseline: (imageURL: URL, folderURL: URL?, record: MetadataSidecar?)?
+    private var cleanupBaseline: (imageURL: URL, folderURL: URL?, record: MetadataSidecar?)? {
+        didSet { capturedCaptionWriteExpectation = nil }
+    }
+    @ObservationIgnored private var capturedCaptionWriteExpectation: (loadID: UUID?, request: MetadataSidecarReplayRequest)?
+    // Captures belong to the full photo path, including its extension. Cleanup phases use the
+    // shared XMP stem key conservatively, since sibling formats can share that companion.
+    @ObservationIgnored private var captionCaptureGenerations: [String: Int] = [:]
+    @ObservationIgnored private var captionCleanupOwners: [String: CaptionMetadataCleanupPhase] = [:]
     var sidecarHistory: [MetadataHistoryEntry] = []
     var currentFolderURL: URL?
     var metadataReferenceSource: MetadataReferenceSource = .embedded
     /// Incremented after every metadata load completes. Observed by EditWorkspaceView
     /// to force re-render even when editingMetadata.cameraRaw hasn't changed.
     var metadataLoadGeneration: Int = 0
+    /// Identity used to reject UI buffers registered for a previous load of the same photo.
+    var editorBufferLoadID: UUID? { metadataLoadRequestID }
 
     var hasXmpMetadata: Bool { xmpMetadata != nil }
     var hasEmbeddedCropNotLoaded: Bool {
@@ -181,8 +210,12 @@ final class MetadataViewModel {
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
     @ObservationIgnored private var metadataLoadRequestID: UUID?
     @ObservationIgnored private var writeTask: Task<Void, Never>? {
-        willSet { historyRestoreRequestID = nil }
+        willSet {
+            historyRestoreRequestID = nil
+            writeTaskGeneration += 1
+        }
     }
+    @ObservationIgnored private var writeTaskGeneration = 0
     @ObservationIgnored private var historyRestoreRequestID: UUID?
     @ObservationIgnored private var discardTask: Task<Void, Never>?
     @ObservationIgnored private var discardRequestID: UUID?
@@ -350,6 +383,18 @@ final class MetadataViewModel {
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
         metadataLoadTask?.cancel()
         metadataLoadTask = nil
+        if images.count == 1,
+           let image = images.first,
+           let phase = captionCleanupOwners[MetadataIOKey.key(for: image.url)] {
+            isLoading = true
+            metadataLoadTask = Task {
+                await phase.waitUntilFinished()
+                guard !Task.isCancelled else { return }
+                metadataLoadTask = nil
+                loadMetadata(for: images, folderURL: folderURL)
+            }
+            return
+        }
         let requestID = UUID()
         metadataLoadRequestID = requestID
 
@@ -1656,85 +1701,74 @@ final class MetadataViewModel {
         let edited = editingMetadata
         let previous = previousEditingMetadata ?? IPTCMetadata()
         let existingHistory = sidecarHistory
-
+        let expectedRecord = currentWriteExpectedRecord
+        let technicalReference = xmpMetadata
+        let loadID = metadataLoadRequestID
+        let generation = writeTaskGeneration + 1
         isSaving = true
         saveError = nil
 
         writeTask?.cancel()
         writeTask = Task {
-            let now = Date()
-            let history = buildHistory(
-                previous: previous,
-                edited: edited,
-                timestamp: now,
-                existing: existingHistory
-            )
-            let sidecar = MetadataSidecar(
-                sourceFile: imageURL.lastPathComponent,
-                lastModified: now,
-                pendingChanges: false,
-                metadata: edited,
-                imageMetadataSnapshot: edited,
-                history: history
-            )
-            let result = await sidecarPersistenceService.persistHistoryAndMirrorXMP(
-                MetadataSidecarPersistenceRequest(
-                    sidecar: sidecar,
-                    imageURL: imageURL,
-                    folderURL: folderURL
-                )
-            )
-
-            let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
-            if isStillSelected, let installed = result.installedSidecar {
-                // JSON may already be durable when cancellation or an XMP failure occurs. Advance
-                // the history baseline so Retry mirrors the existing record instead of appending
-                // duplicate deltas, while leaving `hasChanges` set until both artifacts commit.
-                self.cleanupBaseline = (imageURL, folderURL, installed)
-                self.sidecarHistory = installed.history
-                self.previousEditingMetadata = installed.metadata
+            defer { if writeTaskGeneration == generation { isSaving = false } }
+            let matchesSelection = {
+                self.writeTaskGeneration == generation && self.metadataLoadRequestID == loadID
+                    && self.selectedURLs == [imageURL] && self.currentFolderURL == folderURL
+                    && self.editingMetadata == edited
             }
-
-            if result.completed {
-                if isStillSelected, let installed = result.installedSidecar {
-                    self.cleanupBaseline = (imageURL, folderURL, installed)
-                    self.sidecarHistory = installed.history
-                    self.previousEditingMetadata = installed.metadata
-                    self.xmpMetadata = installed.metadata
-                    if self.metadataReferenceSource == .xmp {
-                        let reference = self.referenceMetadata(
-                            for: .xmp,
-                            embedded: self.embeddedMetadata,
-                            xmp: edited,
-                            imageURL: imageURL
-                        ) ?? edited
-                        self.metadata = reference
-                        self.originalImageMetadata = reference
+            do {
+                let snapshot = try await sidecarService.captureWriteCompletionSnapshot(
+                    for: imageURL, in: folderURL, expectedSidecar: expectedRecord,
+                        expectedTechnicalMetadata: technicalReference)
+                let now = Date()
+                let sidecar = MetadataSidecar(sourceFile: imageURL.lastPathComponent,
+                    lastModified: now, pendingChanges: false, metadata: edited,
+                    imageMetadataSnapshot: edited,
+                    history: buildHistory(previous: previous, edited: edited,
+                        timestamp: now, existing: existingHistory))
+                let result = await sidecarService.completeSidecarAndMirrorXMP(sidecar, snapshot: snapshot,
+                    replaceDevelopSettings: Self.developSettingsChanged(edited.cameraRaw, previous.cameraRaw),
+                    replaceOrientation: edited.exifOrientation != previous.exifOrientation)
+                if result.completed, let installed = result.installedSidecar {
+                    if matchesSelection() {
+                        cleanupBaseline = (imageURL, folderURL, installed)
+                        sidecarHistory = installed.history
+                        xmpMetadata = result.writtenXMPMetadata ?? edited
+                        editingMetadata.cameraRaw = xmpMetadata?.cameraRaw
+                        editingMetadata.exifOrientation = xmpMetadata?.exifOrientation
+                        previousEditingMetadata = editingMetadata
+                        if metadataReferenceSource == .xmp {
+                            metadata = xmpMetadata
+                            originalImageMetadata = xmpMetadata
+                        }
+                        hasChanges = false
+                        selectedHavePendingSidecars = false
                     }
-                    self.hasChanges = false
+                    onComplete(.succeeded)
+                } else {
+                    let message = Self.writeCompletionFailure(result, imageWasWritten: false)
+                    if matchesSelection() { saveError = message }
+                    onComplete(result.wasCancelled ? .cancelled(message: message) : .failed(message: message))
                 }
-                onComplete(.succeeded)
-            } else if let failure = result.failure {
-                let artifact = failure.stage == .metadataSidecar ? "metadata history" : "XMP sidecar"
-                let message = "Failed to save \(artifact): \(failure.message)"
-                self.saveError = message
-                onComplete(.failed(message: message))
-            } else if result.wasCancelled, result.installedSidecar != nil {
-                let message = "Save cancelled after metadata history was written; the XMP sidecar was not changed."
-                self.saveError = message
-                onComplete(.cancelled(message: message))
-            } else if result.wasCancelled {
-                let message = "Save cancelled before metadata history was written."
-                self.saveError = message
-                onComplete(.cancelled(message: message))
-            } else {
-                let message = "The metadata history and XMP sidecar save did not complete."
-                self.saveError = message
-                onComplete(.failed(message: message))
+            } catch {
+                let message = "Metadata was not saved. \(error.localizedDescription)"
+                if matchesSelection() { saveError = message }
+                onComplete(error is CancellationError ? .cancelled(message: message) : .failed(message: message))
             }
-
-            self.isSaving = false
         }
+    }
+
+    private nonisolated static func writeCompletionFailure(
+        _ result: MetadataSidecarPersistenceResult, imageWasWritten: Bool
+    ) -> String {
+        let prefix = imageWasWritten
+            ? "The image metadata was written, but its draft could not be completed. Newer pending edits were preserved."
+            : result.wroteXMPSidecar
+                ? "The XMP metadata was written, but its draft could not be completed."
+                : "Metadata was not saved."
+        let detail = result.failure?.message ?? "The operation was cancelled."
+        let recovery = result.committedButUnverifiedSidecarURL.map { " Review: \($0.path)." } ?? ""
+        return "\(prefix) \(detail)\(recovery) Reload before retrying."
     }
 
     /// True when the develop (Camera Raw) state differs between two snapshots,
@@ -1901,25 +1935,31 @@ final class MetadataViewModel {
         let edited = editingMetadata
         let previous = previousEditingMetadata
         let existingHistory = sidecarHistory
-
+        let expectedRecord = currentWriteExpectedRecord
+        let original = originalImageMetadata
+        let technicalReference = xmpMetadata
+        let loadID = metadataLoadRequestID
+        let generation = writeTaskGeneration + 1
         isSaving = true
         saveError = nil
 
         writeTask?.cancel()
         writeTask = Task {
-            let commitResult: MetadataCommitResult
+            defer { if writeTaskGeneration == generation { isSaving = false } }
+            let matchesSelection = {
+                self.writeTaskGeneration == generation && self.metadataLoadRequestID == loadID
+                    && self.selectedURLs == [imageURL] && self.currentFolderURL == folderURL
+                    && self.editingMetadata == edited
+            }
             do {
-                // Touch the crs block only when develop settings actually changed:
-                // a caption-only save on an ACR-edited file must not rewrite (and,
-                // with replaceCameraRawBlock, wipe) Adobe's develop settings.
-                let developChanged = Self.developSettingsChanged(
-                    edited.cameraRaw, self.originalImageMetadata?.cameraRaw
-                )
-                let fields = overwriteFields(
-                    from: edited,
-                    includeCameraRaw: developChanged,
-                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
-                )
+                // Capture the exact pending record and companion revision before the image writer.
+                // A later edit must survive completion, even though the image write cannot be undone.
+                let completionSnapshot = try await sidecarService.captureWriteCompletionSnapshot(
+                    for: imageURL, in: folderURL, expectedSidecar: expectedRecord,
+                        expectedTechnicalMetadata: technicalReference)
+                let developChanged = Self.developSettingsChanged(edited.cameraRaw, original?.cameraRaw)
+                let fields = overwriteFields(from: edited, includeCameraRaw: developChanged,
+                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) })
                 let structuredData = developChanged
                     ? StructuredWriteData(
                         toneCurve: edited.cameraRaw?.toneCurve,
@@ -1930,77 +1970,44 @@ final class MetadataViewModel {
                         anonymizer: edited.cameraRaw?.anonymizer,
                         unparsedMaskCorrections: edited.cameraRaw?.unparsedMaskCorrections,
                         editorial: EditorialStructuredWriteData(metadata: edited),
-                        replaceCameraRawBlock: true
-                    )
+                        replaceCameraRawBlock: true)
                     : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited))
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
-                let sidecarMirrored = try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
-                    metadata: edited,
-                    for: imageURL,
-                    onlyIfExisting: !alsoWriteXMPSidecar
-                )
-                if sidecarMirrored {
-                    // Dual-write keeps a matching full .xmp record. In PM-style
-                    // writeToFile mode the file is the record, but any .xmp already on
-                    // disk must mirror it — otherwise its stale descriptive values (or a
-                    // develop-sync mtime bump) shadow the file on read and export.
-                    if developChanged {
-                        try await xmpSidecarService.saveCameraRawOnlySerialized(
-                            edited.cameraRaw,
-                            orientation: edited.exifOrientation,
-                            for: imageURL
-                        )
-                    }
-                } else {
-                    // No sidecar yet: keep develop settings ACR-readable without
-                    // creating a descriptive IPTC record next to an embedded-mode file.
-                    await self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
-                }
-
                 let now = Date()
-                let history = buildHistory(
-                    previous: previous ?? IPTCMetadata(),
-                    edited: edited,
-                    timestamp: now,
-                    existing: existingHistory
-                )
-                let sidecar = MetadataSidecar(
-                    sourceFile: imageURL.lastPathComponent,
-                    lastModified: now,
-                    pendingChanges: false,
-                    metadata: edited,
+                let sidecar = MetadataSidecar(sourceFile: imageURL.lastPathComponent,
+                    lastModified: now, pendingChanges: false, metadata: edited,
                     imageMetadataSnapshot: edited,
-                    history: history
-                )
-                let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
-                    sidecar,
-                    for: imageURL,
-                    in: folderURL
-                )
-
-                let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
-                if isStillSelected {
-                    self.cleanupBaseline = (imageURL, folderURL, installed)
-                    self.sidecarHistory = installed.history
-                    self.previousEditingMetadata = installed.metadata
-                    self.metadata = edited
-                    self.originalImageMetadata = edited
-                    self.embeddedMetadata = edited
-                    if sidecarMirrored {
-                        self.xmpMetadata = edited
+                    history: buildHistory(previous: previous ?? IPTCMetadata(), edited: edited,
+                        timestamp: now, existing: existingHistory))
+                let result = await sidecarService.completeSidecarAndMirrorXMP(sidecar,
+                    snapshot: completionSnapshot, mirrorOnlyIfExisting: !alsoWriteXMPSidecar,
+                    replaceDevelopSettings: developChanged,
+                    replaceOrientation: edited.exifOrientation != original?.exifOrientation)
+                if result.completed, let installed = result.installedSidecar {
+                    if matchesSelection() {
+                        cleanupBaseline = (imageURL, folderURL, installed)
+                        sidecarHistory = installed.history
+                        previousEditingMetadata = edited
+                        metadata = edited
+                        originalImageMetadata = edited
+                        embeddedMetadata = edited
+                        if result.wroteXMPSidecar { xmpMetadata = result.writtenXMPMetadata ?? edited }
+                        hasChanges = false
+                        selectedHavePendingSidecars = false
                     }
-                    self.hasChanges = false
+                    onComplete(.succeeded)
+                } else {
+                    let message = Self.writeCompletionFailure(result, imageWasWritten: true)
+                    if matchesSelection() { saveError = message }
+                    onComplete(result.wasCancelled ? .cancelled(message: message) : .failed(message: message))
                 }
-                commitResult = .succeeded
             } catch {
-                let message = error.localizedDescription
-                self.saveError = message
-                commitResult = error is CancellationError
-                    ? .cancelled(message: message)
-                    : .failed(message: message)
+                // Once the image writer returns, completion reports its partial outcome as a
+                // result above. Only admission and the image writer can throw into this catch.
+                let message = "Metadata was not written. \(error.localizedDescription)"
+                if matchesSelection() { saveError = message }
+                onComplete(error is CancellationError ? .cancelled(message: message) : .failed(message: message))
             }
-            self.isSaving = false
-            onComplete(commitResult)
         }
     }
 
@@ -2954,23 +2961,62 @@ final class MetadataViewModel {
 
     func saveToSidecar() {
         guard let folderURL = currentFolderURL else { return }
-
-        isSaving = true
-        writeTask?.cancel()
-        writeTask = Task {
-            if selectedCount == 1, let imageURL = selectedURLs.first {
-                // Single image mode - save with full history tracking
-                await saveSingleImageSidecar(
-                    imageURL: imageURL,
-                    folderURL: folderURL,
-                    pendingChanges: true,
-                    snapshot: pendingDraftImageMetadataSnapshot
-                )
-            } else if selectedCount > 1 {
-                // Batch mode - merge edits into each image's sidecar
-                await saveBatchSidecars(folderURL: folderURL)
+        let generation = writeTaskGeneration + 1
+        if selectedCount == 1, let imageURL = selectedURLs.first {
+            let edited = editingMetadata
+            let previous = previousEditingMetadata ?? IPTCMetadata()
+            let expectedRecord = currentWriteExpectedRecord
+            let technicalReference = xmpMetadata
+            let loadID = metadataLoadRequestID
+            let now = Date()
+            let sidecar = MetadataSidecar(sourceFile: imageURL.lastPathComponent,
+                lastModified: now, pendingChanges: true, metadata: edited,
+                imageMetadataSnapshot: pendingDraftImageMetadataSnapshot,
+                history: buildHistory(previous: previous, edited: edited, timestamp: now, existing: sidecarHistory))
+            isSaving = true
+            saveError = nil
+            writeTask?.cancel()
+            writeTask = Task {
+                defer { if writeTaskGeneration == generation { isSaving = false } }
+                let matchesSelection = {
+                    self.writeTaskGeneration == generation && self.metadataLoadRequestID == loadID
+                        && self.selectedURLs == [imageURL] && self.currentFolderURL == folderURL
+                        && self.editingMetadata == edited
+                }
+                do {
+                    // An intentional editor/technical save may have no editorial history delta.
+                    // Its complete record is valid only against this captured pending revision.
+                    let snapshot = try await sidecarService.captureWriteCompletionSnapshot(
+                        for: imageURL, in: folderURL, expectedSidecar: expectedRecord,
+                        expectedTechnicalMetadata: technicalReference)
+                    let result = await sidecarService.completeSidecarAndMirrorXMP(sidecar, snapshot: snapshot,
+                        replaceDevelopSettings: Self.developSettingsChanged(edited.cameraRaw, previous.cameraRaw),
+                        replaceOrientation: edited.exifOrientation != previous.exifOrientation)
+                    if result.completed, let installed = result.installedSidecar {
+                        if matchesSelection() {
+                            cleanupBaseline = (imageURL, folderURL, installed)
+                            sidecarHistory = installed.history
+                            xmpMetadata = result.writtenXMPMetadata ?? edited
+                            editingMetadata.cameraRaw = xmpMetadata?.cameraRaw
+                            editingMetadata.exifOrientation = xmpMetadata?.exifOrientation
+                            previousEditingMetadata = editingMetadata
+                            hasChanges = true
+                            selectedHavePendingSidecars = true
+                        }
+                    } else if matchesSelection() {
+                        saveError = Self.writeCompletionFailure(result, imageWasWritten: false)
+                    }
+                } catch {
+                    if matchesSelection() { saveError = "Failed to save sidecar: \(error.localizedDescription)" }
+                }
             }
-            isSaving = false
+        } else if selectedCount > 1 {
+            isSaving = true
+            writeTask?.cancel()
+            writeTask = Task {
+                await saveBatchSidecars(folderURL: folderURL)
+                if writeTaskGeneration == generation { isSaving = false }
+            }
         }
     }
 
@@ -2993,12 +3039,21 @@ final class MetadataViewModel {
 
         let now = Date()
         let previous = previousEditingMetadata ?? IPTCMetadata()
-        let history = buildHistory(
-            previous: previous,
-            edited: editingMetadata,
-            timestamp: now,
-            existing: sidecarHistory
-        )
+        let baselineHistory = sidecarHistory
+        let baselineRecordExisted = currentWriteExpectedRecord != nil
+        let changes = MetadataHistoryEntry.changes(from: previous, to: editingMetadata, timestamp: now)
+        // Caption owns editorial drafts. A Develop-only buffer belongs to its explicit technical
+        // write path and must not become a whole-record JSON replacement with no replay intent.
+        guard !changes.isEmpty else { return nil }
+        let captureKey = imageURL.resolvingSymlinksInPath().path.lowercased()
+        let cleanupKey = MetadataIOKey.key(for: imageURL)
+        guard captionCleanupOwners[cleanupKey] == nil else {
+            throw CaptionWorkspaceFlushError.persistenceFailed(
+                "This photo's metadata write is finishing. Your new Caption edits remain in the editor; save them again when it finishes."
+            )
+        }
+        var history = baselineHistory + changes
+        history.trimToHistoryLimit()
         let sidecar = MetadataSidecar(
             sourceFile: imageURL.lastPathComponent,
             lastModified: now,
@@ -3009,62 +3064,20 @@ final class MetadataViewModel {
         )
 
         sidecarHistory = history
-        previousEditingMetadata = editingMetadata
+        var persistedEditorialBaseline = editingMetadata
+        // Replay deliberately preserves technical XMP state. A mixed buffer must continue to
+        // report its unapplied Develop/orientation edits after the editorial request is captured.
+        persistedEditorialBaseline.cameraRaw = previous.cameraRaw
+        persistedEditorialBaseline.exifOrientation = previous.exifOrientation
+        previousEditingMetadata = persistedEditorialBaseline
         saveError = nil
-        return CaptionDraftPersistence(
-            imageURL: imageURL,
-            folderURL: folderURL,
-            sidecar: sidecar
-        )
-    }
-
-    private func saveSingleImageSidecar(
-        imageURL: URL,
-        folderURL: URL,
-        pendingChanges: Bool,
-        snapshot: IPTCMetadata?
-    ) async {
-        let now = Date()
-        let prev = previousEditingMetadata ?? IPTCMetadata()
-        let newHistory = buildHistory(
-            previous: prev,
-            edited: editingMetadata,
-            timestamp: now,
-            existing: sidecarHistory
-        )
-
-        let sidecar = MetadataSidecar(
-            sourceFile: imageURL.lastPathComponent,
-            lastModified: now,
-            pendingChanges: pendingChanges,
-            metadata: editingMetadata,
-            imageMetadataSnapshot: snapshot,
-            history: newHistory
-        )
-
-        do {
-            let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
-                sidecar,
-                for: imageURL,
-                in: folderURL
-            )
-            if pendingChanges {
-                // C2PA: save full metadata to XMP sidecar for render+sign overlay
-                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
-                    metadata: installed.metadata,
-                    for: imageURL,
-                    mergeWithExisting: true
-                )
-            } else {
-                await syncCameraRawToXMPSidecar(for: imageURL, metadata: installed.metadata)
-            }
-            cleanupBaseline = (imageURL, folderURL, installed)
-            sidecarHistory = installed.history
-            previousEditingMetadata = installed.metadata
-            hasChanges = pendingChanges
-        } catch {
-            saveError = "Failed to save sidecar: \(error.localizedDescription)"
-        }
+        let request = MetadataSidecarReplayRequest(
+            sidecar: sidecar, baselineMetadata: previous, baselineHistory: baselineHistory,
+            baselineRecordExisted: baselineRecordExisted,
+            changes: changes, imageURL: imageURL, folderURL: folderURL)
+        captionCaptureGenerations[captureKey, default: 0] += 1
+        capturedCaptionWriteExpectation = (metadataLoadRequestID, request)
+        return CaptionDraftPersistence(request: request)
     }
 
     private func buildHistory(
@@ -3367,11 +3380,15 @@ final class MetadataViewModel {
         let edited = editingMetadata
         let original = originalImageMetadata
         let loadID = metadataLoadRequestID
-        let editorRecord = cleanupBaseline.flatMap { baseline in
-            baseline.imageURL == imageURL && baseline.folderURL == folderURL ? baseline.record : nil
-        }
+        let editorRecord = currentWriteExpectedRecord
+        let generation = writeTaskGeneration + 1
+        let captureKey = imageURL.resolvingSymlinksInPath().path.lowercased()
+        let cleanupKey = MetadataIOKey.key(for: imageURL)
+        let capturedGeneration = captionCaptureGenerations[captureKey, default: 0]
         writeTask?.cancel()
         writeTask = Task {
+            defer { if writeTaskGeneration == generation { isSaving = false } }
+            var metadataWasWritten = false
             do {
                 let cleanup = try await sidecarService.captureWriteCleanupSnapshot(
                     for: imageURL, in: folderURL, editorRecord: editorRecord, requiresEditorMatch: true
@@ -3411,16 +3428,34 @@ final class MetadataViewModel {
                     try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
                 }
 
-                let cleared = try await sidecarService.deleteSidecarAfterWriteSerialized(cleanup)
-                guard !Task.isCancelled else { return }
-                guard metadataLoadRequestID == loadID, currentFolderURL == folderURL,
-                      selectedURLs == [imageURL], editingMetadata == edited else {
-                    self.isSaving = false
+                metadataWasWritten = true
+                // A later immutable Caption request still depends on this JSON revision. Keep it
+                // until that request commits, even if the user has since selected another photo.
+                guard captionCaptureGenerations[captureKey, default: 0] == capturedGeneration,
+                      captionCleanupOwners[cleanupKey] == nil,
+                      writeTaskGeneration == generation, metadataLoadRequestID == loadID,
+                      currentFolderURL == folderURL, selectedURLs == [imageURL] else {
+                    if writeTaskGeneration == generation, metadataLoadRequestID == loadID,
+                       currentFolderURL == folderURL, selectedURLs == [imageURL] {
+                        saveError = "Metadata was written, but a newer Caption draft is still pending. Its saved baseline was retained."
+                    }
                     return
                 }
+                // Capture cannot publish a request based on the soon-to-be-deleted revision while
+                // cleanup awaits its photo lock. Unchanged lifecycle captures remain no-ops.
+                let cleanupOwner = CaptionMetadataCleanupPhase()
+                captionCleanupOwners[cleanupKey] = cleanupOwner
+                defer {
+                    if captionCleanupOwners[cleanupKey] === cleanupOwner {
+                        captionCleanupOwners[cleanupKey] = nil
+                    }
+                    cleanupOwner.finish()
+                }
+                let cleared = try await sidecarService.deleteSidecarAfterWriteSerialized(cleanup)
+                guard writeTaskGeneration == generation, metadataLoadRequestID == loadID,
+                      currentFolderURL == folderURL, selectedURLs == [imageURL] else { return }
                 guard cleared else {
                     self.saveError = "Metadata was written, but newer pending sidecar changes were retained."
-                    self.isSaving = false
                     return
                 }
                 self.metadata = edited
@@ -3433,16 +3468,18 @@ final class MetadataViewModel {
                 self.sidecarHistory = []
                 self.selectedHavePendingSidecars = false
                 self.cleanupBaseline = (imageURL, folderURL, nil)
-                self.hasChanges = false
                 self.previousEditingMetadata = edited
+                // The written revision is now the baseline, even if the user typed a newer value
+                // while the writer ran. Preserve that buffer and keep Write & Next on this photo.
+                self.hasChanges = self.editingMetadata != edited
             } catch {
-                guard !Task.isCancelled else { return }
-                if metadataLoadRequestID == loadID, currentFolderURL == folderURL,
-                   selectedURLs == [imageURL], editingMetadata == edited {
-                    self.saveError = error.localizedDescription
+                if writeTaskGeneration == generation, metadataLoadRequestID == loadID,
+                   currentFolderURL == folderURL, selectedURLs == [imageURL] {
+                    let prefix = metadataWasWritten
+                        ? "Metadata was written, but pending sidecar cleanup did not finish. " : ""
+                    self.saveError = prefix + error.localizedDescription
                 }
             }
-            self.isSaving = false
         }
     }
 
@@ -3823,6 +3860,18 @@ final class MetadataViewModel {
                 saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
             }
         }
+    }
+
+    private var currentWriteExpectedRecord: MetadataSidecar? {
+        if let captured = capturedCaptionWriteExpectation,
+           captured.loadID == metadataLoadRequestID,
+           selectedURLs == [captured.request.imageURL],
+           currentFolderURL == captured.request.folderURL {
+            // The durable Caption barrier may complete inline before MainActor callbacks can run.
+            // Accept only this exact captured revision; a replay rebased onto newer data must reload.
+            return captured.request.sidecar
+        }
+        return currentHistoryRecord
     }
 
     private var currentHistoryRecord: MetadataSidecar? {

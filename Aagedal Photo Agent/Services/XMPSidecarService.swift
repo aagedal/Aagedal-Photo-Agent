@@ -327,6 +327,53 @@ struct XMPSidecarService: Sendable {
         }
     }
 
+    /// Completes an explicit metadata write while the caller owns the photo lock. Editorial
+    /// fields form an exact record; technical fields change only with explicit captured intent.
+    /// An embedded-only write may create a Develop-only sidecar without introducing an IPTC record.
+    @MetadataSidecarFilesystemActor
+    func writeMetadataInHeldTransaction(
+        _ metadata: IPTCMetadata,
+        for imageURL: URL,
+        expectedSnapshot: XMPSidecarWriteSnapshot,
+        onlyIfExisting: Bool,
+        replaceDevelopSettings: Bool,
+        replaceOrientation: Bool,
+        onInstalled: @escaping @Sendable (XMPSidecarWriteSnapshot) -> Void = { _ in }
+    ) async throws -> Bool {
+        let technicalOnly = onlyIfExisting && expectedSnapshot.data == nil
+        let createsTechnicalSidecar = replaceDevelopSettings && metadata.cameraRaw?.isEmpty == false
+        return try await updateXMPTransaction(for: imageURL, expectedSnapshot: expectedSnapshot,
+            onlyIfExisting: onlyIfExisting && !createsTechnicalSidecar, onInstalled: onInstalled) { xmp in
+            let tiffOrientation = xmp.simpleValue(namespace: XMPNamespace.tiff, property: "Orientation")
+            let exifOrientation = xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
+            if !technicalOnly {
+                XMPDataBuilder.applyDescriptive(metadata, into: &xmp)
+                if let titles = metadata.localizedTitles {
+                    if titles.isEmpty {
+                        xmp.setValue(.simple("True"), namespace: XMPDataBuilder.aaphotoNamespace,
+                            property: localizedTitleClearedProperty)
+                    } else {
+                        xmp.removeValue(namespace: XMPDataBuilder.aaphotoNamespace,
+                            property: localizedTitleClearedProperty)
+                    }
+                }
+            }
+            if replaceDevelopSettings {
+                XMPDataBuilder.applyCameraRaw(metadata.cameraRaw,
+                    imageAspect: self.imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop), into: &xmp)
+            }
+            for (namespace, previous) in [(XMPNamespace.tiff, tiffOrientation), (XMPNamespace.exif, exifOrientation)] {
+                let value = replaceOrientation ? metadata.exifOrientation.map(String.init) : previous
+                if let value {
+                    xmp.setValue(.simple(value), namespace: namespace, property: "Orientation")
+                } else {
+                    xmp.removeValue(namespace: namespace, property: "Orientation")
+                }
+            }
+            xmp.creatorTool = SwiftExifWriteEngine.creatorTool
+        }
+    }
+
     /// Reads the batch baseline inside the per-photo transaction and replays the captured
     /// mutation after an external revision change. A queued edit cannot replace newer fields
     /// or Develop settings with the UI's stale batch record.
@@ -591,6 +638,7 @@ struct XMPSidecarService: Sendable {
         expectedSnapshot: XMPSidecarWriteSnapshot? = nil,
         onlyIfExisting: Bool = false,
         beforeRevisionCheck: @Sendable (Int) -> Void = { _ in },
+        onInstalled: @Sendable (XMPSidecarWriteSnapshot) -> Void = { _ in },
         mutation: @Sendable (inout XMPData) -> Void
     ) async throws -> Bool {
         let url = sidecarURL(for: imageURL)
@@ -621,6 +669,7 @@ struct XMPSidecarService: Sendable {
             guard try Self.currentData(at: url) == sourceData else { continue }
 
             try stagedData.write(to: url, options: .atomic)
+            onInstalled(XMPSidecarWriteSnapshot(data: stagedData))
             let installedData = try Data(contentsOf: url)
             guard installedData == stagedData else {
                 throw CocoaError(.fileWriteUnknown)

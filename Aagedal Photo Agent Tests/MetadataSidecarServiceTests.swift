@@ -2014,3 +2014,411 @@ struct MetadataAutomaticSaveBoundaryTests {
         #expect(fixture.model.hasUnpersistedEditorChanges)
     }
 }
+
+@Suite("Explicit metadata replay and write completion")
+struct MetadataReplayIntentTests {
+    private func root() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ReplayIntent-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try Data("immutable image bytes".utf8).write(to: url.appendingPathComponent("photo.JPG"))
+        return url
+    }
+
+    private func request(in folder: URL, baseline: MetadataSidecar?, edited: IPTCMetadata,
+                         timestamp: Date = Date(timeIntervalSince1970: 200),
+                         original: IPTCMetadata? = .init(title: "Embedded original")) -> MetadataSidecarReplayRequest {
+        let previous = baseline?.metadata ?? .init(title: "A")
+        let changes = MetadataHistoryEntry.changes(from: previous, to: edited, timestamp: timestamp)
+        var history = (baseline?.history ?? []) + changes
+        history.trimToHistoryLimit()
+        return .init(sidecar: .init(sourceFile: "photo.JPG", lastModified: timestamp,
+            pendingChanges: true, metadata: edited, imageMetadataSnapshot: original, history: history),
+            baselineMetadata: previous, baselineHistory: baseline?.history ?? [], baselineRecordExisted: baseline != nil, changes: changes,
+            imageURL: folder.appendingPathComponent("photo.JPG"), folderURL: folder)
+    }
+
+    private func jsonURL(_ folder: URL) -> URL { folder.appendingPathComponent(".photo_metadata/photo.JPG.meta.json") }
+
+    @Test("A JSON-committed retry preserves newer fields, status, absent baseline, and technical XMP", arguments: [false, true])
+    func retryAfterIndependentEdit(sameField: Bool) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let replay = request(in: folder, baseline: nil, edited: .init(title: "B"))
+        let first = await service.replayHistoryAndMirrorXMP(replay, beforeXMPCommit: { throw CocoaError(.fileWriteUnknown) })
+        #expect(first.installedSidecar?.metadata.title == "B")
+        #expect(first.failure?.stage == .xmpSidecar)
+        var newer = try #require(first.installedSidecar)
+        let previous = newer.metadata
+        newer.metadata.credit = "Credit C"
+        if sameField { newer.metadata.title = "C" }
+        newer.history += MetadataHistoryEntry.changes(from: previous, to: newer.metadata, timestamp: Date(timeIntervalSince1970: 300))
+        newer.pendingChanges = false
+        newer.imageMetadataSnapshot = nil
+        try service.saveSidecar(newer, for: image, in: folder)
+        var technical = newer.metadata
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1.25
+        technical.cameraRaw = settings
+        technical.exifOrientation = 6
+        try XMPSidecarService().saveSidecar(metadata: technical, for: image)
+        var graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL(folder))) as? [String: Any])
+        graph["vendorExtension"] = ["opaque": "retained"]
+        try JSONSerialization.data(withJSONObject: graph, options: [.sortedKeys]).write(to: jsonURL(folder))
+        let jsonBefore = try Data(contentsOf: jsonURL(folder))
+        let imageBefore = try Data(contentsOf: image)
+        let retried = await service.replayHistoryAndMirrorXMP(replay)
+        #expect(retried.completed)
+        #expect(retried.installedSidecar?.metadata.credit == "Credit C")
+        #expect(retried.installedSidecar?.metadata.title == (sameField ? "C" : "B"))
+        #expect(retried.installedSidecar?.pendingChanges == false)
+        #expect(retried.installedSidecar?.imageMetadataSnapshot == nil)
+        #expect(try Data(contentsOf: jsonURL(folder)) == jsonBefore)
+        #expect(try Data(contentsOf: image) == imageBefore)
+        let xmp = try #require(XMPSidecarService().loadSidecar(for: image))
+        #expect(xmp.title == (sameField ? "C" : "B"))
+        #expect(xmp.credit == "Credit C")
+        #expect(xmp.exifOrientation == 6)
+        #expect(xmp.cameraRaw?.exposure2012 == 1.25)
+    }
+
+    @Test("Disjoint queued deltas merge while overlapping edits conflict", arguments: [false, true])
+    func newDeltaConflict(overlap: Bool) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let anchor = MetadataHistoryEntry(timestamp: Date(timeIntervalSince1970: 100), fieldName: "Headline", oldValue: nil, newValue: "A")
+        let baseline = MetadataSidecar(sourceFile: "photo.JPG", pendingChanges: true,
+            metadata: .init(title: "A"), imageMetadataSnapshot: nil, history: [anchor])
+        try service.saveSidecar(baseline, for: image, in: folder)
+        let replay = request(in: folder, baseline: baseline, edited: .init(title: "B"))
+        _ = try await service.updateMetadataSerialized(for: image, in: folder, fallback: baseline.metadata,
+            pendingChanges: true, timestamp: Date(timeIntervalSince1970: 150)) {
+                if overlap { $0.title = "C" } else { $0.credit = "C" }
+            }
+        let before = try Data(contentsOf: jsonURL(folder))
+        let result = await service.replayHistoryAndMirrorXMP(replay)
+        if overlap {
+            #expect(result.failure != nil)
+            #expect(try Data(contentsOf: jsonURL(folder)) == before)
+            #expect(!FileManager.default.fileExists(atPath: image.deletingPathExtension().appendingPathExtension("xmp").path))
+        } else {
+            #expect(result.completed)
+            #expect(result.installedSidecar?.metadata.title == "B")
+            #expect(result.installedSidecar?.metadata.credit == "C")
+            #expect(result.installedSidecar?.imageMetadataSnapshot == nil)
+        }
+    }
+
+    @Test("A trimmed ABA replay fails closed even when an old field value returns", arguments: [false, true])
+    func trimmedABA(withReceipt: Bool) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let baseline = MetadataSidecar(sourceFile: "photo.JPG", metadata: .init(title: "A"), history: [
+            .init(timestamp: Date(timeIntervalSince1970: 100), fieldName: "Headline", oldValue: nil, newValue: "A")])
+        try service.saveSidecar(baseline, for: image, in: folder)
+        let replay = request(in: folder, baseline: baseline, edited: .init(title: "B"))
+        #expect(await service.replayHistoryAndMirrorXMP(replay).completed)
+        for index in 0..<25 {
+            _ = try await service.updateMetadataSerialized(for: image, in: folder, fallback: .init(), pendingChanges: true,
+                timestamp: Date(timeIntervalSince1970: Double(300 + index))) { metadata in
+                    metadata.credit = "Credit \(index)"
+                    if index == 24 { metadata.title = "A" }
+                }
+        }
+        let retry = withReceipt ? replay : MetadataSidecarReplayRequest(sidecar: replay.sidecar,
+            baselineMetadata: replay.baselineMetadata, baselineHistory: replay.baselineHistory, baselineRecordExisted: replay.baselineRecordExisted, changes: replay.changes,
+            imageURL: image, folderURL: folder)
+        let before = try Data(contentsOf: jsonURL(folder))
+        let result = await service.replayHistoryAndMirrorXMP(retry)
+        #expect(result.failure != nil)
+        #expect(try Data(contentsOf: jsonURL(folder)) == before)
+        #expect(service.loadSidecar(for: image, in: folder)?.metadata.title == "A")
+    }
+
+    @Test("Commit receipt survives failed readback and prevents resurrection after discard", arguments: [false, true])
+    func discardAfterPartialCommit(readbackFailure: Bool) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let service = MetadataSidecarService()
+        let replay = request(in: folder, baseline: nil, edited: .init(title: "B"))
+        let result = await service.replayHistoryAndMirrorXMP(replay,
+            afterJSONCommit: { if readbackFailure { throw CocoaError(.fileReadUnknown) } },
+            beforeXMPCommit: { throw CocoaError(.fileWriteUnknown) })
+        #expect(replay.receipt.hasCommitted)
+        #expect(readbackFailure ? result.committedButUnverifiedSidecarURL != nil : result.installedSidecar != nil)
+        try await service.deleteSidecarSerialized(for: replay.imageURL, in: folder)
+        let retried = await service.replayHistoryAndMirrorXMP(replay)
+        #expect(retried.failure != nil)
+        #expect(!FileManager.default.fileExists(atPath: jsonURL(folder).path))
+    }
+
+    @Test("A backward-clock edit cannot leave its anchor as false replay evidence")
+    func backwardClock() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let service = MetadataSidecarService()
+        let baseline = MetadataSidecar(sourceFile: "photo.JPG", metadata: .init(title: "A"), history: [
+            .init(timestamp: Date(timeIntervalSince1970: 900), fieldName: "Headline", oldValue: nil, newValue: "A")])
+        let image = folder.appendingPathComponent("photo.JPG")
+        try service.saveSidecar(baseline, for: image, in: folder)
+        let before = try Data(contentsOf: jsonURL(folder))
+        let replay = request(in: folder, baseline: baseline, edited: .init(title: "B"), timestamp: Date(timeIntervalSince1970: 200))
+        #expect(await service.replayHistoryAndMirrorXMP(replay).failure != nil)
+        #expect(try Data(contentsOf: jsonURL(folder)) == before)
+    }
+
+    @Test("A full multi-field mutation survives history truncation and partial-commit retry")
+    func moreThanHistoryLimit() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var edited = IPTCMetadata(title: "B")
+        for field in MetadataFieldID.allCases where !field.isRepeatable {
+            field.setHistoryValue("Value for \(field.rawValue)", in: &edited)
+        }
+        let replay = request(in: folder, baseline: nil, edited: edited)
+        #expect(replay.changes.count > 20)
+        let service = MetadataSidecarService()
+        let first = await service.replayHistoryAndMirrorXMP(replay, beforeXMPCommit: { throw CocoaError(.fileWriteUnknown) })
+        #expect(first.installedSidecar != nil)
+        #expect(first.installedSidecar?.history.count == 20)
+        #expect(first.installedSidecar?.metadata == edited)
+        let before = try Data(contentsOf: jsonURL(folder))
+        let second = await service.replayHistoryAndMirrorXMP(replay)
+        #expect(second.completed)
+        #expect(try Data(contentsOf: jsonURL(folder)) == before)
+    }
+
+    @Test("JSON changes after embedded write admission preserve the newer draft and XMP")
+    func completionCASConflict() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let draft = MetadataSidecar(sourceFile: "photo.JPG", pendingChanges: true, metadata: .init(title: "B"), imageMetadataSnapshot: .init(title: "A"))
+        try service.saveSidecar(draft, for: image, in: folder)
+        try XMPSidecarService().saveSidecar(metadata: draft.metadata, for: image)
+        let snapshot = try await service.captureWriteCompletionSnapshot(for: image, in: folder, expectedSidecar: draft, expectedTechnicalMetadata: nil)
+        _ = try await service.updateMetadataSerialized(for: image, in: folder, fallback: draft.metadata,
+            pendingChanges: true) { $0.credit = "Newer credit" }
+        let jsonBefore = try Data(contentsOf: jsonURL(folder))
+        let xmpBefore = try Data(contentsOf: image.deletingPathExtension().appendingPathExtension("xmp"))
+        var completion = draft
+        completion.pendingChanges = false
+        completion.imageMetadataSnapshot = draft.metadata
+        let result = await service.completeSidecarAndMirrorXMP(completion, snapshot: snapshot)
+        #expect(result.failure != nil)
+        #expect(!result.wroteXMPSidecar)
+        #expect(try Data(contentsOf: jsonURL(folder)) == jsonBefore)
+        #expect(try Data(contentsOf: image.deletingPathExtension().appendingPathExtension("xmp")) == xmpBefore)
+        #expect(service.loadSidecar(for: image, in: folder)?.pendingChanges == true)
+    }
+
+    @Test("Completion never clears pending before XMP success and reports later JSON failure", arguments: [false, true])
+    func completionPartialFailure(afterXMP: Bool) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let draft = MetadataSidecar(sourceFile: "photo.JPG", pendingChanges: true, metadata: .init(title: "B"), imageMetadataSnapshot: .init(title: "A"))
+        try service.saveSidecar(draft, for: image, in: folder)
+        let snapshot = try await service.captureWriteCompletionSnapshot(for: image, in: folder, expectedSidecar: draft, expectedTechnicalMetadata: nil)
+        var completion = draft
+        completion.pendingChanges = false
+        completion.imageMetadataSnapshot = draft.metadata
+        let before = try Data(contentsOf: jsonURL(folder))
+        let result = await service.completeSidecarAndMirrorXMP(completion, snapshot: snapshot,
+            beforeXMPCommit: { if !afterXMP { throw CocoaError(.fileWriteUnknown) } },
+            beforeJSONCommit: { if afterXMP { throw CocoaError(.fileWriteUnknown) } })
+        #expect(result.failure?.stage == (afterXMP ? .metadataSidecar : .xmpSidecar))
+        #expect(result.wroteXMPSidecar == afterXMP)
+        #expect(try Data(contentsOf: jsonURL(folder)) == before)
+        #expect(service.loadSidecar(for: image, in: folder)?.pendingChanges == true)
+    }
+
+    @Test("Explicit technical completion carries Develop intent without a fake editorial delta")
+    func technicalCompletion() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let draft = MetadataSidecar(sourceFile: "photo.JPG", pendingChanges: true, metadata: .init(title: "A"), imageMetadataSnapshot: nil)
+        try service.saveSidecar(draft, for: image, in: folder)
+        var existing = draft.metadata
+        existing.exifOrientation = 8
+        try XMPSidecarService().saveSidecar(metadata: existing, for: image)
+        let snapshot = try await service.captureWriteCompletionSnapshot(for: image, in: folder, expectedSidecar: draft, expectedTechnicalMetadata: existing)
+        var technical = draft
+        var crs = CameraRawSettings()
+        crs.exposure2012 = 2.0
+        technical.metadata.cameraRaw = crs
+        technical.metadata.exifOrientation = 3
+        let result = await service.completeSidecarAndMirrorXMP(technical, snapshot: snapshot, replaceDevelopSettings: true)
+        #expect(result.completed)
+        #expect(result.installedSidecar?.pendingChanges == true)
+        #expect(result.installedSidecar?.imageMetadataSnapshot == nil)
+        #expect(result.installedSidecar?.history.isEmpty == true)
+        let xmp = try #require(XMPSidecarService().loadSidecar(for: image))
+        #expect(xmp.cameraRaw?.exposure2012 == 2.0)
+        #expect(xmp.exifOrientation == 8)
+    }
+
+    @Test("An embedded-only completion with no XMP has an explicit successful skip")
+    func skippedMirrorCompletion() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let snapshot = try await service.captureWriteCompletionSnapshot(for: image, in: folder, expectedSidecar: nil, expectedTechnicalMetadata: nil)
+        let completion = MetadataSidecar(sourceFile: "photo.JPG", pendingChanges: false, metadata: .init(title: "A"), imageMetadataSnapshot: .init(title: "A"))
+        let result = await service.completeSidecarAndMirrorXMP(completion, snapshot: snapshot, mirrorOnlyIfExisting: true)
+        #expect(result.completed)
+        #expect(result.skippedXMPSidecar)
+        #expect(!result.wroteXMPSidecar)
+        #expect(result.installedSidecar?.pendingChanges == false)
+    }
+}
+
+extension MetadataReplayIntentTests {
+    @Test("An external JSON edit at the mirror boundary is reported without stale XMP installation")
+    func externalWriteBeforeMirror() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let service = MetadataSidecarService()
+        let replay = request(in: folder, baseline: nil, edited: .init(title: "B"))
+        let xmp = XMPSidecarService()
+        try xmp.saveSidecar(metadata: .init(title: "A"), for: replay.imageURL)
+        let xmpURL = xmp.sidecarURL(for: replay.imageURL)
+        let before = try Data(contentsOf: xmpURL)
+        let result = await service.replayHistoryAndMirrorXMP(replay, beforeXMPCommit: {
+            var newer = try #require(service.loadSidecar(for: replay.imageURL, in: folder))
+            newer.metadata.credit = "Outside writer"
+            try service.saveSidecar(newer, for: replay.imageURL, in: folder)
+        })
+        #expect(result.failure?.stage == .xmpSidecar)
+        #expect(!result.wroteXMPSidecar)
+        #expect(try Data(contentsOf: xmpURL) == before)
+        let retry = await service.replayHistoryAndMirrorXMP(replay)
+        #expect(retry.completed)
+        #expect(xmp.loadSidecar(for: replay.imageURL)?.credit == "Outside writer")
+    }
+
+    @Test("Completion rejects an independently changed XMP revision before clearing pending")
+    func completionXMPConflict() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let draft = MetadataSidecar(sourceFile: "photo.JPG", pendingChanges: true, metadata: .init(title: "B"))
+        try service.saveSidecar(draft, for: image, in: folder)
+        let xmp = XMPSidecarService()
+        try xmp.saveSidecar(metadata: draft.metadata, for: image)
+        let snapshot = try await service.captureWriteCompletionSnapshot(for: image, in: folder, expectedSidecar: draft, expectedTechnicalMetadata: nil)
+        var changed = draft.metadata
+        changed.exifOrientation = 6
+        try xmp.saveSidecar(metadata: changed, for: image)
+        let before = try Data(contentsOf: xmp.sidecarURL(for: image))
+        var completion = draft
+        completion.pendingChanges = false
+        let result = await service.completeSidecarAndMirrorXMP(completion, snapshot: snapshot)
+        #expect(result.failure != nil)
+        #expect(!result.wroteXMPSidecar)
+        #expect(try Data(contentsOf: xmp.sidecarURL(for: image)) == before)
+        #expect(service.loadSidecar(for: image, in: folder)?.pendingChanges == true)
+    }
+}
+
+extension MetadataReplayIntentTests {
+    @Test("Ordinary legacy-nil titles preserve the existing localized XMP title", arguments: [false, true])
+    func legacyTitlePreserved(completion: Bool) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let service = MetadataSidecarService()
+        let image = folder.appendingPathComponent("photo.JPG")
+        let xmp = XMPSidecarService()
+        var original = IPTCMetadata(title: "A")
+        original.localizedTitles = [.init(languageTag: "x-default", value: "Unmodeled legacy title"), .init(languageTag: "fr", value: "Titre conservé")]
+        try xmp.saveSidecar(metadata: original, for: image)
+        let result: MetadataSidecarPersistenceResult
+        if completion {
+            let snapshot = try await service.captureWriteCompletionSnapshot(for: image, in: folder, expectedSidecar: nil, expectedTechnicalMetadata: nil)
+            let sidecar = MetadataSidecar(sourceFile: "photo.JPG", pendingChanges: false, metadata: .init(title: "B"))
+            result = await service.completeSidecarAndMirrorXMP(sidecar, snapshot: snapshot)
+        } else {
+            result = await service.replayHistoryAndMirrorXMP(request(in: folder, baseline: nil, edited: .init(title: "B")))
+        }
+        #expect(result.completed)
+        #expect(xmp.loadSidecar(for: image)?.localizedTitles == original.localizedTitles)
+        #expect(xmp.loadSidecar(for: image)?.title == "B")
+    }
+
+    @Test("A post-mirror external XMP change prevents pending finalization", arguments: [false, true])
+    func externalXMPBeforeJSON(technicalOnly: Bool) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let draft = MetadataSidecar(sourceFile: "photo.JPG", pendingChanges: true, metadata: .init(title: "B"), imageMetadataSnapshot: .init(title: "A"))
+        try service.saveSidecar(draft, for: image, in: folder)
+        let snapshot = try await service.captureWriteCompletionSnapshot(for: image, in: folder, expectedSidecar: draft, expectedTechnicalMetadata: nil)
+        var completion = draft
+        completion.pendingChanges = false
+        completion.imageMetadataSnapshot = draft.metadata
+        let jsonBefore = try Data(contentsOf: jsonURL(folder))
+        let result = await service.completeSidecarAndMirrorXMP(completion, snapshot: snapshot, beforeJSONCommit: {
+            var external = draft.metadata
+            if technicalOnly { external.exifOrientation = 8 } else { external.title = "External title" }
+            try XMPSidecarService().saveSidecar(metadata: external, for: image)
+        })
+        #expect(result.failure?.stage == .metadataSidecar)
+        #expect(result.wroteXMPSidecar)
+        #expect(!result.completed)
+        #expect(try Data(contentsOf: jsonURL(folder)) == jsonBefore)
+        let current = try #require(XMPSidecarService().loadSidecar(for: image))
+        #expect(technicalOnly ? current.exifOrientation == 8 : current.title == "External title")
+    }
+}
+
+extension MetadataReplayIntentTests {
+    @Test("Technical changes before write admission cannot be adopted as the editor baseline")
+    func technicalPreAdmissionConflict() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let draft = MetadataSidecar(sourceFile: "photo.JPG", pendingChanges: true, metadata: .init(title: "A"))
+        try service.saveSidecar(draft, for: image, in: folder)
+        var independent = draft.metadata
+        independent.exifOrientation = 6
+        try XMPSidecarService().saveSidecar(metadata: independent, for: image)
+        let jsonBefore = try Data(contentsOf: jsonURL(folder))
+        await #expect(throws: (any Error).self) {
+            _ = try await service.captureWriteCompletionSnapshot(for: image, in: folder,
+                expectedSidecar: draft, expectedTechnicalMetadata: nil)
+        }
+        #expect(try Data(contentsOf: jsonURL(folder)) == jsonBefore)
+    }
+}
+
+extension MetadataReplayIntentTests {
+    @Test("An existing empty-history draft discarded before first replay remains absent")
+    func deletedBaselineBeforeFirstAttempt() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let baseline = MetadataSidecar(sourceFile: "photo.JPG", pendingChanges: true, metadata: .init(title: "A"), history: [])
+        try service.saveSidecar(baseline, for: image, in: folder)
+        let replay = request(in: folder, baseline: baseline, edited: .init(title: "B"))
+        try await service.deleteSidecarSerialized(for: image, in: folder)
+        let result = await service.replayHistoryAndMirrorXMP(replay)
+        #expect(result.failure != nil)
+        #expect(!replay.receipt.hasCommitted)
+        #expect(!FileManager.default.fileExists(atPath: jsonURL(folder).path))
+        #expect(!FileManager.default.fileExists(atPath: XMPSidecarService().sidecarURL(for: image).path))
+    }
+}

@@ -181,9 +181,11 @@ nonisolated enum CaptionWriteAndNextGate {
     static func shouldAdvance(
         pendingURL: URL?,
         currentURL: URL?,
-        writeSucceeded: Bool
+        writeSucceeded: Bool,
+        hasPendingChanges: Bool,
+        hasUnpersistedEditorChanges: Bool
     ) -> Bool {
-        guard writeSucceeded,
+        guard writeSucceeded, !hasPendingChanges, !hasUnpersistedEditorChanges,
               let pendingURL,
               let currentURL else { return false }
         return pendingURL.standardizedFileURL == currentURL.standardizedFileURL

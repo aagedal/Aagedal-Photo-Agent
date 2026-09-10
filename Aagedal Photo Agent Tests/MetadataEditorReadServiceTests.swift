@@ -47,6 +47,573 @@ private actor HistoryRestoreSuspensionGate {
 
 @Suite("Metadata editor sidecar read boundary", .serialized)
 struct MetadataEditorReadServiceTests {
+    @Test("Active headline buffer reaches the actual Caption Write before focus loss")
+    @MainActor
+    func activeHeadlineBufferReachesImmediateCaptionWrite() async throws {
+        let writer = MetadataCompletionTestWriter {}
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "E"), writeEngine: writer)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let buffers = MetadataEditorBufferRegistry()
+        var localText = "E"
+        buffers.register(key: "title", owner: UUID(), loadID: fixture.model.editorBufferLoadID,
+            read: { localText }, readModel: { fixture.model.editingMetadata.title ?? "" },
+            readSynchronizedModel: { "E" })
+        // Simulate the field's owned buffer changing while the model still holds E.
+        localText = "Final immediate headline F"
+        #expect(fixture.model.editingMetadata.title == "E")
+        var updated = fixture.model.editingMetadata
+        #expect(buffers.capture(key: "title", loadID: fixture.model.editorBufferLoadID,
+            hasMarkedText: false, metadata: &updated) == .changed)
+        fixture.model.editingMetadata = updated
+        fixture.model.markChanged()
+        let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
+        try await Task.detached { try captured.persist() }.value
+        fixture.model.writeMetadataAndClearSidecar()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while fixture.model.isSaving, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(!fixture.model.isSaving)
+        #expect(fixture.model.saveError == nil)
+        #expect(writer.writtenFields[.headline] == "Final immediate headline F")
+        #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.title == "Final immediate headline F")
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder) == nil)
+        #expect(CaptionWriteAndNextGate.shouldAdvance(pendingURL: fixture.image,
+            currentURL: fixture.image, writeSucceeded: fixture.model.saveError == nil,
+            hasPendingChanges: fixture.model.hasChanges,
+            hasUnpersistedEditorChanges: fixture.model.hasUnpersistedEditorChanges))
+    }
+
+    @Test("Owned scalar buffers use their actual editor keys and preserve binding normalization", arguments: [
+        "title", "description", "extendedDescription", "copyright", "rightsUsageTerms",
+        "webStatementOfRights", "digitalImageGUID", "imageSupplierImageID", "jobId",
+        "creatorJobTitle", "descriptionWriter", "credit", "source", "city", "sublocation",
+        "provinceState", "country", "event", "instructions"
+    ])
+    @MainActor
+    func bufferedScalarFieldMapping(key: String) throws {
+        let buffers = MetadataEditorBufferRegistry()
+        let loadID = UUID()
+        var text = "  Exact text \n"
+        buffers.register(key: key, owner: UUID(), loadID: loadID, read: { text })
+        var metadata = IPTCMetadata()
+        let field = try #require(MetadataFieldID(rawValue: key))
+        #expect(buffers.capture(key: key, loadID: loadID, hasMarkedText: false, metadata: &metadata) == .changed)
+        #expect(field.historyValue(in: metadata) == text)
+        text = ""
+        #expect(buffers.capture(key: key, loadID: loadID, hasMarkedText: false, metadata: &metadata) == .changed)
+        #expect(field.historyValue(in: metadata) == nil)
+    }
+
+    @Test("A synchronous Quick List model update wins over the not-yet-refreshed local buffer")
+    @MainActor
+    func bufferedFieldCapturePreservesProgrammaticPick() {
+        let buffers = MetadataEditorBufferRegistry()
+        let loadID = UUID()
+        var metadata = IPTCMetadata(credit: "Old credit")
+        var modelText = "Old credit"
+        buffers.register(key: "credit", owner: UUID(), loadID: loadID, read: { "Old local credit" },
+            readModel: { modelText }, readSynchronizedModel: { "Old credit" })
+        modelText = "Picked credit"
+        metadata.credit = modelText
+        #expect(buffers.capture(key: "credit", loadID: loadID, hasMarkedText: false, metadata: &metadata) == .unchanged)
+        #expect(metadata.credit == "Picked credit")
+        #expect(!MetadataEditorBufferRegistry.mayPublishBuffer(registeredLoadID: loadID,
+            currentLoadID: UUID(), hasMarkedText: false))
+        #expect(!MetadataEditorBufferRegistry.mayPublishBuffer(registeredLoadID: loadID,
+            currentLoadID: loadID, hasMarkedText: true))
+        #expect(MetadataEditorBufferRegistry.mayPublishBuffer(registeredLoadID: loadID,
+            currentLoadID: loadID, hasMarkedText: false))
+    }
+
+    @Test("Buffer capture rejects IME, stale photo loads, and unsubmitted specialized inputs")
+    @MainActor
+    func bufferedFieldCapturePreservesOwnershipAndComposition() {
+        let buffers = MetadataEditorBufferRegistry()
+        let loadID = UUID()
+        let oldOwner = UUID()
+        let newOwner = UUID()
+        var metadata = IPTCMetadata(title: "Saved")
+        buffers.register(key: "title", owner: oldOwner, loadID: loadID, read: { "Old buffer" })
+        buffers.register(key: "title", owner: newOwner, loadID: loadID, read: { "Current buffer" })
+        buffers.unregister(key: "title", owner: oldOwner)
+        #expect(buffers.capture(key: "title", loadID: loadID, hasMarkedText: true, metadata: &metadata) == .unavailable)
+        #expect(buffers.capture(key: "title", loadID: UUID(), hasMarkedText: false, metadata: &metadata) == .unavailable)
+        #expect(metadata.title == "Saved")
+        for key in ["keywords", "personShown", "creator", "countryCode", "dateCreated", "genre", "gps", "unknown"] {
+            buffers.register(key: key, owner: UUID(), loadID: loadID, read: { "Unsubmitted query" })
+            #expect(buffers.capture(key: key, loadID: loadID, hasMarkedText: false, metadata: &metadata) == .unchanged)
+        }
+        #expect(metadata == IPTCMetadata(title: "Saved"))
+        #expect(buffers.capture(key: "title", loadID: loadID, hasMarkedText: false, metadata: &metadata) == .changed)
+        #expect(metadata.title == "Current buffer")
+        buffers.unregister(key: "title", owner: newOwner)
+        #expect(buffers.capture(key: "title", loadID: loadID, hasMarkedText: false, metadata: &metadata) == .unavailable)
+    }
+
+    @Test("Caption blur FIFO retry retains newer same-field and independent edits after a mirror failure")
+    @MainActor
+    func captionFIFOBlurRetryPreservesNewerEdits() async throws {
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "A"))
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let queue = CaptionDraftPersistenceQueue(label: "caption.blur.retry")
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        coordinator.register(owner: UUID(), capturePersistence: {
+            try fixture.model.captureCaptionDraftPersistence()
+        }, handler: {})
+        let xmpURL = XMPSidecarService().sidecarURL(for: fixture.image)
+        try FileManager.default.removeItem(at: xmpURL)
+        try FileManager.default.createDirectory(at: xmpURL, withIntermediateDirectories: true)
+        fixture.model.editingMetadata.title = "B"
+        fixture.model.markChanged()
+        // This is the same boundary now used by field blur/debounce and Caption navigation.
+        try coordinator.enqueueFlush()
+        do {
+            try await queue.drainAsync()
+            Issue.record("The obstructed XMP mirror should fail")
+        } catch {}
+        #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
+        var current = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        let originalHistory = current.history
+        let previous = current.metadata
+        current.metadata.title = "Newer headline C"
+        current.metadata.credit = "Independent credit C"
+        current.history.append(contentsOf: MetadataHistoryEntry.changes(from: previous, to: current.metadata, timestamp: Date()))
+        try MetadataSidecarService().saveSidecar(current, for: fixture.image, in: fixture.folder)
+        try FileManager.default.removeItem(at: xmpURL)
+        try XMPSidecarService().saveSidecar(metadata: current.metadata, for: fixture.image)
+        let jsonURL = fixture.folder.appendingPathComponent(".photo_metadata/draft.jpg.meta.json")
+        let beforeRetry = try Data(contentsOf: jsonURL)
+        try coordinator.flush()
+        #expect(queue.pendingCount == 0)
+        #expect(try Data(contentsOf: jsonURL) == beforeRetry)
+        let mirror = try #require(XMPSidecarService().loadSidecar(for: fixture.image))
+        #expect(mirror.title == "Newer headline C")
+        #expect(mirror.credit == "Independent credit C")
+        let installed = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(installed.imageMetadataSnapshot?.title == "Original")
+        #expect(installed.history.filter { originalHistory.map(\.id).contains($0.id) }.count == originalHistory.count)
+    }
+
+    @Test("Caption captures complete template mutations before the visible history limit")
+    @MainActor
+    func captionCapturesAllTemplateFields() async throws {
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(), pending: IPTCMetadata())
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let fields: [WritableKeyPath<IPTCMetadata, String?>] = [
+            \.title, \.description, \.extendedDescription, \.copyright, \.rightsUsageTerms,
+            \.webStatementOfRights, \.digitalImageGUID, \.imageSupplierImageID, \.jobId,
+            \.creatorJobTitle, \.descriptionWriter, \.credit, \.city, \.sublocation,
+            \.provinceState, \.country, \.countryCode, \.event, \.instructions, \.source,
+            \.dateCreated
+        ]
+        for (index, field) in fields.enumerated() {
+            fixture.model.editingMetadata[keyPath: field] = field == \.dateCreated ? "2026-01-01"
+                : field == \.countryCode ? "NOR" : "Value \(index)"
+        }
+        fixture.model.markChanged()
+        let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
+        #expect(captured.request.changes.count > 20)
+        #expect(captured.sidecar.history.count == 20)
+        try await Task.detached { try captured.persist() }.value
+        let record = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        for field in fields { #expect(record.metadata[keyPath: field] == captured.sidecar.metadata[keyPath: field]) }
+        // Retrying the same operation remains idempotent although its earliest event is trimmed.
+        try await Task.detached { try captured.persist() }.value
+    }
+
+    @Test("Explicit Write after a durable Caption capture completes the exact captured revision")
+    @MainActor
+    func explicitWriteAfterCaptionCapture() async throws {
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(), pending: IPTCMetadata(title: "A"))
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.title = "Captured B"
+        fixture.model.markChanged()
+        let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
+        try await Task.detached { try captured.persist() }.value
+        let result = await withCheckedContinuation { continuation in
+            fixture.model.commitEditsReportingResult(mode: .writeToXMPSidecar) { continuation.resume(returning: $0) }
+        }
+        guard case .succeeded = result else { Issue.record("Explicit Write failed: \(result)"); return }
+        let record = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(record.metadata.title == "Captured B")
+        #expect(record.imageMetadataSnapshot?.title == "Captured B")
+        #expect(!record.pendingChanges)
+        #expect(!fixture.model.hasChanges)
+    }
+
+    @Test("Actual Caption Write and Next clears the exact draft just persisted by its FIFO")
+    @MainActor
+    func captionWriteAndClearAfterFreshCapture() async throws {
+        let writer = MetadataCompletionTestWriter {}
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(), pending: IPTCMetadata(title: "A"),
+            writeEngine: writer)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.title = "Fresh captured B"
+        fixture.model.markChanged()
+        let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
+        try await Task.detached { try captured.persist() }.value
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.metadata.title == "Fresh captured B")
+        // This is the actual Caption Write/Write & Next entry, which intentionally removes JSON.
+        fixture.model.writeMetadataAndClearSidecar()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while fixture.model.isSaving, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(!fixture.model.isSaving)
+        #expect(writer.writeCount == 1)
+        #expect(fixture.model.saveError == nil)
+        #expect(!fixture.model.hasChanges)
+        #expect(fixture.model.editingMetadata.title == "Fresh captured B")
+        #expect(fixture.model.sidecarHistory.isEmpty)
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder) == nil)
+        #expect(CaptionWriteAndNextGate.shouldAdvance(pendingURL: fixture.image,
+            currentURL: fixture.image, writeSucceeded: fixture.model.saveError == nil,
+            hasPendingChanges: fixture.model.hasChanges,
+            hasUnpersistedEditorChanges: fixture.model.hasUnpersistedEditorChanges))
+    }
+
+    @Test("Write and Next retains and can persist a newer same-photo buffer typed during the image write")
+    @MainActor
+    func captionWriteAndNextPreservesNewerEditorBuffer() async throws {
+        let gate = HistoryRestoreSuspensionGate()
+        let writer = MetadataCompletionTestWriter { await gate.pause() }
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "A"), writeEngine: writer)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.title = "Captured B"
+        fixture.model.markChanged()
+        let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
+        try await Task.detached { try captured.persist() }.value
+        fixture.model.writeMetadataAndClearSidecar()
+        let admissionDeadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isPaused), ContinuousClock.now < admissionDeadline { await Task.yield() }
+        let paused = await gate.isPaused
+        try #require(paused)
+        fixture.model.editingMetadata.title = "New buffer D"
+        fixture.model.markChanged()
+        await gate.resume()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while fixture.model.isSaving, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(!fixture.model.isSaving)
+        #expect(fixture.model.saveError == nil)
+        #expect(fixture.model.editingMetadata.title == "New buffer D")
+        #expect(fixture.model.hasUnpersistedEditorChanges)
+        #expect(fixture.model.hasChanges)
+        #expect(!CaptionWriteAndNextGate.shouldAdvance(pendingURL: fixture.image,
+            currentURL: fixture.image, writeSucceeded: fixture.model.saveError == nil,
+            hasPendingChanges: fixture.model.hasChanges,
+            hasUnpersistedEditorChanges: fixture.model.hasUnpersistedEditorChanges))
+        // The app's own successful cleanup must not look like an external discard to the new draft.
+        let newer = try #require(try fixture.model.captureCaptionDraftPersistence())
+        #expect(!newer.request.baselineRecordExisted)
+        try await Task.detached { try newer.persist() }.value
+        let record = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(record.metadata.title == "New buffer D")
+        #expect(record.imageMetadataSnapshot?.title == "Captured B")
+        #expect(record.pendingChanges)
+        #expect(!CaptionWriteAndNextGate.shouldAdvance(pendingURL: fixture.image,
+            currentURL: fixture.image, writeSucceeded: true,
+            hasPendingChanges: fixture.model.hasChanges,
+            hasUnpersistedEditorChanges: fixture.model.hasUnpersistedEditorChanges))
+    }
+
+    @Test("Caption cleanup retains ancestry for a captured draft whose persistence is delayed", arguments: [false, true])
+    @MainActor
+    func captionCleanupRetainsDelayedCapturedDraft(changeSelection: Bool) async throws {
+        let gate = HistoryRestoreSuspensionGate()
+        let writer = MetadataCompletionTestWriter { await gate.pause() }
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "A"), writeEngine: writer)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.title = "Captured B"
+        fixture.model.markChanged()
+        let first = try #require(try fixture.model.captureCaptionDraftPersistence())
+        try await Task.detached { try first.persist() }.value
+        fixture.model.writeMetadataAndClearSidecar()
+        let admissionDeadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isPaused), ContinuousClock.now < admissionDeadline { await Task.yield() }
+        let paused = await gate.isPaused
+        try #require(paused)
+        fixture.model.editingMetadata.title = "Delayed D"
+        fixture.model.markChanged()
+        let delayed = try #require(try fixture.model.captureCaptionDraftPersistence())
+        #expect(delayed.request.baselineRecordExisted)
+        if changeSelection {
+            await loadCaptionFixture(fixture.model, image: fixture.folder.appendingPathComponent("other.jpg"), folder: fixture.folder)
+        }
+        await gate.resume()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while fixture.model.isSaving, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(!fixture.model.isSaving)
+        let retained = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(retained.metadata.title == "Captured B")
+        #expect(retained.pendingChanges)
+        try await Task.detached { try delayed.persist() }.value
+        let installed = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(installed.metadata.title == "Delayed D")
+        #expect(installed.pendingChanges)
+        #expect(installed.imageMetadataSnapshot?.title == "Original")
+    }
+
+    @Test("Reloading the same photo before cleanup retains a valid baseline for its next Caption draft")
+    @MainActor
+    func captionCleanupRetainsBaselineAcrossSamePhotoReload() async throws {
+        let gate = HistoryRestoreSuspensionGate()
+        let writer = MetadataCompletionTestWriter { await gate.pause() }
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "A"), writeEngine: writer)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.title = "Captured B"
+        fixture.model.markChanged()
+        let first = try #require(try fixture.model.captureCaptionDraftPersistence())
+        try await Task.detached { try first.persist() }.value
+        fixture.model.writeMetadataAndClearSidecar()
+        let admissionDeadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isPaused), ContinuousClock.now < admissionDeadline { await Task.yield() }
+        let paused = await gate.isPaused
+        try #require(paused)
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        #expect(fixture.model.editingMetadata.title == "Captured B")
+        await gate.resume()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while fixture.model.isSaving, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(!fixture.model.isSaving)
+        let retained = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(retained.metadata.title == "Captured B")
+        fixture.model.editingMetadata.title = "After reload D"
+        fixture.model.markChanged()
+        let newer = try #require(try fixture.model.captureCaptionDraftPersistence())
+        #expect(newer.request.baselineRecordExisted)
+        try await Task.detached { try newer.persist() }.value
+        let installed = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(installed.metadata.title == "After reload D")
+        #expect(installed.imageMetadataSnapshot?.title == "Original")
+        #expect(installed.pendingChanges)
+    }
+
+    @Test("Actual Caption Write retains a newer draft saved while its image writer runs")
+    @MainActor
+    func captionWriteAndClearRetainsNewerDraft() async throws {
+        let gate = HistoryRestoreSuspensionGate()
+        let writer = MetadataCompletionTestWriter { await gate.pause() }
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "A"), writeEngine: writer)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.title = "Captured B"
+        fixture.model.markChanged()
+        let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
+        try await Task.detached { try captured.persist() }.value
+        fixture.model.writeMetadataAndClearSidecar()
+        let admissionDeadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isPaused), ContinuousClock.now < admissionDeadline { await Task.yield() }
+        let paused = await gate.isPaused
+        try #require(paused)
+        var newer = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        let previous = newer.metadata
+        newer.metadata.title = "Independent C"
+        newer.history.append(contentsOf: MetadataHistoryEntry.changes(from: previous, to: newer.metadata, timestamp: Date()))
+        try MetadataSidecarService().saveSidecar(newer, for: fixture.image, in: fixture.folder)
+        let jsonURL = fixture.folder.appendingPathComponent(".photo_metadata/draft.jpg.meta.json")
+        let expected = try Data(contentsOf: jsonURL)
+        await gate.resume()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while fixture.model.isSaving, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(!fixture.model.isSaving)
+        #expect(writer.writeCount == 1)
+        #expect(fixture.model.saveError?.contains("newer pending sidecar changes were retained") == true)
+        #expect(fixture.model.hasChanges)
+        #expect(try Data(contentsOf: jsonURL) == expected)
+        #expect(!CaptionWriteAndNextGate.shouldAdvance(pendingURL: fixture.image,
+            currentURL: fixture.image, writeSucceeded: fixture.model.saveError == nil,
+            hasPendingChanges: fixture.model.hasChanges,
+            hasUnpersistedEditorChanges: fixture.model.hasUnpersistedEditorChanges))
+    }
+
+    @Test("Image Write completion cannot clear or mirror over a newer pending draft", arguments: [false, true])
+    @MainActor
+    func embeddedCompletionPreservesNewerDraft(changeSelection: Bool) async throws {
+        let gate = HistoryRestoreSuspensionGate()
+        let writer = MetadataCompletionTestWriter { await gate.pause() }
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Written B"), writeEngine: writer)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let commit = Task { @MainActor in
+            await withCheckedContinuation { continuation in
+                fixture.model.commitEditsReportingResult(mode: .writeToFile) { continuation.resume(returning: $0) }
+            }
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        let paused = await gate.isPaused
+        try #require(paused)
+        var newer = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        let previous = newer.metadata
+        newer.metadata.title = "Newer C"
+        newer.metadata.credit = "Independent C"
+        newer.history.append(contentsOf: MetadataHistoryEntry.changes(from: previous, to: newer.metadata, timestamp: Date()))
+        try MetadataSidecarService().saveSidecar(newer, for: fixture.image, in: fixture.folder)
+        try XMPSidecarService().saveSidecar(metadata: newer.metadata, for: fixture.image)
+        let jsonURL = fixture.folder.appendingPathComponent(".photo_metadata/draft.jpg.meta.json")
+        let xmpURL = XMPSidecarService().sidecarURL(for: fixture.image)
+        let expectedJSON = try Data(contentsOf: jsonURL)
+        let expectedXMP = try Data(contentsOf: xmpURL)
+        if changeSelection {
+            await loadCaptionFixture(fixture.model, image: fixture.folder.appendingPathComponent("other.jpg"), folder: fixture.folder)
+        }
+        await gate.resume()
+        let result = await commit.value
+        guard case .failed = result else { Issue.record("Newer draft must prevent completion: \(result)"); return }
+        #expect(writer.writeCount == 1)
+        if changeSelection {
+            #expect(fixture.model.saveError == nil)
+            #expect(fixture.model.editingMetadata.title != "Written B")
+        } else {
+            #expect(fixture.model.saveError?.contains("image metadata was written") == true)
+            #expect(fixture.model.hasChanges)
+        }
+        #expect(!fixture.model.isSaving)
+        #expect(try Data(contentsOf: jsonURL) == expectedJSON)
+        #expect(try Data(contentsOf: xmpURL) == expectedXMP)
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.imageMetadataSnapshot?.title == "Original")
+    }
+
+    @Test("Develop-only explicit XMP writes commit technical state without inventing editorial history")
+    @MainActor
+    func developOnlyXMPWriteCompletes() async throws {
+        var pending = IPTCMetadata(title: "Pending headline")
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        pending.cameraRaw = settings
+        pending.exifOrientation = 6
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"), pending: pending)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.cameraRaw?.exposure2012 = 1.25
+        fixture.model.markChanged()
+        #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
+        #expect(fixture.model.hasUnpersistedEditorChanges)
+        let result = await withCheckedContinuation { continuation in
+            fixture.model.commitEditsReportingResult(mode: .writeToXMPSidecar) { continuation.resume(returning: $0) }
+        }
+        guard case .succeeded = result else { Issue.record("Develop Write failed: \(result)"); return }
+        let mirror = try #require(XMPSidecarService().loadSidecar(for: fixture.image))
+        #expect(mirror.cameraRaw?.exposure2012 == 1.25)
+        #expect(mirror.exifOrientation == 6)
+        #expect(mirror.title == "Pending headline")
+        let record = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(record.history.isEmpty)
+        #expect(!record.pendingChanges)
+        #expect(record.imageMetadataSnapshot?.title == "Pending headline")
+        #expect(!fixture.model.hasUnpersistedEditorChanges)
+    }
+
+    @Test("A mixed Caption capture leaves technical edits pending for the next explicit Write")
+    @MainActor
+    func mixedCaptionCaptureDoesNotAcknowledgeTechnicalEdits() async throws {
+        var pending = IPTCMetadata(title: "A")
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        pending.cameraRaw = settings
+        pending.exifOrientation = 6
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(), pending: pending)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.title = "B"
+        fixture.model.editingMetadata.cameraRaw?.exposure2012 = 1.25
+        fixture.model.editingMetadata.exifOrientation = 8
+        fixture.model.markChanged()
+        let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
+        #expect(captured.request.changes.count == 1)
+        try await Task.detached { try captured.persist() }.value
+        let editorialMirror = try #require(XMPSidecarService().loadSidecar(for: fixture.image))
+        #expect(editorialMirror.title == "B")
+        #expect(editorialMirror.cameraRaw?.exposure2012 == 0.5)
+        #expect(editorialMirror.exifOrientation == 6)
+        #expect(fixture.model.editingMetadata.cameraRaw?.exposure2012 == 1.25)
+        #expect(fixture.model.editingMetadata.exifOrientation == 8)
+        #expect(fixture.model.hasUnpersistedEditorChanges)
+        #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
+        let result = await withCheckedContinuation { continuation in
+            fixture.model.commitEditsReportingResult(mode: .writeToXMPSidecar) { continuation.resume(returning: $0) }
+        }
+        guard case .succeeded = result else { Issue.record("Mixed technical Write failed: \(result)"); return }
+        let completed = try #require(XMPSidecarService().loadSidecar(for: fixture.image))
+        #expect(completed.title == "B")
+        #expect(completed.cameraRaw?.exposure2012 == 1.25)
+        #expect(completed.exifOrientation == 8)
+        #expect(!fixture.model.hasUnpersistedEditorChanges)
+        #expect(!fixture.model.hasChanges)
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.history.count == 1)
+    }
+
+    @Test("A technical edit that arrives before Write admission is not overwritten")
+    @MainActor
+    func externalTechnicalEditBeforeWriteAdmissionIsPreserved() async throws {
+        var pending = IPTCMetadata(title: "Pending")
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        pending.cameraRaw = settings
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(), pending: pending)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        fixture.model.editingMetadata.cameraRaw?.exposure2012 = 0.75
+        fixture.model.markChanged()
+        var external = try #require(XMPSidecarService().loadSidecar(for: fixture.image))
+        external.cameraRaw?.exposure2012 = 1.25
+        try XMPSidecarService().saveSidecar(metadata: external, for: fixture.image)
+        let jsonURL = fixture.folder.appendingPathComponent(".photo_metadata/draft.jpg.meta.json")
+        let xmpURL = XMPSidecarService().sidecarURL(for: fixture.image)
+        let jsonBefore = try Data(contentsOf: jsonURL)
+        let xmpBefore = try Data(contentsOf: xmpURL)
+        let result = await withCheckedContinuation { continuation in
+            fixture.model.commitEditsReportingResult(mode: .writeToXMPSidecar) { continuation.resume(returning: $0) }
+        }
+        guard case .failed = result else { Issue.record("Changed technical reference must conflict: \(result)"); return }
+        #expect(fixture.model.hasUnpersistedEditorChanges)
+        #expect(fixture.model.saveError != nil)
+        #expect(try Data(contentsOf: jsonURL) == jsonBefore)
+        #expect(try Data(contentsOf: xmpURL) == xmpBefore)
+    }
+
+    @Test("A technical history-only save retains the pending editorial baseline")
+    @MainActor
+    func technicalPendingSavePreservesOriginal() async throws {
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Pending"))
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.75
+        fixture.model.editingMetadata.cameraRaw = settings
+        fixture.model.markChanged()
+        fixture.model.saveToSidecar()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while fixture.model.isSaving, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(!fixture.model.isSaving)
+        #expect(fixture.model.saveError == nil)
+        let record = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(record.pendingChanges)
+        #expect(record.history.isEmpty)
+        #expect(record.imageMetadataSnapshot?.title == "Original")
+        #expect(record.metadata.title == "Pending")
+        #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.cameraRaw?.exposure2012 == 0.75)
+        #expect(!fixture.model.hasUnpersistedEditorChanges)
+        let result = await withCheckedContinuation { continuation in
+            fixture.model.commitEditsReportingResult(mode: .writeToXMPSidecar) { continuation.resume(returning: $0) }
+        }
+        guard case .succeeded = result else { Issue.record("Normalized technical baseline must permit the next Write: \(result)"); return }
+        #expect(!fixture.model.hasChanges)
+    }
+
     @Test("Visible field markers compare pending originals independently of the selected XMP reference")
     @MainActor
     func fieldMarkersUseSavedPendingOriginal() async throws {
@@ -395,6 +962,7 @@ struct MetadataEditorReadServiceTests {
     @MainActor
     private func makeHistoryRestoreFixture(
         original: IPTCMetadata?, pending: IPTCMetadata, history: [MetadataHistoryEntry] = [],
+        writeEngine: any MetadataWriteEngine = MetadataCleanupSuccessfulWriter(),
         persist: @escaping @Sendable (MetadataSidecarRestoreRequest) async -> MetadataSidecarPersistenceResult = {
             await MetadataSidecarService().restoreSidecarAndMirrorXMP($0)
         }
@@ -414,7 +982,7 @@ struct MetadataEditorReadServiceTests {
                 reconciliationVerdict: nil)
         }))
         return (folder, image, MetadataViewModel(readService: SwiftExifReadService(),
-            writeEngine: MetadataCleanupSuccessfulWriter(), editorReadService: boundary,
+            writeEngine: writeEngine, editorReadService: boundary,
             persistHistoryRestore: persist))
     }
 
@@ -1289,6 +1857,27 @@ private actor FolderDiscardEvents {
 /// Successful image writer isolates the editor's post-write sidecar transaction.
 private nonisolated final class MetadataCleanupSuccessfulWriter: MetadataWriteEngine {
     func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {}
+    func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {}
+    func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {}
+    func writeRating(_ rating: StarRating, to urls: [URL]) async throws {}
+    func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {}
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws {}
+    func stripIPTCAndXMP(from urls: [URL]) async throws {}
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {}
+}
+
+private nonisolated final class MetadataCompletionTestWriter: MetadataWriteEngine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var fieldsWritten: [MetadataFieldKey: String] = [:]
+    var writtenFields: [MetadataFieldKey: String] { lock.withLock { fieldsWritten } }
+    private let onWrite: @Sendable () async throws -> Void
+    var writeCount: Int { lock.withLock { count } }
+    init(onWrite: @escaping @Sendable () async throws -> Void) { self.onWrite = onWrite }
+    func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        lock.withLock { count += 1; fieldsWritten = fields }
+        try await onWrite()
+    }
     func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {}
     func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {}
     func writeRating(_ rating: StarRating, to urls: [URL]) async throws {}

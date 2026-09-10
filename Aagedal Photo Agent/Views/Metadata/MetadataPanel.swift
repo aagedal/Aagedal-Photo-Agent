@@ -26,6 +26,82 @@ extension View {
     }
 }
 
+/// Registers owned SwiftUI buffers rather than interpreting the shared AppKit field editor's
+/// text using a possibly delayed FocusState. Repeatable query inputs never register here.
+@MainActor
+final class MetadataEditorBufferRegistry {
+    enum CaptureResult: Equatable { case unchanged, changed, unavailable }
+    private struct Buffer {
+        let owner: UUID
+        let loadID: UUID?
+        let read: () -> String
+    }
+    private var buffers: [String: Buffer] = [:]
+
+    func register(key: String, owner: UUID, loadID: UUID?, read: @escaping () -> String,
+                  readModel: (() -> String)? = nil, readSynchronizedModel: (() -> String)? = nil) {
+        buffers[key] = Buffer(owner: owner, loadID: loadID, read: {
+            if let model = readModel?(), let synchronized = readSynchronizedModel?(), model != synchronized {
+                return model
+            }
+            return read()
+        })
+    }
+
+    static func mayPublishBuffer(registeredLoadID: UUID?, currentLoadID: UUID?, hasMarkedText: Bool) -> Bool {
+        registeredLoadID == currentLoadID && !hasMarkedText
+    }
+
+    func unregister(key: String, owner: UUID) {
+        if buffers[key]?.owner == owner { buffers[key] = nil }
+    }
+
+    func capture(key: String?, loadID: UUID?, hasMarkedText: Bool,
+                 metadata: inout IPTCMetadata) -> CaptureResult {
+        guard !hasMarkedText else { return .unavailable }
+        guard let key, let path = Self.keyPath(for: key) else { return .unchanged }
+        guard let buffer = buffers[key], buffer.loadID == loadID else { return .unavailable }
+        let text = buffer.read()
+        let normalized: String? = text.isEmpty ? nil : text
+        guard metadata[keyPath: path] != normalized else { return .unchanged }
+        metadata[keyPath: path] = normalized
+        return .changed
+    }
+
+    // Match the actual EditableTextField/BufferedTextField bindings exactly: preserve whitespace,
+    // turn only the empty string into nil, and leave specialized controls to their own editors.
+    private static func keyPath(for key: String) -> WritableKeyPath<IPTCMetadata, String?>? {
+        switch key {
+        case "title": \.title
+        case "description": \.description
+        case "extendedDescription": \.extendedDescription
+        case "copyright": \.copyright
+        case "rightsUsageTerms": \.rightsUsageTerms
+        case "webStatementOfRights": \.webStatementOfRights
+        case "digitalImageGUID": \.digitalImageGUID
+        case "imageSupplierImageID": \.imageSupplierImageID
+        case "jobId": \.jobId
+        case "creatorJobTitle": \.creatorJobTitle
+        case "descriptionWriter": \.descriptionWriter
+        case "credit": \.credit
+        case "source": \.source
+        case "city": \.city
+        case "sublocation": \.sublocation
+        case "provinceState": \.provinceState
+        case "country": \.country
+        case "event": \.event
+        case "instructions": \.instructions
+        default: nil
+        }
+    }
+}
+
+private extension EnvironmentValues {
+    @Entry var metadataEditorBuffers: MetadataEditorBufferRegistry? = nil
+    @Entry var metadataEditorBufferLoadID: UUID? = nil
+    @Entry var metadataEditorCurrentLoadID: (() -> UUID?)? = nil
+}
+
 struct MetadataPanel: View {
     @Environment(AppCommandRouter.self) private var commandRouter
     @Bindable var viewModel: MetadataViewModel
@@ -57,6 +133,7 @@ struct MetadataPanel: View {
     @State private var showingStructuredPersonShown = false
     @State private var editingQuickList: QuickListType?
     @State private var captionFlushOwner = UUID()
+    @State private var editorBuffers = MetadataEditorBufferRegistry()
     @State private var showingCaptionAutocomplete = false
     @State private var captionAutocompleteField: MetadataFieldID?
     @State private var captionAutocompleteRestoreFocusKey: String?
@@ -1052,29 +1129,19 @@ struct MetadataPanel: View {
         return (updated, NSRange(location: newLocation, length: 0))
     }
 
-    /// Reads the current text from the active NSTextView for buffered fields
-    /// and pushes it to editingMetadata. Call before any commit/write operation
-    /// to ensure the view model has the latest text.
-    private func flushBufferedFields() {
-        guard let key = focusedField,
-              (key == "description" || key == "extendedDescription"),
-              let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
-        let text = editor.string
-        let normalized = text.isEmpty ? nil : text
-        switch key {
-        case "description":
-            if normalized != viewModel.editingMetadata.description {
-                viewModel.editingMetadata.description = normalized
-                viewModel.markChanged()
-            }
-        case "extendedDescription":
-            if normalized != viewModel.editingMetadata.extendedDescription {
-                viewModel.editingMetadata.extendedDescription = normalized
-                viewModel.markChanged()
-            }
-        default:
-            break
+    /// Synchronously copies only a registered scalar/multiline buffer belonging to this load.
+    @discardableResult
+    private func flushBufferedFields() -> Bool {
+        guard !viewModel.isLoading else { return false }
+        let marked = (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true
+        var updated = viewModel.editingMetadata
+        let result = editorBuffers.capture(key: focusedField, loadID: viewModel.editorBufferLoadID,
+            hasMarkedText: marked, metadata: &updated)
+        if result == .changed {
+            viewModel.editingMetadata = updated
+            viewModel.markChanged()
         }
+        return result != .unavailable
     }
 
     /// The shared field editor is reused by AppKit, so spell/grammar state must be reset on every
@@ -1097,6 +1164,16 @@ struct MetadataPanel: View {
         // A pending draft loaded from disk is not a new edit. Moving focus (including to
         // voice-memo playback) must not automatically rewrite that draft or its XMP mirror.
         guard viewModel.hasUnpersistedEditorChanges else { return }
+        if let captionFlushCoordinator {
+            do {
+                // Field blur and debounce must capture the same immutable FIFO request as
+                // navigation. A failed mirror then retries that event instead of inventing it again.
+                try captionFlushCoordinator.enqueueFlush()
+            } catch {
+                viewModel.saveError = "Failed to save caption sidecar: \(error.localizedDescription)"
+            }
+            return
+        }
         if commitsToHistorySidecarOnly {
             viewModel.saveToSidecar()
             onPendingStatusChanged?()
@@ -1163,6 +1240,9 @@ struct MetadataPanel: View {
         }
         .frame(maxWidth: .infinity)
         .accessibilityIdentifier("metadata.panel")
+        .environment(\.metadataEditorBuffers, editorBuffers)
+        .environment(\.metadataEditorBufferLoadID, viewModel.editorBufferLoadID)
+        .environment(\.metadataEditorCurrentLoadID, { viewModel.editorBufferLoadID })
         .sheet(isPresented: $isShowingVariableReference) {
             VariableReferenceView(
                 isPresented: $isShowingVariableReference,
@@ -1335,7 +1415,11 @@ struct MetadataPanel: View {
     /// JSON/XMP I/O. The ordinary metadata panel keeps its configured write mode.
     private func flushCaptionEditorBuffer() throws {
         commitDebounceTask?.cancel()
-        flushBufferedFields()
+        guard flushBufferedFields() else {
+            throw CaptionWorkspaceFlushError.persistenceFailed(
+                "Finish the active text composition or wait for the photo to load before saving Caption edits."
+            )
+        }
         guard viewModel.currentFolderURL != nil else {
             throw CaptionWorkspaceFlushError.sidecarUnavailable
         }
@@ -1578,6 +1662,7 @@ struct MetadataPanel: View {
                 }
                 BufferedTextField(
                     currentValue: viewModel.editingMetadata.description ?? "",
+                    readCurrentValue: { viewModel.editingMetadata.description ?? "" },
                     placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "description") : "Enter description",
                     lineLimit: 4...8,
                     focusedField: $focusedField,
@@ -1615,6 +1700,7 @@ struct MetadataPanel: View {
                     }
                     BufferedTextField(
                         currentValue: viewModel.editingMetadata.extendedDescription ?? "",
+                        readCurrentValue: { viewModel.editingMetadata.extendedDescription ?? "" },
                         placeholder: viewModel.isBatchEdit
                             ? viewModel.batchPlaceholder(for: "extendedDescription")
                             : "Describe the visual content for accessibility",
@@ -3220,6 +3306,11 @@ struct MultipleValuesIndicator: View {
 }
 
 struct EditableTextField: View {
+    @Environment(\.metadataEditorBuffers) private var editorBuffers
+    @Environment(\.metadataEditorBufferLoadID) private var bufferLoadID
+    @Environment(\.metadataEditorCurrentLoadID) private var currentLoadID
+    @State private var registeredLoadID: UUID?
+    @State private var bufferOwner = UUID()
     let label: String
     @Binding var text: String
     var placeholder: String = ""
@@ -3235,6 +3326,7 @@ struct EditableTextField: View {
     var focusedField: FocusState<String?>.Binding? = nil
 
     @State private var localText: String = ""
+    @State private var synchronizedModelText: String = ""
     @State private var quickListPopoverShown: Bool = false
 
     var body: some View {
@@ -3279,6 +3371,8 @@ struct EditableTextField: View {
                             allowsMultiple: false,
                             compact: true,
                             onPick: { picked in
+                                localText = picked
+                                synchronizedModelText = picked
                                 text = picked
                                 onCommit?()
                             },
@@ -3296,9 +3390,12 @@ struct EditableTextField: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.body)
                     .focused(focusedField, equals: focusKey)
-                    .onAppear { localText = text }
+                    .onAppear { registerBuffer(key: focusKey) }
+                    .onChange(of: bufferLoadID) { _, _ in registerBuffer(key: focusKey) }
+                    .onDisappear { editorBuffers?.unregister(key: focusKey, owner: bufferOwner) }
                     .onChange(of: text) { _, newValue in
                         if newValue != localText { localText = newValue }
+                        synchronizedModelText = newValue
                     }
                     .onChange(of: isFocused) { _, focused in
                         if !focused { flush() }
@@ -3319,7 +3416,24 @@ struct EditableTextField: View {
         }
     }
 
+    private func registerBuffer(key: String) {
+        localText = text
+        synchronizedModelText = text
+        registeredLoadID = bufferLoadID
+        let buffer = $localText
+        let model = $text
+        let synchronized = $synchronizedModelText
+        editorBuffers?.register(key: key, owner: bufferOwner, loadID: bufferLoadID,
+            read: { buffer.wrappedValue }, readModel: { model.wrappedValue },
+            readSynchronizedModel: { synchronized.wrappedValue })
+    }
+
     private func flush() {
+        guard MetadataEditorBufferRegistry.mayPublishBuffer(registeredLoadID: registeredLoadID,
+            currentLoadID: currentLoadID?(),
+            hasMarkedText: (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true) else { return }
+        // A model update (for example a Quick List choice) owns precedence until view sync.
+        guard text == synchronizedModelText else { return }
         if localText != text { text = localText }
     }
 }
@@ -3345,7 +3459,13 @@ struct EditableTextEditor: View {
 /// Text field that buffers keystrokes locally to prevent per-keystroke
 /// re-evaluation of the parent view. Syncs on focus loss or Return.
 private struct BufferedTextField: View {
+    @Environment(\.metadataEditorBuffers) private var editorBuffers
+    @Environment(\.metadataEditorBufferLoadID) private var bufferLoadID
+    @Environment(\.metadataEditorCurrentLoadID) private var currentLoadID
+    @State private var registeredLoadID: UUID?
+    @State private var bufferOwner = UUID()
     let currentValue: String
+    let readCurrentValue: () -> String
     let placeholder: String
     let lineLimit: ClosedRange<Int>
     let focusedField: FocusState<String?>.Binding
@@ -3355,6 +3475,7 @@ private struct BufferedTextField: View {
     var onTabTraversalRequested: ((Bool) -> Void)?
 
     @State private var localText = ""
+    @State private var synchronizedModelText = ""
 
     var body: some View {
         let isFocused = focusedField.wrappedValue == focusKey
@@ -3363,11 +3484,14 @@ private struct BufferedTextField: View {
             .textFieldStyle(.roundedBorder)
             .font(.body)
             .focused(focusedField, equals: focusKey)
-            .onAppear { localText = currentValue }
+            .onAppear { registerBuffer() }
+            .onChange(of: bufferLoadID) { _, _ in registerBuffer() }
+            .onDisappear { editorBuffers?.unregister(key: focusKey, owner: bufferOwner) }
             .onChange(of: currentValue) { _, newValue in
                 if newValue != localText {
                     localText = newValue
                 }
+                synchronizedModelText = newValue
             }
             .onChange(of: isFocused) { _, focused in
                 if !focused {
@@ -3391,7 +3515,22 @@ private struct BufferedTextField: View {
             }
     }
 
+    private func registerBuffer() {
+        localText = currentValue
+        synchronizedModelText = currentValue
+        registeredLoadID = bufferLoadID
+        let buffer = $localText
+        let synchronized = $synchronizedModelText
+        editorBuffers?.register(key: focusKey, owner: bufferOwner, loadID: bufferLoadID,
+            read: { buffer.wrappedValue }, readModel: readCurrentValue,
+            readSynchronizedModel: { synchronized.wrappedValue })
+    }
+
     private func flush() {
+        guard MetadataEditorBufferRegistry.mayPublishBuffer(registeredLoadID: registeredLoadID,
+            currentLoadID: currentLoadID?(),
+            hasMarkedText: (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true) else { return }
+        guard readCurrentValue() == synchronizedModelText else { return }
         let normalized = localText.isEmpty ? nil : localText
         onTextFinished(normalized)
     }

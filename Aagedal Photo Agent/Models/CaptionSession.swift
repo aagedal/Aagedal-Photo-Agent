@@ -6,9 +6,10 @@ import Foundation
 /// small JSON/XMP writes run on a serial background queue. Repeating `persist()` is safe and is
 /// used by the durable barrier to retry a previously failed write.
 nonisolated struct CaptionDraftPersistence: Sendable {
-    let imageURL: URL
-    let folderURL: URL
-    let sidecar: MetadataSidecar
+    let request: MetadataSidecarReplayRequest
+    var imageURL: URL { request.imageURL }
+    var folderURL: URL { request.folderURL }
+    var sidecar: MetadataSidecar { request.sidecar }
 
     func persist() throws {
         // DispatchQueue.sync may run a durable retry inline on the caller's MainActor task.
@@ -18,16 +19,12 @@ nonisolated struct CaptionDraftPersistence: Sendable {
         let result = CaptionPersistenceResult()
         Task.detached {
             do {
-                let installed = try await MetadataSidecarService().saveSidecarMergingHistorySerialized(
-                    sidecar,
-                    for: imageURL,
-                    in: folderURL
-                )
-                try await XMPSidecarService().saveSidecarPreservingDevelopSettingsSerialized(
-                    metadata: installed.metadata,
-                    for: imageURL,
-                    mergeWithExisting: true
-                )
+                let persistence = await MetadataSidecarService().replayHistoryAndMirrorXMP(request)
+                guard persistence.completed else {
+                    throw CaptionWorkspaceFlushError.persistenceFailed(
+                        persistence.failure?.message ?? "The captured Caption draft did not finish saving."
+                    )
+                }
                 result.set(.success(()))
             } catch {
                 result.set(.failure(error))

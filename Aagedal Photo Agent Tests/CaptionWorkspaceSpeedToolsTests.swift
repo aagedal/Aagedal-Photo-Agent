@@ -446,18 +446,22 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(CaptionWriteAndNextGate.shouldAdvance(
             pendingURL: current,
             currentURL: current,
-            writeSucceeded: true
+            writeSucceeded: true, hasPendingChanges: false, hasUnpersistedEditorChanges: false
         ))
         #expect(!CaptionWriteAndNextGate.shouldAdvance(
             pendingURL: current,
             currentURL: URL(fileURLWithPath: "/caption/b.jpg"),
-            writeSucceeded: true
+            writeSucceeded: true, hasPendingChanges: false, hasUnpersistedEditorChanges: false
         ))
         #expect(!CaptionWriteAndNextGate.shouldAdvance(
             pendingURL: current,
             currentURL: current,
-            writeSucceeded: false
+            writeSucceeded: false, hasPendingChanges: false, hasUnpersistedEditorChanges: false
         ))
+        for (pending, unpersisted) in [(true, false), (false, true), (true, true)] {
+            #expect(!CaptionWriteAndNextGate.shouldAdvance(pendingURL: current, currentURL: current,
+                writeSucceeded: true, hasPendingChanges: pending, hasUnpersistedEditorChanges: unpersisted))
+        }
     }
 
     @Test("caption advance shortcuts persist and cannot remain ambiguous")

@@ -737,13 +737,21 @@ struct CaptionWorkspaceView: View {
     private func completeWriteAndNextIfPossible() {
         guard let pendingURL = pendingWriteAndNextURL else { return }
         pendingWriteAndNextURL = nil
-        guard CaptionWriteAndNextGate.shouldAdvance(
-            pendingURL: pendingURL,
-            currentURL: session.currentURL,
-            writeSucceeded: metadataViewModel.saveError == nil
-        ) else { return }
         Task { @MainActor in
+            guard metadataViewModel.saveError == nil,
+                  pendingURL.standardizedFileURL == session.currentURL?.standardizedFileURL else { return }
             do {
+                guard try CaptionWorkspaceFlushCoordinator.shared.editorCompositionState() == .committed else { return }
+                // Text entered during the write may still live in AppKit's field editor. Capture
+                // it in this navigation turn; a newer pending draft must keep this photo selected.
+                try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush()
+                guard CaptionWriteAndNextGate.shouldAdvance(
+                    pendingURL: pendingURL,
+                    currentURL: session.currentURL,
+                    writeSucceeded: metadataViewModel.saveError == nil,
+                    hasPendingChanges: metadataViewModel.hasChanges,
+                    hasUnpersistedEditorChanges: metadataViewModel.hasUnpersistedEditorChanges
+                ) else { return }
                 let moved = try await session.goNext(flush: {})
                 if moved {
                     publishSessionSelection()
