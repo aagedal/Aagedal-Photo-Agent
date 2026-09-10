@@ -19,6 +19,31 @@ enum MainViewMode {
     case peopleDatabase    // Known People database view
 }
 
+/// A pending on-disk draft is not permission to embed it during navigation or backgrounding.
+/// Caption always uses its registered buffered-editor/FIFO boundary; explicit Write commands
+/// remain separate. Keeping this admission here makes both lifecycle observers share the rule.
+@MainActor
+enum MetadataAutomaticSaveBoundary {
+    enum Trigger { case selectionChange, deactivation }
+
+    static func perform(
+        _ trigger: Trigger,
+        in workspace: MainViewMode,
+        viewModel: MetadataViewModel,
+        captionFlush: () throws -> Void,
+        commitConfigured: () -> Void
+    ) rethrows {
+        if workspace == .caption {
+            // Capture buffered AppKit text even when it has not yet changed the published
+            // editing model. Selection transitions already cross Caption's navigation barrier.
+            if trigger == .deactivation { try captionFlush() }
+            return
+        }
+        guard viewModel.hasUnpersistedEditorChanges else { return }
+        commitConfigured()
+    }
+}
+
 enum TemplateCommandTarget: Equatable {
     case metadata
     case develop
@@ -3852,20 +3877,19 @@ struct ContentViewModifiers: ViewModifier {
     func body(content: Content) -> some View {
         let base = content
             .onChange(of: browserViewModel.selectedImageIDs) { oldValue, _ in
-                // Defer save of previous selection to a fire-and-forget task so the
-                // selection border renders immediately without waiting for disk I/O.
-                if mainViewMode != .caption, !oldValue.isEmpty && metadataViewModel.hasChanges {
-                    let hadC2PA = browserViewModel.images.contains { image in
-                        metadataViewModel.selectedURLs.contains(image.url) && image.hasC2PA
-                    }
-                    let hadRaw = browserViewModel.images.contains { image in
-                        metadataViewModel.selectedURLs.contains(image.url) && SupportedImageFormats.isRaw(url: image.url)
-                    }
-                    let mode = MetadataWriteMode.current(forC2PA: hadC2PA, isRaw: hadRaw)
-                    let previousURLs = metadataViewModel.selectedURLs
-                    Task { @MainActor in
-                        // Simple resolves C2PA to .writeToFile and deliberately
-                        // ignores content credentials — commit the mode as-is.
+                if !oldValue.isEmpty {
+                    MetadataAutomaticSaveBoundary.perform(.selectionChange, in: mainViewMode,
+                        viewModel: metadataViewModel, captionFlush: {}) {
+                        let hadC2PA = browserViewModel.images.contains { image in
+                            metadataViewModel.selectedURLs.contains(image.url) && image.hasC2PA
+                        }
+                        let hadRaw = browserViewModel.images.contains { image in
+                            metadataViewModel.selectedURLs.contains(image.url) && SupportedImageFormats.isRaw(url: image.url)
+                        }
+                        let mode = MetadataWriteMode.current(forC2PA: hadC2PA, isRaw: hadRaw)
+                        let previousURLs = metadataViewModel.selectedURLs
+                        // Admit the save before scheduling the next selection load; its I/O
+                        // is already asynchronous. Avoid adding another deferred model read.
                         metadataViewModel.commitEdits(mode: mode) {
                             browserViewModel.refreshPendingStatusBatch(for: previousURLs)
                         }
@@ -3885,12 +3909,24 @@ struct ContentViewModifiers: ViewModifier {
                 }
             }
             .onChange(of: scenePhase) { oldPhase, newPhase in
-                if oldPhase == .active, newPhase != .active,
-                   metadataViewModel.hasChanges {
-                    let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-                    let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
-                    let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
-                    metadataViewModel.commitEdits(mode: mode)
+                guard oldPhase == .active, newPhase != .active else { return }
+                do {
+                    try MetadataAutomaticSaveBoundary.perform(.deactivation, in: mainViewMode,
+                        viewModel: metadataViewModel, captionFlush: {
+                            let coordinator = CaptionWorkspaceFlushCoordinator.shared
+                            if coordinator.hasRegisteredHandler {
+                                try coordinator.enqueueFlush()
+                            } else if metadataViewModel.hasUnpersistedEditorChanges {
+                                throw CaptionWorkspaceFlushError.handlerUnavailable
+                            }
+                        }, commitConfigured: {
+                            let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
+                            let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
+                            let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
+                            metadataViewModel.commitEdits(mode: mode)
+                        })
+                } catch {
+                    metadataViewModel.saveError = error.localizedDescription
                 }
             }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in

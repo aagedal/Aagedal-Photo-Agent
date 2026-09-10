@@ -94,7 +94,7 @@ final class MetadataViewModel {
     var originalImageMetadata: IPTCMetadata?
     var embeddedMetadata: IPTCMetadata?
     var xmpMetadata: IPTCMetadata?
-    @ObservationIgnored private var cleanupBaseline: (imageURL: URL, folderURL: URL?, record: MetadataSidecar?)?
+    private var cleanupBaseline: (imageURL: URL, folderURL: URL?, record: MetadataSidecar?)?
     var sidecarHistory: [MetadataHistoryEntry] = []
     var currentFolderURL: URL?
     var metadataReferenceSource: MetadataReferenceSource = .embedded
@@ -145,6 +145,7 @@ final class MetadataViewModel {
     private let writeEngine: any MetadataWriteEngine
     private let descriptiveWriteBoundary: DescriptiveMetadataWriteBoundary
     private let editorReadService: MetadataEditorReadService
+    private let persistHistoryRestore: @Sendable (MetadataSidecarRestoreRequest) async -> MetadataSidecarPersistenceResult
     private let discardSidecar: @Sendable (URL, URL) async throws -> Void
     private let discardFolderSidecars: @Sendable (URL) async throws -> Void
     private let sidecarService = MetadataSidecarService()
@@ -179,7 +180,10 @@ final class MetadataViewModel {
     }
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
     @ObservationIgnored private var metadataLoadRequestID: UUID?
-    @ObservationIgnored private var writeTask: Task<Void, Never>?
+    @ObservationIgnored private var writeTask: Task<Void, Never>? {
+        willSet { historyRestoreRequestID = nil }
+    }
+    @ObservationIgnored private var historyRestoreRequestID: UUID?
     @ObservationIgnored private var discardTask: Task<Void, Never>?
     @ObservationIgnored private var discardRequestID: UUID?
     @ObservationIgnored private var batchProcessTask: Task<Void, Never>?
@@ -190,6 +194,9 @@ final class MetadataViewModel {
         readService: SwiftExifReadService,
         writeEngine: any MetadataWriteEngine,
         editorReadService: MetadataEditorReadService = .shared,
+        persistHistoryRestore: @escaping @Sendable (MetadataSidecarRestoreRequest) async -> MetadataSidecarPersistenceResult = {
+            await MetadataSidecarService().restoreSidecarAndMirrorXMP($0)
+        },
         discardSidecar: @escaping @Sendable (URL, URL) async throws -> Void = { imageURL, folderURL in
             try await MetadataSidecarService().deleteSidecarSerialized(for: imageURL, in: folderURL)
         },
@@ -201,6 +208,7 @@ final class MetadataViewModel {
         self.writeEngine = writeEngine
         self.descriptiveWriteBoundary = DescriptiveMetadataWriteBoundary(writeEngine: writeEngine)
         self.editorReadService = editorReadService
+        self.persistHistoryRestore = persistHistoryRestore
         self.discardSidecar = discardSidecar
         self.discardFolderSidecars = discardFolderSidecars
     }
@@ -3540,68 +3548,72 @@ final class MetadataViewModel {
 
     // MARK: - Diff Helpers
 
+    private var fieldComparisonMetadata: IPTCMetadata? {
+        pendingDraftImageMetadataSnapshot ?? originalImageMetadata
+    }
+
     func fieldDiffers(_ keyPath: KeyPath<IPTCMetadata, String?>) -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata[keyPath: keyPath] != original[keyPath: keyPath]
     }
 
     func keywordsDiffer() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.keywords != original.keywords
     }
 
     func personShownDiffer() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.personShown != original.personShown
     }
 
     func organisationShownNamesDiffer() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.organisationsShownNames != original.organisationsShownNames
     }
 
     func organisationShownCodesDiffer() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.organisationsShownCodes != original.organisationsShownCodes
     }
 
     func sceneCodesDiffer() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.sceneCodes != original.sceneCodes
     }
 
     func subjectCodesDiffer() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.subjectCodes != original.subjectCodes
     }
 
     func mediaTopicsDiffer() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.mediaTopics != original.mediaTopics
     }
 
     func genresDiffer() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.genres != original.genres
     }
 
     func digitalSourceTypeDiffers() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.digitalSourceType != original.digitalSourceType
     }
 
     func urgencyDiffers() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.urgency != original.urgency
     }
 
     func gpsDiffers() -> Bool {
-        guard let original = originalImageMetadata else { return false }
+        guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata.latitude != original.latitude || editingMetadata.longitude != original.longitude
     }
 
     var pendingFieldNames: [String] {
-        guard let original = pendingDraftImageMetadataSnapshot ?? originalImageMetadata else { return [] }
+        guard let original = fieldComparisonMetadata else { return [] }
         var names: [String] = []
         if editingMetadata.title != original.title { names.append("Headline") }
         if editingMetadata.description != original.description { names.append("Description") }
@@ -3783,7 +3795,7 @@ final class MetadataViewModel {
     }
 
     func clearHistory() {
-        guard let imageURL = selectedURLs.first,
+        guard !isSaving, let imageURL = selectedURLs.first,
               let folderURL = currentFolderURL else { return }
 
         sidecarHistory = []
@@ -3813,90 +3825,149 @@ final class MetadataViewModel {
         }
     }
 
-    func restoreToOriginal() {
-        guard let original = originalImageMetadata else { return }
-
-        editingMetadata = original
-        previousEditingMetadata = original
-        hasChanges = false
-
-        if let imageURL = selectedURLs.first,
-           let folderURL = currentFolderURL {
-            let sidecar = MetadataSidecar(
-                sourceFile: imageURL.lastPathComponent,
-                lastModified: Date(),
-                pendingChanges: false,
-                metadata: editingMetadata,
-                imageMetadataSnapshot: originalImageMetadata,
-                history: sidecarHistory
-            )
-            writeTask?.cancel()
-            writeTask = Task {
-                do {
-                    let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
-                        sidecar,
-                        for: imageURL,
-                        in: folderURL
-                    )
-                    cleanupBaseline = (imageURL, folderURL, installed)
-                    sidecarHistory = installed.history
-                } catch {
-                    saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
-                }
-            }
-        }
+    private var currentHistoryRecord: MetadataSidecar? {
+        guard selectedURLs.count == 1, let baseline = cleanupBaseline,
+              baseline.imageURL == selectedURLs.first,
+              baseline.folderURL == currentFolderURL else { return nil }
+        return baseline.record
     }
 
-    func restoreToHistoryPoint(at index: Int) {
-        guard let original = originalImageMetadata else { return }
+    var canRestoreOriginalHistory: Bool { currentHistoryRecord?.imageMetadataSnapshot != nil }
 
-        // Start from original and replay history up to (and including) the given index
-        var restored = original
-        let historyToApply = Array(sidecarHistory.prefix(index + 1))
-
-        guard historyToApply.allSatisfy(\.isRestorable) else {
-            saveError = "This history point includes summarized or hidden metadata and cannot be restored safely."
-            return
+    @discardableResult
+    func restoreToOriginal() -> Task<Void, Never>? {
+        guard let original = currentHistoryRecord?.imageMetadataSnapshot else {
+            saveError = "The original metadata snapshot is unavailable. This older draft cannot safely restore Original State."
+            return nil
         }
+        return persistRestoredHistoryTarget(original)
+    }
 
-        for entry in historyToApply {
-            guard entry.apply(to: &restored) else {
-                saveError = "This history point contains metadata that cannot be restored safely."
-                return
+    @discardableResult
+    func restoreToHistoryPoint(at index: Int) -> Task<Void, Never>? {
+        guard let record = currentHistoryRecord,
+              sidecarHistory.indices.contains(index),
+              record.history.indices.contains(index),
+              record.history == sidecarHistory else {
+            saveError = "This history point is no longer available. Reload the photo and choose a retained point."
+            return nil
+        }
+        // Reverse only later retained transitions from the actual current record. Replaying a
+        // truncated prefix from the original snapshot would lose older edits absent from the log.
+        var restored = record.metadata
+        for entry in record.history.suffix(from: index + 1).reversed() {
+            guard entry.isRestorable else {
+                saveError = "Later history includes summarized or hidden values, so this point cannot be restored safely."
+                return nil
             }
-        }
-
-        editingMetadata = restored
-        previousEditingMetadata = restored
-
-        hasChanges = editingMetadata != original
-
-        // Save the updated sidecar
-        if let imageURL = selectedURLs.first,
-           let folderURL = currentFolderURL {
-            let sidecar = MetadataSidecar(
-                sourceFile: imageURL.lastPathComponent,
-                lastModified: Date(),
-                pendingChanges: hasChanges,
-                metadata: editingMetadata,
-                imageMetadataSnapshot: pendingDraftImageMetadataSnapshot,
-                history: sidecarHistory
-            )
-            writeTask?.cancel()
-            writeTask = Task {
-                do {
-                    let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
-                        sidecar,
-                        for: imageURL,
-                        in: folderURL
-                    )
-                    cleanupBaseline = (imageURL, folderURL, installed)
-                    sidecarHistory = installed.history
-                } catch {
-                    saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            var verified = restored
+            guard entry.apply(to: &verified), verified == restored else {
+                saveError = "The current metadata does not match its recorded history. Reload the photo before restoring."
+                return nil
+            }
+            var prior = restored
+            if let field = entry.fieldID {
+                field.setHistoryValue(entry.oldValue, in: &prior)
+            } else {
+                let inverse = MetadataHistoryEntry(timestamp: entry.timestamp, fieldName: entry.fieldName,
+                    oldValue: entry.newValue, newValue: entry.oldValue)
+                guard inverse.apply(to: &prior) else {
+                    saveError = "This history point contains a change that cannot be reversed safely."
+                    return nil
                 }
             }
+            var roundTrip = prior
+            guard entry.apply(to: &roundTrip), roundTrip == restored else {
+                saveError = "This history point contains an invalid previous value and cannot be restored safely."
+                return nil
+            }
+            restored = prior
         }
+        return persistRestoredHistoryTarget(restored)
+    }
+
+    private func persistRestoredHistoryTarget(_ target: IPTCMetadata) -> Task<Void, Never>? {
+        guard !isLoading, !isSaving, !hasUnpersistedEditorChanges,
+              selectedCount == 1, let imageURL = selectedURLs.first,
+              let folderURL = currentFolderURL, let record = currentHistoryRecord else {
+            saveError = "Finish saving the current edits, then reload the photo before restoring history."
+            return nil
+        }
+        var displayedRecord = record.metadata
+        displayedRecord.cameraRaw = editingMetadata.cameraRaw
+        displayedRecord.exifOrientation = editingMetadata.exifOrientation
+        guard displayedRecord == editingMetadata else {
+            saveError = "The displayed metadata differs from the saved draft. Reload the photo before restoring history."
+            return nil
+        }
+        var restored = target
+        restored.cameraRaw = editingMetadata.cameraRaw
+        restored.exifOrientation = editingMetadata.exifOrientation
+        let timestamp = Date()
+        var history = record.history
+        history.append(contentsOf: MetadataHistoryEntry.changes(from: displayedRecord, to: restored, timestamp: timestamp))
+        history.trimToHistoryLimit()
+        let replacement = MetadataSidecar(sourceFile: imageURL.lastPathComponent,
+            lastModified: timestamp, pendingChanges: true, metadata: restored,
+            imageMetadataSnapshot: record.imageMetadataSnapshot, history: history)
+        let request = MetadataSidecarRestoreRequest(sidecar: replacement, expectedSidecar: record,
+            expectedXMPMetadata: xmpMetadata, imageURL: imageURL, folderURL: folderURL)
+        let requestID = UUID()
+        let loadID = metadataLoadRequestID
+        let edited = editingMetadata
+        let previousWrite = writeTask
+        isSaving = true
+        saveError = nil
+        let task = Task {
+            defer {
+                if historyRestoreRequestID == requestID { isSaving = false }
+            }
+            // A normal metadata save already admitted before this action retains its completion.
+            // The CAS will reject this restore if that save changed its captured source record.
+            await previousWrite?.value
+            guard !Task.isCancelled else {
+                if historyRestoreRequestID == requestID, metadataLoadRequestID == loadID {
+                    saveError = "Metadata restoration was cancelled before it started."
+                }
+                return
+            }
+            let result = await persistHistoryRestore(request)
+            guard historyRestoreRequestID == requestID else { return }
+            guard metadataLoadRequestID == loadID, selectedURLs == [imageURL],
+                  currentFolderURL == folderURL, editingMetadata == edited else { return }
+            if let installed = result.installedSidecar {
+                cleanupBaseline = (imageURL, folderURL, installed)
+                sidecarHistory = installed.history
+                editingMetadata = installed.metadata
+                editingMetadata.cameraRaw = edited.cameraRaw
+                editingMetadata.exifOrientation = edited.exifOrientation
+                previousEditingMetadata = editingMetadata
+                hasChanges = true
+                selectedHavePendingSidecars = true
+                if result.completed {
+                    xmpMetadata = editingMetadata
+                    if metadataReferenceSource == .xmp {
+                        metadata = editingMetadata
+                        originalImageMetadata = editingMetadata
+                    }
+                }
+            }
+            if result.completed {
+                saveError = nil
+            } else {
+                if let path = result.committedButUnverifiedSidecarURL {
+                    saveError = "Restore wrote the metadata draft, but its current contents could not be verified. Reload before another action. Review: \(path.path). \(result.failure?.message ?? "The operation was cancelled.")"
+                    return
+                }
+                let prefix = result.installedSidecar == nil
+                    ? "Metadata was not restored."
+                    : "The restored draft was saved, but its XMP mirror is incomplete. Choose Restore again to retry, or reload before another action."
+                saveError = prefix + " " + (result.failure?.message ?? "The operation was cancelled.")
+            }
+        }
+        writeTask = task
+        historyRestoreRequestID = requestID
+        return task
     }
 
     func clear() {

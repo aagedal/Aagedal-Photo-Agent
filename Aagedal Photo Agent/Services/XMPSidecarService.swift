@@ -290,6 +290,43 @@ struct XMPSidecarService: Sendable {
         }
     }
 
+    /// Exact editorial restore used only while the caller owns this photo's MetadataIOCoordinator
+    /// lock. Do not acquire that lock again here. Validate the pre-restore XMP revision and retain
+    /// its opaque Develop data and both orientation carriers, including explicit absence.
+    @MetadataSidecarFilesystemActor
+    func restoreDescriptiveMetadataInHeldTransaction(
+        _ metadata: IPTCMetadata,
+        for imageURL: URL,
+        expectedSnapshot: XMPSidecarWriteSnapshot
+    ) async throws {
+        _ = try await updateXMPTransaction(for: imageURL, expectedSnapshot: expectedSnapshot) { xmp in
+            let tiffOrientation = xmp.simpleValue(namespace: XMPNamespace.tiff, property: "Orientation")
+            let exifOrientation = xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
+            XMPDataBuilder.applyDescriptive(metadata, into: &xmp)
+            if let localizedTitles = metadata.localizedTitles {
+                if localizedTitles.isEmpty {
+                    xmp.setValue(.simple("True"), namespace: XMPDataBuilder.aaphotoNamespace,
+                                 property: localizedTitleClearedProperty)
+                } else {
+                    xmp.removeValue(namespace: XMPDataBuilder.aaphotoNamespace,
+                                    property: localizedTitleClearedProperty)
+                }
+            } else {
+                xmp.removeValue(namespace: XMPNamespace.dc, property: "title")
+                xmp.removeValue(namespace: XMPDataBuilder.aaphotoNamespace,
+                                property: localizedTitleClearedProperty)
+            }
+            for (namespace, value) in [(XMPNamespace.tiff, tiffOrientation), (XMPNamespace.exif, exifOrientation)] {
+                if let value {
+                    xmp.setValue(.simple(value), namespace: namespace, property: "Orientation")
+                } else {
+                    xmp.removeValue(namespace: namespace, property: "Orientation")
+                }
+            }
+            xmp.creatorTool = SwiftExifWriteEngine.creatorTool
+        }
+    }
+
     /// Reads the batch baseline inside the per-photo transaction and replays the captured
     /// mutation after an external revision change. A queued edit cannot replace newer fields
     /// or Develop settings with the UI's stale batch record.

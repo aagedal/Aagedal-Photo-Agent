@@ -20,8 +20,404 @@ private nonisolated final class CaptionBaselineRetryGate: @unchecked Sendable {
     }
 }
 
+private nonisolated final class HistoryRestoreFailureGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasFailed = false
+    func failFirst() throws {
+        let shouldFail = lock.withLock {
+            if hasFailed { return false }
+            hasFailed = true
+            return true
+        }
+        if shouldFail { throw CocoaError(.fileWriteUnknown) }
+    }
+}
+
+private actor HistoryRestoreSuspensionGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    var isPaused: Bool { continuation != nil }
+    func pause() async {
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 @Suite("Metadata editor sidecar read boundary", .serialized)
 struct MetadataEditorReadServiceTests {
+    @Test("Visible field markers compare pending originals independently of the selected XMP reference")
+    @MainActor
+    func fieldMarkersUseSavedPendingOriginal() async throws {
+        var pending = IPTCMetadata(title: "Pending headline", description: "Pending caption")
+        pending.keywords = ["Pending keyword"]
+        pending.personShown = ["Pending person"]
+        pending.organisationsShownNames = ["Pending organisation"]
+        pending.organisationsShownCodes = ["Pending code"]
+        pending.sceneCodes = ["010100"]
+        pending.subjectCodes = ["01000000"]
+        pending.mediaTopics = [.init(termIdentifier: "http://cv.iptc.org/newscodes/mediatopic/20000000")]
+        pending.genres = [.init(termIdentifier: "http://cv.iptc.org/newscodes/genre/Feature")]
+        pending.urgency = 1
+        pending.latitude = 59
+        pending.longitude = 10
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(), pending: pending)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        for reference in [MetadataReferenceSource.embedded, .xmp] {
+            fixture.model.applyReferenceSource(reference)
+            #expect(fixture.model.fieldDiffers(\.title))
+            #expect(fixture.model.fieldDiffers(\.description))
+            #expect(fixture.model.keywordsDiffer())
+            #expect(fixture.model.personShownDiffer())
+            #expect(fixture.model.organisationShownNamesDiffer())
+            #expect(fixture.model.organisationShownCodesDiffer())
+            #expect(fixture.model.sceneCodesDiffer())
+            #expect(fixture.model.subjectCodesDiffer())
+            #expect(fixture.model.mediaTopicsDiffer())
+            #expect(fixture.model.genresDiffer())
+            #expect(fixture.model.urgencyDiffers())
+            #expect(fixture.model.gpsDiffers())
+        }
+        await fixture.model.restoreToOriginal()?.value
+        #expect(fixture.model.saveError == nil)
+        #expect(fixture.model.hasChanges)
+        #expect(!fixture.model.fieldDiffers(\.title))
+        #expect(!fixture.model.fieldDiffers(\.description))
+        #expect(!fixture.model.keywordsDiffer())
+        #expect(!fixture.model.gpsDiffers())
+    }
+
+    @Test("Original restores exact pending editorial state while preserving Develop and the immutable baseline", arguments: [false, true])
+    @MainActor
+    func originalRestoreIsDurableAndRepeatable(clearTitles: Bool) async throws {
+        let original = IPTCMetadata(title: "Original headline", description: "Original caption")
+        var pending = IPTCMetadata(title: "Pending headline", description: "Pending caption")
+        pending.localizedTitles = clearTitles ? [] : [.init(languageTag: "nb", value: "Overskrift")]
+        var develop = CameraRawSettings()
+        develop.exposure2012 = 0.5
+        pending.cameraRaw = develop
+        pending.exifOrientation = 6
+        let fixture = try makeHistoryRestoreFixture(original: original, pending: pending)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let imageBefore = try Data(contentsOf: fixture.image)
+        let referenceBefore = try #require(XMPSidecarService().loadSidecar(for: fixture.image))
+        #expect(referenceBefore.cameraRaw?.exposure2012 == 0.5)
+        #expect(referenceBefore.exifOrientation == 6)
+        for _ in 0..<2 {
+            await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+            #expect(fixture.model.editingMetadata.cameraRaw == referenceBefore.cameraRaw)
+            #expect(fixture.model.editingMetadata.exifOrientation == referenceBefore.exifOrientation)
+            #expect(fixture.model.canRestoreOriginalHistory)
+            await fixture.model.restoreToOriginal()?.value
+            #expect(fixture.model.saveError == nil)
+            #expect(!fixture.model.isSaving)
+            let record = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+            #expect(record.pendingChanges)
+            #expect(record.imageMetadataSnapshot == original)
+            #expect(record.metadata.title == original.title)
+            #expect(record.metadata.description == original.description)
+            // IPTCMetadata deliberately serializes only editorial data in JSON; Develop and
+            // orientation remain authoritative in XMP and must survive both editor reloads.
+            #expect(record.metadata.cameraRaw == nil)
+            #expect(record.metadata.exifOrientation == nil)
+            #expect(fixture.model.editingMetadata.cameraRaw == referenceBefore.cameraRaw)
+            #expect(fixture.model.editingMetadata.exifOrientation == referenceBefore.exifOrientation)
+            let mirror = try #require(XMPSidecarService().loadSidecar(for: fixture.image))
+            #expect(mirror.title == original.title)
+            #expect(mirror.description == original.description)
+            #expect(mirror.localizedTitles == nil)
+            #expect(mirror.cameraRaw == referenceBefore.cameraRaw)
+            #expect(mirror.exifOrientation == referenceBefore.exifOrientation)
+            #expect(fixture.model.hasChanges)
+            #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
+        }
+        #expect(try Data(contentsOf: fixture.image) == imageBefore)
+    }
+
+    @Test("History reversal retains edits older than the retained log and survives further restores")
+    @MainActor
+    func historyRestoreRetainsTrimmedEdits() async throws {
+        var current = IPTCMetadata(title: "Headline 0", credit: "Older retained credit")
+        var history: [MetadataHistoryEntry] = []
+        for index in 1...25 {
+            history.append(MetadataHistoryEntry(timestamp: Date(timeIntervalSince1970: Double(index)),
+                fieldID: .headline, oldValue: "Headline \(index - 1)", newValue: "Headline \(index)"))
+        }
+        history.trimToHistoryLimit()
+        current.title = "Headline 25"
+        let original = IPTCMetadata(title: "Original", credit: "Original credit")
+        let fixture = try makeHistoryRestoreFixture(original: original, pending: current, history: history)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        await fixture.model.restoreToHistoryPoint(at: 10)?.value
+        #expect(fixture.model.saveError == nil)
+        #expect(fixture.model.editingMetadata.title == history[10].newValue)
+        #expect(fixture.model.editingMetadata.credit == "Older retained credit")
+        await fixture.model.restoreToOriginal()?.value
+        #expect(fixture.model.saveError == nil)
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        // The original end-of-log point remains reachable by reversing explicit restoration deltas.
+        let originalEnd = try #require(fixture.model.sidecarHistory.firstIndex { $0.id == history.last?.id })
+        await fixture.model.restoreToHistoryPoint(at: originalEnd)?.value
+        #expect(fixture.model.saveError == nil)
+        #expect(fixture.model.editingMetadata.title == "Headline 25")
+        #expect(fixture.model.editingMetadata.credit == "Older retained credit")
+        fixture.model.editingMetadata.title = "New edit after restore"
+        fixture.model.markChanged()
+        let draft = try #require(try fixture.model.captureCaptionDraftPersistence())
+        #expect(draft.sidecar.imageMetadataSnapshot == original)
+        try await Task.detached { try draft.persist() }.value
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        #expect(fixture.model.editingMetadata.title == "New edit after restore")
+        #expect(fixture.model.pendingFieldNames.contains("Headline"))
+    }
+
+    @Test("A clicked legacy history index remains distinct when event IDs collide")
+    @MainActor
+    func legacyDuplicateHistoryIDsRestoreClickedIndex() async throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let history = try decoder.decode([MetadataHistoryEntry].self, from: Data("""
+        [
+          {"timestamp":"2026-01-01T00:00:00Z","fieldName":"Headline","oldValue":"A","newValue":"B"},
+          {"timestamp":"2026-01-01T00:00:00Z","fieldName":"Headline","oldValue":"B","newValue":"C"},
+          {"timestamp":"2026-01-01T00:00:00Z","fieldName":"Headline","oldValue":"C","newValue":"D"}
+        ]
+        """.utf8))
+        #expect(Set(history.map(\.id)).count == 1)
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "A"),
+            pending: IPTCMetadata(title: "D"), history: history)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        await fixture.model.restoreToHistoryPoint(at: 1)?.value
+        #expect(fixture.model.saveError == nil)
+        #expect(fixture.model.editingMetadata.title == "C")
+        #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.title == "C")
+    }
+
+    @Test("Restore rejects changed JSON or XMP before replacing either carrier", arguments: [false, true])
+    @MainActor
+    func staleRestorePreservesExternalChanges(changeJSON: Bool) async throws {
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Pending"))
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        if changeJSON {
+            var record = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+            record.metadata.title = "External"
+            try MetadataSidecarService().saveSidecar(record, for: fixture.image, in: fixture.folder)
+        } else {
+            try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(title: "External"), for: fixture.image)
+        }
+        let jsonURL = fixture.folder.appendingPathComponent(".photo_metadata/draft.jpg.meta.json")
+        let xmpURL = XMPSidecarService().sidecarURL(for: fixture.image)
+        let jsonBefore = try Data(contentsOf: jsonURL)
+        let xmpBefore = try Data(contentsOf: xmpURL)
+        await fixture.model.restoreToOriginal()?.value
+        #expect(fixture.model.saveError?.contains("not restored") == true)
+        #expect(fixture.model.editingMetadata.title == "Pending")
+        #expect(try Data(contentsOf: jsonURL) == jsonBefore)
+        #expect(try Data(contentsOf: xmpURL) == xmpBefore)
+    }
+
+    @Test("Cancellation after JSON commit reports its durable pending result")
+    @MainActor
+    func cancellationAfterJSONCommitIsVisible() async throws {
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Pending"), persist: { request in
+                await MetadataSidecarService().restoreSidecarAndMirrorXMP(request, beforeXMPCommit: {
+                    throw CancellationError()
+                })
+            })
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        await fixture.model.restoreToOriginal()?.value
+        #expect(fixture.model.editingMetadata.title == "Original")
+        #expect(fixture.model.hasChanges)
+        #expect(!fixture.model.isSaving)
+        #expect(fixture.model.saveError?.contains("cancelled") == true)
+        #expect(fixture.model.saveError?.contains("draft was saved") == true)
+        #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.title == "Pending")
+    }
+
+    @Test("Missing original, invalid history, and unflushed edits fail without changing disk")
+    @MainActor
+    func unsafeHistoryRestorePreservesBytes() async throws {
+        let fixture = try makeHistoryRestoreFixture(original: nil, pending: IPTCMetadata(title: "Pending"))
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let recordURL = fixture.folder.appendingPathComponent(".photo_metadata/draft.jpg.meta.json")
+        let before = try Data(contentsOf: recordURL)
+        #expect(!fixture.model.canRestoreOriginalHistory)
+        #expect(fixture.model.restoreToOriginal() == nil)
+        #expect(fixture.model.saveError?.contains("unavailable") == true)
+        #expect(fixture.model.restoreToHistoryPoint(at: -1) == nil)
+        #expect(fixture.model.restoreToHistoryPoint(at: 100) == nil)
+        #expect(try Data(contentsOf: recordURL) == before)
+
+        let editable = try makeHistoryRestoreFixture(original: IPTCMetadata(), pending: IPTCMetadata(title: "Pending"))
+        defer { try? FileManager.default.removeItem(at: editable.folder) }
+        await loadCaptionFixture(editable.model, image: editable.image, folder: editable.folder)
+        editable.model.editingMetadata.title = "Unflushed edit"
+        editable.model.markChanged()
+        #expect(editable.model.restoreToOriginal() == nil)
+        #expect(editable.model.saveError?.contains("Finish saving") == true)
+        #expect(MetadataSidecarService().loadSidecar(for: editable.image, in: editable.folder)?.metadata.title == "Pending")
+    }
+
+    @Test("Summarized or inconsistent later history is never partially replayed", arguments: [false, true])
+    @MainActor
+    func unverifiableHistoryFails(inconsistent: Bool) async throws {
+        let history = [
+            MetadataHistoryEntry(timestamp: Date(timeIntervalSince1970: 1), fieldID: .headline, oldValue: "A", newValue: "B"),
+            inconsistent
+                ? MetadataHistoryEntry(timestamp: Date(timeIntervalSince1970: 2), fieldID: .headline, oldValue: "B", newValue: "Wrong")
+                : MetadataHistoryEntry(timestamp: Date(timeIntervalSince1970: 2), fieldID: .description, oldValue: "A", newValue: "B")
+        ]
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(),
+            pending: IPTCMetadata(title: "C", description: "B"), history: history)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        #expect(fixture.model.restoreToHistoryPoint(at: 0) == nil)
+        #expect(fixture.model.saveError != nil)
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.metadata.title == "C")
+    }
+
+    @Test("A JSON-committed mirror failure remains pending and the same Restore retries its mirror")
+    @MainActor
+    func partialRestoreCanRetrySameTarget() async throws {
+        let gate = HistoryRestoreFailureGate()
+        let original = IPTCMetadata(title: "Original")
+        let fixture = try makeHistoryRestoreFixture(original: original, pending: IPTCMetadata(title: "Pending"),
+            persist: { request in
+                await MetadataSidecarService().restoreSidecarAndMirrorXMP(request, beforeXMPCommit: {
+                    try gate.failFirst()
+                })
+            })
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        await fixture.model.restoreToOriginal()?.value
+        #expect(fixture.model.saveError?.contains("XMP mirror is incomplete") == true)
+        #expect(fixture.model.editingMetadata.title == "Original")
+        #expect(fixture.model.hasChanges)
+        #expect(!fixture.model.isSaving)
+        #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.title == "Pending")
+        await fixture.model.restoreToOriginal()?.value
+        #expect(fixture.model.saveError == nil)
+        #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.title == "Original")
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.imageMetadataSnapshot == original)
+    }
+
+    @Test("A post-commit verification failure reports its path without publishing unverified state")
+    @MainActor
+    func unverifiedRestoreReportsCommittedPath() async throws {
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Pending"), persist: { request in
+                await MetadataSidecarService().restoreSidecarAndMirrorXMP(request, afterJSONCommit: {
+                    throw CocoaError(.fileReadUnknown)
+                })
+            })
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        await fixture.model.restoreToOriginal()?.value
+        #expect(fixture.model.saveError?.contains("could not be verified") == true)
+        #expect(fixture.model.saveError?.contains("draft.jpg.meta.json") == true)
+        #expect(fixture.model.editingMetadata.title == "Pending")
+        #expect(!fixture.model.isSaving)
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.metadata.title == "Original")
+        #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.title == "Pending")
+    }
+
+    @Test("Cancelled Restore clears its own busy state and selection changes reject obsolete completions", arguments: [false, true])
+    @MainActor
+    func cancelledOrObsoleteRestoreCannotPublish(switchSelection: Bool) async throws {
+        let gate = HistoryRestoreSuspensionGate()
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Pending"), persist: { request in
+                await gate.pause()
+                return await MetadataSidecarService().restoreSidecarAndMirrorXMP(request)
+            })
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let task = try #require(fixture.model.restoreToOriginal())
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        let paused = await gate.isPaused
+        try #require(paused)
+        if switchSelection {
+            await loadCaptionFixture(fixture.model,
+                image: fixture.folder.appendingPathComponent("other.jpg"), folder: fixture.folder)
+        } else {
+            task.cancel()
+        }
+        await gate.resume()
+        await task.value
+        #expect(!fixture.model.isSaving)
+        if switchSelection {
+            #expect(fixture.model.editingMetadata.title != "Original")
+            #expect(fixture.model.saveError == nil)
+        } else {
+            #expect(fixture.model.editingMetadata.title == "Pending")
+            #expect(fixture.model.saveError?.contains("cancelled") == true)
+        }
+    }
+
+    @Test("Cancellation after a completed transaction reports the actual durable restoration")
+    @MainActor
+    func completedRestoreSurvivesLateCallerCancellation() async throws {
+        let gate = HistoryRestoreSuspensionGate()
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Pending"), persist: { request in
+                let result = await MetadataSidecarService().restoreSidecarAndMirrorXMP(request)
+                await gate.pause()
+                return result
+            })
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let task = try #require(fixture.model.restoreToOriginal())
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        let paused = await gate.isPaused
+        try #require(paused)
+        task.cancel()
+        await gate.resume()
+        await task.value
+        #expect(!fixture.model.isSaving)
+        #expect(fixture.model.saveError == nil)
+        #expect(fixture.model.editingMetadata.title == "Original")
+        #expect(fixture.model.hasChanges)
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.metadata.title == "Original")
+        #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.title == "Original")
+    }
+
+    @MainActor
+    private func makeHistoryRestoreFixture(
+        original: IPTCMetadata?, pending: IPTCMetadata, history: [MetadataHistoryEntry] = [],
+        persist: @escaping @Sendable (MetadataSidecarRestoreRequest) async -> MetadataSidecarPersistenceResult = {
+            await MetadataSidecarService().restoreSidecarAndMirrorXMP($0)
+        }
+    ) throws -> (folder: URL, image: URL, model: MetadataViewModel) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("HistoryRestore-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let image = folder.appendingPathComponent("draft.jpg")
+        // The injected reader supplies source facts. The image bytes must remain untouched.
+        try Data("unchanged image fixture".utf8).write(to: image)
+        try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: image.lastPathComponent,
+            pendingChanges: true, metadata: pending, imageMetadataSnapshot: original, history: history),
+            for: image, in: folder)
+        try XMPSidecarService().saveSidecar(metadata: pending, for: image)
+        let boundary = MetadataEditorReadService(access: .init(read: { url, folder, _, _ in
+            MetadataEditorSourceFacts(imageURL: url, xmpMetadata: XMPSidecarService().loadSidecar(for: url),
+                appSidecar: folder.flatMap { MetadataSidecarService().loadSidecar(for: url, in: $0) },
+                reconciliationVerdict: nil)
+        }))
+        return (folder, image, MetadataViewModel(readService: SwiftExifReadService(),
+            writeEngine: MetadataCleanupSuccessfulWriter(), editorReadService: boundary,
+            persistHistoryRestore: persist))
+    }
+
     @Test("Untouched pending Caption drafts never enqueue a write or change their baseline", arguments: [false, true])
     @MainActor
     func untouchedCaptionDraftIsReadOnly(hasMirroredXMP: Bool) async throws {
@@ -36,6 +432,7 @@ struct MetadataEditorReadServiceTests {
             #expect(fixture.model.hasChanges)
             #expect(!fixture.model.hasUnpersistedEditorChanges)
             #expect(fixture.model.pendingFieldNames.contains("Description"))
+            #expect(fixture.model.fieldDiffers(\.description))
             #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
             #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
         }

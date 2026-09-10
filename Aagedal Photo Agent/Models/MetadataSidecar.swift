@@ -10,10 +10,12 @@ nonisolated enum MetadataHistoryValueStorage: String, Codable, Sendable {
     case redacted
 }
 
-nonisolated struct MetadataHistoryEntry: Codable, Sendable, Identifiable {
-    /// Existing sidecars did not persist an ID. Include the field identity in the fallback so
-    /// simultaneous edits do not collide in SwiftUI lists as they did when `Date` was the ID.
-    var id: String { "\(timestamp.timeIntervalSinceReferenceDate)-\(fieldID?.rawValue ?? fieldName)" }
+nonisolated struct MetadataHistoryEntry: Codable, Sendable, Identifiable, Equatable {
+    /// New events keep identity across timestamp precision changes and same-field rapid edits.
+    /// Legacy documents retain their derived identity until a distinct new event is recorded.
+    private let eventID: String?
+    var persistentEventID: String? { eventID }
+    var id: String { eventID ?? "\(timestamp.timeIntervalSinceReferenceDate)-\(fieldID?.rawValue ?? fieldName)" }
 
     let timestamp: Date
     /// Stable identity for normal editor fields. `fieldName` remains for old sidecars and audit
@@ -38,6 +40,7 @@ nonisolated struct MetadataHistoryEntry: Codable, Sendable, Identifiable {
 
     /// Source-compatible initializer for older call sites and non-field audit events.
     init(timestamp: Date, fieldName: String, oldValue: String?, newValue: String?) {
+        self.eventID = UUID().uuidString
         self.timestamp = timestamp
         self.fieldID = MetadataFieldID(legacyHistoryName: fieldName)
         self.fieldName = fieldName
@@ -54,6 +57,7 @@ nonisolated struct MetadataHistoryEntry: Codable, Sendable, Identifiable {
         oldValue: String?,
         newValue: String?
     ) {
+        self.eventID = UUID().uuidString
         self.timestamp = timestamp
         self.fieldID = fieldID
         self.fieldName = fieldID.displayName
@@ -89,6 +93,7 @@ nonisolated struct MetadataHistoryEntry: Codable, Sendable, Identifiable {
         valueStorage: MetadataHistoryValueStorage
     ) {
         precondition(valueStorage != .exact)
+        self.eventID = UUID().uuidString
         self.timestamp = timestamp
         self.fieldID = nil
         self.fieldName = fieldName
@@ -100,12 +105,15 @@ nonisolated struct MetadataHistoryEntry: Codable, Sendable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case timestamp, fieldID, fieldName, oldValue, newValue
+        case eventID, timestamp, fieldID, fieldName, oldValue, newValue
         case oldValueSummary, newValueSummary, valueStorage
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedID = try container.decodeIfPresent(String.self, forKey: .eventID)
+        eventID = decodedID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? decodedID : nil
         timestamp = try container.decode(Date.self, forKey: .timestamp)
         fieldName = try container.decode(String.self, forKey: .fieldName)
         fieldID = try container.decodeIfPresent(MetadataFieldID.self, forKey: .fieldID)
@@ -131,6 +139,7 @@ nonisolated struct MetadataHistoryEntry: Codable, Sendable, Identifiable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(eventID, forKey: .eventID)
         try container.encode(timestamp, forKey: .timestamp)
         try container.encodeIfPresent(fieldID, forKey: .fieldID)
         try container.encode(fieldName, forKey: .fieldName)

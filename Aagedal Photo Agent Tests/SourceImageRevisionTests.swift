@@ -737,19 +737,38 @@ struct SerializedFileSystemServiceTests {
             in: fixture.directoryURL
         )
 
+        let metadataDirectory = fixture.directoryURL.appendingPathComponent(".photo_metadata")
+        let sourceCarrier = metadataDirectory.appendingPathComponent("photo.jpg.meta.json")
+        var graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: sourceCarrier)) as? [String: Any])
+        graph["opaqueExtension"] = ["value": "preserve source only"]
+        try JSONSerialization.data(withJSONObject: graph, options: .sortedKeys).write(to: sourceCarrier)
+        let sourceBytes = try Data(contentsOf: sourceCarrier)
+        let orphan = metadataDirectory.appendingPathComponent("photo copy 2.meta.json")
+        let orphanBytes = Data(#"{"schemaVersion":99,"sourceFile":"unrelated.JPG","opaque":"keep"}"#.utf8)
+        try orphanBytes.write(to: orphan)
+
         let result = await FileSystemService().duplicateImages(
             [.init(source: ImageFile(url: imageURL))],
             in: fixture.directoryURL,
             metadataSidecarService: metadataService
         )
 
-        let duplicateURL = fixture.directoryURL.appendingPathComponent("photo copy 2.jpg")
+        let duplicateURL = fixture.directoryURL.appendingPathComponent("photo copy 3.jpg")
         #expect(result.completed.count == 1)
         #expect(result.completed.first?.sourceURL == imageURL)
         #expect(result.completed.first?.duplicate.url == duplicateURL)
         #expect(result.failures.isEmpty)
         #expect(FileManager.default.fileExists(atPath: duplicateURL.path))
         #expect(metadataService.loadSidecar(for: duplicateURL, in: fixture.directoryURL)?.metadata.title == "Copied")
+        #expect(metadataService.loadSidecar(for: duplicateURL, in: fixture.directoryURL)?.sourceFile == duplicateURL.lastPathComponent)
+        #expect(try Data(contentsOf: sourceCarrier) == sourceBytes)
+        #expect(try Data(contentsOf: orphan) == orphanBytes)
+        let copiedGraph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf:
+            metadataDirectory.appendingPathComponent("photo copy 3.jpg.meta.json"))) as? [String: Any])
+        #expect((copiedGraph["opaqueExtension"] as? [String: String])?["value"] == "preserve source only")
+        let all = await metadataService.loadAllSidecars(in: fixture.directoryURL)
+        #expect(all[imageURL]?.sourceFile == imageURL.lastPathComponent)
+        #expect(all[duplicateURL]?.sourceFile == duplicateURL.lastPathComponent)
     }
 }
 

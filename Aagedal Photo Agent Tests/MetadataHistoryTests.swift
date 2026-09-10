@@ -6,6 +6,25 @@ import Testing
 struct MetadataHistoryTests {
     private let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
 
+    @Test("rapid same-field events retain distinct identity and truthful time after JSON roundtrip")
+    func sameTimestampEventIdentities() throws {
+        let entries = [
+            MetadataHistoryEntry(timestamp: timestamp, fieldID: .headline, oldValue: "A", newValue: "B"),
+            MetadataHistoryEntry(timestamp: timestamp, fieldID: .headline, oldValue: "B", newValue: "C")
+        ]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode([MetadataHistoryEntry].self, from: encoder.encode(entries))
+        #expect(Set(decoded.map(\.id)).count == 2)
+        #expect(decoded.map(\.id) == entries.map(\.id))
+        #expect(decoded.allSatisfy { $0.timestamp == timestamp })
+        var metadata = IPTCMetadata(title: "A")
+        for entry in decoded { #expect(entry.apply(to: &metadata)) }
+        #expect(metadata.title == "C")
+    }
+
     @Test("legacy entries decode with stable identity and remain replayable")
     func legacyEntryMigration() throws {
         let data = Data(
@@ -28,9 +47,22 @@ struct MetadataHistoryTests {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let migrated = try encoder.encode(entry)
-        let object = try #require(JSONSerialization.jsonObject(with: migrated) as? [String: Any])
+        let object = try #require(try JSONSerialization.jsonObject(with: migrated) as? [String: Any])
         #expect(object["fieldID"] as? String == MetadataFieldID.headline.rawValue)
         #expect(object["valueStorage"] as? String == MetadataHistoryValueStorage.exact.rawValue)
+        #expect(object["eventID"] == nil)
+        #expect(try decoder.decode(MetadataHistoryEntry.self, from: migrated).id == entry.id)
+    }
+
+    @Test("blank persisted event identity falls back to deterministic legacy identity")
+    func blankEventIdentityIsNotSharedIdentity() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let entry = try decoder.decode(MetadataHistoryEntry.self, from: Data(
+            #"{"eventID":" ","timestamp":"2023-11-14T22:13:20Z","fieldName":"Title","oldValue":"A","newValue":"B"}"#.utf8
+        ))
+        #expect(entry.persistentEventID == nil)
+        #expect(!entry.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     @Test("controlled values use labels while retaining canonical replay values")

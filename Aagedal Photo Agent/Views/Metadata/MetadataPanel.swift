@@ -1349,6 +1349,27 @@ struct MetadataPanel: View {
         return persistence
     }
 
+    private func performHistoryRestore(_ action: () -> Task<Void, Never>?) {
+        commitDebounceTask?.cancel()
+        flushBufferedFields()
+        do {
+            // A previously captured Caption draft must finish before restore is admitted, or
+            // it could later replace the restored record. New unsaved edits may make the CAS
+            // stale; the model then asks for reload rather than overwriting either version.
+            try captionFlushCoordinator?.flush()
+        } catch {
+            viewModel.saveError = "Finish saving the Caption draft before restoring history: \(error.localizedDescription)"
+            showingHistoryPopover = false
+            return
+        }
+        let task = action()
+        showingHistoryPopover = false
+        Task {
+            await task?.value
+            onPendingStatusChanged?()
+        }
+    }
+
     // MARK: - Rating & Label
 
     @ViewBuilder
@@ -1450,6 +1471,7 @@ struct MetadataPanel: View {
                 }
                 Spacer()
                 Button {
+                    flushBufferedFields()
                     showingHistoryPopover = true
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
@@ -1457,26 +1479,24 @@ struct MetadataPanel: View {
                         .foregroundStyle(viewModel.sidecarHistory.isEmpty ? .secondary : .primary)
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.sidecarHistory.isEmpty)
-                .help(viewModel.sidecarHistory.isEmpty ? "No editing history" : "View editing history")
+                .disabled(viewModel.sidecarHistory.isEmpty && !viewModel.canRestoreOriginalHistory)
+                .help(viewModel.sidecarHistory.isEmpty && !viewModel.canRestoreOriginalHistory
+                    ? "No editing history or saved original state" : "View editing history and original state")
                 .accessibilityLabel("Metadata editing history")
                 .popover(isPresented: $showingHistoryPopover) {
                     MetadataHistoryView(
                         history: viewModel.sidecarHistory,
                         onRestoreToPoint: { index in
-                            viewModel.restoreToHistoryPoint(at: index)
-                            showingHistoryPopover = false
-                            onPendingStatusChanged?()
+                            performHistoryRestore { viewModel.restoreToHistoryPoint(at: index) }
                         },
                         onRestoreOriginal: {
-                            viewModel.restoreToOriginal()
-                            showingHistoryPopover = false
-                            onPendingStatusChanged?()
+                            performHistoryRestore { viewModel.restoreToOriginal() }
                         },
                         onClearHistory: {
                             viewModel.clearHistory()
                             showingHistoryPopover = false
-                        }
+                        },
+                        canRestoreOriginal: viewModel.canRestoreOriginalHistory
                     )
                 }
             }
@@ -1535,7 +1555,7 @@ struct MetadataPanel: View {
                     Text("Description")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    DifferenceIndicator(differs: viewModel.fieldDiffers(\.description))
+                    DifferenceIndicator(differs: viewModel.fieldDiffers(\.description), fieldName: "Description")
                     if viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("description") {
                         MultipleValuesIndicator()
                     }
@@ -1619,7 +1639,7 @@ struct MetadataPanel: View {
                     Text("Extended Description (Accessibility)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    DifferenceIndicator(differs: viewModel.fieldDiffers(\.extendedDescription))
+                    DifferenceIndicator(differs: viewModel.fieldDiffers(\.extendedDescription), fieldName: "Extended Description")
                     if viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("extendedDescription") {
                         MultipleValuesIndicator()
                     }
@@ -2697,7 +2717,7 @@ struct KeywordsEditorWithDiff: View {
                 Text(label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                DifferenceIndicator(differs: differs)
+                DifferenceIndicator(differs: differs, fieldName: label)
                 if hasMultipleValues {
                     MultipleValuesIndicator()
                 }
@@ -3174,13 +3194,15 @@ struct TypeaheadTextField: NSViewRepresentable {
 
 struct DifferenceIndicator: View {
     let differs: Bool
+    var fieldName: String? = nil
 
     var body: some View {
         if differs {
             Image(systemName: "exclamationmark.circle.fill")
                 .foregroundStyle(.orange)
                 .font(.caption)
-                .help("Value differs from image file. Changes pending.")
+                .help("Value differs from the saved original metadata. Changes pending.")
+                .accessibilityLabel(fieldName.map { "\($0): changes pending" } ?? "Changes pending")
         }
     }
 }
@@ -3221,7 +3243,7 @@ struct EditableTextField: View {
                 Text(label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                DifferenceIndicator(differs: showsDifference)
+                DifferenceIndicator(differs: showsDifference, fieldName: label)
                 if hasMultipleValues {
                     MultipleValuesIndicator()
                 }
@@ -3601,7 +3623,7 @@ private struct OrderedCreatorsEditor: View {
                 Text("Creators (ordered)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                DifferenceIndicator(differs: differs)
+                DifferenceIndicator(differs: differs, fieldName: "Creators")
                 if hasMultipleValues { MultipleValuesIndicator() }
                 Spacer()
                 Button {
@@ -3709,7 +3731,7 @@ private struct EditorialDateCreatedEditor: View {
                 Text("Date Created")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                DifferenceIndicator(differs: differs)
+                DifferenceIndicator(differs: differs, fieldName: "Date Created")
                 if hasMultipleValues { MultipleValuesIndicator() }
             }
             TextField("YYYY-MM-DD or ISO 8601 date/time", text: $draft)

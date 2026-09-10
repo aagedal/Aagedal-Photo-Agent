@@ -733,8 +733,9 @@ actor FileSystemService {
                 .appendingPathExtension(fileExtension)
             do {
                 var counter = 2
-                while try voiceMemoRepository.copyDestinationURLs(for: source.url, to: destinationURL)
-                    .contains(where: { fileManager.fileExists(atPath: $0.path) }) {
+                while try (voiceMemoRepository.copyDestinationURLs(for: source.url, to: destinationURL)
+                    + metadataSidecarService.relocationDestinationURLs(for: destinationURL, in: folderURL))
+                    .contains(where: { (try? fileManager.attributesOfItem(atPath: $0.path)) != nil }) {
                     try Task.checkCancellation()
                     copyName = "\(baseName) copy \(counter)"
                     destinationURL = folderURL.appendingPathComponent(copyName)
@@ -755,20 +756,16 @@ actor FileSystemService {
                 continue
             }
 
-            if let sidecar = metadataSidecarService.loadSidecar(for: source.url, in: folderURL) {
-                do {
-                    try metadataSidecarService.saveSidecar(
-                        sidecar,
-                        for: destinationURL,
-                        in: folderURL
-                    )
-                } catch {
-                    failures.append(ItemFailure(
-                        sourceURL: source.url,
-                        stage: .metadataSidecar,
-                        message: error.localizedDescription
-                    ))
-                }
+            do {
+                try metadataSidecarService.copySidecarsPreservingOpaqueFields(
+                    for: source.url, to: destinationURL, in: folderURL
+                )
+            } catch {
+                failures.append(ItemFailure(
+                    sourceURL: source.url,
+                    stage: .metadataSidecar,
+                    message: error.localizedDescription
+                ))
             }
             completed.append(DuplicateCompletion(
                 sourceURL: source.url,

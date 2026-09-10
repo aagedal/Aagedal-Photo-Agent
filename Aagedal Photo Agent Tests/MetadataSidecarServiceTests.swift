@@ -1202,8 +1202,8 @@ struct MetadataSidecarServiceTests {
 
     // MARK: - Corrupt File Handling
 
-    @Test("corrupt sidecar is moved aside and load returns nil")
-    func corruptSidecarMovedAside() throws {
+    @Test("corrupt sidecar is preserved in place and load returns nil")
+    func corruptSidecarPreservedInPlace() throws {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
 
@@ -1220,12 +1220,13 @@ struct MetadataSidecarServiceTests {
         // Should return nil (not crash) and move the file aside
         let result = service.loadSidecar(for: imageURL, in: folder)
         #expect(result == nil)
-        #expect(!FileManager.default.fileExists(atPath: sidecarURL.path))
+        #expect(FileManager.default.fileExists(atPath: sidecarURL.path))
 
-        // Verify a .corrupt backup was created
+        #expect(try Data(contentsOf: sidecarURL) == corruptData)
+        // Reading does not quarantine or replace an ambiguous carrier.
         let files = try FileManager.default.contentsOfDirectory(at: metaDir, includingPropertiesForKeys: nil)
         let backupFiles = files.filter { $0.lastPathComponent.contains(".corrupt.") }
-        #expect(!backupFiles.isEmpty)
+        #expect(backupFiles.isEmpty)
     }
 
     // MARK: - loadAllSidecars
@@ -1596,4 +1597,420 @@ struct BatchMetadataBaselineTransactionTests {
 
 private nonisolated enum RawMetadataReadExecutorContext {
     @TaskLocal static var marker: URL?
+}
+
+@Suite("Metadata carrier ownership")
+struct MetadataCarrierOwnershipTests {
+    private func root() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".photo_metadata"), withIntermediateDirectories: true)
+        return root
+    }
+
+    private func bytes(owner: String, title: String, version: Int = 1, extensionValue: String = "opaque") -> Data {
+        Data("{\"schemaVersion\":\(version),\"sourceFile\":\"\(owner)\",\"metadata\":{\"title\":\"\(title)\"},\"opaqueExtension\":\"\(extensionValue)\"}".utf8)
+    }
+
+    @Test("Reading saving clearing and discarding RAW never adopts or consumes JPEG-owned legacy", arguments: [false, true], [1, 99])
+    func foreignLegacyRemainsUntouched(hasCurrent: Bool, version: Int) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.ARW")
+        let legacy = folder.appendingPathComponent(".photo_metadata/photo.meta.json")
+        let foreign = bytes(owner: "photo.JPG", title: "JPEG private caption", version: version, extensionValue: "JPEG only")
+        try foreign.write(to: legacy)
+        let service = MetadataSidecarService()
+        if hasCurrent {
+            try service.saveSidecar(.init(sourceFile: "photo.ARW", metadata: .init(title: "RAW")), for: image, in: folder)
+        }
+        #expect(service.loadSidecar(for: image, in: folder)?.metadata.title == (hasCurrent ? "RAW" : nil))
+        let selected = await service.loadSidecars(for: [image], in: folder)
+        #expect(selected[image]?.metadata.title == (hasCurrent ? "RAW" : nil))
+        let installed = try await service.updateMetadataSerialized(for: image, in: folder,
+            fallback: .init(title: "Fallback"), pendingChanges: true, mutation: { $0.title = "Edited RAW" })
+        #expect(installed.sourceFile == "photo.ARW")
+        #expect(installed.metadata.title == "Edited RAW")
+        let current = folder.appendingPathComponent(".photo_metadata/photo.ARW.meta.json")
+        let graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: current)) as? [String: Any])
+        #expect(graph["opaqueExtension"] == nil)
+        _ = try await service.saveSidecarReplacingHistorySerialized(installed, for: image, in: folder)
+        #expect(try Data(contentsOf: legacy) == foreign)
+        try await service.deleteSidecarSerialized(for: image, in: folder)
+        #expect(!FileManager.default.fileExists(atPath: current.path))
+        #expect(try Data(contentsOf: legacy) == foreign)
+    }
+
+    @Test("Current and legacy belonging to the same photo retain distinct opaque bytes with deterministic current preference")
+    func bothOwnedCarriers() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let current = folder.appendingPathComponent(".photo_metadata/photo.JPG.meta.json")
+        let legacy = folder.appendingPathComponent(".photo_metadata/photo.meta.json")
+        try bytes(owner: "photo.JPG", title: "Current", extensionValue: "current extension").write(to: current)
+        let oldBytes = bytes(owner: "photo.JPG", title: "Legacy", extensionValue: "legacy extension")
+        try oldBytes.write(to: legacy)
+        let service = MetadataSidecarService()
+        let loaded = try #require(service.loadSidecar(for: image, in: folder))
+        #expect(loaded.metadata.title == "Current")
+        for _ in 0..<3 { #expect(await service.loadAllSidecars(in: folder)[image]?.metadata.title == "Current") }
+        var edit = loaded
+        edit.metadata.title = "Edited current"
+        try service.saveSidecar(edit, for: image, in: folder)
+        #expect(try Data(contentsOf: legacy) == oldBytes)
+        let graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: current)) as? [String: Any])
+        #expect(graph["opaqueExtension"] as? String == "current extension")
+        #expect(await service.loadAllSidecars(in: folder)[image]?.metadata.title == "Edited current")
+    }
+
+    @Test("Owned legacy migration preserves opaque data and changes only its carrier name")
+    func ownedLegacyMigration() throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let legacy = folder.appendingPathComponent(".photo_metadata/photo.meta.json")
+        try bytes(owner: "photo.JPG", title: "Before", extensionValue: "future transcript").write(to: legacy)
+        let service = MetadataSidecarService()
+        var record = try #require(service.loadSidecar(for: image, in: folder))
+        record.metadata.title = "After"
+        try service.saveSidecar(record, for: image, in: folder)
+        let graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(".photo_metadata/photo.JPG.meta.json"))) as? [String: Any])
+        #expect(graph["opaqueExtension"] as? String == "future transcript")
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
+    }
+
+    @Test("Mismatched or ambiguous carriers fail closed without quarantine fallback writes deletes or renames", arguments: 0..<4)
+    func invalidOwnershipStopsAllMutations(kind: Int) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.ARW")
+        let current = folder.appendingPathComponent(".photo_metadata/photo.ARW.meta.json")
+        let legacy = folder.appendingPathComponent(".photo_metadata/photo.meta.json")
+        let invalid: Data
+        switch kind {
+        case 0: invalid = bytes(owner: "photo.JPG", title: "Foreign current")
+        case 1: invalid = Data("malformed".utf8)
+        case 2: invalid = Data(#"{"schemaVersion":99,"metadata":{}}"#.utf8)
+        default: invalid = bytes(owner: "photo.ARW", title: "Future current", version: 99)
+        }
+        let bad = kind == 2 ? legacy : current
+        if bad == legacy { try bytes(owner: "photo.ARW", title: "Current").write(to: current) }
+        else { try bytes(owner: "photo.ARW", title: "Legacy fallback").write(to: legacy) }
+        try invalid.write(to: bad)
+        let currentBefore = try Data(contentsOf: current)
+        let legacyBefore = try Data(contentsOf: legacy)
+        let service = MetadataSidecarService()
+        #expect(service.loadSidecar(for: image, in: folder) == nil)
+        #expect(await service.loadSidecars(for: [image], in: folder)[image] == nil)
+        #expect(throws: (any Error).self) {
+            try service.saveSidecar(.init(sourceFile: "photo.ARW", metadata: .init(title: "Wrong overwrite")), for: image, in: folder)
+        }
+        #expect(throws: (any Error).self) { try service.deleteSidecar(for: image, in: folder) }
+        if kind != 3 { // Association-only relocation of proven future schemas remains supported.
+            #expect(throws: (any Error).self) {
+                try service.renameSidecar(from: image, to: folder.appendingPathComponent("renamed.ARW"), in: folder)
+            }
+        }
+        #expect(try Data(contentsOf: current) == currentBefore)
+        #expect(try Data(contentsOf: legacy) == legacyBefore)
+        #expect(!(try FileManager.default.contentsOfDirectory(atPath: current.deletingLastPathComponent().path)).contains { $0.contains(".corrupt.") })
+    }
+
+    @Test("Incoming owner mismatch cannot write a current record or change latest history")
+    func incomingMismatchRejected() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.ARW")
+        let current = folder.appendingPathComponent(".photo_metadata/photo.ARW.meta.json")
+        let original = bytes(owner: "photo.ARW", title: "Original")
+        try original.write(to: current)
+        let wrong = MetadataSidecar(sourceFile: "photo.JPG", metadata: .init(title: "Foreign"))
+        let service = MetadataSidecarService()
+        #expect(throws: (any Error).self) { try service.saveSidecar(wrong, for: image, in: folder) }
+        do {
+            _ = try await service.saveSidecarReplacingHistorySerialized(wrong, for: image, in: folder)
+            Issue.record("Foreign incoming history was admitted")
+        } catch { }
+        #expect(try Data(contentsOf: current) == original)
+    }
+
+    @Test("Carrier and metadata-directory links are never read adopted or mutated", arguments: 0..<3)
+    func linkedCarriersAreRejected(kind: Int) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let current = folder.appendingPathComponent(".photo_metadata/photo.JPG.meta.json")
+        let external = folder.appendingPathComponent("external.json")
+        let original = bytes(owner: "photo.JPG", title: "External")
+        try original.write(to: external)
+        if kind == 2 {
+            let directory = current.deletingLastPathComponent()
+            try FileManager.default.removeItem(at: directory)
+            let target = folder.appendingPathComponent("External Metadata")
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+            try original.write(to: target.appendingPathComponent("photo.JPG.meta.json"))
+            try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: target)
+        } else {
+            try FileManager.default.createSymbolicLink(at: current, withDestinationURL: kind == 0 ? external : folder.appendingPathComponent("missing"))
+        }
+        let service = MetadataSidecarService()
+        #expect(service.loadSidecar(for: image, in: folder) == nil)
+        #expect(await service.loadAllSidecars(in: folder).isEmpty)
+        #expect(throws: (any Error).self) { try service.saveSidecar(.init(sourceFile: "photo.JPG"), for: image, in: folder) }
+        #expect(throws: (any Error).self) { try service.deleteSidecar(for: image, in: folder) }
+        #expect(try Data(contentsOf: external) == original)
+    }
+
+    @Test("Raw metadata copy preserves both owned opaque graphs and future schemas", arguments: [1, 99])
+    func opaqueCopyPreservesBothCarriers(version: Int) throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let target = folder.appendingPathComponent("copy.JPG")
+        let service = MetadataSidecarService()
+        for (name, value) in [("photo.JPG.meta.json", "current"), ("photo.meta.json", "legacy")] {
+            let source = folder.appendingPathComponent(".photo_metadata/\(name)")
+            let original = bytes(owner: "photo.JPG", title: value, version: version, extensionValue: value)
+            try original.write(to: source)
+        }
+        try service.copySidecarsPreservingOpaqueFields(for: image, to: target, in: folder)
+        for (name, value) in [("copy.JPG.meta.json", "current"), ("copy.meta.json", "legacy")] {
+            let graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(".photo_metadata/\(name)"))) as? [String: Any])
+            #expect(graph["sourceFile"] as? String == "copy.JPG")
+            #expect(graph["schemaVersion"] as? Int == version)
+            #expect(graph["opaqueExtension"] as? String == value)
+        }
+    }
+
+    @Test("Raw copy rejects ownership races and destination arrivals without deleting any original", arguments: [false, true])
+    func copyPreparationRace(destinationArrives: Bool) throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let target = folder.appendingPathComponent("copy.JPG")
+        let source = folder.appendingPathComponent(".photo_metadata/photo.JPG.meta.json")
+        let destination = folder.appendingPathComponent(".photo_metadata/copy.JPG.meta.json")
+        let original = bytes(owner: "photo.JPG", title: "Original")
+        let changed = bytes(owner: destinationArrives ? "unrelated.JPG" : "photo.JPG", title: "External change")
+        try original.write(to: source)
+        let racedURL = destinationArrives ? destination : source
+        let service = MetadataSidecarService()
+        #expect(throws: (any Error).self) {
+            try service.copySidecarsPreservingOpaqueFields(for: image, to: target, in: folder, beforeInstall: {
+                try changed.write(to: racedURL)
+            })
+        }
+        #expect(try Data(contentsOf: racedURL) == changed)
+        if destinationArrives { #expect(try Data(contentsOf: source) == original) }
+        else { #expect(!FileManager.default.fileExists(atPath: destination.path)) }
+    }
+
+    @Test("Raw copy installation failure rolls back its completed prefix and retains both sources", arguments: [false, true])
+    func copyInstallationFailure(afterRename: Bool) throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let target = folder.appendingPathComponent("copy.JPG")
+        for name in ["photo.JPG.meta.json", "photo.meta.json"] {
+            try bytes(owner: "photo.JPG", title: name).write(to: folder.appendingPathComponent(".photo_metadata/\(name)"))
+        }
+        let service = MetadataSidecarService()
+        #expect(throws: (any Error).self) {
+            try service.copySidecarsPreservingOpaqueFields(for: image, to: target, in: folder, install: { staged, destination in
+                if destination.lastPathComponent == "copy.meta.json" {
+                    if afterRename { try FileManager.default.moveItem(at: staged, to: destination) }
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                try FileManager.default.moveItem(at: staged, to: destination)
+            })
+        }
+        for name in ["photo.JPG.meta.json", "photo.meta.json"] {
+            #expect(try Data(contentsOf: folder.appendingPathComponent(".photo_metadata/\(name)")) == bytes(owner: "photo.JPG", title: name))
+        }
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(".photo_metadata/copy.JPG.meta.json").path))
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(".photo_metadata/copy.meta.json").path))
+    }
+}
+
+extension MetadataCarrierOwnershipTests {
+    @Test("Raw copy without source metadata still rejects an orphan destination")
+    func emptySourceCopyRejectsDestination() throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let orphan = folder.appendingPathComponent(".photo_metadata/copy.JPG.meta.json")
+        let original = bytes(owner: "copy.JPG", title: "Orphan")
+        try original.write(to: orphan)
+        #expect(throws: (any Error).self) {
+            try MetadataSidecarService().copySidecarsPreservingOpaqueFields(
+                for: folder.appendingPathComponent("photo.JPG"), to: folder.appendingPathComponent("copy.JPG"), in: folder)
+        }
+        #expect(try Data(contentsOf: orphan) == original)
+    }
+
+    @Test("History merge preserves same-second event order and opaque event data without duplicate-id traps", arguments: [false, true])
+    func historyIdentityAndStableOrder(hasPersistentIDs: Bool) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let current = folder.appendingPathComponent(".photo_metadata/photo.JPG.meta.json")
+        let firstID = hasPersistentIDs ? #""eventID":"z-first","# : ""
+        let secondID = hasPersistentIDs ? #""eventID":"a-second","# : ""
+        let data = Data("""
+        {"schemaVersion":1,"sourceFile":"photo.JPG","metadata":{"title":"C"},"history":[
+          {\(firstID)"timestamp":"2026-09-10T00:00:00Z","fieldName":"Title","oldValue":"A","newValue":"B","futureEvent":{"sequence":1}},
+          {\(secondID)"timestamp":"2026-09-10T00:00:00Z","fieldName":"Title","oldValue":"B","newValue":"C","futureEvent":{"sequence":2}}
+        ]}
+        """.utf8)
+        try data.write(to: current)
+        let service = MetadataSidecarService()
+        var draft = try #require(service.loadSidecar(for: image, in: folder))
+        #expect(draft.history.map(\.newValue) == ["B", "C"])
+        draft.metadata.title = "D"
+        draft.history.append(MetadataHistoryEntry(timestamp: Date(timeIntervalSince1970: 1_789_009_200),
+            fieldName: "Title", oldValue: "C", newValue: "D"))
+        let saved = try await service.saveSidecarMergingHistorySerialized(draft, for: image, in: folder)
+        #expect(saved.metadata.title == "D")
+        #expect(saved.history.map(\.newValue) == ["B", "C", "D"])
+        let again = try await service.saveSidecarMergingHistorySerialized(draft, for: image, in: folder)
+        #expect(again.history.map(\.newValue) == ["B", "C", "D"])
+        let graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: current)) as? [String: Any])
+        let events = try #require(graph["history"] as? [[String: Any]])
+        #expect((events[0]["futureEvent"] as? [String: Int])?["sequence"] == 1)
+        #expect((events[1]["futureEvent"] as? [String: Int])?["sequence"] == 2)
+    }
+
+    @Test("A legacy owner changing during a serialized edit is retried without adopting the new owner")
+    func serializedOwnershipRace() async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.ARW")
+        let legacy = folder.appendingPathComponent(".photo_metadata/photo.meta.json")
+        try bytes(owner: "photo.ARW", title: "Old RAW").write(to: legacy)
+        let changed = bytes(owner: "photo.JPG", title: "New JPEG", extensionValue: "JPEG only")
+        let service = MetadataSidecarService()
+        let result = try await service.updateMetadataSerialized(for: image, in: folder,
+            fallback: .init(title: "RAW fallback"), pendingChanges: true,
+            beforeRevisionCheck: { attempt in
+                if attempt == 0 { try? changed.write(to: legacy) }
+            }, mutation: { $0.keywords = ["RAW keyword"] })
+        #expect(result.metadata.title == "RAW fallback")
+        #expect(result.metadata.keywords == ["RAW keyword"])
+        #expect(try Data(contentsOf: legacy) == changed)
+    }
+}
+
+@Suite("Automatic metadata lifecycle", .serialized)
+struct MetadataAutomaticSaveBoundaryTests {
+    @MainActor
+    private func fixture() async throws -> (folder: URL, image: URL, model: MetadataViewModel) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("LifecycleMetadata-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let image = folder.appendingPathComponent("photo.JPG")
+        try Data("immutable image fixture".utf8).write(to: image)
+        let pending = IPTCMetadata(title: "Pending B", description: "Pending caption")
+        try MetadataSidecarService().saveSidecar(.init(sourceFile: "photo.JPG", pendingChanges: true,
+            metadata: pending, imageMetadataSnapshot: .init(title: "Original A")), for: image, in: folder)
+        try XMPSidecarService().saveSidecar(metadata: pending, for: image)
+        let boundary = MetadataEditorReadService(access: .init(read: { url, folder, _, _ in
+            MetadataEditorSourceFacts(imageURL: url, xmpMetadata: XMPSidecarService().loadSidecar(for: url),
+                appSidecar: folder.flatMap { MetadataSidecarService().loadSidecar(for: url, in: $0) },
+                reconciliationVerdict: nil)
+        }))
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            editorReadService: boundary)
+        model.loadMetadata(for: [ImageFile(url: image)], folderURL: folder)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while model.isLoading, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!model.isLoading)
+        return (folder, image, model)
+    }
+
+    @Test("Navigation backgrounding and termination preserve already-saved pending and restored drafts", arguments: [false, true], [false, true])
+    @MainActor
+    func persistedDraftLifecycleDoesNotWrite(restored: Bool, isCaption: Bool) async throws {
+        let fixture = try await fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        if restored {
+            await fixture.model.restoreToOriginal()?.value
+            #expect(fixture.model.saveError == nil)
+        }
+        #expect(fixture.model.hasChanges)
+        #expect(!fixture.model.hasUnpersistedEditorChanges)
+        let metadataURL = fixture.folder.appendingPathComponent(".photo_metadata/photo.JPG.meta.json")
+        let imageBefore = try Data(contentsOf: fixture.image)
+        let metadataBefore = try Data(contentsOf: metadataURL)
+        let xmpURL = XMPSidecarService().sidecarURL(for: fixture.image)
+        let xmpBefore = try Data(contentsOf: xmpURL)
+        var configuredCommits = 0
+        let coordinator = CaptionWorkspaceFlushCoordinator()
+        coordinator.register(owner: UUID(), capturePersistence: {
+            try fixture.model.captureCaptionDraftPersistence()
+        }, handler: {})
+        for trigger in [MetadataAutomaticSaveBoundary.Trigger.selectionChange, .deactivation] {
+            try MetadataAutomaticSaveBoundary.perform(trigger, in: isCaption ? .caption : .browser,
+                viewModel: fixture.model, captionFlush: { try coordinator.enqueueFlush() },
+                commitConfigured: { configuredCommits += 1 })
+        }
+        try await CaptionWorkspaceTerminationFlushOperation(coordinator: coordinator).flush()
+        #expect(configuredCommits == 0)
+        #expect(try Data(contentsOf: fixture.image) == imageBefore)
+        #expect(try Data(contentsOf: metadataURL) == metadataBefore)
+        #expect(try Data(contentsOf: xmpURL) == xmpBefore)
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.pendingChanges == true)
+    }
+
+    @Test("Actual browser edits still enter their configured automatic-save destination", arguments: [false, true])
+    @MainActor
+    func actualEditsStillCommit(onDeactivation: Bool) async throws {
+        let fixture = try await fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        fixture.model.editingMetadata.title = "New editor change"
+        fixture.model.markChanged()
+        #expect(fixture.model.hasUnpersistedEditorChanges)
+        var configuredCommits = 0
+        MetadataAutomaticSaveBoundary.perform(onDeactivation ? .deactivation : .selectionChange,
+            in: .browser, viewModel: fixture.model, captionFlush: {}, commitConfigured: { configuredCommits += 1 })
+        #expect(configuredCommits == 1)
+    }
+
+    @Test("Caption backgrounding captures buffered text through its FIFO without any configured embed")
+    @MainActor
+    func captionDeactivationUsesDraftBoundary() async throws {
+        let fixture = try await fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let imageBefore = try Data(contentsOf: fixture.image)
+        #expect(!fixture.model.hasUnpersistedEditorChanges)
+        let coordinator = CaptionWorkspaceFlushCoordinator()
+        coordinator.register(owner: UUID(), capturePersistence: {
+            try fixture.model.captureCaptionDraftPersistence()
+        }, handler: {
+            // AppKit can hold a newer value before the published model has become dirty.
+            fixture.model.editingMetadata.title = "Buffered Caption edit"
+            fixture.model.markChanged()
+        })
+        try MetadataAutomaticSaveBoundary.perform(.deactivation, in: .caption, viewModel: fixture.model,
+            captionFlush: { try coordinator.enqueueFlush() },
+            commitConfigured: { Issue.record("Caption deactivation entered configured image write") })
+        try await CaptionWorkspaceTerminationFlushOperation(coordinator: coordinator).flush()
+        let saved = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(saved.metadata.title == "Buffered Caption edit")
+        #expect(saved.pendingChanges)
+        #expect(saved.imageMetadataSnapshot?.title == "Original A")
+        #expect(try Data(contentsOf: fixture.image) == imageBefore)
+    }
+
+    @Test("Caption capture failure surfaces instead of falling back to image write")
+    @MainActor
+    func captionFailureDoesNotEmbed() async throws {
+        let fixture = try await fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        fixture.model.editingMetadata.title = "New Caption edit"
+        fixture.model.markChanged()
+        #expect(throws: CaptionWorkspaceFlushError.handlerUnavailable) {
+            try MetadataAutomaticSaveBoundary.perform(.deactivation, in: .caption, viewModel: fixture.model,
+                captionFlush: { throw CaptionWorkspaceFlushError.handlerUnavailable },
+                commitConfigured: { Issue.record("Failed Caption flush fell back to image write") })
+        }
+        #expect(fixture.model.hasUnpersistedEditorChanges)
+    }
 }

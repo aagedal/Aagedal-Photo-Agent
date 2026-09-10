@@ -34,44 +34,158 @@ struct MetadataSidecarService: Sendable {
         return [current, legacy]
     }
 
-    // MARK: - Load
+    private nonisolated struct CarrierSnapshot: Sendable, Equatable {
+        let url: URL
+        let data: Data
+        let isCurrent: Bool
+        let isOwned: Bool
+    }
 
-    nonisolated func loadSidecar(for imageURL: URL, in folderURL: URL) -> MetadataSidecar? {
+    private nonisolated func entryExists(_ url: URL) throws -> Bool {
+        do { _ = try FileManager.default.attributesOfItem(atPath: url.path); return true }
+        catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) { return false }
+    }
+
+    private nonisolated func ownershipChanged(_ url: URL) -> CocoaError {
+        CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: url.path,
+            NSLocalizedDescriptionKey: "Metadata ownership or contents changed at \(url.path). Existing data was preserved; reload before retrying."])
+    }
+
+    private nonisolated func invalidOwnership(_ url: URL) -> CocoaError {
+        CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path,
+            NSLocalizedDescriptionKey: "Cannot safely establish metadata ownership at \(url.path). Existing data was preserved."])
+    }
+
+    private nonisolated func requireRegularFile(_ url: URL) throws {
+        guard try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType == .typeRegular else {
+            throw invalidOwnership(url)
+        }
+    }
+
+    private nonisolated func requireMetadataDirectory(in folderURL: URL) throws {
+        let directory = sidecarDirectory(for: folderURL)
+        if try entryExists(directory),
+           try FileManager.default.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType != .typeDirectory {
+            throw invalidOwnership(directory)
+        }
+    }
+
+    private nonisolated func declaredOwner(in data: Data, at url: URL) throws -> String {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let owner = object["sourceFile"] as? String,
+              !owner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              owner != ".", owner != "..", !owner.contains("/"), !owner.contains("\\"), !owner.contains("\0") else {
+            throw invalidOwnership(url)
+        }
+        return owner
+    }
+
+    private nonisolated func requireIncomingOwner(_ record: MetadataSidecar, imageURL: URL) throws {
+        guard record.sourceFile == imageURL.lastPathComponent else { throw invalidOwnership(imageURL) }
+        guard record.schemaVersion == MetadataSidecar.currentSchemaVersion else {
+            throw EditorialJSONSchemaError.newerSchemaRequiresReadOnly(document: "metadata sidecar",
+                found: record.schemaVersion, supported: MetadataSidecar.currentSchemaVersion)
+        }
+    }
+
+    private nonisolated func carrierSnapshots(for imageURL: URL, in folderURL: URL) throws -> [CarrierSnapshot] {
+        try requireMetadataDirectory(in: folderURL)
+        let current = sidecarFileURL(for: imageURL, in: folderURL)
+        return try sidecarCandidateURLs(for: imageURL, in: folderURL).compactMap { url in
+            guard try entryExists(url) else { return nil }
+            try requireRegularFile(url)
+            let data = try Data(contentsOf: url)
+            let owner = try declaredOwner(in: data, at: url)
+            let isCurrent = url == current
+            let isOwned = owner == imageURL.lastPathComponent
+            guard !isCurrent || isOwned else { throw invalidOwnership(url) }
+            return CarrierSnapshot(url: url, data: data, isCurrent: isCurrent, isOwned: isOwned)
+        }
+    }
+
+    private nonisolated func decodeOwnedRecords(_ snapshots: [CarrierSnapshot]) throws -> [MetadataSidecar] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-
-        for fileURL in sidecarCandidateURLs(for: imageURL, in: folderURL) {
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-
-            do {
-                let data = try Data(contentsOf: fileURL)
-                let sidecar = try decoder.decode(MetadataSidecar.self, from: data)
-                guard !sidecar.sourceFile.contains("/"), !sidecar.sourceFile.contains("\\"), !sidecar.sourceFile.contains("..") else {
-                    continue
-                }
-                return sidecar
-            } catch let error as EditorialJSONSchemaError where error.isNewerSchema {
-                sidecarLogger.warning(
-                    "Leaving newer sidecar \(fileURL.lastPathComponent, privacy: .private(mask: .hash)) untouched: \(error.localizedDescription, privacy: .private)"
-                )
-                continue
-            } catch {
-                sidecarLogger.error("Failed to decode sidecar \(fileURL.lastPathComponent): \(error.localizedDescription)")
-                // Move corrupt file aside so it doesn't block future loads
-                let timestamp = ISO8601DateFormatter().string(from: Date())
-                    .replacingOccurrences(of: ":", with: "-")
-                let backupURL = fileURL.deletingLastPathComponent()
-                    .appendingPathComponent("\(fileURL.lastPathComponent).corrupt.\(timestamp)")
-                do {
-                    try FileManager.default.moveItem(at: fileURL, to: backupURL)
-                    sidecarLogger.warning("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .private(mask: .hash))")
-                } catch {
-                    sidecarLogger.error("Failed to move corrupt sidecar \(fileURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
-                }
-                continue
-            }
+        return try snapshots.filter(\.isOwned).map { carrier in
+            try EditorialJSONSchema.requireWritableVersion(in: carrier.data,
+                supportedVersion: MetadataSidecar.currentSchemaVersion, documentName: "metadata sidecar",
+                legacyKey: "version", unversionedLegacyVersion: 1)
+            return try decoder.decode(MetadataSidecar.self, from: carrier.data)
         }
-        return nil
+    }
+
+    private nonisolated func ownedRecords(for imageURL: URL, in folderURL: URL) throws -> [MetadataSidecar] {
+        try decodeOwnedRecords(carrierSnapshots(for: imageURL, in: folderURL))
+    }
+
+    /// Explicit association-only copy preserves the entire JSON graph, including future-schema
+    /// fields and both owned naming generations. No copied record can adopt destination data.
+    nonisolated func copySidecarsPreservingOpaqueFields(
+        for sourceImageURL: URL, to destinationImageURL: URL, in folderURL: URL,
+        beforeInstall: @Sendable () throws -> Void = {},
+        install: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
+    ) throws {
+        let snapshots = try carrierSnapshots(for: sourceImageURL, in: folderURL)
+        let owned = snapshots.filter(\.isOwned)
+        try requireMetadataDirectory(in: folderURL)
+        let destinations = sidecarCandidateURLs(for: destinationImageURL, in: folderURL)
+        for destination in destinations where try entryExists(destination) { throw ownershipChanged(destination) }
+        guard !owned.isEmpty else { return }
+        let directory = sidecarDirectory(for: folderURL)
+        let staging = directory.appendingPathComponent(".copy-metadata-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        var prepared: [(staged: URL, destination: URL)] = []
+        for carrier in owned {
+            let destination = carrier.isCurrent
+                ? sidecarFileURL(for: destinationImageURL, in: folderURL)
+                : legacySidecarFileURL(for: destinationImageURL, in: folderURL)
+            let data = Self.updatingSourceFile(in: carrier.data, to: destinationImageURL.lastPathComponent, sourceURL: carrier.url)
+            let staged = staging.appendingPathComponent(destination.lastPathComponent)
+            try data.write(to: staged, options: .atomic)
+            prepared.append((staged, destination))
+        }
+        try beforeInstall()
+        guard try snapshots == carrierSnapshots(for: sourceImageURL, in: folderURL) else { throw ownershipChanged(sourceImageURL) }
+        for destination in destinations where try entryExists(destination) { throw ownershipChanged(destination) }
+        var installed: [URL] = []
+        do {
+            for item in prepared {
+                do {
+                    try install(item.staged, item.destination)
+                    installed.append(item.destination)
+                } catch {
+                    if !(try entryExists(item.staged)), try entryExists(item.destination) {
+                        installed.append(item.destination)
+                    }
+                    throw error
+                }
+            }
+        } catch {
+            var residuals: [String] = []
+            for destination in installed.reversed() {
+                do { try FileManager.default.removeItem(at: destination) }
+                catch { residuals.append(destination.path) }
+            }
+            if !residuals.isEmpty {
+                throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey:
+                    "Metadata copy failed; incomplete owned copies need cleanup: \(residuals.joined(separator: ", "))"])
+            }
+            throw error
+        }
+    }
+
+    // MARK: - Load
+
+    /// Filename discovery never authorizes adopting a different photo's document. Reads are
+    /// non-mutating: ambiguous or unsupported carriers remain available for explicit recovery.
+    nonisolated func loadSidecar(for imageURL: URL, in folderURL: URL) -> MetadataSidecar? {
+        try? loadOwnedSidecarForMutation(for: imageURL, in: folderURL)
+    }
+
+    nonisolated func loadOwnedSidecarForMutation(for imageURL: URL, in folderURL: URL) throws -> MetadataSidecar? {
+        try ownedRecords(for: imageURL, in: folderURL).first
     }
 
     @MetadataSidecarFilesystemActor
@@ -80,6 +194,7 @@ struct MetadataSidecarService: Sendable {
         beforeRead: @escaping @Sendable (URL) -> Void = { _ in }
     ) async -> [URL: MetadataSidecar] {
         guard !Task.isCancelled else { return [:] }
+        do { try requireMetadataDirectory(in: folderURL) } catch { return [:] }
         let dir = sidecarDirectory(for: folderURL)
         guard FileManager.default.fileExists(atPath: dir.path) else { return [:] }
 
@@ -132,17 +247,12 @@ struct MetadataSidecarService: Sendable {
             var iterator = requests.makeIterator()
             for _ in 0..<min(Self.maxPendingReads, requests.count) {
                 guard let request = iterator.next() else { break }
-                let (imageURL, candidates) = request
+                let (imageURL, _) = request
                 group.addTask { @MetadataSidecarFilesystemActor in
                     guard !Task.isCancelled else { return nil }
                     beforeRead(imageURL)
-                    for fileURL in candidates {
-                        guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-                        if let (_, sidecar) = Self.decodeSidecar(at: fileURL, folderURL: folderURL) {
-                            return (imageURL, sidecar)
-                        }
-                    }
-                    return nil
+                    guard let sidecar = try? self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL) else { return nil }
+                    return (imageURL, sidecar)
                 }
             }
             var result: [URL: MetadataSidecar] = [:]
@@ -152,17 +262,12 @@ struct MetadataSidecarService: Sendable {
                     result[imageURL] = sidecar
                 }
                 if !Task.isCancelled, let request = iterator.next() {
-                    let (imageURL, candidates) = request
+                    let (imageURL, _) = request
                     group.addTask { @MetadataSidecarFilesystemActor in
                         guard !Task.isCancelled else { return nil }
                         beforeRead(imageURL)
-                        for fileURL in candidates {
-                            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-                            if let (_, sidecar) = Self.decodeSidecar(at: fileURL, folderURL: folderURL) {
-                                return (imageURL, sidecar)
-                            }
-                        }
-                        return nil
+                        guard let sidecar = try? self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL) else { return nil }
+                        return (imageURL, sidecar)
                     }
                 }
             }
@@ -176,44 +281,27 @@ struct MetadataSidecarService: Sendable {
         return Set(sidecars.filter { $0.value.pendingChanges }.keys)
     }
 
-    private nonisolated static func decodeSidecar(
-        at file: URL,
-        folderURL: URL
-    ) -> (URL, MetadataSidecar)? {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+    private nonisolated static func decodeSidecar(at file: URL, folderURL: URL) -> (URL, MetadataSidecar)? {
         do {
+            let service = MetadataSidecarService()
+            try service.requireRegularFile(file)
             let data = try Data(contentsOf: file)
-            let sidecar = try decoder.decode(MetadataSidecar.self, from: data)
-            guard !sidecar.sourceFile.contains("/"),
-                  !sidecar.sourceFile.contains("\\"),
-                  !sidecar.sourceFile.contains("..") else {
-                return nil
-            }
-            let imageURL = folderURL.appendingPathComponent(sidecar.sourceFile)
-            return (imageURL, sidecar)
-        } catch let error as EditorialJSONSchemaError where error.isNewerSchema {
-            sidecarLogger.warning(
-                "Leaving newer sidecar \(file.lastPathComponent, privacy: .private(mask: .hash)) untouched: \(error.localizedDescription, privacy: .private)"
-            )
-            return nil
+            let owner = try service.declaredOwner(in: data, at: file)
+            let imageURL = folderURL.appendingPathComponent(owner)
+            // Foundation directory enumeration can return absolute/canonical URLs while
+            // callers retain /var aliases or base-URL forms. Compare resolved filesystem paths,
+            // preserving the exact expected carrier filename and the caller's result URL.
+            let observedPath = file.resolvingSymlinksInPath().standardizedFileURL.path
+            guard service.sidecarCandidateURLs(for: imageURL, in: folderURL).contains(where: {
+                $0.lastPathComponent == file.lastPathComponent
+                    && $0.resolvingSymlinksInPath().standardizedFileURL.path == observedPath
+            }), let record = try service.loadOwnedSidecarForMutation(for: imageURL, in: folderURL) else { return nil }
+            // Every carrier resolves through the canonical current record, so enumeration and
+            // task completion order cannot let stale legacy metadata overwrite current edits.
+            return (imageURL, record)
         } catch {
-            sidecarLogger.error("Failed to decode sidecar \(file.lastPathComponent): \(error.localizedDescription)")
-            moveCorruptSidecarAside(file: file)
+            sidecarLogger.warning("Preserving unreadable or unowned sidecar \(file.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
             return nil
-        }
-    }
-
-    private nonisolated static func moveCorruptSidecarAside(file: URL) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-            .replacingOccurrences(of: ":", with: "-")
-        let backupURL = file.deletingLastPathComponent()
-            .appendingPathComponent("\(file.lastPathComponent).corrupt.\(timestamp)")
-        do {
-            try FileManager.default.moveItem(at: file, to: backupURL)
-            sidecarLogger.warning("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .private(mask: .hash))")
-        } catch {
-            sidecarLogger.error("Failed to move corrupt sidecar \(file.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -267,46 +355,36 @@ struct MetadataSidecarService: Sendable {
     // MARK: - Save
 
     nonisolated func saveSidecar(_ sidecar: MetadataSidecar, for imageURL: URL, in folderURL: URL) throws {
-        let dir = sidecarDirectory(for: folderURL)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
-        var existingCurrentData: Data?
-        for existingURL in sidecarCandidateURLs(for: imageURL, in: folderURL)
-            where FileManager.default.fileExists(atPath: existingURL.path) {
-            let existingData = try Data(contentsOf: existingURL)
-            try EditorialJSONSchema.requireWritableVersion(
-                in: existingData,
-                supportedVersion: MetadataSidecar.currentSchemaVersion,
-                documentName: "metadata sidecar",
-                legacyKey: "version",
-                unversionedLegacyVersion: 1
-            )
-            if existingCurrentData == nil {
-                existingCurrentData = existingData
-            }
-        }
-
+        try requireIncomingOwner(sidecar, imageURL: imageURL)
+        let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
+        let owned = snapshots.filter(\.isOwned)
+        _ = try decodeOwnedRecords(owned)
         var updatedSidecar = sidecar
         updatedSidecar.schemaVersion = MetadataSidecar.currentSchemaVersion
         updatedSidecar.lastModified = Date()
-
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         var data = try encoder.encode(updatedSidecar)
-        if let existingCurrentData {
-            data = Self.preservingUnknownFields(from: existingCurrentData, in: data)
+        if let existing = owned.first {
+            data = Self.preservingUnknownFields(from: existing.data, in: data)
         }
+        let dir = sidecarDirectory(for: folderURL)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        guard try snapshots == carrierSnapshots(for: imageURL, in: folderURL) else { throw ownershipChanged(imageURL) }
         let currentURL = sidecarFileURL(for: imageURL, in: folderURL)
         try data.write(to: currentURL, options: .atomic)
-
-        let legacyURL = legacySidecarFileURL(for: imageURL, in: folderURL)
-        if legacyURL != currentURL,
-           FileManager.default.fileExists(atPath: legacyURL.path) {
+        // Only a sole owned legacy document was migrated into this new current record. When
+        // both generations already exist, keep legacy's distinct opaque data rather than erase
+        // it. Proven foreign legacy documents never contribute fields or enter cleanup.
+        if owned.count == 1, let legacy = owned.first, !legacy.isCurrent {
             do {
-                try FileManager.default.removeItem(at: legacyURL)
+                try requireRegularFile(legacy.url)
+                if try Data(contentsOf: legacy.url) == legacy.data {
+                    try FileManager.default.removeItem(at: legacy.url)
+                }
             } catch {
-                sidecarLogger.warning("Failed to remove legacy sidecar \(legacyURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+                sidecarLogger.warning("Current metadata was saved; legacy cleanup retained \(legacy.url.path, privacy: .private): \(error.localizedDescription, privacy: .private)")
             }
         }
     }
@@ -327,7 +405,7 @@ struct MetadataSidecarService: Sendable {
         return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             for attempt in 0..<4 {
                 let tokens = try self.contentTokens(for: imageURL, in: folderURL)
-                let current = self.loadSidecar(for: imageURL, in: folderURL)
+                let current = try self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL)
                 let previous = current?.metadata ?? fallback
                 var metadata = previous
                 mutation(&metadata)
@@ -372,10 +450,11 @@ struct MetadataSidecarService: Sendable {
         in folderURL: URL,
         beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
     ) async throws -> MetadataSidecar {
-        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
+        try requireIncomingOwner(sidecar, imageURL: imageURL)
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             for attempt in 0..<4 {
                 let sourceTokens = try self.contentTokens(for: imageURL, in: folderURL)
-                let current = self.loadSidecar(for: imageURL, in: folderURL)
+                let current = try self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL)
                 let merged = Self.mergingHistory(sidecar, onto: current)
 
                 beforeRevisionCheck(attempt)
@@ -398,6 +477,92 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
+    /// Compare-and-replace an explicitly restored editorial draft, then mirror that exact record
+    /// to XMP under the same photo lock. Never replay later history deltas onto the restore target.
+    /// A committed JSON record is returned even if cancellation or XMP failure follows it.
+    @MetadataSidecarFilesystemActor
+    func restoreSidecarAndMirrorXMP(
+        _ request: MetadataSidecarRestoreRequest,
+        beforeJSONCommit: @escaping @Sendable () throws -> Void = {},
+        afterJSONCommit: @escaping @Sendable () throws -> Void = {},
+        beforeXMPCommit: @escaping @Sendable () throws -> Void = {}
+    ) async -> MetadataSidecarPersistenceResult {
+        guard !Task.isCancelled else {
+            return MetadataSidecarPersistenceResult(installedSidecar: nil, wroteXMPSidecar: false,
+                wasCancelled: true, failure: nil)
+        }
+        return await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: request.imageURL)) { @MetadataSidecarFilesystemActor in
+            var installed: MetadataSidecar?
+            var didCommitJSON = false
+            var stage = MetadataSidecarPersistenceResult.FailureStage.metadataSidecar
+            do {
+                try Task.checkCancellation()
+                let filename = request.imageURL.lastPathComponent
+                guard request.expectedSidecar.sourceFile == filename,
+                      request.sidecar.sourceFile == filename,
+                      request.sidecar.pendingChanges,
+                      request.sidecar.imageMetadataSnapshot == request.expectedSidecar.imageMetadataSnapshot else {
+                    throw CocoaError(.fileWriteInvalidFileName)
+                }
+                let tokens = try self.contentTokens(for: request.imageURL, in: request.folderURL)
+                let records = try self.ownedRecords(for: request.imageURL, in: request.folderURL)
+                guard let current = records.first,
+                      Self.samePersistedRecord(current, request.expectedSidecar) else {
+                    throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
+                        "The metadata draft changed before restore. Reload the photo and choose the history point again."])
+                }
+                let xmpService = XMPSidecarService()
+                let xmpURL = xmpService.sidecarURL(for: request.imageURL)
+                let xmpData = FileManager.default.fileExists(atPath: xmpURL.path)
+                    ? try Data(contentsOf: xmpURL) : nil
+                let xmpMetadata = xmpData.flatMap {
+                    xmpService.loadSidecar(fromData: $0, imageAspect: { ImagePixelAspect.aspect(at: request.imageURL) })
+                }
+                guard (xmpData == nil || xmpMetadata != nil), xmpMetadata == request.expectedXMPMetadata else {
+                    throw DescriptiveMetadataWriteError.staleXMPSidecar(xmpURL)
+                }
+                try beforeJSONCommit()
+                try Task.checkCancellation()
+                guard try self.contentTokens(for: request.imageURL, in: request.folderURL) == tokens else {
+                    throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
+                        "The metadata draft changed while restore was prepared. Reload the photo before retrying."])
+                }
+                if Self.samePersistedRecord(current, request.sidecar) {
+                    installed = current
+                } else {
+                    try self.saveSidecar(request.sidecar, for: request.imageURL, in: request.folderURL)
+                    didCommitJSON = true
+                    try afterJSONCommit()
+                    let readBack = self.loadSidecar(for: request.imageURL, in: request.folderURL)
+                    guard let readBack, Self.samePersistedRecord(readBack, request.sidecar) else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    installed = readBack
+                }
+                stage = .xmpSidecar
+                try Task.checkCancellation()
+                try beforeXMPCommit()
+                try await xmpService.restoreDescriptiveMetadataInHeldTransaction(
+                    request.sidecar.metadata, for: request.imageURL,
+                    expectedSnapshot: XMPSidecarWriteSnapshot(data: xmpData)
+                )
+                return MetadataSidecarPersistenceResult(installedSidecar: installed,
+                    wroteXMPSidecar: true, wasCancelled: false, failure: nil)
+            } catch is CancellationError {
+                return MetadataSidecarPersistenceResult(installedSidecar: installed,
+                    wroteXMPSidecar: false, wasCancelled: true, failure: nil,
+                    committedButUnverifiedSidecarURL: didCommitJSON && installed == nil
+                        ? self.sidecarFileURL(for: request.imageURL, in: request.folderURL) : nil)
+            } catch {
+                return MetadataSidecarPersistenceResult(installedSidecar: installed,
+                    wroteXMPSidecar: false, wasCancelled: false,
+                    failure: .init(stage: stage, message: error.localizedDescription),
+                    committedButUnverifiedSidecarURL: didCommitJSON && installed == nil
+                        ? self.sidecarFileURL(for: request.imageURL, in: request.folderURL) : nil)
+            }
+        }
+    }
+
     /// Serializes an intentional history replacement. The latest metadata record remains
     /// authoritative so clearing history cannot erase a face/caption mutation that reached the
     /// shared boundary first.
@@ -408,10 +573,11 @@ struct MetadataSidecarService: Sendable {
         in folderURL: URL,
         beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in }
     ) async throws -> MetadataSidecar {
-        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
+        try requireIncomingOwner(sidecar, imageURL: imageURL)
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             for attempt in 0..<4 {
                 let sourceTokens = try self.contentTokens(for: imageURL, in: folderURL)
-                let current = self.loadSidecar(for: imageURL, in: folderURL)
+                let current = try self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL)
                 var replacement = current ?? sidecar
                 replacement.history = sidecar.history
 
@@ -457,16 +623,7 @@ struct MetadataSidecarService: Sendable {
         return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             try beforeRead()
             let tokens = try self.contentTokens(for: imageURL, in: folderURL)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let records = try tokens.compactMap { data -> MetadataSidecar? in
-                guard let data else { return nil }
-                let record = try decoder.decode(MetadataSidecar.self, from: data)
-                guard record.sourceFile == imageURL.lastPathComponent else {
-                    throw CocoaError(.fileReadCorruptFile)
-                }
-                return record
-            }
+            let records = try self.ownedRecords(for: imageURL, in: folderURL)
             if let expected {
                 guard let current = records.first, Self.samePersistedRecord(current, expected) else {
                     throw CocoaError(.fileWriteFileExists, userInfo: [
@@ -498,7 +655,7 @@ struct MetadataSidecarService: Sendable {
         return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: snapshot.imageURL)) { @MetadataSidecarFilesystemActor in
             try beforeRevisionCheck()
             guard snapshot.matchesEditor,
-                  try self.contentTokens(for: snapshot.imageURL, in: snapshot.folderURL) == snapshot.tokens else {
+                  (try? self.contentTokens(for: snapshot.imageURL, in: snapshot.folderURL)) == snapshot.tokens else {
                 return false
             }
             try self.deleteSidecar(for: snapshot.imageURL, in: snapshot.folderURL)
@@ -521,18 +678,15 @@ struct MetadataSidecarService: Sendable {
         try Task.checkCancellation()
         return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             for attempt in 0..<4 {
-                let tokens = try self.contentTokens(for: imageURL, in: folderURL)
+                guard let tokens = try? self.contentTokens(for: imageURL, in: folderURL) else { return false }
                 guard tokens.contains(where: { $0 != nil }) else { return false }
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                for data in tokens.compactMap({ $0 }) {
-                    guard let record = try? decoder.decode(MetadataSidecar.self, from: data),
-                          !record.pendingChanges, record.history.isEmpty,
-                          record.sourceFile == imageURL.lastPathComponent else { return false }
+                guard let records = try? self.ownedRecords(for: imageURL, in: folderURL), !records.isEmpty else { return false }
+                for record in records {
+                    guard !record.pendingChanges, record.history.isEmpty else { return false }
                 }
                 beforeRevisionCheck(attempt)
                 await Task.yield()
-                guard try self.contentTokens(for: imageURL, in: folderURL) == tokens else {
+                guard (try? self.contentTokens(for: imageURL, in: folderURL)) == tokens else {
                     continue
                 }
                 try self.deleteSidecar(for: imageURL, in: folderURL)
@@ -560,10 +714,16 @@ struct MetadataSidecarService: Sendable {
     }
 
     nonisolated func deleteSidecar(for imageURL: URL, in folderURL: URL) throws {
-        for fileURL in sidecarCandidateURLs(for: imageURL, in: folderURL) {
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                try FileManager.default.removeItem(at: fileURL)
-            }
+        let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
+        let owned = snapshots.filter(\.isOwned)
+        _ = try decodeOwnedRecords(owned)
+        // Complete validation precedes the first removal; never discard an unrelated legacy
+        // document or an unreadable/newer owned record while clearing this photo's draft.
+        guard try snapshots == carrierSnapshots(for: imageURL, in: folderURL) else { throw ownershipChanged(imageURL) }
+        for carrier in owned {
+            try requireRegularFile(carrier.url)
+            guard try Data(contentsOf: carrier.url) == carrier.data else { throw ownershipChanged(carrier.url) }
+            try FileManager.default.removeItem(at: carrier.url)
         }
     }
 
@@ -582,44 +742,23 @@ struct MetadataSidecarService: Sendable {
 
     nonisolated func deleteAllSidecars(in folderURL: URL) throws {
         let dir = sidecarDirectory(for: folderURL)
-        if FileManager.default.fileExists(atPath: dir.path) {
+        if try entryExists(dir) {
+            try requireMetadataDirectory(in: folderURL)
             try FileManager.default.removeItem(at: dir)
         }
     }
 
     func renameSidecar(from oldImageURL: URL, to newImageURL: URL, in folderURL: URL) throws {
-        let fm = FileManager.default
-        let sourceURLs = sidecarCandidateURLs(for: oldImageURL, in: folderURL).filter {
-            fm.fileExists(atPath: $0.path)
-        }
-        guard !sourceURLs.isEmpty else { return }
-
-        // Load existing sidecar, update sourceFile to match the new filename, and save at new path.
-        // If this build cannot decode the document (including a newer schema), preserve its
-        // complete JSON graph and rewrite only the association field.
-        if var sidecar = loadSidecar(for: oldImageURL, in: folderURL) {
-            sidecar.sourceFile = newImageURL.lastPathComponent
-            try saveSidecar(sidecar, for: newImageURL, in: folderURL)
-        } else if let first = sourceURLs.first {
-            let originalData = try Data(contentsOf: first)
-            let destinationData = Self.updatingSourceFile(
-                in: originalData,
-                to: newImageURL.lastPathComponent,
-                sourceURL: first
-            )
-            let destinationURL = sidecarFileURL(for: newImageURL, in: folderURL)
-            try destinationData.write(to: destinationURL, options: .atomic)
-        }
-
-        // Remove all old sidecar files (current + legacy)
-        for oldURL in sourceURLs {
-            let newURL = sidecarFileURL(for: newImageURL, in: folderURL)
-            guard oldURL != newURL else { continue }
-            do {
-                try fm.removeItem(at: oldURL)
-            } catch {
-                sidecarLogger.warning("Failed to remove old sidecar \(oldURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
-            }
+        guard oldImageURL.standardizedFileURL != newImageURL.standardizedFileURL else { return }
+        let snapshots = try carrierSnapshots(for: oldImageURL, in: folderURL)
+        let owned = snapshots.filter(\.isOwned)
+        guard !owned.isEmpty else { return }
+        try copySidecarsPreservingOpaqueFields(for: oldImageURL, to: newImageURL, in: folderURL)
+        guard try snapshots == carrierSnapshots(for: oldImageURL, in: folderURL) else { throw ownershipChanged(oldImageURL) }
+        for carrier in owned {
+            try requireRegularFile(carrier.url)
+            guard try Data(contentsOf: carrier.url) == carrier.data else { throw ownershipChanged(carrier.url) }
+            try FileManager.default.removeItem(at: carrier.url)
         }
     }
 
@@ -759,6 +898,7 @@ struct MetadataSidecarService: Sendable {
         }
         preserveUnknownMetadataFields(key: "metadata", from: existing, in: &encoded)
         preserveUnknownMetadataFields(key: "imageMetadataSnapshot", from: existing, in: &encoded)
+        preserveUnknownHistoryFields(from: existing, in: &encoded)
 
         return (try? JSONSerialization.data(
             withJSONObject: encoded,
@@ -767,9 +907,9 @@ struct MetadataSidecarService: Sendable {
     }
 
     private nonisolated func contentTokens(for imageURL: URL, in folderURL: URL) throws -> [Data?] {
-        try sidecarCandidateURLs(for: imageURL, in: folderURL).map { url in
-            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-            return try Data(contentsOf: url)
+        let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
+        return sidecarCandidateURLs(for: imageURL, in: folderURL).map { url in
+            snapshots.first(where: { $0.url == url })?.data
         }
     }
 
@@ -779,13 +919,10 @@ struct MetadataSidecarService: Sendable {
     ) -> MetadataSidecar {
         guard let current else { return incoming }
 
-        let currentIDs = Set(current.history.map(\.id))
-        let newEntries = incoming.history
-            .filter { !currentIDs.contains($0.id) }
-            .sorted { lhs, rhs in
-                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-                return lhs.id < rhs.id
-            }
+        var known = Set(current.history.map(Self.historyStorageIdentity))
+        let newEntries = Self.stableHistoryOrder(incoming.history.filter {
+            known.insert(Self.historyStorageIdentity($0)).inserted
+        })
 
         // Callers that do not provide a history delta retain the established whole-record save
         // contract. Transactional editor workflows always provide entries for their changed fields.
@@ -798,12 +935,10 @@ struct MetadataSidecarService: Sendable {
             _ = Self.applyNonReplayableChange(entry, from: incoming.metadata, to: &metadata)
         }
 
-        var historyByID = Dictionary(uniqueKeysWithValues: current.history.map { ($0.id, $0) })
-        for entry in incoming.history { historyByID[entry.id] = entry }
-        var history = historyByID.values.sorted { lhs, rhs in
-            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-            return lhs.id < rhs.id
-        }
+        // Legacy records can contain distinct same-second events with the same derived id.
+        // Preserve their order and contents; only an actual persistent event identity (or an
+        // identical legacy payload) makes an incoming replay redundant.
+        var history = Self.stableHistoryOrder(current.history + newEntries)
         history.trimToHistoryLimit()
 
         return MetadataSidecar(
@@ -814,6 +949,49 @@ struct MetadataSidecarService: Sendable {
             imageMetadataSnapshot: incoming.imageMetadataSnapshot ?? current.imageMetadataSnapshot,
             history: history
         )
+    }
+
+    private nonisolated static func historyStorageIdentity(_ entry: MetadataHistoryEntry) -> String {
+        if let id = entry.persistentEventID { return "event:\(id)" }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .secondsSince1970
+        return "legacy:" + ((try? encoder.encode(entry))?.base64EncodedString() ?? entry.id)
+    }
+
+    private nonisolated static func stableHistoryOrder(_ entries: [MetadataHistoryEntry]) -> [MetadataHistoryEntry] {
+        entries.enumerated().sorted {
+            if $0.element.timestamp != $1.element.timestamp { return $0.element.timestamp < $1.element.timestamp }
+            return $0.offset < $1.offset
+        }.map(\.element)
+    }
+
+    private nonisolated static func preserveUnknownHistoryFields(
+        from existing: [String: Any], in encoded: inout [String: Any]
+    ) {
+        guard let oldEvents = existing["history"] as? [[String: Any]],
+              var newEvents = encoded["history"] as? [[String: Any]] else { return }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        func identity(_ graph: [String: Any]) -> String? {
+            guard let data = try? JSONSerialization.data(withJSONObject: graph),
+                  let entry = try? decoder.decode(MetadataHistoryEntry.self, from: data) else { return nil }
+            return historyStorageIdentity(entry)
+        }
+        var previous: [String: [[String: Any]]] = [:]
+        for graph in oldEvents {
+            guard let key = identity(graph) else { continue }
+            previous[key, default: []].append(graph)
+        }
+        let known = Set(["eventID", "timestamp", "fieldID", "fieldName", "oldValue", "newValue",
+                         "oldValueSummary", "newValueSummary", "valueStorage"])
+        for index in newEvents.indices {
+            guard let key = identity(newEvents[index]), var candidates = previous[key], !candidates.isEmpty else { continue }
+            let old = candidates.removeFirst()
+            previous[key] = candidates
+            for (field, value) in old where !known.contains(field) { newEvents[index][field] = value }
+        }
+        encoded["history"] = newEvents
     }
 
     private nonisolated static func applyNonReplayableChange(
@@ -888,6 +1066,14 @@ private extension EditorialJSONSchemaError {
 /// Immutable input for the two-artifact metadata save used by the single-image XMP workflow.
 /// Keeping the complete snapshot in one value prevents a selection change on the main actor from
 /// redirecting either half of the persistence operation to a different photo.
+nonisolated struct MetadataSidecarRestoreRequest: Sendable {
+    let sidecar: MetadataSidecar
+    let expectedSidecar: MetadataSidecar
+    let expectedXMPMetadata: IPTCMetadata?
+    let imageURL: URL
+    let folderURL: URL
+}
+
 nonisolated struct MetadataSidecarPersistenceRequest: Sendable {
     let sidecar: MetadataSidecar
     let imageURL: URL
@@ -925,6 +1111,16 @@ nonisolated struct MetadataSidecarPersistenceResult: Sendable {
     let wroteXMPSidecar: Bool
     let wasCancelled: Bool
     let failure: Failure?
+    let committedButUnverifiedSidecarURL: URL?
+
+    init(installedSidecar: MetadataSidecar?, wroteXMPSidecar: Bool, wasCancelled: Bool,
+         failure: Failure?, committedButUnverifiedSidecarURL: URL? = nil) {
+        self.installedSidecar = installedSidecar
+        self.wroteXMPSidecar = wroteXMPSidecar
+        self.wasCancelled = wasCancelled
+        self.failure = failure
+        self.committedButUnverifiedSidecarURL = committedButUnverifiedSidecarURL
+    }
 
     var completed: Bool {
         installedSidecar != nil && wroteXMPSidecar && !wasCancelled && failure == nil
