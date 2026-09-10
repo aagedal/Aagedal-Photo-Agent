@@ -197,6 +197,9 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         case copySourceChanged
         case moveRollbackFailed([String])
         case unsafeMemoFile(String)
+        case unsafeTrashCarrier(String)
+        case trashRollbackFailed([String])
+        case trashOutcomeUncertain(String)
 
         var errorDescription: String? {
             switch self {
@@ -209,7 +212,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             case .unsupportedSchema(let version):
                 return "Voice-memo relationship schema \(version) is newer than this app supports."
             case .memoMissing(let filename):
-                return "The saved voice memo \(filename) is missing. Restore it before copying, moving, or renaming the photo."
+                return "The saved voice memo \(filename) is missing. Restore it before copying, moving, renaming, or trashing the photo."
             case .ambiguousImportedDestination(let filename):
                 return "The imported voice memo for \(filename) could not be identified unambiguously."
             case .sharedMemoRequiresGroupAction(let filename):
@@ -221,11 +224,17 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             case .copyRollbackFailed(let filenames):
                 return "Photo and voice-memo copy failed. Remove the incomplete copies before retrying: \(filenames.joined(separator: ", "))."
             case .copySourceChanged:
-                return "The photo, voice memo, or saved relationship changed during copying. Try again when the source is stable."
+                return "The photo, voice memo, or saved relationship changed during the file operation. Try again when the source is stable."
             case .moveRollbackFailed(let paths):
                 return "The photo and voice-memo move failed and could not be fully rolled back. Recover these files before retrying: \(paths.joined(separator: ", "))."
+            case .unsafeTrashCarrier(let path):
+                return "Trash was stopped because a photo companion is malformed or is not an owned regular file: \(path)"
+            case .trashRollbackFailed(let paths):
+                return "Trash failed and some originals could not be restored. Recover these files before retrying: \(paths.joined(separator: ", "))."
+            case .trashOutcomeUncertain(let path):
+                return "Trash reported an error after the recovery bundle disappeared. Check Finder Trash for \(URL(fileURLWithPath: path).lastPathComponent) before retrying; the original files may already be there. Original recovery path: \(path)"
             case .unsafeMemoFile(let filename):
-                return "The saved voice memo \(filename) must be a regular file in the photo's folder before it can be moved. Symbolic links are left untouched."
+                return "The saved voice memo \(filename) must be a regular file in the photo's folder before file operations can proceed. Symbolic links are left untouched."
             }
         }
     }
@@ -672,6 +681,192 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             catch { cleanupResiduals.append(backup) }
         }
         return MoveReceipt(cleanupResidualURLs: cleanupResiduals)
+    }
+
+    /// A proven memo is trashed with its photo in one visible recoverable folder. Shared
+    /// audio and shared XMP are copied, so deleting one RAW/JPEG never consumes the
+    /// remaining variant's companions. Restore the whole folder from Finder Trash, then open
+    /// that folder in Photo Agent; filenames and the hidden metadata hierarchy remain intact.
+    /// This is a synchronous rollback transaction, not a process-crash-atomic multi-file move.
+    func trashImagePreservingCompanion(
+        at imageURL: URL,
+        using handler: any ImageTrashHandling
+    ) throws {
+        let fm = FileManager.default
+        let recordURL = recordURL(for: imageURL)
+        if try trashCarrierExists(at: recordURL),
+           try fm.attributesOfItem(atPath: recordURL.path)[.type] as? FileAttributeType != .typeRegular {
+            throw RepositoryError.unsafeTrashCarrier(recordURL.path)
+        }
+        // Keep the old direct path for photos without a persisted relationship, including
+        // callers with virtual URLs. Malformed or unavailable saved relationships fail closed.
+        guard let companion = try moveCompanion(for: imageURL, to: imageURL) else {
+            try handler.trashItem(at: imageURL)
+            return
+        }
+        let folder = imageURL.deletingLastPathComponent()
+        let bundle = folder.appendingPathComponent(
+            "\(String(imageURL.lastPathComponent.prefix(60))) Photo Agent Trash \(UUID().uuidString)",
+            isDirectory: true
+        )
+        let originalReferenceCount = try memoReferenceCount(to: companion.association.memoURL, in: folder)
+        guard companion.isShared == (originalReferenceCount > 1) else { throw RepositoryError.copySourceChanged }
+        let originalSiblings = try trashSiblingImages(for: imageURL)
+        struct Carrier {
+            let source: URL
+            let destination: URL
+            let shared: Bool
+            let revision: CopyRevision
+        }
+        var carriers: [Carrier] = []
+        func append(_ source: URL, relativePath: String, shared: Bool) throws {
+            let attributes = try fm.attributesOfItem(atPath: source.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular,
+                  source.resolvingSymlinksInPath().deletingLastPathComponent().path
+                    == source.deletingLastPathComponent().resolvingSymlinksInPath().path else {
+                throw RepositoryError.unsafeTrashCarrier(source.path)
+            }
+            carriers.append(Carrier(source: source, destination: bundle.appendingPathComponent(relativePath),
+                                    shared: shared, revision: try copyRevision(at: source)))
+        }
+        try append(imageURL, relativePath: imageURL.lastPathComponent, shared: false)
+        try append(recordURL, relativePath: recordURL.lastPathComponent, shared: false)
+        try append(companion.association.memoURL,
+                   relativePath: companion.association.memoURL.lastPathComponent, shared: companion.isShared)
+        let xmp = imageURL.deletingPathExtension().appendingPathExtension("xmp")
+        if try trashCarrierExists(at: xmp) {
+            guard try fm.attributesOfItem(atPath: xmp.path)[.type] as? FileAttributeType == .typeRegular else {
+                throw RepositoryError.unsafeTrashCarrier(xmp.path)
+            }
+            // Trash preserves opaque XMP bytes without interpreting or rewriting them.
+            // Even unreadable metadata must remain recoverable with the original photo.
+            try append(xmp, relativePath: xmp.lastPathComponent, shared: !originalSiblings.isEmpty)
+        }
+        let metadataFolder = folder.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName)
+        if try trashCarrierExists(at: metadataFolder) {
+            guard try fm.attributesOfItem(atPath: metadataFolder.path)[.type] as? FileAttributeType == .typeDirectory else {
+                throw RepositoryError.unsafeTrashCarrier(metadataFolder.path)
+            }
+            for source in MetadataSidecarService().relocationDestinationURLs(for: imageURL, in: folder) {
+                guard try trashCarrierExists(at: source) else { continue }
+                guard try fm.attributesOfItem(atPath: source.path)[.type] as? FileAttributeType == .typeRegular else {
+                    throw RepositoryError.unsafeTrashCarrier(source.path)
+                }
+                // Preserve all fields, including newer opaque extensions; only reject malformed
+                // carriers rather than silently dropping them or traversing linked directories.
+                guard let json = (try? JSONSerialization.jsonObject(with: Data(contentsOf: source))) as? [String: Any],
+                      let declaredOwner = json["sourceFile"] as? String,
+                      !declaredOwner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      declaredOwner != ".", declaredOwner != "..",
+                      !declaredOwner.contains("/"), !declaredOwner.contains("\\") else {
+                    throw RepositoryError.unsafeTrashCarrier(source.path)
+                }
+                let isCurrent = source.lastPathComponent == "\(imageURL.lastPathComponent).meta.json"
+                guard declaredOwner == imageURL.lastPathComponent else {
+                    if isCurrent { throw RepositoryError.unsafeTrashCarrier(source.path) }
+                    // A basename fallback can belong to another variant. Its owner, not
+                    // the shared stem, controls which photo may consume or adopt it.
+                    continue
+                }
+                try append(source, relativePath: "\(MetadataSidecarService.sidecarDirectoryName)/\(source.lastPathComponent)",
+                           shared: false)
+            }
+        }
+        guard Set(carriers.map { $0.source.standardizedFileURL }).count == carriers.count,
+              Set(carriers.map { $0.destination.standardizedFileURL }).count == carriers.count else {
+            throw RepositoryError.invalidRecord
+        }
+        try Task.checkCancellation()
+        try fm.createDirectory(at: bundle, withIntermediateDirectories: false)
+        var retired: [Carrier] = []
+        var trashEntered = false
+        do {
+            for carrier in carriers {
+                try fm.createDirectory(at: carrier.destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if carrier.shared {
+                    try copyIO.copy(carrier.source, carrier.destination)
+                    guard try carrier.revision.digest == SourceImageRevisionCaptureIO.system.hash(carrier.destination) else {
+                        throw RepositoryError.copySourceChanged
+                    }
+                }
+            }
+            guard try originalSiblings == trashSiblingImages(for: imageURL),
+                  originalReferenceCount == (try memoReferenceCount(to: companion.association.memoURL, in: folder)) else {
+                throw RepositoryError.copySourceChanged
+            }
+            for carrier in carriers {
+                guard try carrier.revision.matches(copyRevision(at: carrier.source)) else {
+                    throw RepositoryError.copySourceChanged
+                }
+            }
+            try Task.checkCancellation()
+            for carrier in carriers where !carrier.shared {
+                do {
+                    try copyIO.install(carrier.source, carrier.destination)
+                    retired.append(carrier)
+                } catch {
+                    // Same-volume rename may have committed before a wrapper reports failure.
+                    if !fm.fileExists(atPath: carrier.source.path), fm.fileExists(atPath: carrier.destination.path) {
+                        retired.append(carrier)
+                    }
+                    throw error
+                }
+                guard try carrier.revision.matches(copyRevision(at: carrier.destination)) else {
+                    throw RepositoryError.copySourceChanged
+                }
+            }
+            // Our relationship and photo are now inside the private bundle, so the expected
+            // source reference count falls by one. Catch a new shared owner before Trash.
+            guard try originalSiblings == trashSiblingImages(for: imageURL),
+                  originalReferenceCount - 1 == (try memoReferenceCount(to: companion.association.memoURL, in: folder)) else {
+                throw RepositoryError.copySourceChanged
+            }
+            for carrier in carriers {
+                guard try carrier.revision.matches(copyRevision(at: carrier.shared ? carrier.source : carrier.destination)) else {
+                    throw RepositoryError.copySourceChanged
+                }
+            }
+            try Task.checkCancellation()
+            trashEntered = true
+            try handler.trashItem(at: bundle)
+        } catch {
+            // Never delete or recreate contents after an ambiguous Trash result. Finder may
+            // already hold the only original-byte bundle; its identity is the recovery evidence.
+            if trashEntered && !fm.fileExists(atPath: bundle.path) {
+                throw RepositoryError.trashOutcomeUncertain(bundle.path)
+            }
+            var recovery: [String] = []
+            for carrier in retired.reversed() {
+                do { try copyIO.install(carrier.destination, carrier.source) }
+                catch { recovery.append(carrier.destination.path) }
+            }
+            if recovery.isEmpty {
+                do { try copyIO.remove(bundle) }
+                catch { recovery.append(bundle.path) }
+            }
+            if !recovery.isEmpty { throw RepositoryError.trashRollbackFailed(recovery) }
+            throw error
+        }
+    }
+
+    private func trashCarrierExists(at url: URL) throws -> Bool {
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: url.path)
+            return true
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) {
+            return false
+        }
+    }
+
+    private func trashSiblingImages(for imageURL: URL) throws -> Set<URL> {
+        let source = imageURL.standardizedFileURL
+        let stem = imageURL.deletingPathExtension().lastPathComponent.lowercased()
+        return Set(try FileManager.default.contentsOfDirectory(
+            at: imageURL.deletingLastPathComponent(), includingPropertiesForKeys: nil
+        ).filter {
+            $0.standardizedFileURL != source && SupportedImageFormats.isSupported(url: $0)
+                && $0.deletingPathExtension().lastPathComponent.lowercased() == stem
+        }.map(\.standardizedFileURL))
     }
 
     private struct MoveCompanion: Equatable {

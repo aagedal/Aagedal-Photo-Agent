@@ -215,10 +215,15 @@ struct BrowserView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
                 .accessibilityHidden(true)
-            Text(message)
+            Text(message.components(separatedBy: "\n").first ?? message)
                 .font(.callout)
                 .lineLimit(3)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Details…") {
+                OperationIssueDetailsPresenter.present(title: "Operation Needs Attention", message: message)
+            }
+            .accessibilityLabel("Show complete operation details")
+            .accessibilityIdentifier("browser.errorDetails")
             Button {
                 viewModel.errorMessage = nil
             } label: {

@@ -625,10 +625,10 @@ struct MetadataSidecarService: Sendable {
 
     nonisolated func moveSidecar(for imageURL: URL, from sourceFolderURL: URL, to destinationFolderURL: URL) throws {
         let fm = FileManager.default
-        let sourceURLs = sidecarCandidateURLs(for: imageURL, in: sourceFolderURL).filter {
-            fm.fileExists(atPath: $0.path)
-        }
+        let sourceURLs = try ownedRelocationSources(for: imageURL, in: sourceFolderURL)
         guard !sourceURLs.isEmpty else { return }
+        let legacyURL = legacySidecarFileURL(for: imageURL, in: sourceFolderURL)
+        let keepLegacy = try PhotoSidecarOwnership.hasSurvivingStemSibling(of: imageURL, in: sourceFolderURL)
 
         let destinationDirectory = sidecarDirectory(for: destinationFolderURL)
         try fm.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
@@ -639,9 +639,14 @@ struct MetadataSidecarService: Sendable {
             throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: candidate.path])
         }
         if let first = sourceURLs.first {
-            try fm.moveItem(at: first, to: destinationURL)
+            if first == legacyURL && keepLegacy {
+                try PhotoSidecarOwnership.copyPreservingSource(from: first, to: destinationURL)
+            } else {
+                try fm.moveItem(at: first, to: destinationURL)
+            }
         }
         for extra in sourceURLs.dropFirst() {
+            if extra == legacyURL && keepLegacy { continue }
             do {
                 try fm.removeItem(at: extra)
             } catch {
@@ -656,6 +661,17 @@ struct MetadataSidecarService: Sendable {
         sidecarCandidateURLs(for: imageURL, in: folderURL)
     }
 
+    private nonisolated func ownedRelocationSources(for imageURL: URL, in folderURL: URL) throws -> [URL] {
+        let legacy = legacySidecarFileURL(for: imageURL, in: folderURL)
+        return try sidecarCandidateURLs(for: imageURL, in: folderURL).filter { candidate in
+            guard FileManager.default.fileExists(atPath: candidate.path) else { return false }
+            if candidate != legacy { return true }
+            return try PhotoSidecarOwnership.legacyRecordBelongsToImage(
+                at: candidate, imageURL: imageURL
+            )
+        }
+    }
+
     /// Moves a sidecar while allowing the image filename to change. The JSON's
     /// `sourceFile` value must follow the destination filename or bulk sidecar
     /// loading will continue to associate it with the old image URL.
@@ -666,10 +682,10 @@ struct MetadataSidecarService: Sendable {
         to destinationFolderURL: URL
     ) throws {
         let fm = FileManager.default
-        let sourceURLs = sidecarCandidateURLs(for: sourceImageURL, in: sourceFolderURL).filter {
-            fm.fileExists(atPath: $0.path)
-        }
+        let sourceURLs = try ownedRelocationSources(for: sourceImageURL, in: sourceFolderURL)
         guard let sourceURL = sourceURLs.first else { return }
+        let legacyURL = legacySidecarFileURL(for: sourceImageURL, in: sourceFolderURL)
+        let keepLegacy = try PhotoSidecarOwnership.hasSurvivingStemSibling(of: sourceImageURL, in: sourceFolderURL)
 
         let sourceData = try Data(contentsOf: sourceURL)
         let destinationData = Self.updatingSourceFile(
@@ -694,6 +710,7 @@ struct MetadataSidecarService: Sendable {
         // The destination is safely on disk before any source artifact is removed.
         // A legacy duplicate may coexist with the current sidecar, so clean up both.
         for oldURL in sourceURLs {
+            if oldURL == legacyURL && keepLegacy { continue }
             do {
                 try fm.removeItem(at: oldURL)
             } catch {

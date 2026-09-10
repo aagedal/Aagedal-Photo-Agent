@@ -3220,11 +3220,12 @@ final class BrowserViewModel {
                 }
             }
 
-            if let firstFailure = result.failures.first {
-                let suffix = result.failures.count == 1
-                    ? ""
-                    : " and \(result.failures.count - 1) other file(s)"
-                errorMessage = "Couldn’t move \(firstFailure.sourceURL.lastPathComponent)\(suffix) to the Trash: \(firstFailure.message)"
+            if let feedback = TrashOperationFeedback(
+                completedURLs: deletedURLs,
+                failures: result.failures,
+                cancelled: result.cancellationStoppedRemainingItems
+            ) {
+                errorMessage = feedback.message
             }
         }
     }

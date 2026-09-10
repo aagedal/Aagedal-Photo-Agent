@@ -231,12 +231,13 @@ struct FaceGroupDetailView: View {
                     let result = await viewModel.deleteGroup(group.id, includePhotos: true)
                     onPhotosDeleted?(result.trashedPhotoURLs)
                     dismiss()
+                    OperationIssueDetailsPresenter.presentTrashIssues(result)
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             let photoCount = viewModel.imageURLs(for: group).count
-            Text("This will delete \(group.faceIDs.count) face(s) across \(photoCount) photo(s). Moving photos to Trash cannot be undone from this app.")
+            Text("This will delete \(group.faceIDs.count) face(s) across \(photoCount) photo(s). Moving photos to Trash cannot be undone from this app.\n\n\(TrashOperationFeedback.recoveryGuidance)")
         }
     }
 

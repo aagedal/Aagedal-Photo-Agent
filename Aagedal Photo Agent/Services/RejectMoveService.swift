@@ -92,21 +92,31 @@ nonisolated struct RejectMoveService: Sendable {
             let xmpSource = url.deletingPathExtension().appendingPathExtension("xmp")
             let xmpDestination = dest.deletingPathExtension().appendingPathExtension("xmp")
             var xmpMoved = false
+            var xmpCopied = false
 
             do {
                 let receipt = try voiceMemoRepository.moveImagePreservingCompanion(from: url, to: dest) {
                     do {
                         if fm.fileExists(atPath: xmpSource.path) {
-                            try fm.moveItem(at: xmpSource, to: xmpDestination)
-                            xmpMoved = true
+                            let sharedStem = try PhotoSidecarOwnership.hasSurvivingStemSibling(of: url, in: folderURL)
+                            if sharedStem {
+                                try PhotoSidecarOwnership.copyPreservingSource(from: xmpSource, to: xmpDestination)
+                                xmpCopied = true
+                            } else {
+                                try fm.moveItem(at: xmpSource, to: xmpDestination)
+                                xmpMoved = true
+                            }
                         }
                         try sidecarService.relocateSidecar(
                             for: url, to: dest, from: folderURL, to: rejectedFolder
                         )
                     } catch {
                         let originalError = error
-                        if xmpMoved {
-                            do { try fm.moveItem(at: xmpDestination, to: xmpSource) }
+                        if xmpMoved || xmpCopied {
+                            do {
+                                if xmpCopied { try fm.removeItem(at: xmpDestination) }
+                                else { try fm.moveItem(at: xmpDestination, to: xmpSource) }
+                            }
                             catch {
                                 throw NSError(domain: "RejectMoveService", code: 1, userInfo: [
                                     NSLocalizedDescriptionKey: originalError.localizedDescription

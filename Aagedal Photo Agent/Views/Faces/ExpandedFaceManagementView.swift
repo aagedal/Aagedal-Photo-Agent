@@ -194,6 +194,7 @@ struct ExpandedFaceManagementView: View {
                     let result = await viewModel.deleteGroup(group.id, includePhotos: true)
                     onPhotosDeleted?(result.trashedPhotoURLs)
                     groupToDelete = nil
+                    OperationIssueDetailsPresenter.presentTrashIssues(result)
                 }
             }
             Button("Cancel", role: .cancel) {
@@ -203,7 +204,7 @@ struct ExpandedFaceManagementView: View {
             let photoCount = Set(group.faceIDs.compactMap { faceID in
                 viewModel.face(byID: faceID)?.imageURL
             }).count
-            Text("This will delete \(group.faceIDs.count) face(s) across \(photoCount) photo(s). Moving photos to Trash cannot be undone from this app.")
+            Text("This will delete \(group.faceIDs.count) face(s) across \(photoCount) photo(s). Moving photos to Trash cannot be undone from this app.\n\n\(TrashOperationFeedback.recoveryGuidance)")
         }
         .fileImporter(
             isPresented: $showingNameListFilePicker,

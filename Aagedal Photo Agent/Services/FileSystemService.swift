@@ -577,8 +577,11 @@ actor FileSystemService {
                 break
             }
             do {
-                try handler.trashItem(at: url)
+                try VoiceMemoCompanionRepository().trashImagePreservingCompanion(at: url, using: handler)
                 completed.insert(url)
+            } catch is CancellationError {
+                cancellationStoppedRemainingItems = true
+                break
             } catch {
                 failures.append(ItemFailure(
                     sourceURL: url,
@@ -664,10 +667,14 @@ actor FileSystemService {
             let xmpSource = xmpSidecarService.sidecarURL(for: sourceURL)
             if fileManager.fileExists(atPath: xmpSource.path) {
                 do {
-                    try fileManager.moveItem(
-                        at: xmpSource,
-                        to: xmpSidecarService.sidecarURL(for: destinationURL)
-                    )
+                    let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
+                    if try PhotoSidecarOwnership.hasSurvivingStemSibling(
+                        of: sourceURL, in: sourceURL.deletingLastPathComponent()
+                    ) {
+                        try PhotoSidecarOwnership.copyPreservingSource(from: xmpSource, to: xmpDestination)
+                    } else {
+                        try fileManager.moveItem(at: xmpSource, to: xmpDestination)
+                    }
                 } catch {
                     failures.append(ItemFailure(
                         sourceURL: sourceURL,

@@ -50,7 +50,7 @@ private struct ImageDeletionConfirmationModifier: ViewModifier {
                 }
             } message: {
                 let count = viewModel.selectedImageIDs.count
-                Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?")
+                Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?\n\n\(TrashOperationFeedback.recoveryGuidance)")
             }
     }
 }

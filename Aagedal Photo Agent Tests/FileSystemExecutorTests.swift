@@ -4,6 +4,331 @@ import Testing
 
 @Suite("Filesystem Dispatch executor")
 struct FileSystemExecutorTests {
+    @Test("Trash keeps shared RAW/JPEG companions in independent recoverable bundles")
+    func trashPreservesSharedBundles() async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = root.appendingPathComponent("photo.ARW")
+        let jpeg = root.appendingPathComponent("photo.JPG")
+        let memo = root.appendingPathComponent("photo.WAV")
+        let xmp = root.appendingPathComponent("photo.xmp")
+        let metadataFolder = root.appendingPathComponent(".photo_metadata")
+        let legacy = metadataFolder.appendingPathComponent("photo.meta.json")
+        let current = metadataFolder.appendingPathComponent("photo.ARW.meta.json")
+        try FileManager.default.createDirectory(at: metadataFolder, withIntermediateDirectories: true)
+        for url in [raw, jpeg, memo] { try Data(url.lastPathComponent.utf8).write(to: url) }
+        try Data("<xmp><unknown>preserved</unknown></xmp>".utf8).write(to: xmp)
+        try Data(#"{"sourceFile":"photo.JPG","unknown":"legacy"}"#.utf8).write(to: legacy)
+        try Data(#"{"sourceFile":"photo.ARW","unknown":"current"}"#.utf8).write(to: current)
+        let repository = VoiceMemoCompanionRepository()
+        for image in [raw, jpeg] {
+            try repository.save(.init(profileIdentifier: "synthetic-trash", imageURL: image, memoURL: memo))
+        }
+        let trash = root.appendingPathComponent("Fake Trash")
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+        let handler = ExecutorTestTrashHandler { bundle in
+            #expect(!bundle.lastPathComponent.hasPrefix("."))
+            #expect(bundle.lastPathComponent.contains("Photo Agent Trash"))
+            try FileManager.default.moveItem(at: bundle, to: trash.appendingPathComponent(bundle.lastPathComponent))
+        }
+        let first = await FileSystemService().trashItems([raw], using: handler)
+        #expect(first.completedSourceURLs == [raw])
+        #expect(first.failures.isEmpty)
+        #expect(try repository.lookup(for: jpeg) != .none)
+        for shared in [memo, xmp, legacy] { #expect(FileManager.default.fileExists(atPath: shared.path)) }
+        #expect(!FileManager.default.fileExists(atPath: current.path))
+        let firstBundle = try #require(FileManager.default.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil).first)
+        #expect(try Data(contentsOf: firstBundle.appendingPathComponent(".photo_metadata/photo.ARW.meta.json"))
+                == Data(#"{"sourceFile":"photo.ARW","unknown":"current"}"#.utf8))
+        let second = await FileSystemService().trashItems([jpeg], using: handler)
+        #expect(second.completedSourceURLs == [jpeg])
+        #expect(second.failures.isEmpty)
+        for source in [raw, jpeg, memo, xmp, legacy] { #expect(!FileManager.default.fileExists(atPath: source.path)) }
+        let bundles = try FileManager.default.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil)
+        #expect(bundles.count == 2)
+        for bundle in bundles {
+            let image = bundle.appendingPathComponent(bundle == firstBundle ? "photo.ARW" : "photo.JPG")
+            guard case .available(let association) = try repository.lookup(for: image) else {
+                Issue.record("Trash bundle lost its proven association")
+                continue
+            }
+            #expect(try Data(contentsOf: association.memoURL) == Data("photo.WAV".utf8))
+            #expect(try Data(contentsOf: bundle.appendingPathComponent("photo.xmp"))
+                    == Data("<xmp><unknown>preserved</unknown></xmp>".utf8))
+            let bundledLegacy = bundle.appendingPathComponent(".photo_metadata/photo.meta.json")
+            if bundle == firstBundle {
+                #expect(!FileManager.default.fileExists(atPath: bundledLegacy.path))
+            } else {
+                #expect(try Data(contentsOf: bundledLegacy) == Data(#"{"sourceFile":"photo.JPG","unknown":"legacy"}"#.utf8))
+            }
+        }
+    }
+
+    @Test("Trash preserves opaque unreadable XMP byte-for-byte for recovery")
+    func trashPreservesOpaqueXMP() async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (image, _, _) = try trashTestAssociation(in: root)
+        let xmp = root.appendingPathComponent("photo.xmp")
+        let opaqueBytes = Data([0xff, 0xfe, 0x00, 0x3c, 0x01])
+        try opaqueBytes.write(to: xmp)
+        let trashed = root.appendingPathComponent("Fake Trash Bundle")
+        let result = await FileSystemService().trashItems([image], using: ExecutorTestTrashHandler { bundle in
+            try FileManager.default.moveItem(at: bundle, to: trashed)
+        })
+        #expect(result.completedSourceURLs == [image])
+        #expect(result.failures.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: xmp.path))
+        #expect(try Data(contentsOf: trashed.appendingPathComponent("photo.xmp")) == opaqueBytes)
+    }
+
+    @Test("Trash restores exact originals after retirement or Trash failure", arguments: [false, true])
+    func trashRestoresOriginals(failDuringRetirement: Bool) throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (image, memo, repository) = try trashTestAssociation(in: root)
+        let originalRecord = try Data(contentsOf: repository.recordURL(for: image))
+        var io = VoiceMemoCompanionCopyIO.system
+        if failDuringRetirement {
+            io.install = { source, destination in
+                if source == memo { throw CocoaError(.fileWriteUnknown) }
+                try FileManager.default.moveItem(at: source, to: destination)
+            }
+        }
+        let tested = VoiceMemoCompanionRepository(copyIO: io)
+        do {
+            try tested.trashImagePreservingCompanion(at: image, using: ExecutorTestTrashHandler { _ in
+                throw CocoaError(.fileWriteUnknown)
+            })
+            Issue.record("Expected injected Trash failure")
+        } catch { }
+        #expect(try Data(contentsOf: image) == Data("photo".utf8))
+        #expect(try Data(contentsOf: memo) == Data("audio".utf8))
+        #expect(try Data(contentsOf: repository.recordURL(for: image)) == originalRecord)
+        #expect(try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).count == 3)
+    }
+
+    @Test("Trash source retirement races preserve the actual newer bytes", arguments: [false, true])
+    func trashRetirementRacePreservesNewBytes(changeMemo: Bool) throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (image, memo, _) = try trashTestAssociation(in: root)
+        let changed = changeMemo ? memo : image
+        var io = VoiceMemoCompanionCopyIO.system
+        io.install = { source, destination in
+            if source == changed { try Data("newer bytes".utf8).write(to: source) }
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
+        do {
+            try VoiceMemoCompanionRepository(copyIO: io).trashImagePreservingCompanion(
+                at: image, using: ExecutorTestTrashHandler { _ in Issue.record("Changed source reached Trash") }
+            )
+            Issue.record("Expected source-change rejection")
+        } catch { }
+        #expect(try Data(contentsOf: changed) == Data("newer bytes".utf8))
+        #expect(FileManager.default.fileExists(atPath: image.path))
+        #expect(FileManager.default.fileExists(atPath: memo.path))
+    }
+
+    @Test("A new differently named memo owner during retirement stops Trash and preserves both photos")
+    func trashRejectsNewMemoOwner() throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (image, memo, repository) = try trashTestAssociation(in: root)
+        let newOwner = root.appendingPathComponent("different.JPG")
+        var io = VoiceMemoCompanionCopyIO.system
+        io.install = { source, destination in
+            if source == image {
+                try Data("new owner".utf8).write(to: newOwner)
+                try repository.save(.init(profileIdentifier: "synthetic-trash", imageURL: newOwner, memoURL: memo))
+            }
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
+        do {
+            try VoiceMemoCompanionRepository(copyIO: io).trashImagePreservingCompanion(
+                at: image, using: ExecutorTestTrashHandler { _ in Issue.record("Newly shared WAV reached Trash") }
+            )
+            Issue.record("Expected ownership-change rejection")
+        } catch { }
+        for owner in [image, newOwner] {
+            guard case .available(let association) = try repository.lookup(for: owner) else {
+                Issue.record("Ownership race lost an association")
+                continue
+            }
+            #expect(try Data(contentsOf: association.memoURL) == Data("audio".utf8))
+        }
+    }
+
+    @Test("Shared memo partial-copy failure and preparation cancellation leave originals untouched", arguments: [false, true])
+    func trashSharedPreparationFailure(cancel: Bool) async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (image, memo, repository) = try trashTestAssociation(in: root)
+        let sibling = root.appendingPathComponent("photo.ARW")
+        try Data("sibling".utf8).write(to: sibling)
+        try repository.save(.init(profileIdentifier: "synthetic-trash", imageURL: sibling, memoURL: memo))
+        var io = VoiceMemoCompanionCopyIO.system
+        io.copy = { source, destination in
+            if cancel {
+                try FileManager.default.copyItem(at: source, to: destination)
+                withUnsafeCurrentTask { $0?.cancel() }
+            } else {
+                try Data("partial bytes".utf8).write(to: destination)
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+        let tested = VoiceMemoCompanionRepository(copyIO: io)
+        await Task {
+            do {
+                try tested.trashImagePreservingCompanion(at: image, using: ExecutorTestTrashHandler { _ in
+                    Issue.record("Failed or cancelled preparation reached Trash")
+                })
+                Issue.record("Expected preparation rejection")
+            } catch { }
+        }.value
+        #expect(try Data(contentsOf: image) == Data("photo".utf8))
+        #expect(try Data(contentsOf: memo) == Data("audio".utf8))
+        for owner in [image, sibling] {
+            guard case .available = try repository.lookup(for: owner) else {
+                Issue.record("Preparation failure lost an association")
+                continue
+            }
+        }
+        #expect(try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).count == 5)
+    }
+
+    @Test("Trash rollback collision keeps new source and reports recoverable original paths")
+    func trashRollbackRecoveryPaths() throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (image, memo, _) = try trashTestAssociation(in: root)
+        do {
+            try VoiceMemoCompanionRepository().trashImagePreservingCompanion(
+                at: image, using: ExecutorTestTrashHandler { _ in
+                    try Data("external new photo".utf8).write(to: image)
+                    throw CocoaError(.fileWriteUnknown)
+                }
+            )
+            Issue.record("Expected recovery failure")
+        } catch VoiceMemoCompanionRepository.RepositoryError.trashRollbackFailed(let paths) {
+            #expect(paths.count == 1)
+            let backup = try #require(paths.first)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: backup)) == Data("photo".utf8))
+        }
+        #expect(try Data(contentsOf: image) == Data("external new photo".utf8))
+        #expect(try Data(contentsOf: memo) == Data("audio".utf8))
+    }
+
+    @Test("Trash reports an uncertain outcome when a handler commits then throws")
+    func trashThrowAfterCommitPreservesEvidence() async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (image, _, repository) = try trashTestAssociation(in: root)
+        let trashed = root.appendingPathComponent("Fake Trash Bundle")
+        let result = await FileSystemService().trashItems([image], using: ExecutorTestTrashHandler { bundle in
+            try FileManager.default.moveItem(at: bundle, to: trashed)
+            throw CocoaError(.fileWriteUnknown)
+        })
+        #expect(result.completedSourceURLs.isEmpty)
+        #expect(result.failures.count == 1)
+        #expect(result.failures.first?.message.contains("Check Finder Trash") == true)
+        #expect(!FileManager.default.fileExists(atPath: image.path))
+        let recoverable = trashed.appendingPathComponent(image.lastPathComponent)
+        #expect(try Data(contentsOf: recoverable) == Data("photo".utf8))
+        guard case .available = try repository.lookup(for: recoverable) else {
+            Issue.record("Ambiguous handler outcome must retain complete recovery bundle")
+            return
+        }
+    }
+
+    @Test("Trash fails closed for unsafe saved companions and continues independent photos", arguments: 0..<10)
+    func trashUnsafeCompanionPartialSuccess(kind: Int) async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (image, memo, repository) = try trashTestAssociation(in: root)
+        let record = repository.recordURL(for: image)
+        switch kind {
+        case 0: try FileManager.default.removeItem(at: memo)
+        case 1: try Data(#"{"schemaVersion":99}"#.utf8).write(to: record)
+        case 2: try Data("corrupt".utf8).write(to: record)
+        case 3:
+            try FileManager.default.removeItem(at: memo)
+            try FileManager.default.createSymbolicLink(at: memo, withDestinationURL: image)
+        case 4:
+            let metadata = root.appendingPathComponent(".photo_metadata")
+            try FileManager.default.createDirectory(at: metadata, withIntermediateDirectories: true)
+            try Data(#"{"sourceFile":"../other.JPG"}"#.utf8).write(to: metadata.appendingPathComponent("photo.JPG.meta.json"))
+        case 5:
+            try FileManager.default.removeItem(at: record)
+            try FileManager.default.createSymbolicLink(at: record, withDestinationURL: root.appendingPathComponent("missing-record"))
+        case 6:
+            let metadata = root.appendingPathComponent(".photo_metadata")
+            try FileManager.default.createDirectory(at: metadata, withIntermediateDirectories: true)
+            try Data("malformed JSON".utf8).write(to: metadata.appendingPathComponent("photo.JPG.meta.json"))
+        case 7:
+            try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("photo.xmp"), withDestinationURL: image)
+        case 8:
+            let metadata = root.appendingPathComponent(".photo_metadata")
+            try FileManager.default.createDirectory(at: metadata, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: metadata.appendingPathComponent("photo.JPG.meta.json"), withDestinationURL: record)
+        default:
+            let linked = root.appendingPathComponent("Other Metadata")
+            try FileManager.default.createDirectory(at: linked, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: root.appendingPathComponent(".photo_metadata"), withDestinationURL: linked)
+        }
+        let recordAttributes = try FileManager.default.attributesOfItem(atPath: record.path)
+        let independent = root.appendingPathComponent("independent.JPG")
+        let unrelatedWAV = root.appendingPathComponent("independent.WAV")
+        try Data("independent".utf8).write(to: independent)
+        try Data("unproven".utf8).write(to: unrelatedWAV)
+        let result = await FileSystemService().trashItems([image, independent], using: ExecutorTestTrashHandler { url in
+            #expect(url == independent)
+            try FileManager.default.removeItem(at: url)
+        })
+        #expect(result.completedSourceURLs == [independent])
+        #expect(result.failures.count == 1)
+        #expect(FileManager.default.fileExists(atPath: image.path))
+        #expect(try FileManager.default.attributesOfItem(atPath: record.path)[.type] as? FileAttributeType
+                == recordAttributes[.type] as? FileAttributeType)
+        #expect(try Data(contentsOf: unrelatedWAV) == Data("unproven".utf8))
+    }
+
+    @Test("Cancellation while a companion bundle enters Trash reports its commit and stops the next photo")
+    func trashBundleCommitCancellation() async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (image, _, _) = try trashTestAssociation(in: root)
+        let second = root.appendingPathComponent("second.JPG")
+        try Data("second".utf8).write(to: second)
+        let result = await Task {
+            await FileSystemService().trashItems([image, second], using: ExecutorTestTrashHandler { bundle in
+                #expect(bundle.lastPathComponent.contains("Photo Agent Trash"))
+                try FileManager.default.removeItem(at: bundle)
+                withUnsafeCurrentTask { $0?.cancel() }
+            })
+        }.value
+        #expect(result.completedSourceURLs == [image])
+        #expect(result.failures.isEmpty)
+        #expect(result.cancellationStoppedRemainingItems)
+        #expect(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    private func trashTestRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func trashTestAssociation(in root: URL) throws -> (URL, URL, VoiceMemoCompanionRepository) {
+        let image = root.appendingPathComponent("photo.JPG")
+        let memo = root.appendingPathComponent("photo.WAV")
+        try Data("photo".utf8).write(to: image)
+        try Data("audio".utf8).write(to: memo)
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(.init(profileIdentifier: "synthetic-trash", imageURL: image, memoURL: memo))
+        return (image, memo, repository)
+    }
+
     @Test("Browser move preserves shared voice memos for both variants and editorial sidecars")
     func movePreservesSharedVoiceMemoBundles() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

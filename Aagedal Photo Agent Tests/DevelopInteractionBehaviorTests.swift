@@ -83,6 +83,81 @@ struct DevelopInteractionBehaviorTests {
         #expect(viewModel.errorMessage?.contains("Test trash failure") == true)
     }
 
+    @Test("Trash feedback preserves every recovery path and distinguishes committed cleanup")
+    func trashFeedbackPreservesCompleteCommitEvidence() throws {
+        let completed = URL(fileURLWithPath: "/tmp/finished.jpg")
+        let failures = (0..<8).map { index in
+            FileSystemService.ItemFailure(
+                sourceURL: URL(fileURLWithPath: "/tmp/folder-\(index)/photo.jpg"),
+                stage: .primary,
+                message: "Outcome uncertain. Inspect /tmp/recovery-\(index)/photo.jpg before retrying."
+            )
+        } + [.init(sourceURL: completed, stage: .cleanup, message: "Remove /tmp/retained-backup only after verification.")]
+        let feedback = try #require(TrashOperationFeedback(
+            completedURLs: [completed], failures: failures, cancelled: false
+        ))
+        #expect(feedback.summary == "1 photo(s) moved to Trash; 9 issue(s) need attention.")
+        for failure in failures {
+            #expect(feedback.details.contains(failure.sourceURL.path))
+            #expect(feedback.details.contains(failure.message))
+        }
+        #expect(feedback.details.contains("Photo moved to Trash; cleanup needs attention"))
+        #expect(feedback.details.contains("Move to Trash was not confirmed"))
+        #expect(!feedback.details.contains("was restored"))
+    }
+
+    @Test("Face Trash failures explain that face data was removed independently of photo success")
+    func faceTrashFeedbackExplainsPartialOutcome() throws {
+        let result = FaceGroupDeletionResult(
+            trashedPhotoURLs: [urls[0]],
+            failures: [.init(sourceURL: urls[1], stage: .primary, message: "Missing linked memo.")],
+            cancellationStoppedRemainingPhotos: false,
+            faceDataDisposition: .applied
+        )
+        let feedback = try #require(TrashOperationFeedback(result: result))
+        #expect(feedback.summary.contains("1 photo(s) moved"))
+        #expect(feedback.details.contains("face data was removed"))
+        #expect(feedback.details.contains("photos whose move to Trash failed"))
+        #expect(feedback.details.contains(urls[1].path))
+    }
+
+    @Test("Face Trash interruption exposes why the face model was preserved", arguments: [
+        FaceGroupDeletionResult.FaceDataDisposition.cancelledBeforeMutation,
+        .staleStatePreserved,
+        .groupNotFound
+    ])
+    func faceTrashFeedbackExplainsPreservedState(_ disposition: FaceGroupDeletionResult.FaceDataDisposition) throws {
+        let feedback = try #require(TrashOperationFeedback(result: .init(
+            trashedPhotoURLs: [], failures: [],
+            cancellationStoppedRemainingPhotos: disposition == .cancelledBeforeMutation,
+            faceDataDisposition: disposition
+        )))
+        switch disposition {
+        case .cancelledBeforeMutation:
+            #expect(feedback.details.contains("cancelled before changing the face data"))
+        case .staleStatePreserved:
+            #expect(feedback.details.contains("newer face data was preserved"))
+        case .groupNotFound:
+            #expect(feedback.details.contains("No photos or face data were changed"))
+        case .applied:
+            Issue.record("Unexpected test input")
+        }
+    }
+
+    @Test("Successful Trash stays quiet and cancellation keeps its committed count")
+    func trashFeedbackSuccessAndCancellation() throws {
+        #expect(TrashOperationFeedback(completedURLs: [urls[0]], failures: [], cancelled: false) == nil)
+        #expect(TrashOperationFeedback(result: .init(
+            trashedPhotoURLs: [urls[0]], failures: [],
+            cancellationStoppedRemainingPhotos: false, faceDataDisposition: .applied
+        )) == nil)
+        let cancelled = try #require(TrashOperationFeedback(
+            completedURLs: [urls[0]], failures: [], cancelled: true
+        ))
+        #expect(cancelled.summary.contains("1 photo(s) moved"))
+        #expect(cancelled.details.contains("stopped before all remaining photos"))
+    }
+
     @Test("Rating an image out of the active filter advances full screen to the next image")
     @MainActor
     func ratingOutOfFilterAdvancesFullScreen() async {

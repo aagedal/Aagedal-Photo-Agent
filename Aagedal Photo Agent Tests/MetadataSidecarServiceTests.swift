@@ -380,6 +380,104 @@ private nonisolated final class FolderChangeMonitorFactoryProbe: @unchecked Send
 @Suite("MetadataSidecarService")
 struct MetadataSidecarServiceTests {
 
+    @Test("Shared sidecar copy failure or destination race never publishes partial bytes", arguments: [false, true])
+    func stagedSharedSidecarCopy(racingDestination: Bool) throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("photo.xmp")
+        let destination = folder.appendingPathComponent("moved.xmp")
+        let original = Data("original source".utf8)
+        let other = Data("unrelated destination".utf8)
+        try original.write(to: source)
+        #expect(throws: (any Error).self) {
+            try PhotoSidecarOwnership.copyPreservingSource(from: source, to: destination) { _, staged in
+                try Data("partial copy".utf8).write(to: staged)
+                if racingDestination {
+                    try other.write(to: destination)
+                } else {
+                    throw CocoaError(.fileWriteOutOfSpace)
+                }
+            }
+        }
+        #expect(try Data(contentsOf: source) == original)
+        if racingDestination { #expect(try Data(contentsOf: destination) == other) }
+        else { #expect(!FileManager.default.fileExists(atPath: destination.path)) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasPrefix(".photo-agent-sidecar-") }.isEmpty)
+    }
+
+    @Test("Move and Reject preserve a sibling's shared XMP and declared legacy metadata", arguments: [false, true], [false, true])
+    func movePreservesSiblingCarriers(reject: Bool, hasCurrent: Bool) async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let raw = folder.appendingPathComponent("photo.ARW")
+        let jpeg = folder.appendingPathComponent("photo.JPG")
+        try Data("raw".utf8).write(to: raw)
+        try Data("jpeg".utf8).write(to: jpeg)
+        let service = MetadataSidecarService()
+        let xmp = XMPSidecarService()
+        try xmp.saveSidecar(metadata: IPTCMetadata(description: "Shared caption"), for: raw)
+        let xmpURL = xmp.sidecarURL(for: raw)
+        let originalXMP = try Data(contentsOf: xmpURL)
+        let metadataFolder = folder.appendingPathComponent(".photo_metadata")
+        try FileManager.default.createDirectory(at: metadataFolder, withIntermediateDirectories: true)
+        let legacy = metadataFolder.appendingPathComponent("photo.meta.json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let legacyData = try encoder.encode(makeSidecar(filename: "photo.JPG", metadata: IPTCMetadata(description: "JPEG pending"), pendingChanges: true))
+        try legacyData.write(to: legacy)
+        if hasCurrent {
+            try service.saveSidecar(makeSidecar(filename: "photo.ARW", metadata: IPTCMetadata(description: "RAW pending")), for: raw, in: folder)
+            // saveSidecar migration cleanup is a separate boundary; recreate the sibling's
+            // legacy record to test the exact pre-existing two-carrier move state.
+            try legacyData.write(to: legacy)
+        }
+        let destination: URL
+        if reject {
+            let result = await FileSystemService().moveRejectedItems([raw], in: folder)
+            #expect(result.failedFiles.isEmpty)
+            destination = try #require(result.movedFiles.first)
+        } else {
+            let target = folder.appendingPathComponent("Moved")
+            let result = try await FileSystemService().moveImageItems([raw], into: target, createDestinationIfNeeded: true, xmpSidecarService: xmp, metadataSidecarService: service)
+            #expect(result.failures.isEmpty)
+            #expect(result.movedSourceURLs == [raw])
+            destination = target.appendingPathComponent(raw.lastPathComponent)
+        }
+        #expect(try Data(contentsOf: jpeg) == Data("jpeg".utf8))
+        #expect(try Data(contentsOf: xmpURL) == originalXMP)
+        #expect(try Data(contentsOf: xmp.sidecarURL(for: destination)) == originalXMP)
+        #expect(try Data(contentsOf: legacy) == legacyData)
+        #expect(service.loadSidecar(for: jpeg, in: folder)?.metadata.description == "JPEG pending")
+        let relocated = service.loadSidecar(for: destination, in: destination.deletingLastPathComponent())
+        #expect(relocated?.metadata.description == (hasCurrent ? "RAW pending" : nil))
+    }
+
+    @Test("Moving a legacy-only record retains exact source bytes for a surviving stem sibling", arguments: [false, true])
+    func movingOwnedLegacyRetainsSharedSource(relocate: Bool) throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.ARW")
+        try Data("jpeg".utf8).write(to: folder.appendingPathComponent("photo.JPG"))
+        let directory = folder.appendingPathComponent(".photo_metadata")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let legacy = directory.appendingPathComponent("photo.meta.json")
+        let bytes = Data("{\"schemaVersion\":999,\"sourceFile\":\"photo.ARW\",\"future\":{\"keep\":true}}".utf8)
+        try bytes.write(to: legacy)
+        let target = folder.appendingPathComponent("Moved")
+        let destination = target.appendingPathComponent(relocate ? "renamed.ARW" : "photo.ARW")
+        let service = MetadataSidecarService()
+        if relocate {
+            try service.relocateSidecar(for: image, to: destination, from: folder, to: target)
+        } else {
+            try service.moveSidecar(for: image, from: folder, to: target)
+        }
+        #expect(try Data(contentsOf: legacy) == bytes)
+        let moved = target.appendingPathComponent(".photo_metadata/\(destination.lastPathComponent).meta.json")
+        let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: moved)) as? [String: Any])
+        #expect(object["sourceFile"] as? String == destination.lastPathComponent)
+        #expect((object["future"] as? [String: Bool])?["keep"] == true)
+    }
+
     // MARK: - Helpers
 
     private func makeTempFolder() throws -> URL {
