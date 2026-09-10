@@ -92,6 +92,8 @@
 		C0DEA1000000000000000002 /* CaptionAutocompleteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */; };
 		C4A710000000000000000002 /* CaptionSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A710000000000000000001 /* CaptionSessionTests.swift */; };
 		C4A720000000000000000002 /* CaptionCopyPreviousServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */; };
+		C7F170000000000000000002 /* MetadataFieldMutationWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */; };
+		C7F170000000000000000004 /* FieldMutationCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F170000000000000000003 /* FieldMutationCallerTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		D311F1000000000000000002 /* DeliveryPlanningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */; };
 		D311F2000000000000000002 /* VerifiedDeliveryUploadCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */; };
@@ -242,6 +244,8 @@
 		C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionAutocompleteServiceTests.swift; sourceTree = "<group>"; };
 		C4A710000000000000000001 /* CaptionSessionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionSessionTests.swift; sourceTree = "<group>"; };
 		C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionCopyPreviousServiceTests.swift; sourceTree = "<group>"; };
+		C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataFieldMutationWriteServiceTests.swift; sourceTree = "<group>"; };
+		C7F170000000000000000003 /* FieldMutationCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FieldMutationCallerTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 		D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryPlanningServiceTests.swift; sourceTree = "<group>"; };
 		D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VerifiedDeliveryUploadCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -432,6 +436,8 @@
 				E7EC01020000000000000001 /* RenameOriginalFilenameTransactionTests.swift */,
 				A95300000000000000000001 /* MetadataHistoryTests.swift */,
 				C4A710000000000000000001 /* CaptionSessionTests.swift */,
+				C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */,
+				C7F170000000000000000003 /* FieldMutationCallerTests.swift */,
 				A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */,
 				A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */,
 				A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */,
@@ -744,6 +750,8 @@
 				E7EC01020000000000000002 /* RenameOriginalFilenameTransactionTests.swift in Sources */,
 				A95300000000000000000002 /* MetadataHistoryTests.swift in Sources */,
 				C4A710000000000000000002 /* CaptionSessionTests.swift in Sources */,
+				C7F170000000000000000002 /* MetadataFieldMutationWriteServiceTests.swift in Sources */,
+				C7F170000000000000000004 /* FieldMutationCallerTests.swift in Sources */,
 				A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */,
 				A770F2000000000000000002 /* CaptionWorkspaceSpeedToolsTests.swift in Sources */,
 				A770F3000000000000000002 /* AccessibilityKeyboardAuditTests.swift in Sources */,

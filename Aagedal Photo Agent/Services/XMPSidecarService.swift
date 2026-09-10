@@ -374,6 +374,54 @@ struct XMPSidecarService: Sendable {
         }
     }
 
+    nonisolated func fieldMutationData(for imageURL: URL) throws -> Data? {
+        let url = sidecarURL(for: imageURL)
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else { throw CocoaError(.fileReadCorruptFile) }
+            return try Data(contentsOf: url)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) { return nil }
+    }
+
+    /// Caller owns the photo lock. Mutate a single physical field; never mirror a pending draft.
+    @MetadataSidecarFilesystemActor
+    func mutateFieldInHeldTransaction(_ mutation: MetadataPhysicalFieldMutation, for imageURL: URL,
+        expectedSnapshot: XMPSidecarWriteSnapshot, embeddedBaseline: IPTCMetadata,
+        onInstalled: @escaping @Sendable (XMPSidecarWriteSnapshot) -> Void
+    ) async throws -> Bool {
+        guard try fieldMutationData(for: imageURL) == expectedSnapshot.data else { throw MetadataFieldMutationConflict() }
+        return try await updateXMPTransaction(for: imageURL, expectedSnapshot: expectedSnapshot,
+            onInstalled: onInstalled) { xmp in
+            if case .addPersons = mutation,
+               !self.parseMetadata(from: xmp, imageAspect: { nil }).hasDescriptiveContent {
+                // PersonInImage makes this an authoritative descriptive XMP record. Seed from
+                // actual embedded facts, never unrelated pending JSON, before adding that field.
+                let orientation = xmp.tiffOrientation
+                let exifOrientation = xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
+                let current = self.parseMetadata(from: xmp, imageAspect: { nil })
+                // Existing rating, label, GPS and technical overlays remain authoritative when
+                // adding the first descriptive field to an otherwise technical-only sidecar.
+                let seed = embeddedBaseline.merged(preferring: current)
+                XMPDataBuilder.applyDescriptive(seed, into: &xmp)
+                if expectedSnapshot.data != nil {
+                    for (namespace, value) in [(XMPNamespace.tiff, orientation), (XMPNamespace.exif, exifOrientation)] {
+                        if let value { xmp.setValue(.simple(value), namespace: namespace, property: "Orientation") }
+                        else { xmp.removeValue(namespace: namespace, property: "Orientation") }
+                    }
+                }
+            }
+            switch mutation {
+            case .rating(let value): xmp.rating = Double(MetadataPhysicalFieldMutation.normalizedRating(value) ?? 0)
+            case .label(let value): xmp.label = MetadataPhysicalFieldMutation.normalizedLabel(value)
+            case .addPersons(let names):
+                xmp.setValue(.array(MetadataPhysicalFieldMutation.add(names, to: xmp.personInImage ?? [])),
+                    namespace: XMPNamespace.iptcExt, property: "PersonInImage")
+            }
+            xmp.creatorTool = SwiftExifWriteEngine.creatorTool
+        }
+    }
+
     /// Reads the batch baseline inside the per-photo transaction and replays the captured
     /// mutation after an external revision change. A queued edit cannot replace newer fields
     /// or Develop settings with the UI's stale batch record.

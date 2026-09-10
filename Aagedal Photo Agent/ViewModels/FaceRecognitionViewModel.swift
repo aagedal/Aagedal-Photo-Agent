@@ -597,6 +597,9 @@ final class FaceRecognitionViewModel {
     /// folder was displayed when their background scan completed.
     @ObservationIgnored private var deferredPostprocessingFolders: Set<URL> = []
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
+    @ObservationIgnored private let injectedFieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)?
+    @ObservationIgnored private let fieldMutationModeResolver: @MainActor (Bool, Bool) -> MetadataWriteMode
+    private(set) var fieldMutationResults: [MetadataFieldMutationWriteResult] = []
     @ObservationIgnored private var lensPrewarmTask: Task<Void, Never>?
     @ObservationIgnored private var faceDataLoadTask: Task<Void, Never>?
     @ObservationIgnored private var faceDataPersistenceTask: Task<Void, Never>?
@@ -626,10 +629,16 @@ final class FaceRecognitionViewModel {
         fileSystemService: FileSystemService = FileSystemService(),
         imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler(),
         folderLoadService: FaceDataFolderLoadService = .shared,
-        fileSignatureService: FaceScanFileSignatureService = .shared
+        fileSignatureService: FaceScanFileSignatureService = .shared,
+        fieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)? = nil,
+        fieldMutationModeResolver: @escaping @MainActor (Bool, Bool) -> MetadataWriteMode = {
+            MetadataWriteMode.current(forC2PA: $0, isRaw: $1)
+        }
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
+        self.injectedFieldMutationWriter = fieldMutationWriter
+        self.fieldMutationModeResolver = fieldMutationModeResolver
         self.activityHistory = activityHistory
         self.faceModelAvailabilityOverride = faceModelAvailability
         self.fileSystemService = fileSystemService
@@ -2487,7 +2496,7 @@ final class FaceRecognitionViewModel {
 
     func applyNameToMetadata(groupID: UUID) {
         guard let data = faceData,
-              renameQuiescenceFolderURL != data.folderURL.standardizedFileURL,
+              !fieldMutationIsPaused(in: data.folderURL),
               let group = groupLookup[groupID], !group.isExcludedFromPersonShown,
               let name = group.name, !name.isEmpty else { return }
 
@@ -2501,60 +2510,8 @@ final class FaceRecognitionViewModel {
 
         guard !uniqueURLs.isEmpty else { return }
 
-        metadataWriteTask?.cancel()
-        metadataWriteTask = Task {
-            let c2paLookup = await loadC2PALookup(urls: uniqueURLs)
-            let folderURL = data.folderURL
-
-            for url in uniqueURLs {
-                let hasC2PA = c2paLookup[url] ?? false
-                let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: SupportedImageFormats.isRaw(url: url))
-
-                switch mode {
-                case .historyOnly:
-                    await applyNamesToSidecar(
-                        url: url,
-                        folderURL: folderURL,
-                        names: names,
-                        writeXmpSidecar: false,
-                        pendingChanges: true
-                    )
-                case .writeToFileAndXMPSidecar:
-                    // Dual write: .xmp sidecar (+ history) and the embedded file.
-                    await applyNamesToSidecar(
-                        url: url,
-                        folderURL: folderURL,
-                        names: names,
-                        writeXmpSidecar: true,
-                        pendingChanges: false
-                    )
-                    await applyNamesToFile(url: url, names: names)
-                case .writeToXMPSidecar:
-                    await applyNamesToSidecar(
-                        url: url,
-                        folderURL: folderURL,
-                        names: names,
-                        writeXmpSidecar: true,
-                        pendingChanges: false
-                    )
-                case .writeToFile:
-                    // PM-style embed: the file is the record, but an .xmp already on
-                    // disk must mirror it or its stale values shadow the file.
-                    await applyNamesToSidecar(
-                        url: url,
-                        folderURL: folderURL,
-                        names: names,
-                        writeXmpSidecar: xmpSidecarService.sidecarExists(for: url),
-                        pendingChanges: false
-                    )
-                    await applyNamesToFile(url: url, names: names)
-                }
-            }
-
-            await MainActor.run {
-                NotificationCenter.default.post(name: .faceMetadataDidChange, object: nil)
-            }
-        }
+        enqueuePersonMutations(namesByURL: Dictionary(uniqueKeysWithValues: uniqueURLs.map { ($0, names) }),
+            folderURL: data.folderURL, capturedC2PA: nil, onComplete: nil)
     }
 
     func applyAllNamesToMetadata(
@@ -2566,7 +2523,7 @@ final class FaceRecognitionViewModel {
             onComplete?()
             return
         }
-        guard renameQuiescenceFolderURL != data.folderURL.standardizedFileURL else {
+        guard !fieldMutationIsPaused(in: data.folderURL) else {
             errorMessage = "Face metadata writing is paused while files in this folder are being renamed."
             onComplete?()
             return
@@ -2629,184 +2586,87 @@ final class FaceRecognitionViewModel {
             return
         }
 
+        let capturedFolder = folderURL ?? data.folderURL
+        guard Self.fieldMutationFolderIdentity(capturedFolder) == Self.fieldMutationFolderIdentity(data.folderURL) else {
+            errorMessage = "The face folder changed; person names were not written."
+            onComplete?()
+            return
+        }
         let c2paLookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0.hasC2PA) })
+        enqueuePersonMutations(namesByURL: namesByURL, folderURL: capturedFolder,
+            capturedC2PA: c2paLookup, onComplete: onComplete)
+    }
 
-        metadataWriteTask?.cancel()
+    /// Directory identity must not depend on whether a decoded URL carries a trailing slash.
+    /// Keep this normalization scoped to field-write admission/completion and its rename barrier.
+    nonisolated private static func fieldMutationFolderIdentity(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private func fieldMutationIsPaused(in folderURL: URL) -> Bool {
+        guard let reservation = renameQuiescenceFolderURL else { return false }
+        return Self.fieldMutationFolderIdentity(reservation) == Self.fieldMutationFolderIdentity(folderURL)
+    }
+
+    private func enqueuePersonMutations(namesByURL: [URL: [String]], folderURL: URL,
+        capturedC2PA: [URL: Bool]?, onComplete: (() -> Void)?) {
+        // Capture settings before any asynchronous reads or preceding accepted operations.
+        let ordinaryMode = fieldMutationModeResolver(false, false)
+        let c2paMode = fieldMutationModeResolver(true, false)
+        let rawMode = fieldMutationModeResolver(false, true)
+        let revision = faceDataRevision
+        let urls = namesByURL.keys.sorted { $0.path < $1.path }
+        let previous = metadataWriteTask
+        let writer = injectedFieldMutationWriter
+        let engine = writeEngine
+        let reader = readService
         metadataWriteTask = Task {
-            for (url, names) in namesByURL {
-                let hasC2PA = c2paLookup[url] ?? false
-                let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: SupportedImageFormats.isRaw(url: url))
-
-                switch mode {
-                case .historyOnly:
-                    await applyNamesToSidecar(
-                        url: url,
-                        folderURL: folderURL,
-                        names: names,
-                        writeXmpSidecar: false,
-                        pendingChanges: true
-                    )
-                case .writeToFileAndXMPSidecar:
-                    await applyNamesToSidecar(
-                        url: url,
-                        folderURL: folderURL,
-                        names: names,
-                        writeXmpSidecar: true,
-                        pendingChanges: false
-                    )
-                    await applyNamesToFile(url: url, names: names)
-                case .writeToXMPSidecar:
-                    await applyNamesToSidecar(
-                        url: url,
-                        folderURL: folderURL,
-                        names: names,
-                        writeXmpSidecar: true,
-                        pendingChanges: false
-                    )
-                case .writeToFile:
-                    // PM-style embed: the file is the record, but an .xmp already on
-                    // disk must mirror it or its stale values shadow the file.
-                    await applyNamesToSidecar(
-                        url: url,
-                        folderURL: folderURL,
-                        names: names,
-                        writeXmpSidecar: xmpSidecarService.sidecarExists(for: url),
-                        pendingChanges: false
-                    )
-                    await applyNamesToFile(url: url, names: names)
+            // The completion closure releases FaceBar's busy state, including failures. Success
+            // is represented by immutable results and change notifications, never this callback.
+            defer { onComplete?() }
+            await previous?.value
+            let c2pa = if let capturedC2PA { capturedC2PA } else { await loadC2PALookup(urls: urls) }
+            let service = MetadataFieldMutationWriteService(writeEngine: engine, readEmbedded: { url in
+                guard let value = try await reader.readBatchFullMetadata(urls: [url])[url] else {
+                    throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path])
                 }
+                return value
+            })
+            var results: [MetadataFieldMutationWriteResult] = []
+            for url in urls {
+                let mode = SupportedImageFormats.isRaw(url: url) ? rawMode : ((c2pa[url] ?? false) ? c2paMode : ordinaryMode)
+                let request = MetadataFieldMutationWriteRequest(imageURL: url, folderURL: folderURL,
+                    requestedMode: mode, mutation: .addPersons(namesByURL[url] ?? []))
+                guard c2pa[url] != nil else {
+                    results.append(.failed(request: request,
+                        message: "Could not read this photo's metadata and content-credential status. Person names were not written."))
+                    continue
+                }
+                let result = if let writer { await writer(request) } else { await service.write(request) }
+                results.append(result)
             }
-
-            await MainActor.run {
-                NotificationCenter.default.post(name: .faceMetadataDidChange, object: nil)
-                onComplete?()
+            guard faceData.map({ Self.fieldMutationFolderIdentity($0.folderURL) }) == Self.fieldMutationFolderIdentity(folderURL),
+                  faceDataRevision == revision else { return }
+            fieldMutationResults = results
+            if let failure = MetadataFieldMutationFeedback.failureSummary(results) { errorMessage = failure }
+            let changed = results.filter {
+                $0.installedSidecar != nil || $0.didWriteEmbedded || $0.didWriteXMP
+                    || $0.embeddedWriteMayHaveOccurred || $0.committedButUnverifiedSidecarURL != nil
+            }.map(\.imageURL)
+            if !changed.isEmpty {
+                NotificationCenter.default.post(name: .faceMetadataDidChange, object: nil,
+                    userInfo: ["imageURLs": changed])
             }
         }
     }
+
+    func waitForPendingFieldMutationWrites() async { await metadataWriteTask?.value }
 
     private func splitPersonNames(_ rawName: String) -> [String] {
         rawName
             .components(separatedBy: CharacterSet(charactersIn: ",;"))
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-    }
-
-    private func mergePersons(existing: [String], adding: [String]) -> [String] {
-        var merged = existing
-        var seen = Set(existing.map { $0.lowercased() })
-        for name in adding {
-            if seen.insert(name.lowercased()).inserted {
-                merged.append(name)
-            }
-        }
-        return merged
-    }
-
-    @discardableResult
-    private func applyNamesToFile(url: URL, names: [String]) async -> Bool {
-        do {
-            let existing = try await readService.readFullMetadata(url: url)
-            let merged = mergePersons(existing: existing.personShown, adding: names)
-            guard merged != existing.personShown else { return true }
-            let value = merged.joined(separator: ", ")
-            try await writeEngine.writeFields([.personInImage: value], to: [url])
-            return true
-        } catch {
-            // Continue with next image
-            return false
-        }
-    }
-
-    private func applyNamesToSidecar(
-        url: URL,
-        folderURL: URL?,
-        names: [String],
-        writeXmpSidecar: Bool,
-        pendingChanges: Bool
-    ) async {
-        guard let folderURL else { return }
-
-        var baseMetadata: IPTCMetadata
-        var history: [MetadataHistoryEntry] = []
-        var snapshot: IPTCMetadata?
-        let hadSidecar: Bool
-
-        if let existingSidecar = sidecarService.loadSidecar(for: url, in: folderURL) {
-            baseMetadata = existingSidecar.metadata
-            history = existingSidecar.history
-            history.trimToHistoryLimit()
-            snapshot = existingSidecar.imageMetadataSnapshot
-            hadSidecar = true
-        } else {
-            baseMetadata = IPTCMetadata()
-            hadSidecar = false
-        }
-
-        if snapshot == nil {
-            snapshot = await loadBaseMetadata(url: url)
-        }
-
-        if !hadSidecar {
-            // Never seed a new record from nothing: a partial sidecar holding only
-            // personShown would become the authoritative record and mask the file's
-            // other descriptive fields on read and export.
-            guard let snapshot else {
-                errorMessage = "Could not read metadata for \(url.lastPathComponent); person names were not written to its sidecar."
-                return
-            }
-            baseMetadata = snapshot
-        }
-
-        let merged = mergePersons(existing: baseMetadata.personShown, adding: names)
-        guard merged != baseMetadata.personShown else { return }
-
-        var updatedMetadata = baseMetadata
-        updatedMetadata.personShown = merged
-        let oldValue = MetadataFieldID.personShown.historyValue(in: baseMetadata)
-        let newValue = MetadataFieldID.personShown.historyValue(in: updatedMetadata)
-
-        if oldValue != newValue {
-            history.append(MetadataHistoryEntry(
-                timestamp: Date(),
-                fieldID: .personShown,
-                oldValue: oldValue,
-                newValue: newValue
-            ))
-            history.trimToHistoryLimit()
-        }
-
-        let sidecar = MetadataSidecar(
-            sourceFile: url.lastPathComponent,
-            lastModified: Date(),
-            pendingChanges: pendingChanges,
-            metadata: updatedMetadata,
-            imageMetadataSnapshot: pendingChanges ? snapshot : updatedMetadata,
-            history: history
-        )
-
-        let installed: MetadataSidecar
-        do {
-            installed = try await sidecarService.saveSidecarMergingHistorySerialized(
-                sidecar,
-                for: url,
-                in: folderURL
-            )
-        } catch {
-            errorMessage = "Failed to save metadata sidecar: \(error.localizedDescription)"
-            return
-        }
-
-        if writeXmpSidecar {
-            do {
-                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
-                    metadata: installed.metadata,
-                    for: url,
-                    mergeWithExisting: true
-                )
-            } catch {
-                errorMessage = "Failed to save XMP sidecar: \(error.localizedDescription)"
-            }
-        }
     }
 
     private func loadC2PALookup(urls: [URL]) async -> [URL: Bool] {
@@ -2823,23 +2683,6 @@ final class FaceRecognitionViewModel {
             return lookup
         } catch {
             return [:]
-        }
-    }
-
-    private func loadBaseMetadata(url: URL) async -> IPTCMetadata? {
-        do {
-            var metadata = try await readService.readFullMetadata(url: url)
-            if let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
-                // Record semantics, matching the panel's reference read: a descriptive
-                // sidecar IS the record (clears stick — don't reseed cleared fields
-                // from embedded); develop-only sidecars overlay additively.
-                metadata = xmpMetadata.hasDescriptiveContent
-                    ? metadata.replacingDescriptiveFields(from: xmpMetadata)
-                    : metadata.merged(preferring: xmpMetadata)
-            }
-            return metadata
-        } catch {
-            return nil
         }
     }
 

@@ -24,7 +24,7 @@ nonisolated enum RenderedMetadataCopySafetyError: LocalizedError {
 
 /// Native, in-process metadata write engine. Reads and re-emits the image file
 /// via SwiftExif. There is no external process and no fallback path.
-nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
+nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataFieldMutationWriting, @unchecked Sendable {
 
     init() {}
 
@@ -59,6 +59,62 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             try Task.checkCancellation()
             try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
                 try self.writeFieldsToFile(fields, structuredData: structuredData, url: url)
+            }
+        }
+    }
+
+    /// Atomic field mutation with a live physical baseline and verified receipt. The prepared
+    /// JSON/XMP precondition runs inside this lock before any source write, preventing a delayed
+    /// older request from overwriting the physical result of a newer admitted intent.
+    func writeFieldMutation(_ mutation: MetadataPhysicalFieldMutation, to url: URL,
+        validatePreparedIntent: @escaping @Sendable () async throws -> Void
+    ) async throws -> MetadataFieldMutationPhysicalReceipt {
+        try Task.checkCancellation()
+        guard !SupportedImageFormats.isRaw(url: url) else {
+            throw MetadataFieldMutationPhysicalError(message: "RAW metadata must be written to XMP.", mayHaveWritten: false)
+        }
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+            var attemptedWrite = false
+            do {
+                try await validatePreparedIntent()
+                var metadata = try readMetadata(from: url)
+                func value(_ record: ImageMetadata) -> MetadataPhysicalFieldValue {
+                    switch mutation {
+                    case .rating: return .rating(MetadataPhysicalFieldMutation.normalizedRating(record.xmp?.rating.map(Int.init)))
+                    case .label: return .label(MetadataPhysicalFieldMutation.normalizedLabel(record.xmp?.label))
+                    case .addPersons: return .persons(record.xmp?.personInImage ?? [])
+                    }
+                }
+                let before = value(metadata)
+                switch mutation {
+                case .rating(let rating):
+                    if metadata.xmp == nil { metadata.xmp = XMPData() }
+                    metadata.xmp?.rating = Double(MetadataPhysicalFieldMutation.normalizedRating(rating) ?? 0)
+                case .label(let label):
+                    if metadata.xmp == nil { metadata.xmp = XMPData() }
+                    metadata.xmp?.label = MetadataPhysicalFieldMutation.normalizedLabel(label)
+                case .addPersons(let names):
+                    if metadata.xmp == nil { metadata.xmp = XMPData() }
+                    let existingNames = metadata.xmp?.personInImage ?? []
+                    let updatedNames = MetadataPhysicalFieldMutation.add(names, to: existingNames)
+                    metadata.xmp?.setValue(.array(updatedNames),
+                        namespace: XMPNamespace.iptcExt, property: "PersonInImage")
+                }
+                let intended = value(metadata)
+                let changed = before != intended
+                if changed {
+                    attemptedWrite = true
+                    try metadata.write(to: url)
+                }
+                let revision = try await SourceImageRevision.capture(at: url)
+                let actual = value(try readMetadata(from: url))
+                guard actual == intended else { throw CocoaError(.fileReadCorruptFile) }
+                return MetadataFieldMutationPhysicalReceipt(value: actual, sourceRevision: revision, didWrite: changed)
+            } catch let error as MetadataFieldMutationConflict {
+                throw error
+            } catch {
+                throw MetadataFieldMutationPhysicalError(message: error.localizedDescription,
+                    mayHaveWritten: attemptedWrite, wasCancelled: error is CancellationError)
             }
         }
     }

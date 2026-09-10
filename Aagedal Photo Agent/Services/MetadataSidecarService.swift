@@ -1171,6 +1171,14 @@ struct MetadataSidecarService: Sendable {
         )) ?? encodedData
     }
 
+    /// Internal field-write evidence; callers already hold the photo transaction lock.
+    nonisolated func fieldMutationTokens(for imageURL: URL, in folderURL: URL) throws -> [Data?] {
+        try contentTokens(for: imageURL, in: folderURL)
+    }
+    nonisolated func fieldMutationRecordsEqual(_ lhs: MetadataSidecar, _ rhs: MetadataSidecar) -> Bool {
+        Self.samePersistedRecord(lhs, rhs)
+    }
+
     private nonisolated func contentTokens(for imageURL: URL, in folderURL: URL) throws -> [Data?] {
         let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
         return sidecarCandidateURLs(for: imageURL, in: folderURL).map { url in

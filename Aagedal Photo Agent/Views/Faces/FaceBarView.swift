@@ -189,12 +189,37 @@ struct FaceBarView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let message = viewModel.errorMessage {
+                HStack(spacing: 4) {
+                    Button {
+                        OperationIssueDetailsPresenter.present(title: "Face Operation Needs Attention", message: message)
+                    } label: {
+                        Label("Details", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    .help("Review the complete face-operation error and any partial writes.")
+                    .accessibilityLabel("Face operation needs attention: show complete details")
+                    .accessibilityIdentifier("face.operationDetails")
+                    Button {
+                        if viewModel.errorMessage == message { viewModel.errorMessage = nil }
+                    } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss face operation notice")
+                }
+            }
+
             Spacer()
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .frame(height: barHeight)
         .background(.bar)
+        // This bar is shared by Browser and expanded Face management. The window-owned details
+        // sheet survives a group popover closing and exposes every per-photo outcome for copying.
+        .onChange(of: viewModel.errorMessage) { _, message in
+            guard let message, !message.isEmpty else { return }
+            OperationIssueDetailsPresenter.present(title: "Face Operation Needs Attention", message: message)
+        }
         // Naming a group can unlock fresh refinements; offer Refine again.
         .onChange(of: namedGroups.count) { _, _ in didRefine = false }
         // A new scan reshuffles groups — start fresh.

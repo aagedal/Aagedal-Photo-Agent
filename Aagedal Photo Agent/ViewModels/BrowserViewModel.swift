@@ -227,6 +227,13 @@ final class BrowserViewModel {
     @ObservationIgnored private var folderOrientationLoadRequestID: UUID?
     @ObservationIgnored private var refreshOrientationLoadRequestID: UUID?
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
+    @ObservationIgnored private var fieldMutationTask: Task<Void, Never>?
+    @ObservationIgnored private var fieldMutationDisplayID = UUID()
+    @ObservationIgnored private var fieldMutationRequestIDs: [URL: [String: UUID]] = [:]
+    @ObservationIgnored private var fieldMutationFallbacks: [URL: [String: (displayID: UUID, image: ImageFile, unresolved: [MetadataFieldMutationWriteResult])]] = [:]
+    @ObservationIgnored private let injectedFieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)?
+    @ObservationIgnored private let fieldMutationModeResolver: @MainActor (Bool, Bool) -> MetadataWriteMode
+    private(set) var fieldMutationResults: [MetadataFieldMutationWriteResult] = []
     @ObservationIgnored private var batchReadTask: Task<Void, Never>?
     @ObservationIgnored private var removeIPTCPreflightTask: Task<Void, Never>?
     @ObservationIgnored private var removeIPTCPreflightRequestID: UUID?
@@ -275,9 +282,15 @@ final class BrowserViewModel {
          voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService = .shared,
          favoritesDefaults: UserDefaults = .standard,
          favoriteBookmarkService: FavoriteFolderBookmarkService = .shared,
+         fieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)? = nil,
+         fieldMutationModeResolver: @escaping @MainActor (Bool, Bool) -> MetadataWriteMode = {
+             MetadataWriteMode.current(forC2PA: $0, isRaw: $1)
+         },
          refreshSidecarLoader: @escaping @Sendable (URL) async -> [URL: MetadataSidecar] = {
              await MetadataSidecarService().loadAllSidecars(in: $0)
          }) {
+        self.injectedFieldMutationWriter = fieldMutationWriter
+        self.fieldMutationModeResolver = fieldMutationModeResolver
         self.refreshSidecarLoader = refreshSidecarLoader
         self.thumbnailService = thumbnailService
         self.fullScreenImageCache = fullScreenImageCache
@@ -714,6 +727,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var loadFolderTask: Task<Void, Never>?
 
     func loadFolder(url: URL, addToOpenFolders: Bool = true) {
+        fieldMutationDisplayID = UUID()
         AppStartupSignposts.shared.firstFolderLoadStarted()
 
         // Cancel any in-flight folder load to prevent stale results overwriting
@@ -1855,46 +1869,110 @@ final class BrowserViewModel {
     // MARK: - Rating & Labels
 
     func setRating(_ rating: StarRating) {
-        applyMetadataField(
+        applyBrowserFieldMutation(.rating(rating == .none ? nil : rating.rawValue), field: "rating",
             updateImage: { $0.starRating = rating },
-            affectsSortKey: sortOrder == .rating,
-            affectsFilterKey: minimumStarRating != .none,
-            applySidecar: { url, writeXmp, pending in
-                await self.applyFieldToSidecar(
-                    url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
-                    fieldName: "Rating",
-                    getOld: { $0.rating.map(String.init) },
-                    applyNew: { metadata in
-                        metadata.rating = rating == .none ? nil : rating.rawValue
-                        return metadata.rating.map(String.init)
-                    }
-                )
-            },
-            writeToFile: { try await self.writeEngine.writeRating(rating, to: $0) },
-            fieldDescription: "rating"
-        )
+            affectsSortKey: sortOrder == .rating, affectsFilterKey: minimumStarRating != .none)
     }
 
     func setLabel(_ label: ColorLabel) {
-        applyMetadataField(
+        applyBrowserFieldMutation(.label(label.xmpLabelValue), field: "label",
             updateImage: { $0.colorLabel = label },
-            affectsSortKey: sortOrder == .label,
-            affectsFilterKey: !selectedColorLabels.isEmpty,
-            applySidecar: { url, writeXmp, pending in
-                await self.applyFieldToSidecar(
-                    url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
-                    fieldName: "Label",
-                    getOld: { $0.label },
-                    applyNew: { metadata in
-                        metadata.label = label.xmpLabelValue
-                        return metadata.label
-                    }
-                )
-            },
-            writeToFile: { try await self.writeEngine.writeLabel(label, to: $0) },
-            fieldDescription: "label"
-        )
+            affectsSortKey: sortOrder == .label, affectsFilterKey: !selectedColorLabels.isEmpty)
     }
+
+    /// Accepted rating/label intents run in order; a later action never cancels an earlier one.
+    /// The old rotation path remains separate until it has a technical mutation contract.
+    private func applyBrowserFieldMutation(_ mutation: MetadataPhysicalFieldMutation, field: String,
+        updateImage: (inout ImageFile) -> Void, affectsSortKey: Bool, affectsFilterKey: Bool) {
+        let capturedImages = selectedImages
+        guard !capturedImages.isEmpty else { return }
+        let folder = currentFolderURL
+        let displayID = fieldMutationDisplayID
+        let requests = capturedImages.map { image in
+            MetadataFieldMutationWriteRequest(imageURL: image.url,
+                folderURL: folder ?? image.url.deletingLastPathComponent(),
+                requestedMode: fieldMutationModeResolver(image.hasC2PA, SupportedImageFormats.isRaw(url: image.url)),
+                mutation: mutation)
+        }
+        updateMetadataFieldPresentation(updateImage: updateImage, affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
+        guard let folder else {
+            errorMessage = "The current folder is unavailable; the \(field) could not be saved."
+            return
+        }
+        for (request, original) in zip(requests, capturedImages) {
+            if fieldMutationRequestIDs[request.imageURL]?[field] == nil
+                || fieldMutationFallbacks[request.imageURL]?[field]?.displayID != displayID {
+                fieldMutationFallbacks[request.imageURL, default: [:]][field] = (displayID, original, [])
+            }
+            fieldMutationRequestIDs[request.imageURL, default: [:]][field] = request.id
+        }
+        let previous = fieldMutationTask
+        let writer = injectedFieldMutationWriter
+        let engine = writeEngine
+        let reader = metadataReadService
+        fieldMutationTask = Task {
+            await previous?.value
+            let service = MetadataFieldMutationWriteService(writeEngine: engine, readEmbedded: { url in
+                guard let value = try await reader.readBatchFullMetadata(urls: [url])[url] else {
+                    throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path])
+                }
+                return value
+            })
+            var results: [MetadataFieldMutationWriteResult] = []
+            var currentResults: [MetadataFieldMutationWriteResult] = []
+            for (request, original) in zip(requests, capturedImages) {
+                let result = if let writer { await writer(request) } else { await service.write(request) }
+                results.append(result)
+                let ownsField = fieldMutationRequestIDs[request.imageURL]?[field] == request.id
+                let prior = fieldMutationFallbacks[request.imageURL]?[field]
+                var fallback = prior?.image ?? original
+                var unresolved = prior?.displayID == displayID ? (prior?.unresolved ?? []) : []
+                let isConflict = result.failure?.kind == .conflict
+                let recordIsCurrent = !isConflict && !result.embeddedWriteMayHaveOccurred && result.committedButUnverifiedSidecarURL == nil
+                if !recordIsCurrent {
+                    unresolved.append(result)
+                }
+                // A conflict's installedSidecar is the earlier prepared intent, not current disk.
+                // Carry uncertainty across queued successors so a later precommit failure cannot
+                // manufacture a rollback over a preceding possibly committed field write.
+                if prior?.displayID == displayID {
+                    if recordIsCurrent, let record = result.installedSidecar {
+                        if field == "rating" { fallback.starRating = StarRating(rawValue: record.metadata.rating ?? 0) ?? .none }
+                        else { fallback.colorLabel = ColorLabel.fromMetadataLabel(record.metadata.label) }
+                    }
+                    fieldMutationFallbacks[request.imageURL]?[field] = (displayID, fallback, unresolved)
+                }
+                if ownsField {
+                    fieldMutationRequestIDs[request.imageURL]?[field] = nil
+                    fieldMutationFallbacks[request.imageURL]?[field] = nil
+                }
+                guard ownsField, currentFolderURL == folder, fieldMutationDisplayID == displayID,
+                      let index = urlToImageIndex[request.imageURL] else { continue }
+                currentResults.append(contentsOf: unresolved)
+                if !unresolved.contains(where: { $0.requestID == result.requestID }) { currentResults.append(result) }
+                suppressImagesCascade = true
+                if recordIsCurrent, let record = result.installedSidecar {
+                    if field == "rating" { images[index].starRating = StarRating(rawValue: record.metadata.rating ?? 0) ?? .none }
+                    else { images[index].colorLabel = ColorLabel.fromMetadataLabel(record.metadata.label) }
+                    images[index].hasPendingMetadataChanges = record.pendingChanges || !unresolved.isEmpty || !(fieldMutationRequestIDs[request.imageURL]?.isEmpty ?? true)
+                    images[index].pendingFieldNames = extractPendingFieldNames(from: record)
+                } else if !result.completed && unresolved.isEmpty && !result.didWriteEmbedded && !result.didWriteXMP {
+                    if field == "rating" { images[index].starRating = fallback.starRating }
+                    else { images[index].colorLabel = fallback.colorLabel }
+                } else if !result.completed {
+                    // An uncertain physical/JSON commit cannot be represented as a rollback.
+                    images[index].hasPendingMetadataChanges = true
+                }
+                suppressImagesCascade = false
+                rebuildSortedCache()
+            }
+            guard currentFolderURL == folder, fieldMutationDisplayID == displayID else { return }
+            fieldMutationResults = currentResults.isEmpty ? results : currentResults
+            if let failure = MetadataFieldMutationFeedback.failureSummary(currentResults) { errorMessage = failure }
+        }
+    }
+
+    func waitForPendingFieldMutationWrites() async { await fieldMutationTask?.value }
 
     /// Move all images currently labeled `.trash` to a sibling `.Rejected/`
     /// subfolder, along with their JSON and XMP sidecars. The blocking bundle moves cross the
@@ -2022,6 +2100,60 @@ final class BrowserViewModel {
         let urls = selectedImages.map(\.url)
         let c2paByURL = Dictionary(uniqueKeysWithValues: selectedImages.map { ($0.url, $0.hasC2PA) })
 
+        updateMetadataFieldPresentation(updateImage: updateImage, affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
+
+        metadataWriteTask?.cancel()
+        metadataWriteTask = Task {
+            var writeToFileWithSidecar: [URL] = []
+            var writeToSidecar: [URL] = []
+            var writeToXmp: [URL] = []
+
+            for url in urls {
+                let hasC2PA = c2paByURL[url] ?? false
+                let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: SupportedImageFormats.isRaw(url: url))
+
+                switch mode {
+                case .historyOnly:
+                    writeToSidecar.append(url)
+                case .writeToFileAndXMPSidecar:
+                    // Dual write: file (with history) + .xmp sidecar.
+                    writeToFileWithSidecar.append(url)
+                    writeToXmp.append(url)
+                case .writeToXMPSidecar:
+                    writeToXmp.append(url)
+                case .writeToFile:
+                    writeToFileWithSidecar.append(url)
+                }
+            }
+
+            for url in writeToSidecar {
+                await applySidecar(url, false, true)
+            }
+            for url in writeToXmp {
+                await applySidecar(url, true, false)
+            }
+            for url in writeToFileWithSidecar {
+                // PM-style embed: the file is the record, but an .xmp already on disk
+                // must mirror the new value or its stale copy shadows the file on
+                // read/export. (Dual-write URLs were already handled above; the
+                // unchanged-value guard makes this second pass a no-op for them.)
+                await applySidecar(url, xmpSidecarService.sidecarExists(for: url), false)
+            }
+
+            if metadataReadService.isAvailable, !writeToFileWithSidecar.isEmpty {
+                do {
+                    try await writeToFile(writeToFileWithSidecar)
+                } catch {
+                    self.errorMessage = "Failed to write \(fieldDescription): \(error.localizedDescription)"
+                }
+            }
+
+            self.refreshPendingStatusBatch(for: urls)
+        }
+    }
+
+    private func updateMetadataFieldPresentation(updateImage: (inout ImageFile) -> Void,
+        affectsSortKey: Bool, affectsFilterKey: Bool) {
         // Phase 1: In-place mutation — skip the didSet cascade since URLs don't change
         suppressImagesCascade = true
         defer { suppressImagesCascade = false }
@@ -2074,54 +2206,6 @@ final class BrowserViewModel {
             }
         }
 
-        metadataWriteTask?.cancel()
-        metadataWriteTask = Task {
-            var writeToFileWithSidecar: [URL] = []
-            var writeToSidecar: [URL] = []
-            var writeToXmp: [URL] = []
-
-            for url in urls {
-                let hasC2PA = c2paByURL[url] ?? false
-                let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: SupportedImageFormats.isRaw(url: url))
-
-                switch mode {
-                case .historyOnly:
-                    writeToSidecar.append(url)
-                case .writeToFileAndXMPSidecar:
-                    // Dual write: file (with history) + .xmp sidecar.
-                    writeToFileWithSidecar.append(url)
-                    writeToXmp.append(url)
-                case .writeToXMPSidecar:
-                    writeToXmp.append(url)
-                case .writeToFile:
-                    writeToFileWithSidecar.append(url)
-                }
-            }
-
-            for url in writeToSidecar {
-                await applySidecar(url, false, true)
-            }
-            for url in writeToXmp {
-                await applySidecar(url, true, false)
-            }
-            for url in writeToFileWithSidecar {
-                // PM-style embed: the file is the record, but an .xmp already on disk
-                // must mirror the new value or its stale copy shadows the file on
-                // read/export. (Dual-write URLs were already handled above; the
-                // unchanged-value guard makes this second pass a no-op for them.)
-                await applySidecar(url, xmpSidecarService.sidecarExists(for: url), false)
-            }
-
-            if metadataReadService.isAvailable, !writeToFileWithSidecar.isEmpty {
-                do {
-                    try await writeToFile(writeToFileWithSidecar)
-                } catch {
-                    self.errorMessage = "Failed to write \(fieldDescription): \(error.localizedDescription)"
-                }
-            }
-
-            self.refreshPendingStatusBatch(for: urls)
-        }
     }
 
     private func applyPendingSidecarOverrides(for url: URL, index: Int, cachedSidecar: MetadataSidecar? = nil) {
@@ -3985,5 +4069,26 @@ final class BrowserViewModel {
                 searchText = ""
             }
         }
+    }
+}
+
+/// Shared user-facing partial outcome text for the bounded field mutation callers.
+nonisolated enum MetadataFieldMutationFeedback {
+    static func failureSummary(_ results: [MetadataFieldMutationWriteResult]) -> String? {
+        let failures = results.filter { !$0.completed }
+        guard !failures.isEmpty else { return nil }
+        let details = failures.map { result in
+            var detail = "\(result.imageURL.lastPathComponent): \(result.failure?.message ?? (result.wasCancelled ? "The write was cancelled." : "The requested write did not complete."))"
+            var destinations: [String] = []
+            if result.didWriteEmbedded { destinations.append("image metadata") }
+            if result.didWriteXMP { destinations.append("XMP sidecar") }
+            if !destinations.isEmpty { detail += " Already written: " + destinations.joined(separator: ", ") + "." }
+            if result.embeddedWriteMayHaveOccurred { detail += " Image metadata may already have changed; verify it before retrying." }
+            if let url = result.committedButUnverifiedSidecarURL { detail += " Metadata JSON was written but could not be verified: \(url.path)." }
+            if result.failure?.kind == .conflict { detail += " The displayed metadata may be stale. Reload this photo to read its current saved values." }
+            else if result.installedSidecar?.pendingChanges == true { detail += " Pending edits were retained." }
+            return detail
+        }
+        return "\(results.count - failures.count) of \(results.count) photo metadata edits completed.\n" + details.joined(separator: "\n")
     }
 }
