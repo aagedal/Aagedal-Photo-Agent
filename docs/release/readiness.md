@@ -1,14 +1,24 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — scoped variable recovery and bounded native cancel/export/tamper/discard/retry/relaunch pass. Wider release gates remain open.
+**State:** IMPLEMENTING — exact XMP baselines and bounded native saves pass; failed Develop-save termination loses unsaved intent and remains a release blocker.
 **Updated:** 2026-09-11
-**Latest implementation commit:** `9c344fb7b0ef73026ee242165d86e76b1d4d1e19` (2,654 tests / 293 suites and repository checks passed).
-**Latest native evidence:** `9c344fb` scoped variable recovery: Cancel/save-panel Cancel, private export, tamper rejection, exact A discard, B-only retry, preserved originals/history/pixels/newer JSON and relaunch pass. No preferences changed; QA apps stopped.
-**Cycle baseline:** `6fac926` on `main`; cycle 13 implementation and bounded native recovery complete.
+**Latest implementation commit:** `a777dd78c1b7e6ecac6eaa8be6aa59de882ae571` (2,666 tests / 295 suites and repository checks passed).
+**Latest native evidence:** `a777dd7` masked repeat saves, external-change refusal, deliberate reload/retry, embedded-plus-XMP reset and relaunch pass. Genuine failed-save Quit lacks retention/decision and is the next defect. No preferences changed; QA apps stopped.
+**Cycle baseline:** `1ca6bce` on `main`; cycle 14 exact XMP baseline implementation and bounded native checks complete.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 14 XMP baselines](cycle-14-xmp-baselines-2026-09-11.md) captures exact load-time bytes,
+propagates verified receipts and prevents stale technical intent from adopting Caption/Variables
+physical results. Restore admission also uses exact bytes. Independent review passes, focused v3
+passes 121 tests / five suites, full passes 2,666 tests / 295 suites in 96.165s, repository checks pass.
+Native masked reset/repeated save, genuine external refusal, fresh reload/retry, embedded reset
+and relaunch pass. All artifacts match after final relaunch; no preferences changed; QA apps stopped.
+A genuine failed Develop reset can still be lost on normal Quit after dismissing the error;
+this is a confirmed release blocker, not a passing lifecycle check.
+
 
 [Cycle 13 variable recovery](cycle-13-variable-recovery-2026-09-11.md) adds complete private exports,
 settled review ownership and exact-photo discard with native buffer and deferred shared-template
@@ -150,9 +160,11 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Correct the three remaining single-photo/Develop snapshot callers that compare regenerated
-   XMP mask IDs. Retain exact bytes at editor load and update from verified receipts, preserving
-   external-change detection; see the concrete inventory in field-write design.
+1. Fix failed Develop-save lifetime: cycle14 final binary allowed normal Quit after genuine
+   external-XMP conflict without a retry/discard decision or durable unsaved-reset carrier.
+   Retain captured intent across Quit/workspace/selection, or require an explicit safe recovery
+   decision. Audit undo/redo persistence too. Exact-byte save admission is now verified; do not
+   mistake that fix for safe failure retention.
 2. Complete remaining variable native cases: focused live-field commit, >20-field templates,
    in-flight cancellation/selection, authentic RAW/C2PA and accessibility/performance. Cycle 12's
    physical/error/repair/History Only/relaunch cases pass on `fbe253f`; do not rerun unchanged full
@@ -182,7 +194,7 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Archive/reassociation, transcription, reviewed variables and delivery; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 13: 2,654 tests and repository checks passed | Packaging and exact-candidate release checks remain |
+| Automated regression and package | Cycle 14: 2,666 tests and repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -245,7 +257,7 @@ session. The final QA process was quit and native inventory confirmed it stopped
 returned to its original window. Bridge is available, but presence is not interoperability proof.
 
 Browser visual QA of the checklist remains pending: URL policy rejected its local file URL
-at setup. Do not bypass with another route. Static checks now pass for 34 complete cases, unique
+at setup. Do not bypass with another route. Static checks now pass for 35 complete cases, unique
 IDs, local source links and JavaScript syntax. It remains unassigned to a candidate and all
 human results are unrun.
 
@@ -254,14 +266,23 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Implementation `9c344fb` is committed, independently reviewed and validated by 61 focused tests,
-2,654 integrated tests and repository checks. Native scoped variable conflict recovery, Cancel,
-export/tamper/discard, B-only retry and full relaunch artifact preservation pass on the identified
-Debug binary. No preferences changed; all QA app entries are stopped. The cycle13 report records
-failures and fixes without weakening tests, exact identity and disposable evidence paths.
+Implementation `a777dd7` is committed and independently reviewed. Focused v3 passes 121 tests,
+full passes 2,666 tests and repository checks pass. Native repeated masked save, external conflict
+refusal, fresh reload/retry, embedded-plus-sidecar reset and final relaunch artifact equality pass
+on the identified Debug binary. All QA app entries are stopped; no preferences changed.
 
-Next: fix the three legacy single-photo/Develop XMP snapshot callers using exact load-time bytes,
-then proceed through the ordered native/voice/transcription/delivery and external gates. All four
-plans retain 60 open criteria (9/23/22/6). No unrelated source edits or concurrent checkout work
-were encountered. HTML has 34 cases with final candidate/results unassigned; interactive validation
-remains pending. No-progress counter is zero and the existing heartbeat remains active.
+Highest priority: failed Develop save loses unsaved intent on normal Quit after dismissing its
+error. Reproduced with a genuine externally modified XMP on the final binary; external saved
+bytes survive, but the requested in-memory reset does not. Fix lifecycle retention/recovery and
+test Quit/workspace/selection, including undo/redo, before progressing to the remaining broad
+native and voice/transcription/delivery gates. Do not describe this as ready for final testing.
+
+Cycle14 report includes exact identity, failed test fixtures and corrections, native evidence and
+limitations. All four plans retain 60 open criteria (9/23/22/6). HTML has 35 cases with results and
+candidate unassigned; interactive validation remains pending. No-progress counter is zero and
+existing heartbeat remains active. No unrelated source or overlapping checkout work was found.
+
+Root cause for next cycle: termination invokes DevelopVersionFlushCoordinator, but EditWorkspaceView
+only flushes its named-version session, which reports success for Primary. Primary persistence
+outcomes are discarded with alert/session state. Add retained immutable Primary work to the shared
+flush boundary; preserve original exact evidence and scoped recovery. Detailed map is in cycle14.

@@ -173,3 +173,18 @@ Tests must cover pre-prepare unsaved input after selection changes, >20 changes 
 fields, same-stem siblings/other folders, late completion or stale generation, changed editor input,
 and native conflict/export/scoped discard/remaining-work/Close/Quit/relaunch with exact file hashes.
 This is an implementation outline, not completed recovery or passing acceptance evidence.
+
+### Cycle 14 exact editor XMP evidence
+
+`a777dd7` corrects the three legacy MetadataViewModel callers inventoried above, plus Restore/history
+admission. Editor loads now retain exact validated XMP bytes or explicit absence; verified own
+receipts advance evidence only with matching photo/load ownership and coherent technical state.
+Caption/Variables cannot bless independent external CRS changes for an older Develop buffer.
+The [cycle14 report](cycle-14-xmp-baselines-2026-09-11.md) records 2,666 passing tests and native
+masked repeat saves, external-change refusal, deliberate reload/retry, embedded reset and relaunch.
+
+Native genuine failure exposed a separate blocker: dismissing a failed Develop-save alert then
+quitting normally loses the unsaved requested reset without another recovery decision. Preserve
+that captured intent or require an explicit safe decision across termination, workspace exit and
+selection. Do not count exact-byte admission as durable failed-save retention. This is the next
+mandatory lifecycle correction; undo/redo persistence also needs an explicit audit.

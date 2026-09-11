@@ -26,7 +26,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 13: scoped variable conflict recovery](release/cycle-13-variable-recovery-2026-09-11.md). Source `9c344fb` passes independent review, 2,654 tests and repository checks. Native permanent conflict, cancellation, verified export/tamper rejection, exact-photo discard, remaining retry and relaunch pass. No preferences changed; QA apps stopped. Legacy XMP snapshot callers and wider feature/release gates remain open.
+**Latest improvement continuation:** [Cycle 14: exact editor XMP baselines](release/cycle-14-xmp-baselines-2026-09-11.md). Source `a777dd7` passes independent review, 2,666 tests and repository checks. Native masked repeated saves, external-change refusal, reload/retry, embedded reset and relaunch pass. A genuine failed Develop save can still lose unsaved intent on normal Quit; fixing that lifecycle defect is next. No preferences changed; QA apps stopped. Wider feature/release gates remain open.
 
 ## Portfolio
 

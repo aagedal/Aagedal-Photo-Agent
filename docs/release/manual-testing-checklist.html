@@ -239,6 +239,17 @@
     "cleanup": "Restore preferences and remove only disposable obstructions. Retain the private recovery export and artifact comparisons with the test evidence; do not use production photos."
   },
   {
+    "id": "A20",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Save masked XMP without adopting external edits",
+    "source": "field-write-completion-design.md",
+    "setup": "Use disposable masked XMP photos with pending unrelated captions, known/null originals and opaque metadata. Include a non-RAW photo with embedded Develop settings. Keep exact source/XMP/JSON hashes.",
+    "steps": "1. Load a masked photo in Develop and make two successive exposure adjustments. 2. After loading, alter only the disposable XMP externally and attempt another save; inspect the error and unchanged external bytes. 3. Reload deliberately and retry. 4. Exercise explicit Develop reset, History Only, and Restore Original/history. 5. Edit Caption then immediately return to Develop; repeat when an external technical change was preserved during Caption persistence. 6. With a save still failed, dismiss only its error alert, then try Quit, workspace exit and selection changes; verify retained edits or an explicit recovery decision. Then complete recovery, quit normally and reopen.",
+    "expected": "Unchanged masked XMP saves successfully despite regenerated internal mask IDs. Verified own writes allow repeated saves. External bytes or technical intent cannot be adopted by a stale editor; failures are visible and preserve unrelated records. A failed save cannot silently discard unsaved edits on Quit, workspace exit or selection change. Reset and Restore honor their exact scope. Pending History Only saves preserve known/null originals and unrelated drafts; explicit completed writes establish their documented written-image baseline. Opaque fields and source pixels survive; Reset and Restore alter only requested metadata. Relaunch displays the saved result.",
+    "cleanup": "Restore preferences, retain artifact comparisons and remove only disposable obstructions. Record any blocked format or timing case separately."
+  },
+  {
     "id": "U01",
     "lane": "Final user acceptance",
     "priority": "P0",
