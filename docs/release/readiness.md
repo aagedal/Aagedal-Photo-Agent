@@ -1,14 +1,23 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — immutable variable writes and bounded native failure/repair/History Only persistence pass. Permanent conflict recovery and wider release gates remain open.
+**State:** IMPLEMENTING — scoped variable recovery and bounded native cancel/export/tamper/discard/retry/relaunch pass. Wider release gates remain open.
 **Updated:** 2026-09-11
-**Latest implementation commit:** `fbe253f11304f9f8de8cfafa667338edfd580781` (2,633 tests / 291 suites and repository checks passed).
-**Latest native evidence:** `fbe253f` variables: physical 2/3 failure details, repair-only retry, History Only, known/null originals/full captions/literal lists and relaunch pass. Preferences restored; QA apps stopped.
-**Cycle baseline:** `e9e6a14` on `main`; cycle 12 source committed and bounded validation complete.
+**Latest implementation commit:** `9c344fb7b0ef73026ee242165d86e76b1d4d1e19` (2,654 tests / 293 suites and repository checks passed).
+**Latest native evidence:** `9c344fb` scoped variable recovery: Cancel/save-panel Cancel, private export, tamper rejection, exact A discard, B-only retry, preserved originals/history/pixels/newer JSON and relaunch pass. No preferences changed; QA apps stopped.
+**Cycle baseline:** `6fac926` on `main`; cycle 13 implementation and bounded native recovery complete.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 13 variable recovery](cycle-13-variable-recovery-2026-09-11.md) adds complete private exports,
+settled review ownership and exact-photo discard with native buffer and deferred shared-template
+cleanup guards. Independent review passes; focused v3 passes 61 tests / six suites, integrated
+passes 2,654 tests / 293 suites in 98.963s and repository checks pass. Native permanent conflict,
+Cancel/save-panel Cancel, mode-0600 export, tamper rejection, A-only discard, B-only repair/retry
+and normal quit/relaunch pass. All artifacts remain identical after relaunch and QA apps are stopped.
+Intermediate v2 stack exhaustion and fixture/expectation errors are documented and corrected.
+
 
 [Cycle 12 variables](cycle-12-variables-2026-09-11.md) captures immutable input/folder/policy,
 awaits full-record JSON/physical verification, retains retry/partial receipts and guards Close/Quit
@@ -17,8 +26,8 @@ prior clear/overwrite composition are corrected. Independent review passes, focu
 134 tests / seven suites, focused roster passes seven tests, full v2 passes 2,633 tests / 291 suites
 in 99.012s and repository checks pass. Native physical partial failure/repair, JSON-only History
 Only, literal lists/originals/opaque/history/pixels, preference restoration and relaunch pass.
-All app entries are stopped. Permanent conflict recovery and the listed broader native cases remain
-mandatory; transient native menu access recovered after a normal quit/relaunch.
+At that checkpoint all app entries were stopped. Cycle 13 above completes bounded permanent conflict
+recovery; broader native cases remain mandatory. Transient menu access recovered after normal quit/relaunch.
 
 
 [Cycle 11 native Review recovery](cycle-11-review-recovery-native-2026-09-11.md) passes on
@@ -141,33 +150,29 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Add scoped export/reconcile/discard for permanently conflicting retained variable admissions.
-   Current session retention blocks ordinary Close/Quit safely, but Retry cannot fix every external
-   ownership conflict and Quit Without Saving is not an adequate release recovery workflow.
-   A concrete payload/receipt/identity/test outline is in the [field-write design](field-write-completion-design.md).
-2. Correct the three remaining single-photo/Develop snapshot callers that compare regenerated
+1. Correct the three remaining single-photo/Develop snapshot callers that compare regenerated
    XMP mask IDs. Retain exact bytes at editor load and update from verified receipts, preserving
    external-change detection; see the concrete inventory in field-write design.
-3. Complete remaining variable native cases: focused live-field commit, >20-field templates,
+2. Complete remaining variable native cases: focused live-field commit, >20-field templates,
    in-flight cancellation/selection, authentic RAW/C2PA and accessibility/performance. Cycle 12's
    physical/error/repair/History Only/relaunch cases pass on `fbe253f`; do not rerun unchanged full
    checks without a relevant change. Review lifetime/IME and Write All's broader cases remain separate.
-4. Complete remaining Sony companion archive and source reassociation using the source-backed
+3. Complete remaining Sony companion archive and source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Ingest, rename, Duplicate, Move, Reject and
    memo Trash now have implementation. Preserve explicit ownership through rendering/signing/
    cleanup; schema-1 filename hints alone cannot establish historical reassociation identity.
-5. Implement cancellable local transcription with explicit language/model/offline state,
+4. Implement cancellable local transcription with explicit language/model/offline state,
    review-before-apply and transcript provenance, following the [SDK-backed design](voice-memo-transcription-design.md).
    Integrate reviewed transcript variables and visible Deadline WAV delivery policy/receipt.
-6. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
+5. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
    storage/executor auditing. Cycle 3 observed native Trash, shared survivor playback, missing-memo
    Details, Finder Put Back, exact bundle recovery and restored Caption persistence. Broaden to
    real Sony, long error scrolling, face-group Trash, Bridge/Photo Mechanic, disposable transports,
    accessibility/IME/display, solar/reports and measured performance. Narrow evidence is not a full gate.
-7. Establish missing hardware/model-lifecycle/privacy/remote-CI evidence. Qualified legal review
+6. Establish missing hardware/model-lifecycle/privacy/remote-CI evidence. Qualified legal review
    and protected remote branch enforcement remain external prerequisites. Complete independent
    work before an actionable blocker handoff; do not silently move mandatory gates to acceptance.
-8. Once unconditional gates pass, obtain independent readiness review, build/launch the exact
+7. Once unconditional gates pass, obtain independent readiness review, build/launch the exact
    candidate, finalize and visually verify the [HTML checklist](manual-testing-checklist.html),
    then follow [the coordinator protocol](coordinator.md) before notifying for acceptance.
 
@@ -177,7 +182,7 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Archive/reassociation, transcription, reviewed variables and delivery; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 10: 2,585 tests and repository checks passed | Packaging and exact-candidate release checks remain |
+| Automated regression and package | Cycle 13: 2,654 tests and repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -240,7 +245,7 @@ session. The final QA process was quit and native inventory confirmed it stopped
 returned to its original window. Bridge is available, but presence is not interoperability proof.
 
 Browser visual QA of the checklist remains pending: URL policy rejected its local file URL
-at setup. Do not bypass with another route. Static checks now pass for 33 complete cases, unique
+at setup. Do not bypass with another route. Static checks now pass for 34 complete cases, unique
 IDs, local source links and JavaScript syntax. It remains unassigned to a candidate and all
 human results are unrun.
 
@@ -249,25 +254,14 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Cycle 12 implemented and committed `fbe253f11304f9f8de8cfafa667338edfd580781` from `e9e6a14`.
-Independent core/caller/parent integration review passes. Focused v4: 134 tests / seven suites,
-7.267s; roster source-contract follow-up: seven tests / 0.082s; full v2: 2,633 tests / 291 suites,
-99.012s. Repository checks and whitespace pass. Intermediate compile, fixture and actual template
-failures are recorded with corrections in the [cycle report](cycle-12-variables-2026-09-11.md).
-No application/test source changed after the passing full run; documentation changes only.
+Implementation `9c344fb` is committed, independently reviewed and validated by 61 focused tests,
+2,654 integrated tests and repository checks. Native scoped variable conflict recovery, Cancel,
+export/tamper/discard, B-only retry and full relaunch artifact preservation pass on the identified
+Debug binary. No preferences changed; all QA app entries are stopped. The cycle13 report records
+failures and fixes without weakening tests, exact identity and disposable evidence paths.
 
-Native testing used exact Debug 3.0.0 (738) identified in `build/qa-variables-cycle12/tested-binary-identity.json`.
-Physical A/B complete, C failed unchanged with visible details, empty obstruction repaired and C-only
-retry completes. History Only changes only JSON. Both folders retain originals, opaque data, literal
-lists and 2→3 history entries, with exact relaunch artifact equality. Preferences equal the captured
-original state; General page restored. Final native inventory confirms every QA app entry stopped.
-The transient menu connection recovered by normal quit/relaunch; no host-access blocker remains.
-
-Next: mandatory scoped variable conflict export/reconcile/discard, then legacy exact-XMP baseline
-callers and wider native/feature gates. Independent recovery design is saved in field-write design;
-it is not implementation evidence. Prepared fixtures remain available with no obstruction remaining.
-All four authoritative plans retain 60 unchecked criteria (9/23/22/6); no checkbox changed.
-The HTML checklist has 33 complete cases (18 agent, six final-user, nine external), all human results
-unrun and final candidate unassigned. Static unique-ID/content/source-path/JavaScript checks pass;
-interactive HTML validation remains separate. No-progress count is zero; the existing heartbeat
-remains active and no readiness notification is due.
+Next: fix the three legacy single-photo/Develop XMP snapshot callers using exact load-time bytes,
+then proceed through the ordered native/voice/transcription/delivery and external gates. All four
+plans retain 60 open criteria (9/23/22/6). No unrelated source edits or concurrent checkout work
+were encountered. HTML has 34 cases with final candidate/results unassigned; interactive validation
+remains pending. No-progress counter is zero and the existing heartbeat remains active.

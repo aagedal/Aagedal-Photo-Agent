@@ -228,6 +228,17 @@
     "cleanup": "Restore the intended candidate build and record which packaging variant was checked."
   },
   {
+    "id": "A19",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Recover a permanent variable conflict without losing other photos",
+    "source": "field-write-completion-design.md",
+    "setup": "Use disposable photos with retained failed variable requests, including unsaved input before its first JSON write, an independently newer saved record, a same-stem sibling and another folder. Keep source/XMP/JSON hashes and known/null originals.",
+    "steps": "1. Create a failed variable operation and a permanent external-change conflict. 2. Choose Review Variable Conflicts and one affected photo. Cancel review and cancel the export panel; confirm all requests remain. 3. Export Recovery JSON to a separate file and inspect captured input, full changes, original status and partial-save details. Keep a backup, tamper with the actual exported file, and attempt discard. 4. Export again and explicitly discard only the reviewed requests. 5. Repair and retry another photo, then quit normally and reopen both folders. Repeat while selection or editor contents change during review.",
+    "expected": "Unverified export or stale review never permits discard. Export includes unresolved input and complete resolved intent even beyond 20 history entries, with technical state and known/unknown originals. Discard changes only the exact exported in-memory requests; saved artifacts, same-stem siblings, other folders and newer editor input survive. After reconciling from fresh saved metadata, a new operation can proceed. Ordinary Close/Quit remains blocked while unverified only-copy work remains.",
+    "cleanup": "Restore preferences and remove only disposable obstructions. Retain the private recovery export and artifact comparisons with the test evidence; do not use production photos."
+  },
+  {
     "id": "U01",
     "lane": "Final user acceptance",
     "priority": "P0",

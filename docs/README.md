@@ -26,7 +26,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 12: verified variable processing](release/cycle-12-variables-2026-09-11.md). Source `fbe253f` passes independent review, 2,633 tests and repository checks. Native physical failure/repair, History Only, preserved originals/history/literal lists and relaunch pass; preferences are restored and QA apps stopped. Scoped permanent-conflict recovery and wider feature/release gates remain open.
+**Latest improvement continuation:** [Cycle 13: scoped variable conflict recovery](release/cycle-13-variable-recovery-2026-09-11.md). Source `9c344fb` passes independent review, 2,654 tests and repository checks. Native permanent conflict, cancellation, verified export/tamper rejection, exact-photo discard, remaining retry and relaunch pass. No preferences changed; QA apps stopped. Legacy XMP snapshot callers and wider feature/release gates remain open.
 
 ## Portfolio
 
