@@ -1287,6 +1287,9 @@ struct MetadataPanel: View {
             }
         }
         .onAppear {
+            viewModel.registerVariableRecoveryEditorBarrier(owner: captionFlushOwner) {
+                try flushCaptionEditorBuffer()
+            }
             StructuredKeywordsCoordinator.shared.register(owner: viewModel) { expanded in
                 addStructuredKeywords(expanded)
             }
@@ -1322,6 +1325,7 @@ struct MetadataPanel: View {
         }
         .onDisappear {
             cancelQuickListCreation()
+            viewModel.unregisterVariableRecoveryEditorBarrier(owner: captionFlushOwner)
             StructuredKeywordsCoordinator.shared.unregister(owner: viewModel)
             captionFlushCoordinator?.unregister(owner: captionFlushOwner)
         }

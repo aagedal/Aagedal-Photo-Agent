@@ -161,21 +161,69 @@ final class MetadataViewModel {
     }
     @ObservationIgnored private var captionPersistenceFailureRequestID: UUID?
     private(set) var variableBatchOutcome: VariableMetadataBatchOutcome?
-    private struct VariableAdmission {
+    private struct VariableCapturedBatchInput {
+        let metadata: IPTCMetadata
+        let previousCommon: IPTCMetadata?
+        let fields: [MetadataFieldID: MetadataFieldMutation]
+        let locations: BatchLocationsShownMutation
+        let suppliers: EditorialImageSupplierMutation
+        let keywordsMode: MultiSelectFieldMode
+        let personMode: MultiSelectFieldMode
+    }
+    private final class VariableAdmission {
         let id: UUID
         let imageURL: URL
         let folderURL: URL
         let editorCheckpoint: CaptionConflictEditorCheckpoint?
+        let loadID: UUID?
         let requiresPersistence: Bool
-        let capture: @MainActor () async throws -> VariableMetadataWriteRequest?
+        let selectedURLs: [URL]
+        let edited: IPTCMetadata
+        let previous: IPTCMetadata?
+        let expectedRecord: MetadataSidecar?
+        let referenceSource: MetadataReferenceSource
+        let hasEditorInput: Bool
+        let batchInput: VariableCapturedBatchInput?
+        let batchBaseline: IPTCMetadata?
+        let options: VariableMetadataOptions
+        let sequenceIndex: Int
+        var cachedInput: VariableMetadataInputSnapshot?
+
+        init(id: UUID, imageURL: URL, folderURL: URL, editorCheckpoint: CaptionConflictEditorCheckpoint?, loadID: UUID?,
+             requiresPersistence: Bool, selectedURLs: [URL], edited: IPTCMetadata,
+             previous: IPTCMetadata?, expectedRecord: MetadataSidecar?, referenceSource: MetadataReferenceSource,
+             hasEditorInput: Bool, batchInput: VariableCapturedBatchInput?, batchBaseline: IPTCMetadata?,
+             options: VariableMetadataOptions, sequenceIndex: Int) {
+            self.id = id; self.imageURL = imageURL; self.folderURL = folderURL
+            self.editorCheckpoint = editorCheckpoint; self.loadID = loadID; self.requiresPersistence = requiresPersistence
+            self.selectedURLs = selectedURLs; self.edited = edited; self.previous = previous
+            self.expectedRecord = expectedRecord; self.referenceSource = referenceSource
+            self.hasEditorInput = hasEditorInput; self.batchInput = batchInput; self.batchBaseline = batchBaseline
+            self.options = options; self.sequenceIndex = sequenceIndex
+        }
     }
-    private var retainedVariableAdmissions: [VariableAdmission] = []
-    private var retainedVariableWrites: [VariableMetadataWriteRequest] = []
+    private var retainedVariableAdmissions: [VariableAdmission] = [] {
+        didSet { variableRecoveryGeneration &+= 1 }
+    }
+    private var retainedVariableWrites: [VariableMetadataWriteRequest] = [] {
+        didSet { variableRecoveryGeneration &+= 1 }
+    }
+    @ObservationIgnored private var variableRecoveryGeneration: UInt64 = 0
+    @ObservationIgnored private var variableRecoveryOwnerID: UUID?
+    private(set) var variableRecoveryPhotoURL: URL?
+    @ObservationIgnored private var variableRecoverySnapshot: VariableConflictSnapshot?
+    @ObservationIgnored private var variableRecoveryOperationID: UUID?
+    @ObservationIgnored private var variableRecoveryEndRequested = false
+    @ObservationIgnored private var variableQuiescenceWaiters: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var variableFailures: [String: String] = [:]
+    @ObservationIgnored private var retainedVariableOrigins: [UUID: VariableAdmission] = [:]
+    @ObservationIgnored private let variableRecoveryExportAccess: CaptionConflictExportAccess
+    @ObservationIgnored private let variableRecoveryBeforeDiscard: @Sendable () async -> Void
     @ObservationIgnored private let variableLifecycleOwnerID = UUID()
     @ObservationIgnored private let variableLifecycleCoordinator: VariableDraftLifecycleCoordinator
     @ObservationIgnored private var activeVariableBatchIDs: Set<UUID> = []
     @ObservationIgnored private var retainedVariableEditorCheckpoints: [UUID: CaptionConflictEditorCheckpoint] = [:]
-    var hasRetainedVariableWrites: Bool { !retainedVariableWrites.isEmpty || !retainedVariableAdmissions.isEmpty }
+    var hasRetainedVariableWrites: Bool { !retainedVariableWrites.isEmpty || !retainedVariableAdmissions.isEmpty || !variableDiscardedEditorCheckpoints.isEmpty }
     var variableProcessingStatus: String?
     var variableProcessingHadFailures = false
     var selectedHasC2PA = false
@@ -326,6 +374,8 @@ final class MetadataViewModel {
         variableInputLoader: (@MainActor @Sendable (URL, URL) async throws -> VariableMetadataInputSnapshot)? = nil,
         variableWriteExecutor: (@Sendable (VariableMetadataWriteRequest) async -> VariableMetadataWriteResult)? = nil,
         variableLifecycleCoordinator: VariableDraftLifecycleCoordinator = .shared,
+        variableRecoveryExportAccess: CaptionConflictExportAccess = .init(),
+        variableRecoveryBeforeDiscard: @escaping @Sendable () async -> Void = {},
         variableOptions: @escaping @MainActor () -> VariableMetadataOptions = { .capture() },
         variableResolver: @escaping @MainActor @Sendable (VariableMetadataResolutionInput) async throws -> IPTCMetadata = {
             try await VariableMetadataResolver.resolve($0)
@@ -343,6 +393,8 @@ final class MetadataViewModel {
         self.variableInputLoader = variableInputLoader
         self.variableWriteExecutor = variableWriteExecutor
         self.variableLifecycleCoordinator = variableLifecycleCoordinator
+        self.variableRecoveryExportAccess = variableRecoveryExportAccess
+        self.variableRecoveryBeforeDiscard = variableRecoveryBeforeDiscard
         self.variableOptions = variableOptions
         self.variableResolver = variableResolver
     }
@@ -1333,6 +1385,8 @@ final class MetadataViewModel {
         mode: MetadataWriteMode,
         onComplete: @escaping (MetadataCommitResult) -> Void
     ) {
+        do { try requireVariableDiscardedEditorReconciled() }
+        catch { saveError = error.localizedDescription; onComplete(.failed(message: error.localizedDescription)); return }
         switch mode {
         case .historyOnly:
             saveToSidecar()
@@ -1345,6 +1399,8 @@ final class MetadataViewModel {
     }
 
     func writeMetadata() {
+        do { try requireVariableDiscardedEditorReconciled() }
+        catch { saveError = error.localizedDescription; return }
         let urls = selectedURLs
         guard !urls.isEmpty else { return }
         let selectionSnapshot = Set(urls)
@@ -2346,6 +2402,12 @@ final class MetadataViewModel {
     /// local copy resolves its own {filename}/{seq} values, then awaited JSON preparation saves
     /// that complete result. No separate literal save can race the variable operation.
     func applyTemplateFieldsAndProcessVariables(_ template: [String: String], to images: [ImageFile], append: Bool = false) {
+        do { try requireVariableDiscardedEditorReconciled() }
+        catch { saveError = error.localizedDescription; return }
+        guard variableRecoveryOwnerID == nil else {
+            saveError = "Finish or cancel the variable conflict review before applying a variable template."
+            return
+        }
         applyTemplateFields(template, append: append)
         guard !images.isEmpty else { return }
         if selectedCount > 1 {
@@ -2418,6 +2480,12 @@ final class MetadataViewModel {
 
     /// Resolves all variable placeholders in editingMetadata text fields in-place.
     func processVariables(filename: String = "", sequenceIndex: Int = 1) {
+        do { try requireVariableDiscardedEditorReconciled() }
+        catch { saveError = error.localizedDescription; return }
+        guard variableRecoveryOwnerID == nil else {
+            saveError = "Finish or cancel the variable conflict review before resolving variables."
+            return
+        }
         guard !isProcessingFolder else {
             saveError = "Wait for the current folder operation before resolving this editor's variables."
             return
@@ -2458,6 +2526,14 @@ final class MetadataViewModel {
     }
 
     func retryVariableWrites() {
+        if retainedVariableWrites.isEmpty && retainedVariableAdmissions.isEmpty && !variableDiscardedEditorCheckpoints.isEmpty {
+            guard variableRecoveryOwnerID == nil, !isProcessingFolder else { return }
+            batchProcessTask = Task {
+                await reconcileVariableDiscardedEditors()
+                synchronizeVariableLifecycleRetention()
+            }
+            return
+        }
         guard !isProcessingFolder, let folder = retainedVariableWrites.first?.folderURL ?? retainedVariableAdmissions.first?.folderURL else { return }
         let folderKey = Self.variablePhotoKey(folder)
         let requests = retainedVariableWrites.filter { Self.variablePhotoKey($0.folderURL) == folderKey }
@@ -2468,6 +2544,13 @@ final class MetadataViewModel {
     func waitForVariableProcessing() async { await batchProcessTask?.value }
 
     func requireVariableDraftsPersisted() throws {
+        if variableRecoveryOwnerID != nil {
+            throw CaptionWorkspaceFlushError.persistenceFailed("Finish or cancel the variable conflict review before closing or changing this workspace.")
+        }
+        if variableDiscardedEditorCheckpoints.contains(where: variableDiscardOwnsCurrentEditor) {
+            throw CaptionWorkspaceFlushError.persistenceFailed(
+                "The discarded variable editor must be refreshed before saving or leaving. Open the metadata editor and finish recovery for any other selected photos.")
+        }
         if !activeVariableBatchIDs.isEmpty {
             throw CaptionWorkspaceFlushError.persistenceFailed(
                 "Variable processing is still running. Wait for its result before closing or changing this workspace.")
@@ -2482,7 +2565,7 @@ final class MetadataViewModel {
     }
 
     private func synchronizeVariableLifecycleRetention() {
-        if !activeVariableBatchIDs.isEmpty || retainedVariableAdmissions.contains(where: \.requiresPersistence) || retainedVariableWrites.contains(where: { !$0.hasVerifiedPreparedRecord }) {
+        if variableRecoveryOwnerID != nil || variableDiscardedEditorCheckpoints.contains(where: variableDiscardOwnsCurrentEditor) || !activeVariableBatchIDs.isEmpty || retainedVariableAdmissions.contains(where: \.requiresPersistence) || retainedVariableWrites.contains(where: { !$0.hasVerifiedPreparedRecord }) {
             variableLifecycleCoordinator.register(ownerID: variableLifecycleOwnerID) { [self] in
                 try requireVariableDraftsPersisted()
             }
@@ -2520,12 +2603,408 @@ final class MetadataViewModel {
             hasC2PA: credentials, evidence: .init(sourceRevision: after, xmpData: xmp.snapshot.data))
     }
 
+    @ObservationIgnored private var variableRecoveryEditorBarrier: (owner: UUID, handler: @MainActor () throws -> Void)?
+
+    func registerVariableRecoveryEditorBarrier(owner: UUID, handler: @escaping @MainActor () throws -> Void) {
+        variableRecoveryEditorBarrier = (owner, handler)
+    }
+
+    func unregisterVariableRecoveryEditorBarrier(owner: UUID) {
+        if variableRecoveryEditorBarrier?.owner == owner { variableRecoveryEditorBarrier = nil }
+    }
+
+    func prepareVariableRecoveryPresentation() throws {
+        try variableRecoveryEditorBarrier?.handler()
+    }
+
+    var variableRecoveryPhotos: [URL] {
+        var seen = Set<String>()
+        return (retainedVariableWrites.map(\.imageURL) + retainedVariableAdmissions.map(\.imageURL))
+            .filter { seen.insert(Self.variablePhotoKey($0)).inserted }
+    }
+
+    func beginVariableRecovery(for photoURL: URL) async throws -> VariableConflictSnapshot {
+        guard variableRecoveryOwnerID == nil else { throw VariableConflictRecoveryError.requestRunning }
+        guard variableRecoveryPhotos.contains(where: { Self.variablePhotoKey($0) == Self.variablePhotoKey(photoURL) }) else {
+            throw VariableConflictRecoveryError.obsoleteReview
+        }
+        try prepareVariableRecoveryPresentation()
+        let owner = UUID()
+        variableRecoveryOwnerID = owner
+        variableRecoveryPhotoURL = photoURL
+        variableRecoveryEndRequested = false
+        synchronizeVariableLifecycleRetention()
+        do {
+            // Freeze first, then settle every already accepted operation. In-flight admissions
+            // may become requests; the review snapshots that final set, never an earlier guess.
+            if !activeVariableBatchIDs.isEmpty {
+                await withCheckedContinuation { variableQuiescenceWaiters.append($0) }
+            }
+            try Task.checkCancellation()
+            guard variableRecoveryOwnerID == owner else { throw VariableConflictRecoveryError.obsoleteReview }
+            let entries = try variableRecoveryEntries(for: photoURL)
+            guard !entries.isEmpty else { throw VariableConflictRecoveryError.obsoleteReview }
+            let generation = variableRecoveryGeneration
+            let snapshot = try await VariableConflictRecovery.makeSnapshot(photoURL: photoURL,
+                reason: variableFailures[Self.variablePhotoKey(photoURL)] ?? "Retained variable work needs review.",
+                generation: generation, entries: entries)
+            try Task.checkCancellation()
+            guard variableRecoveryOwnerID == owner, variableRecoveryGeneration == generation else {
+                throw VariableConflictRecoveryError.obsoleteReview
+            }
+            variableRecoverySnapshot = snapshot
+            return snapshot
+        } catch {
+            if variableRecoveryOwnerID == owner { releaseVariableRecovery() }
+            throw error
+        }
+    }
+
+    func endVariableRecovery(_ snapshot: VariableConflictSnapshot) async {
+        guard variableRecoverySnapshot?.id == snapshot.id else { return }
+        if variableRecoveryOperationID != nil {
+            // The operation owns its freeze through verification and editor cleanup even if the
+            // sheet disappears. Its defer releases only after every awaited step is finished.
+            variableRecoveryEndRequested = true
+        } else { releaseVariableRecovery() }
+    }
+
+    func exportVariableRecovery(_ snapshot: VariableConflictSnapshot, to url: URL) async throws -> VariableConflictExportReceipt {
+        try validateVariableRecovery(snapshot)
+        guard variableRecoveryOperationID == nil else { throw VariableConflictRecoveryError.requestRunning }
+        let operation = UUID()
+        variableRecoveryOperationID = operation
+        defer { finishVariableRecoveryOperation(operation) }
+        let receipt = try await VariableConflictRecovery.export(snapshot, to: url,
+            currentEntries: variableRecoveryEntries(for: snapshot.photoURL), generation: variableRecoveryGeneration,
+            protectedPhotoURLs: variableRecoveryProtectedPhotos, access: variableRecoveryExportAccess)
+        try Task.checkCancellation()
+        try validateVariableRecovery(snapshot)
+        return receipt
+    }
+
+    func discardVariableRecovery(_ snapshot: VariableConflictSnapshot, receipt: VariableConflictExportReceipt) async throws {
+        try validateVariableRecovery(snapshot)
+        guard variableRecoveryOperationID == nil else { throw VariableConflictRecoveryError.requestRunning }
+        let operation = UUID()
+        variableRecoveryOperationID = operation
+        defer { finishVariableRecoveryOperation(operation) }
+        await variableRecoveryBeforeDiscard()
+        try Task.checkCancellation()
+        try validateVariableRecovery(snapshot)
+        let ids = try await VariableConflictRecovery.verifyDiscard(snapshot, receipt: receipt,
+            currentEntries: variableRecoveryEntries(for: snapshot.photoURL), generation: variableRecoveryGeneration,
+            protectedPhotoURLs: variableRecoveryProtectedPhotos)
+        try Task.checkCancellation()
+        try validateVariableRecovery(snapshot)
+        guard Set(ids) == Set(snapshot.entryIDs) else { throw VariableConflictRecoveryError.obsoleteReview }
+        // Capture any currently focused native text before deciding whether the original
+        // editor checkpoint is unchanged. No registered barrier means no destructive reload.
+        try prepareVariableRecoveryPresentation()
+        let mayReloadEditor = variableRecoveryEditorBarrier != nil
+        let key = Self.variablePhotoKey(snapshot.photoURL)
+        let idSet = Set(ids)
+        let origin = retainedVariableAdmissions.first { idSet.contains($0.id) && Self.variablePhotoKey($0.imageURL) == key }
+            ?? retainedVariableWrites.first(where: { idSet.contains($0.id) && Self.variablePhotoKey($0.imageURL) == key })
+                .flatMap { retainedVariableOrigins[$0.id] }
+        if (!mayReloadEditor || isSaving), let origin, variableDiscardOwnsCurrentEditor(origin) {
+            throw CaptionWorkspaceFlushError.persistenceFailed(isSaving
+                ? "Wait for the current metadata save to finish before discarding variable requests. The exported requests are still retained."
+                : "Open the metadata editor before discarding this photo's variable requests so its current text can be checked. The exported requests are still retained.")
+        }
+        retainedVariableAdmissions.removeAll { idSet.contains($0.id) && Self.variablePhotoKey($0.imageURL) == key }
+        retainedVariableWrites.removeAll { idSet.contains($0.id) && Self.variablePhotoKey($0.imageURL) == key }
+        for id in ids {
+            retainedVariableEditorCheckpoints.removeValue(forKey: id)
+            retainedVariableOrigins.removeValue(forKey: id)
+        }
+        variableFailures.removeValue(forKey: key)
+        if let origin, variableDiscardOwnsCurrentEditor(origin) {
+            variableDiscardedEditorCheckpoints.append(origin)
+            if mayReloadEditor { await reconcileVariableDiscardedEditors() }
+        }
+        // Verification and removal are complete; no file or sidecar has been modified.
+        releaseVariableRecovery()
+    }
+
+    private var variableRecoveryProtectedPhotos: [URL] { variableRecoveryPhotos + selectedURLs }
+
+    private func validateVariableRecovery(_ snapshot: VariableConflictSnapshot) throws {
+        guard variableRecoveryOwnerID != nil, variableRecoverySnapshot?.id == snapshot.id,
+              variableRecoveryGeneration == snapshot.generation,
+              variableRecoveryPhotoURL.map(Self.variablePhotoKey) == Self.variablePhotoKey(snapshot.photoURL) else {
+            throw VariableConflictRecoveryError.obsoleteReview
+        }
+    }
+
+    private func finishVariableRecoveryOperation(_ operation: UUID) {
+        guard variableRecoveryOperationID == operation else { return }
+        variableRecoveryOperationID = nil
+        if variableRecoveryEndRequested { releaseVariableRecovery() }
+    }
+
+    private func releaseVariableRecovery() {
+        variableRecoverySnapshot = nil
+        variableRecoveryPhotoURL = nil
+        variableRecoveryOwnerID = nil
+        variableRecoveryOperationID = nil
+        variableRecoveryEndRequested = false
+        synchronizeVariableLifecycleRetention()
+    }
+
+    private func variableRecoveryEntries(for photoURL: URL) throws -> [VariableConflictEntry] {
+        let key = Self.variablePhotoKey(photoURL)
+        let failure = variableFailures[key]
+        let admissions = try retainedVariableAdmissions.filter { Self.variablePhotoKey($0.imageURL) == key }.map {
+            VariableConflictEntry(id: $0.id, imageURL: $0.imageURL, folderURL: $0.folderURL,
+                admissionPayload: try variableAdmissionPayload($0), failure: failure)
+        }
+        let requests = try retainedVariableWrites.filter { Self.variablePhotoKey($0.imageURL) == key }.map { request in
+            VariableConflictEntry(id: request.id, imageURL: request.imageURL, folderURL: request.folderURL,
+                admissionPayload: try retainedVariableOrigins[request.id].map(variableAdmissionPayload),
+                request: request, failure: failure)
+        }
+        return requests + admissions
+    }
+
+    private func variableAdmissionPayload(_ admission: VariableAdmission) throws -> Data {
+        func json<T: Encodable>(_ value: T) throws -> Any {
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            return try JSONSerialization.jsonObject(with: encoder.encode(value), options: [.fragmentsAllowed])
+        }
+        func metadata(_ value: IPTCMetadata?) throws -> Any { try json(value.map(VariableRecoveryMetadata.init)) }
+        func sidecar(_ value: MetadataSidecar?) throws -> Any { try json(value.map(VariableRecoverySidecar.init)) }
+        func mutation(_ value: MetadataFieldMutation) throws -> [String: Any] {
+            switch value {
+            case .untouched: return ["operation": "untouched"]
+            case .clear: return ["operation": "clear"]
+            case .append(let values): return ["operation": "append", "values": values]
+            case .overwrite(.scalar(let value)): return ["operation": "overwriteScalar", "value": value]
+            case .overwrite(.repeatable(let values)): return ["operation": "overwriteRepeatable", "values": values]
+            }
+        }
+        let options = admission.options
+        let ownsEditor = admission.selectedURLs.contains(admission.imageURL)
+        var document: [String: Any] = [
+            "formatVersion": 1, "admissionID": admission.id.uuidString,
+            "imageURL": admission.imageURL.absoluteString, "folderURL": admission.folderURL.absoluteString,
+            "requiresPersistence": admission.requiresPersistence,
+            "selectionURLs": ownsEditor ? admission.selectedURLs.map(\.absoluteString) : [],
+            "selectionLoadID": try json(ownsEditor ? admission.loadID : nil),
+            "editedMetadata": try metadata(ownsEditor ? admission.edited : nil),
+            "previousMetadata": try metadata(ownsEditor ? admission.previous : nil),
+            "expectedSidecarExisted": ownsEditor && admission.expectedRecord != nil,
+            "expectedSidecar": try sidecar(ownsEditor ? admission.expectedRecord : nil),
+            "referenceSource": ownsEditor ? admission.referenceSource.rawValue : "automatic",
+            "hasEditorInput": ownsEditor && admission.hasEditorInput,
+            "sequenceIndex": admission.sequenceIndex, "filename": admission.imageURL.lastPathComponent,
+            "batchBaseline": try metadata(ownsEditor ? admission.batchBaseline : nil),
+            "options": ["ordinaryMode": options.ordinaryMode.rawValue, "credentialMode": options.credentialMode.rawValue,
+                "rawMode": options.rawMode.rawValue, "credentialRawMode": options.credentialRawMode.rawValue,
+                "initials": options.initials, "addJobIDToKeywords": options.addJobIDToKeywords,
+                "approvedKeywords": options.approvedKeywords, "strictKeywords": options.strictKeywords] as [String: Any]
+        ]
+        if ownsEditor, let batch = admission.batchInput {
+            var fields: [String: Any] = [:]
+            for (field, intent) in batch.fields { fields[field.rawValue] = try mutation(intent) }
+            let locations: [String: Any]
+            switch batch.locations {
+            case .untouched: locations = ["operation": "untouched"]
+            case .clear: locations = ["operation": "clear"]
+            case .append(let values): locations = ["operation": "append", "values": try json(values)]
+            case .replace(let values): locations = ["operation": "replace", "values": try json(values)]
+            }
+            let suppliers: [String: Any]
+            switch batch.suppliers {
+            case .untouched: suppliers = ["operation": "untouched"]
+            case .clear: suppliers = ["operation": "clear"]
+            case .append(let values): suppliers = ["operation": "append", "values": try json(values)]
+            case .replace(let values): suppliers = ["operation": "replace", "values": try json(values)]
+            }
+            document["batchInput"] = ["metadata": try metadata(batch.metadata),
+                "previousCommon": try metadata(batch.previousCommon), "fields": fields,
+                "locations": locations, "suppliers": suppliers, "keywordsMode": batch.keywordsMode.rawValue,
+                "personMode": batch.personMode.rawValue]
+        } else { document["batchInput"] = NSNull() }
+        if let input = admission.cachedInput {
+            document["cachedFirstInput"] = ["baselineSidecar": try sidecar(input.baselineSidecar),
+                "embeddedMetadata": try metadata(input.embeddedMetadata), "xmpMetadata": try metadata(input.xmpMetadata),
+                "hasC2PA": input.hasC2PA, "evidence": try json(input.evidence)]
+        } else { document["cachedFirstInput"] = NSNull() }
+        return try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+    }
+
+    private var variableDiscardedEditorCheckpoints: [VariableAdmission] = []
+
+    private func reconcileVariableDiscardedEditors() async {
+        guard !isSaving, variableRecoveryEditorBarrier != nil else { return }
+        do { try prepareVariableRecoveryPresentation() } catch { return }
+        let pending = variableDiscardedEditorCheckpoints
+        for origin in pending {
+            let keys = Set(origin.selectedURLs.map(Self.variablePhotoKey))
+            guard !variableRecoveryPhotos.contains(where: { keys.contains(Self.variablePhotoKey($0)) }) else { continue }
+            variableDiscardedEditorCheckpoints.removeAll { $0.id == origin.id }
+            await reloadAfterVariableDiscard(origin)
+        }
+    }
+
+    private func requireVariableDiscardedEditorReconciled() throws {
+        guard !variableDiscardedEditorCheckpoints.contains(where: variableDiscardOwnsCurrentEditor) else {
+            throw CaptionWorkspaceFlushError.persistenceFailed(
+                "This shared editor still contains exported variable edits. Finish recovery for the other selected photos, then use Retry Variable Writes to refresh it before saving.")
+        }
+    }
+
+    private func variableDiscardOwnsCurrentEditor(_ origin: VariableAdmission) -> Bool {
+        !origin.selectedURLs.isEmpty && origin.selectedURLs.contains(origin.imageURL)
+            && selectedURLs == origin.selectedURLs
+            && currentFolderURL.map(Self.variablePhotoKey) == Self.variablePhotoKey(origin.folderURL)
+            && metadataLoadRequestID == origin.loadID && editingMetadata == origin.edited
+    }
+
+    private func reloadAfterVariableDiscard(_ origin: VariableAdmission) async {
+        let selection = origin.selectedURLs
+        guard !isSaving, variableDiscardOwnsCurrentEditor(origin) else { return }
+        let selectionKeys = Set(selection.map(Self.variablePhotoKey))
+        // Shared template buffers still belong to other retained photos until their own review.
+        guard !variableRecoveryPhotos.contains(where: { selectionKeys.contains(Self.variablePhotoKey($0)) }) else { return }
+        let loadID = UUID()
+        let empty = IPTCMetadata()
+        metadataLoadTask?.cancel()
+        metadataLoadRequestID = loadID
+        isLoading = true
+        editingMetadata = empty
+        previousEditingMetadata = empty
+        hasChanges = false
+        selectedHavePendingSidecars = false
+        cleanupBaseline = nil
+        capturedCaptionWriteExpectation = nil
+        sidecarHistory = []
+        batchFieldMutations = [:]
+        batchLocationsShownMutation = .untouched
+        batchImageSupplierMutation = .untouched
+        defer { if metadataLoadRequestID == loadID { isLoading = false } }
+        do {
+            var records: [URL: IPTCMetadata] = [:]
+            var inputs: [URL: VariableMetadataInputSnapshot] = [:]
+            for url in selection {
+                let input = try await loadVariableInput(imageURL: url, folderURL: origin.folderURL)
+                inputs[url] = input
+                let source: MetadataReferenceSource = selection.count == 1 ? origin.referenceSource
+                    : (input.xmpMetadata == nil ? .embedded : .xmp)
+                let reference = referenceMetadata(for: source, embedded: input.embeddedMetadata, xmp: input.xmpMetadata, imageURL: url)
+                    ?? input.embeddedMetadata
+                var displayed = input.baselineSidecar?.pendingChanges == true ? input.baselineSidecar!.metadata : reference
+                displayed.cameraRaw = reference.cameraRaw
+                displayed.exifOrientation = input.baselineSidecar?.orientationDraft?.targetOrientation ?? reference.exifOrientation
+                records[url] = displayed
+            }
+            guard metadataLoadRequestID == loadID, selectedURLs == selection,
+                  currentFolderURL.map(Self.variablePhotoKey) == Self.variablePhotoKey(origin.folderURL), editingMetadata == empty else { return }
+            if selection.count == 1, let url = selection.first, let input = inputs[url], let displayed = records[url] {
+                embeddedMetadata = input.embeddedMetadata
+                xmpMetadata = input.xmpMetadata
+                metadataReferenceSource = origin.referenceSource == .xmp && input.xmpMetadata == nil ? .embedded : origin.referenceSource
+                metadata = referenceMetadata(for: metadataReferenceSource, embedded: embeddedMetadata, xmp: xmpMetadata, imageURL: url)
+                originalImageMetadata = metadata
+                cleanupBaseline = (url, origin.folderURL, input.baselineSidecar)
+                sidecarHistory = input.baselineSidecar?.history ?? []
+                editingMetadata = displayed
+                previousEditingMetadata = displayed
+            } else { publishBatchMetadata(selection.compactMap { records[$0] }, metadataByURL: records, isReload: false) }
+            selectedHavePendingSidecars = inputs.values.contains { $0.baselineSidecar?.pendingChanges == true }
+            hasChanges = selectedHavePendingSidecars
+            metadataLoadGeneration += 1
+            saveError = nil
+        } catch {
+            guard metadataLoadRequestID == loadID, selectedURLs == selection, editingMetadata == empty else { return }
+            metadata = nil; originalImageMetadata = nil; embeddedMetadata = nil; xmpMetadata = nil
+            saveError = "The exported variable requests were discarded, but saved metadata could not be reloaded: \(error.localizedDescription)"
+        }
+    }
+
+    private func captureVariableAdmission(_ admission: VariableAdmission) async throws -> VariableMetadataWriteRequest? {
+        let url = admission.imageURL
+        let folder = admission.folderURL
+        let selected = admission.selectedURLs
+        let edited = admission.edited
+        let previous = admission.previous
+        let selectedExpectedRecord = admission.expectedRecord
+        let selectedSource = admission.referenceSource
+        let hasEditorInput = admission.hasEditorInput
+        let options = admission.options
+        let input: VariableMetadataInputSnapshot
+        if let cached = admission.cachedInput { input = cached }
+        else {
+            input = try await loadVariableInput(imageURL: url, folderURL: folder)
+            admission.cachedInput = input
+            variableRecoveryGeneration &+= 1
+        }
+        let isCapturedSelection = selected.count == 1 && selected.first == url && hasEditorInput
+        let referenceSource: MetadataReferenceSource = isCapturedSelection
+            ? selectedSource : (input.xmpMetadata == nil ? .embedded : .xmp)
+        let physical = referenceMetadata(for: referenceSource, embedded: input.embeddedMetadata,
+            xmp: input.xmpMetadata, imageURL: url) ?? input.embeddedMetadata
+        var original = input.baselineSidecar?.pendingChanges == true
+            ? input.baselineSidecar!.metadata : physical
+        // JSON deliberately omits technical state. Carry the live physical
+        // reference separately so unchanged Develop/orientation is not a draft.
+        original.cameraRaw = physical.cameraRaw
+        original.exifOrientation = physical.exifOrientation
+        var local = original
+        if isCapturedSelection {
+            guard try Self.sameVariableRecord(selectedExpectedRecord, input.baselineSidecar) else {
+                throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
+                    "The saved metadata changed after this editor was loaded. Your editor values were retained; reload or reconcile before processing variables."])
+            }
+            if input.baselineSidecar?.pendingChanges != true {
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                guard let previous, try encoder.encode(previous) == encoder.encode(original) else {
+                    throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
+                        "The photo's physical metadata changed after this editor was loaded. Your editor values remain unchanged; reload or reconcile before processing variables."])
+                }
+            }
+            // The loaded editor already proved its technical values unchanged.
+            // Mask parse identities are not an editorial edit; physical writes
+            // preserve the service's current technical record independently.
+            original.cameraRaw = edited.cameraRaw
+            original.exifOrientation = edited.exifOrientation
+            local = edited
+        } else if selected.contains(url), let batchInput = admission.batchInput {
+            if let captured = admission.batchBaseline {
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                guard try encoder.encode(captured) == encoder.encode(original) else {
+                    throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
+                        "The saved metadata changed after this batch editor was loaded. The template remains in the editor; reconcile before processing variables."])
+                }
+            }
+            Self.applyBatchEdits(batchInput.metadata, to: &local,
+                previousCommon: batchInput.previousCommon, batchFieldMutations: batchInput.fields,
+                batchLocationsShownMutation: batchInput.locations, batchImageSupplierMutation: batchInput.suppliers,
+                keywordsMode: batchInput.keywordsMode, personMode: batchInput.personMode)
+        }
+        let resolved = try await variableResolver(.init(metadata: local, imageURL: url,
+            filename: url.lastPathComponent, sequenceIndex: admission.sequenceIndex, options: options))
+        try Task.checkCancellation()
+        return try VariableMetadataWriteRequest.capture(original: original, resolved: resolved,
+            baselineSidecar: input.baselineSidecar, imageURL: url, folderURL: folder,
+            requestedMode: options.mode(hasC2PA: input.hasC2PA, imageURL: url), creationEvidence: input.evidence)
+    }
+
     private func startVariableBatch(images: [ImageFile],
                                     retryRequests: [VariableMetadataWriteRequest] = [],
                                     retryAdmissions: [VariableAdmission] = [], retryFolder: URL? = nil) {
+        guard variableRecoveryOwnerID == nil else {
+            saveError = "Finish or cancel the variable conflict review before starting or retrying variable processing."
+            return
+        }
         guard let folder = retryFolder ?? currentFolderURL,
               !images.isEmpty || !retryRequests.isEmpty || !retryAdmissions.isEmpty else { return }
         let isRetry = retryFolder != nil
+        if !isRetry {
+            do { try requireVariableDiscardedEditorReconciled() }
+            catch { saveError = error.localizedDescription; return }
+        }
         let urls = isRetry ? retryRequests.map(\.imageURL) + retryAdmissions.map(\.imageURL) : images.map(\.url)
         let batchID = UUID()
         let folderKey = Self.variablePhotoKey(folder)
@@ -2545,7 +3024,10 @@ final class MetadataViewModel {
         let selectedSource = metadataReferenceSource
         let hasEditorInput = hasChanges && !Set(selected).isDisjoint(with: Set(urls))
         let hasUnsavedEditorInput = hasEditorInput && hasUnpersistedEditorChanges
-        let batchMutation = selectedCount > 1 && hasEditorInput ? capturedBatchMutation() : nil
+        let batchInput: VariableCapturedBatchInput? = selectedCount > 1 && hasEditorInput
+            ? .init(metadata: edited, previousCommon: previous, fields: batchFieldMutations,
+                locations: batchLocationsShownMutation, suppliers: batchImageSupplierMutation,
+                keywordsMode: multiSelectMode(for: "keywords"), personMode: multiSelectMode(for: "personShown")) : nil
         let selectedBatchBaselines = batchMetadataByURL
         let technicalDirty = hasEditorInput && (Self.developSettingsChanged(edited.cameraRaw, previous?.cameraRaw)
             || edited.exifOrientation != previous?.exifOrientation)
@@ -2564,66 +3046,14 @@ final class MetadataViewModel {
         if isRetry { admissions = retryAdmissions }
         else {
             admissions = urls.enumerated().map { index, url in
-                var capturedInput: VariableMetadataInputSnapshot?
-                return VariableAdmission(id: UUID(), imageURL: url, folderURL: folder,
+                VariableAdmission(id: UUID(), imageURL: url, folderURL: folder,
                     editorCheckpoint: selected == [url] ? .init(photoURL: url, folderURL: folder,
-                        loadID: loadID, metadata: edited) : nil,
+                        loadID: loadID, metadata: edited) : nil, loadID: loadID,
                     requiresPersistence: hasUnsavedEditorInput && selected.contains(url),
-                    capture: { [weak self] in
-                        guard let self else { throw CancellationError() }
-                        let input: VariableMetadataInputSnapshot
-                        if let capturedInput { input = capturedInput }
-                        else {
-                            input = try await loadVariableInput(imageURL: url, folderURL: folder)
-                            capturedInput = input
-                        }
-                        let isCapturedSelection = selected.count == 1 && selected.first == url && hasEditorInput
-                        let referenceSource: MetadataReferenceSource = isCapturedSelection
-                            ? selectedSource : (input.xmpMetadata == nil ? .embedded : .xmp)
-                        let physical = referenceMetadata(for: referenceSource, embedded: input.embeddedMetadata,
-                            xmp: input.xmpMetadata, imageURL: url) ?? input.embeddedMetadata
-                        var original = input.baselineSidecar?.pendingChanges == true
-                            ? input.baselineSidecar!.metadata : physical
-                        // JSON deliberately omits technical state. Carry the live physical
-                        // reference separately so unchanged Develop/orientation is not a draft.
-                        original.cameraRaw = physical.cameraRaw
-                        original.exifOrientation = physical.exifOrientation
-                        var local = original
-                        if isCapturedSelection {
-                            guard try Self.sameVariableRecord(selectedExpectedRecord, input.baselineSidecar) else {
-                                throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
-                                    "The saved metadata changed after this editor was loaded. Your editor values were retained; reload or reconcile before processing variables."])
-                            }
-                            if input.baselineSidecar?.pendingChanges != true {
-                                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-                                guard let previous, try encoder.encode(previous) == encoder.encode(original) else {
-                                    throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
-                                        "The photo's physical metadata changed after this editor was loaded. Your editor values remain unchanged; reload or reconcile before processing variables."])
-                                }
-                            }
-                            // The loaded editor already proved its technical values unchanged.
-                            // Mask parse identities are not an editorial edit; physical writes
-                            // preserve the service's current technical record independently.
-                            original.cameraRaw = edited.cameraRaw
-                            original.exifOrientation = edited.exifOrientation
-                            local = edited
-                        } else if selected.contains(url), let batchMutation {
-                            if let captured = selectedBatchBaselines[url] {
-                                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-                                guard try encoder.encode(captured) == encoder.encode(original) else {
-                                    throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
-                                        "The saved metadata changed after this batch editor was loaded. The template remains in the editor; reconcile before processing variables."])
-                                }
-                            }
-                            batchMutation(&local)
-                        }
-                        let resolved = try await variableResolver(.init(metadata: local, imageURL: url,
-                            filename: url.lastPathComponent, sequenceIndex: index + 1, options: options))
-                        try Task.checkCancellation()
-                        return try VariableMetadataWriteRequest.capture(original: original, resolved: resolved,
-                            baselineSidecar: input.baselineSidecar, imageURL: url, folderURL: folder,
-                            requestedMode: options.mode(hasC2PA: input.hasC2PA, imageURL: url), creationEvidence: input.evidence)
-                    })
+                    selectedURLs: selected, edited: edited, previous: previous,
+                    expectedRecord: selectedExpectedRecord, referenceSource: selectedSource,
+                    hasEditorInput: hasEditorInput, batchInput: batchInput,
+                    batchBaseline: selectedBatchBaselines[url], options: options, sequenceIndex: index + 1)
             }
             retainedVariableAdmissions.append(contentsOf: admissions)
         }
@@ -2642,6 +3072,11 @@ final class MetadataViewModel {
         batchProcessTask = Task {
             defer {
                 activeVariableBatchIDs.remove(batchID)
+                if activeVariableBatchIDs.isEmpty {
+                    let waiters = variableQuiescenceWaiters
+                    variableQuiescenceWaiters.removeAll()
+                    waiters.forEach { $0.resume() }
+                }
                 synchronizeVariableLifecycleRetention()
                 if batchProcessGeneration == generation { isProcessingFolder = false; folderProcessProgress = "" }
             }
@@ -2666,13 +3101,17 @@ final class MetadataViewModel {
                     let key = Self.variablePhotoKey(url)
                     let explicitRetry = retryRequests.first { Self.variablePhotoKey($0.imageURL) == key }
                     let admission = admissions.first { Self.variablePhotoKey($0.imageURL) == key }
-                    let request: VariableMetadataWriteRequest? = if let explicitRetry { explicitRetry } else { try await admission?.capture() }
+                    let request: VariableMetadataWriteRequest?
+                    if let explicitRetry { request = explicitRetry }
+                    else if let admission { request = try await captureVariableAdmission(admission) }
+                    else { throw VariableConflictRecoveryError.obsoleteReview }
                     if let admission { retainedVariableAdmissions.removeAll { $0.id == admission.id } }
                     if let request {
                         // Retain before the first possible commit. Even a JSON readback failure
                         // must keep the identical operation/receipt available to the Retry action.
                         if !retainedVariableWrites.contains(where: { $0.id == request.id }) {
                             retainedVariableWrites.append(request)
+                            if let admission { retainedVariableOrigins[request.id] = admission }
                             if let checkpoint = admission?.editorCheckpoint {
                                 retainedVariableEditorCheckpoints[request.id] = checkpoint
                             }
@@ -2684,6 +3123,7 @@ final class MetadataViewModel {
                         if result.completed {
                             retainedVariableWrites.removeAll { $0.id == request.id }
                             retainedVariableEditorCheckpoints.removeValue(forKey: request.id)
+                            retainedVariableOrigins.removeValue(forKey: request.id)
                             if let record = result.physicalResult?.installedSidecar ?? result.preparedSidecar {
                                 acknowledgedBatchMetadata[url] = record.metadata
                                 acknowledgedPending[url] = record.pendingChanges
@@ -2719,10 +3159,14 @@ final class MetadataViewModel {
                     item.wasCancelled = error is CancellationError
                     item.failure = item.wasCancelled ? nil : error.localizedDescription
                 }
+                let failureKey = Self.variablePhotoKey(url)
+                if item.completed { variableFailures.removeValue(forKey: failureKey) }
+                else { variableFailures[failureKey] = item.failure ?? item.writeResult?.failure ?? "Variable persistence did not complete." }
                 results.append(item)
                 if batchProcessGeneration == generation { folderProcessProgress = "\(results.count)/\(urls.count)" }
                 if item.wasCancelled || Task.isCancelled { cancelled = true; break }
             }
+            await reconcileVariableDiscardedEditors()
             guard batchProcessGeneration == generation else { return }
             let outcome = VariableMetadataBatchOutcome(requestID: batchID, folderURL: folder,
                 results: results, unattemptedURLs: Array(urls.dropFirst(results.count)), wasCancelled: cancelled)
@@ -2980,6 +3424,8 @@ final class MetadataViewModel {
     // MARK: - Sidecar Management
 
     func saveToSidecar() {
+        do { try requireVariableDiscardedEditorReconciled() }
+        catch { saveError = error.localizedDescription; return }
         guard let folderURL = currentFolderURL else { return }
         let generation = writeTaskGeneration + 1
         if selectedCount == 1, let imageURL = selectedURLs.first {
@@ -3047,6 +3493,7 @@ final class MetadataViewModel {
     /// the same image cannot manufacture duplicate edits; the queue retains and retries a failed
     /// request at the next durable barrier.
     func captureCaptionDraftPersistence() throws -> CaptionDraftPersistence? {
+        try requireVariableDiscardedEditorReconciled()
         guard let folderURL = currentFolderURL else {
             throw CaptionWorkspaceFlushError.sidecarUnavailable
         }
@@ -3387,6 +3834,8 @@ final class MetadataViewModel {
     }
 
     func writeMetadataAndClearSidecar() {
+        do { try requireVariableDiscardedEditorReconciled() }
+        catch { saveError = error.localizedDescription; return }
         guard selectedCount == 1,
               let imageURL = selectedURLs.first,
               let folderURL = currentFolderURL else {

@@ -178,6 +178,7 @@ struct ContentView: View {
     @State private var windowContentHeight: CGFloat = 0
     @State private var backupEditedFolderItem: BackupEditedItem?
     @State private var isShowingWriteAllC2PAWarning = false
+    @State private var isShowingVariableRecovery = false
     @State private var c2paDetailPresentation: C2PADetailPresentation?
     @State private var c2paValidation: C2PAValidationResult?
     @State private var pendingWriteAllC2PACount = 0
@@ -421,6 +422,9 @@ struct ContentView: View {
     private var contentWithSheets: some View {
         contentBase
             .sheet(isPresented: $isShowingTemplatePicker) { templatePickerSheet }
+            .sheet(isPresented: $isShowingVariableRecovery) {
+                VariableConflictRecoveryHost(viewModel: metadataViewModel)
+            }
             .sheet(isPresented: $isShowingSaveTemplateName) { saveTemplateSheet }
             .sheet(isPresented: $isShowingSaveDevelopTemplateName) { saveDevelopTemplateSheet }
             .sheet(item: $ftpUploadItem) { item in
@@ -2089,6 +2093,21 @@ struct ContentView: View {
             }
         }
         if metadataViewModel.hasRetainedVariableWrites {
+            ToolbarItem(id: "folder-variable-review", placement: .secondaryAction) {
+                Button {
+                    // Recovery must remain reachable while retained variable work blocks flush.
+                    do {
+                        try metadataViewModel.prepareVariableRecoveryPresentation()
+                        isShowingVariableRecovery = true
+                    } catch {
+                        metadataViewModel.saveError = error.localizedDescription
+                    }
+                } label: {
+                    Label("Review Variable Conflicts", systemImage: "doc.text.magnifyingglass")
+                }
+                .accessibilityIdentifier("toolbar.processVariables.review")
+                .help("Export and review retained variable edits for one photo before discarding them.")
+            }
             ToolbarItem(id: "folder-variable-retry", placement: .secondaryAction) {
                 Button {
                     // Retry owns an immutable request and must remain reachable when its

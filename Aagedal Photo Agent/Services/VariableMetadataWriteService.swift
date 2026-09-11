@@ -7,6 +7,14 @@ nonisolated final class VariableMetadataWriteReceipt: @unchecked Sendable {
     private var physical: MetadataSidecarReplayCreationEvidence
     private var completed: VariableMetadataWriteResult?
     private var unverified: PendingMetadataWriteResult?
+    private var lastResult: VariableMetadataWriteResult?
+    func recordLastResult(_ value: VariableMetadataWriteResult) { lock.withLock { lastResult = value } }
+    func captureRecovery<T>(_ body: (MetadataSidecar?, MetadataSidecarReplayCreationEvidence, VariableMetadataWriteResult?, PendingMetadataWriteResult?, VariableMetadataWriteResult?) throws -> T) throws -> T {
+        try lock.withLock {
+            guard !running else { throw VariableConflictRecoveryError.requestRunning }
+            return try body(prepared, physical, completed, unverified, lastResult)
+        }
+    }
     var unverifiedCompletion: PendingMetadataWriteResult? { lock.withLock { unverified } }
     func recordUnverified(_ value: PendingMetadataWriteResult) { lock.withLock { unverified = value } }
     init(evidence: MetadataSidecarReplayCreationEvidence) { physical = evidence }
@@ -27,12 +35,36 @@ nonisolated struct VariableMetadataWriteRequest: Sendable {
     let imageURL: URL
     let folderURL: URL
     let requestedMode: MetadataWriteMode
+    let originalMetadata: IPTCMetadata
     let replay: MetadataSidecarReplayRequest
     let baselineSidecar: MetadataSidecar?
     fileprivate let receipt: VariableMetadataWriteReceipt
     var sidecar: MetadataSidecar { replay.sidecar }
     /// A verified JSON preparation has already retained this captured intent durably.
     var hasVerifiedPreparedRecord: Bool { receipt.state.0 != nil }
+
+    /// Sample all private receipt fields while execution is excluded by the same receipt lock.
+    /// The caller also freezes its admissions so this settled snapshot stays current for review.
+    func recoverySnapshot() throws -> VariableMetadataRequestRecoverySnapshot {
+        try receipt.captureRecovery { prepared, physical, completed, unverified, last in
+            .init(requestID: id, imageURL: imageURL, folderURL: folderURL, requestedMode: requestedMode.rawValue,
+                originalMetadata: .init(originalMetadata), capturedMetadata: .init(replay.sidecar.metadata),
+                baselineMetadata: .init(replay.baselineMetadata),
+                baselineSidecar: baselineSidecar.map(VariableRecoverySidecar.init),
+                capturedSidecar: .init(replay.sidecar), baselineRecordExisted: replay.baselineRecordExisted,
+                baselineHistory: replay.baselineHistory, fullChanges: replay.changes,
+                initialPhysicalEvidence: replay.creationEvidence, currentPhysicalEvidence: physical,
+                preparedSidecar: prepared.map(VariableRecoverySidecar.init),
+                completedResult: completed.map(VariableRecoveryWriteResult.init),
+                unverifiedCompletion: unverified.map(VariableRecoveryPhysicalResult.init),
+                lastResult: last.map(VariableRecoveryWriteResult.init),
+                jsonWasCommitted: replay.receipt.hasCommitted,
+                committedRecord: replay.receipt.committedRecord.map(VariableRecoverySidecar.init),
+                creationEvidenceInvalidated: replay.receipt.creationEvidenceInvalidated,
+                creationMirrorCompleted: replay.receipt.creationMirrorCompleted,
+                creationInstalledXMPData: replay.receipt.creationInstalledXMPData)
+        }
+    }
 
     static func capture(original: IPTCMetadata, resolved: IPTCMetadata,
         baselineSidecar: MetadataSidecar?, imageURL: URL, folderURL: URL,
@@ -62,7 +94,7 @@ nonisolated struct VariableMetadataWriteRequest: Sendable {
         let replay = MetadataSidecarReplayRequest(sidecar: sidecar, baselineMetadata: baseline,
             baselineHistory: baselineSidecar?.history ?? [], baselineRecordExisted: baselineSidecar != nil,
             changes: changes, imageURL: imageURL, folderURL: folderURL, creationEvidence: creationEvidence)
-        return Self(id: UUID(), imageURL: imageURL, folderURL: folderURL, requestedMode: requestedMode,
+        return Self(id: UUID(), imageURL: imageURL, folderURL: folderURL, requestedMode: requestedMode, originalMetadata: original,
             replay: replay, baselineSidecar: baselineSidecar, receipt: .init(evidence: creationEvidence))
     }
 }
@@ -100,8 +132,8 @@ nonisolated struct VariableMetadataWriteService: Sendable {
             result.failure = "This variable request is already being saved. Its captured values were retained."
             return result
         }
-        defer { request.receipt.end() }
-        if let completed = request.receipt.state.2 { return completed }
+        defer { request.receipt.recordLastResult(result); request.receipt.end() }
+        if let completed = request.receipt.state.2 { result = completed; return result }
         if Task.isCancelled { result.wasCancelled = true; return result }
         let service = MetadataSidecarService()
         if var unverified = request.receipt.unverifiedCompletion,
