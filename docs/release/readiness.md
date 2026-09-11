@@ -1,14 +1,25 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — field-only rating/label/add-person writes are committed and automated checks pass. Final native Face retest awaits desktop access.
-**Updated:** 2026-09-10
-**Latest implementation commit:** `34a7313a2d1d2cb01cd9cbf20e22f11a746fa249` (2,547 tests / 284 suites and repository checks passed).
-**Latest native evidence:** `7a503b3` recovery PASS; cycle-7 pre-Face-correction binary Browser PASS. Final `34a7313` Face launch blocked by locked Mac; do not transfer earlier native evidence to it without retesting.
-**Cycle baseline:** `53d0ef8` on `main`; clean checkout at cycle 7 start.
+**State:** IMPLEMENTING — explicit XMP label clears pass automated and native verification. Remaining writer, feature and release gates stay open.
+**Updated:** 2026-09-11
+**Latest implementation commit:** `b8e668a226293dee094e1f358c72dc238d7c232d` (2,554 tests / 285 suites and repository checks passed).
+**Latest native evidence:** `b8e668a` clear/write/relaunch and final-build reopen PASS; `34a7313` Face partial failure/retry/relaunch PASS in cycle 8.
+**Cycle baseline:** `d0af70b` on `main`; clean checkout at cycle 8 start.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+
+[Cycle 8](cycle-08-explicit-label-clear-2026-09-11.md) implements standard empty XMP Label
+presence through merge, JSON/XMP, Browser reload and export/FTP field mapping. An absent label
+still inherits. Focused v3 passes 68 tests / five suites, integrated checks pass 2,554 tests /
+285 suites, and repository validation plus independent source review pass. Native XMP-only clears
+preserve embedded PNG bytes, pending captions and null snapshots; restored preferences and relaunch
+retain None/None/Blue for two clear cases and an absent-label control. The final full-suite build
+was separately launched and preserves all eight fixture artifact states. Normal Quit and native
+inventory confirm every QA app entry stopped. Prior Face34a now passes actual partial failure,
+full error details, repair/retry, destination-only names and relaunch with exact hashes.
 
 [Cycle 7](cycle-07-field-write-completion-2026-09-10.md) closes the narrow native recovery gate
 on unchanged `7a503b3`: cancel review/export, export tamper rejection, exact A discard, actual B/C
@@ -20,8 +31,8 @@ native Face corrections; integrated v2 passes 2,547 tests / 284 suites plus repo
 Earlier focused v6 passes 117 tests / six suites. Native Browser rating/label, clears, failure details,
 pending-caption/nil-snapshot preservation and relaunch pass on the recorded pre-Face-correction
 binary. Native Face exposed a directory-URL trailing-slash mismatch and missing visible errors;
-both are corrected and independently reviewed. Final native Face testing is still required after
-the Mac locked during the rebuild.
+both are corrected and independently reviewed. The final cycle-7 native launch was blocked by a locked Mac; access resumed in cycle 8 and
+actual Face partial failure, retry and relaunch now pass on unchanged `34a7313`.
 
 [Cycle 6](cycle-06-caption-conflict-recovery-2026-09-10.md) implements scoped conflict review,
 verified private export and exact queued-set discard, preserving other photos and newer saved
@@ -70,13 +81,12 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Recheck desktop access and test the exact `34a7313` build against the prepared Face fixture:
-   Apply All with one blocked XMP, inspect full per-photo error, preserve destination-only names
-   and pending G, remove only the disposable obstruction, retry, and verify relaunch. Recheck
-   Browser persistence after the shared FaceBar change. Then continue the [field-write design](field-write-completion-design.md):
-   rotation/orientation carrier, retained Metadata Review replay/recovery, batch XMP completion
-   and non-displayed variables. Effective XMP-only label clear remains required; the new service
-   reports retained-pending failure when embedded fallback would keep the old label.
+1. Continue the [field-write design](field-write-completion-design.md): migrate Browser rotation
+   to verified per-field completion with an explicit technical orientation carrier; then retain
+   Metadata Review replay/recovery, batch XMP completion and non-displayed variable writes.
+   Those paths still have whole-record acknowledgement or untracked replay gaps. App-written
+   XMP-only label clears now work. The dependency's external empty element-form Label parsing
+   limitation remains an explicit interoperability follow-up; empty attributes are covered.
 2. Complete remaining Sony companion archive and source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Ingest, rename, Duplicate, Move, Reject and
    memo Trash now have implementation. Preserve explicit ownership through rendering/signing/
@@ -102,7 +112,7 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Archive/reassociation, transcription, reviewed variables and delivery; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 7 final regression/repository checks passed | Native Face retest, packaging and exact-candidate launch remain |
+| Automated regression and package | Cycle 8 regression/repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -116,9 +126,9 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 Cycle 6's final recovery build could not launch while the Mac was locked. Access resumed at the
 first cycle-7 recheck, and native recovery passed with exact fixture hashes after relaunch. No
-unlock bypass was used. The Mac locked again before final cycle-7 Face retesting; recheck availability
-next cycle while continuing independent implementation work. This is not a product failure or an
-all-work blocker.
+unlock bypass was used. The Mac locked again before final cycle-7 Face retesting and remained
+locked on the first cycle-8 check. Later access resumed; final Face34a and explicit-clear native
+checks pass. No user action remains for these temporary host limitations.
 
 XCTest failed to establish its daemon control session twice before executing any tests.
 [Diagnostics](cycle-03-test-launch-diagnostics.md) distinguish this from product failures.
@@ -149,29 +159,28 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Source `34a7313` contains ten reviewed implementation/project/test files. The exact final Debug
-3.0.0 (738) identity is `build/qa-field-write-cycle7-face/tested-binary-identity-final.json`, with
-full regression and repository logs under `/private/tmp/aagedal-coordinator-cycle7-*-v2.log`.
-Do not rebuild unchanged source just to resume its native test. The final build has not yet been
-native-launched because the Mac locked. The QA app was quit normally and inventory confirmed
-stopped before the final build.
+Source `b8e668a226293dee094e1f358c72dc238d7c232d` contains twelve reviewed source/test files. Focused v3, integrated
+and repository logs use `/private/tmp/aagedal-coordinator-cycle8-*.log`; exact counts and initial
+fixture-only failures are preserved in the dated report. No rerun is needed on unchanged source
+merely because a heartbeat fired.
 
-`build/qa-field-write-cycle7-face/` retains two synthetic photos and the saved **Cycle 7 Added Person**
-group. Its nonempty `failed.xmp` directory is intentional. Native Apply before the correction made
-no changes because of folder URL identity; the Browser failed-rating test also preserved every
-fixture byte. On corrected Apply, successful.png must append to each destination's own names and
-retain pending headline G; failed.png must report failure and stay byte-identical. After preserving
-failure evidence, remove only the test obstruction and retry. No model download is needed for these
-saved-group metadata operations; this is not inference or authentic recognition evidence.
+`build/qa-label-clear-cycle8/` contains known/null-snapshot clear cases and the absent-label control,
+plus pre/post-write/relaunch/final-build snapshots. All source PNG bytes remain unchanged and all
+eight original artifacts match across relaunch. Original Professional preset, Custom standard-image
+write setting and Settings General page were restored. The final Debug 3.0.0 (738) identity is in
+`final-binary-identity.json`; the pre-full native-write identity remains separately recorded because
+the full suite relinked the same source. Both builds were actually opened; final native inventory
+confirms the QA app stopped.
 
-`build/qa-field-write-cycle7-final/` contains passing Browser read-back snapshots, unchanged pixel
-payload hashes, and exact artifact equality across quit/relaunch. pending.png is 3 stars / Blue;
-nil-snapshot.png is cleared / no label; both retain G pending and the latter's snapshot remains null.
-Its binary identity is the pre-Face-correction build and must stay distinguished from final source.
+`build/qa-field-write-cycle7-face/` now contains passing cycle-8 Face evidence. The intentional
+failed.xmp directory was removed only after recording the native partial failure; failed.png then
+received the requested person on retry. successful.png/XMP retained their own preexisting names
+and stayed byte-identical across retry. Both JSON records retain pending headline G and one history
+event. All tracked states match after relaunch. Do not describe this fixture as untouched or still
+blocked; it does not need an inference model for saved-group metadata actions.
 
-`build/qa-caption-conflict-cycle6-final/` now contains passing recovery evidence: preserved newer A,
-resumed B/C captions, verified private recovery export and exact relaunch hashes. It is no longer
-an untouched fixture. Earlier cycle-3/4/5 fixture locations and intentional changes remain in their
-dated reports. No private images, production destinations, remote configuration or publication
-were changed. No broad gate or final user acceptance is closed. Reconcile checkout/task ownership
-and native availability at the next cycle; keep the no-progress count zero and automation active.
+Earlier Browser and Caption recovery fixture locations, binary identities and intentional changes
+remain in their dated cycle reports. Native source identity is kept separate from broad release
+readiness. No production transfer, publication, private-photo change or final user acceptance
+occurred. Reconcile checkout/task ownership before the next bounded slice. Sixty current unchecked
+plan entries remain; no-progress count is zero and automation stays active.

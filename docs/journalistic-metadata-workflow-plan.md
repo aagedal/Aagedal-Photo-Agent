@@ -2,11 +2,17 @@
 
 > Project planning index: [README.md](README.md)
 
-## 2026-09-10 coordinator validation follow-up
+## 2026-09-11 coordinator validation follow-up
+
+[Cycle 8](release/cycle-08-explicit-label-clear-2026-09-11.md) adds standard explicit XMP label
+clears across merge/reload and export/FTP field mapping. Source `b8e668a` passes 2,554 integrated
+tests; native sidecar-only clear, source-byte preservation, pending/null-snapshot retention and
+relaunch pass. Final cycle-7 Face partial failure, visible details, retry and relaunch also pass.
+External empty element-form label parsing remains a dependency limitation; no broad gate closes.
 
 [Cycle 6](release/cycle-06-caption-conflict-recovery-2026-09-10.md) implements scoped review,
 verified private export and explicit queued-set discard for permanent Caption conflicts. Source
-`7a503b3` passes independent review and 2,523 integrated tests. [Cycle 7](release/cycle-07-field-write-completion-2026-09-10.md) now verifies native review/export cancellation, tampered-export rejection, scoped discard, continued writes and relaunch after desktop access resumed. Field-only Browser rating/label and Face add-person source `34a7313` passes 2,547 integrated tests and independent review. Browser native checks pass on its recorded pre-Face-correction build; final native Face retest awaits desktop access. No broader criterion is checked by these bounded results.
+`7a503b3` passes independent review and 2,523 integrated tests. [Cycle 7](release/cycle-07-field-write-completion-2026-09-10.md) now verifies native review/export cancellation, tampered-export rejection, scoped discard, continued writes and relaunch after desktop access resumed. Field-only Browser rating/label and Face add-person source `34a7313` passes 2,547 integrated tests and independent review. Browser native checks pass on its recorded pre-Face-correction build; final native Face verification passed in cycle 8 after desktop access resumed. No broader criterion is checked by these bounded results.
 
 [Cycle 5](release/cycle-05-caption-retry-intent-2026-09-10.md) adds immutable Caption retry
 intent, guarded write completion and active scalar/multiline buffer capture after native testing

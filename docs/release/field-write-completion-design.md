@@ -1,12 +1,12 @@
 # Field-only write completion and Metadata Review continuation
 
-Source-backed cycle-6 audit of `7a503b3`, with [cycle-7 implementation evidence](cycle-07-field-write-completion-2026-09-10.md).
-Browser rating/label and Face add-person service/callers are implemented with automated checks;
-Browser native checks pass on the recorded pre-Face-correction build. The Face directory-identity and
-error-presentation corrections are committed as `34a7313` with 2,547 integrated tests passing; final
-native Face retesting awaits desktop access. Orientation,
-Metadata Review, batch completion, non-displayed variables and effective XMP-only label clear
-remain mandatory work. This document retains the original observations and design boundaries.
+Source-backed cycle-6 audit of `7a503b3`, followed by [cycle 7](cycle-07-field-write-completion-2026-09-10.md)
+and [cycle 8](cycle-08-explicit-label-clear-2026-09-11.md). Browser rating/label and Face add-person
+completion are implemented and natively verified. Source `b8e668a` adds effective standard empty
+XMP Label clears through parsing, merge, JSON/XMP, Browser reload and export/FTP field mapping;
+2,554 integrated tests pass. The external empty element-form Label dependency limitation remains
+separate from app-written empty attributes. Orientation, Metadata Review, batch completion and
+non-displayed variables remain mandatory work. Original observations below are historical.
 
 ## Original caller audit on 7a503b3
 

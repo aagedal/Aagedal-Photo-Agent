@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-09
+**Last reviewed:** 2026-09-11
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -26,7 +26,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Coordinator cycle 7: native recovery and field-only writes](release/cycle-07-field-write-completion-2026-09-10.md). Scoped Caption conflict recovery now passes native cancel/export/tamper/discard, continued writes and relaunch on `7a503b3`. Field-only Browser rating/label and Face add-person source `34a7313` passes 2,547 integrated tests and independent review; Browser native checks pass on the recorded pre-Face-correction build. Final native Face retest awaits desktop access. [Cycle 6](release/cycle-06-caption-conflict-recovery-2026-09-10.md) retains its 2,523-test result; adjacent writer completion and broader release gates remain open.
+**Latest improvement continuation:** [Coordinator cycle 8: explicit label clear and Face verification](release/cycle-08-explicit-label-clear-2026-09-11.md). Source `b8e668a` passes 2,554 integrated tests and independent review. Native XMP-only clears retain source bytes and unrelated pending captions across relaunch; cycle-7 Face partial failure, retry and persistence now pass too. Orientation, Metadata Review, remaining writer completion and wider release gates remain open.
 
 ## Portfolio
 

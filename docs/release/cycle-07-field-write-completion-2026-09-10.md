@@ -241,3 +241,12 @@ A second native availability check after the source commit and documentation sti
 Mac locked. No unlock bypass or user notification was attempted. Final static checklist checks
 pass: 31 unique complete cases (16 agent, six user, nine external), all case source links resolve,
 and `node --check /private/tmp/aagedal-cycle7-checklist-final.js` passes. No human outcomes were set.
+
+
+### Later cycle-8 native follow-up
+
+[Cycle 8](cycle-08-explicit-label-clear-2026-09-11.md) reopened the exact `34a7313` binary after
+access resumed. Native Face partial failure/details, repair/retry, per-destination preservation,
+normal Quit and relaunch now pass with exact hashes. The pending/locked statements above describe
+the end of cycle 7, not the current gate. Cycle 8 also implements the previously missing effective
+XMP-only label clear and records its own automated/native evidence.
