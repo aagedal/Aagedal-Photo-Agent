@@ -6,7 +6,10 @@ import os
 nonisolated private let thumbnailLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ThumbnailService")
 
 nonisolated struct ThumbnailSourceAccess: Sendable {
-    var sidecarOrientation: @Sendable (URL) -> Int? = { XMPSidecarService().sidecarOrientation(for: $0) }
+    var sidecarOrientation: @Sendable (URL) -> Int? = { url in
+        MetadataSidecarService().loadSidecar(for: url, in: url.deletingLastPathComponent())?
+            .orientationDraft?.targetOrientation ?? XMPSidecarService().sidecarOrientation(for: url)
+    }
     var fileOrientation: @Sendable (URL) -> Int = { FullScreenImageCache.fileEXIFOrientation(at: $0) }
     var materializeOrientation: @Sendable (CIImage) -> CGImage? = {
         CameraRawApproximation.ciContext.createCGImage($0, from: $0.extent)

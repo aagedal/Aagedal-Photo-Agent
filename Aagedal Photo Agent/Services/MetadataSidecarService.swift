@@ -354,12 +354,46 @@ struct MetadataSidecarService: Sendable {
 
     // MARK: - Save
 
-    nonisolated func saveSidecar(_ sidecar: MetadataSidecar, for imageURL: URL, in folderURL: URL) throws {
+    nonisolated enum OrientationDraftMutation {
+        case preserve
+        /// Caller holds the photo lock and has separately checked its source/JSON/XMP tokens.
+        case replace(expected: MetadataOrientationDraft?, with: MetadataOrientationDraft?)
+    }
+
+    /// Whole-record writers must acknowledge rotation separately from their editorial payload.
+    @MetadataSidecarFilesystemActor
+    func requireNoPendingOrientation(for imageURL: URL, in folderURL: URL) async throws {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
+            if try self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL)?.orientationDraft != nil {
+                throw PendingOrientationWriteError()
+            }
+        }
+    }
+
+    @discardableResult
+    nonisolated func saveSidecar(_ sidecar: MetadataSidecar, for imageURL: URL, in folderURL: URL,
+        orientationMutation: OrientationDraftMutation = .preserve
+    ) throws -> MetadataSidecar {
         try requireIncomingOwner(sidecar, imageURL: imageURL)
         let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
         let owned = snapshots.filter(\.isOwned)
-        _ = try decodeOwnedRecords(owned)
+        let current = try decodeOwnedRecords(owned).first
         var updatedSidecar = sidecar
+        switch orientationMutation {
+        case .preserve:
+            if let current { updatedSidecar.orientationDraft = current.orientationDraft }
+        case .replace(let expected, let replacement):
+            guard current?.orientationDraft == expected else { throw ownershipChanged(imageURL) }
+            updatedSidecar.orientationDraft = replacement
+        }
+        if let draft = updatedSidecar.orientationDraft {
+            guard (1...8).contains(draft.expectedOrientation), (1...8).contains(draft.targetOrientation),
+                  (1...8).contains(draft.expectedEmbeddedOrientation),
+                  draft.expectedXMPSidecarOrientation.map({ (1...8).contains($0) }) ?? true else {
+                throw CocoaError(.fileWriteInvalidFileName)
+            }
+            updatedSidecar.pendingChanges = true
+        }
         updatedSidecar.schemaVersion = MetadataSidecar.currentSchemaVersion
         updatedSidecar.lastModified = Date()
         let encoder = JSONEncoder()
@@ -387,6 +421,7 @@ struct MetadataSidecarService: Sendable {
                 sidecarLogger.warning("Current metadata was saved; legacy cleanup retained \(legacy.url.path, privacy: .private): \(error.localizedDescription, privacy: .private)")
             }
         }
+        return updatedSidecar
     }
 
     /// Builds batch metadata and its history from the same revision under the photo lock.
@@ -426,9 +461,9 @@ struct MetadataSidecarService: Sendable {
                 beforeRevisionCheck(attempt)
                 await Task.yield()
                 guard try self.contentTokens(for: imageURL, in: folderURL) == tokens else { continue }
-                try self.saveSidecar(sidecar, for: imageURL, in: folderURL)
+                let saved = try self.saveSidecar(sidecar, for: imageURL, in: folderURL)
                 guard let installed = self.loadSidecar(for: imageURL, in: folderURL),
-                      Self.samePersistedRecord(installed, sidecar) else {
+                      Self.samePersistedRecord(installed, saved) else {
                     throw CocoaError(.fileReadCorruptFile)
                 }
                 return installed
@@ -463,9 +498,9 @@ struct MetadataSidecarService: Sendable {
                     continue
                 }
 
-                try self.saveSidecar(merged, for: imageURL, in: folderURL)
+                let saved = try self.saveSidecar(merged, for: imageURL, in: folderURL)
                 guard let readBack = self.loadSidecar(for: imageURL, in: folderURL),
-                      Self.samePersistedRecord(readBack, merged)
+                      Self.samePersistedRecord(readBack, saved)
                 else {
                     throw CocoaError(.fileReadCorruptFile)
                 }
@@ -507,12 +542,12 @@ struct MetadataSidecarService: Sendable {
                     installed = current
                     request.receipt.markCommitted()
                 } else {
-                    try self.saveSidecar(merged, for: request.imageURL, in: request.folderURL)
+                    let saved = try self.saveSidecar(merged, for: request.imageURL, in: request.folderURL)
                     committed = true
                     request.receipt.markCommitted()
                     try afterJSONCommit()
                     guard let readBack = self.loadSidecar(for: request.imageURL, in: request.folderURL),
-                          Self.samePersistedRecord(readBack, merged) else { throw CocoaError(.fileReadCorruptFile) }
+                          Self.samePersistedRecord(readBack, saved) else { throw CocoaError(.fileReadCorruptFile) }
                     installed = readBack
                 }
                 let authoritativeTokens = try self.contentTokens(for: request.imageURL, in: request.folderURL)
@@ -545,6 +580,7 @@ struct MetadataSidecarService: Sendable {
         let folderURL: URL
         fileprivate let tokens: [Data?]
         fileprivate let xmpData: Data?
+        fileprivate let allowsPendingOrientation: Bool
     }
 
     /// Capture before an embedded write or explicit XMP/technical save. Nil explicitly expects
@@ -552,12 +588,14 @@ struct MetadataSidecarService: Sendable {
     @MetadataSidecarFilesystemActor
     func captureWriteCompletionSnapshot(
         for imageURL: URL, in folderURL: URL, expectedSidecar: MetadataSidecar?,
-        expectedTechnicalMetadata: IPTCMetadata?
+        expectedTechnicalMetadata: IPTCMetadata?,
+        allowPendingOrientation: Bool = false
     ) async throws -> WriteCompletionSnapshot {
         try Task.checkCancellation()
         return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             let tokens = try self.contentTokens(for: imageURL, in: folderURL)
             let current = try self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL)
+            if !allowPendingOrientation, current?.orientationDraft != nil { throw PendingOrientationWriteError() }
             guard Self.sameOptionalRecord(current, expectedSidecar) else { throw self.ownershipChanged(imageURL) }
             let xmpData = try self.xmpBytes(for: imageURL)
             let technical = xmpData.flatMap { XMPSidecarService().loadSidecar(fromData: $0,
@@ -568,7 +606,7 @@ struct MetadataSidecarService: Sendable {
                 throw DescriptiveMetadataWriteError.staleXMPSidecar(XMPSidecarService().sidecarURL(for: imageURL))
             }
             return WriteCompletionSnapshot(imageURL: imageURL, folderURL: folderURL,
-                tokens: tokens, xmpData: xmpData)
+                tokens: tokens, xmpData: xmpData, allowsPendingOrientation: allowPendingOrientation)
         }
     }
 
@@ -598,6 +636,9 @@ struct MetadataSidecarService: Sendable {
             var stage = MetadataSidecarPersistenceResult.FailureStage.metadataSidecar
             do {
                 try self.requireIncomingOwner(sidecar, imageURL: snapshot.imageURL)
+                if snapshot.allowsPendingOrientation,
+                   try self.loadOwnedSidecarForMutation(for: snapshot.imageURL, in: snapshot.folderURL)?.orientationDraft != nil,
+                   (!sidecar.pendingChanges || replaceOrientation) { throw PendingOrientationWriteError() }
                 guard try self.contentTokens(for: snapshot.imageURL, in: snapshot.folderURL) == snapshot.tokens,
                       try self.xmpBytes(for: snapshot.imageURL) == snapshot.xmpData else {
                     throw self.ownershipChanged(snapshot.imageURL)
@@ -619,11 +660,11 @@ struct MetadataSidecarService: Sendable {
                       try self.xmpBytes(for: snapshot.imageURL) == committedXMP.data else {
                     throw self.ownershipChanged(snapshot.imageURL)
                 }
-                try self.saveSidecar(sidecar, for: snapshot.imageURL, in: snapshot.folderURL)
+                let saved = try self.saveSidecar(sidecar, for: snapshot.imageURL, in: snapshot.folderURL)
                 committed = true
                 try afterJSONCommit()
                 guard let readBack = self.loadSidecar(for: snapshot.imageURL, in: snapshot.folderURL),
-                      Self.samePersistedRecord(readBack, sidecar) else { throw CocoaError(.fileReadCorruptFile) }
+                      Self.samePersistedRecord(readBack, saved) else { throw CocoaError(.fileReadCorruptFile) }
                 installed = readBack
                 return .init(installedSidecar: installed, wroteXMPSidecar: wroteXMP,
                     wasCancelled: false, failure: nil, skippedXMPSidecar: skippedXMP,
@@ -739,7 +780,7 @@ struct MetadataSidecarService: Sendable {
         return MetadataSidecar(sourceFile: request.sidecar.sourceFile,
             lastModified: request.sidecar.lastModified, pendingChanges: true, metadata: metadata,
             imageMetadataSnapshot: current == nil ? request.sidecar.imageMetadataSnapshot : current?.imageMetadataSnapshot,
-            history: history)
+            history: history, orientationDraft: current?.orientationDraft)
     }
 
     /// Compare-and-replace an explicitly restored editorial draft, then mirror that exact record
@@ -795,11 +836,11 @@ struct MetadataSidecarService: Sendable {
                 if Self.samePersistedRecord(current, request.sidecar) {
                     installed = current
                 } else {
-                    try self.saveSidecar(request.sidecar, for: request.imageURL, in: request.folderURL)
+                    let saved = try self.saveSidecar(request.sidecar, for: request.imageURL, in: request.folderURL)
                     didCommitJSON = true
                     try afterJSONCommit()
                     let readBack = self.loadSidecar(for: request.imageURL, in: request.folderURL)
-                    guard let readBack, Self.samePersistedRecord(readBack, request.sidecar) else {
+                    guard let readBack, Self.samePersistedRecord(readBack, saved) else {
                         throw CocoaError(.fileReadCorruptFile)
                     }
                     installed = readBack
@@ -889,6 +930,7 @@ struct MetadataSidecarService: Sendable {
             try beforeRead()
             let tokens = try self.contentTokens(for: imageURL, in: folderURL)
             let records = try self.ownedRecords(for: imageURL, in: folderURL)
+            if records.first?.orientationDraft != nil { throw PendingOrientationWriteError() }
             if let expected {
                 guard let current = records.first, Self.samePersistedRecord(current, expected) else {
                     throw CocoaError(.fileWriteFileExists, userInfo: [
@@ -1220,7 +1262,7 @@ struct MetadataSidecarService: Sendable {
             pendingChanges: incoming.pendingChanges,
             metadata: metadata,
             imageMetadataSnapshot: incoming.imageMetadataSnapshot ?? current.imageMetadataSnapshot,
-            history: history
+            history: history, orientationDraft: current.orientationDraft
         )
     }
 
@@ -1565,5 +1607,12 @@ actor MetadataSidecarPersistenceService {
                 failure: .init(stage: .xmpSidecar, message: error.localizedDescription)
             )
         }
+    }
+}
+
+
+nonisolated struct PendingOrientationWriteError: LocalizedError, Sendable {
+    var errorDescription: String? {
+        "This photo has a pending rotation. Choose a physical metadata write mode, then use Write Pending Rotation before writing the complete metadata record. The rotation and caption draft were retained."
     }
 }

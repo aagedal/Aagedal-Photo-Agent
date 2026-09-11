@@ -547,6 +547,10 @@ struct FTPUploadView: View {
             let fields = SidecarIPTCOverlay.authoritativeFields(from: sidecar)
             guard !fields.isEmpty else { return }
             do {
+                try await MetadataSidecarService().requireNoPendingOrientation(
+                    for: url, in: url.deletingLastPathComponent())
+                guard !Task.isCancelled, sidecarMergeRequestID == requestID,
+                      inspectionRequestKey == originatingInspectionKey, activeFiles.contains(url) else { return }
                 try await writeEngine.writeFields(
                     fields,
                     to: [url],
@@ -840,6 +844,19 @@ struct FTPUploadView: View {
     }
 
     private func continueUpload(renderURLs: Set<URL>, connection: FTPConnection) async {
+        let filesAtAdmission = activeFiles
+        let inspectionAtAdmission = inspectionRequestKey
+        do {
+            for url in filesAtAdmission {
+                try await MetadataSidecarService().requireNoPendingOrientation(
+                    for: url, in: url.deletingLastPathComponent())
+            }
+        } catch {
+            viewModel.errorMessages.append(error.localizedDescription)
+            return
+        }
+        guard !Task.isCancelled, activeFiles == filesAtAdmission,
+              inspectionRequestKey == inspectionAtAdmission else { return }
         if processVariablesBeforeUpload {
             isProcessingVariables = true
             variablesProcessProgress = "0/\(activeFiles.count)"

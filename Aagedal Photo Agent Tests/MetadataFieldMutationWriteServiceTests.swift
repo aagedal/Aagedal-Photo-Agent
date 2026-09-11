@@ -34,6 +34,244 @@ struct MetadataFieldMutationWriteServiceTests {
         image.deletingLastPathComponent().appendingPathComponent(".photo_metadata/\(image.lastPathComponent).meta.json")
     }
 
+    @Test("History-only rotation survives reload and consecutive turns without changing physical bytes")
+    func durableOrientationChain() async throws {
+        let (folder, image, _) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let original = try Data(contentsOf: image)
+        let first = await worker().write(request(image, mode: .historyOnly, mutation: .orientation(expected: 1, new: 6)))
+        #expect(first.completed)
+        let firstDraft = try #require(first.installedSidecar?.orientationDraft)
+        let second = await worker().write(request(image, mode: .historyOnly, mutation: .orientation(expected: 6, new: 3)))
+        #expect(second.completed)
+        let reloaded = try #require(MetadataSidecarService().loadSidecar(for: image, in: folder))
+        #expect(reloaded.orientationDraft?.expectedOrientation == 1)
+        #expect(reloaded.orientationDraft?.targetOrientation == 3)
+        #expect(reloaded.orientationDraft?.id != firstDraft.id)
+        #expect(reloaded.pendingChanges)
+        #expect(reloaded.metadata.exifOrientation == nil) // The technical payload has its own carrier.
+        #expect(reloaded.history.filter { $0.fieldName == "Orientation" }.map(\.newValue) == ["6", "3"])
+        #expect(try Data(contentsOf: image) == original)
+        #expect(!FileManager.default.fileExists(atPath: XMPSidecarService().sidecarURL(for: image).path))
+        let beforeStale = try Data(contentsOf: json(image))
+        let stale = await worker().write(request(image, mode: .historyOnly, mutation: .orientation(expected: 6, new: 8)))
+        #expect(stale.failure?.kind == .conflict)
+        #expect(try Data(contentsOf: json(image)) == beforeStale)
+    }
+
+    @Test("Physical rotation touches only orientation and retains unrelated pending captions and nil snapshots",
+        arguments: [MetadataWriteMode.writeToFile, .writeToXMPSidecar, .writeToFileAndXMPSidecar], [false, true])
+    func orientationPhysicalDestinations(mode: MetadataWriteMode, nilSnapshot: Bool) async throws {
+        let (folder, image, embedded) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var draft = embedded; draft.title = "Pending caption"
+        try MetadataSidecarService().saveSidecar(.init(sourceFile: image.lastPathComponent, pendingChanges: true,
+            metadata: draft, imageMetadataSnapshot: nilSnapshot ? nil : embedded), for: image, in: folder)
+        var graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: json(image))) as? [String: Any])
+        graph["opaque"] = ["keep": true]
+        try JSONSerialization.data(withJSONObject: graph).write(to: json(image))
+        var xmp = XMPData(); xmp.headline = "Physical XMP caption"
+        xmp.tiffOrientation = "1"
+        xmp.setValue(.simple("1"), namespace: XMPNamespace.exif, property: "Orientation")
+        xmp.setValue(.simple("1.25"), namespace: XMPNamespace.crs, property: "Exposure2012")
+        xmp.setValue(.simple("untouched"), namespace: "https://example.test/opaque/", property: "Value")
+        let xmpURL = XMPSidecarService().sidecarURL(for: image)
+        try Data(XMPWriter.generateXML(xmp).utf8).write(to: xmpURL)
+        let before = try Data(contentsOf: image)
+        let result = await worker().write(request(image, mode: mode, mutation: .orientation(expected: 1, new: 6)))
+        #expect(result.completed)
+        #expect(result.installedSidecar?.orientationDraft == nil)
+        #expect(result.installedSidecar?.pendingChanges == true)
+        #expect(result.installedSidecar?.metadata.title == "Pending caption")
+        #expect(result.installedSidecar?.imageMetadataSnapshot?.title == (nilSnapshot ? nil : "Embedded A"))
+        let physical = try ImageMetadata.read(from: image)
+        #expect(try await read(image).title == "Embedded A")
+        if mode.writesEmbedded {
+            #expect(physical.exif?.orientation == 6)
+            #expect(physical.xmp?.tiffOrientation == "6")
+            #expect(physical.xmp?.simpleValue(namespace: XMPNamespace.exif, property: "Orientation") == "6")
+        } else { #expect(try Data(contentsOf: image) == before) }
+        let mirrored = try XMPReader.readFromXML(Data(contentsOf: xmpURL))
+        #expect(mirrored.tiffOrientation == "6")
+        #expect(mirrored.simpleValue(namespace: XMPNamespace.exif, property: "Orientation") == "6")
+        #expect(mirrored.headline == "Physical XMP caption")
+        #expect(mirrored.simpleValue(namespace: XMPNamespace.crs, property: "Exposure2012") == "1.25")
+        #expect(mirrored.simpleValue(namespace: "https://example.test/opaque/", property: "Value") == "untouched")
+        let saved = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: json(image))) as? [String: Any])
+        #expect((saved["opaque"] as? [String: Bool])?["keep"] == true)
+    }
+
+    @Test("Same-target apply acknowledges a pending rotation without an extra turn after partial embedded commit")
+    func orientationRetryAfterEmbeddedCommit() async throws {
+        let (folder, image, embedded) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var xmp = embedded; xmp.exifOrientation = 1
+        try XMPSidecarService().saveSidecar(metadata: xmp, for: image)
+        let failed = await worker(hooks: .init(afterEmbeddedWrite: { throw CocoaError(.fileWriteNoPermission) }))
+            .write(request(image, mode: .writeToFileAndXMPSidecar, mutation: .orientation(expected: 1, new: 6)))
+        #expect(failed.didWriteEmbedded)
+        #expect(!failed.completed)
+        #expect(failed.installedSidecar?.orientationDraft?.targetOrientation == 6)
+        #expect(try ImageMetadata.read(from: image).exif?.orientation == 6)
+        #expect(XMPSidecarService().loadSidecar(for: image)?.exifOrientation == 1)
+        let retry = await worker().write(request(image, mode: .writeToFileAndXMPSidecar,
+            mutation: .orientation(expected: 6, new: 6)))
+        #expect(retry.completed)
+        #expect(!retry.didWriteEmbedded)
+        #expect(retry.installedSidecar?.orientationDraft == nil)
+        #expect(retry.installedSidecar?.pendingChanges == false)
+        #expect(XMPSidecarService().loadSidecar(for: image)?.exifOrientation == 6)
+    }
+
+    @Test("A new turn after a partial dual write captures each actual destination baseline and remains retryable")
+    func orientationNewTurnAfterPartialCommit() async throws {
+        let (folder, image, embedded) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var xmp = embedded; xmp.exifOrientation = 1
+        try XMPSidecarService().saveSidecar(metadata: xmp, for: image)
+        let partial = await worker(hooks: .init(afterEmbeddedWrite: { throw CocoaError(.fileWriteNoPermission) }))
+            .write(request(image, mode: .writeToFileAndXMPSidecar, mutation: .orientation(expected: 1, new: 6)))
+        #expect(partial.didWriteEmbedded)
+        let next = await worker(hooks: .init(afterPrepare: { throw CancellationError() }))
+            .write(request(image, mode: .writeToFileAndXMPSidecar, mutation: .orientation(expected: 6, new: 3)))
+        #expect(!next.completed)
+        #expect(next.wasCancelled)
+        #expect(try ImageMetadata.read(from: image).exif?.orientation == 6)
+        #expect(next.installedSidecar?.orientationDraft?.expectedEmbeddedOrientation == 6)
+        #expect(next.installedSidecar?.orientationDraft?.expectedXMPSidecarOrientation == 1)
+        let applied = await worker().write(request(image, mode: .writeToFileAndXMPSidecar,
+            mutation: .orientation(expected: 3, new: 3)))
+        #expect(applied.completed)
+        #expect(applied.installedSidecar?.orientationDraft == nil)
+        #expect(try ImageMetadata.read(from: image).exif?.orientation == 3)
+        #expect(XMPSidecarService().loadSidecar(for: image)?.exifOrientation == 3)
+    }
+
+    @Test("A conflicting physical rotation is not adopted by pending apply")
+    func orientationExternalConflict() async throws {
+        let (folder, image, _) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = await worker().write(request(image, mode: .historyOnly, mutation: .orientation(expected: 1, new: 6)))
+        try await SwiftExifWriteEngine().writeOrientation(3, to: [image])
+        let before = try Data(contentsOf: image)
+        let jsonBefore = try Data(contentsOf: json(image))
+        let result = await worker().write(request(image, mutation: .orientation(expected: 6, new: 6)))
+        #expect(result.failure?.kind == .conflict)
+        #expect(try Data(contentsOf: image) == before)
+        #expect(try Data(contentsOf: json(image)) == jsonBefore)
+    }
+
+    @Test("Ordinary saves and Caption replay retain technical intent, while complete-record admission fails before writing")
+    func orientationSurvivesEditorialSaves() async throws {
+        let (folder, image, _) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let result = await worker().write(request(image, mode: .historyOnly, mutation: .orientation(expected: 1, new: 6)))
+        let initial = try #require(result.installedSidecar)
+        let service = MetadataSidecarService()
+        var incoming = MetadataSidecar(sourceFile: image.lastPathComponent, pendingChanges: false,
+            metadata: initial.metadata, imageMetadataSnapshot: initial.imageMetadataSnapshot, history: initial.history)
+        incoming.metadata.credit = "Independent credit"
+        let saved = try service.saveSidecar(incoming, for: image, in: folder)
+        #expect(saved.orientationDraft == initial.orientationDraft)
+        #expect(saved.pendingChanges)
+        let current = try #require(service.loadSidecar(for: image, in: folder))
+        var edited = current.metadata; edited.title = "Caption after rotation"
+        let now = Date().addingTimeInterval(1)
+        let changes = MetadataHistoryEntry.changes(from: current.metadata, to: edited, timestamp: now)
+        let replay = MetadataSidecarReplayRequest(sidecar: .init(sourceFile: image.lastPathComponent,
+            lastModified: now, pendingChanges: true, metadata: edited, imageMetadataSnapshot: current.imageMetadataSnapshot,
+            history: current.history + changes), baselineMetadata: current.metadata, baselineHistory: current.history,
+            baselineRecordExisted: true, changes: changes, imageURL: image, folderURL: folder)
+        let caption = await service.replayHistoryAndMirrorXMP(replay)
+        #expect(caption.completed)
+        #expect(caption.installedSidecar?.orientationDraft == initial.orientationDraft)
+        #expect(caption.installedSidecar?.metadata.title == "Caption after rotation")
+        let latest = try #require(caption.installedSidecar)
+        await #expect(throws: PendingOrientationWriteError.self) {
+            try await service.requireNoPendingOrientation(for: image, in: folder)
+        }
+        await #expect(throws: PendingOrientationWriteError.self) {
+            _ = try await service.captureWriteCleanupSnapshot(for: image, in: folder)
+        }
+        let technical = XMPSidecarService().loadSidecar(for: image)
+        await #expect(throws: PendingOrientationWriteError.self) {
+            _ = try await service.captureWriteCompletionSnapshot(for: image, in: folder,
+                expectedSidecar: latest, expectedTechnicalMetadata: technical)
+        }
+        let allowed = try await service.captureWriteCompletionSnapshot(for: image, in: folder,
+            expectedSidecar: latest, expectedTechnicalMetadata: technical, allowPendingOrientation: true)
+        var next = latest; next.orientationDraft = nil; next.metadata.credit = "Saved editorial draft"
+        let persistence = await service.completeSidecarAndMirrorXMP(next, snapshot: allowed)
+        #expect(persistence.completed)
+        #expect(persistence.installedSidecar?.orientationDraft == initial.orientationDraft)
+        #expect(persistence.installedSidecar?.pendingChanges == true)
+        #expect(persistence.installedSidecar?.metadata.credit == "Saved editorial draft")
+    }
+
+    @Test("Invalid injected embedded facts masked by a valid XMP baseline cannot commit an unreadable draft")
+    func invalidPhysicalOrientationBaseline() async throws {
+        let (folder, image, embedded) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        // The dependency's setOrientation refuses values outside 1...8. Supply corrupt read
+        // facts at the existing boundary instead of pretending that writer can construct them.
+        let actualSource = try ImageMetadata.read(from: image)
+        try #require(actualSource.exif?.orientation != 9)
+        var xmp = embedded; xmp.exifOrientation = 1
+        try XMPSidecarService().saveSidecar(metadata: xmp, for: image)
+        try MetadataSidecarService().saveSidecar(.init(sourceFile: image.lastPathComponent,
+            pendingChanges: true, metadata: embedded), for: image, in: folder)
+        let before = try Data(contentsOf: json(image))
+        let source = try Data(contentsOf: image)
+        let malformedReader = MetadataFieldMutationWriteService(writeEngine: SwiftExifWriteEngine(),
+            readEmbedded: { _ in
+                var metadata = embedded; metadata.exifOrientation = 9
+                return metadata
+            })
+        let result = await malformedReader.write(request(image, mutation: .orientation(expected: 1, new: 6)))
+        #expect(!result.completed)
+        #expect(!result.didWriteEmbedded)
+        #expect(try Data(contentsOf: json(image)) == before)
+        #expect(try Data(contentsOf: image) == source)
+    }
+
+    @Test("RAW rotation uses XMP even when an embedded mode is requested")
+    func rawOrientation() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("RawRotation-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.ARW")
+        let source = Data("opaque RAW fixture".utf8); try source.write(to: image)
+        let writer = MetadataFieldMutationWriteService(writeEngine: SwiftExifWriteEngine(),
+            readEmbedded: { _ in IPTCMetadata(exifOrientation: 1) })
+        let result = await writer.write(request(image, mutation: .orientation(expected: 1, new: 6)))
+        #expect(result.completed)
+        #expect(result.didWriteXMP)
+        #expect(!result.didWriteEmbedded)
+        #expect(result.installedSidecar?.orientationDraft == nil)
+        #expect(XMPSidecarService().loadSidecar(for: image)?.exifOrientation == 6)
+        #expect(try Data(contentsOf: image) == source)
+    }
+
+    @Test("Invalid technical draft values fail before any replacement and malformed persisted carriers fail closed")
+    func invalidOrientationDraft() async throws {
+        let (folder, image, _) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let before = try Data(contentsOf: image)
+        let invalid = await worker().write(request(image, mutation: .orientation(expected: 1, new: 9)))
+        #expect(!invalid.completed)
+        #expect(!FileManager.default.fileExists(atPath: json(image).path))
+        let valid = await worker().write(request(image, mode: .historyOnly, mutation: .orientation(expected: 1, new: 6)))
+        #expect(valid.completed)
+        var graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: json(image))) as? [String: Any])
+        graph["orientationDraft"] = ["id": UUID().uuidString, "expectedOrientation": 1, "targetOrientation": 9]
+        try JSONSerialization.data(withJSONObject: graph).write(to: json(image))
+        let corrupt = try Data(contentsOf: json(image))
+        let retry = await worker().write(request(image, mutation: .orientation(expected: 6, new: 6)))
+        #expect(!retry.completed)
+        #expect(try Data(contentsOf: json(image)) == corrupt)
+        #expect(try Data(contentsOf: image) == before)
+    }
+
     @Test("Rating and label success preserve unrelated pending captions and absent original snapshots", arguments: [false, true], [false, true])
     func unrelatedPending(nilSnapshot: Bool, label: Bool) async throws {
         let (folder, image, embedded) = try await fixture()

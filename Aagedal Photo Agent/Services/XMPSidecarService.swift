@@ -414,6 +414,9 @@ struct XMPSidecarService: Sendable {
             switch mutation {
             case .rating(let value): xmp.rating = Double(MetadataPhysicalFieldMutation.normalizedRating(value) ?? 0)
             case .label(let value): xmp.label = MetadataPhysicalFieldMutation.normalizedLabel(value) ?? ""
+            case .orientation(_, let target):
+                xmp.tiffOrientation = String(target)
+                xmp.setValue(.simple(String(target)), namespace: XMPNamespace.exif, property: "Orientation")
             case .addPersons(let names):
                 xmp.setValue(.array(MetadataPhysicalFieldMutation.add(names, to: xmp.personInImage ?? [])),
                     namespace: XMPNamespace.iptcExt, property: "PersonInImage")

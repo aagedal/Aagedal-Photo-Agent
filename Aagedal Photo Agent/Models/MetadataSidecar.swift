@@ -328,6 +328,40 @@ nonisolated struct MetadataHistoryEntry: Codable, Sendable, Identifiable, Equata
     }
 }
 
+/// An explicit technical draft, independent of IPTCMetadata's editorial JSON projection.
+nonisolated struct MetadataOrientationDraft: Codable, Equatable, Sendable {
+    let id: UUID
+    let expectedOrientation: Int
+    let targetOrientation: Int
+    let expectedEmbeddedOrientation: Int
+    let expectedXMPSidecarOrientation: Int?
+
+    init(id: UUID = UUID(), expectedOrientation: Int, targetOrientation: Int,
+         expectedEmbeddedOrientation: Int? = nil, expectedXMPSidecarOrientation: Int? = nil) {
+        self.id = id; self.expectedOrientation = expectedOrientation; self.targetOrientation = targetOrientation
+        self.expectedEmbeddedOrientation = expectedEmbeddedOrientation ?? expectedOrientation
+        self.expectedXMPSidecarOrientation = expectedXMPSidecarOrientation
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, expectedOrientation, targetOrientation, expectedEmbeddedOrientation, expectedXMPSidecarOrientation
+    }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        expectedOrientation = try container.decode(Int.self, forKey: .expectedOrientation)
+        targetOrientation = try container.decode(Int.self, forKey: .targetOrientation)
+        expectedEmbeddedOrientation = try container.decodeIfPresent(Int.self, forKey: .expectedEmbeddedOrientation) ?? expectedOrientation
+        expectedXMPSidecarOrientation = try container.decodeIfPresent(Int.self, forKey: .expectedXMPSidecarOrientation)
+        guard (1...8).contains(expectedOrientation), (1...8).contains(targetOrientation),
+              (1...8).contains(expectedEmbeddedOrientation),
+              expectedXMPSidecarOrientation.map({ (1...8).contains($0) }) ?? true else {
+            throw DecodingError.dataCorruptedError(forKey: .targetOrientation, in: container,
+                debugDescription: "Orientation drafts require values from 1 through 8.")
+        }
+    }
+}
+
 nonisolated struct MetadataSidecar: Codable, Sendable {
     static let currentSchemaVersion = 1
     /// Source compatibility for call sites that used the original name.
@@ -343,6 +377,7 @@ nonisolated struct MetadataSidecar: Codable, Sendable {
     var metadata: IPTCMetadata
     var imageMetadataSnapshot: IPTCMetadata?
     var history: [MetadataHistoryEntry]
+    var orientationDraft: MetadataOrientationDraft?
 
     init(
         sourceFile: String,
@@ -350,20 +385,22 @@ nonisolated struct MetadataSidecar: Codable, Sendable {
         pendingChanges: Bool = false,
         metadata: IPTCMetadata = IPTCMetadata(),
         imageMetadataSnapshot: IPTCMetadata? = nil,
-        history: [MetadataHistoryEntry] = []
+        history: [MetadataHistoryEntry] = [],
+        orientationDraft: MetadataOrientationDraft? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.sourceFile = sourceFile
         self.lastModified = lastModified
-        self.pendingChanges = pendingChanges
+        self.pendingChanges = pendingChanges || orientationDraft != nil
         self.metadata = metadata
         self.imageMetadataSnapshot = imageMetadataSnapshot
         self.history = history
+        self.orientationDraft = orientationDraft
     }
 
     enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion, version
-        case sourceFile, lastModified, pendingChanges, metadata, imageMetadataSnapshot, history
+        case sourceFile, lastModified, pendingChanges, metadata, imageMetadataSnapshot, history, orientationDraft
     }
 
     static let persistedJSONFieldNames = Set(CodingKeys.allCases.map(\.rawValue))
@@ -402,6 +439,8 @@ nonisolated struct MetadataSidecar: Codable, Sendable {
         )
         history = try container.decodeIfPresent([MetadataHistoryEntry].self, forKey: .history) ?? []
         history.trimToHistoryLimit()
+        orientationDraft = try container.decodeIfPresent(MetadataOrientationDraft.self, forKey: .orientationDraft)
+        pendingChanges = pendingChanges || orientationDraft != nil
     }
 
     func encode(to encoder: Encoder) throws {
@@ -409,10 +448,11 @@ nonisolated struct MetadataSidecar: Codable, Sendable {
         try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
         try container.encode(sourceFile, forKey: .sourceFile)
         try container.encode(lastModified, forKey: .lastModified)
-        try container.encode(pendingChanges, forKey: .pendingChanges)
+        try container.encode(pendingChanges || orientationDraft != nil, forKey: .pendingChanges)
         try container.encode(metadata, forKey: .metadata)
         try container.encodeIfPresent(imageMetadataSnapshot, forKey: .imageMetadataSnapshot)
         try container.encode(history, forKey: .history)
+        try container.encodeIfPresent(orientationDraft, forKey: .orientationDraft)
     }
 }
 

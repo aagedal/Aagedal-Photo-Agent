@@ -422,6 +422,13 @@ final class ThumbnailCollectionView: NSCollectionView {
         labelSubmenu.submenu = labelMenu
         menu.addItem(labelSubmenu)
 
+        if viewModel.hasPendingOrientationInSelection {
+            let writeRotation = NSMenuItem(title: "Write Pending Rotation", action: #selector(contextWritePendingRotation(_:)), keyEquivalent: "")
+            writeRotation.target = self
+            writeRotation.toolTip = "Apply the displayed pending rotation using the current metadata write mode."
+            menu.addItem(writeRotation)
+        }
+
         menu.addItem(NSMenuItem.separator())
 
         // Save As
@@ -567,6 +574,10 @@ final class ThumbnailCollectionView: NSCollectionView {
     @objc private func contextSetLabel(_ sender: NSMenuItem) {
         guard let label = sender.representedObject as? ColorLabel else { return }
         commandRouter?.send(.setLabel(label))
+    }
+
+    @objc private func contextWritePendingRotation(_ sender: Any?) {
+        viewModel?.applyPendingOrientationToSelection()
     }
 
     @objc private func contextSaveAsJPEG(_ sender: Any?) {

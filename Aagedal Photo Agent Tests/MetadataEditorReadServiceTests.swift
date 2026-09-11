@@ -47,6 +47,45 @@ private actor HistoryRestoreSuspensionGate {
 
 @Suite("Metadata editor sidecar read boundary", .serialized)
 struct MetadataEditorReadServiceTests {
+    @Test("Pending rotations block descriptive completion before physical writes", arguments: ["legacy", "clear", "all"])
+    @MainActor
+    func pendingOrientationSurvivesDescriptiveWrite(action: String) async throws {
+        let writer = MetadataCompletionTestWriter(onWrite: {})
+        let fixture = try makeHistoryRestoreFixture(original: nil,
+            pending: IPTCMetadata(title: "Pending caption"), writeEngine: writer)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let service = MetadataSidecarService()
+        let draft = MetadataOrientationDraft(expectedOrientation: 1, targetOrientation: 6)
+        let record = try #require(service.loadSidecar(for: fixture.image, in: fixture.folder))
+        try service.saveSidecar(record, for: fixture.image, in: fixture.folder,
+            orientationMutation: .replace(expected: nil, with: draft))
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let sourceBefore = try Data(contentsOf: fixture.image)
+        let jsonURL = fixture.folder.appendingPathComponent(".photo_metadata/draft.jpg.meta.json")
+        let jsonBefore = try Data(contentsOf: jsonURL)
+        let xmpURL = XMPSidecarService().sidecarURL(for: fixture.image)
+        let xmpBefore = try Data(contentsOf: xmpURL)
+        switch action {
+        case "legacy": fixture.model.writeMetadata()
+        case "clear": fixture.model.writeMetadataAndClearSidecar()
+        default: fixture.model.writeAllPendingChanges(in: fixture.folder, images: [ImageFile(url: fixture.image)])
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while (fixture.model.isSaving || fixture.model.isProcessingFolder), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!fixture.model.isSaving && !fixture.model.isProcessingFolder)
+        #expect(fixture.model.saveError != nil)
+        #expect(writer.writeCount == 0)
+        #expect(try Data(contentsOf: fixture.image) == sourceBefore)
+        #expect(try Data(contentsOf: jsonURL) == jsonBefore)
+        #expect(try Data(contentsOf: xmpURL) == xmpBefore)
+        let retained = try #require(service.loadSidecar(for: fixture.image, in: fixture.folder))
+        #expect(retained.orientationDraft == draft)
+        #expect(retained.pendingChanges)
+        #expect(retained.imageMetadataSnapshot == nil)
+    }
+
     @Test("Scoped recovery clears only the resolved queue request's displayed error")
     @MainActor
     func conflictRecoveryClearsOnlyMatchingFailure() {

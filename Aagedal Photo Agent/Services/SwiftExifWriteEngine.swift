@@ -83,9 +83,16 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                     case .rating: return .rating(MetadataPhysicalFieldMutation.normalizedRating(record.xmp?.rating.map(Int.init)))
                     case .label: return .label(MetadataPhysicalFieldMutation.normalizedLabel(record.xmp?.label))
                     case .addPersons: return .persons(record.xmp?.personInImage ?? [])
+                    case .orientation: return .orientation(Int(record.exif?.orientation ?? 1))
                     }
                 }
                 let before = value(metadata)
+                let orientationCarriersNeedRepair: Bool
+                if case .orientation(_, let target) = mutation {
+                    orientationCarriersNeedRepair = metadata.exif?.orientation != UInt16(target)
+                        || metadata.xmp?.tiffOrientation != String(target)
+                        || metadata.xmp?.simpleValue(namespace: XMPNamespace.exif, property: "Orientation") != String(target)
+                } else { orientationCarriersNeedRepair = false }
                 switch mutation {
                 case .rating(let rating):
                     if metadata.xmp == nil { metadata.xmp = XMPData() }
@@ -93,6 +100,12 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 case .label(let label):
                     if metadata.xmp == nil { metadata.xmp = XMPData() }
                     metadata.xmp?.label = MetadataPhysicalFieldMutation.normalizedLabel(label)
+                case .orientation(_, let target):
+                    guard (1...8).contains(target) else { throw CocoaError(.fileWriteInapplicableStringEncoding) }
+                    metadata.setOrientation(UInt16(target))
+                    if metadata.xmp == nil { metadata.xmp = XMPData() }
+                    metadata.xmp?.tiffOrientation = String(target)
+                    metadata.xmp?.setValue(.simple(String(target)), namespace: XMPNamespace.exif, property: "Orientation")
                 case .addPersons(let names):
                     if metadata.xmp == nil { metadata.xmp = XMPData() }
                     let existingNames = metadata.xmp?.personInImage ?? []
@@ -101,13 +114,21 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                         namespace: XMPNamespace.iptcExt, property: "PersonInImage")
                 }
                 let intended = value(metadata)
-                let changed = before != intended
+                let changed = before != intended || orientationCarriersNeedRepair
                 if changed {
                     attemptedWrite = true
                     try metadata.write(to: url)
                 }
                 let revision = try await SourceImageRevision.capture(at: url)
-                let actual = value(try readMetadata(from: url))
+                let verified = try readMetadata(from: url)
+                let actual = value(verified)
+                if case .orientation(_, let target) = mutation {
+                    guard verified.exif?.orientation == UInt16(target),
+                          verified.xmp?.tiffOrientation == String(target),
+                          verified.xmp?.simpleValue(namespace: XMPNamespace.exif, property: "Orientation") == String(target) else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                }
                 guard actual == intended else { throw CocoaError(.fileReadCorruptFile) }
                 return MetadataFieldMutationPhysicalReceipt(value: actual, sourceRevision: revision, didWrite: changed)
             } catch let error as MetadataFieldMutationConflict {

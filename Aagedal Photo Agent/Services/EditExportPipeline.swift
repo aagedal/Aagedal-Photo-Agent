@@ -383,6 +383,8 @@ enum EditExportPipeline {
                            outputFilenameSuffix: String = "",
                            collisionPolicy: EditedImageRenderer.OutputCollisionPolicy = .replaceExisting,
                            finalizationService: ExportArtifactFinalizationService = .shared) async throws -> URL {
+        try await MetadataSidecarService().requireNoPendingOrientation(
+            for: sourceURL, in: folderURL ?? sourceURL.deletingLastPathComponent())
         if case .rawDNG(let compression, let executableURL) = kind {
             // A DNG is still a camera RAW, not a rendered output. Do not run the
             // rendered-metadata copier or sidecar overlay; the converter preserves

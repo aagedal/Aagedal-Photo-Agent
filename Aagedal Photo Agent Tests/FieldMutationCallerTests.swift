@@ -9,9 +9,11 @@ private actor FieldMutationCallerRecorder {
     private var gate: CheckedContinuation<Void, Never>?
     let pausesFirst: Bool
     let failingNames: Set<String>
-    init(pausesFirst: Bool = false, failingNames: Set<String> = []) {
+    let failingInvocations: Set<Int>
+    init(pausesFirst: Bool = false, failingNames: Set<String> = [], failingInvocations: Set<Int> = []) {
         self.pausesFirst = pausesFirst
         self.failingNames = failingNames
+        self.failingInvocations = failingInvocations
     }
     var captured: [MetadataFieldMutationWriteRequest] { requests }
     var isPaused: Bool { gate != nil }
@@ -19,7 +21,7 @@ private actor FieldMutationCallerRecorder {
     func write(_ request: MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult {
         requests.append(request)
         if pausesFirst, requests.count == 1 { await withCheckedContinuation { gate = $0 } }
-        if failingNames.contains(request.imageURL.lastPathComponent) {
+        if failingNames.contains(request.imageURL.lastPathComponent) || failingInvocations.contains(requests.count) {
             return .failed(request: request, message: "Injected destination failure")
         }
         var metadata = IPTCMetadata(title: "Unrelated pending caption")
@@ -27,12 +29,16 @@ private actor FieldMutationCallerRecorder {
         case .rating(let value): metadata.rating = value
         case .label(let value): metadata.label = value
         case .addPersons(let names): metadata.personShown = names
+        case .orientation(_, let target): metadata.exifOrientation = target
         }
         var baseline = IPTCMetadata(title: "Original caption")
         request.mutation.apply(to: &baseline)
-        let sidecar = MetadataSidecar(sourceFile: request.imageURL.lastPathComponent,
+        var sidecar = MetadataSidecar(sourceFile: request.imageURL.lastPathComponent,
             pendingChanges: true, metadata: metadata,
             imageMetadataSnapshot: baseline, history: [])
+        if request.requestedMode == .historyOnly, case .orientation(let expected, let target) = request.mutation {
+            sidecar.orientationDraft = MetadataOrientationDraft(expectedOrientation: expected, targetOrientation: target)
+        }
         return .init(requestID: request.id, imageURL: request.imageURL, installedSidecar: sidecar,
             didWriteEmbedded: request.requestedMode == .writeToFile || request.requestedMode == .writeToFileAndXMPSidecar,
             didWriteXMP: request.requestedMode == .writeToXMPSidecar || request.requestedMode == .writeToFileAndXMPSidecar)
@@ -146,6 +152,180 @@ struct FieldMutationCallerTests {
         #expect(model.images.first?.starRating == StarRating.none)
         #expect(model.images.first?.colorLabel == ColorLabel.none)
         #expect(model.fieldMutationResults.isEmpty)
+    }
+
+    @Test("Browser rotations capture ordered per-photo targets and mode without cancelling prior fields", arguments: [false, true])
+    @MainActor
+    func browserRotationIntentChain(switchFolder: Bool) async throws {
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        var mode: MetadataWriteMode = .historyOnly
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) },
+            fieldMutationModeResolver: { _, _ in mode })
+        let folder = URL(fileURLWithPath: "/virtual/rotation-chain")
+        let photo = folder.appendingPathComponent("photo.jpg")
+        model.currentFolderURL = folder
+        model.images = [ImageFile(url: photo)]
+        model.selectedImageIDs = [photo]
+        model.rotateClockwise()
+        try await waitForPause(recorder)
+        #expect(model.images.first?.exifOrientation == 6)
+        model.rotateClockwise()
+        #expect(model.images.first?.exifOrientation == 3)
+        mode = .writeToFileAndXMPSidecar
+        model.applyPendingOrientationToSelection()
+        model.setRating(.four)
+        model.rotateCounterclockwise()
+        #expect(model.images.first?.exifOrientation == 6)
+        #expect(await recorder.captured.count == 1)
+        let otherPhoto = URL(fileURLWithPath: "/virtual/other/other.jpg")
+        if switchFolder {
+            model.currentFolderURL = otherPhoto.deletingLastPathComponent()
+            model.images = [ImageFile(url: otherPhoto)]
+        }
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        let requests = await recorder.captured
+        #expect(requests.count == 5)
+        #expect(requests.allSatisfy { $0.imageURL == photo && $0.folderURL == folder })
+        #expect(requests.map(\.requestedMode) == [.historyOnly, .historyOnly, .writeToFileAndXMPSidecar, .writeToFileAndXMPSidecar, .writeToFileAndXMPSidecar])
+        #expect(requests[0].mutation == .orientation(expected: 1, new: 6))
+        #expect(requests[1].mutation == .orientation(expected: 6, new: 3))
+        #expect(requests[2].mutation == .orientation(expected: 3, new: 3))
+        #expect(requests[3].mutation == .rating(4))
+        #expect(requests[4].mutation == .orientation(expected: 3, new: 6))
+        if switchFolder {
+            #expect(model.images.first?.url == otherPhoto)
+            #expect(model.images.first?.exifOrientation == 1)
+            #expect(model.fieldMutationResults.isEmpty)
+        } else {
+            #expect(model.images.first?.exifOrientation == 6)
+            #expect(model.images.first?.starRating == .four)
+            #expect(model.images.first?.hasPendingMetadataChanges == true)
+            #expect(model.images.first?.pendingFieldNames.contains("Headline") == true)
+            #expect(model.hasPendingOrientationInSelection == false)
+        }
+    }
+
+    @Test("A rotation captures each selected photo's orientation and credential-specific destination")
+    @MainActor
+    func browserRotationCapturesPerPhotoFacts() async throws {
+        let recorder = FieldMutationCallerRecorder()
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) },
+            fieldMutationModeResolver: { hasC2PA, isRaw in
+                hasC2PA || isRaw ? .writeToXMPSidecar : .writeToFile
+            })
+        let folder = URL(fileURLWithPath: "/virtual/per-photo-rotation")
+        var ordinary = ImageFile(url: folder.appendingPathComponent("ordinary.jpg"))
+        ordinary.exifOrientation = 1
+        var protected = ImageFile(url: folder.appendingPathComponent("protected.jpg"))
+        protected.hasC2PA = true
+        protected.exifOrientation = 8
+        model.currentFolderURL = folder
+        model.images = [ordinary, protected]
+        model.selectedImageIDs = [ordinary.url, protected.url]
+        model.rotateClockwise()
+        await model.waitForPendingFieldMutationWrites()
+        let requests = await recorder.captured
+        #expect(requests.count == 2)
+        let ordinaryRequest = try #require(requests.first { $0.imageURL == ordinary.url })
+        let protectedRequest = try #require(requests.first { $0.imageURL == protected.url })
+        #expect(ordinaryRequest.mutation == .orientation(expected: 1, new: 6))
+        #expect(ordinaryRequest.requestedMode == .writeToFile)
+        #expect(protectedRequest.mutation == .orientation(expected: 8, new: 1))
+        #expect(protectedRequest.requestedMode == .writeToXMPSidecar)
+    }
+
+    @Test("Failed rapid rotations restore their verified orientation without clearing a pending caption", arguments: [false, true])
+    @MainActor
+    func browserRotationDefiniteFailure(firstSucceeds: Bool) async throws {
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true, failingInvocations: firstSucceeds ? [2] : [1, 2])
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) },
+            fieldMutationModeResolver: { _, _ in .historyOnly })
+        let folder = URL(fileURLWithPath: "/virtual/rotation-failure")
+        let photo = folder.appendingPathComponent("bad.jpg")
+        var image = ImageFile(url: photo)
+        image.hasPendingMetadataChanges = true
+        image.pendingFieldNames = ["Headline"]
+        model.currentFolderURL = folder
+        model.images = [image]
+        model.selectedImageIDs = [photo]
+        model.rotateClockwise()
+        try await waitForPause(recorder)
+        model.rotateCounterclockwise()
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.images.first?.exifOrientation == (firstSucceeds ? 6 : 1))
+        #expect(model.images.first?.pendingFieldNames.contains("Headline") == true)
+        #expect(model.images.first?.pendingFieldNames.contains("Orientation") == firstSucceeds)
+        #expect(model.images.first?.hasPendingMetadataChanges == true)
+        #expect(model.errorMessage?.contains("bad.jpg") == true)
+    }
+
+    @Test("Browser reloads a durable pending rotation and explicitly writes it without another turn")
+    @MainActor
+    func browserPendingRotationReloadAndApply() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("BrowserRotation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.png")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 12,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .png, properties: [:])).write(to: photo)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.headline: "Original caption"], to: [photo])
+        try await engine.writeOrientation(1, to: [photo])
+        let sourceBytes = try Data(contentsOf: photo)
+        let sidecars = MetadataSidecarService()
+        try sidecars.saveSidecar(MetadataSidecar(sourceFile: photo.lastPathComponent,
+            pendingChanges: true, metadata: IPTCMetadata(title: "Unwritten caption G"), imageMetadataSnapshot: nil),
+            for: photo, in: folder)
+        let model = BrowserViewModel(fieldMutationModeResolver: { _, _ in .historyOnly })
+        model.loadFolder(url: folder, addToOpenFolders: false)
+        await model.waitForFolderLoad()
+        let loadedPhoto = try #require(model.images.first?.url)
+        #expect(loadedPhoto.resolvingSymlinksInPath().path == photo.resolvingSymlinksInPath().path)
+        model.selectedImageIDs = [loadedPhoto]
+        try #require(model.selectedImages.count == 1, "Select the model's enumerated URL identity before issuing a rotation")
+        model.rotateClockwise()
+        model.rotateClockwise()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.errorMessage == nil)
+        try #require(model.fieldMutationResults.count == 1, "The final queued rotation must actually reach persistence")
+        try #require(model.fieldMutationResults.first?.completed == true)
+        let pending = try #require(sidecars.loadSidecar(for: photo, in: folder))
+        #expect(pending.orientationDraft?.expectedOrientation == 1)
+        #expect(pending.orientationDraft?.targetOrientation == 3)
+        #expect(pending.imageMetadataSnapshot == nil)
+        #expect(pending.metadata.title == "Unwritten caption G")
+        #expect(try Data(contentsOf: photo) == sourceBytes)
+
+        let reloaded = BrowserViewModel(fieldMutationModeResolver: { _, _ in .writeToFileAndXMPSidecar })
+        reloaded.loadFolder(url: folder, addToOpenFolders: false)
+        await reloaded.waitForFolderLoad()
+        let reloadedPhoto = try #require(reloaded.images.first?.url)
+        #expect(reloadedPhoto.resolvingSymlinksInPath().path == photo.resolvingSymlinksInPath().path)
+        reloaded.selectedImageIDs = [reloadedPhoto]
+        try #require(reloaded.selectedImages.count == 1)
+        #expect(reloaded.images.first?.exifOrientation == 3)
+        #expect(reloaded.hasPendingOrientationInSelection)
+        reloaded.applyPendingOrientationToSelection()
+        await reloaded.waitForPendingFieldMutationWrites()
+        #expect(reloaded.errorMessage == nil)
+        try #require(reloaded.fieldMutationResults.count == 1, "Write Pending Rotation must actually reach persistence")
+        try #require(reloaded.fieldMutationResults.first?.completed == true)
+        #expect(reloaded.images.first?.exifOrientation == 3)
+        #expect(!reloaded.hasPendingOrientationInSelection)
+        let final = try #require(sidecars.loadSidecar(for: photo, in: folder))
+        #expect(final.orientationDraft == nil)
+        #expect(final.pendingChanges)
+        #expect(final.imageMetadataSnapshot == nil)
+        #expect(final.metadata.title == "Unwritten caption G")
+        let embedded = try await SwiftExifReadService().readFullMetadata(url: photo)
+        #expect(embedded.exifOrientation == 3)
+        #expect(embedded.title == "Original caption")
+        #expect(XMPSidecarService().loadSidecar(for: photo)?.exifOrientation == 3)
     }
 
     @Test("Browser preparation failure restores only its optimistic field and reports the photo")

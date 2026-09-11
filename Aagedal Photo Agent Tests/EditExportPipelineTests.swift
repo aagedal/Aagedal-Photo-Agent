@@ -14,6 +14,39 @@ import SwiftMediaMetadata
 @Suite("EditExportPipeline render + sidecar overlay (real file)")
 struct EditExportPipelineTests {
 
+    @Test("Pending rotation is presented consistently and blocks export before creating output")
+    func pendingRotationPresentationAndExportAdmission() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("PendingRotationExport-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("photo.jpg")
+        let sourceBytes = Data("source must not be decoded or changed".utf8)
+        try sourceBytes.write(to: source)
+        let draft = MetadataOrientationDraft(expectedOrientation: 1, targetOrientation: 6)
+        try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: source.lastPathComponent,
+            pendingChanges: true, metadata: IPTCMetadata(title: "Pending caption"),
+            orientationDraft: draft), for: source, in: folder)
+        var xmp = IPTCMetadata()
+        xmp.exifOrientation = 1
+        try XMPSidecarService().saveSidecar(metadata: xmp, for: source)
+        #expect(ThumbnailSourceAccess.system.sidecarOrientation(source) == 6)
+        #expect(FullScreenImageCache.displayOrientation(for: source, fallback: 1) == 6)
+        #expect(FullScreenImagePresentationFactsAccess.system.read(source).sidecarOrientation == 6)
+        let output = folder.appendingPathComponent("output", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        do {
+            _ = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: nil, kind: .jpeg,
+                outputFolder: output, folderURL: folder, writeEngine: SwiftExifWriteEngine(),
+                failureTracker: MetadataFailureTracker())
+            Issue.record("Export must require the saved rotation to be applied first")
+        } catch {
+            #expect(error.localizedDescription.contains("Write Pending Rotation"))
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: output.path).isEmpty)
+        #expect(try Data(contentsOf: source) == sourceBytes)
+        #expect(MetadataSidecarService().loadSidecar(for: source, in: folder)?.orientationDraft == draft)
+    }
+
     private var collisionSafeJPEGConfiguration: AdvancedExportConfiguration {
         AdvancedExportConfiguration(
             sdrFormat: .jpeg,

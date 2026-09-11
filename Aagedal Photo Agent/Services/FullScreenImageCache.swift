@@ -55,7 +55,8 @@ nonisolated struct FullScreenImagePresentationFactsAccess: Sendable {
         }
         return Snapshot(
             sidecarCameraRaw: sidecarMetadata?.cameraRaw,
-            sidecarOrientation: sidecarMetadata?.exifOrientation,
+            sidecarOrientation: MetadataSidecarService().loadSidecar(for: imageURL, in: imageURL.deletingLastPathComponent())?
+                .orientationDraft?.targetOrientation ?? sidecarMetadata?.exifOrientation,
             fileOrientation: fileOrientation,
             pixelWidth: pixelWidth,
             pixelHeight: pixelHeight
@@ -193,7 +194,8 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// XMP, so speculative full-screen renders must not rely only on the browser model:
     /// fast navigation can prefetch before the async metadata pass has populated it.
     nonisolated static func displayOrientation(for url: URL, fallback: Int = 1) -> Int {
-        XMPSidecarService().sidecarOrientation(for: url) ?? fallback
+        MetadataSidecarService().loadSidecar(for: url, in: url.deletingLastPathComponent())?
+            .orientationDraft?.targetOrientation ?? XMPSidecarService().sidecarOrientation(for: url) ?? fallback
     }
 
     nonisolated static func renderToken(settings: CameraRawSettings?, isEdited: Bool) -> String? {

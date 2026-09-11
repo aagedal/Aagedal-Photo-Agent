@@ -4,6 +4,7 @@ nonisolated enum MetadataPhysicalFieldMutation: Sendable, Equatable {
     case rating(Int?)
     case label(String?)
     case addPersons([String])
+    case orientation(expected: Int, new: Int)
 
     // A label mutation always carries an explicit value, including the empty standard clear.
     func apply(to metadata: inout IPTCMetadata) {
@@ -11,6 +12,7 @@ nonisolated enum MetadataPhysicalFieldMutation: Sendable, Equatable {
         case .rating(let value): metadata.rating = Self.normalizedRating(value)
         case .label(let value): metadata.label = Self.normalizedLabel(value) ?? ""
         case .addPersons(let names): metadata.personShown = Self.add(names, to: metadata.personShown)
+        case .orientation(_, let new): metadata.exifOrientation = new
         }
     }
     func value(in metadata: IPTCMetadata) -> MetadataPhysicalFieldValue {
@@ -18,6 +20,7 @@ nonisolated enum MetadataPhysicalFieldMutation: Sendable, Equatable {
         case .rating: return .rating(Self.normalizedRating(metadata.rating))
         case .label: return .label(Self.normalizedLabel(metadata.label))
         case .addPersons: return .persons(metadata.personShown)
+        case .orientation: return .orientation(metadata.exifOrientation ?? 1)
         }
     }
     static func normalizedRating(_ value: Int?) -> Int? { value == 0 ? nil : value }
@@ -33,12 +36,13 @@ nonisolated enum MetadataPhysicalFieldMutation: Sendable, Equatable {
 }
 
 nonisolated enum MetadataPhysicalFieldValue: Sendable, Equatable {
-    case rating(Int?), label(String?), persons([String])
+    case rating(Int?), label(String?), persons([String]), orientation(Int)
     func apply(to metadata: inout IPTCMetadata) {
         switch self {
         case .rating(let value): metadata.rating = value
         case .label(let value): metadata.label = value ?? ""
         case .persons(let value): metadata.personShown = value
+        case .orientation(let value): metadata.exifOrientation = value
         }
     }
 }
@@ -173,6 +177,11 @@ nonisolated struct MetadataFieldMutationWriteService: Sendable {
             if case .rating(let value) = request.mutation, let value, !(0...5).contains(value) {
                 throw MetadataFieldMutationWriteResult.Failure(stage: .prepare, message: "Rating must be between zero and five.", kind: .io)
             }
+            if case .orientation(let expected, let new) = request.mutation,
+               (!(1...8).contains(expected) || !(1...8).contains(new)) {
+                throw MetadataFieldMutationWriteResult.Failure(stage: .prepare,
+                    message: "Orientation must be between one and eight.", kind: .io)
+            }
             let beforeRead = try await SourceImageRevision.capture(at: request.imageURL)
             let embedded = try await readEmbedded(request.imageURL)
             let afterRead = try await SourceImageRevision.capture(at: request.imageURL)
@@ -247,10 +256,17 @@ nonisolated struct MetadataFieldMutationWriteService: Sendable {
                 } else {
                     completed.pendingChanges = true
                 }
-                try service.saveSidecar(completed, for: request.imageURL, in: request.folderURL)
+                var orientationMutation = MetadataSidecarService.OrientationDraftMutation.preserve
+                if case .orientation(_, let target) = request.mutation {
+                    guard acknowledged == .orientation(target) else { throw MetadataFieldMutationConflict() }
+                    completed.orientationDraft = nil
+                    orientationMutation = .replace(expected: prepared.sidecar.orientationDraft, with: nil)
+                }
+                let saved = try service.saveSidecar(completed, for: request.imageURL, in: request.folderURL,
+                    orientationMutation: orientationMutation)
                 xmpReceipt.markJSONCommitted()
                 guard let readBack = try service.loadOwnedSidecarForMutation(for: request.imageURL, in: request.folderURL),
-                      service.fieldMutationRecordsEqual(readBack, completed) else { throw CocoaError(.fileReadCorruptFile) }
+                      service.fieldMutationRecordsEqual(readBack, saved) else { throw CocoaError(.fileReadCorruptFile) }
                 return readBack
             }
             return result(request, installed: installed, physical: physical, xmp: xmpReceipt.data != nil)
@@ -289,22 +305,54 @@ nonisolated struct MetadataFieldMutationWriteService: Sendable {
                 source = xmpMetadata.hasDescriptiveContent ? source.replacingDescriptiveFields(from: xmpMetadata)
                     : source.merged(preferring: xmpMetadata)
             }
+            var orientationDraft = current?.orientationDraft
+            var orientationMutation = MetadataSidecarService.OrientationDraftMutation.preserve
+            if case .orientation(let expected, let new) = request.mutation {
+                let physicalOrientation = source.exifOrientation ?? 1
+                let effective = orientationDraft?.targetOrientation ?? physicalOrientation
+                guard effective == expected else { throw MetadataFieldMutationConflict() }
+                let embeddedOrientation = embedded.exifOrientation ?? 1
+                let sidecarOrientation = xmpMetadata?.exifOrientation
+                if let draft = orientationDraft {
+                    guard embeddedOrientation == draft.expectedEmbeddedOrientation || embeddedOrientation == draft.targetOrientation else {
+                        throw MetadataFieldMutationConflict()
+                    }
+                    if let sidecarOrientation {
+                        guard sidecarOrientation == (draft.expectedXMPSidecarOrientation ?? draft.expectedOrientation)
+                            || sidecarOrientation == draft.targetOrientation else { throw MetadataFieldMutationConflict() }
+                    } else if draft.expectedXMPSidecarOrientation != nil {
+                        throw MetadataFieldMutationConflict()
+                    }
+                }
+                let replacement = MetadataOrientationDraft(
+                    id: orientationDraft?.targetOrientation == new ? (orientationDraft?.id ?? request.id) : request.id,
+                    expectedOrientation: physicalOrientation, targetOrientation: new,
+                    expectedEmbeddedOrientation: embeddedOrientation,
+                    expectedXMPSidecarOrientation: sidecarOrientation)
+                orientationMutation = .replace(expected: orientationDraft, with: replacement)
+                orientationDraft = replacement
+            }
             let previous = current?.metadata ?? source
             var metadata = previous
             request.mutation.apply(to: &metadata)
             var history = current?.history ?? []
             history += MetadataHistoryEntry.changes(from: previous, to: metadata, timestamp: Date())
+            if case .orientation(let expected, let new) = request.mutation, expected != new {
+                history.append(MetadataHistoryEntry(timestamp: Date(), fieldName: "Orientation",
+                    oldValue: String(expected), newValue: String(new)))
+            }
             history.trimToHistoryLimit()
             let sidecar = MetadataSidecar(sourceFile: request.imageURL.lastPathComponent, pendingChanges: true,
                 metadata: metadata, imageMetadataSnapshot: current == nil ? source : current?.imageMetadataSnapshot,
-                history: history)
+                history: history, orientationDraft: orientationDraft)
             guard try service.fieldMutationTokens(for: request.imageURL, in: request.folderURL) == originalTokens,
                   try xmp.fieldMutationData(for: request.imageURL) == xmpData else { throw MetadataFieldMutationConflict() }
-            try service.saveSidecar(sidecar, for: request.imageURL, in: request.folderURL)
+            let saved = try service.saveSidecar(sidecar, for: request.imageURL, in: request.folderURL,
+                orientationMutation: orientationMutation)
             evidence.markPrepareJSONCommitted()
             try hooks.afterPrepareJSONCommit()
             guard let installed = try service.loadOwnedSidecarForMutation(for: request.imageURL, in: request.folderURL),
-                  service.fieldMutationRecordsEqual(installed, sidecar) else { throw CocoaError(.fileReadCorruptFile) }
+                  service.fieldMutationRecordsEqual(installed, saved) else { throw CocoaError(.fileReadCorruptFile) }
             return Prepared(sidecar: installed,
                 tokens: try service.fieldMutationTokens(for: request.imageURL, in: request.folderURL),
                 xmpData: xmpData, embedded: embedded, sourceRevision: revision)

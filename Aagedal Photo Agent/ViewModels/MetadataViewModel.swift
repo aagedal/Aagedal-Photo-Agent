@@ -1253,6 +1253,7 @@ final class MetadataViewModel {
         let urls = selectedURLs
         guard !urls.isEmpty else { return }
         let selectionSnapshot = Set(urls)
+        let writeFolderURL = currentFolderURL
         let edited = editingMetadata
         let original = metadata
         let isBatch = isBatchEdit
@@ -1266,6 +1267,11 @@ final class MetadataViewModel {
         writeTask?.cancel()
         writeTask = Task {
             do {
+                if let writeFolderURL {
+                    for url in urls {
+                        try await sidecarService.requireNoPendingOrientation(for: url, in: writeFolderURL)
+                    }
+                }
                 var fields: [MetadataFieldKey: String] = [:]
 
                 if isBatch {
@@ -1664,9 +1670,25 @@ final class MetadataViewModel {
     }
 
     private func writeXMPSidecar() async {
-        guard !selectedURLs.isEmpty else { return }
+        let urls = selectedURLs
+        let folderAtAdmission = currentFolderURL
+        guard !urls.isEmpty else { return }
+        do {
+            if let folder = folderAtAdmission {
+                for url in urls {
+                    try await sidecarService.requireNoPendingOrientation(for: url, in: folder)
+                }
+            }
+        } catch {
+            saveError = error.localizedDescription
+            return
+        }
 
-        if selectedCount == 1, let imageURL = selectedURLs.first {
+        guard !Task.isCancelled, selectedURLs == urls, currentFolderURL == folderAtAdmission else {
+            saveError = "The selection changed before the XMP write began. Try the write again."
+            return
+        }
+        if urls.count == 1, let imageURL = urls.first {
             let edited = editingMetadata
             do {
                 try await xmpSidecarService.saveSidecarSerialized(
@@ -1683,7 +1705,6 @@ final class MetadataViewModel {
         }
 
         let mutation = capturedBatchMutation()
-        let urls = selectedURLs
         let baselines = batchMetadataByURL
         for imageURL in urls {
             guard !Task.isCancelled else { return }
@@ -1722,6 +1743,10 @@ final class MetadataViewModel {
             writeTask?.cancel()
             writeTask = Task {
                 await writeXMPSidecar()
+                if let saveError {
+                    onComplete(.failed(message: saveError))
+                    return
+                }
                 await saveBatchSidecars(folderURL: folderURL, pendingChanges: false)
                 hasChanges = false
                 if let saveError {
@@ -2382,6 +2407,10 @@ final class MetadataViewModel {
             throw NSError(domain: "MetadataViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "No folder URL"])
         }
 
+        if mode != .historyOnly {
+            try await sidecarService.requireNoPendingOrientation(for: url, in: folder)
+        }
+
         // Build changed-fields dictionary for file write paths
         var fields: [MetadataFieldKey: String] = [:]
         if resolved.title != original.title { fields[.headline] = resolved.title ?? "" }
@@ -3028,7 +3057,7 @@ final class MetadataViewModel {
                     // Its complete record is valid only against this captured pending revision.
                     let snapshot = try await sidecarService.captureWriteCompletionSnapshot(
                         for: imageURL, in: folderURL, expectedSidecar: expectedRecord,
-                        expectedTechnicalMetadata: technicalReference)
+                        expectedTechnicalMetadata: technicalReference, allowPendingOrientation: true)
                     let result = await sidecarService.completeSidecarAndMirrorXMP(sidecar, snapshot: snapshot,
                         replaceDevelopSettings: Self.developSettingsChanged(edited.cameraRaw, previous.cameraRaw),
                         replaceOrientation: edited.exifOrientation != previous.exifOrientation)
@@ -3551,6 +3580,7 @@ final class MetadataViewModel {
             var writtenCount = 0
             var skippedCount = 0
             var failedCount = 0
+            var firstFailure: String?
 
             let imagesByURL = Dictionary(images.map { ($0.url, $0) }, uniquingKeysWith: { _, last in last })
 
@@ -3605,6 +3635,7 @@ final class MetadataViewModel {
                     return
                 } catch {
                     failedCount += 1
+                    if firstFailure == nil { firstFailure = "\(imageURL.lastPathComponent): \(error.localizedDescription)" }
                     logger.warning("Failed to write metadata for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                 }
 
@@ -3619,6 +3650,7 @@ final class MetadataViewModel {
             self.selectedHavePendingSidecars = !remainingPending.isDisjoint(with: urls)
             if failedCount > 0 || skippedCount > 0 {
                 self.saveError = "Wrote \(writtenCount), skipped \(skippedCount), failed \(failedCount)."
+                    + (firstFailure.map { " " + $0 } ?? "")
             }
         }
     }

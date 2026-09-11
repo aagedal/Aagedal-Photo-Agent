@@ -561,7 +561,8 @@ final class BrowserViewModel {
                   facts.requestID == requestID,
                   facts.imageURL == url else { return }
 
-            let orientation = facts.sidecarOrientation ?? imageFile.exifOrientation
+            let orientation = imageFile.pendingFieldNames.contains("Orientation")
+                ? imageFile.exifOrientation : (facts.sidecarOrientation ?? imageFile.exifOrientation)
             let cameraRaw = showsOriginal
                 ? nil
                 : (imageFile.cameraRawSettings ?? facts.sidecarCameraRaw)
@@ -1459,6 +1460,7 @@ final class BrowserViewModel {
                             in: dict, exifOrientation: xmpOrientation)
                     }
                 }
+                if hasActiveOrientationMutation(for: sourceURL) { updated[index].exifOrientation = previousOrientation }
                 if updated[index].exifOrientation != previousOrientation {
                     let newOrientation = updated[index].exifOrientation
                     let dictOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? -1
@@ -1869,22 +1871,23 @@ final class BrowserViewModel {
     // MARK: - Rating & Labels
 
     func setRating(_ rating: StarRating) {
-        applyBrowserFieldMutation(.rating(rating == .none ? nil : rating.rawValue), field: "rating",
+        applyBrowserFieldMutation(mutationForImage: { _ in .rating(rating == .none ? nil : rating.rawValue) }, field: "rating",
             updateImage: { $0.starRating = rating },
             affectsSortKey: sortOrder == .rating, affectsFilterKey: minimumStarRating != .none)
     }
 
     func setLabel(_ label: ColorLabel) {
-        applyBrowserFieldMutation(.label(label.xmpLabelValue), field: "label",
+        applyBrowserFieldMutation(mutationForImage: { _ in .label(label.xmpLabelValue) }, field: "label",
             updateImage: { $0.colorLabel = label },
             affectsSortKey: sortOrder == .label, affectsFilterKey: !selectedColorLabels.isEmpty)
     }
 
-    /// Accepted rating/label intents run in order; a later action never cancels an earlier one.
-    /// The old rotation path remains separate until it has a technical mutation contract.
-    private func applyBrowserFieldMutation(_ mutation: MetadataPhysicalFieldMutation, field: String,
+    /// Accepted field intents run in order; a later action never cancels an earlier one.
+    /// Each photo captures its own expected and requested value before optimistic updates.
+    private func applyBrowserFieldMutation(mutationForImage: (ImageFile) -> MetadataPhysicalFieldMutation, field: String,
+        imagesToMutate: [ImageFile]? = nil,
         updateImage: (inout ImageFile) -> Void, affectsSortKey: Bool, affectsFilterKey: Bool) {
-        let capturedImages = selectedImages
+        let capturedImages = imagesToMutate ?? selectedImages
         guard !capturedImages.isEmpty else { return }
         let folder = currentFolderURL
         let displayID = fieldMutationDisplayID
@@ -1892,7 +1895,7 @@ final class BrowserViewModel {
             MetadataFieldMutationWriteRequest(imageURL: image.url,
                 folderURL: folder ?? image.url.deletingLastPathComponent(),
                 requestedMode: fieldMutationModeResolver(image.hasC2PA, SupportedImageFormats.isRaw(url: image.url)),
-                mutation: mutation)
+                mutation: mutationForImage(image))
         }
         updateMetadataFieldPresentation(updateImage: updateImage, affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
         guard let folder else {
@@ -1937,8 +1940,7 @@ final class BrowserViewModel {
                 // manufacture a rollback over a preceding possibly committed field write.
                 if prior?.displayID == displayID {
                     if recordIsCurrent, let record = result.installedSidecar {
-                        if field == "rating" { fallback.starRating = StarRating(rawValue: record.metadata.rating ?? 0) ?? .none }
-                        else { fallback.colorLabel = ColorLabel.fromMetadataLabel(record.metadata.label) }
+                        applyVerifiedFieldResult(result, record: record, request: request, field: field, to: &fallback)
                     }
                     fieldMutationFallbacks[request.imageURL]?[field] = (displayID, fallback, unresolved)
                 }
@@ -1951,17 +1953,32 @@ final class BrowserViewModel {
                 currentResults.append(contentsOf: unresolved)
                 if !unresolved.contains(where: { $0.requestID == result.requestID }) { currentResults.append(result) }
                 suppressImagesCascade = true
+                let oldOrientation = images[index].exifOrientation
                 if recordIsCurrent, let record = result.installedSidecar {
-                    if field == "rating" { images[index].starRating = StarRating(rawValue: record.metadata.rating ?? 0) ?? .none }
-                    else { images[index].colorLabel = ColorLabel.fromMetadataLabel(record.metadata.label) }
+                    applyVerifiedFieldResult(result, record: record, request: request, field: field, to: &images[index])
                     images[index].hasPendingMetadataChanges = record.pendingChanges || !unresolved.isEmpty || !(fieldMutationRequestIDs[request.imageURL]?.isEmpty ?? true)
                     images[index].pendingFieldNames = extractPendingFieldNames(from: record)
+                    if hasActiveOrientationMutation(for: request.imageURL), !images[index].pendingFieldNames.contains("Orientation") {
+                        images[index].pendingFieldNames.append("Orientation")
+                    }
                 } else if !result.completed && unresolved.isEmpty && !result.didWriteEmbedded && !result.didWriteXMP {
                     if field == "rating" { images[index].starRating = fallback.starRating }
-                    else { images[index].colorLabel = fallback.colorLabel }
+                    else if field == "label" { images[index].colorLabel = fallback.colorLabel }
+                    else if field == "orientation" {
+                        images[index].exifOrientation = fallback.exifOrientation
+                        images[index].pendingFieldNames.removeAll { $0 == "Orientation" }
+                        if fallback.pendingFieldNames.contains("Orientation") { images[index].pendingFieldNames.append("Orientation") }
+                        images[index].hasPendingMetadataChanges = fallback.hasPendingMetadataChanges || !images[index].pendingFieldNames.isEmpty
+                    }
                 } else if !result.completed {
                     // An uncertain physical/JSON commit cannot be represented as a rollback.
                     images[index].hasPendingMetadataChanges = true
+                }
+                if images[index].exifOrientation != oldOrientation {
+                    let cameraRaw = images[index].cameraRawSettings
+                    applySidecarCropState(to: &images[index], cameraRaw: cameraRaw)
+                    thumbnailService.invalidateThumbnail(for: request.imageURL)
+                    fullScreenImageCache.invalidateImage(for: request.imageURL)
                 }
                 suppressImagesCascade = false
                 rebuildSortedCache()
@@ -1969,6 +1986,20 @@ final class BrowserViewModel {
             guard currentFolderURL == folder, fieldMutationDisplayID == displayID else { return }
             fieldMutationResults = currentResults.isEmpty ? results : currentResults
             if let failure = MetadataFieldMutationFeedback.failureSummary(currentResults) { errorMessage = failure }
+        }
+    }
+
+    private func applyVerifiedFieldResult(_ result: MetadataFieldMutationWriteResult, record: MetadataSidecar,
+        request: MetadataFieldMutationWriteRequest, field: String, to image: inout ImageFile) {
+        if field == "rating" { image.starRating = StarRating(rawValue: record.metadata.rating ?? 0) ?? .none }
+        else if field == "label" { image.colorLabel = ColorLabel.fromMetadataLabel(record.metadata.label) }
+        else if field == "orientation" {
+            image.pendingFieldNames.removeAll { $0 == "Orientation" }
+            if let draft = record.orientationDraft {
+                image.exifOrientation = draft.targetOrientation
+                image.pendingFieldNames.append("Orientation")
+            } else if result.completed, case .orientation(_, let target) = request.mutation { image.exifOrientation = target }
+            image.hasPendingMetadataChanges = record.pendingChanges
         }
     }
 
@@ -2003,91 +2034,45 @@ final class BrowserViewModel {
         }
     }
 
-    func rotateClockwise() {
-        guard !selectedImageIDs.isEmpty else { return }
-        var newOrientations: [URL: Int] = [:]
-        for image in selectedImages {
-            newOrientations[image.url] = ImageFile.orientationAfterClockwiseRotation(image.exifOrientation)
-            logger.info("[\(image.url.lastPathComponent, privacy: .private(mask: .hash))] rotateClockwise \(image.exifOrientation) → \(newOrientations[image.url] ?? -1)")
-        }
-        applyMetadataField(
-            updateImage: { image in
-                image.exifOrientation = newOrientations[image.url] ?? image.exifOrientation
-            },
-            affectsSortKey: false,
-            affectsFilterKey: false,
-            applySidecar: { url, writeXmp, pending in
-                await self.applyFieldToSidecar(
-                    url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
-                    fieldName: "Orientation",
-                    getOld: { $0.exifOrientation.map(String.init) },
-                    applyNew: { metadata in
-                        metadata.exifOrientation = newOrientations[url]
-                        return metadata.exifOrientation.map(String.init)
-                    }
-                )
-            },
-            writeToFile: { urls in
-                var byOrientation: [Int: [URL]] = [:]
-                for url in urls {
-                    let orientation = newOrientations[url] ?? 1
-                    byOrientation[orientation, default: []].append(url)
-                }
-                for (orientation, batchURLs) in byOrientation {
-                    try await self.writeEngine.writeOrientation(orientation, to: batchURLs)
-                }
-            },
-            fieldDescription: "orientation"
-        )
-        for url in selectedImages.map(\.url) {
-            thumbnailService.rotateThumbnailInCache(for: url, clockwise: true)
-            // Cached full-screen decodes were corrected for the OLD orientation —
-            // without this, the spacebar preview keeps showing the unrotated image.
-            fullScreenImageCache.invalidateImage(for: url)
+    func rotateClockwise() { rotateSelection(clockwise: true) }
+
+    func rotateCounterclockwise() { rotateSelection(clockwise: false) }
+
+    private func rotateSelection(clockwise: Bool) {
+        let captured = selectedImages
+        guard !captured.isEmpty else { return }
+        let targets = Dictionary(uniqueKeysWithValues: captured.map { image in
+            (image.url, clockwise ? ImageFile.orientationAfterClockwiseRotation(image.exifOrientation)
+                : ImageFile.orientationAfterCounterclockwiseRotation(image.exifOrientation))
+        })
+        applyBrowserFieldMutation(mutationForImage: { image in
+            .orientation(expected: image.exifOrientation, new: targets[image.url] ?? image.exifOrientation)
+        }, field: "orientation", imagesToMutate: captured, updateImage: { image in
+            image.exifOrientation = targets[image.url] ?? image.exifOrientation
+            image.hasPendingMetadataChanges = true
+            if !image.pendingFieldNames.contains("Orientation") { image.pendingFieldNames.append("Orientation") }
+            let cameraRaw = image.cameraRawSettings
+            self.applySidecarCropState(to: &image, cameraRaw: cameraRaw)
+        }, affectsSortKey: false, affectsFilterKey: false)
+        for image in captured {
+            thumbnailService.rotateThumbnailInCache(for: image.url, clockwise: clockwise)
+            fullScreenImageCache.invalidateImage(for: image.url)
         }
     }
 
-    func rotateCounterclockwise() {
-        guard !selectedImageIDs.isEmpty else { return }
-        var newOrientations: [URL: Int] = [:]
-        for image in selectedImages {
-            newOrientations[image.url] = ImageFile.orientationAfterCounterclockwiseRotation(image.exifOrientation)
-            logger.info("[\(image.url.lastPathComponent, privacy: .private(mask: .hash))] rotateCounterclockwise \(image.exifOrientation) → \(newOrientations[image.url] ?? -1)")
-        }
-        applyMetadataField(
-            updateImage: { image in
-                image.exifOrientation = newOrientations[image.url] ?? image.exifOrientation
-            },
-            affectsSortKey: false,
-            affectsFilterKey: false,
-            applySidecar: { url, writeXmp, pending in
-                await self.applyFieldToSidecar(
-                    url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
-                    fieldName: "Orientation",
-                    getOld: { $0.exifOrientation.map(String.init) },
-                    applyNew: { metadata in
-                        metadata.exifOrientation = newOrientations[url]
-                        return metadata.exifOrientation.map(String.init)
-                    }
-                )
-            },
-            writeToFile: { urls in
-                var byOrientation: [Int: [URL]] = [:]
-                for url in urls {
-                    let orientation = newOrientations[url] ?? 1
-                    byOrientation[orientation, default: []].append(url)
-                }
-                for (orientation, batchURLs) in byOrientation {
-                    try await self.writeEngine.writeOrientation(orientation, to: batchURLs)
-                }
-            },
-            fieldDescription: "orientation"
-        )
-        for url in selectedImages.map(\.url) {
-            thumbnailService.rotateThumbnailInCache(for: url, clockwise: false)
-            // See rotateClockwise — stale full-screen decodes carry the old orientation.
-            fullScreenImageCache.invalidateImage(for: url)
-        }
+    var hasPendingOrientationInSelection: Bool {
+        selectedImages.contains { $0.pendingFieldNames.contains("Orientation") }
+    }
+
+    /// Apply the already displayed rotation using the current metadata write mode, without
+    /// introducing another turn. The service validates the saved draft before acknowledging it.
+    func applyPendingOrientationToSelection() {
+        let pending = selectedImages.filter { $0.pendingFieldNames.contains("Orientation") }
+        guard !pending.isEmpty else { return }
+        applyBrowserFieldMutation(mutationForImage: { image in
+            .orientation(expected: image.exifOrientation, new: image.exifOrientation)
+        }, field: "orientation", imagesToMutate: pending,
+            updateImage: { _ in }, affectsSortKey: false, affectsFilterKey: false)
     }
 
     private func applyMetadataField(
@@ -2225,6 +2210,7 @@ final class BrowserViewModel {
             return
         }
         guard sidecar.pendingChanges else { return }
+        applySidecarCropAndDevelopState(to: &array[index], sidecar: sidecar)
 
         if let snapshot = sidecar.imageMetadataSnapshot {
             if sidecar.metadata.rating != snapshot.rating {
@@ -2246,9 +2232,25 @@ final class BrowserViewModel {
     /// Apply cameraRaw and crop state from XMP during initial folder load.
     /// Camera raw is no longer stored in JSON sidecars — this is now a no-op
     /// until metadata is read (which populates cameraRaw from XMP).
+    private func hasActiveOrientationMutation(for url: URL) -> Bool {
+        fieldMutationRequestIDs[url]?["orientation"] != nil
+            && fieldMutationFallbacks[url]?["orientation"]?.displayID == fieldMutationDisplayID
+    }
+
     private func applySidecarCropAndDevelopState(to imageFile: inout ImageFile, sidecar: MetadataSidecar) {
-        // Camera raw data is sourced from XMP only, not from JSON sidecar.
-        // Crop/develop state will be applied when metadata loads.
+        // Camera Raw is still sourced from physical metadata. Only the typed orientation
+        // intent overrides the physical display baseline while the rotation remains pending.
+        guard let draft = sidecar.orientationDraft, !hasActiveOrientationMutation(for: imageFile.url) else { return }
+        let previous = imageFile.exifOrientation
+        imageFile.exifOrientation = draft.targetOrientation
+        imageFile.hasPendingMetadataChanges = true
+        if !imageFile.pendingFieldNames.contains("Orientation") { imageFile.pendingFieldNames.append("Orientation") }
+        let cameraRaw = imageFile.cameraRawSettings
+        applySidecarCropState(to: &imageFile, cameraRaw: cameraRaw)
+        if previous != imageFile.exifOrientation {
+            thumbnailService.invalidateThumbnail(for: imageFile.url)
+            fullScreenImageCache.invalidateImage(for: imageFile.url)
+        }
     }
 
     private func applySidecarCropState(to imageFile: inout ImageFile, cameraRaw: CameraRawSettings?) {
@@ -3074,12 +3076,10 @@ final class BrowserViewModel {
     // MARK: - Pending Status
 
     private func extractPendingFieldNames(from sidecar: MetadataSidecar?) -> [String] {
-        guard let sidecar, sidecar.pendingChanges,
-              let original = sidecar.imageMetadataSnapshot else {
-            return []
-        }
+        guard let sidecar, sidecar.pendingChanges else { return [] }
+        var names = sidecar.orientationDraft == nil ? [] : ["Orientation"]
+        guard let original = sidecar.imageMetadataSnapshot else { return names }
         let edited = sidecar.metadata
-        var names: [String] = []
         if edited.title != original.title { names.append("Headline") }
         if edited.description != original.description { names.append("Description") }
         if edited.extendedDescription != original.extendedDescription { names.append("Extended Description") }
@@ -3109,7 +3109,7 @@ final class BrowserViewModel {
         if edited.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
         if edited.urgency != original.urgency { names.append("Urgency") }
         if edited.sceneCodes != original.sceneCodes { names.append("Scene Code") }
-        if edited.exifOrientation != original.exifOrientation { names.append("Orientation") }
+        if edited.exifOrientation != original.exifOrientation, !names.contains("Orientation") { names.append("Orientation") }
         if edited.latitude != original.latitude || edited.longitude != original.longitude { names.append("GPS Coordinates") }
         if edited.captureDate != original.captureDate { names.append("Capture Date") }
         return names
