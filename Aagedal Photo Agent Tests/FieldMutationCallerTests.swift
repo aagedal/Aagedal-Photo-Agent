@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import CoreGraphics
 import Testing
@@ -78,6 +79,35 @@ private nonisolated final class FieldMutationNotificationCounter: @unchecked Sen
 
 @Suite("Browser and Face field mutation callers", .serialized)
 struct FieldMutationCallerTests {
+    @Test("Browser folder reload distinguishes absent and explicitly cleared XMP labels", arguments: [false, true])
+    @MainActor
+    func browserReloadRespectsExplicitLabelClear(explicitClear: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("BrowserLabelClear-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.png")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .png, properties: [:])).write(to: photo)
+        try await SwiftExifWriteEngine().writeFields([.label: "Select", .headline: "Original caption"], to: [photo])
+        let sourceBytes = try Data(contentsOf: photo)
+        let attribute = explicitClear ? "xmp:Label=\"\"" : ""
+        let xml = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" \(attribute)/></rdf:RDF></x:xmpmeta>"
+        try Data(xml.utf8).write(to: photo.deletingPathExtension().appendingPathExtension("xmp"))
+        for _ in 0..<2 {
+            let model = BrowserViewModel()
+            model.loadFolder(url: folder, addToOpenFolders: false)
+            await model.waitForFolderLoad()
+            #expect(model.folderLoadErrorMessage == nil)
+            #expect(model.images.count == 1)
+            let image = try #require(model.images.first)
+            #expect(image.filename == photo.lastPathComponent)
+            #expect(image.colorLabel == (explicitClear ? ColorLabel.none : ColorLabel.red))
+        }
+        #expect(try Data(contentsOf: photo) == sourceBytes)
+    }
+
     @Test("Rapid Browser rating and label intents retain admission order, folder and mode")
     @MainActor
     func browserCapturesAndSerializesIntents() async throws {

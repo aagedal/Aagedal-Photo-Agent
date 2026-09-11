@@ -330,6 +330,70 @@ struct EditExportPipelineTests {
         #expect(try await SwiftExifReadService().readFullMetadata(url: rendered).localizedTitles == nil)
     }
 
+    @Test("Rendered sidecar overlay preserves explicit label clears and missing-label inheritance", arguments: [false, true], [false, true])
+    func renderedLabelClearPropagation(usesJSON: Bool, explicitlyClears: Bool) async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let engine = SwiftExifWriteEngine()
+        let oldLabel = try #require(ColorLabel.red.xmpLabelValue)
+        try await engine.writeFields([.label: oldLabel, .headline: "Embedded headline"], to: [source])
+        let sourceBytes = try Data(contentsOf: source)
+        // Rating ensures a partial record remains meaningful even when Label is absent.
+        let pending = IPTCMetadata(rating: 3, label: explicitlyClears ? "" : nil)
+        if usesJSON {
+            try MetadataSidecarService().saveSidecar(MetadataSidecar(
+                sourceFile: source.lastPathComponent, pendingChanges: true, metadata: pending
+            ), for: source, in: dir)
+        } else {
+            try XMPSidecarService().saveSidecar(metadata: pending, for: source)
+            #expect(XMPSidecarService().loadSidecar(for: source)?.label == pending.label)
+        }
+        let outDir = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source, cameraRaw: nil, kind: .jpeg,
+            outputFolder: outDir, folderURL: dir,
+            writeEngine: engine, failureTracker: tracker)
+
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+        let actual = try SwiftMediaMetadata.readMetadata(from: rendered)
+        if explicitlyClears {
+            #expect(actual.xmp?.label == nil || actual.xmp?.label == "")
+        } else {
+            #expect(actual.xmp?.label == oldLabel)
+        }
+        #expect(try await SwiftExifReadService().readFullMetadata(url: rendered).title == "Embedded headline")
+        #expect(try await SwiftExifReadService().readFullMetadata(url: rendered).rating == 3)
+        #expect(try Data(contentsOf: source) == sourceBytes)
+    }
+
+    @Test("FTP sync field mapping clears an old embedded label without clearing unmodeled text", arguments: [false, true])
+    func ftpSyncLabelClearPropagation(explicitlyClears: Bool) async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let engine = SwiftExifWriteEngine()
+        let oldLabel = try #require(ColorLabel.red.xmpLabelValue)
+        try await engine.writeFields([.label: oldLabel, .headline: "Keep embedded headline"], to: [source])
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(rating: 4, label: explicitlyClears ? "" : nil), for: source)
+        let pending = try #require(XMPSidecarService().loadSidecar(for: source))
+        // This is the same mapping and physical-write boundary used by FTPUploadView.mergeSidecar.
+        let fields = SidecarIPTCOverlay.authoritativeFields(from: pending)
+        #expect(fields[.label] == (explicitlyClears ? "" : nil))
+        #expect(fields[.headline] == nil)
+        try await engine.writeFields(fields, to: [source], structuredData: StructuredWriteData(editorial: nil))
+
+        let actual = try SwiftMediaMetadata.readMetadata(from: source)
+        if explicitlyClears {
+            #expect(actual.xmp?.label == nil || actual.xmp?.label == "")
+        } else {
+            #expect(actual.xmp?.label == oldLabel)
+        }
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).title == "Keep embedded headline")
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).rating == 4)
+    }
+
     @Test("Sony-authored raster TIFF accepts direct and sidecar IPTC writes")
     func renderedSonyTIFFAcceptsSidecarIPTC() async throws {
         let (dir, source) = try makeSonyTIFFWorkspace()

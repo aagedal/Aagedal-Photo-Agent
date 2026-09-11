@@ -20,7 +20,8 @@ enum XMPDataBuilder {
 
     /// Write the IPTC/descriptive fields directly as XMP, mirroring the old NSXML `updateDescription`.
     /// Uses `XMPData`'s symmetric convenience setters where they exist, so `asMetadataDict` reads
-    /// every field back identically. nil/empty ⇒ remove (clears propagate). Orientation,
+    /// every field back identically. nil/empty ⇒ remove, except empty Label retains its explicit
+    /// standard clear. Orientation,
     /// GPS and photoshop:DateCreated have no convenience setter, so they go through `setSimpleOrRemove`
     /// (and are read back via the service's `fillXMPOnlyGaps`).
     nonisolated static func applyDescriptive(_ m: IPTCMetadata, into xmp: inout XMPData) {
@@ -32,7 +33,8 @@ enum XMPDataBuilder {
         setArrayOrRemove(&xmp, m.organisationsShownNames, namespace: XMPNamespace.iptcExt, property: "OrganisationInImageName")
         setArrayOrRemove(&xmp, m.organisationsShownCodes, namespace: XMPNamespace.iptcExt, property: "OrganisationInImageCode")
         xmp.rating = m.rating.map(Double.init)
-        xmp.label = nilIfEmpty(m.label)
+        // Empty Label is an explicit standard clear; nil means no label property.
+        xmp.label = m.label
         xmp.digitalSourceType = nilIfEmpty(m.digitalSourceType?.newsCodeURI)
         setSimpleOrRemove(&xmp, m.urgency.map(String.init), namespace: XMPNamespace.photoshop, property: "Urgency")
         setArrayOrRemove(&xmp, m.sceneCodes, namespace: XMPNamespace.iptcCore, property: "Scene")

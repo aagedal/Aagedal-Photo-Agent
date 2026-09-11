@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Testing
+import SwiftMediaMetadata
 @testable import Aagedal_Photo_Agent
 
 @Suite("Verified field mutation writes", .serialized)
@@ -171,11 +172,12 @@ struct MetadataFieldMutationWriteServiceTests {
         #expect(try Data(contentsOf: xmpURL) == xmpBefore)
     }
 
-    @Test("XMP rating clear is explicit zero; unsupported effective label clear stays pending")
+    @Test("XMP rating and label clears override embedded values without rewriting the image")
     func xmpClearSemantics() async throws {
         let (folder, image, _) = try await fixture()
         defer { try? FileManager.default.removeItem(at: folder) }
         try await SwiftExifWriteEngine().writeFields([.rating: "5", .label: "Red"], to: [image])
+        let sourceBytes = try Data(contentsOf: image)
         let beforeRating = try await read(image)
         try #require(beforeRating.label == ColorLabel.red.xmpLabelValue)
         let first = await worker().write(request(image, mode: .writeToXMPSidecar, mutation: .rating(nil)))
@@ -184,11 +186,80 @@ struct MetadataFieldMutationWriteServiceTests {
         let beforeClear = try await read(image)
         try #require(beforeClear.label == ColorLabel.red.xmpLabelValue)
         let second = await worker().write(request(image, mode: .writeToXMPSidecar, mutation: .label(nil)))
-        #expect(!second.completed)
-        #expect(second.failure?.message.contains("falls back") == true || second.failure?.message.contains("fall back") == true)
-        #expect(second.installedSidecar?.pendingChanges == true)
-        #expect(second.installedSidecar?.metadata.label == nil)
+        #expect(second.completed)
+        #expect(second.didWriteXMP)
+        #expect(!second.didWriteEmbedded)
+        #expect(second.installedSidecar?.pendingChanges == false)
+        #expect(second.installedSidecar?.metadata.label == "")
+        #expect(second.installedSidecar?.imageMetadataSnapshot?.label == "")
+        let xmp = try #require(XMPSidecarService().loadSidecar(for: image))
+        #expect(xmp.label == "")
+        #expect(beforeClear.merged(preferring: xmp).label == "")
+        #expect(beforeClear.replacingDescriptiveFields(from: xmp).label == "")
         #expect(try await read(image).label == ColorLabel.red.xmpLabelValue)
+        #expect(try Data(contentsOf: image) == sourceBytes)
+    }
+
+
+    @Test("XMP label clear retains unrelated pending metadata, opaque carriers and exact snapshot presence", arguments: [false, true])
+    func labelClearPreservesPending(nilSnapshot: Bool) async throws {
+        let (folder, image, _) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try await SwiftExifWriteEngine().writeFields([.label: "Select"], to: [image])
+        let embedded = try await read(image)
+        var draft = embedded; draft.title = "Pending caption"
+        try MetadataSidecarService().saveSidecar(.init(sourceFile: image.lastPathComponent,
+            pendingChanges: true, metadata: draft, imageMetadataSnapshot: nilSnapshot ? nil : embedded),
+            for: image, in: folder)
+        var graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: json(image))) as? [String: Any])
+        graph["opaqueExtension"] = ["keep": [1, 2, 3]]
+        try JSONSerialization.data(withJSONObject: graph).write(to: json(image))
+        var xmp = XMPData()
+        xmp.label = "Select"
+        xmp.setValue(.simple("keep me"), namespace: "https://example.test/opaque/", property: "Value")
+        xmp.setValue(.simple("1.5"), namespace: XMPNamespace.crs, property: "Exposure2012")
+        xmp.tiffOrientation = "6"
+        let xmpURL = XMPSidecarService().sidecarURL(for: image)
+        try Data(XMPWriter.generateXML(xmp).utf8).write(to: xmpURL)
+        let sourceBytes = try Data(contentsOf: image)
+        let result = await worker().write(request(image, mode: .writeToXMPSidecar, mutation: .label(nil)))
+        #expect(result.completed)
+        #expect(result.installedSidecar?.pendingChanges == true)
+        let reloaded = try #require(MetadataSidecarService().loadSidecar(for: image, in: folder))
+        #expect(reloaded.metadata.label == "")
+        #expect(reloaded.metadata.title == "Pending caption")
+        #expect(reloaded.imageMetadataSnapshot?.label == (nilSnapshot ? nil : ""))
+        #expect(reloaded.imageMetadataSnapshot?.title == (nilSnapshot ? nil : "Embedded A"))
+        let raw = try XMPReader.readFromXML(Data(contentsOf: xmpURL))
+        #expect(raw.label == "")
+        #expect(raw.simpleValue(namespace: "https://example.test/opaque/", property: "Value") == "keep me")
+        #expect(raw.simpleValue(namespace: XMPNamespace.crs, property: "Exposure2012") == "1.5")
+        #expect(raw.tiffOrientation == "6")
+        let saved = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: json(image))) as? [String: Any])
+        #expect((saved["opaqueExtension"] as? [String: [Int]])?["keep"] == [1, 2, 3])
+        #expect(try Data(contentsOf: image) == sourceBytes)
+        // A later descriptive serializer must retain the explicit clear rather than resurrecting red.
+        try XMPSidecarService().saveSidecar(metadata: reloaded.metadata, for: image)
+        let afterResave = try #require(XMPSidecarService().loadSidecar(for: image))
+        #expect(embedded.merged(preferring: afterResave).label == "")
+    }
+
+    @Test("An XMP label clear followed by finalization failure retains a visible pending receipt")
+    func labelClearFinalizeFailure() async throws {
+        let (folder, image, _) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try await SwiftExifWriteEngine().writeFields([.label: "Select"], to: [image])
+        let sourceBytes = try Data(contentsOf: image)
+        let result = await worker(hooks: .init(beforeFinalize: { throw CocoaError(.fileWriteNoPermission) }))
+            .write(request(image, mode: .writeToXMPSidecar, mutation: .label(nil)))
+        #expect(!result.completed)
+        #expect(result.didWriteXMP)
+        #expect(result.failure != nil)
+        #expect(result.installedSidecar?.pendingChanges == true)
+        #expect(result.installedSidecar?.metadata.label == "")
+        #expect(result.installedSidecar?.imageMetadataSnapshot?.label == "Select")
+        #expect(XMPSidecarService().loadSidecar(for: image)?.label == "")
+        #expect(try Data(contentsOf: image) == sourceBytes)
     }
 
     @Test("XMP field mutation preserves opaque Develop, localized title and unrelated names")

@@ -5,10 +5,11 @@ nonisolated enum MetadataPhysicalFieldMutation: Sendable, Equatable {
     case label(String?)
     case addPersons([String])
 
+    // A label mutation always carries an explicit value, including the empty standard clear.
     func apply(to metadata: inout IPTCMetadata) {
         switch self {
         case .rating(let value): metadata.rating = Self.normalizedRating(value)
-        case .label(let value): metadata.label = Self.normalizedLabel(value)
+        case .label(let value): metadata.label = Self.normalizedLabel(value) ?? ""
         case .addPersons(let names): metadata.personShown = Self.add(names, to: metadata.personShown)
         }
     }
@@ -36,7 +37,7 @@ nonisolated enum MetadataPhysicalFieldValue: Sendable, Equatable {
     func apply(to metadata: inout IPTCMetadata) {
         switch self {
         case .rating(let value): metadata.rating = value
-        case .label(let value): metadata.label = value
+        case .label(let value): metadata.label = value ?? ""
         case .persons(let value): metadata.personShown = value
         }
     }
@@ -180,12 +181,6 @@ nonisolated struct MetadataFieldMutationWriteService: Sendable {
             installed = prepared.sidecar
             try await hooks.afterPrepare()
             try Task.checkCancellation()
-            if target == .xmpSidecar, case .label(let requested) = request.mutation,
-               MetadataPhysicalFieldMutation.normalizedLabel(requested) == nil,
-               MetadataPhysicalFieldMutation.normalizedLabel(prepared.embedded.label) != nil {
-                throw MetadataFieldMutationWriteResult.Failure(stage: .xmp,
-                    message: "This photo has an embedded color label. An empty XMP label would fall back to that value, so the clear remains pending. Clear the embedded label with an allowed image-write mode or retain the pending draft until explicit XMP clear support is available.", kind: .io)
-            }
             if target.writesEmbedded {
                 stage = .embedded
                 guard let writer = writeEngine as? any MetadataFieldMutationWriting else {

@@ -520,6 +520,16 @@ enum SidecarIPTCOverlay {
         case failed
     }
 
+    /// Shared by rendered export and FTP's explicit sidecar-to-file sync. A partial
+    /// record leaves descriptive fields alone; an empty Label is an explicit clear,
+    /// whereas a missing Label leaves the destination's embedded value unchanged.
+    nonisolated static func authoritativeFields(from metadata: IPTCMetadata) -> [MetadataFieldKey: String] {
+        var fields = metadata.hasDescriptiveContent ? metadata.toOverwriteFields() : [:]
+        if let rating = metadata.rating { fields[.rating] = String(rating) }
+        if let label = metadata.label { fields[.label] = label }
+        return fields
+    }
+
     static func apply(sourceURL: URL, renderedURL: URL, folderURL: URL?,
                       writeEngine: any MetadataWriteEngine) async -> Outcome {
         // Prefer XMP sidecar IPTC (default write mode for RAW and C2PA files). A sidecar
@@ -551,16 +561,7 @@ enum SidecarIPTCOverlay {
             // stale embedded value from the rendered output. GPS stays additive (see
             // toOverwriteFields). Guarded again here: a rating/label-only sidecar must not
             // wipe the descriptive fields it never carried.
-            var fields = xmpMeta.hasDescriptiveContent ? xmpMeta.toOverwriteFields() : [:]
-            // Rating and label are excluded from toOverwriteFields() (managed separately
-            // in normal flow). For rendered output we must include them because the source
-            // file may be C2PA-protected and hold stale values.
-            if let rating = xmpMeta.rating {
-                fields[.rating] = String(rating)
-            }
-            if let label = xmpMeta.label, !label.isEmpty {
-                fields[.label] = label
-            }
+            let fields = authoritativeFields(from: xmpMeta)
             guard !fields.isEmpty else { return .noPendingEdits }
             do {
                 try await writeEngine.writeFieldsToRenderedFiles(
@@ -591,13 +592,7 @@ enum SidecarIPTCOverlay {
 
         // Same partial-record guard as the .xmp branch: a record with no descriptive
         // content (e.g. a failed-seed fallback) must not wipe fields it never carried.
-        var fields = sidecar.metadata.hasDescriptiveContent ? sidecar.metadata.toOverwriteFields() : [:]
-        if let rating = sidecar.metadata.rating {
-            fields[.rating] = String(rating)
-        }
-        if let label = sidecar.metadata.label, !label.isEmpty {
-            fields[.label] = label
-        }
+        let fields = authoritativeFields(from: sidecar.metadata)
         guard !fields.isEmpty else { return .noPendingEdits }
 
         do {

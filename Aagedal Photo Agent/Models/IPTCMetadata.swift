@@ -1956,6 +1956,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
 
     // XMP managed alongside IPTC (persisted to JSON sidecar)
     var rating: Int?
+    /// nil inherits an earlier carrier; an empty standard XMP Label explicitly clears it.
     var label: String?
 
     // Camera raw / orientation — in-memory only, sourced from XMP, NOT persisted to JSON sidecar
@@ -2360,7 +2361,7 @@ extension IPTCMetadata {
         if let value = record.latitude { result.latitude = value }
         if let value = record.longitude { result.longitude = value }
         if let value = record.rating { result.rating = value }
-        if let value = record.label, !value.isEmpty { result.label = value }
+        if let value = record.label { result.label = value }
         if let recordCRS = record.cameraRaw, !recordCRS.isEmpty {
             if let existingCRS = result.cameraRaw {
                 result.cameraRaw = existingCRS.merged(preferring: recordCRS)
@@ -2425,7 +2426,7 @@ extension IPTCMetadata {
         if let value = override.latitude { result.latitude = value }
         if let value = override.longitude { result.longitude = value }
         if let value = override.rating { result.rating = value }
-        if let value = override.label, !value.isEmpty { result.label = value }
+        if let value = override.label { result.label = value }
         // CameraRaw: prefer override (XMP) when it has data
         if let overrideCRS = override.cameraRaw, !overrideCRS.isEmpty {
             if let existingCRS = result.cameraRaw {

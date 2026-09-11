@@ -1449,7 +1449,7 @@ final class BrowserViewModel {
                        let starRating = StarRating(rawValue: xmpRating) {
                         updated[index].starRating = starRating
                     }
-                    if let xmpLabel = xmpMeta.label, !xmpLabel.isEmpty {
+                    if let xmpLabel = xmpMeta.label {
                         updated[index].colorLabel = ColorLabel.fromMetadataLabel(xmpLabel)
                     }
                     if let xmpOrientation = xmpMeta.exifOrientation {
@@ -1973,6 +1973,8 @@ final class BrowserViewModel {
     }
 
     func waitForPendingFieldMutationWrites() async { await fieldMutationTask?.value }
+
+    func waitForFolderLoad() async { await loadFolderTask?.value }
 
     /// Move all images currently labeled `.trash` to a sibling `.Rejected/`
     /// subfolder, along with their JSON and XMP sidecars. The blocking bundle moves cross the

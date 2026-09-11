@@ -5991,3 +5991,36 @@ struct BrushCompositingTests {
                 "the global layer must not flatten distinct super-whites before local recovery")
     }
 }
+
+
+@Suite("Explicit standard XMP label clears")
+struct ExplicitXMPLabelClearTests {
+    @Test("Absent inherits while empty clears across parsing, both merges and JSON reload")
+    func absentVersusEmpty() throws {
+        let embedded = IPTCMetadata(title: "Embedded title", credit: "Credit", label: "Select")
+        for explicit in [false, true] {
+            var xmp = XMPData()
+            if explicit { xmp.label = "" }
+            let bytes = Data(XMPWriter.generateXML(xmp).utf8)
+            let record = try #require(XMPSidecarService().loadSidecar(fromData: bytes))
+            #expect(record.label == (explicit ? "" : nil))
+            let decoded = try JSONDecoder().decode(IPTCMetadata.self, from: JSONEncoder().encode(record))
+            #expect(decoded.label == record.label)
+            #expect(embedded.merged(preferring: decoded).label == (explicit ? "" : "Select"))
+            #expect(embedded.merged(preferring: decoded).title == "Embedded title")
+            #expect(embedded.merged(preferring: decoded).credit == "Credit")
+            #expect(embedded.replacingDescriptiveFields(from: decoded).label == (explicit ? "" : "Select"))
+            var rebuilt = XMPData()
+            XMPDataBuilder.applyDescriptive(decoded, into: &rebuilt)
+            #expect(try XMPReader.readFromXML(Data(XMPWriter.generateXML(rebuilt).utf8)).label == record.label)
+        }
+    }
+
+    @Test("Nonempty aliases remain canonical and custom labels retain their text")
+    func canonicalAndCustom() {
+        #expect(iptcMetadataFromDict([MetadataDictKey.label: "Red"]).label == "Select")
+        #expect(iptcMetadataFromDict([MetadataDictKey.label: "Editorial desk"]).label == "Editorial desk")
+        #expect(iptcMetadataFromDict([MetadataDictKey.label: ""]).label == "")
+        #expect(iptcMetadataFromDict([:]).label == nil)
+    }
+}

@@ -544,9 +544,7 @@ struct FTPUploadView: View {
                   sidecarSnapshot.requestID == requestID,
                   let sidecar = sidecarSnapshot.metadataByImageURL[url],
                   sidecar.hasDescriptiveContent || sidecar.rating != nil || sidecar.label != nil else { return }
-            var fields = sidecar.hasDescriptiveContent ? sidecar.toOverwriteFields() : [:]
-            if let rating = sidecar.rating { fields[.rating] = String(rating) }
-            if let label = sidecar.label, !label.isEmpty { fields[.label] = label }
+            let fields = SidecarIPTCOverlay.authoritativeFields(from: sidecar)
             guard !fields.isEmpty else { return }
             do {
                 try await writeEngine.writeFields(

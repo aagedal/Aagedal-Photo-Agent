@@ -1305,7 +1305,8 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         locationsCreated: parseEditorialLocations(dict[MetadataDictKey.locationCreated]),
         locationsShown: parseEditorialLocations(dict[MetadataDictKey.locationShown]),
         rating: dict[MetadataDictKey.rating] as? Int,
-        label: ColorLabel.canonicalMetadataLabel(dict[MetadataDictKey.label] as? String),
+        // Preserve carrier presence: an empty standard XMP Label overrides embedded color.
+        label: (dict[MetadataDictKey.label] as? String).map { ColorLabel.canonicalMetadataLabel($0) ?? "" },
         cameraRaw: (cameraRaw.isEmpty || crsIsAlreadyApplied(in: dict)) ? nil : cameraRaw,
         exifOrientation: parseIntValue(dict[MetadataDictKey.orientation])
     )
