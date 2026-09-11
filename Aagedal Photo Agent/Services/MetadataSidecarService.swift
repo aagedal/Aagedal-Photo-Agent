@@ -236,6 +236,38 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
+    /// Folder command discovery reports unsafe or unreadable carriers rather than hiding them.
+    @MetadataSidecarFilesystemActor
+    func discoverPendingSidecars(in folderURL: URL) async -> PendingMetadataDiscoveryResult {
+        guard !Task.isCancelled else { return .init(records: [:], failures: [], wasCancelled: true) }
+        var records: [URL: MetadataSidecar] = [:]
+        var failures: [PendingMetadataDiscoveryFailure] = []
+        let directory = sidecarDirectory(for: folderURL)
+        do {
+            try requireMetadataDirectory(in: folderURL)
+            guard try entryExists(directory) else { return .init(records: [:], failures: []) }
+            let files = try FileManager.default.contentsOfDirectory(at: directory,
+                includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasSuffix(".meta.json") }
+            for file in files.sorted(by: { $0.path < $1.path }) {
+                if Task.isCancelled { break }
+                do {
+                    try requireRegularFile(file)
+                    let owner = try declaredOwner(in: Data(contentsOf: file), at: file)
+                    let image = folderURL.appendingPathComponent(owner)
+                    guard sidecarCandidateURLs(for: image, in: folderURL).contains(where: {
+                        $0.standardizedFileURL.resolvingSymlinksInPath().path == file.standardizedFileURL.resolvingSymlinksInPath().path
+                    }),
+                          SupportedImageFormats.isSupported(url: image) else { throw invalidOwnership(file) }
+                    let record = try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: image)) { @MetadataSidecarFilesystemActor in
+                        try self.loadOwnedSidecarForMutation(for: image, in: folderURL)
+                    }
+                    if let record, record.pendingChanges { records[image] = record }
+                } catch { failures.append(.init(url: file, message: error.localizedDescription)) }
+            }
+        } catch { failures.append(.init(url: directory, message: error.localizedDescription)) }
+        return .init(records: records, failures: failures, wasCancelled: Task.isCancelled)
+    }
+
     @MetadataSidecarFilesystemActor
     func loadSidecars(
         for imageURLs: [URL], in folderURL: URL,
@@ -627,6 +659,7 @@ struct MetadataSidecarService: Sendable {
     func captureWriteCompletionSnapshot(
         for imageURL: URL, in folderURL: URL, expectedSidecar: MetadataSidecar?,
         expectedTechnicalMetadata: IPTCMetadata?,
+        expectedXMPSnapshot: XMPSidecarWriteSnapshot? = nil,
         allowPendingOrientation: Bool = false
     ) async throws -> WriteCompletionSnapshot {
         try Task.checkCancellation()
@@ -638,13 +671,46 @@ struct MetadataSidecarService: Sendable {
             let xmpData = try self.xmpBytes(for: imageURL)
             let technical = xmpData.flatMap { XMPSidecarService().loadSidecar(fromData: $0,
                 imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) }
-            guard xmpData == nil || technical != nil,
-                  technical?.cameraRaw == expectedTechnicalMetadata?.cameraRaw,
-                  technical?.exifOrientation == expectedTechnicalMetadata?.exifOrientation else {
+            guard xmpData == nil || technical != nil else {
                 throw DescriptiveMetadataWriteError.staleXMPSidecar(XMPSidecarService().sidecarURL(for: imageURL))
+            }
+            if let expectedXMPSnapshot {
+                // Parsed mask identities are regenerated on each read. Exact captured bytes are
+                // stronger evidence for callers that carry the complete physical XMP baseline.
+                guard xmpData == expectedXMPSnapshot.data else {
+                    throw DescriptiveMetadataWriteError.staleXMPSidecar(XMPSidecarService().sidecarURL(for: imageURL))
+                }
+            } else {
+                guard technical?.cameraRaw == expectedTechnicalMetadata?.cameraRaw,
+                      technical?.exifOrientation == expectedTechnicalMetadata?.exifOrientation else {
+                    throw DescriptiveMetadataWriteError.staleXMPSidecar(XMPSidecarService().sidecarURL(for: imageURL))
+                }
             }
             return WriteCompletionSnapshot(imageURL: imageURL, folderURL: folderURL,
                 tokens: tokens, xmpData: xmpData, allowsPendingOrientation: allowPendingOrientation)
+        }
+    }
+
+    /// The caller owns this photo's MetadataIOCoordinator lock (e.g. an embedded engine).
+    @MetadataSidecarFilesystemActor
+    func validateWriteCompletionInHeldTransaction(_ snapshot: WriteCompletionSnapshot,
+                                                  sourceRevision: SourceImageRevision) async throws {
+        guard try contentTokens(for: snapshot.imageURL, in: snapshot.folderURL) == snapshot.tokens,
+              try xmpBytes(for: snapshot.imageURL) == snapshot.xmpData else {
+            throw ownershipChanged(snapshot.imageURL)
+        }
+        try await validateCompletionSource(sourceRevision, at: snapshot.imageURL)
+        guard try contentTokens(for: snapshot.imageURL, in: snapshot.folderURL) == snapshot.tokens,
+              try xmpBytes(for: snapshot.imageURL) == snapshot.xmpData else {
+            throw ownershipChanged(snapshot.imageURL)
+        }
+    }
+
+    @MetadataSidecarFilesystemActor
+    private func validateCompletionSource(_ expected: SourceImageRevision, at imageURL: URL) async throws {
+        let actual = try await SourceImageRevision.capture(at: imageURL)
+        guard actual.canonicalURL == expected.canonicalURL, actual.sha256 == expected.sha256 else {
+            throw ownershipChanged(imageURL)
         }
     }
 
@@ -658,6 +724,8 @@ struct MetadataSidecarService: Sendable {
         mirrorOnlyIfExisting: Bool = false,
         replaceDevelopSettings: Bool = false,
         replaceOrientation: Bool = false,
+        expectedSourceRevision: SourceImageRevision? = nil,
+        verifyWrittenMetadata: (@Sendable (IPTCMetadata) throws -> Void)? = nil,
         beforeXMPCommit: @escaping @Sendable () throws -> Void = {},
         beforeJSONCommit: @escaping @Sendable () throws -> Void = {},
         afterJSONCommit: @escaping @Sendable () throws -> Void = {}
@@ -681,8 +749,17 @@ struct MetadataSidecarService: Sendable {
                       try self.xmpBytes(for: snapshot.imageURL) == snapshot.xmpData else {
                     throw self.ownershipChanged(snapshot.imageURL)
                 }
+                if let expectedSourceRevision {
+                    try await self.validateCompletionSource(expectedSourceRevision, at: snapshot.imageURL)
+                }
                 stage = .xmpSidecar
                 try beforeXMPCommit()
+                guard try self.contentTokens(for: snapshot.imageURL, in: snapshot.folderURL) == snapshot.tokens else {
+                    throw self.ownershipChanged(snapshot.imageURL)
+                }
+                if let expectedSourceRevision {
+                    try await self.validateCompletionSource(expectedSourceRevision, at: snapshot.imageURL)
+                }
                 guard try self.contentTokens(for: snapshot.imageURL, in: snapshot.folderURL) == snapshot.tokens else {
                     throw self.ownershipChanged(snapshot.imageURL)
                 }
@@ -694,6 +771,20 @@ struct MetadataSidecarService: Sendable {
                 stage = .metadataSidecar
                 try beforeJSONCommit()
                 let committedXMP = xmpReceipt.snapshot ?? XMPSidecarWriteSnapshot(data: snapshot.xmpData)
+                guard try self.contentTokens(for: snapshot.imageURL, in: snapshot.folderURL) == snapshot.tokens,
+                      try self.xmpBytes(for: snapshot.imageURL) == committedXMP.data else {
+                    throw self.ownershipChanged(snapshot.imageURL)
+                }
+                if let expectedSourceRevision {
+                    try await self.validateCompletionSource(expectedSourceRevision, at: snapshot.imageURL)
+                }
+                if wroteXMP, let verifyWrittenMetadata {
+                    guard let actual = self.metadataFromXMPReceipt(xmpReceipt, imageURL: snapshot.imageURL) else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    try verifyWrittenMetadata(actual)
+                }
+                // The source hash above awaits another actor; recheck carriers after that await.
                 guard try self.contentTokens(for: snapshot.imageURL, in: snapshot.folderURL) == snapshot.tokens,
                       try self.xmpBytes(for: snapshot.imageURL) == committedXMP.data else {
                     throw self.ownershipChanged(snapshot.imageURL)

@@ -2076,6 +2076,18 @@ struct ContentView: View {
     /// instead of sharing one hosted item with an inferred group description.
     @ToolbarContentBuilder
     private var folderActionToolbarContent: some ToolbarContent {
+        if let attention = metadataViewModel.pendingWriteBatchOutcome?.attention {
+            ToolbarItem(id: "folder-write-pending-details", placement: .secondaryAction) {
+                Button {
+                    OperationIssueDetailsPresenter.present(title: attention.title, message: attention.message)
+                } label: {
+                    Label("Write All Details", systemImage: "exclamationmark.triangle")
+                }
+                .accessibilityLabel(attention.title)
+                .accessibilityIdentifier("toolbar.writeAllPending.details")
+                .help("Review the complete Write All results, including partial writes and retained pending files.")
+            }
+        }
         if metadataViewModel.isProcessingFolder {
             ToolbarItem(id: "folder-processing-status", placement: .secondaryAction) {
                 HStack(spacing: 4) {
@@ -4058,6 +4070,13 @@ struct ContentViewModifiers: ViewModifier {
                     )
                     metadataViewModel.currentFolderURL = folderURL
                 }
+            }
+            .onChange(of: metadataViewModel.pendingWriteBatchOutcome?.requestID) { _, requestID in
+                guard let attention = metadataViewModel.pendingWriteBatchOutcome?.attention,
+                      attention.id == requestID else { return }
+                // Folder writes can outlive the original selection. Present their own scoped
+                // outcome without replacing the newly selected editor's message or metadata.
+                OperationIssueDetailsPresenter.present(title: attention.title, message: attention.message)
             }
             .onChange(of: metadataViewModel.isProcessingFolder) { _, isProcessing in
                 if !isProcessing {

@@ -89,6 +89,52 @@ nonisolated enum MetadataCommitResult: Sendable, Equatable {
     case failed(message: String)
 }
 
+/// Batch-specific presentation stays separate from the current editor's error state.
+nonisolated struct PendingMetadataWriteBatchAttention: Identifiable, Sendable {
+    let id: UUID
+    let title: String
+    let message: String
+}
+
+/// Immutable report for one Write All request, including its exact attempted prefix.
+nonisolated struct PendingMetadataWriteBatchOutcome: Sendable {
+    let requestID: UUID
+    let folderURL: URL
+    let results: [PendingMetadataWriteResult]
+    let discoveryFailures: [PendingMetadataDiscoveryFailure]
+    let unattemptedURLs: [URL]
+    let wasCancelled: Bool
+    let discoveryWasCancelled: Bool
+
+    var completedCount: Int { results.filter(\.completed).count }
+    var skippedCount: Int { results.filter(\.wasSkipped).count }
+    var failedCount: Int { results.filter { !$0.completed && !$0.wasSkipped && !$0.wasCancelled }.count }
+
+    var attention: PendingMetadataWriteBatchAttention? {
+        guard let message = attentionMessage else { return nil }
+        return .init(id: requestID, title: "Write All Needs Attention: \(folderURL.lastPathComponent)", message: message)
+    }
+
+    var attentionMessage: String? {
+        guard wasCancelled || skippedCount > 0 || failedCount > 0 || !discoveryFailures.isEmpty else { return nil }
+        var lines = ["Write All in \(folderURL.path): wrote \(completedCount), skipped \(skippedCount), failed \(failedCount)."]
+        if wasCancelled { lines.append("Cancelled after \(results.count) attempted photos; \(unattemptedURLs.count) discovered photos were not attempted.") }
+        if discoveryWasCancelled { lines.append("Discovery did not finish; additional pending photos may remain unverified.") }
+        for failure in discoveryFailures { lines.append("\(failure.url.path): \(failure.message)") }
+        for result in results where !result.completed {
+            var message = result.imageURL.path + ": " + (result.failure ?? (result.wasSkipped ? "Skipped protected photo." : "The pending write did not complete."))
+            var written: [String] = []
+            if result.didWriteEmbedded { written.append("image metadata") }
+            if result.didWriteXMP { written.append("XMP sidecar") }
+            if !written.isEmpty { message += " Already written: " + written.joined(separator: " and ") + "." }
+            if result.embeddedWriteMayHaveOccurred { message += " Image metadata may already have changed; verify it before retrying." }
+            if let path = result.committedButUnverifiedSidecarURL { message += " Metadata JSON was committed but could not be verified: \(path.path)." }
+            lines.append(message)
+        }
+        return lines.joined(separator: "\n\n")
+    }
+}
+
 /// A scoped recovery may reload only the exact editor state that the user reviewed.
 nonisolated struct CaptionConflictEditorCheckpoint: Sendable {
     let photoURL: URL
@@ -105,6 +151,7 @@ final class MetadataViewModel {
     var isSaving = false
     var isProcessingFolder = false
     var folderProcessProgress = ""
+    private(set) var pendingWriteBatchOutcome: PendingMetadataWriteBatchOutcome?
     var selectedCount = 0
     var selectedURLs: [URL] = []
     var hasChanges = false
@@ -230,7 +277,12 @@ final class MetadataViewModel {
     @ObservationIgnored private var historyRestoreRequestID: UUID?
     @ObservationIgnored private var discardTask: Task<Void, Never>?
     @ObservationIgnored private var discardRequestID: UUID?
-    @ObservationIgnored private var batchProcessTask: Task<Void, Never>?
+    @ObservationIgnored private var batchProcessTask: Task<Void, Never>? {
+        willSet { batchProcessGeneration += 1 }
+    }
+    @ObservationIgnored private var batchProcessGeneration = 0
+    @ObservationIgnored private let pendingWriteDiscovery: @Sendable (URL) async -> PendingMetadataDiscoveryResult
+    @ObservationIgnored private let pendingWriteExecutor: (@Sendable (PendingMetadataWriteRequest) async -> PendingMetadataWriteResult)?
     @ObservationIgnored private var geocodingTask: Task<Void, Never>?
     @ObservationIgnored private var batchMetadataByURL: [URL: IPTCMetadata] = [:]
 
@@ -246,7 +298,11 @@ final class MetadataViewModel {
         },
         discardFolderSidecars: @escaping @Sendable (URL) async throws -> Void = { folderURL in
             try await MetadataSidecarService().deleteAllSidecarsSerialized(in: folderURL)
-        }
+        },
+        pendingWriteDiscovery: @escaping @Sendable (URL) async -> PendingMetadataDiscoveryResult = {
+            await MetadataSidecarService().discoverPendingSidecars(in: $0)
+        },
+        pendingWriteExecutor: (@Sendable (PendingMetadataWriteRequest) async -> PendingMetadataWriteResult)? = nil
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
@@ -255,6 +311,8 @@ final class MetadataViewModel {
         self.persistHistoryRestore = persistHistoryRestore
         self.discardSidecar = discardSidecar
         self.discardFolderSidecars = discardFolderSidecars
+        self.pendingWriteDiscovery = pendingWriteDiscovery
+        self.pendingWriteExecutor = pendingWriteExecutor
     }
 
     deinit {
@@ -3554,106 +3612,87 @@ final class MetadataViewModel {
 
     func writeAllPendingChanges(in folderURL: URL?, images: [ImageFile], skipC2PA: Bool = true) {
         guard let folderURL else { return }
-
+        // Image-list credential booleans may still be unloaded or stale. The service reads a
+        // complete physical record for every discovered photo before choosing its destination.
+        _ = images
+        let requestID = UUID()
+        let generation = batchProcessGeneration + 1
+        let loadID = metadataLoadRequestID
+        let selected = selectedURLs
+        let editorAtAdmission = editingMetadata
+        let discovery = pendingWriteDiscovery
+        let executor = pendingWriteExecutor
+        let engine = writeEngine
+        let reader = readService
         isProcessingFolder = true
         folderProcessProgress = "0/?"
+        pendingWriteBatchOutcome = nil
         saveError = nil
-
-        let loadID = metadataLoadRequestID
-        let urls = selectedURLs
         batchProcessTask?.cancel()
         batchProcessTask = Task {
             defer {
-                if !Task.isCancelled {
-                    self.isProcessingFolder = false
-                    self.folderProcessProgress = ""
+                if batchProcessGeneration == generation {
+                    isProcessingFolder = false
+                    folderProcessProgress = ""
                 }
             }
-
-            let sidecars = await sidecarService.loadAllSidecars(in: folderURL)
-            guard !Task.isCancelled else { return }
-            let pendingSidecars = sidecars.filter { $0.value.pendingChanges }
-
-            var processed = 0
-            let total = pendingSidecars.count
-            self.folderProcessProgress = "0/\(total)"
-            var writtenCount = 0
-            var skippedCount = 0
-            var failedCount = 0
-            var firstFailure: String?
-
-            let imagesByURL = Dictionary(images.map { ($0.url, $0) }, uniquingKeysWith: { _, last in last })
-
-            for (imageURL, sidecar) in pendingSidecars {
-                guard !Task.isCancelled else { return }
-                if skipC2PA {
-                    if let image = imagesByURL[imageURL], image.hasC2PA {
-                        skippedCount += 1
-                        processed += 1
-                        self.folderProcessProgress = "\(processed)/\(total)"
-                        continue
-                    }
+            let discovered = await discovery(folderURL)
+            let records = discovered.records.sorted { $0.key.path < $1.key.path }
+            var results: [PendingMetadataWriteResult] = []
+            var cancelled = Task.isCancelled || discovered.wasCancelled
+            if batchProcessGeneration == generation { folderProcessProgress = "0/\(records.count)" }
+            let service = PendingMetadataWriteService(writeEngine: engine, readSourceFacts: { @MainActor url in
+                let dictionaries = try await reader.readBatchBasicMetadata(urls: [url])
+                guard dictionaries.count == 1, let dictionary = dictionaries.first,
+                      let sourcePath = dictionary[MetadataDictKey.sourceFile] as? String,
+                      URL(fileURLWithPath: sourcePath).standardizedFileURL.resolvingSymlinksInPath().path
+                        == url.standardizedFileURL.resolvingSymlinksInPath().path else {
+                    throw CocoaError(.fileReadCorruptFile, userInfo: [
+                        NSLocalizedDescriptionKey: "Could not verify this photo's metadata and content-credential status.",
+                        NSFilePathErrorKey: url.path
+                    ])
                 }
-
-                let edited = sidecar.metadata
-                // Batch pending writes have no per-file baseline to diff against
-                // (originalImageMetadata tracks only the selected image), so gate on
-                // whether the sidecar recorded develop edits at all: cameraRaw == nil
-                // means a metadata-only pending change, and the file's crs block
-                // (possibly Adobe-authored) must be left untouched.
-                let developChanged = edited.cameraRaw != nil
-                let fields = overwriteFields(
-                    from: edited,
-                    includeCameraRaw: developChanged,
-                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
-                )
-                let structuredData = developChanged
-                    ? StructuredWriteData(
-                        toneCurve: edited.cameraRaw?.toneCurve,
-                        masks: edited.cameraRaw?.localAdjustments,
-                        watermarkLayers: edited.cameraRaw?.watermarkLayers,
-                        hslAdjustments: edited.cameraRaw?.hslAdjustments,
-                        layerOrder: edited.cameraRaw?.layerOrder,
-                        anonymizer: edited.cameraRaw?.anonymizer,
-                        editorial: EditorialStructuredWriteData(metadata: edited),
-                        replaceCameraRawBlock: true
-                    )
-                    : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited))
-
-                do {
-                    let cleanup = try await sidecarService.captureWriteCleanupSnapshot(
-                        for: imageURL, in: folderURL, expected: sidecar
-                    )
-                    try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
-                    guard try await sidecarService.deleteSidecarAfterWriteSerialized(cleanup) else {
-                        throw CocoaError(.fileWriteFileExists, userInfo: [
-                            NSLocalizedDescriptionKey: "Metadata was written, but newer pending sidecar changes were retained."
-                        ])
-                    }
-                    writtenCount += 1
-                } catch is CancellationError {
-                    return
-                } catch {
-                    failedCount += 1
-                    if firstFailure == nil { firstFailure = "\(imageURL.lastPathComponent): \(error.localizedDescription)" }
-                    logger.warning("Failed to write metadata for \(imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
-                }
-
-                guard !Task.isCancelled else { return }
-                processed += 1
-                self.folderProcessProgress = "\(processed)/\(total)"
+                return PendingMetadataSourceFacts(metadata: iptcMetadataFromDict(dictionary),
+                    hasC2PA: TechnicalMetadata.dictHasC2PA(dictionary))
+            })
+            for (imageURL, sidecar) in records {
+                guard !cancelled, !Task.isCancelled else { cancelled = true; break }
+                let request = PendingMetadataWriteRequest(imageURL: imageURL, folderURL: folderURL,
+                    expectedSidecar: sidecar, skipC2PA: skipC2PA)
+                let result = if let executor { await executor(request) } else { await service.execute(request) }
+                // Preserve a verified/uncertain admitted write even when cancellation arrived
+                // during it. Remaining entries stay an explicit unattempted suffix.
+                results.append(result)
+                if batchProcessGeneration == generation { folderProcessProgress = "\(results.count)/\(records.count)" }
+                if result.wasCancelled || Task.isCancelled { cancelled = true; break }
             }
-
-            let remainingPending = await sidecarService.imagesWithPendingChanges(in: folderURL)
-            guard !Task.isCancelled, currentFolderURL == folderURL,
-                  metadataLoadRequestID == loadID, selectedURLs == urls else { return }
-            self.selectedHavePendingSidecars = !remainingPending.isDisjoint(with: urls)
-            if failedCount > 0 || skippedCount > 0 {
-                self.saveError = "Wrote \(writtenCount), skipped \(skippedCount), failed \(failedCount)."
-                    + (firstFailure.map { " " + $0 } ?? "")
+            guard batchProcessGeneration == generation else { return }
+            // Read the final pending state strictly; uncertainty must not become a false clean flag.
+            let remaining = cancelled ? nil : await discovery(folderURL)
+            cancelled = cancelled || Task.isCancelled || remaining?.wasCancelled == true
+            var discoveryFailures = discovered.failures
+            for failure in remaining?.failures ?? [] where !discoveryFailures.contains(where: { $0.url == failure.url && $0.message == failure.message }) {
+                discoveryFailures.append(failure)
             }
+            let outcome = PendingMetadataWriteBatchOutcome(requestID: requestID, folderURL: folderURL,
+                results: results, discoveryFailures: discoveryFailures,
+                unattemptedURLs: records.dropFirst(results.count).map(\.key), wasCancelled: cancelled,
+                discoveryWasCancelled: discovered.wasCancelled || remaining?.wasCancelled == true)
+            guard batchProcessGeneration == generation else { return }
+            pendingWriteBatchOutcome = outcome
+            guard
+                  currentFolderURL?.standardizedFileURL.resolvingSymlinksInPath().path == folderURL.standardizedFileURL.resolvingSymlinksInPath().path,
+                  metadataLoadRequestID == loadID, selectedURLs == selected,
+                  editingMetadata == editorAtAdmission else { return }
+            if let remaining, remaining.failures.isEmpty, !remaining.wasCancelled {
+                let paths = Set(remaining.records.keys.map { $0.standardizedFileURL.resolvingSymlinksInPath().path })
+                selectedHavePendingSidecars = selected.contains { paths.contains($0.standardizedFileURL.resolvingSymlinksInPath().path) }
+            }
+            saveError = outcome.attentionMessage
         }
     }
+
+    func waitForPendingMetadataWriteBatch() async { await batchProcessTask?.value }
 
     // MARK: - Diff Helpers
 

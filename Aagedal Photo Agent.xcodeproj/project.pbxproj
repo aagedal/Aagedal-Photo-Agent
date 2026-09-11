@@ -136,6 +136,8 @@
 		F3A100000000000000000002 /* ImportMetadataScanServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */; };
 		F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */; };
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
+		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
+		2295BF0BEAFF48D09B6EB3E6 /* PendingMetadataWriteCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -288,6 +290,8 @@
 		F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportMetadataScanServiceTests.swift; sourceTree = "<group>"; };
 		F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AdobeDNGDiscoveryTests.swift; sourceTree = "<group>"; };
 		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
+		C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteServiceTests.swift; sourceTree = "<group>"; };
+		B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteCallerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -438,6 +442,8 @@
 				C4A710000000000000000001 /* CaptionSessionTests.swift */,
 				C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */,
 				C7F170000000000000000003 /* FieldMutationCallerTests.swift */,
+				B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */,
+				C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */,
 				A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */,
 				A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */,
 				A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */,
@@ -752,6 +758,8 @@
 				C4A710000000000000000002 /* CaptionSessionTests.swift in Sources */,
 				C7F170000000000000000002 /* MetadataFieldMutationWriteServiceTests.swift in Sources */,
 				C7F170000000000000000004 /* FieldMutationCallerTests.swift in Sources */,
+				2295BF0BEAFF48D09B6EB3E6 /* PendingMetadataWriteCallerTests.swift in Sources */,
+				0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */,
 				A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */,
 				A770F2000000000000000002 /* CaptionWorkspaceSpeedToolsTests.swift in Sources */,
 				A770F3000000000000000002 /* AccessibilityKeyboardAuditTests.swift in Sources */,

@@ -24,7 +24,7 @@ nonisolated enum RenderedMetadataCopySafetyError: LocalizedError {
 
 /// Native, in-process metadata write engine. Reads and re-emits the image file
 /// via SwiftExif. There is no external process and no fallback path.
-nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataFieldMutationWriting, @unchecked Sendable {
+nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataFieldMutationWriting, PendingMetadataWriting, @unchecked Sendable {
 
     init() {}
 
@@ -136,6 +136,43 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             } catch {
                 throw MetadataFieldMutationPhysicalError(message: error.localizedDescription,
                     mayHaveWritten: attemptedWrite, wasCancelled: error is CancellationError)
+            }
+        }
+    }
+
+    /// Complete-record capability for Write All. The lock covers admission, the physical write,
+    /// and readback so an older queued operation cannot overwrite a newer admitted draft.
+    func writePendingMetadata(_ intended: IPTCMetadata, to url: URL,
+        validatePreparedIntent: @escaping @Sendable () async throws -> Void
+    ) async throws -> PendingMetadataPhysicalReceipt {
+        try Task.checkCancellation()
+        guard !SupportedImageFormats.isRaw(url: url) else {
+            throw MetadataFieldMutationPhysicalError(message: "RAW metadata must be written to XMP.", mayHaveWritten: false)
+        }
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+            var attempted = false
+            do {
+                try await validatePreparedIntent()
+                var fields = intended.toOverwriteFields()
+                if intended.latitude == nil || intended.longitude == nil {
+                    fields[.gpsLatitude] = ""; fields[.gpsLongitude] = ""
+                }
+                attempted = true
+                try self.writeFieldsToFile(fields,
+                    structuredData: StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: intended)),
+                    url: url, completeEditorial: intended)
+                let beforeRead = try await SourceImageRevision.capture(at: url)
+                let actual = try readMetadata(from: url)
+                let metadata = iptcMetadataFromDict(actual.asMetadataDict(fileURL: url))
+                try PendingMetadataWriteService.verifyEditorial(metadata, expected: intended)
+                let revision = try await SourceImageRevision.capture(at: url)
+                guard beforeRead.canonicalURL == revision.canonicalURL, beforeRead.sha256 == revision.sha256 else {
+                    throw MetadataFieldMutationConflict()
+                }
+                return PendingMetadataPhysicalReceipt(metadata: metadata, sourceRevision: revision)
+            } catch {
+                throw MetadataFieldMutationPhysicalError(message: error.localizedDescription,
+                    mayHaveWritten: attempted, wasCancelled: error is CancellationError)
             }
         }
     }
@@ -379,7 +416,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
     private func writeFieldsToFile(
         _ fields: [MetadataFieldKey: String],
         structuredData: StructuredWriteData,
-        url: URL
+        url: URL,
+        completeEditorial: IPTCMetadata? = nil
     ) throws {
         var metadata = try readMetadata(from: url)
 
@@ -482,6 +520,20 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         // Version 3 preserves dc:title, scalar editorial roles, and full Date Created precision
         // while synchronizing the legacy IIM carrier into XMP.
         metadata.synchronizeIPTCToXMP()
+
+        if let completeEditorial {
+            // Canonical typed arrays avoid the comma-delimited legacy IIM transport. Preserve
+            // both orientation carriers and all CRS/opaque properties during this editorial write.
+            var xmp = metadata.xmp ?? XMPData()
+            let tiffOrientation = xmp.simpleValue(namespace: XMPNamespace.tiff, property: "Orientation")
+            let exifOrientation = xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
+            XMPDataBuilder.applyDescriptive(completeEditorial, into: &xmp)
+            for (namespace, value) in [(XMPNamespace.tiff, tiffOrientation), (XMPNamespace.exif, exifOrientation)] {
+                if let value { xmp.setValue(.simple(value), namespace: namespace, property: "Orientation") }
+                else { xmp.removeValue(namespace: namespace, property: "Orientation") }
+            }
+            metadata.xmp = xmp
+        }
 
         try metadata.write(to: url)
     }
