@@ -297,9 +297,11 @@ struct XMPSidecarService: Sendable {
     func restoreDescriptiveMetadataInHeldTransaction(
         _ metadata: IPTCMetadata,
         for imageURL: URL,
-        expectedSnapshot: XMPSidecarWriteSnapshot
+        expectedSnapshot: XMPSidecarWriteSnapshot,
+        onInstalled: @Sendable (XMPSidecarWriteSnapshot) -> Void = { _ in }
     ) async throws {
-        _ = try await updateXMPTransaction(for: imageURL, expectedSnapshot: expectedSnapshot) { xmp in
+        _ = try await updateXMPTransaction(for: imageURL, expectedSnapshot: expectedSnapshot,
+            onInstalled: onInstalled) { xmp in
             let tiffOrientation = xmp.simpleValue(namespace: XMPNamespace.tiff, property: "Orientation")
             let exifOrientation = xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
             XMPDataBuilder.applyDescriptive(metadata, into: &xmp)

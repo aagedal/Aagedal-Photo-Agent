@@ -709,8 +709,15 @@ struct MetadataSidecarService: Sendable {
                     }
                     request.receipt.markCreationMirrorCompleted()
                 }
+                guard let verifiedXMP = xmpReceipt.snapshot,
+                      try self.xmpBytes(for: request.imageURL) == verifiedXMP.data,
+                      try self.contentTokens(for: request.imageURL, in: request.folderURL) == authoritativeTokens else {
+                    throw DescriptiveMetadataWriteError.staleXMPSidecar(xmp.sidecarURL(for: request.imageURL))
+                }
+                request.receipt.markVerifiedXMP(verifiedXMP)
                 return .init(installedSidecar: installed, wroteXMPSidecar: true, wasCancelled: false, failure: nil,
-                    writtenXMPMetadata: self.metadataFromXMPReceipt(xmpReceipt, imageURL: request.imageURL))
+                    writtenXMPMetadata: self.metadataFromXMPReceipt(xmpReceipt, imageURL: request.imageURL),
+                    writtenXMPSnapshot: verifiedXMP)
             } catch {
                 return .init(installedSidecar: installed, wroteXMPSidecar: xmpReceipt.snapshot != nil,
                     wasCancelled: error is CancellationError,
@@ -998,7 +1005,8 @@ struct MetadataSidecarService: Sendable {
         _ request: MetadataSidecarRestoreRequest,
         beforeJSONCommit: @escaping @Sendable () throws -> Void = {},
         afterJSONCommit: @escaping @Sendable () throws -> Void = {},
-        beforeXMPCommit: @escaping @Sendable () throws -> Void = {}
+        beforeXMPCommit: @escaping @Sendable () throws -> Void = {},
+        afterXMPCommit: @escaping @Sendable () throws -> Void = {}
     ) async -> MetadataSidecarPersistenceResult {
         guard !Task.isCancelled else {
             return MetadataSidecarPersistenceResult(installedSidecar: nil, wroteXMPSidecar: false,
@@ -1007,6 +1015,7 @@ struct MetadataSidecarService: Sendable {
         return await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: request.imageURL)) { @MetadataSidecarFilesystemActor in
             var installed: MetadataSidecar?
             var didCommitJSON = false
+            let xmpReceipt = MetadataSidecarXMPCommitReceipt()
             var stage = MetadataSidecarPersistenceResult.FailureStage.metadataSidecar
             do {
                 try Task.checkCancellation()
@@ -1026,12 +1035,12 @@ struct MetadataSidecarService: Sendable {
                 }
                 let xmpService = XMPSidecarService()
                 let xmpURL = xmpService.sidecarURL(for: request.imageURL)
-                let xmpData = FileManager.default.fileExists(atPath: xmpURL.path)
-                    ? try Data(contentsOf: xmpURL) : nil
+                let xmpData = try self.xmpBytes(for: request.imageURL)
                 let xmpMetadata = xmpData.flatMap {
                     xmpService.loadSidecar(fromData: $0, imageAspect: { ImagePixelAspect.aspect(at: request.imageURL) })
                 }
-                guard (xmpData == nil || xmpMetadata != nil), xmpMetadata == request.expectedXMPMetadata else {
+                guard (xmpData == nil || xmpMetadata != nil),
+                      request.expectedXMPSnapshot.map({ $0.data == xmpData }) ?? (xmpMetadata == request.expectedXMPMetadata) else {
                     throw DescriptiveMetadataWriteError.staleXMPSidecar(xmpURL)
                 }
                 try beforeJSONCommit()
@@ -1052,23 +1061,35 @@ struct MetadataSidecarService: Sendable {
                     }
                     installed = readBack
                 }
+                let authoritativeTokens = try self.contentTokens(for: request.imageURL, in: request.folderURL)
                 stage = .xmpSidecar
                 try Task.checkCancellation()
                 try beforeXMPCommit()
+                guard try self.contentTokens(for: request.imageURL, in: request.folderURL) == authoritativeTokens else {
+                    throw self.ownershipChanged(request.imageURL)
+                }
                 try await xmpService.restoreDescriptiveMetadataInHeldTransaction(
                     request.sidecar.metadata, for: request.imageURL,
-                    expectedSnapshot: XMPSidecarWriteSnapshot(data: xmpData)
+                    expectedSnapshot: XMPSidecarWriteSnapshot(data: xmpData),
+                    onInstalled: { xmpReceipt.record($0) }
                 )
+                try afterXMPCommit()
+                guard let verifiedXMP = xmpReceipt.snapshot,
+                      try self.xmpBytes(for: request.imageURL) == verifiedXMP.data,
+                      try self.contentTokens(for: request.imageURL, in: request.folderURL) == authoritativeTokens else {
+                    throw DescriptiveMetadataWriteError.staleXMPSidecar(xmpURL)
+                }
                 return MetadataSidecarPersistenceResult(installedSidecar: installed,
-                    wroteXMPSidecar: true, wasCancelled: false, failure: nil)
+                    wroteXMPSidecar: true, wasCancelled: false, failure: nil,
+                    writtenXMPSnapshot: verifiedXMP)
             } catch is CancellationError {
                 return MetadataSidecarPersistenceResult(installedSidecar: installed,
-                    wroteXMPSidecar: false, wasCancelled: true, failure: nil,
+                    wroteXMPSidecar: xmpReceipt.snapshot != nil, wasCancelled: true, failure: nil,
                     committedButUnverifiedSidecarURL: didCommitJSON && installed == nil
                         ? self.sidecarFileURL(for: request.imageURL, in: request.folderURL) : nil)
             } catch {
                 return MetadataSidecarPersistenceResult(installedSidecar: installed,
-                    wroteXMPSidecar: false, wasCancelled: false,
+                    wroteXMPSidecar: xmpReceipt.snapshot != nil, wasCancelled: false,
                     failure: .init(stage: stage, message: error.localizedDescription),
                     committedButUnverifiedSidecarURL: didCommitJSON && installed == nil
                         ? self.sidecarFileURL(for: request.imageURL, in: request.folderURL) : nil)
@@ -1603,6 +1624,9 @@ nonisolated final class MetadataSidecarReplayReceipt: @unchecked Sendable {
     private var invalidatedCreation = false
     private var completedCreationMirror = false
     private var installedCreationXMP: Data?
+    private var verifiedXMP: XMPSidecarWriteSnapshot?
+    var verifiedXMPSnapshot: XMPSidecarWriteSnapshot? { lock.withLock { verifiedXMP } }
+    func markVerifiedXMP(_ value: XMPSidecarWriteSnapshot) { lock.withLock { verifiedXMP = value } }
     var creationMirrorCompleted: Bool { lock.withLock { completedCreationMirror } }
     var creationInstalledXMPData: Data? { lock.withLock { installedCreationXMP } }
     func markCreationMirrorInstalled(_ data: Data?) { lock.withLock { installedCreationXMP = data } }
@@ -1654,6 +1678,14 @@ nonisolated struct MetadataSidecarRestoreRequest: Sendable {
     let expectedXMPMetadata: IPTCMetadata?
     let imageURL: URL
     let folderURL: URL
+    let expectedXMPSnapshot: XMPSidecarWriteSnapshot?
+    init(sidecar: MetadataSidecar, expectedSidecar: MetadataSidecar,
+         expectedXMPMetadata: IPTCMetadata?, imageURL: URL, folderURL: URL,
+         expectedXMPSnapshot: XMPSidecarWriteSnapshot? = nil) {
+        self.sidecar = sidecar; self.expectedSidecar = expectedSidecar
+        self.expectedXMPMetadata = expectedXMPMetadata; self.imageURL = imageURL; self.folderURL = folderURL
+        self.expectedXMPSnapshot = expectedXMPSnapshot
+    }
 }
 
 nonisolated struct MetadataSidecarPersistenceRequest: Sendable {

@@ -1931,9 +1931,8 @@ struct MetadataAutomaticSaveBoundaryTests {
             metadata: pending, imageMetadataSnapshot: .init(title: "Original A")), for: image, in: folder)
         try XMPSidecarService().saveSidecar(metadata: pending, for: image)
         let boundary = MetadataEditorReadService(access: .init(read: { url, folder, _, _ in
-            MetadataEditorSourceFacts(imageURL: url, xmpMetadata: XMPSidecarService().loadSidecar(for: url),
-                appSidecar: folder.flatMap { MetadataSidecarService().loadSidecar(for: url, in: $0) },
-                reconciliationVerdict: nil)
+            MetadataEditorReadAccess.systemRead(imageURL: url, folderURL: folder,
+                embedded: nil, reconciles: false)
         }))
         let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
             editorReadService: boundary)

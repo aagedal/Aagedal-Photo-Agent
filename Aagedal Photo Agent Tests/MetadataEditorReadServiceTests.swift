@@ -1089,9 +1089,8 @@ struct MetadataEditorReadServiceTests {
             for: image, in: folder)
         try XMPSidecarService().saveSidecar(metadata: pending, for: image)
         let boundary = MetadataEditorReadService(access: .init(read: { url, folder, _, _ in
-            MetadataEditorSourceFacts(imageURL: url, xmpMetadata: XMPSidecarService().loadSidecar(for: url),
-                appSidecar: folder.flatMap { MetadataSidecarService().loadSidecar(for: url, in: $0) },
-                reconciliationVerdict: nil)
+            MetadataEditorReadAccess.systemRead(imageURL: url, folderURL: folder,
+                embedded: nil, reconciles: false)
         }))
         return (folder, image, MetadataViewModel(readService: SwiftExifReadService(),
             writeEngine: writeEngine, editorReadService: boundary,
@@ -1229,12 +1228,8 @@ struct MetadataEditorReadServiceTests {
             try XMPSidecarService().saveSidecar(metadata: pending, for: image)
         }
         let readBoundary = MetadataEditorReadService(access: .init(read: { url, folder, _, _ in
-            MetadataEditorSourceFacts(
-                imageURL: url,
-                xmpMetadata: XMPSidecarService().loadSidecar(for: url),
-                appSidecar: folder.flatMap { MetadataSidecarService().loadSidecar(for: url, in: $0) },
-                reconciliationVerdict: nil
-            )
+            MetadataEditorReadAccess.systemRead(imageURL: url, folderURL: folder,
+                embedded: nil, reconciles: false)
         }))
         let model = MetadataViewModel(readService: SwiftExifReadService(),
             writeEngine: MetadataCleanupSuccessfulWriter(), editorReadService: readBoundary)
@@ -1997,4 +1992,125 @@ private nonisolated final class MetadataCompletionTestWriter: MetadataWriteEngin
     func writeOrientation(_ orientation: Int, to urls: [URL]) async throws {}
     func stripIPTCAndXMP(from urls: [URL]) async throws {}
     func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {}
+}
+
+@Suite("Metadata editor exact XMP load evidence", .serialized)
+struct MetadataEditorXMPSnapshotTests {
+    private func fixture() throws -> (URL, URL) {
+        let folder = URL(fileURLWithPath: "/private/tmp/EditorXMP-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let image = folder.appendingPathComponent("photo.jpg")
+        try Data("source".utf8).write(to: image)
+        return (folder, image)
+    }
+    private func facts(_ image: URL, hook: @escaping @Sendable () throws -> Void = {}) async -> MetadataEditorSourceFacts? {
+        let access = MetadataEditorReadAccess { url, folder, embedded, reconciles in
+            MetadataEditorReadAccess.systemRead(imageURL: url, folderURL: folder,
+                embedded: embedded, reconciles: reconciles, beforeValidation: hook)
+        }
+        let result = await MetadataEditorReadService(access: access).load(.init(id: UUID(), imageURLs: [image],
+            folderURL: image.deletingLastPathComponent(), embeddedMetadataByImageURL: [:]))
+        guard case .complete(let snapshot) = result else { return nil }
+        return snapshot.factsByImageURL[image]
+    }
+
+    @Test("Absent and present loaded XMP have exact distinct evidence; later bytes cannot be adopted")
+    func exactPresentAndAbsent() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let absent = try #require(await facts(image))
+        #expect(absent.xmpWriteSnapshot == .init(data: nil))
+        let xmp = XMPSidecarService(); try xmp.saveSidecar(metadata: .init(title: "Loaded"), for: image)
+        let original = try Data(contentsOf: xmp.sidecarURL(for: image))
+        let loaded = try #require(await facts(image))
+        #expect(loaded.xmpMetadata?.title == "Loaded")
+        #expect(loaded.xmpWriteSnapshot?.data == original && loaded.xmpReadFailure == nil)
+        try xmp.saveSidecar(metadata: .init(title: "External"), for: image)
+        for token in [try #require(absent.xmpWriteSnapshot), try #require(loaded.xmpWriteSnapshot)] {
+            var refused = false
+            do { _ = try await MetadataSidecarService().captureWriteCompletionSnapshot(for: image, in: folder,
+                expectedSidecar: nil, expectedTechnicalMetadata: nil, expectedXMPSnapshot: token) }
+            catch { refused = true }
+            #expect(refused)
+        }
+        #expect(xmp.loadSidecar(for: image)?.title == "External")
+    }
+
+    @Test("Undecodable, linked, and changed-during-read XMP cannot masquerade as absent evidence")
+    func unavailableEvidence() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let service = XMPSidecarService(); let url = service.sidecarURL(for: image)
+        try Data([0xff]).write(to: url)
+        let malformed = try #require(await facts(image))
+        #expect(malformed.xmpWriteSnapshot == nil && malformed.xmpReadFailure != nil)
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: folder.appendingPathComponent("missing"))
+        let linked = try #require(await facts(image))
+        #expect(linked.xmpWriteSnapshot == nil && linked.xmpReadFailure != nil)
+        try FileManager.default.removeItem(at: url)
+        try service.saveSidecar(metadata: .init(title: "Before"), for: image)
+        let raced = try #require(await facts(image, hook: {
+            try XMPSidecarService().saveSidecar(metadata: .init(title: "After"), for: image)
+        }))
+        #expect(raced.xmpWriteSnapshot == nil && raced.xmpReadFailure != nil)
+        #expect(service.loadSidecar(for: image)?.title == "After")
+    }
+
+    @Test("Replay publishes exact verified receipt only after its final mirror check", arguments: [false, true])
+    func replayVerifiedReceipt(fail: Bool) async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let baseline = IPTCMetadata(title: "Before")
+        let edited = IPTCMetadata(title: "After")
+        let changes = MetadataHistoryEntry.changes(from: baseline, to: edited, timestamp: Date())
+        try MetadataSidecarService().saveSidecar(.init(sourceFile: image.lastPathComponent,
+            pendingChanges: true, metadata: baseline, imageMetadataSnapshot: baseline), for: image, in: folder)
+        let sidecar = MetadataSidecar(sourceFile: image.lastPathComponent, pendingChanges: true,
+            metadata: edited, imageMetadataSnapshot: baseline, history: changes)
+        let request = MetadataSidecarReplayRequest(sidecar: sidecar, baselineMetadata: baseline,
+            baselineHistory: [], baselineRecordExisted: true, changes: changes, imageURL: image, folderURL: folder)
+        let result = await MetadataSidecarService().replayHistoryAndMirrorXMP(request, afterXMPCommit: {
+            if fail { try XMPSidecarService().saveSidecar(metadata: .init(title: "External"), for: image) }
+        })
+        #expect(result.completed == !fail)
+        #expect(result.wroteXMPSidecar)
+        if fail {
+            #expect(XMPSidecarService().loadSidecar(for: image)?.title == "External")
+            #expect(request.receipt.verifiedXMPSnapshot == nil && result.writtenXMPSnapshot == nil)
+        } else {
+            let bytes = try Data(contentsOf: XMPSidecarService().sidecarURL(for: image))
+            #expect(request.receipt.verifiedXMPSnapshot?.data == bytes)
+            #expect(result.writtenXMPSnapshot?.data == bytes)
+        }
+    }
+    @Test("Restore uses exact loaded bytes and exposes only verified completion evidence", arguments: [0, 1, 2, 3])
+    func restoreReceipt(mode: Int) async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let service = MetadataSidecarService(); let xmp = XMPSidecarService()
+        try xmp.saveSidecar(metadata: .init(title: "Before"), for: image)
+        let token = XMPSidecarWriteSnapshot(data: try Data(contentsOf: xmp.sidecarURL(for: image)))
+        let original = MetadataSidecar(sourceFile: image.lastPathComponent, pendingChanges: true,
+            metadata: .init(title: "Before"), imageMetadataSnapshot: nil)
+        let saved = try service.saveSidecar(original, for: image, in: folder)
+        var restored = saved; restored.metadata.title = "Restored"
+        if mode == 1 { try xmp.saveSidecar(metadata: .init(title: "External"), for: image) }
+        let result = await service.restoreSidecarAndMirrorXMP(.init(sidecar: restored, expectedSidecar: saved,
+            expectedXMPMetadata: .init(title: "Intentionally different decoded object"), imageURL: image,
+            folderURL: folder, expectedXMPSnapshot: token), afterXMPCommit: {
+                if mode == 2 { try XMPSidecarService().saveSidecar(metadata: .init(title: "External"), for: image) }
+                if mode == 3 {
+                    var newer = saved; newer.metadata.title = "Newer JSON"
+                    try MetadataSidecarService().saveSidecar(newer, for: image, in: folder)
+                }
+            })
+        #expect(result.completed == (mode == 0))
+        #expect(result.wroteXMPSidecar == (mode != 1))
+        if mode == 0 {
+            #expect(result.writtenXMPSnapshot?.data == (try Data(contentsOf: xmp.sidecarURL(for: image))))
+        } else {
+            #expect(result.writtenXMPSnapshot == nil)
+            if mode == 3 {
+                #expect(service.loadSidecar(for: image, in: folder)?.metadata.title == "Newer JSON")
+            } else { #expect(xmp.loadSidecar(for: image)?.title == "External") }
+        }
+    }
+
 }

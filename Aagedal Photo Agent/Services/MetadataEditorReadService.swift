@@ -9,6 +9,17 @@ nonisolated struct MetadataEditorSourceFacts: Sendable {
     let xmpMetadata: IPTCMetadata?
     let appSidecar: MetadataSidecar?
     let reconciliationVerdict: SidecarReconciliation.Verdict?
+    /// nil means unavailable evidence; a wrapper containing nil data proves absence at load.
+    let xmpWriteSnapshot: XMPSidecarWriteSnapshot?
+    let xmpReadFailure: String?
+
+    init(imageURL: URL, xmpMetadata: IPTCMetadata?, appSidecar: MetadataSidecar?,
+         reconciliationVerdict: SidecarReconciliation.Verdict?,
+         xmpWriteSnapshot: XMPSidecarWriteSnapshot? = nil, xmpReadFailure: String? = nil) {
+        self.imageURL = imageURL; self.xmpMetadata = xmpMetadata; self.appSidecar = appSidecar
+        self.reconciliationVerdict = reconciliationVerdict
+        self.xmpWriteSnapshot = xmpWriteSnapshot; self.xmpReadFailure = xmpReadFailure
+    }
 }
 
 /// One ordered Metadata-editor read request. Embedded metadata is already produced by the
@@ -62,29 +73,55 @@ nonisolated struct MetadataEditorReadAccess: Sendable {
     let read: @Sendable (URL, URL?, IPTCMetadata?, Bool) -> MetadataEditorSourceFacts
 
     static let system = MetadataEditorReadAccess { imageURL, folderURL, embedded, reconciles in
+        systemRead(imageURL: imageURL, folderURL: folderURL, embedded: embedded, reconciles: reconciles)
+    }
+
+    /// Used only on the read service's filesystem executor. Parsing and publication share the
+    /// same bytes; the second read refuses an external replacement during reconciliation.
+    static func systemRead(imageURL: URL, folderURL: URL?, embedded: IPTCMetadata?,
+                           reconciles: Bool, beforeValidation: () throws -> Void = {}) -> MetadataEditorSourceFacts {
         let xmpService = XMPSidecarService()
-        let xmpMetadata = xmpService.loadSidecar(for: imageURL)
         let appSidecar = folderURL.flatMap {
             MetadataSidecarService().loadSidecar(for: imageURL, in: $0)
         }
-        let verdict: SidecarReconciliation.Verdict?
-        if reconciles, let embedded, let xmpMetadata {
-            verdict = SidecarReconciliation.verdict(
-                imageURL: imageURL,
-                sidecarURL: xmpService.sidecarURL(for: imageURL),
-                embedded: embedded,
-                sidecar: xmpMetadata
-            )
-        } else {
-            verdict = nil
+        do {
+            let url = xmpService.sidecarURL(for: imageURL)
+            let data = try regularXMPBytes(at: url)
+            let metadata: IPTCMetadata?
+            if let data {
+                guard let parsed = xmpService.loadSidecar(fromData: data,
+                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                metadata = parsed
+            } else { metadata = nil }
+            let verdict: SidecarReconciliation.Verdict?
+            if reconciles, let embedded, let metadata {
+                verdict = SidecarReconciliation.verdict(imageURL: imageURL, sidecarURL: url,
+                    embedded: embedded, sidecar: metadata)
+            } else { verdict = nil }
+            try beforeValidation()
+            guard try regularXMPBytes(at: url) == data else {
+                throw DescriptiveMetadataWriteError.staleXMPSidecar(url)
+            }
+            return .init(imageURL: imageURL, xmpMetadata: metadata, appSidecar: appSidecar,
+                reconciliationVerdict: verdict, xmpWriteSnapshot: .init(data: data))
+        } catch {
+            return .init(imageURL: imageURL, xmpMetadata: nil, appSidecar: appSidecar,
+                reconciliationVerdict: nil, xmpReadFailure:
+                    "The XMP sidecar could not be read consistently. Reload before saving. " + error.localizedDescription)
         }
-        return MetadataEditorSourceFacts(
-            imageURL: imageURL,
-            xmpMetadata: xmpMetadata,
-            appSidecar: appSidecar,
-            reconciliationVerdict: verdict
-        )
     }
+
+    private static func regularXMPBytes(at url: URL) throws -> Data? {
+        let attributes: [FileAttributeKey: Any]
+        do { attributes = try FileManager.default.attributesOfItem(atPath: url.path) }
+        catch let error as NSError where error.domain == NSCocoaErrorDomain &&
+            [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) { return nil }
+        guard attributes[.type] as? FileAttributeType == .typeRegular else { throw CocoaError(.fileReadCorruptFile) }
+        return try Data(contentsOf: url)
+    }
+
 }
 
 /// Serializes Metadata-editor XMP, JSON-history, conditional image-aspect, and modification-time

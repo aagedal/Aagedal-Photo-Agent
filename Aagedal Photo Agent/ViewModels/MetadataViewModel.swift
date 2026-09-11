@@ -1,4 +1,5 @@
 import Foundation
+import SwiftMediaMetadata
 import os
 
 /// MainActor admission barrier for the brief interval in which an explicit Caption write removes
@@ -236,6 +237,7 @@ final class MetadataViewModel {
     var originalImageMetadata: IPTCMetadata?
     var embeddedMetadata: IPTCMetadata?
     var xmpMetadata: IPTCMetadata?
+    @ObservationIgnored private var editorXMPWriteBaseline: (imageURL: URL, folderURL: URL?, loadID: UUID?, snapshot: XMPSidecarWriteSnapshot?, failure: String?)?
     private var cleanupBaseline: (imageURL: URL, folderURL: URL?, record: MetadataSidecar?)? {
         didSet { capturedCaptionWriteExpectation = nil }
     }
@@ -330,7 +332,9 @@ final class MetadataViewModel {
         return originalImageMetadata
     }
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
-    @ObservationIgnored private var metadataLoadRequestID: UUID?
+    @ObservationIgnored private var metadataLoadRequestID: UUID? {
+        didSet { if oldValue != metadataLoadRequestID { editorXMPWriteBaseline = nil } }
+    }
     @ObservationIgnored private var writeTask: Task<Void, Never>? {
         willSet {
             historyRestoreRequestID = nil
@@ -706,6 +710,8 @@ final class MetadataViewModel {
                     self.embeddedMetadata = embedded
                     self.descriptionConflict = conflict
                     self.xmpMetadata = xmpMeta
+                    self.editorXMPWriteBaseline = (imageURL, folderSnapshot, requestID,
+                        sourceFacts.xmpWriteSnapshot, sourceFacts.xmpReadFailure)
                     self.metadataReferenceSource = referenceSource
                     self.metadata = baseMeta
                     self.originalImageMetadata = baseMeta
@@ -1919,6 +1925,7 @@ final class MetadataViewModel {
         let existingHistory = sidecarHistory
         let expectedRecord = currentWriteExpectedRecord
         let technicalReference = xmpMetadata
+        let xmpEvidence = editorXMPWriteEvidence(for: imageURL, in: folderURL)
         let loadID = metadataLoadRequestID
         let generation = writeTaskGeneration + 1
         isSaving = true
@@ -1935,7 +1942,7 @@ final class MetadataViewModel {
             do {
                 let snapshot = try await sidecarService.captureWriteCompletionSnapshot(
                     for: imageURL, in: folderURL, expectedSidecar: expectedRecord,
-                        expectedTechnicalMetadata: technicalReference)
+                        expectedTechnicalMetadata: technicalReference, expectedXMPSnapshot: try xmpEvidence.get())
                 let now = Date()
                 let sidecar = MetadataSidecar(sourceFile: imageURL.lastPathComponent,
                     lastModified: now, pendingChanges: false, metadata: edited,
@@ -1950,6 +1957,7 @@ final class MetadataViewModel {
                         cleanupBaseline = (imageURL, folderURL, installed)
                         sidecarHistory = installed.history
                         xmpMetadata = result.writtenXMPMetadata ?? edited
+                        editorXMPWriteBaseline = (imageURL, folderURL, loadID, result.writtenXMPSnapshot, nil)
                         editingMetadata.cameraRaw = xmpMetadata?.cameraRaw
                         editingMetadata.exifOrientation = xmpMetadata?.exifOrientation
                         previousEditingMetadata = editingMetadata
@@ -2154,6 +2162,7 @@ final class MetadataViewModel {
         let expectedRecord = currentWriteExpectedRecord
         let original = originalImageMetadata
         let technicalReference = xmpMetadata
+        let xmpEvidence = editorXMPWriteEvidence(for: imageURL, in: folderURL)
         let loadID = metadataLoadRequestID
         let generation = writeTaskGeneration + 1
         isSaving = true
@@ -2172,7 +2181,7 @@ final class MetadataViewModel {
                 // A later edit must survive completion, even though the image write cannot be undone.
                 let completionSnapshot = try await sidecarService.captureWriteCompletionSnapshot(
                     for: imageURL, in: folderURL, expectedSidecar: expectedRecord,
-                        expectedTechnicalMetadata: technicalReference)
+                        expectedTechnicalMetadata: technicalReference, expectedXMPSnapshot: try xmpEvidence.get())
                 let developChanged = Self.developSettingsChanged(edited.cameraRaw, original?.cameraRaw)
                 let fields = overwriteFields(from: edited, includeCameraRaw: developChanged,
                     imageAspect: { ImagePixelAspect.aspect(at: imageURL) })
@@ -2208,6 +2217,8 @@ final class MetadataViewModel {
                         originalImageMetadata = edited
                         embeddedMetadata = edited
                         if result.wroteXMPSidecar { xmpMetadata = result.writtenXMPMetadata ?? edited }
+                        editorXMPWriteBaseline = (imageURL, folderURL, loadID,
+                            result.writtenXMPSnapshot ?? (result.skippedXMPSidecar ? (try? xmpEvidence.get()) : nil), nil)
                         hasChanges = false
                         selectedHavePendingSidecars = false
                     }
@@ -2904,6 +2915,7 @@ final class MetadataViewModel {
             if selection.count == 1, let url = selection.first, let input = inputs[url], let displayed = records[url] {
                 embeddedMetadata = input.embeddedMetadata
                 xmpMetadata = input.xmpMetadata
+                editorXMPWriteBaseline = (url, origin.folderURL, loadID, .init(data: input.evidence.xmpData), nil)
                 metadataReferenceSource = origin.referenceSource == .xmp && input.xmpMetadata == nil ? .embedded : origin.referenceSource
                 metadata = referenceMetadata(for: metadataReferenceSource, embedded: embeddedMetadata, xmp: xmpMetadata, imageURL: url)
                 originalImageMetadata = metadata
@@ -3148,11 +3160,22 @@ final class MetadataViewModel {
                             selectedHavePendingSidecars = record.pendingChanges
                             if result.physicalResult?.didWriteEmbedded == true { embeddedMetadata = displayed }
                             if result.physicalResult?.didWriteXMP == true { xmpMetadata = displayed }
+                            if let physical = result.physicalResult?.resultingPhysicalBaseline {
+                                let installedXMP = XMPSidecarWriteSnapshot(data: physical.xmpData)
+                                if let loaded = editorXMPWriteBaseline?.snapshot,
+                                   (try? Self.sameXMPTechnicalEvidence(loaded, installedXMP)) == true {
+                                    editorXMPWriteBaseline = (url, folder, loadID, installedXMP, nil)
+                                } else {
+                                    let message = "Variable processing preserved newer XMP technical metadata. Reload this photo before another metadata save."
+                                    editorXMPWriteBaseline = (url, folder, loadID, nil, message)
+                                    saveError = message
+                                }
+                            }
                             let actualReference = referenceMetadata(for: metadataReferenceSource,
                                 embedded: embeddedMetadata, xmp: xmpMetadata, imageURL: url)
                             metadata = actualReference
                             originalImageMetadata = actualReference
-                            saveError = nil
+                            saveError = editorXMPWriteBaseline?.failure
                         }
                     } else { item.unchanged = true }
                 } catch {
@@ -3254,6 +3277,8 @@ final class MetadataViewModel {
             self.embeddedMetadata = embedded
             self.descriptionConflict = conflict
             self.xmpMetadata = xmpMeta
+            self.editorXMPWriteBaseline = (url, folderSnapshot, requestID,
+                sourceFacts.xmpWriteSnapshot, sourceFacts.xmpReadFailure)
             self.metadataReferenceSource = refSource
             self.metadata = baseMeta
             self.originalImageMetadata = baseMeta
@@ -3433,6 +3458,7 @@ final class MetadataViewModel {
             let previous = previousEditingMetadata ?? IPTCMetadata()
             let expectedRecord = currentWriteExpectedRecord
             let technicalReference = xmpMetadata
+            let xmpEvidence = editorXMPWriteEvidence(for: imageURL, in: folderURL)
             let loadID = metadataLoadRequestID
             let now = Date()
             let sidecar = MetadataSidecar(sourceFile: imageURL.lastPathComponent,
@@ -3454,7 +3480,7 @@ final class MetadataViewModel {
                     // Its complete record is valid only against this captured pending revision.
                     let snapshot = try await sidecarService.captureWriteCompletionSnapshot(
                         for: imageURL, in: folderURL, expectedSidecar: expectedRecord,
-                        expectedTechnicalMetadata: technicalReference, allowPendingOrientation: true)
+                        expectedTechnicalMetadata: technicalReference, expectedXMPSnapshot: try xmpEvidence.get(), allowPendingOrientation: true)
                     let result = await sidecarService.completeSidecarAndMirrorXMP(sidecar, snapshot: snapshot,
                         replaceDevelopSettings: Self.developSettingsChanged(edited.cameraRaw, previous.cameraRaw),
                         replaceOrientation: edited.exifOrientation != previous.exifOrientation)
@@ -3463,6 +3489,7 @@ final class MetadataViewModel {
                             cleanupBaseline = (imageURL, folderURL, installed)
                             sidecarHistory = installed.history
                             xmpMetadata = result.writtenXMPMetadata ?? edited
+                            editorXMPWriteBaseline = (imageURL, folderURL, loadID, result.writtenXMPSnapshot, nil)
                             editingMetadata.cameraRaw = xmpMetadata?.cameraRaw
                             editingMetadata.exifOrientation = xmpMetadata?.exifOrientation
                             previousEditingMetadata = editingMetadata
@@ -3850,6 +3877,7 @@ final class MetadataViewModel {
         let original = originalImageMetadata
         let loadID = metadataLoadRequestID
         let editorRecord = currentWriteExpectedRecord
+        let priorXMPEvidence = editorXMPWriteEvidence(for: imageURL, in: folderURL)
         let generation = writeTaskGeneration + 1
         let captureKey = imageURL.resolvingSymlinksInPath().path.lowercased()
         let cleanupKey = MetadataIOKey.key(for: imageURL)
@@ -3937,6 +3965,9 @@ final class MetadataViewModel {
                 self.sidecarHistory = []
                 self.selectedHavePendingSidecars = false
                 self.cleanupBaseline = (imageURL, folderURL, nil)
+                self.editorXMPWriteBaseline = (imageURL, folderURL, loadID,
+                    wroteToRawSidecar ? nil : (try? priorXMPEvidence.get()),
+                    wroteToRawSidecar ? "Reload this photo after its RAW-sidecar write before another metadata save." : nil)
                 self.previousEditingMetadata = edited
                 // The written revision is now the baseline, even if the user typed a newer value
                 // while the writer ran. Preserve that buffer and keep Write & Next on this photo.
@@ -4318,6 +4349,50 @@ final class MetadataViewModel {
         }
     }
 
+    private func editorXMPWriteEvidence(for imageURL: URL, in folderURL: URL) -> Result<XMPSidecarWriteSnapshot, any Error> {
+        if let captured = capturedCaptionWriteExpectation,
+           captured.loadID == metadataLoadRequestID, captured.request.imageURL == imageURL,
+           captured.request.folderURL == folderURL, selectedURLs == [imageURL],
+           let snapshot = captured.request.receipt.verifiedXMPSnapshot {
+            // Caption mirrors may preserve an independent Develop edit made after this editor
+            // loaded. Its verified bytes are usable only if the technical reference is still
+            // the one from which the user's current editor was derived.
+            guard let baseline = editorXMPWriteBaseline, baseline.imageURL == imageURL,
+                  baseline.folderURL == folderURL, baseline.loadID == metadataLoadRequestID,
+                  let loaded = baseline.snapshot,
+                  (try? Self.sameXMPTechnicalEvidence(loaded, snapshot)) == true else {
+                return .failure(CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey:
+                    "The XMP technical metadata changed while Caption was saving. Reload this photo before changing or saving Develop settings."]))
+            }
+            return .success(snapshot)
+        }
+        if let baseline = editorXMPWriteBaseline, baseline.imageURL == imageURL,
+           baseline.folderURL == folderURL, baseline.loadID == metadataLoadRequestID,
+           let snapshot = baseline.snapshot { return .success(snapshot) }
+        return .failure(CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey:
+            editorXMPWriteBaseline?.failure
+                ?? "The editor's XMP revision could not be verified. Reload this photo before saving."]))
+    }
+
+    private nonisolated static func sameXMPTechnicalEvidence(_ lhs: XMPSidecarWriteSnapshot, _ rhs: XMPSidecarWriteSnapshot) throws -> Bool {
+        if lhs == rhs { return true }
+        func properties(_ snapshot: XMPSidecarWriteSnapshot) throws -> [String: XMPValue] {
+            let xmp = try snapshot.data.map { try XMPReader.readFromXML($0) } ?? XMPData()
+            var values: [String: XMPValue] = [:]
+            for namespace in [XMPNamespace.crs, XMPDataBuilder.aaphotoNamespace] {
+                for (name, value) in xmp.properties(in: namespace) {
+                    if namespace == XMPDataBuilder.aaphotoNamespace && name == "LocalizedTitleCleared" { continue }
+                    values[namespace + name] = value
+                }
+            }
+            for namespace in [XMPNamespace.tiff, XMPNamespace.exif] {
+                values[namespace + "Orientation"] = xmp.value(namespace: namespace, property: "Orientation")
+            }
+            return values
+        }
+        return try properties(lhs) == properties(rhs)
+    }
+
     private var currentWriteExpectedRecord: MetadataSidecar? {
         if let captured = capturedCaptionWriteExpectation,
            captured.loadID == metadataLoadRequestID,
@@ -4415,8 +4490,12 @@ final class MetadataViewModel {
         let replacement = MetadataSidecar(sourceFile: imageURL.lastPathComponent,
             lastModified: timestamp, pendingChanges: true, metadata: restored,
             imageMetadataSnapshot: record.imageMetadataSnapshot, history: history)
+        let restoreXMP: XMPSidecarWriteSnapshot
+        do { restoreXMP = try editorXMPWriteEvidence(for: imageURL, in: folderURL).get() }
+        catch { saveError = error.localizedDescription; return nil }
         let request = MetadataSidecarRestoreRequest(sidecar: replacement, expectedSidecar: record,
-            expectedXMPMetadata: xmpMetadata, imageURL: imageURL, folderURL: folderURL)
+            expectedXMPMetadata: xmpMetadata, imageURL: imageURL, folderURL: folderURL,
+            expectedXMPSnapshot: restoreXMP)
         let requestID = UUID()
         let loadID = metadataLoadRequestID
         let edited = editingMetadata
@@ -4451,6 +4530,7 @@ final class MetadataViewModel {
                 selectedHavePendingSidecars = true
                 if result.completed {
                     xmpMetadata = editingMetadata
+                    editorXMPWriteBaseline = (imageURL, folderURL, loadID, result.writtenXMPSnapshot, nil)
                     if metadataReferenceSource == .xmp {
                         metadata = editingMetadata
                         originalImageMetadata = editingMetadata
