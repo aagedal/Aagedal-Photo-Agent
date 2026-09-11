@@ -26,7 +26,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Coordinator cycle 9: durable rotation](release/cycle-09-durable-rotation-2026-09-11.md). Source `b5840e4` passes 2,569 integrated tests and independent review. History-only rotation now persists with field-only physical acknowledgement and an explicit apply command. Native launch/open succeeded, but host lock interrupted Settings setup before rotation testing; preference cleanup remains pending. Metadata Review, remaining writer completion and wider release gates stay open.
+**Latest improvement continuation:** [Cycle 10: retained Metadata Review saves](release/cycle-10-metadata-review-2026-09-11.md). Source `f897bdd` passes 2,585 tests and independent review. Native known/null/first-record edits survive workspace exit and focused-field normal quit/relaunch without changing source PNGs. Failure/recovery testing remains open after the native connection became unusable; final normal QA shutdown is confirmed. [Rotation verification](release/cycle-10-rotation-native-2026-09-11.md) remains separately recorded. Wider feature and release gates stay open.
 
 ## Portfolio
 

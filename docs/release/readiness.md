@@ -1,22 +1,31 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — durable rotation passes native history/relaunch/dual-apply verification. Metadata Review retained replay/recovery is being integrated; remaining feature and release gates stay open.
+**State:** IMPLEMENTING — retained Metadata Review saves pass integrated tests and native edit/exit/quit/relaunch checks. Native failure/recovery and wider feature/release gates remain open.
 **Updated:** 2026-09-11
-**Latest implementation commit:** `b5840e4304450dce9371b5c2329e230635adf351` (2,569 tests / 285 suites and repository checks passed).
-**Latest native evidence:** `b5840e4` history-only rotation, full-screen, relaunch, Write All refusal and same-target dual apply PASS in cycle 10; preferences restored and QA app stopped.
+**Latest implementation commit:** `f897bdd08e9dd8efab6ca9de7f626080cbc99736` (2,585 tests / 286 suites and repository checks passed).
+**Latest native evidence:** `f897bdd` Review known/null/first-record edits, workspace exit, focused-field normal quit and relaunch PASS. Connection became unusable before failure testing; final normal shutdown is confirmed. No Review test preferences changed.
 **Cycle baseline:** `5afb5f3` on `main`; cycle 10 was interrupted and resumed with its owned work preserved.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
 
+[Cycle 10 Metadata Review](cycle-10-metadata-review-2026-09-11.md) implements retained live row
+buffers, shared replay/receipt/recovery, source evidence for first records and lifecycle/mutation
+barriers. Independent review passes after resolving stale row callbacks, full-value rebasing and
+recovery freeze lifetimes. Focused 57 tests and full 2,585 tests pass; repository checks pass.
+Native edits survive workspace exit and normal quit/relaunch with known/null/first originals,
+unchanged PNGs and untouched-row no-write behavior. Native failure/recovery remains unrun after
+the connection stopped returning usable state/screenshots. Exact identity and cleanup notes are
+in the report. The failure fixture remains untouched.
+
 [Cycle 10 native continuation](cycle-10-rotation-native-2026-09-11.md) resolves the rotation setup
 blocker on unchanged `b5840e4`. History-only angles 6/8 survive full-screen and relaunch; Write All
 reports the full refusal and preserves all artifacts. Explicit same-target dual apply writes EXIF
 and both XMP conventions, removes only rotation intent, preserves G/null snapshot/history/pixels,
 and survives reopening. Original Professional/Custom preferences and General page are restored;
-native inventory confirms the QA app stopped. Metadata Review code is in progress in the shared
-checkout; it has not yet been built or validated. Other listed tasks use separate repositories.
+native inventory confirmed the rotation QA app stopped at that checkpoint. The later Review
+shutdown status is recorded above. Other listed tasks use separate repositories.
 
 
 [Cycle 9](cycle-09-durable-rotation-2026-09-11.md) implements ordered Browser rotation, a durable
@@ -25,10 +34,9 @@ thumbnail/full-screen pending orientation. Caption and null snapshots survive; c
 writes/export/FTP admission require pending rotation to be applied first. Full checks pass 2,569
 tests / 285 suites and independent review passes. Two new fixture construction defects were
 corrected and documented; no product assertion was suppressed. The exact final build launched
-and opened the disposable folder, then the Mac locked on the Custom preset click. **Native
-rotation remains unrun and preference cleanup is pending:** inspect Settings before assuming the
-click applied; restore Professional and Custom Standard Images = Write to Image File after testing.
-All four original fixture artifacts remain byte-identical. The QA app was not confirmed stopped.
+and opened the disposable folder, then the Mac locked on the Custom preset click. At the cycle-9 checkpoint rotation and preference cleanup were unverified; cycle 10
+subsequently completed those checks as recorded above. The earlier unchanged fixture state is
+historical, not the current rotation artifact state.
 
 
 
@@ -102,11 +110,11 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Finish, review and validate the in-progress Metadata Review migration in the [field-write design](field-write-completion-design.md):
-   Metadata Review retained replay/recovery, then batch XMP completion and non-displayed variable
-   writes still have whole-record acknowledgement or untracked replay gaps. Rotation implementation
-   now passes tests and native history-only/dual-apply/relaunch; broader failure/mode coverage stays explicit. App-written XMP-only label
-   clears work; external empty element-form Label parsing remains an interoperability follow-up.
+1. Reconnect native QA and relaunch the identified binary; complete Review failure/retry and scoped export/discard using `build/qa-metadata-review-cycle10/failure`.
+   Do not overwrite the passing happy fixtures. Then continue batch XMP completion and
+   non-displayed variable writes from the [field-write design](field-write-completion-design.md).
+   Review implementation is committed and tested; do not redo unchanged full checks. Broader
+   rotation failure/mode coverage and external empty element-form Label parsing remain explicit.
 2. Complete remaining Sony companion archive and source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Ingest, rename, Duplicate, Move, Reject and
    memo Trash now have implementation. Preserve explicit ownership through rendering/signing/
@@ -132,7 +140,7 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Archive/reassociation, transcription, reviewed variables and delivery; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 9 regression/repository checks passed | Packaging and exact-candidate release checks remain |
+| Automated regression and package | Cycle 10: 2,585 tests and repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -144,8 +152,16 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Blocker tracking
 
+Current native connection limitation: while opening the Review failure fixture, menu IDs became
+invalid and blank/stale window state plus unavailable screenshots persisted after reconnect.
+A later normal Escape/Command-Q retry succeeded; final native inventory confirms all QA app entries stopped. No Review
+preferences or failure files were changed. Retry through native UI when available; independent
+implementation remains possible, so this is not total blockage and no readiness alert is due.
+
+Historical native checkpoints follow:
+
 Cycle 10 resolved cycle 9's native lock/setup blocker. Preferences are restored, the exact
-rotation binary passed the recorded cases and all native QA app entries are stopped. Historical
+rotation binary passed the recorded cases and all native QA app entries were stopped then. Historical
 cycle-9 notes below describe that earlier state, not an outstanding cleanup task.
 
 
@@ -192,37 +208,23 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Cycle-10 interruption/resumption checkpoint: native rotation is complete as recorded above.
-The fixture has now been intentionally changed: known/unknown source orientation is 6/8,
-matching XMP companions exist, typed drafts are removed, captions remain pending, original
-snapshots and pixel payloads are unchanged. Final `cycle10-after-apply-snapshot.json` and
-`cycle10-after-final-relaunch-snapshot.json` match. Preferences restored; QA app stopped.
-Core agent owns CaptionSession/MetadataSidecarService replay evidence and tests; Browser agent
-owns MetadataReviewView/BrowserViewModel/caller tests; parent owns ContentView/FolderTreeRow
-lifecycle integration and automatic-save tests. These uncommitted changes need build, tests,
-independent review and native testing before integration is called complete.
+Implementation `f897bdd08e9dd8efab6ca9de7f626080cbc99736` contains ten reviewed source/test
+files. Focused 57 tests / five suites pass in 1.387s; full 2,585 tests / 286 suites pass in
+93.600s; repository and whitespace checks pass. Logs use `/private/tmp/aagedal-coordinator-cycle10-*`.
+Only release documentation changed after implementation commit. Agents finished their bounded
+work and independent review passed. Do not repeat full tests without a relevant source change.
 
-The following cycle-9 handoff is retained as historical baseline information:
+Native Review happy evidence and exact binary hashes are in
+[the cycle-10 Review report](cycle-10-metadata-review-2026-09-11.md). The app path remains the
+DerivedData Debug `Aagedal Photo Agent.app`, 3.0.0 (738), arm64. Happy artifacts are intentionally
+changed; after-quit and after-relaunch snapshots match. All PNGs are unchanged; b-null original
+remains absent; d-untouched has no JSON/XMP. Separate failure fixtures are unchanged, with no
+obstruction created. Final native inventory confirms the QA app stopped after normal Escape/Command-Q cleanup.
+Relaunch the identified binary when native access returns. No write preferences changed during Review QA.
 
-
-Source `b5840e4304450dce9371b5c2329e230635adf351` contains sixteen reviewed source/test files.
-The integrated suite passes 2,569 tests / 285 suites in 89.697 seconds; final Browser focused
-checks pass 15 tests, core checks pass after their fixture correction, and repository checks pass.
-Logs use `/private/tmp/aagedal-coordinator-cycle9-*.log`; exact initial failures and corrections
-are in the dated report. Do not rerun unchanged automated checks merely because a heartbeat fires.
-
-`build/qa-rotation-cycle9/` is the new untouched known/null-snapshot native fixture set. Read its
-`tested-binary-identity.json` before native continuation. The app was left in Settings after the
-Custom click returned host-locked; neither click outcome nor shutdown is verified. Professional
-was selected immediately before that click. Original Custom Standard Images = Write to Image File,
-RAW/C2PA = XMP. Finish/restore through the UI when available; no unlock bypass or global reset.
-`before-native-snapshot.json` and `after-native-attempt-snapshot.json` match all four original
-artifacts. The inspector in `build/qa-rotation-cycle9-tools/inspect.py` now includes orientation
-carriers and pixel payload hashes. No native rotation/write result is claimed yet.
-
-Cycle-8 label-clear and Face fixtures retain their passing evidence. Their binaries differ from
-the current build; do not describe the current app as the cycle-8 identity. Earlier Caption,
-Browser, Trash and recovery evidence remains in its dated reports. No production transfer,
-publication, private-photo change or final user acceptance occurred. The HTML remains unassigned
-to a final candidate, with 31 cases and human results unrun. Sixty unchecked authoritative plan
-entries remain; no-progress count is zero and the coordinator automation stays active.
+Native rotation history/dual-apply evidence on earlier `b5840e4` remains in its separate report;
+those preferences were restored. Do not confuse the two binary identities. HTML A03 now has
+Review instructions; 31 cases pass static structure/link checks, candidate fields remain blank,
+and human results remain unrun. Sixty unchecked authoritative plan entries remain; no-progress
+count is zero and the existing coordinator automation stays active. No final acceptance,
+production transfer, publication or private-photo modification occurred.

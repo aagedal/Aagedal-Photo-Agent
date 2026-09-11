@@ -5,8 +5,11 @@ Source-backed cycle-6 audit of `7a503b3`, followed by [cycle 7](cycle-07-field-w
 Browser rating/label and Face add-person completion are natively verified. Source `b5840e4` adds
 durable orientation drafts, expected→target field writes, destination-specific retry baselines,
 Write Pending Rotation, display precedence and whole-record/export admission guards. All 2,569
-integrated tests pass; native rotation setup stopped at a host lock before any rotation. Metadata
-Review, batch completion and non-displayed variables remain mandatory work. External empty
+integrated tests pass. [Cycle 10 native verification](cycle-10-rotation-native-2026-09-11.md)
+passed history-only rotation, normal quit/relaunch, Write All refusal and explicit dual-write
+application, with original preferences restored. [Metadata Review cycle 10](cycle-10-metadata-review-2026-09-11.md) is committed as `f897bdd`,
+with retained buffers/shared replay/recovery and 2,585 integrated tests passing. Native edit/exit/quit/relaunch
+passes; native failure/recovery remains open. Batch completion and non-displayed variables remain mandatory work. External empty
 element-form Label parsing remains separate from app-written empty attributes. Original
 observations below are historical; the old Browser field helper chain now has no entry caller.
 
@@ -63,7 +66,9 @@ silent replay or overwrite. This draft flow is distinct from field-only physical
 Cycle 9 supplies the explicit technical treatment: `IPTCMetadata` Codable still omits orientation,
 while `MetadataSidecar.orientationDraft` durably carries the intent. Ordinary Caption saves preserve
 it; only verified field completion removes it. Whole-record writes and exports direct the user to
-apply the pending rotation first. Native verification remains open; see the cycle-9 report.
+apply the pending rotation first. Cycle 10 verifies history-only persistence and dual-write
+application natively; XMP-only and injected partial-failure rotation cases retain automated
+evidence only. See the cycle-10 native report for the exact tested binary and remaining scope.
 
 ## Required tests and integration order
 
