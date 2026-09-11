@@ -1,23 +1,37 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — retained Metadata Review saves pass integrated tests and native edit/exit/quit/relaunch checks. Native failure/recovery and wider feature/release gates remain open.
+**State:** IMPLEMENTING — native Review partial-save retry and scoped export/discard now pass through relaunch. Write All pending-metadata completion is being corrected; wider release gates remain open.
 **Updated:** 2026-09-11
 **Latest implementation commit:** `f897bdd08e9dd8efab6ca9de7f626080cbc99736` (2,585 tests / 286 suites and repository checks passed).
-**Latest native evidence:** `f897bdd` Review known/null/first-record edits, workspace exit, focused-field normal quit and relaunch PASS. Connection became unusable before failure testing; final normal shutdown is confirmed. No Review test preferences changed.
-**Cycle baseline:** `5afb5f3` on `main`; cycle 10 was interrupted and resumed with its owned work preserved.
+**Latest native evidence:** `f897bdd` Review retry, cancellation, verified recovery export and photo-scoped discard preserve external metadata and other queued photos through relaunch. Final QA shutdown confirmed; preferences unchanged.
+**Cycle baseline:** `3b595fd` on `main`; cycle 11 continues the existing coordinator task.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 11 native Review recovery](cycle-11-review-recovery-native-2026-09-11.md) passes on
+unchanged `f897bdd`: JSON-only partial failure blocks exit; retry completes both photos without
+duplicate history; applied-witness retry preserves a newer record; a replaced history creates a
+permanent conflict, Cancel/Save-panel Cancel retain work, verified export enables scoped discard,
+and external A plus other queued B survive normal quit/relaunch with identical artifacts. Native
+session reset restored access, all obstructions are removed, no preferences changed, and the QA
+app is stopped. More than 20 native fields, IME/VoiceOver and in-flight disappearance remain open.
+
+Write All audit found a critical pending-data-loss path: RAW is silently skipped by the old Void
+embedded writer, then its pending JSON can be deleted and counted written; stale XMP can also
+shadow embedded results. Core and caller agents are implementing a bounded verified completion
+service, strict discovery/routing and truthful result/cancellation reporting. Source is owned and
+uncommitted; no cycle-11 build has run yet. Independent reviewer is auditing the frozen proposal.
 
 [Cycle 10 Metadata Review](cycle-10-metadata-review-2026-09-11.md) implements retained live row
 buffers, shared replay/receipt/recovery, source evidence for first records and lifecycle/mutation
 barriers. Independent review passes after resolving stale row callbacks, full-value rebasing and
 recovery freeze lifetimes. Focused 57 tests and full 2,585 tests pass; repository checks pass.
 Native edits survive workspace exit and normal quit/relaunch with known/null/first originals,
-unchanged PNGs and untouched-row no-write behavior. Native failure/recovery remains unrun after
-the connection stopped returning usable state/screenshots. Exact identity and cleanup notes are
-in the report. The failure fixture remains untouched.
+unchanged PNGs and untouched-row no-write behavior. At the cycle-10 checkpoint, native failure/recovery was unrun after
+the connection stopped returning usable state/screenshots. Cycle 11 above now supplies that
+evidence and records the intentionally changed disposable failure fixture.
 
 [Cycle 10 native continuation](cycle-10-rotation-native-2026-09-11.md) resolves the rotation setup
 blocker on unchanged `b5840e4`. History-only angles 6/8 survive full-screen and relaunch; Write All
@@ -110,11 +124,12 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Reconnect native QA and relaunch the identified binary; complete Review failure/retry and scoped export/discard using `build/qa-metadata-review-cycle10/failure`.
-   Do not overwrite the passing happy fixtures. Then continue batch XMP completion and
-   non-displayed variable writes from the [field-write design](field-write-completion-design.md).
-   Review implementation is committed and tested; do not redo unchanged full checks. Broader
-   rotation failure/mode coverage and external empty element-form Label parsing remain explicit.
+1. Integrate and validate the in-progress Write All service/engine/caller fix, then native-test
+   explicit full-record writes with RAW routing and stale-XMP preservation. Follow with the
+   non-displayed variable writer's mutable folder/mode and partial-write acknowledgement gaps in
+   the [field-write design](field-write-completion-design.md). Native Review ordinary retry/recovery
+   is now passing; keep its remaining lifetime/accessibility cases distinct. Do not rerun the
+   unchanged f897bdd full suite without a relevant source change.
 2. Complete remaining Sony companion archive and source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Ingest, rename, Duplicate, Move, Reject and
    memo Trash now have implementation. Preserve explicit ownership through rendering/signing/
@@ -151,6 +166,10 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | Signing/notarization/distribution | After applicable gates | Separate authorization and release-plan evidence |
 
 ## Blocker tracking
+
+Cycle 11 restored native access by resetting only the CUA session and using native keyboard menu
+selection where IDs went stale. Ordinary Review failure/recovery is complete; final shutdown is
+confirmed and test preferences are unchanged. The earlier connection limitation below is historical.
 
 Current native connection limitation: while opening the Review failure fixture, menu IDs became
 invalid and blank/stale window state plus unavailable screenshots persisted after reconnect.
@@ -208,23 +227,24 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Implementation `f897bdd08e9dd8efab6ca9de7f626080cbc99736` contains ten reviewed source/test
-files. Focused 57 tests / five suites pass in 1.387s; full 2,585 tests / 286 suites pass in
-93.600s; repository and whitespace checks pass. Logs use `/private/tmp/aagedal-coordinator-cycle10-*`.
-Only release documentation changed after implementation commit. Agents finished their bounded
-work and independent review passed. Do not repeat full tests without a relevant source change.
+Cycle 11 baseline HEAD `3b595fd`, last verified implementation `f897bdd` (2,585 tests / 286
+suites in 93.600s, focused 57 tests / five suites in 1.387s, repository checks passing).
+[Native cycle-11 Review recovery](cycle-11-review-recovery-native-2026-09-11.md) ran on that exact
+unchanged Debug binary; all three binary hashes still match the cycle-10 identity manifest.
+The failure fixture is now intentionally changed, with verified recovery export and before/after
+snapshots under `build/qa-metadata-review-cycle10`. E12/S13 survive relaunch; external A files
+remain exact; source PNGs unchanged; no obstruction remains. Native inventory confirms the app
+stopped. No write preferences changed. The happy fixtures remain unchanged from cycle 10.
 
-Native Review happy evidence and exact binary hashes are in
-[the cycle-10 Review report](cycle-10-metadata-review-2026-09-11.md). The app path remains the
-DerivedData Debug `Aagedal Photo Agent.app`, 3.0.0 (738), arm64. Happy artifacts are intentionally
-changed; after-quit and after-relaunch snapshots match. All PNGs are unchanged; b-null original
-remains absent; d-untouched has no JSON/XMP. Separate failure fixtures are unchanged, with no
-obstruction created. Final native inventory confirms the QA app stopped after normal Escape/Command-Q cleanup.
-Relaunch the identified binary when native access returns. No write preferences changed during Review QA.
+Current owned source work: core memo_trash owns new PendingMetadataWriteService/Tests and additive
+SwiftExifWriteEngine/MetadataSidecarService changes; trash_ui owns MetadataViewModel Write All and
+new PendingMetadataWriteCallerTests. Parent registered both new test files in the Xcode project
+(main Services is automatically synchronized). Caller has five tests and core eleven; final source
+review/focused build/full tests/native completion still pending. Parent alone builds, operates GUI
+and commits. Other active desktop tasks are in separate repositories. No other checkout work found.
 
-Native rotation history/dual-apply evidence on earlier `b5840e4` remains in its separate report;
-those preferences were restored. Do not confuse the two binary identities. HTML A03 now has
-Review instructions; 31 cases pass static structure/link checks, candidate fields remain blank,
-and human results remain unrun. Sixty unchecked authoritative plan entries remain; no-progress
-count is zero and the existing coordinator automation stays active. No final acceptance,
-production transfer, publication or private-photo modification occurred.
+Keep variables as a separate implementation slice: captured folder/mode and immutable intent,
+full-record-vs-delta acknowledgement, nil original preservation, stable history, and truthful
+async success remain mandatory. No new authoritative plan checkbox is proven by the narrow
+native cases. Sixty unchecked plan criteria remain; all human HTML results are unrun. No-progress
+count stays zero and the existing heartbeat stays active. No readiness notification is due.

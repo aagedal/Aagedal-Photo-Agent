@@ -128,3 +128,10 @@ exercised. Broader writer completion, variables, archive/transcription, hardware
 interoperability and release prerequisites remain tracked in readiness.md. The automation stays
 active; the app is not ready for final user acceptance.
 
+
+## Cycle 11 continuation
+
+[Native cycle 11](cycle-11-review-recovery-native-2026-09-11.md) subsequently passes ordinary
+partial-save retry, cancellation, verified export and scoped discard through normal relaunch on
+the same f897bdd binary. Its final shutdown is confirmed; remaining IME/accessibility and
+in-flight disappearance cases stay explicit.

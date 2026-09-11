@@ -26,7 +26,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 10: retained Metadata Review saves](release/cycle-10-metadata-review-2026-09-11.md). Source `f897bdd` passes 2,585 tests and independent review. Native known/null/first-record edits survive workspace exit and focused-field normal quit/relaunch without changing source PNGs. Failure/recovery testing remains open after the native connection became unusable; final normal QA shutdown is confirmed. [Rotation verification](release/cycle-10-rotation-native-2026-09-11.md) remains separately recorded. Wider feature and release gates stay open.
+**Latest improvement continuation:** [Cycle 11: native Review recovery](release/cycle-11-review-recovery-native-2026-09-11.md). On unchanged `f897bdd`, partial-save retry, applied-witness replay, verified export and photo-scoped discard preserve newer external metadata and other queued photos through normal quit/relaunch. All QA apps are stopped and preferences unchanged. [Cycle 10 implementation](release/cycle-10-metadata-review-2026-09-11.md) passes 2,585 tests. Write All completion fixes are in progress; wider feature and release gates stay open.
 
 ## Portfolio
 
