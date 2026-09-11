@@ -9,7 +9,7 @@ integrated tests pass. [Cycle 10 native verification](cycle-10-rotation-native-2
 passed history-only rotation, normal quit/relaunch, Write All refusal and explicit dual-write
 application, with original preferences restored. [Metadata Review cycle 10](cycle-10-metadata-review-2026-09-11.md) is committed as `f897bdd`,
 with retained buffers/shared replay/recovery and 2,585 integrated tests passing. Native edit/exit/quit/relaunch
-passes; native failure/recovery remains open. Batch completion and non-displayed variables remain mandatory work. External empty
+passes; [cycle 11 native recovery](cycle-11-review-recovery-native-2026-09-11.md) also passes retry, verified export and scoped discard. [Write All cycle 11](cycle-11-write-all-2026-09-11.md) passes 2,602 tests and bounded native failure/repair/relaunch; non-displayed variables remain mandatory work. External empty
 element-form Label parsing remains separate from app-written empty attributes. Original
 observations below are historical; the old Browser field helper chain now has no entry caller.
 
@@ -84,3 +84,48 @@ Suggested ownership: service and service tests; bounded Browser callers/tests; b
 callers/tests. Agree APIs before edits, serialize builds/desktop under coordinator ownership,
 and obtain independent final review after source integration. Metadata batch completion and
 non-displayed variable writes remain subsequent inventoried work.
+
+## Cycle 11 complete-record Write All migration
+
+The legacy batch writer could delete pending JSON after a Void writer silently skipped RAW,
+and could leave a stale XMP shadow. The replacement captures immutable owned records and fresh
+source/credential facts, uses strict discovery, and routes RAW to XMP. Ordinary formats use a
+verified embedded writer and mirror an existing XMP. Only full editorial read-back plus unchanged
+source/carrier ownership can mark the original JSON record complete. History, opaque JSON and an
+explicit nil original snapshot remain retained. Physical writes that precede failure are reported;
+cancellation retains the attempted prefix and identifies the unattempted suffix. Batch-specific
+attention remains accessible after selection changes. Independent review, focused/integrated checks and bounded native failure/repair/relaunch pass
+on `8fd931c`; see the cycle-11 report for exact scope and remaining real RAW/cancellation gates.
+
+The variable writer remains a separate mandatory slice: capture photo/folder/mode before awaits;
+retain full pre-trim changes with stable replay IDs; preserve an explicitly nil original; avoid
+acknowledging the complete pending record after writing only variable differences; and propagate
+partial/failure/cancellation results. Its displayed-selection branch must await the actual commit
+before counting success. Reuse complete-record completion only when every pending editorial value
+is physically written and verified, otherwise acknowledge only the field delta actually written.
+
+### Next variable slice: bounded ownership and semantics
+
+Treat Variables in a physical write mode as completion of the full resolved editorial record,
+consistent with its existing selected-image/full-XMP intent. First install a verified pending
+resolved request, then call an extracted mode-aware complete-record service against that receipt.
+Keep Write All's explicit default routing unchanged. History Only needs awaited JSON-only replay;
+using the existing JSON-plus-XMP replay would change its contract. A verified pending receipt is
+required before counting a history-only save. Preserve unrelated technical Develop/orientation
+intent; unresolved technical changes must not be silently completed.
+
+Capture folder, ordered photo URLs/sequence numbers, reference policy, initials/job-ID option,
+editor/load identity, batch generation and effective C2PA/RAW write policies before awaiting work.
+Fresh per-photo facts select from those captured policies. Resolve an immutable local record for
+both selected and nonselected images, taking its original input before GPS/roster transformation.
+Remove the selected-image fire-and-forget commit branch. Retain full pre-trim deltas and stable
+request IDs across partial retry; do not interpolate again against changed inputs. Preserve an
+existing original snapshot by record presence, including nil. Report unreadable individual inputs
+and cancelled/unattempted suffixes. Batch attention is separate from selected-editor state.
+
+Suggested ownership: core service owner for JSON-only replay/prepare plus mode-aware verified
+completion and service regressions; caller owner for immutable variable requests/runner and model
+integration; coordinator for UI barriers, project registration, builds and native QA. Freeze source
+during integrated checks and native validation. Existing non-Write-All technical callers still
+use parsed cameraRaw equality and may share the random mask-identity issue exposed in cycle 11;
+inventory that behavior rather than silently treating this bounded fix as universal.

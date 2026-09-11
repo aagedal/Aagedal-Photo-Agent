@@ -27,7 +27,8 @@
 <div id="cases"></div>
 <footer><strong>Authoritative sources and support records</strong><ul><li><a href="../README.md">Planning index</a> and <a href="../app-improvement-audit-plan.md">cross-cutting improvement audit</a></li><li><a href="../v2.3/README.md">3.0 investigation scope (historical v2.3 path)</a> and <a href="../v2.3/delivery-plan.md">investigation delivery plan</a></li><li><a href="../journalistic-metadata-workflow-plan.md">Journalistic metadata workflow plan</a></li><li><a href="../suncalc-plan.md">Solar overlay plan</a></li><li><a href="../manual-release-prerequisite-audit.md">Manual prerequisite audit</a> · <a href="../accessibility-keyboard-audit-validation.md">accessibility audit</a> · <a href="../metadata-field-support.md">metadata carrier/write-mode support</a></li><li><a href="../feature-help-3.0.md">Feature guide</a> · <a href="../limitations-3.0.md">known limitations</a></li></ul><p>Source links use repository-relative paths and work best with this file kept in <code>docs/release/</code>. If copied elsewhere, include the repository docs or consult their matching candidate revision. Before handoff, update this checklist for completed Sony functionality and any newly approved scope; never silently remove an open mandatory gate.</p></footer>
 </main>
-<script id="case-data" type="application/json">[
+<script id="case-data" type="application/json">
+[
   {
     "id": "A01",
     "lane": "Agent computer use",
@@ -82,6 +83,17 @@
     "steps": "1. In Browser, apply a rating and color label while G remains pending. Change each rapidly twice and navigate or replace folders during completion. 2. Read back embedded metadata, XMP, JSON, snapshot and pending status; reopen Caption and relaunch. 3. Add a person through one Face group and Apply All Names; include case variants, source-only names and unrelated pending person edits. 4. Repeat with a disposable blocked XMP destination and injected failed embedded write; inspect actual partial outcomes and retry. 5. Clear rating and label in each supported destination mode; verify effective values after reopen, including an embedded label plus XMP sidecar. Compare explicit empty Label with an absent Label control; verify both after restoring the original write mode and relaunching. 6. In Save History Only mode, rotate a nonsquare image twice, then quit and reopen; inspect the thumbnail and full-screen image, JSON orientation draft and unchanged source/XMP bytes. Try Write All and rendered export while the rotation is pending. 7. Choose a physical write mode and use Browser’s Write Pending Rotation context command. Reopen and verify the same angle, acknowledged rotation, retained G/nil snapshot and unchanged pixel payload; repeat with XMP-only and dual-write modes.",
     "expected": "Only requested physical fields change; unrelated G remains pending and the original caption/snapshot is retained, including an existing nil snapshot. Person additions preserve destination-only names and order without applying unrelated queued person edits. Accepted rapid actions persist in order and stale callbacks do not alter a newer folder or editor. Failures remain visible and pending; successful physical writes are reported accurately. Clear operations affect the effective reopened value; if a mode cannot represent a clear, record the case blocked with its explicit retained-pending error rather than marking success. History-only rotation survives relaunch with a durable technical draft. Full-record writes and export explain how to apply it first. Write Pending Rotation applies the displayed angle without another turn, preserves Develop and captions, and removes only the verified rotation intent.",
     "cleanup": "Restore any test write-mode preference, quit normally, preserve sanitized read-back and hash evidence, and remove only disposable fixture copies."
+  },
+  {
+    "id": "A17",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Write All completion, failed-photo retry and retained audit history",
+    "source": "cycle-11-write-all-2026-09-11.md",
+    "setup": "Use disposable JPEG/PNG and real supported camera RAW copies with pending metadata JSON. Include known and null original snapshots, history, unknown JSON, different embedded and sidecar headlines, a nonempty physical color label to clear, and technical XMP/masks. Record file and pixel hashes. Obstruct one test XMP path using only an empty directory.",
+    "steps": "1. Click Write All Pending in Browser. Inspect the complete report and each photo’s pending marker. 2. Read embedded metadata, XMP and owned JSON: compare every requested editorial value, cleared label, history, original snapshot and unrelated technical values. 3. Dismiss the report, select another photo and reopen Write All Details; verify the original folder and failed photo remain identified. 4. Remove only the empty obstruction and run Write All again. Verify only the still-pending photo is attempted. 5. Quit normally, relaunch, reopen the folder and compare values and hashes. 6. Repeat with an unreadable pending carrier, protected credentials, cancellation after some writes, and a controlled independent JSON/XMP change during a write. Verify the report distinguishes saved destinations from retained or unattempted work.",
+    "expected": "Only verified full-record writes clear pending state. RAW writes XMP without modifying the original RAW. Existing sidecars cannot shadow new editorial values. JSON history, opaque fields and known/null originals survive; technical XMP and pixel payloads remain intact. Failed photos retain their pending intent and full accessible details. Repair and retry do not rewrite completed photos or duplicate history. Cancellation reports the attempted prefix and unattempted remainder. Independent changes conflict without silently overwriting them. Relaunch preserves the verified state.",
+    "cleanup": "Remove the empty test obstruction, restore any test preferences, quit the QA build, and retain sanitized before/after manifests. Delete only disposable copies after evidence is no longer needed."
   },
   {
     "id": "A04",
@@ -369,7 +381,8 @@
     "expected": "Candidate evidence matches the delivered build. No draft, incomplete checklist or automated pass count triggers distribution. Signed packaging and publication are recorded by the authorized release owner only after sign-off.",
     "cleanup": "Retain immutable candidate evidence and release artifact checksums. Remove disposable installs only; do not alter production release channels from this checklist."
   }
-]</script>
+]
+</script>
 <script>
 'use strict';
 const cases=JSON.parse(document.getElementById('case-data').textContent);
