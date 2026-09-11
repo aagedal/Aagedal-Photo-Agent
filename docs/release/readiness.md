@@ -1,14 +1,23 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — durable rotation and field-only completion pass automated verification. Native rotation setup was interrupted by host lock; remaining writer, feature and release gates stay open.
+**State:** IMPLEMENTING — durable rotation passes native history/relaunch/dual-apply verification. Metadata Review retained replay/recovery is being integrated; remaining feature and release gates stay open.
 **Updated:** 2026-09-11
 **Latest implementation commit:** `b5840e4304450dce9371b5c2329e230635adf351` (2,569 tests / 285 suites and repository checks passed).
-**Latest native evidence:** `b5840e4` launched/opened fixtures; host locked in Settings before rotation testing. Prior `b8e668a` clears and `34a7313` Face workflows pass cycle 8.
-**Cycle baseline:** `9d65002` on `main`; clean checkout at cycle 9 start.
+**Latest native evidence:** `b5840e4` history-only rotation, full-screen, relaunch, Write All refusal and same-target dual apply PASS in cycle 10; preferences restored and QA app stopped.
+**Cycle baseline:** `5afb5f3` on `main`; cycle 10 was interrupted and resumed with its owned work preserved.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 10 native continuation](cycle-10-rotation-native-2026-09-11.md) resolves the rotation setup
+blocker on unchanged `b5840e4`. History-only angles 6/8 survive full-screen and relaunch; Write All
+reports the full refusal and preserves all artifacts. Explicit same-target dual apply writes EXIF
+and both XMP conventions, removes only rotation intent, preserves G/null snapshot/history/pixels,
+and survives reopening. Original Professional/Custom preferences and General page are restored;
+native inventory confirms the QA app stopped. Metadata Review code is in progress in the shared
+checkout; it has not yet been built or validated. Other listed tasks use separate repositories.
+
 
 [Cycle 9](cycle-09-durable-rotation-2026-09-11.md) implements ordered Browser rotation, a durable
 technical JSON draft, per-destination retry baselines, same-target Write Pending Rotation, and
@@ -93,12 +102,10 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Recheck native access and finish cycle-9 rotation testing and preference cleanup first when
-   available; use the exact build/fixtures and resume instructions in its dated report. Do not
-   block independent work on this host limitation. Continue the [field-write design](field-write-completion-design.md):
+1. Finish, review and validate the in-progress Metadata Review migration in the [field-write design](field-write-completion-design.md):
    Metadata Review retained replay/recovery, then batch XMP completion and non-displayed variable
    writes still have whole-record acknowledgement or untracked replay gaps. Rotation implementation
-   now passes tests; native history-only/retry/relaunch remains a gate. App-written XMP-only label
+   now passes tests and native history-only/dual-apply/relaunch; broader failure/mode coverage stays explicit. App-written XMP-only label
    clears work; external empty element-form Label parsing remains an interoperability follow-up.
 2. Complete remaining Sony companion archive and source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Ingest, rename, Duplicate, Move, Reject and
@@ -136,6 +143,11 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | Signing/notarization/distribution | After applicable gates | Separate authorization and release-plan evidence |
 
 ## Blocker tracking
+
+Cycle 10 resolved cycle 9's native lock/setup blocker. Preferences are restored, the exact
+rotation binary passed the recorded cases and all native QA app entries are stopped. Historical
+cycle-9 notes below describe that earlier state, not an outstanding cleanup task.
+
 
 Cycle 9 native launch/open succeeded. Settings showed Professional selected, then the Custom
 click returned locked-Mac; a later recheck remained locked. No rotation command ran. Original
@@ -179,6 +191,19 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+Cycle-10 interruption/resumption checkpoint: native rotation is complete as recorded above.
+The fixture has now been intentionally changed: known/unknown source orientation is 6/8,
+matching XMP companions exist, typed drafts are removed, captions remain pending, original
+snapshots and pixel payloads are unchanged. Final `cycle10-after-apply-snapshot.json` and
+`cycle10-after-final-relaunch-snapshot.json` match. Preferences restored; QA app stopped.
+Core agent owns CaptionSession/MetadataSidecarService replay evidence and tests; Browser agent
+owns MetadataReviewView/BrowserViewModel/caller tests; parent owns ContentView/FolderTreeRow
+lifecycle integration and automatic-save tests. These uncommitted changes need build, tests,
+independent review and native testing before integration is called complete.
+
+The following cycle-9 handoff is retained as historical baseline information:
+
 
 Source `b5840e4304450dce9371b5c2329e230635adf351` contains sixteen reviewed source/test files.
 The integrated suite passes 2,569 tests / 285 suites in 89.697 seconds; final Browser focused

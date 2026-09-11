@@ -133,3 +133,10 @@ replay/recovery and the remaining writer migrations. Sony archive/reassociation,
 delivery, broader UI/performance/hardware/interoperability and external prerequisites remain.
 Substantive implementation and verification occurred; no-progress counter stays zero. This single
 native blocker does not justify pausing the automation or notifying for final user testing.
+
+## Cycle-10 follow-up
+
+[Native continuation](cycle-10-rotation-native-2026-09-11.md) passes history-only rotation,
+full-screen/relaunch, visible Write All refusal and same-target dual apply on unchanged `b5840e4`.
+Preferences are restored and native inventory confirms the QA app stopped. Earlier pending setup
+and untouched-fixture notes above are historical; final fixture values are recorded in that report.
