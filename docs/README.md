@@ -26,7 +26,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 11: verified Write All](release/cycle-11-write-all-2026-09-11.md). Source `8fd931c` passes independent review, 2,602 tests and repository checks. Native partial failure, repair-only retry, retained history/originals and relaunch pass; QA apps are stopped with preferences unchanged. [Review retry and scoped recovery](release/cycle-11-review-recovery-native-2026-09-11.md) also pass on the prior binary. Variable processing and wider feature/release gates remain open.
+**Latest improvement continuation:** [Cycle 12: verified variable processing](release/cycle-12-variables-2026-09-11.md). Source `fbe253f` passes independent review, 2,633 tests and repository checks. Native physical failure/repair, History Only, preserved originals/history/literal lists and relaunch pass; preferences are restored and QA apps stopped. Scoped permanent-conflict recovery and wider feature/release gates remain open.
 
 ## Portfolio
 

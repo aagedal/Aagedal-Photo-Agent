@@ -96,6 +96,17 @@
     "cleanup": "Remove the empty test obstruction, restore any test preferences, quit the QA build, and retain sanitized before/after manifests. Delete only disposable copies after evidence is no longer needed."
   },
   {
+    "id": "A18",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Variable processing saves verified records and retains failed work",
+    "source": "field-write-completion-design.md",
+    "setup": "Copy photos with filename/initials placeholders, an unrelated pending caption, known and null originals, punctuated list items, history and existing technical XMP. Include one selected photo with an unsaved variable field and one mixed-selection template. Record the original write preset/options and artifact hashes. Prepare a disposable failed destination.",
+    "steps": "1. With a variable field still focused, run Process Variables in Folder. Compare every resolved field and unrelated pending caption in embedded metadata, XMP and JSON; confirm punctuation and list order survive. 2. Repeat with a mixed-selection template and more than 20 changed fields. 3. Select Save History Only, process another disposable set, then confirm only owned JSON changed. 4. Trigger a failed write, read Variable Processing Details, switch selection, and reopen the same report. If a resolved request was retained, repair the destination and use Retry Variable Writes in the same session; verify identical resolved values and no duplicate history. 5. During a slow operation, change selection, folder, preferences and the current editor buffer; then cancel and inspect exact attempted and unattempted counts. 6. Quit normally, relaunch and inspect saved or pending records. After relaunch, review any pending draft and deliberately choose its destination; do not treat a new Write All action as resuming the earlier variable policy. 7. Use the metadata panel’s buffer-only variable action during delayed geocoding, switch photos, and verify the new editor stays unchanged.",
+    "expected": "Success appears only after the selected save/write mode finishes verification. Full physical processing writes the entire resolved editorial record before clearing pending; History Only leaves images and XMP untouched. Existing originals including null, history, unknown data, technical edits and unrelated list punctuation survive. Older tasks cannot overwrite a new editor or clear another batch’s progress. Failures retain unsaved work and show truthful partial destinations; same-session Retry uses the original request and policy. Resolved pending JSON survives relaunch; original-policy retry is not claimed across restart without a durable receipt.",
+    "cleanup": "Restore the original preset and all modified options, remove only disposable obstructions, quit the QA app, and retain sanitized manifests and observations."
+  },
+  {
     "id": "A04",
     "lane": "Agent computer use",
     "priority": "P0",

@@ -129,3 +129,47 @@ integration; coordinator for UI barriers, project registration, builds and nativ
 during integrated checks and native validation. Existing non-Write-All technical callers still
 use parsed cameraRaw equality and may share the random mask-identity issue exposed in cycle 11;
 inventory that behavior rather than silently treating this bounded fix as universal.
+
+### Cycle 12 read-only findings and bounded retry lifetime
+
+The independent audit identified three remaining mask-equality callers in MetadataViewModel:
+`writeXMPSidecarAndPreserveHistory` (ordinary XMP and Develop primary save),
+`writeMetadataAndPreserveHistory` (embedded/dual and Develop reset with embedded CRS), and
+single-photo `saveToSidecar` (History Only/explicit pending save). All compare separately parsed
+cameraRaw values, whose mask IDs regenerate. These paths can reject an unchanged masked XMP.
+The next correction must retain exact XMP bytes with the loaded editor baseline and update them
+from verified receipts; capturing new bytes only when Save is clicked would adopt external changes.
+Keep technical intent flags and explicit absent snapshots. This is mandatory subsequent defect work.
+
+Variable retry is bounded to the current model/session unless a durable operation carrier is
+implemented. A verified pending JSON record preserves the resolved editorial values and history
+across relaunch, but does not encode captured write mode/policy, full retry receipt or physical
+baseline. Failure details must explain that Retry Variable Writes preserves the original operation
+only in this session. After relaunch the user can review pending drafts and deliberately choose a
+new physical write operation; Write All is not a resume of the original variable policy. Do not
+count a no-placeholder rerun as repair or automatically adopt a new policy. Uncommitted live
+buffers still need the existing pending-save/recovery safeguards; this limitation does not permit
+losing edits that have not reached verified JSON.
+
+
+### Variable permanent-conflict recovery implementation outline
+
+Independent cycle-12 review recommends photo-scoped review/export/discard, following Caption's
+verified private export pattern. Replace opaque pre-prepare admission ownership with an exportable
+captured payload plus executor: original live/template fields, sequence, frozen options, ownership
+checkpoint and optional cached first-read facts. Failed reads must export without rereading.
+Expose a lock-protected request/receipt snapshot with full pre-trim deltas, explicit known/null
+originals, technical metadata (ordinary IPTC JSON omits it), preparation and partial physical evidence.
+
+Freeze affected-photo capture/retry before reviewing; settle in-flight work before snapshotting.
+Bind verified export receipts to exact bytes, request/admission IDs, generation and review ID.
+Canonical full photo identity includes the extension, preserving same-stem RAW/JPEG siblings.
+Revalidate export and generation immediately before scoped in-memory discard; never modify image,
+JSON or XMP during discard. Other folders/photos keep their requests and retry order. Preserve newer
+live editor input; reload only an unchanged original checkpoint. Reconciliation creates a new request
+from fresh facts rather than rebasing stale intent. Cancel or failed/tampered export removes nothing.
+
+Tests must cover pre-prepare unsaved input after selection changes, >20 changes and all receipt
+fields, same-stem siblings/other folders, late completion or stale generation, changed editor input,
+and native conflict/export/scoped discard/remaining-work/Close/Quit/relaunch with exact file hashes.
+This is an implementation outline, not completed recovery or passing acceptance evidence.

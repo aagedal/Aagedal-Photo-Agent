@@ -1,14 +1,25 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — verified Write All completion and native failure/repair/relaunch now pass. Variable processing and wider release gates remain open.
+**State:** IMPLEMENTING — immutable variable writes and bounded native failure/repair/History Only persistence pass. Permanent conflict recovery and wider release gates remain open.
 **Updated:** 2026-09-11
-**Latest implementation commit:** `8fd931c54b9134005d7293118bb1db3fe9242d9b` (2,602 tests / 288 suites and repository checks passed).
-**Latest native evidence:** `8fd931c` Write All partial failure, independent details, repair and normal quit/relaunch preserve originals/history/opaque JSON/pixels. Final QA shutdown confirmed; preferences unchanged.
-**Cycle baseline:** `3b595fd` on `main`; Review evidence committed as `5d02f5c`, Write All implementation as `8fd931c`.
+**Latest implementation commit:** `fbe253f11304f9f8de8cfafa667338edfd580781` (2,633 tests / 291 suites and repository checks passed).
+**Latest native evidence:** `fbe253f` variables: physical 2/3 failure details, repair-only retry, History Only, known/null originals/full captions/literal lists and relaunch pass. Preferences restored; QA apps stopped.
+**Cycle baseline:** `e9e6a14` on `main`; cycle 12 source committed and bounded validation complete.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 12 variables](cycle-12-variables-2026-09-11.md) captures immutable input/folder/policy,
+awaits full-record JSON/physical verification, retains retry/partial receipts and guards Close/Quit
+while unverified unsaved work is retained. Template lists, >20 deltas, original provenance and
+prior clear/overwrite composition are corrected. Independent review passes, focused v4 passes
+134 tests / seven suites, focused roster passes seven tests, full v2 passes 2,633 tests / 291 suites
+in 99.012s and repository checks pass. Native physical partial failure/repair, JSON-only History
+Only, literal lists/originals/opaque/history/pixels, preference restoration and relaunch pass.
+All app entries are stopped. Permanent conflict recovery and the listed broader native cases remain
+mandatory; transient native menu access recovered after a normal quit/relaunch.
+
 
 [Cycle 11 native Review recovery](cycle-11-review-recovery-native-2026-09-11.md) passes on
 unchanged `f897bdd`: JSON-only partial failure blocks exit; retry completes both photos without
@@ -130,29 +141,33 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Implement the variable writer's captured folder/mode, awaited verified save and complete-record
-   acknowledgement migration in the [field-write design](field-write-completion-design.md).
-   The selected-image fire-and-forget success path and partial-delta/full-record acknowledgement
-   are real defects. Preserve nil originals/full history and retained retry identity. Write All's
-   bounded source and native cases now pass; do not rerun the unchanged full suite without a
-   relevant change. Broader real RAW/credential/cancellation and Review accessibility/lifetime
-   native cases retain separate gates.
-2. Complete remaining Sony companion archive and source reassociation using the source-backed
+1. Add scoped export/reconcile/discard for permanently conflicting retained variable admissions.
+   Current session retention blocks ordinary Close/Quit safely, but Retry cannot fix every external
+   ownership conflict and Quit Without Saving is not an adequate release recovery workflow.
+   A concrete payload/receipt/identity/test outline is in the [field-write design](field-write-completion-design.md).
+2. Correct the three remaining single-photo/Develop snapshot callers that compare regenerated
+   XMP mask IDs. Retain exact bytes at editor load and update from verified receipts, preserving
+   external-change detection; see the concrete inventory in field-write design.
+3. Complete remaining variable native cases: focused live-field commit, >20-field templates,
+   in-flight cancellation/selection, authentic RAW/C2PA and accessibility/performance. Cycle 12's
+   physical/error/repair/History Only/relaunch cases pass on `fbe253f`; do not rerun unchanged full
+   checks without a relevant change. Review lifetime/IME and Write All's broader cases remain separate.
+4. Complete remaining Sony companion archive and source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Ingest, rename, Duplicate, Move, Reject and
    memo Trash now have implementation. Preserve explicit ownership through rendering/signing/
    cleanup; schema-1 filename hints alone cannot establish historical reassociation identity.
-3. Implement cancellable local transcription with explicit language/model/offline state,
+5. Implement cancellable local transcription with explicit language/model/offline state,
    review-before-apply and transcript provenance, following the [SDK-backed design](voice-memo-transcription-design.md).
    Integrate reviewed transcript variables and visible Deadline WAV delivery policy/receipt.
-4. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
+6. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
    storage/executor auditing. Cycle 3 observed native Trash, shared survivor playback, missing-memo
    Details, Finder Put Back, exact bundle recovery and restored Caption persistence. Broaden to
    real Sony, long error scrolling, face-group Trash, Bridge/Photo Mechanic, disposable transports,
    accessibility/IME/display, solar/reports and measured performance. Narrow evidence is not a full gate.
-5. Establish missing hardware/model-lifecycle/privacy/remote-CI evidence. Qualified legal review
+7. Establish missing hardware/model-lifecycle/privacy/remote-CI evidence. Qualified legal review
    and protected remote branch enforcement remain external prerequisites. Complete independent
    work before an actionable blocker handoff; do not silently move mandatory gates to acceptance.
-6. Once unconditional gates pass, obtain independent readiness review, build/launch the exact
+8. Once unconditional gates pass, obtain independent readiness review, build/launch the exact
    candidate, finalize and visually verify the [HTML checklist](manual-testing-checklist.html),
    then follow [the coordinator protocol](coordinator.md) before notifying for acceptance.
 
@@ -225,7 +240,7 @@ session. The final QA process was quit and native inventory confirmed it stopped
 returned to its original window. Bridge is available, but presence is not interoperability proof.
 
 Browser visual QA of the checklist remains pending: URL policy rejected its local file URL
-at setup. Do not bypass with another route. Static checks passed for 32 complete cases, unique
+at setup. Do not bypass with another route. Static checks now pass for 33 complete cases, unique
 IDs, local source links and JavaScript syntax. It remains unassigned to a candidate and all
 human results are unrun.
 
@@ -234,32 +249,25 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Latest implementation `8fd931c54b9134005d7293118bb1db3fe9242d9b`: independent source review PASS,
-focused v2 **91 tests / five suites in 4.622s**, integrated **2,602 tests / 288 suites in 94.961s**,
-repository validation and whitespace PASS. Initial focused 37/38 failure exposed random mask IDs
-in parsed XMP equality; exact captured bytes corrected it and the same preservation assertions pass.
-Logs `/private/tmp/aagedal-coordinator-cycle11-{focused,focused-v2,full,repository}.log`.
+Cycle 12 implemented and committed `fbe253f11304f9f8de8cfafa667338edfd580781` from `e9e6a14`.
+Independent core/caller/parent integration review passes. Focused v4: 134 tests / seven suites,
+7.267s; roster source-contract follow-up: seven tests / 0.082s; full v2: 2,633 tests / 291 suites,
+99.012s. Repository checks and whitespace pass. Intermediate compile, fixture and actual template
+failures are recorded with corrections in the [cycle report](cycle-12-variables-2026-09-11.md).
+No application/test source changed after the passing full run; documentation changes only.
 
-[Write All evidence](cycle-11-write-all-2026-09-11.md) identifies the final full-suite Debug app and
-three binary hashes. Native mixed success/failure report and reopened details, exact failed record
-retention, repaired-only retry and relaunch pass. Original snapshots including null, history, opaque
-JSON and pixel payloads survive. The disposable fixture is `build/qa-write-all-cycle11/photos`;
-all final artifacts match the after-retry manifest and the empty obstruction was removed. No write
-preferences changed; final native inventory confirms all QA app entries stopped. The earlier
-[Review native recovery](cycle-11-review-recovery-native-2026-09-11.md) remains valid on `f897bdd`.
+Native testing used exact Debug 3.0.0 (738) identified in `build/qa-variables-cycle12/tested-binary-identity.json`.
+Physical A/B complete, C failed unchanged with visible details, empty obstruction repaired and C-only
+retry completes. History Only changes only JSON. Both folders retain originals, opaque data, literal
+lists and 2→3 history entries, with exact relaunch artifact equality. Preferences equal the captured
+original state; General page restored. Final native inventory confirms every QA app entry stopped.
+The transient menu connection recovered by normal quit/relaunch; no host-access blocker remains.
 
-All cycle-11 source files are committed; remaining owned edits at this checkpoint are release
-documentation/checklist updates being committed by the parent. Core and caller agents are idle,
-review passes, no build/GUI session is running. Other active desktop tasks use separate repos.
-The caller supplied a read-only next variable-slice proposal, persisted in field-write design:
-JSON-only awaited history replay; immutable resolver input captured before GPS/sports processing;
-full resolved pending record prepared before mode-aware verified physical completion; stable IDs
-through partial retry; generation-owned progress and independent attention. Test delayed/failed
-selected commits, unrelated pending fields, nil originals, >20 deltas, read errors, C2PA/RAW,
-source/carrier conflicts, cancellation prefixes and changes to folder/preferences during awaits.
-
-No new authoritative checkbox is proven by these bounded cases. Sixty unchecked plan criteria
-remain. HTML now has 32 cases (17 agent, six final-user, nine external), including detailed Write
-All case A17. All human results remain unrun and the final candidate is unassigned. Browser visual
-validation remains a separate policy-blocked gate; no alternate-route bypass was used. No-progress
-count stays zero and the existing heartbeat stays active. No readiness notification is due.
+Next: mandatory scoped variable conflict export/reconcile/discard, then legacy exact-XMP baseline
+callers and wider native/feature gates. Independent recovery design is saved in field-write design;
+it is not implementation evidence. Prepared fixtures remain available with no obstruction remaining.
+All four authoritative plans retain 60 unchecked criteria (9/23/22/6); no checkbox changed.
+The HTML checklist has 33 complete cases (18 agent, six final-user, nine external), all human results
+unrun and final candidate unassigned. Static unique-ID/content/source-path/JavaScript checks pass;
+interactive HTML validation remains separate. No-progress count is zero; the existing heartbeat
+remains active and no readiness notification is due.
