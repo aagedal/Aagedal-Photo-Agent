@@ -11,10 +11,11 @@ struct CaptionConflictRecoveryView: View {
     let onExport: () -> Void
     let onDiscard: () -> Void
     let onCancel: () -> Void
+    var title: String = "Review Queued Caption Conflict"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Review Queued Caption Conflict")
+            Text(title)
                 .font(.title2.bold())
             Text(photoURL.lastPathComponent)
                 .font(.headline)

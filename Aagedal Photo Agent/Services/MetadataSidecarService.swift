@@ -519,7 +519,8 @@ struct MetadataSidecarService: Sendable {
         _ request: MetadataSidecarReplayRequest,
         beforeJSONCommit: @escaping @Sendable () throws -> Void = {},
         afterJSONCommit: @escaping @Sendable () throws -> Void = {},
-        beforeXMPCommit: @escaping @Sendable () throws -> Void = {}
+        beforeXMPCommit: @escaping @Sendable () throws -> Void = {},
+        afterXMPCommit: @escaping @Sendable () throws -> Void = {}
     ) async -> MetadataSidecarPersistenceResult {
         guard !Task.isCancelled else {
             return .init(installedSidecar: nil, wroteXMPSidecar: false, wasCancelled: true, failure: nil)
@@ -533,8 +534,19 @@ struct MetadataSidecarService: Sendable {
                 try self.requireIncomingOwner(request.sidecar, imageURL: request.imageURL)
                 let tokens = try self.contentTokens(for: request.imageURL, in: request.folderURL)
                 let current = try self.loadOwnedSidecarForMutation(for: request.imageURL, in: request.folderURL)
+                guard !request.receipt.creationEvidenceInvalidated else { throw Self.replayConflict() }
                 let merged = try Self.replaying(request, onto: current)
+                let creating = request.receipt.creationMirrorCompleted ? nil : request.creationEvidence
                 try beforeJSONCommit()
+                if let creating {
+                    let source = try await SourceImageRevision.capture(at: request.imageURL)
+                    guard source.canonicalURL == creating.sourceRevision.canonicalURL,
+                          source.relationship(to: creating.sourceRevision) == .exactRevision,
+                          try self.xmpBytes(for: request.imageURL) == (request.receipt.creationInstalledXMPData ?? creating.xmpData) else {
+                        if request.receipt.hasCommitted { request.receipt.markCreationEvidenceInvalidated() }
+                        throw Self.replayConflict()
+                    }
+                }
                 guard try self.contentTokens(for: request.imageURL, in: request.folderURL) == tokens else {
                     throw self.ownershipChanged(request.imageURL)
                 }
@@ -555,13 +567,39 @@ struct MetadataSidecarService: Sendable {
                 let xmpData = try self.xmpBytes(for: request.imageURL)
                 stage = .xmpSidecar
                 try beforeXMPCommit()
+                if let creating {
+                    let source = try await SourceImageRevision.capture(at: request.imageURL)
+                    guard source.canonicalURL == creating.sourceRevision.canonicalURL,
+                          source.relationship(to: creating.sourceRevision) == .exactRevision,
+                          xmpData == (request.receipt.creationInstalledXMPData ?? creating.xmpData),
+                          try self.xmpBytes(for: request.imageURL) == (request.receipt.creationInstalledXMPData ?? creating.xmpData) else {
+                        // Once JSON committed, retry must not silently adopt the newly changed
+                        // creation baseline. Keep this request in explicit scoped recovery.
+                        request.receipt.markCreationEvidenceInvalidated()
+                        throw Self.replayConflict()
+                    }
+                }
                 guard try self.contentTokens(for: request.imageURL, in: request.folderURL) == authoritativeTokens else {
                     throw self.ownershipChanged(request.imageURL)
                 }
                 _ = try await xmp.writeMetadataInHeldTransaction(merged.metadata,
                     for: request.imageURL, expectedSnapshot: .init(data: xmpData),
                     onlyIfExisting: false, replaceDevelopSettings: false, replaceOrientation: false,
-                    onInstalled: { xmpReceipt.record($0) })
+                    onInstalled: {
+                        xmpReceipt.record($0)
+                        if creating != nil { request.receipt.markCreationMirrorInstalled($0.data) }
+                    })
+                try afterXMPCommit()
+                if let creating {
+                    let source = try await SourceImageRevision.capture(at: request.imageURL)
+                    guard source.canonicalURL == creating.sourceRevision.canonicalURL,
+                          source.relationship(to: creating.sourceRevision) == .exactRevision,
+                          try self.xmpBytes(for: request.imageURL) == request.receipt.creationInstalledXMPData else {
+                        request.receipt.markCreationEvidenceInvalidated()
+                        throw Self.replayConflict()
+                    }
+                    request.receipt.markCreationMirrorCompleted()
+                }
                 return .init(installedSidecar: installed, wroteXMPSidecar: true, wasCancelled: false, failure: nil,
                     writtenXMPMetadata: self.metadataFromXMPReceipt(xmpReceipt, imageURL: request.imageURL))
             } catch {
@@ -1391,8 +1429,23 @@ private nonisolated final class MetadataSidecarXMPCommitReceipt: @unchecked Send
 nonisolated final class MetadataSidecarReplayReceipt: @unchecked Sendable {
     private let lock = NSLock()
     private var committed = false
+    private var invalidatedCreation = false
+    private var completedCreationMirror = false
+    private var installedCreationXMP: Data?
+    var creationMirrorCompleted: Bool { lock.withLock { completedCreationMirror } }
+    var creationInstalledXMPData: Data? { lock.withLock { installedCreationXMP } }
+    func markCreationMirrorInstalled(_ data: Data?) { lock.withLock { installedCreationXMP = data } }
+    func markCreationMirrorCompleted() { lock.withLock { completedCreationMirror = true } }
+    var creationEvidenceInvalidated: Bool { lock.withLock { invalidatedCreation } }
+    func markCreationEvidenceInvalidated() { lock.withLock { invalidatedCreation = true } }
     var hasCommitted: Bool { lock.withLock { committed } }
     func markCommitted() { lock.withLock { committed = true } }
+}
+
+/// Physical and companion evidence captured before the first editorial JSON record exists.
+nonisolated struct MetadataSidecarReplayCreationEvidence: Codable, Sendable {
+    let sourceRevision: SourceImageRevision
+    let xmpData: Data?
 }
 
 nonisolated struct MetadataSidecarReplayRequest: Sendable {
@@ -1404,10 +1457,12 @@ nonisolated struct MetadataSidecarReplayRequest: Sendable {
     let imageURL: URL
     let folderURL: URL
     let receipt: MetadataSidecarReplayReceipt
+    let creationEvidence: MetadataSidecarReplayCreationEvidence?
 
     init(sidecar: MetadataSidecar, baselineMetadata: IPTCMetadata,
          baselineHistory: [MetadataHistoryEntry], baselineRecordExisted: Bool, changes: [MetadataHistoryEntry],
-         imageURL: URL, folderURL: URL, receipt: MetadataSidecarReplayReceipt = .init()) {
+         imageURL: URL, folderURL: URL, receipt: MetadataSidecarReplayReceipt = .init(),
+         creationEvidence: MetadataSidecarReplayCreationEvidence? = nil) {
         self.sidecar = sidecar
         self.baselineMetadata = baselineMetadata
         self.baselineHistory = baselineHistory
@@ -1416,6 +1471,7 @@ nonisolated struct MetadataSidecarReplayRequest: Sendable {
         self.imageURL = imageURL
         self.folderURL = folderURL
         self.receipt = receipt
+        self.creationEvidence = creationEvidence
     }
 }
 

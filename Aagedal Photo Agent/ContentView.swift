@@ -20,7 +20,7 @@ enum MainViewMode {
 }
 
 /// A pending on-disk draft is not permission to embed it during navigation or backgrounding.
-/// Caption always uses its registered buffered-editor/FIFO boundary; explicit Write commands
+/// Caption and Metadata Review use their registered buffered-editor/FIFO boundary; explicit Write commands
 /// remain separate. Keeping this admission here makes both lifecycle observers share the rule.
 @MainActor
 enum MetadataAutomaticSaveBoundary {
@@ -33,9 +33,9 @@ enum MetadataAutomaticSaveBoundary {
         captionFlush: () throws -> Void,
         commitConfigured: () -> Void
     ) rethrows {
-        if workspace == .caption {
+        if workspace == .caption || workspace == .metadataReview {
             // Capture buffered AppKit text even when it has not yet changed the published
-            // editing model. Selection transitions already cross Caption's navigation barrier.
+            // editing model. Caption selection uses its navigation barrier; Review retains every row.
             if trigger == .deactivation { try captionFlush() }
             return
         }
@@ -81,6 +81,7 @@ private struct C2PADetailPresentation: Identifiable {
 private struct SafetyAndCullingHandlers: ViewModifier {
     let browserViewModel: BrowserViewModel
     let commandRouter: AppCommandRouter
+    let performAfterMetadataFlush: (@escaping @MainActor () -> Void) -> Void
     @Binding var backupEditedFolderItem: BackupEditedItem?
 
     func body(content: Content) -> some View {
@@ -95,7 +96,7 @@ private struct SafetyAndCullingHandlers: ViewModifier {
                 case .backupEditedFilesForFolder(let url):
                     backupEditedFolderItem = BackupEditedItem(url: url)
                 case .moveRejectedToFolder:
-                    browserViewModel.moveRejectedToFolder()
+                    performAfterMetadataFlush { browserViewModel.moveRejectedToFolder() }
                 case .openFolder, .openRecentFolder, .setRating, .setLabel,
                      .renderSelected, .advancedExportSelected, .renderAll,
                      .saveAsJPEG, .saveAsPNG, .archiveRAW,
@@ -139,7 +140,10 @@ struct ContentView: View {
     /// Open a folder into the active pane. The shared sidebar (primary pane) picks it up
     /// through the scene command router, so it shows even when a non-primary pane opened it.
     private func openFolderInActivePane(_ url: URL, addToOpenFolders: Bool) {
-        panes.active.loadFolder(url: url, addToOpenFolders: addToOpenFolders)
+        let targetPane = panes.active
+        performAfterCaptionFlush {
+            targetPane.loadFolder(url: url, addToOpenFolders: addToOpenFolders)
+        }
     }
     @State private var metadataViewModel: MetadataViewModel
     @State private var faceRecognitionViewModel: FaceRecognitionViewModel
@@ -379,6 +383,7 @@ struct ContentView: View {
                 mainViewMode: mainViewMode,
                 commandRouter: commandRouter,
                 loadTechnicalMetadata: loadTechnicalMetadata,
+                performAfterMetadataFlush: performAfterCaptionFlush,
                 technicalMetadataCache: $technicalMetadataCache,
                 technicalMetadata: $technicalMetadata
             ))
@@ -441,10 +446,7 @@ struct ContentView: View {
                     receiptLibrary: deliveryReceiptLibrary,
                     workflowActivity: deliveryWorkflowActivity,
                     onResumeWorkflow: { workflowIdentifier in
-                        pendingDeadlineResumeWorkflowIdentifier = workflowIdentifier
-                        isShowingDeadlineStagingActivity = false
-                        mainViewMode = .deadline
-                        return true
+                        resumeDeadlineWorkflow(workflowIdentifier)
                     }
                 )
             }
@@ -476,6 +478,7 @@ struct ContentView: View {
                     request: request,
                     executionQuiescence: BatchRenameExecutionQuiescence(
                         prepare: {
+                            try flushMetadataForTransition()
                             browserViewModel.beginRenameQuiescence()
                             do {
                                 try await faceRecognitionViewModel.quiesceScanForRename(
@@ -603,18 +606,22 @@ struct ContentView: View {
             .alert("C2PA Protected Images", isPresented: $isShowingWriteAllC2PAWarning) {
                 Button("Cancel", role: .cancel) { }
                 Button("Skip C2PA") {
-                    metadataViewModel.writeAllPendingChanges(
-                        in: browserViewModel.currentFolderURL,
-                        images: browserViewModel.images,
-                        skipC2PA: true
-                    )
+                    performAfterCaptionFlush {
+                        metadataViewModel.writeAllPendingChanges(
+                            in: browserViewModel.currentFolderURL,
+                            images: browserViewModel.images,
+                            skipC2PA: true
+                        )
+                    }
                 }
                 Button("Write Anyway") {
-                    metadataViewModel.writeAllPendingChanges(
-                        in: browserViewModel.currentFolderURL,
-                        images: browserViewModel.images,
-                        skipC2PA: false
-                    )
+                    performAfterCaptionFlush {
+                        metadataViewModel.writeAllPendingChanges(
+                            in: browserViewModel.currentFolderURL,
+                            images: browserViewModel.images,
+                            skipC2PA: false
+                        )
+                    }
                 }
             } message: {
                 let count = pendingWriteAllC2PACount
@@ -782,13 +789,13 @@ struct ContentView: View {
                 case .archiveRAW(let format):
                     archiveSelectedRAW(as: format)
                 case .renameSelected:
-                    browserViewModel.renameSelected()
+                    performAfterCaptionFlush { browserViewModel.renameSelected() }
                 case .duplicateSelected:
-                    browserViewModel.duplicateSelectedImages()
+                    performAfterCaptionFlush { browserViewModel.duplicateSelectedImages() }
                 case .resetAllEdits:
-                    browserViewModel.confirmResetAllEdits()
+                    performAfterCaptionFlush { browserViewModel.confirmResetAllEdits() }
                 case .removeAllIPTC:
-                    browserViewModel.confirmRemoveAllIPTC()
+                    performAfterCaptionFlush { browserViewModel.confirmRemoveAllIPTC() }
                 case .showImport:
                     importViewModel.prepareForNewSession()
                     isShowingImport = true
@@ -832,6 +839,7 @@ struct ContentView: View {
             .modifier(SafetyAndCullingHandlers(
                 browserViewModel: browserViewModel,
                 commandRouter: commandRouter,
+                performAfterMetadataFlush: performAfterCaptionFlush,
                 backupEditedFolderItem: $backupEditedFolderItem
             ))
             .onReceive(NotificationCenter.default.publisher(for: .importStarted)) { notification in
@@ -850,10 +858,12 @@ struct ContentView: View {
                 case .processVariablesSelected:
                     let selected = browserViewModel.selectedImages
                     if !selected.isEmpty {
-                        metadataViewModel.processVariablesForImages(selected)
+                        performAfterCaptionFlush { metadataViewModel.processVariablesForImages(selected) }
                     }
                 case .processVariablesAll:
-                    metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
+                    performAfterCaptionFlush {
+                        metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
+                    }
                 case .showTemplatePalette:
                     switch mainViewMode.templateCommandTarget {
                     case .metadata:
@@ -883,18 +893,7 @@ struct ContentView: View {
                         }
                     }
                 case .writeAllPendingMetadata:
-                    let c2paPending = browserViewModel.images.filter { image in
-                        image.hasPendingMetadataChanges && image.hasC2PA
-                    }
-                    if !c2paPending.isEmpty {
-                        pendingWriteAllC2PACount = c2paPending.count
-                        isShowingWriteAllC2PAWarning = true
-                    } else {
-                        metadataViewModel.writeAllPendingChanges(
-                            in: browserViewModel.currentFolderURL,
-                            images: browserViewModel.images
-                        )
-                    }
+                    requestWriteAllPendingMetadata()
                 case .openCaptionWorkspace:
                     openCaptionWorkspace()
                 case .renderAndSignSelected:
@@ -1070,7 +1069,7 @@ struct ContentView: View {
                     onRequestDelete: { image in
                         browserViewModel.selectedImageIDs = [image.url]
                         browserViewModel.lastClickedImageURL = image.url
-                        browserViewModel.confirmDeleteSelectedImages()
+                        performAfterCaptionFlush { browserViewModel.confirmDeleteSelectedImages() }
                     },
                     onClose: { sourceURLs, focusedURL in
                         browserViewModel.selectedImageIDs = sourceURLs
@@ -1207,30 +1206,78 @@ struct ContentView: View {
     /// its local exit button. Route them through the same registered flush handler and leave the
     /// editor visible when persistence fails.
     private func leaveEditWorkspaceIfNeeded(_ transition: @escaping @MainActor () -> Void) {
-        if mainViewMode == .caption {
-            Task { @MainActor in
-                do {
-                    try CaptionWorkspaceFlushCoordinator.shared.flush()
-                    guard mainViewMode == .caption else { return }
-                    transition()
-                } catch {
-                    metadataViewModel.saveError = error.localizedDescription
-                }
-            }
-            return
+        performAfterCaptionFlush {
+            performAfterDevelopFlush(reason: .workspaceExit, transition)
         }
-        performAfterDevelopFlush(reason: .workspaceExit, transition)
+    }
+
+    private func requestWriteAllPendingMetadata() {
+        performAfterCaptionFlush {
+            let c2paPending = browserViewModel.images.filter {
+                $0.hasPendingMetadataChanges && $0.hasC2PA
+            }
+            if !c2paPending.isEmpty {
+                pendingWriteAllC2PACount = c2paPending.count
+                isShowingWriteAllC2PAWarning = true
+            } else {
+                metadataViewModel.writeAllPendingChanges(
+                    in: browserViewModel.currentFolderURL,
+                    images: browserViewModel.images
+                )
+            }
+        }
+    }
+
+    private func flushMetadataForTransition() throws {
+        let coordinator = CaptionWorkspaceFlushCoordinator.shared
+        if mainViewMode == .caption || mainViewMode == .metadataReview {
+            try coordinator.flush()
+        } else if coordinator.hasPendingPersistence {
+            try coordinator.flushQueuedPersistence()
+        }
+    }
+
+    private func flushMetadataForFileOperation() -> Bool {
+        do {
+            try flushMetadataForTransition()
+            return true
+        } catch {
+            if mainViewMode == .metadataReview { browserViewModel.errorMessage = error.localizedDescription }
+            else { metadataViewModel.saveError = error.localizedDescription }
+            return false
+        }
+    }
+
+    private func resumeDeadlineWorkflow(_ identifier: UUID) -> Bool {
+        do {
+            try flushMetadataForTransition()
+            pendingDeadlineResumeWorkflowIdentifier = identifier
+            isShowingDeadlineStagingActivity = false
+            mainViewMode = .deadline
+            return true
+        } catch {
+            if mainViewMode == .metadataReview { browserViewModel.errorMessage = error.localizedDescription }
+            else { metadataViewModel.saveError = error.localizedDescription }
+            return false
+        }
     }
 
     private func performAfterCaptionFlush(_ operation: @escaping @MainActor () -> Void) {
-        guard mainViewMode == .caption else { operation(); return }
+        let coordinator = CaptionWorkspaceFlushCoordinator.shared
+        let workspace = mainViewMode
+        let hasLiveEditor = workspace == .caption || workspace == .metadataReview
+        guard hasLiveEditor || coordinator.hasPendingPersistence else { operation(); return }
         Task { @MainActor in
             do {
-                try CaptionWorkspaceFlushCoordinator.shared.flush()
-                guard mainViewMode == .caption else { return }
+                try flushMetadataForTransition()
+                guard mainViewMode == workspace else { return }
                 operation()
             } catch {
-                metadataViewModel.saveError = error.localizedDescription
+                if workspace == .metadataReview {
+                    browserViewModel.errorMessage = error.localizedDescription
+                } else {
+                    metadataViewModel.saveError = error.localizedDescription
+                }
             }
         }
     }
@@ -1248,7 +1295,7 @@ struct ContentView: View {
     }
 
     private func openEditWorkspace() {
-        if mainViewMode == .caption {
+        if mainViewMode == .caption || mainViewMode == .metadataReview {
             leaveEditWorkspaceIfNeeded {
                 mainViewMode = .browser
                 openEditWorkspace()
@@ -1695,11 +1742,14 @@ struct ContentView: View {
     private func openComparisonFromFullScreen(renderEdits: Bool) {
         guard browserViewModel.isFullScreen,
               let fullScreenComparisonImages else { return }
-        comparisonImages = fullScreenComparisonImages
-        comparisonOrigin = .fullScreen
-        comparisonInitialLeftRepresentation = renderEdits ? .committedEdit : .original
-        opensComparisonAfterFullScreenDismissal = true
-        browserViewModel.isFullScreen = false
+        performAfterCaptionFlush {
+            guard browserViewModel.isFullScreen else { return }
+            comparisonImages = fullScreenComparisonImages
+            comparisonOrigin = .fullScreen
+            comparisonInitialLeftRepresentation = renderEdits ? .committedEdit : .original
+            opensComparisonAfterFullScreenDismissal = true
+            browserViewModel.isFullScreen = false
+        }
     }
 
     @ViewBuilder
@@ -2039,18 +2089,7 @@ struct ContentView: View {
         } else {
             ToolbarItem(id: "folder-write-pending", placement: .secondaryAction) {
                 Button {
-                    let c2paPending = browserViewModel.images.filter { image in
-                        image.hasPendingMetadataChanges && image.hasC2PA
-                    }
-                    if !c2paPending.isEmpty {
-                        pendingWriteAllC2PACount = c2paPending.count
-                        isShowingWriteAllC2PAWarning = true
-                    } else {
-                        metadataViewModel.writeAllPendingChanges(
-                            in: browserViewModel.currentFolderURL,
-                            images: browserViewModel.images
-                        )
-                    }
+                    requestWriteAllPendingMetadata()
                 } label: {
                     Label("Write All Pending", systemImage: "square.and.arrow.down.on.square")
                 }
@@ -2062,7 +2101,9 @@ struct ContentView: View {
 
             ToolbarItem(id: "folder-process-variables", placement: .secondaryAction) {
                 Button {
-                    metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
+                    performAfterCaptionFlush {
+                        metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
+                    }
                 } label: {
                     Label("Process Variables in Folder", systemImage: "curlybraces")
                 }
@@ -2266,6 +2307,9 @@ struct ContentView: View {
                                 viewModel: sidebarViewModel,
                                 currentFolderURL: browserViewModel.currentFolderURL,
                                 openFolder: openFolderInActivePane,
+                                closeFolder: { url in
+                                    performAfterCaptionFlush { sidebarViewModel.closeOpenFolder(url) }
+                                },
                                 revealInFinder: revealInFinder
                             )
                         }
@@ -2290,6 +2334,9 @@ struct ContentView: View {
                                 viewModel: sidebarViewModel,
                                 currentFolderURL: browserViewModel.currentFolderURL,
                                 openFolder: openFolderInActivePane,
+                                closeFolder: { url in
+                                    performAfterCaptionFlush { sidebarViewModel.closeOpenFolder(url) }
+                                },
                                 revealInFinder: revealInFinder
                             )
                         }
@@ -2351,9 +2398,7 @@ struct ContentView: View {
                         receiptLibrary: deliveryReceiptLibrary,
                         workflowActivity: deliveryWorkflowActivity,
                         onResumeWorkflow: { workflowIdentifier in
-                            pendingDeadlineResumeWorkflowIdentifier = workflowIdentifier
-                            mainViewMode = .deadline
-                            return true
+                            resumeDeadlineWorkflow(workflowIdentifier)
                         }
                     )
                     Spacer()
@@ -2644,6 +2689,7 @@ struct ContentView: View {
     }
 
     private func showAdvancedExportSelected() {
+        guard flushMetadataForFileOperation() else { return }
         guard !isRenderingEditedFolder else { return }
 
         // A Set backs selection, so derive the queue from visibleImages to preserve
@@ -2726,6 +2772,7 @@ struct ContentView: View {
     }
 
     private func renderAndSignSelected() {
+        guard flushMetadataForFileOperation() else { return }
         guard C2PASigningService.isAvailable else {
             browserViewModel.errorMessage = "c2patool not found in app bundle"
             return
@@ -2900,12 +2947,15 @@ struct ContentView: View {
     // MARK: - Copy & Paste IPTC
 
     private func copyIPTCMetadata() {
+        guard flushMetadataForFileOperation() else { return }
         guard browserViewModel.selectedImages.count == 1 else {
             browserViewModel.errorMessage = "Select a single image to copy IPTC metadata from."
             return
         }
 
-        let source = metadataViewModel.editingMetadata
+        let source = mainViewMode == .metadataReview
+            ? (browserViewModel.selectedImages.first?.metadata ?? metadataViewModel.editingMetadata)
+            : metadataViewModel.editingMetadata
         browserViewModel.copiedIPTCMetadata = IPTCMetadata(
             title: source.title,
             localizedTitles: source.localizedTitles,
@@ -2943,6 +2993,7 @@ struct ContentView: View {
     }
 
     private func pasteIPTCMetadata() {
+        guard flushMetadataForFileOperation() else { return }
         guard let copied = browserViewModel.copiedIPTCMetadata else {
             browserViewModel.errorMessage = "No IPTC metadata copied."
             return
@@ -3310,6 +3361,7 @@ struct ContentView: View {
     }
 
     private func saveSelectedAs(format: EditedImageRenderer.SaveAsFormat) {
+        guard flushMetadataForFileOperation() else { return }
         guard !isRenderingEditedFolder else { return }
         let urls = browserViewModel.selectedImages.map(\.url)
         guard !urls.isEmpty else { return }
@@ -3419,6 +3471,7 @@ struct ContentView: View {
     }
 
     private func archiveSelectedRAW(as format: RAWArchiveFormat) {
+        guard flushMetadataForFileOperation() else { return }
         guard !isRenderingEditedFolder else { return }
         let selectedRAW = browserViewModel.selectedImages
             .filter { SupportedImageFormats.isRaw(url: $0.url) }
@@ -3696,6 +3749,7 @@ struct ContentView: View {
         urls: [URL]? = nil,
         configurations: [AdvancedExportConfiguration]? = nil
     ) {
+        guard flushMetadataForFileOperation() else { return }
         guard !isRenderingEditedFolder,
               let folderURL = browserViewModel.currentFolderURL else { return }
         let urls = urls ?? browserViewModel.images.map(\.url)
@@ -3867,6 +3921,7 @@ struct ContentViewModifiers: ViewModifier {
     let mainViewMode: MainViewMode
     let commandRouter: AppCommandRouter
     let loadTechnicalMetadata: () -> Void
+    let performAfterMetadataFlush: (@escaping @MainActor () -> Void) -> Void
     @Binding var technicalMetadataCache: [URL: TechnicalMetadata]
     @Binding var technicalMetadata: TechnicalMetadata?
     @Environment(\.scenePhase) private var scenePhase
@@ -3916,7 +3971,7 @@ struct ContentViewModifiers: ViewModifier {
                             let coordinator = CaptionWorkspaceFlushCoordinator.shared
                             if coordinator.hasRegisteredHandler {
                                 try coordinator.enqueueFlush()
-                            } else if metadataViewModel.hasUnpersistedEditorChanges {
+                            } else if mainViewMode == .metadataReview || metadataViewModel.hasUnpersistedEditorChanges {
                                 throw CaptionWorkspaceFlushError.handlerUnavailable
                             }
                         }, commitConfigured: {
@@ -3926,7 +3981,11 @@ struct ContentViewModifiers: ViewModifier {
                             metadataViewModel.commitEdits(mode: mode)
                         })
                 } catch {
-                    metadataViewModel.saveError = error.localizedDescription
+                    if mainViewMode == .metadataReview {
+                        browserViewModel.errorMessage = error.localizedDescription
+                    } else {
+                        metadataViewModel.saveError = error.localizedDescription
+                    }
                 }
             }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -3936,9 +3995,10 @@ struct ContentViewModifiers: ViewModifier {
                 guard let delivery else { return }
                 switch delivery.command {
                 case .openFolder:
-                    browserViewModel.openFolder()
+                    performAfterMetadataFlush { browserViewModel.openFolder() }
                 case .openRecentFolder(let url):
-                    panes.active.loadFolder(url: url, addToOpenFolders: true)
+                    let targetPane = panes.active
+                    performAfterMetadataFlush { targetPane.loadFolder(url: url, addToOpenFolders: true) }
                 case .setRating(let rating):
                     browserViewModel.setRating(rating)
                 case .setLabel(let label):
@@ -3958,7 +4018,7 @@ struct ContentViewModifiers: ViewModifier {
                 case .openInExternalEditor:
                     openSelectedInExternalEditor()
                 case .deleteSelected:
-                    browserViewModel.confirmDeleteSelectedImages()
+                    performAfterMetadataFlush { browserViewModel.confirmDeleteSelectedImages() }
                 case .renderSelected, .advancedExportSelected, .renderAll,
                      .saveAsJPEG, .saveAsPNG, .archiveRAW,
                      .renameSelected, .duplicateSelected,
@@ -4026,7 +4086,8 @@ struct ContentViewModifiers: ViewModifier {
                         .dropSourceSnapshot(for: [url]),
                           snapshot.directories.first == url
                     else { return }
-                    panes.active.loadFolder(url: url, addToOpenFolders: true)
+                    let targetPane = panes.active
+                    performAfterMetadataFlush { targetPane.loadFolder(url: url, addToOpenFolders: true) }
                 }
             }
         }

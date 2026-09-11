@@ -83,8 +83,242 @@ private nonisolated final class FieldMutationNotificationCounter: @unchecked Sen
     func increment() { lock.withLock { count += 1 } }
 }
 
+private nonisolated final class ReviewCallerCallbacks: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callbacks: [@MainActor @Sendable () -> Void] = []
+    func schedule(_ callback: @escaping @MainActor @Sendable () -> Void) { lock.withLock { callbacks.append(callback) } }
+    @MainActor func deliver() {
+        let pending = lock.withLock { let pending = callbacks; callbacks.removeAll(); return pending }
+        pending.forEach { $0() }
+    }
+}
+
+private actor ReviewCallerBaselineSequence {
+    private(set) var count = 0
+    func load(_ image: URL, _ folder: URL) -> MetadataReviewLoadedBaseline {
+        count += 1
+        let metadata = IPTCMetadata(title: "Saved revision \(count)")
+        return .init(metadata: metadata, sidecar: MetadataSidecar(sourceFile: image.lastPathComponent,
+            pendingChanges: true, metadata: metadata, imageMetadataSnapshot: nil))
+    }
+}
+
 @Suite("Browser and Face field mutation callers", .serialized)
 struct FieldMutationCallerTests {
+    @Test("Review commit reads the current central buffer and rejects obsolete row owners")
+    @MainActor
+    func reviewCaptureOnlyAndOwnerGuards() async throws {
+        let photo = URL(fileURLWithPath: "/virtual/review-owner/photo.jpg")
+        let queue = CaptionDraftPersistenceQueue(label: "review.owner")
+        queue.enqueue(operation: { throw CaptionWorkspaceFlushError.persistenceFailed("Hold queued work") })
+        let sequence = ReviewCallerBaselineSequence()
+        let model = BrowserViewModel(metadataReviewBaselineLoader: { await sequence.load($0, $1) },
+            metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator(persistenceQueue: queue))
+        model.currentFolderURL = photo.deletingLastPathComponent()
+        model.images = [ImageFile(url: photo)]
+        await model.prepareMetadataReviewEditor(for: photo)
+        let obsoleteID = try #require(model.metadataReviewEditor(for: photo)?.id)
+        await model.prepareMetadataReviewEditor(for: photo)
+        let currentID = try #require(model.metadataReviewEditor(for: photo)?.id)
+        #expect(obsoleteID != currentID)
+        model.updateMetadataReviewText("Fresh text before another view render", field: .headline, for: photo, editorID: currentID)
+        model.updateMetadataReviewText("Old row callback", field: .headline, for: photo, editorID: obsoleteID)
+        model.commitMetadataReviewEditor(for: photo, editorID: obsoleteID)
+        #expect(queue.pendingCount == 1)
+        model.commitMetadataReviewEditor(for: photo, editorID: currentID)
+        #expect(queue.pendingCount == 2)
+        #expect(model.metadataReviewEditor(for: photo)?.previous.title == "Fresh text before another view render")
+        #expect(model.metadataReviewEditor(for: photo)?.sidecar?.metadata.title == "Fresh text before another view render")
+    }
+
+    @Test("Review freezes row admission synchronously and obsolete cleanup cannot release a newer owner")
+    @MainActor
+    func reviewSynchronousFreezeOwnership() async throws {
+        let photo = URL(fileURLWithPath: "/virtual/review-freeze/photo.jpg")
+        let queue = CaptionDraftPersistenceQueue(label: "review.freeze")
+        queue.enqueue(operation: { throw CaptionWorkspaceFlushError.persistenceFailed("Hold queued work") })
+        let sequence = ReviewCallerBaselineSequence()
+        let model = BrowserViewModel(metadataReviewBaselineLoader: { await sequence.load($0, $1) },
+            metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator(persistenceQueue: queue))
+        model.currentFolderURL = photo.deletingLastPathComponent()
+        model.images = [ImageFile(url: photo)]
+        await model.prepareMetadataReviewEditor(for: photo)
+        let editorID = try #require(model.metadataReviewEditor(for: photo)?.id)
+        model.updateMetadataReviewText("Included before review", field: .headline, for: photo, editorID: editorID)
+        let freeze = try model.beginMetadataReviewRecovery(for: photo)
+        // The async coordinator has not begun its review yet; the model already blocks input.
+        #expect(model.metadataReviewCoordinator.isReviewing(photo) == false)
+        #expect(model.isMetadataReviewFrozen(for: photo))
+        model.updateMetadataReviewText("Unexported admission-gap text", field: .headline, for: photo, editorID: editorID)
+        model.commitMetadataReviewEditor(for: photo, editorID: editorID)
+        #expect(queue.pendingCount == 2)
+        #expect(model.metadataReviewEditor(for: photo)?.draft.title == "Included before review")
+        model.endMetadataReviewRecovery(for: photo, owner: UUID())
+        #expect(model.isMetadataReviewFrozen(for: photo))
+        model.endMetadataReviewRecovery(for: photo, owner: freeze)
+        let replacement = try model.beginMetadataReviewRecovery(for: photo)
+        model.endMetadataReviewRecovery(for: photo, owner: freeze)
+        #expect(model.isMetadataReviewFrozen(for: photo))
+        model.endMetadataReviewRecovery(for: photo, owner: replacement)
+        model.updateMetadataReviewText("Accepted after cancellation", field: .headline, for: photo, editorID: editorID)
+        #expect(model.metadataReviewEditor(for: photo)?.draft.title == "Accepted after cancellation")
+    }
+
+    @Test("A delayed Review receipt rebases full live Description without consulting summarized history")
+    @MainActor
+    func reviewLiveDescriptionSurvivesReceipt() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("ReviewReceipt-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.png")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 12,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .png, properties: [:])).write(to: photo)
+        let baseline = IPTCMetadata(title: "Headline A", description: "Original full description")
+        try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: photo.lastPathComponent,
+            pendingChanges: true, metadata: baseline, imageMetadataSnapshot: nil), for: photo, in: folder)
+        let callbacks = ReviewCallerCallbacks()
+        let queue = CaptionDraftPersistenceQueue(label: "review.receipt", failureDelivery: .init(schedule: callbacks.schedule))
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let model = BrowserViewModel(metadataReviewCoordinator: coordinator)
+        model.currentFolderURL = folder
+        model.images = [ImageFile(url: photo)]
+        await model.prepareMetadataReviewEditor(for: photo)
+        let editorID = try #require(model.metadataReviewEditor(for: photo)?.id)
+        model.updateMetadataReviewText("Headline B", field: .headline, for: photo, editorID: editorID)
+        model.commitMetadataReviewEditor(for: photo, editorID: editorID)
+        try await coordinator.retryQueuedPersistence()
+        let liveDescription = String(repeating: "A full live sentence with spaces. ", count: 10).trimmingCharacters(in: .whitespaces)
+        model.updateMetadataReviewText(liveDescription, field: .description, for: photo, editorID: editorID)
+        callbacks.deliver()
+        let editor = try #require(model.metadataReviewEditor(for: photo))
+        #expect(editor.error == nil)
+        #expect(editor.previous.title == "Headline B")
+        #expect(editor.previous.description == baseline.description)
+        #expect(editor.draft.description == liveDescription)
+        #expect(model.metadataReviewText(for: .description, imageURL: photo) == liveDescription)
+        #expect(editor.latestRequestID == nil)
+    }
+
+    @Test("Review retains a partial mirror and a dependent edit with more than twenty changed fields")
+    @MainActor
+    func reviewRetainsLargeDraftAndDependentRetry() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("ReviewCaller-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.png")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 12,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .png, properties: [:])).write(to: photo)
+        let sourceBytes = try Data(contentsOf: photo)
+        let initial = MetadataSidecar(sourceFile: photo.lastPathComponent, pendingChanges: true,
+            metadata: IPTCMetadata(title: "Initial pending caption"), imageMetadataSnapshot: nil,
+            orientationDraft: MetadataOrientationDraft(expectedOrientation: 1, targetOrientation: 6))
+        let sidecars = MetadataSidecarService()
+        try sidecars.saveSidecar(initial, for: photo, in: folder)
+        let jsonURL = folder.appendingPathComponent(".photo_metadata/photo.png.meta.json")
+        var raw = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
+        raw["futureReviewMarker"] = ["keep": "opaque value"]
+        try JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys]).write(to: jsonURL)
+        let callbacks = ReviewCallerCallbacks()
+        let queue = CaptionDraftPersistenceQueue(label: "review.caller.large", failureDelivery: .init(schedule: callbacks.schedule))
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let model = BrowserViewModel(metadataReviewCoordinator: coordinator)
+        model.currentFolderURL = folder
+        model.images = [ImageFile(url: photo)]
+        await model.prepareMetadataReviewEditor(for: photo)
+        let baseline = try #require(model.metadataReviewEditor(for: photo))
+        #expect(baseline.sidecar?.imageMetadataSnapshot == nil)
+        let xmpURL = photo.deletingPathExtension().appendingPathExtension("xmp")
+        try FileManager.default.createDirectory(at: xmpURL, withIntermediateDirectories: true)
+        try Data("intentional mirror obstruction".utf8).write(to: xmpURL.appendingPathComponent("blocker"))
+        let fields: [MetadataFieldID] = [.headline, .description, .extendedDescription, .keywords, .personShown,
+            .organisationShownName, .organisationShownCode, .creator, .creatorJobTitle, .descriptionWriter,
+            .credit, .copyright, .rightsUsageTerms, .webStatementOfRights, .digitalImageGUID,
+            .imageSupplierImageID, .jobId, .city, .sublocation, .provinceState, .country,
+            .countryCode, .event, .instructions, .source]
+        var first = baseline.draft
+        for field in fields { field.setTextValue(field == .countryCode ? "NOR" : "Value \(field.rawValue)", in: &first) }
+        try #require(MetadataHistoryEntry.changes(from: baseline.draft, to: first, timestamp: Date()).count > 20)
+        model.saveMetadataReviewEdit(first, for: photo)
+        do { try await coordinator.retryQueuedPersistence(); Issue.record("Expected the obstructed mirror to fail") } catch { }
+        #expect(queue.pendingCount == 1)
+        var second = first
+        second.title = "Final dependent headline"
+        model.saveMetadataReviewEdit(second, for: photo)
+        #expect(queue.pendingCount == 2)
+        callbacks.deliver()
+        #expect(model.metadataReviewEditor(for: photo)?.draft.title == second.title)
+        #expect(model.metadataReviewEditor(for: photo)?.error == nil)
+        let savedFirst = try #require(sidecars.loadSidecar(for: photo, in: folder))
+        #expect(savedFirst.metadata.title == first.title)
+        #expect(savedFirst.history.count == 20)
+        try FileManager.default.removeItem(at: xmpURL)
+        try await coordinator.retryQueuedPersistence()
+        callbacks.deliver()
+        #expect(queue.pendingCount == 0)
+        let final = try #require(sidecars.loadSidecar(for: photo, in: folder))
+        for field in fields { #expect(field.historyValue(in: final.metadata) == field.historyValue(in: second)) }
+        #expect(final.history.count == 20)
+        #expect(final.history.last?.newValue == second.title)
+        #expect(final.imageMetadataSnapshot == nil)
+        #expect(final.orientationDraft == initial.orientationDraft)
+        #expect(try Data(contentsOf: photo) == sourceBytes)
+        let finalRaw = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
+        #expect((finalRaw["futureReviewMarker"] as? [String: String])?["keep"] == "opaque value")
+        #expect(XMPSidecarService().loadSidecar(for: photo)?.title == second.title)
+        #expect(model.metadataReviewEditor(for: photo)?.latestRequestID == nil)
+        #expect(model.metadataReviewEditor(for: photo)?.draft.title == second.title)
+    }
+
+    @Test("Review raw spaces and token delimiters survive row buffers and clean reloads preserve dirty drafts")
+    @MainActor
+    func reviewRawBuffersAndCleanReload() async throws {
+        let sequence = ReviewCallerBaselineSequence()
+        let photo = URL(fileURLWithPath: "/virtual/review-buffers/photo.jpg")
+        let model = BrowserViewModel(metadataReviewBaselineLoader: { await sequence.load($0, $1) },
+            metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator())
+        model.currentFolderURL = photo.deletingLastPathComponent()
+        model.images = [ImageFile(url: photo)]
+        await model.prepareMetadataReviewEditor(for: photo)
+        #expect(model.metadataReviewEditor(for: photo)?.draft.title == "Saved revision 1")
+        await model.prepareMetadataReviewEditor(for: photo)
+        #expect(model.metadataReviewEditor(for: photo)?.draft.title == "Saved revision 2")
+        model.updateMetadataReviewText("Words with a trailing ", field: .headline, for: photo)
+        model.updateMetadataReviewText("one, two, ", field: .keywords, for: photo)
+        #expect(model.metadataReviewText(for: .headline, imageURL: photo) == "Words with a trailing ")
+        #expect(model.metadataReviewText(for: .keywords, imageURL: photo) == "one, two, ")
+        #expect(model.metadataReviewEditor(for: photo)?.draft.keywords == ["one", "two"])
+        await model.prepareMetadataReviewEditor(for: photo)
+        #expect(await sequence.count == 2)
+        #expect(model.metadataReviewText(for: .headline, imageURL: photo) == "Words with a trailing ")
+    }
+
+    @Test("A direct Browser deletion cannot bypass retained Review buffers or the shared failed queue")
+    @MainActor
+    func reviewDirectMutationUsesSharedBarrier() async throws {
+        let photo = URL(fileURLWithPath: "/virtual/review-barrier/photo.jpg")
+        let queue = CaptionDraftPersistenceQueue(label: "review.caller.barrier")
+        queue.enqueue(operation: { throw CaptionWorkspaceFlushError.persistenceFailed("Earlier queued failure") })
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let sequence = ReviewCallerBaselineSequence()
+        let model = BrowserViewModel(metadataReviewBaselineLoader: { await sequence.load($0, $1) }, metadataReviewCoordinator: coordinator)
+        model.currentFolderURL = photo.deletingLastPathComponent()
+        model.images = [ImageFile(url: photo)]
+        model.selectedImageIDs = [photo]
+        await model.prepareMetadataReviewEditor(for: photo)
+        model.updateMetadataReviewText("Buffered before deletion", field: .headline, for: photo)
+        model.deleteSelectedImages()
+        #expect(queue.pendingCount == 2)
+        #expect(model.images.first?.url == photo)
+        #expect(model.errorMessage?.contains("Earlier queued failure") == true)
+        #expect(model.metadataReviewEditor(for: photo)?.draft.title == "Buffered before deletion")
+    }
+
     @Test("Browser folder reload distinguishes absent and explicitly cleared XMP labels", arguments: [false, true])
     @MainActor
     func browserReloadRespectsExplicitLabelClear(explicitClear: Bool) async throws {

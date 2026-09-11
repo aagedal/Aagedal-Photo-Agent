@@ -1901,6 +1901,25 @@ extension MetadataCarrierOwnershipTests {
 
 @Suite("Automatic metadata lifecycle", .serialized)
 struct MetadataAutomaticSaveBoundaryTests {
+    @Test("Metadata Review lifecycle captures its owned buffers without embedding the sidebar editor")
+    @MainActor
+    func reviewLifecycleUsesSharedDraftBoundary() async throws {
+        let fixture = try await fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        fixture.model.editingMetadata.title = "Unrelated sidebar buffer"
+        fixture.model.markChanged()
+        var captures = 0
+        var physicalCommits = 0
+        for trigger in [MetadataAutomaticSaveBoundary.Trigger.selectionChange, .deactivation] {
+            MetadataAutomaticSaveBoundary.perform(trigger, in: .metadataReview,
+                viewModel: fixture.model, captionFlush: { captures += 1 },
+                commitConfigured: { physicalCommits += 1 })
+        }
+        #expect(captures == 1)
+        #expect(physicalCommits == 0)
+        #expect(fixture.model.editingMetadata.title == "Unrelated sidebar buffer")
+    }
+
     @MainActor
     private func fixture() async throws -> (folder: URL, image: URL, model: MetadataViewModel) {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("LifecycleMetadata-\(UUID().uuidString)")
@@ -1999,15 +2018,15 @@ struct MetadataAutomaticSaveBoundaryTests {
         #expect(try Data(contentsOf: fixture.image) == imageBefore)
     }
 
-    @Test("Caption capture failure surfaces instead of falling back to image write")
+    @Test("Editorial workspace capture failure surfaces instead of falling back to image write", arguments: [false, true])
     @MainActor
-    func captionFailureDoesNotEmbed() async throws {
+    func captionFailureDoesNotEmbed(isReview: Bool) async throws {
         let fixture = try await fixture()
         defer { try? FileManager.default.removeItem(at: fixture.folder) }
         fixture.model.editingMetadata.title = "New Caption edit"
         fixture.model.markChanged()
         #expect(throws: CaptionWorkspaceFlushError.handlerUnavailable) {
-            try MetadataAutomaticSaveBoundary.perform(.deactivation, in: .caption, viewModel: fixture.model,
+            try MetadataAutomaticSaveBoundary.perform(.deactivation, in: isReview ? .metadataReview : .caption, viewModel: fixture.model,
                 captionFlush: { throw CaptionWorkspaceFlushError.handlerUnavailable },
                 commitConfigured: { Issue.record("Failed Caption flush fell back to image write") })
         }

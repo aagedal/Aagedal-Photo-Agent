@@ -12,7 +12,8 @@ nonisolated struct CaptionDraftPersistence: Sendable {
     var folderURL: URL { request.folderURL }
     var sidecar: MetadataSidecar { request.sidecar }
 
-    func persist() throws {
+    @discardableResult
+    func persist() throws -> MetadataSidecar {
         // DispatchQueue.sync may run a durable retry inline on the caller's MainActor task.
         // Give this synchronous-to-async bridge an independent task context so the semaphore
         // cannot block the executor needed by its own persistence work.
@@ -29,26 +30,29 @@ nonisolated struct CaptionDraftPersistence: Sendable {
                         persistence.failure?.message ?? "The captured Caption draft did not finish saving."
                     )
                 }
-                result.set(.success(()))
+                guard let installed = persistence.installedSidecar else {
+                    throw CaptionWorkspaceFlushError.persistenceFailed("The captured metadata draft has no verified save receipt.")
+                }
+                result.set(.success(installed))
             } catch {
                 result.set(.failure(error))
             }
             completion.signal()
         }
         completion.wait()
-        try result.get().get()
+        return try result.get().get()
     }
 }
 
 nonisolated private final class CaptionPersistenceResult: @unchecked Sendable {
     private let lock = NSLock()
-    private var value: Result<Void, any Error>?
+    private var value: Result<MetadataSidecar, any Error>?
 
-    nonisolated func set(_ newValue: Result<Void, any Error>) {
+    nonisolated func set(_ newValue: Result<MetadataSidecar, any Error>) {
         lock.withLock { value = newValue }
     }
 
-    nonisolated func get() -> Result<Void, any Error> {
+    nonisolated func get() -> Result<MetadataSidecar, any Error> {
         lock.withLock { value! }
     }
 }
@@ -122,6 +126,10 @@ nonisolated private struct CaptionRecoveryRequest: Encodable {
     let baselineRecordExisted: Bool
     let changes: [MetadataHistoryEntry]
     let jsonWasCommitted: Bool
+    let creationEvidence: MetadataSidecarReplayCreationEvidence?
+    let creationEvidenceInvalidated: Bool
+    let creationMirrorCompleted: Bool
+    let creationInstalledXMPData: Data?
     init(id: UUID, persistence: CaptionDraftPersistence) {
         let request = persistence.request
         requestID = id
@@ -135,6 +143,10 @@ nonisolated private struct CaptionRecoveryRequest: Encodable {
         baselineRecordExisted = request.baselineRecordExisted
         changes = request.changes
         jsonWasCommitted = request.receipt.hasCommitted
+        creationEvidence = request.creationEvidence
+        creationEvidenceInvalidated = request.receipt.creationEvidenceInvalidated
+        creationMirrorCompleted = request.receipt.creationMirrorCompleted
+        creationInstalledXMPData = request.receipt.creationInstalledXMPData
     }
 }
 
@@ -177,7 +189,8 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
     private struct Item: @unchecked Sendable {
         let id: UUID
         let persistence: CaptionDraftPersistence?
-        let operation: @Sendable () throws -> Void
+        let operation: @Sendable () throws -> MetadataSidecar?
+        let onSuccess: @MainActor @Sendable (UUID, MetadataSidecar) -> Void
         let onFailure: @MainActor @Sendable (String) -> Void
         let photoURL: URL?
     }
@@ -191,6 +204,7 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
     private var review: CaptionConflictSnapshot?
     private let publicationLock = NSLock()
     private var publishedFailure: CaptionQueueFailure?
+    private var admittedPendingCount = 0
     private var stateHandler: (@MainActor @Sendable (CaptionQueueFailure?) -> Void)?
 
     init(label: String = "com.aagedal.photo-agent.caption-persistence",
@@ -206,8 +220,10 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
 
     @discardableResult
     func enqueue(_ persistence: CaptionDraftPersistence,
-                 onFailure: @escaping @MainActor @Sendable (String) -> Void) -> UUID {
-        enqueue(persistence: persistence, operation: { try persistence.persist() }, onFailure: onFailure)
+                 onFailure: @escaping @MainActor @Sendable (String) -> Void,
+                 onSuccess: @escaping @MainActor @Sendable (UUID, MetadataSidecar) -> Void = { _, _ in }) -> UUID {
+        enqueueItem(persistence: persistence, operation: { try persistence.persist() },
+            onFailure: onFailure, onSuccess: onSuccess)
     }
 
     /// Retained-request operation injection exercises recovery without relying on filesystem faults.
@@ -215,8 +231,17 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
     func enqueue(persistence: CaptionDraftPersistence? = nil,
                  operation: @escaping @Sendable () throws -> Void,
                  onFailure: @escaping @MainActor @Sendable (String) -> Void = { _ in }) -> UUID {
-        let item = Item(id: UUID(), persistence: persistence, operation: operation, onFailure: onFailure,
+        enqueueItem(persistence: persistence, operation: { try operation(); return nil },
+            onFailure: onFailure, onSuccess: { _, _ in })
+    }
+
+    private func enqueueItem(persistence: CaptionDraftPersistence?,
+                 operation: @escaping @Sendable () throws -> MetadataSidecar?,
+                 onFailure: @escaping @MainActor @Sendable (String) -> Void,
+                 onSuccess: @escaping @MainActor @Sendable (UUID, MetadataSidecar) -> Void) -> UUID {
+        let item = Item(id: UUID(), persistence: persistence, operation: operation, onSuccess: onSuccess, onFailure: onFailure,
             photoURL: persistence.map { $0.imageURL.standardizedFileURL.resolvingSymlinksInPath() })
+        publicationLock.withLock { admittedPendingCount += 1 }
         queue.async { [self] in
             // Normal admission is frozen before editor capture by the coordinator. A previously
             // captured request arriving late must still be retained; it invalidates the export set.
@@ -247,6 +272,8 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
     }
 
     var pendingCount: Int { queue.sync { items.count } }
+    /// Includes work admitted before its queue block starts and the in-flight head, without waiting for I/O.
+    var hasPendingWork: Bool { publicationLock.withLock { admittedPendingCount > 0 } }
     var currentFailure: CaptionQueueFailure? { publicationLock.withLock { publishedFailure } }
 
     func beginReview(_ expected: CaptionQueueFailure) async throws -> CaptionConflictSnapshot {
@@ -303,6 +330,7 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
             }
             let ids = Set(snapshot.requestIDs)
             items.removeAll { ids.contains($0.id) }
+            publicationLock.withLock { admittedPendingCount -= ids.count }
             generation &+= 1
             photoGenerations[snapshot.photoURL, default: 0] &+= 1
             failure = nil
@@ -382,10 +410,16 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
         else if failure != nil { return }
         while let item = items.first {
             do {
-                try item.operation()
+                let installed = try item.operation()
                 items.removeFirst()
+                publicationLock.withLock { admittedPendingCount -= 1 }
                 generation &+= 1
                 if let photo = item.photoURL { photoGenerations[photo, default: 0] &+= 1 }
+                if let installed {
+                    // The callback carries the exact verified transaction receipt. A newer write
+                    // may already exist when delivered; callers must gate UI publication by ID.
+                    failureDelivery.schedule { @MainActor in item.onSuccess(item.id, installed) }
+                }
             } catch {
                 failure = error
                 failureID = item.id
@@ -674,6 +708,7 @@ final class CaptionWorkspaceFlushCoordinator {
     private let persistenceQueue: CaptionDraftPersistenceQueue
 
     var hasRegisteredHandler: Bool { handler != nil }
+    var hasPendingPersistence: Bool { persistenceQueue.hasPendingWork }
     var currentQueueFailure: CaptionQueueFailure? { persistenceQueue.currentFailure }
 
     init(persistenceQueue: CaptionDraftPersistenceQueue = CaptionDraftPersistenceQueue()) {
@@ -714,6 +749,22 @@ final class CaptionWorkspaceFlushCoordinator {
     func retryQueuedPersistence() async throws {
         try await persistenceQueue.drainAsync()
         failure = persistenceQueue.currentFailure
+    }
+
+    /// Admit an already captured Review/editor request into the shared durable FIFO. Admission
+    /// occurs before optimistic editor state advances; the exact photo is frozen during recovery.
+    @discardableResult
+    func enqueueCapturedDraft(_ persistence: CaptionDraftPersistence,
+        onFailure: @escaping @MainActor @Sendable (String) -> Void = { _ in },
+        onSuccess: @escaping @MainActor @Sendable (UUID, MetadataSidecar) -> Void = { _, _ in }
+    ) throws -> UUID {
+        guard !isReviewing(persistence.imageURL) else { throw CaptionConflictRecoveryError.reviewInProgress }
+        return persistenceQueue.enqueue(persistence, onFailure: onFailure, onSuccess: onSuccess)
+    }
+
+    /// Drain already captured work when no editor handler is mounted (for example, after leaving Review).
+    func flushQueuedPersistence() throws {
+        try persistenceQueue.drain()
     }
 
     func register(
@@ -824,5 +875,53 @@ nonisolated enum CaptionReadinessResolver {
         if report.blockerCount > 0 { return .blocked }
         if report.warningCount > 0 { return .warnings }
         return .ready
+    }
+}
+
+
+/// Capture only complete editorial snapshots; technical fields retain their existing carriers.
+nonisolated enum MetadataReviewDraftCapture {
+    @MetadataSidecarFilesystemActor
+    static func loadBaseline(for imageURL: URL, in folderURL: URL) async throws -> MetadataSidecar? {
+        try Task.checkCancellation()
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
+            try MetadataSidecarService().loadOwnedSidecarForMutation(for: imageURL, in: folderURL)
+        }
+    }
+
+    static func capture(previous: IPTCMetadata, edited: IPTCMetadata, baselineSidecar: MetadataSidecar?,
+                        imageURL: URL, folderURL: URL, timestamp: Date = Date(),
+                        creationEvidence: MetadataSidecarReplayCreationEvidence? = nil) throws -> CaptionDraftPersistence? {
+        if let baselineSidecar {
+            guard baselineSidecar.sourceFile == imageURL.lastPathComponent,
+                  try editorialBytes(baselineSidecar.metadata) == editorialBytes(previous) else {
+                throw CaptionWorkspaceFlushError.persistenceFailed(
+                    "The Metadata Review baseline changed. The visible edit was retained; reload the saved metadata before capturing it again.")
+            }
+        }
+        guard try editorialBytes(previous) != editorialBytes(edited) else { return nil }
+        if baselineSidecar == nil, creationEvidence == nil {
+            throw CaptionWorkspaceFlushError.persistenceFailed("The first Metadata Review draft requires a verified photo and XMP baseline.")
+        }
+        let changes = MetadataHistoryEntry.changes(from: previous, to: edited, timestamp: timestamp)
+        guard !changes.isEmpty else {
+            throw CaptionWorkspaceFlushError.persistenceFailed("This Metadata Review change cannot be represented as an editorial draft.")
+        }
+        let baselineHistory = baselineSidecar?.history ?? []
+        var history = baselineHistory + changes
+        history.trimToHistoryLimit()
+        let sidecar = MetadataSidecar(sourceFile: imageURL.lastPathComponent, lastModified: timestamp,
+            pendingChanges: true, metadata: edited,
+            imageMetadataSnapshot: baselineSidecar == nil ? previous : baselineSidecar?.imageMetadataSnapshot,
+            history: history, orientationDraft: baselineSidecar?.orientationDraft)
+        return CaptionDraftPersistence(request: .init(sidecar: sidecar,
+            baselineMetadata: previous, baselineHistory: baselineHistory,
+            baselineRecordExisted: baselineSidecar != nil, changes: changes,
+            imageURL: imageURL, folderURL: folderURL, creationEvidence: creationEvidence))
+    }
+
+    private static func editorialBytes(_ metadata: IPTCMetadata) throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(metadata)
     }
 }

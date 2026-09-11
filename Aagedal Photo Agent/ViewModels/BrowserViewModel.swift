@@ -2,6 +2,26 @@ import Foundation
 import AppKit
 import os
 
+nonisolated struct MetadataReviewLoadedBaseline: Sendable {
+    let metadata: IPTCMetadata
+    let sidecar: MetadataSidecar?
+    var creationEvidence: MetadataSidecarReplayCreationEvidence? = nil
+}
+
+struct MetadataReviewEditorState {
+    let id: UUID
+    let imageURL: URL
+    let folderURL: URL
+    var previous: IPTCMetadata
+    var draft: IPTCMetadata
+    var sidecar: MetadataSidecar?
+    var latestRequestID: UUID?
+    var latestCaptureID: UUID?
+    var creationEvidence: MetadataSidecarReplayCreationEvidence?
+    var textBuffers: [MetadataFieldID: String] = [:]
+    var error: String?
+}
+
 enum SidebarTree: Hashable {
     case favorites(rootID: UUID)
     case open
@@ -234,6 +254,13 @@ final class BrowserViewModel {
     @ObservationIgnored private let injectedFieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)?
     @ObservationIgnored private let fieldMutationModeResolver: @MainActor (Bool, Bool) -> MetadataWriteMode
     private(set) var fieldMutationResults: [MetadataFieldMutationWriteResult] = []
+    private(set) var metadataReviewEditors: [String: MetadataReviewEditorState] = [:]
+    private(set) var metadataReviewLoading: Set<String> = []
+    private(set) var metadataReviewLoadErrors: [String: String] = [:]
+    private var metadataReviewFreezeOwners: [String: UUID] = [:]
+    @ObservationIgnored private var metadataReviewLoadIDs: [String: UUID] = [:]
+    @ObservationIgnored private let metadataReviewBaselineLoader: (@Sendable (URL, URL) async throws -> MetadataReviewLoadedBaseline)?
+    let metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator
     @ObservationIgnored private var batchReadTask: Task<Void, Never>?
     @ObservationIgnored private var removeIPTCPreflightTask: Task<Void, Never>?
     @ObservationIgnored private var removeIPTCPreflightRequestID: UUID?
@@ -286,9 +313,13 @@ final class BrowserViewModel {
          fieldMutationModeResolver: @escaping @MainActor (Bool, Bool) -> MetadataWriteMode = {
              MetadataWriteMode.current(forC2PA: $0, isRaw: $1)
          },
+         metadataReviewBaselineLoader: (@Sendable (URL, URL) async throws -> MetadataReviewLoadedBaseline)? = nil,
+         metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator = .shared,
          refreshSidecarLoader: @escaping @Sendable (URL) async -> [URL: MetadataSidecar] = {
              await MetadataSidecarService().loadAllSidecars(in: $0)
          }) {
+        self.metadataReviewBaselineLoader = metadataReviewBaselineLoader
+        self.metadataReviewCoordinator = metadataReviewCoordinator
         self.injectedFieldMutationWriter = fieldMutationWriter
         self.fieldMutationModeResolver = fieldMutationModeResolver
         self.refreshSidecarLoader = refreshSidecarLoader
@@ -2011,6 +2042,7 @@ final class BrowserViewModel {
     /// subfolder, along with their JSON and XMP sidecars. The blocking bundle moves cross the
     /// browser's serialized filesystem actor before the current folder is reloaded.
     func moveRejectedToFolder() {
+        guard flushMetadataReviewBeforeMutation() else { return }
         guard let folderURL = currentFolderURL else { return }
         let rejectedURLs = visibleImages.filter { $0.colorLabel == .trash }.map(\.url)
         guard !rejectedURLs.isEmpty else { return }
@@ -2774,6 +2806,7 @@ final class BrowserViewModel {
     }
 
     func renamePendingSubfolder() {
+        guard flushMetadataReviewBeforeMutation() else { return }
         guard let oldURL = pendingRenameSubfolderURL else { return }
         pendingRenameSubfolderURL = nil
         let trimmed: String
@@ -2912,6 +2945,7 @@ final class BrowserViewModel {
     // MARK: - Move Folder
 
     func moveFolder(_ sourceURL: URL, into destinationURL: URL) {
+        guard flushMetadataReviewBeforeMutation() else { return }
         let sourcePath = sourceURL.path(percentEncoded: false)
         let destPath = destinationURL.path(percentEncoded: false)
 
@@ -3158,63 +3192,230 @@ final class BrowserViewModel {
         }
     }
 
-    /// Saves an inline edit from Metadata Review as the same pending JSON/XMP sidecar record used
-    /// by the metadata panel. Updating the in-memory image first keeps the review list responsive.
+    nonisolated static func metadataReviewKey(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    func metadataReviewEditor(for url: URL) -> MetadataReviewEditorState? {
+        metadataReviewEditors[Self.metadataReviewKey(url)]
+    }
+
+    var metadataReviewSourceGeneration: UUID { fieldMutationDisplayID }
+
+    func prepareMetadataReviewEditor(for url: URL) async {
+        let key = Self.metadataReviewKey(url)
+        if let editor = metadataReviewEditors[key] {
+            guard editor.latestRequestID == nil, editor.draft == editor.previous,
+                  editor.textBuffers.isEmpty else { return }
+            metadataReviewEditors[key] = nil
+        }
+        guard !metadataReviewLoading.contains(key),
+              let folder = currentFolderURL else { return }
+        let id = UUID()
+        metadataReviewLoadIDs[key] = id
+        metadataReviewLoading.insert(key)
+        defer { if metadataReviewLoadIDs[key] == id { metadataReviewLoading.remove(key) } }
+        metadataReviewLoadErrors[key] = nil
+        let reader = metadataReadService
+        do {
+            let baseline: MetadataReviewLoadedBaseline
+            if let loader = metadataReviewBaselineLoader { baseline = try await loader(url, folder) }
+            else {
+                let before = try await SourceImageRevision.capture(at: url)
+                guard let embedded = try await reader.readBatchFullMetadata(urls: [url])[url] else {
+                    throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path])
+                }
+                let sidecar = try await MetadataReviewDraftCapture.loadBaseline(for: url, in: folder)
+                let loaded = try await Task.detached { () throws -> (IPTCMetadata, Data?) in
+                    let xmp = XMPSidecarService()
+                    let data = try xmp.fieldMutationData(for: url)
+                    var merged = embedded
+                    if let data {
+                        guard let parsed = xmp.loadSidecar(fromData: data, imageAspect: { ImagePixelAspect.aspect(at: url) }) else {
+                            throw CocoaError(.fileReadCorruptFile)
+                        }
+                        merged = parsed.hasDescriptiveContent ? embedded.replacingDescriptiveFields(from: parsed) : embedded.merged(preferring: parsed)
+                    }
+                    return (sidecar?.metadata ?? merged, data)
+                }.value
+                let after = try await SourceImageRevision.capture(at: url)
+                guard before.relationship(to: after) == .exactRevision else {
+                    throw CaptionWorkspaceFlushError.persistenceFailed("The photo changed while loading. Reload its metadata before editing.")
+                }
+                baseline = MetadataReviewLoadedBaseline(metadata: loaded.0, sidecar: sidecar,
+                    creationEvidence: sidecar == nil ? .init(sourceRevision: after, xmpData: loaded.1) : nil)
+            }
+            guard metadataReviewLoadIDs[key] == id, !Task.isCancelled else { return }
+            metadataReviewEditors[key] = MetadataReviewEditorState(id: id, imageURL: url, folderURL: folder,
+                previous: baseline.metadata, draft: baseline.metadata, sidecar: baseline.sidecar,
+                creationEvidence: baseline.creationEvidence)
+        } catch {
+            if metadataReviewLoadIDs[key] == id { metadataReviewLoadErrors[key] = error.localizedDescription }
+        }
+    }
+
+    func updateMetadataReviewDraft(_ edited: IPTCMetadata, for url: URL) {
+        let key = Self.metadataReviewKey(url)
+        guard metadataReviewEditors[key] != nil, !isMetadataReviewFrozen(for: url) else { return }
+        metadataReviewEditors[key]?.draft = edited
+    }
+
+    func metadataReviewText(for field: MetadataFieldID, imageURL: URL) -> String {
+        guard let editor = metadataReviewEditor(for: imageURL) else { return "" }
+        return editor.textBuffers[field] ?? field.textValue(in: editor.draft) ?? ""
+    }
+
+    func updateMetadataReviewText(_ text: String, field: MetadataFieldID, for url: URL, editorID: UUID? = nil) {
+        let key = Self.metadataReviewKey(url)
+        guard var editor = metadataReviewEditors[key], !isMetadataReviewFrozen(for: url),
+              editorID == nil || editor.id == editorID else { return }
+        editor.textBuffers[field] = text
+        field.setTextValue(text, in: &editor.draft)
+        metadataReviewEditors[key] = editor
+    }
+
+    func commitMetadataReviewEditor(for url: URL, editorID: UUID) {
+        guard metadataReviewEditor(for: url)?.id == editorID, !isMetadataReviewFrozen(for: url) else { return }
+        do { try captureMetadataReviewDrafts(for: url) }
+        catch { metadataReviewEditors[Self.metadataReviewKey(url)]?.error = error.localizedDescription }
+    }
+
+    func isMetadataReviewFrozen(for url: URL) -> Bool {
+        metadataReviewFreezeOwners[Self.metadataReviewKey(url)] != nil || metadataReviewCoordinator.isReviewing(url)
+    }
+
+    /// Freeze synchronously before capturing the final live buffer, with an owner token that
+    /// prevents an obsolete view's cleanup from releasing a later review's admission barrier.
+    func beginMetadataReviewRecovery(for url: URL) throws -> UUID {
+        let key = Self.metadataReviewKey(url)
+        guard !isMetadataReviewFrozen(for: url) else { throw CaptionConflictRecoveryError.reviewInProgress }
+        let owner = UUID()
+        metadataReviewFreezeOwners[key] = owner
+        do { try captureMetadataReviewDrafts(for: url) }
+        catch { metadataReviewFreezeOwners[key] = nil; throw error }
+        return owner
+    }
+
+    func endMetadataReviewRecovery(for url: URL, owner: UUID) {
+        let key = Self.metadataReviewKey(url)
+        if metadataReviewFreezeOwners[key] == owner { metadataReviewFreezeOwners[key] = nil }
+    }
+
+    static var metadataReviewCompositionIsCommitted: Bool {
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return true }
+        return !editor.hasMarkedText()
+    }
+
+    /// Retained row buffers are captured before navigation/quit or review, even after lazy rows unmount.
+    func captureMetadataReviewDrafts(for photo: URL? = nil) throws {
+        guard Self.metadataReviewCompositionIsCommitted else {
+            throw CaptionWorkspaceFlushError.persistenceFailed("Finish the active text composition before saving or reviewing queued edits.")
+        }
+        let key = photo.map(Self.metadataReviewKey)
+        for editor in metadataReviewEditors.values.sorted(by: { $0.imageURL.path < $1.imageURL.path })
+            where key == nil || Self.metadataReviewKey(editor.imageURL) == key {
+            try captureMetadataReviewDraft(for: editor.imageURL)
+        }
+    }
+
     func saveMetadataReviewEdit(_ edited: IPTCMetadata, for url: URL) {
-        guard let folderURL = currentFolderURL,
-              let index = images.firstIndex(where: { $0.url == url }) else { return }
-        let previous = images[index].metadata ?? IPTCMetadata()
-        guard edited != previous else { return }
+        updateMetadataReviewDraft(edited, for: url)
+        do { try captureMetadataReviewDrafts(for: url) }
+        catch { metadataReviewEditors[Self.metadataReviewKey(url)]?.error = error.localizedDescription }
+    }
 
+    private func captureMetadataReviewDraft(for url: URL) throws {
+        let key = Self.metadataReviewKey(url)
+        guard var editor = metadataReviewEditors[key],
+              let captured = try MetadataReviewDraftCapture.capture(previous: editor.previous, edited: editor.draft,
+                baselineSidecar: editor.sidecar, imageURL: editor.imageURL, folderURL: editor.folderURL,
+                creationEvidence: editor.creationEvidence) else { return }
+        guard currentFolderURL.map(Self.metadataReviewKey) != Self.metadataReviewKey(editor.folderURL)
+            || images.contains(where: { Self.metadataReviewKey($0.url) == key }) else {
+            throw CaptionWorkspaceFlushError.persistenceFailed("This photo is no longer in the current folder. Its unsaved Review draft was retained.")
+        }
+        let editorID = editor.id
+        let captureID = UUID()
+        let requestID = try metadataReviewCoordinator.enqueueCapturedDraft(captured, onFailure: { [weak self] message in
+            guard let self, self.metadataReviewEditors[key]?.id == editorID,
+                  self.metadataReviewEditors[key]?.latestCaptureID == captureID else { return }
+            // The global queue failure identifies its exact request/photo; row state remains retained.
+            self.metadataReviewEditors[key]?.error = message
+        }, onSuccess: { [weak self] requestID, installed in
+            self?.acceptMetadataReviewReceipt(installed, requestID: requestID, editorID: editorID, key: key)
+        })
+        editor.previous = captured.sidecar.metadata
+        editor.sidecar = captured.sidecar
+        editor.latestRequestID = requestID
+        editor.latestCaptureID = captureID
+        editor.creationEvidence = nil
+        editor.textBuffers = [:]
+        editor.error = nil
+        metadataReviewEditors[key] = editor
+        publishMetadataReviewEditor(editor)
+    }
+
+    private func acceptMetadataReviewReceipt(_ installed: MetadataSidecar, requestID: UUID, editorID: UUID, key: String) {
+        guard var editor = metadataReviewEditors[key], editor.id == editorID, editor.latestRequestID == requestID else { return }
+        // Rebase only the still-live field deltas onto the authoritative receipt, preserving
+        // unrelated fields a preceding independent writer added while persistence was pending.
+        let liveFields = MetadataFieldID.userSelectable.filter {
+            $0.historyValue(in: editor.previous) != $0.historyValue(in: editor.draft)
+        }
+        var draft = installed.metadata
+        guard liveFields.allSatisfy({ field in
+            guard field.historyValue(in: draft) == field.historyValue(in: editor.previous) else { return false }
+            field.setHistoryValue(field.historyValue(in: editor.draft), in: &draft)
+            return true
+        }) else {
+            editor.error = "Saved metadata changed while this row was edited. The visible draft was retained."
+            metadataReviewEditors[key] = editor
+            return
+        }
+        editor.previous = installed.metadata
+        editor.sidecar = installed
+        editor.draft = draft
+        editor.error = nil
+        editor.latestRequestID = nil
+        metadataReviewEditors[key] = editor
+        publishMetadataReviewEditor(editor)
+    }
+
+    private func publishMetadataReviewEditor(_ editor: MetadataReviewEditorState) {
+        guard currentFolderURL.map(Self.metadataReviewKey) == Self.metadataReviewKey(editor.folderURL),
+              let index = images.firstIndex(where: { Self.metadataReviewKey($0.url) == Self.metadataReviewKey(editor.imageURL) }) else { return }
         var updated = images
-        updated[index].metadata = edited
-        updated[index].keywords = edited.keywords
-        updated[index].personShown = edited.personShown
-        updated[index].hasPendingMetadataChanges = true
-        updated[index].pendingFieldNames = MetadataFieldID.userSelectable.compactMap { field in
-            field.historyValue(in: previous) != field.historyValue(in: edited) ? field.displayName : nil
-        }
+        updated[index].metadata = editor.draft
+        updated[index].keywords = editor.draft.keywords
+        updated[index].personShown = editor.draft.personShown
+        updated[index].hasPendingMetadataChanges = editor.sidecar?.pendingChanges == true || editor.draft != editor.previous
+        updated[index].pendingFieldNames = extractPendingFieldNames(from: editor.sidecar)
         images = updated
+    }
 
-        let existing = sidecarService.loadSidecar(for: url, in: folderURL)
-        var history = existing?.history ?? []
-        let now = Date()
-        for field in MetadataFieldID.userSelectable {
-            let old = field.historyValue(in: previous)
-            let new = field.historyValue(in: edited)
-            if old != new {
-                history.append(MetadataHistoryEntry(
-                    timestamp: now,
-                    fieldID: field,
-                    oldValue: old,
-                    newValue: new
-                ))
-            }
+    func finishMetadataReviewDiscard(for photo: URL, editorID: UUID?) async {
+        let key = Self.metadataReviewKey(photo)
+        guard metadataReviewEditors[key]?.id == editorID else { return }
+        metadataReviewEditors[key] = nil
+        metadataReviewLoadIDs[key] = nil
+        metadataReviewLoadErrors[key] = nil
+        if selectedImageIDs.contains(where: { Self.metadataReviewKey($0) == key }),
+           images.contains(where: { Self.metadataReviewKey($0.url) == key }) {
+            await prepareMetadataReviewEditor(for: photo)
+            if let editor = metadataReviewEditors[key] { publishMetadataReviewEditor(editor) }
         }
-        history.trimToHistoryLimit()
-        let record = MetadataSidecar(
-            sourceFile: url.lastPathComponent,
-            lastModified: now,
-            pendingChanges: true,
-            metadata: edited,
-            imageMetadataSnapshot: existing?.imageMetadataSnapshot ?? previous,
-            history: history
-        )
-        Task {
-            do {
-                let installed = try await sidecarService.saveSidecarMergingHistorySerialized(
-                    record,
-                    for: url,
-                    in: folderURL
-                )
-                try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
-                    metadata: installed.metadata,
-                    for: url,
-                    mergeWithExisting: true
-                )
-            } catch {
-                errorMessage = "Failed to save metadata for \(url.lastPathComponent): \(error.localizedDescription)"
-            }
+    }
+
+    /// Direct context-menu and full-screen mutations also cross the retained Review barrier.
+    private func flushMetadataReviewBeforeMutation() -> Bool {
+        guard !metadataReviewEditors.isEmpty else { return true }
+        do {
+            try captureMetadataReviewDrafts()
+            try metadataReviewCoordinator.flushQueuedPersistence()
+            return true
+        } catch {
+            errorMessage = "Queued Metadata Review edits must be saved or reviewed before changing these files. \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -3264,6 +3465,7 @@ final class BrowserViewModel {
     }
 
     func deleteSelectedImages() {
+        guard flushMetadataReviewBeforeMutation() else { return }
         let urlsToDelete = selectedImageIDs
         guard !urlsToDelete.isEmpty else { return }
         let orderedURLs = visibleImages.map(\.url)
@@ -3356,6 +3558,7 @@ final class BrowserViewModel {
     }
 
     private func moveSelectedImages(toSubfolderNamed name: String, in folderURL: URL) {
+        guard flushMetadataReviewBeforeMutation() else { return }
         let destinationFolder = folderURL.appendingPathComponent(name)
         let urlsToMove = Array(selectedImageIDs)
         let xmpService = xmpSidecarService
@@ -3435,6 +3638,7 @@ final class BrowserViewModel {
     /// Moves image files to a destination folder along with their XMP and metadata sidecars.
     /// Silently skips files already in the destination (drag-drop onto own folder is a no-op).
     func moveImages(_ urls: [URL], into destinationFolder: URL) {
+        guard flushMetadataReviewBeforeMutation() else { return }
         guard !urls.isEmpty else { return }
 
         let destStd = destinationFolder.standardizedFileURL
@@ -3511,6 +3715,7 @@ final class BrowserViewModel {
     // MARK: - Rename
 
     func renameSelected() {
+        guard flushMetadataReviewBeforeMutation() else { return }
         guard let folderURL = currentFolderURL, !selectedImageIDs.isEmpty else { return }
         let selectedInVisibleOrder = sortedImages.filter { selectedImageIDs.contains($0.url) }
         guard !selectedInVisibleOrder.isEmpty else { return }
@@ -3673,6 +3878,7 @@ final class BrowserViewModel {
     // MARK: - Duplicate
 
     func duplicateSelectedImages() {
+        guard flushMetadataReviewBeforeMutation() else { return }
         guard let folderURL = currentFolderURL, !selectedImageIDs.isEmpty else { return }
 
         let sorted = sortedImages.filter { selectedImageIDs.contains($0.url) }
@@ -3745,6 +3951,7 @@ final class BrowserViewModel {
     }
 
     func resetAllEditsOnSelected() {
+        guard flushMetadataReviewBeforeMutation() else { return }
         let urls = Array(selectedImageIDs)
         guard !urls.isEmpty else { return }
 
@@ -3877,6 +4084,7 @@ final class BrowserViewModel {
     }
 
     func removeIPTCFromImageFiles(onComplete: (() -> Void)? = nil) {
+        guard flushMetadataReviewBeforeMutation() else { return }
         guard let folderURL = currentFolderURL else { return }
         let urls = removeIPTCSelectedURLs
 
@@ -3888,6 +4096,7 @@ final class BrowserViewModel {
     }
 
     func removeIPTCFromXMPSidecars(onComplete: (() -> Void)? = nil) {
+        guard flushMetadataReviewBeforeMutation() else { return }
         let urls = removeIPTCSelectedURLs
 
         batchReadTask?.cancel()
@@ -3905,6 +4114,7 @@ final class BrowserViewModel {
     }
 
     func removeIPTCFromBoth(onComplete: (() -> Void)? = nil) {
+        guard flushMetadataReviewBeforeMutation() else { return }
         guard let folderURL = currentFolderURL else { return }
         let urls = removeIPTCSelectedURLs
 

@@ -35,6 +35,7 @@ struct FolderTreeRow: View {
     /// Opens a folder into the active pane (and registers it in the shared sidebar).
     /// Bool = whether to add it to the Open Folders section.
     let openFolder: (URL, Bool) -> Void
+    let closeFolder: (URL) -> Void
     let revealInFinder: (URL) -> Void
 
     @State private var isDropHighlighted = false
@@ -85,6 +86,7 @@ struct FolderTreeRow: View {
                         viewModel: viewModel,
                         currentFolderURL: currentFolderURL,
                         openFolder: openFolder,
+                        closeFolder: closeFolder,
                         revealInFinder: revealInFinder
                     )
                 }
@@ -132,7 +134,7 @@ struct FolderTreeRow: View {
 
             if isRootOfSection && section == .openRoot && isHovered {
                 Button {
-                    viewModel.closeOpenFolder(url)
+                    closeFolder(url)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.caption)
@@ -250,7 +252,7 @@ struct FolderTreeRow: View {
             .disabled(viewModel.favoriteFolders.contains { $0.url == url })
             Divider()
             Button("Close", role: .destructive) {
-                viewModel.closeOpenFolder(url)
+                closeFolder(url)
             }
 
         case .openChild:

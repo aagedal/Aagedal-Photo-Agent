@@ -660,3 +660,237 @@ extension CaptionConflictRecoveryTests {
         #expect(service.loadSidecar(for: image, in: root)?.metadata.title == "Newer C")
     }
 }
+
+
+@Suite("Metadata Review retained persistence")
+struct MetadataReviewPersistenceTests {
+    private func folder() throws -> URL {
+        let folder = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("MetadataReviewCore-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for name in ["a.JPG", "b.JPG"] { try Data("Source \(name)".utf8).write(to: folder.appendingPathComponent(name)) }
+        return folder
+    }
+
+    private func creation(_ image: URL) async throws -> CaptionDraftPersistence {
+        let previous = IPTCMetadata(title: "A")
+        let evidence = MetadataSidecarReplayCreationEvidence(sourceRevision: try await SourceImageRevision.capture(at: image),
+            xmpData: try XMPSidecarService().fieldMutationData(for: image))
+        return try #require(try MetadataReviewDraftCapture.capture(previous: previous, edited: .init(title: "B"),
+            baselineSidecar: nil, imageURL: image, folderURL: image.deletingLastPathComponent(), creationEvidence: evidence))
+    }
+
+    @Test("Capture retains every pre-trim field change, nil snapshot, orientation intent and opaque saved fields")
+    func completeCapture() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("a.JPG")
+        let orientation = MetadataOrientationDraft(expectedOrientation: 1, targetOrientation: 6)
+        let baseline = MetadataSidecar(sourceFile: "a.JPG", pendingChanges: true,
+            metadata: .init(title: "A"), imageMetadataSnapshot: nil, orientationDraft: orientation)
+        let service = MetadataSidecarService()
+        try service.saveSidecar(baseline, for: image, in: root)
+        let jsonURL = root.appendingPathComponent(".photo_metadata/a.JPG.meta.json")
+        var graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
+        graph["futureExtension"] = ["opaque": "preserved"]
+        try JSONSerialization.data(withJSONObject: graph).write(to: jsonURL)
+        let loaded = try #require(try await MetadataReviewDraftCapture.loadBaseline(for: image, in: root))
+        var edited = loaded.metadata
+        for field in MetadataFieldID.allCases where !field.isRepeatable {
+            field.setHistoryValue("Review \(field.rawValue)", in: &edited)
+        }
+        let captured = try #require(try MetadataReviewDraftCapture.capture(previous: loaded.metadata, edited: edited,
+            baselineSidecar: loaded, imageURL: image, folderURL: root))
+        #expect(captured.request.changes.count > MetadataSidecar.historyLimit)
+        #expect(captured.sidecar.history.count == MetadataSidecar.historyLimit)
+        #expect(captured.sidecar.imageMetadataSnapshot == nil)
+        #expect(captured.sidecar.orientationDraft == orientation)
+        let result = try captured.persist()
+        #expect(result.metadata == edited)
+        #expect(result.imageMetadataSnapshot == nil)
+        #expect(result.orientationDraft == orientation)
+        let saved = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
+        #expect((saved["futureExtension"] as? [String: String])?["opaque"] == "preserved")
+    }
+
+    @Test("First Review creation fails closed if the captured photo or XMP changed", arguments: [false, true])
+    func staleCreationBeforeJSON(sourceChanged: Bool) async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("a.JPG")
+        let captured = try await creation(image)
+        if sourceChanged { try Data("new source bytes".utf8).write(to: image) }
+        else { try XMPSidecarService().saveSidecar(metadata: .init(title: "External"), for: image) }
+        let source = try Data(contentsOf: image)
+        let xmp = try XMPSidecarService().fieldMutationData(for: image)
+        let result = await MetadataSidecarService().replayHistoryAndMirrorXMP(captured.request)
+        #expect(result.failure?.kind == .replayConflict)
+        #expect(!captured.request.receipt.hasCommitted)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".photo_metadata/a.JPG.meta.json").path))
+        #expect(try Data(contentsOf: image) == source)
+        #expect(try XMPSidecarService().fieldMutationData(for: image) == xmp)
+    }
+
+    @Test("Creation evidence survives JSON success plus pre-mirror failure and rejects a changed retry baseline", arguments: [false, true])
+    func staleCreationAfterJSON(sourceChanged: Bool) async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("a.JPG")
+        let captured = try await creation(image)
+        let service = MetadataSidecarService()
+        let first = await service.replayHistoryAndMirrorXMP(captured.request,
+            beforeXMPCommit: { throw CocoaError(.fileWriteNoPermission) })
+        #expect(first.installedSidecar?.metadata.title == "B")
+        #expect(captured.request.receipt.hasCommitted)
+        #expect(!captured.request.receipt.creationMirrorCompleted)
+        if sourceChanged { try Data("external source after JSON".utf8).write(to: image) }
+        else { try XMPSidecarService().saveSidecar(metadata: .init(title: "External after JSON"), for: image) }
+        let source = try Data(contentsOf: image)
+        let xmp = try XMPSidecarService().fieldMutationData(for: image)
+        let jsonURL = root.appendingPathComponent(".photo_metadata/a.JPG.meta.json")
+        let json = try Data(contentsOf: jsonURL)
+        let retry = await service.replayHistoryAndMirrorXMP(captured.request)
+        #expect(retry.failure?.kind == .replayConflict)
+        #expect(captured.request.receipt.creationEvidenceInvalidated)
+        #expect(try Data(contentsOf: jsonURL) == json)
+        #expect(try Data(contentsOf: image) == source)
+        #expect(try XMPSidecarService().fieldMutationData(for: image) == xmp)
+    }
+
+    @Test("Creation proof cannot complete if source or XMP changes after the mirror commit", arguments: [false, true])
+    func changedAfterMirrorCommit(sourceChanged: Bool) async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("a.JPG")
+        let captured = try await creation(image)
+        let service = MetadataSidecarService()
+        let result = await service.replayHistoryAndMirrorXMP(captured.request, afterXMPCommit: {
+            if sourceChanged { try Data("changed after mirror".utf8).write(to: image) }
+            else { try XMPSidecarService().saveSidecar(metadata: .init(title: "External after mirror"), for: image) }
+        })
+        #expect(result.wroteXMPSidecar)
+        #expect(result.failure?.kind == .replayConflict)
+        #expect(captured.request.receipt.creationEvidenceInvalidated)
+        #expect(!captured.request.receipt.creationMirrorCompleted)
+        let source = try Data(contentsOf: image)
+        let xmp = try XMPSidecarService().fieldMutationData(for: image)
+        let retry = await service.replayHistoryAndMirrorXMP(captured.request)
+        #expect(retry.failure?.kind == .replayConflict)
+        #expect(try Data(contentsOf: image) == source)
+        #expect(try XMPSidecarService().fieldMutationData(for: image) == xmp)
+    }
+
+    @Test("A known own XMP install remains retryable after the response fails")
+    func ownInstalledMirrorReceipt() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("a.JPG")
+        let captured = try await creation(image)
+        let service = MetadataSidecarService()
+        let first = await service.replayHistoryAndMirrorXMP(captured.request,
+            afterXMPCommit: { throw CocoaError(.fileReadUnknown) })
+        #expect(!first.completed)
+        #expect(first.wroteXMPSidecar)
+        #expect(!captured.request.receipt.creationMirrorCompleted)
+        #expect(captured.request.receipt.creationInstalledXMPData == (try XMPSidecarService().fieldMutationData(for: image)))
+        let retry = await service.replayHistoryAndMirrorXMP(captured.request)
+        #expect(retry.completed)
+        #expect(captured.request.receipt.creationMirrorCompleted)
+        #expect(retry.installedSidecar?.metadata.title == "B")
+    }
+
+    @Test("Success callbacks carry the exact transaction record and applied retries return newer authoritative fields")
+    @MainActor
+    func exactSuccessReceipt() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("a.JPG")
+        let captured = try await creation(image)
+        let callbacks = DeferredCaptionFailureCallbacks()
+        let queue = CaptionDraftPersistenceQueue(label: "review.receipts", failureDelivery: .init(schedule: callbacks.schedule))
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        var received: [UUID: MetadataSidecar] = [:]
+        let firstID = try coordinator.enqueueCapturedDraft(captured, onSuccess: { received[$0] = $1 })
+        try coordinator.flushQueuedPersistence() // No mounted Caption handler is required.
+        _ = try await MetadataSidecarService().updateMetadataSerialized(for: image, in: root,
+            fallback: .init(), pendingChanges: true) { $0.credit = "Independent later credit" }
+        callbacks.deliver()
+        #expect(received[firstID]?.metadata.title == "B")
+        #expect(received[firstID]?.metadata.credit == nil) // No unrelated fresh load masquerades as this receipt.
+        let retryID = try coordinator.enqueueCapturedDraft(captured, onSuccess: { received[$0] = $1 })
+        try coordinator.flushQueuedPersistence()
+        callbacks.deliver()
+        #expect(received[retryID]?.metadata.credit == "Independent later credit")
+        #expect(!coordinator.hasPendingPersistence)
+    }
+
+    @Test("Shared Review conflict export retains creation evidence, freezes admission and resumes unrelated actual writes")
+    @MainActor
+    func sharedScopedRecovery() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("a.JPG")
+        let captured = try await creation(image)
+        _ = await MetadataSidecarService().replayHistoryAndMirrorXMP(captured.request,
+            beforeXMPCommit: { throw CocoaError(.fileWriteNoPermission) })
+        try Data("external changed source".utf8).write(to: image)
+        let b = try await creation(root.appendingPathComponent("b.JPG"))
+        let queue = CaptionDraftPersistenceQueue(label: "review.shared-recovery")
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let failedID = try coordinator.enqueueCapturedDraft(captured)
+        _ = try coordinator.enqueueCapturedDraft(b)
+        #expect(coordinator.hasPendingPersistence)
+        #expect(queue.pendingCount == 2)
+        let failure = try #require(queue.currentFailure)
+        #expect(failure.id == failedID)
+        #expect(failure.kind == .replayConflict)
+        let review = try await coordinator.beginConflictReview(failure)
+        #expect(throws: CaptionConflictRecoveryError.self) { _ = try coordinator.enqueueCapturedDraft(captured) }
+        #expect(throws: CaptionConflictRecoveryError.self) { try coordinator.flushQueuedPersistence() }
+        let exportURL = root.appendingPathComponent("review-recovery.json")
+        let receipt = try await coordinator.exportConflict(review, to: exportURL)
+        let graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: exportURL)) as? [String: Any])
+        let requests = try #require(graph["requests"] as? [[String: Any]])
+        #expect(requests.count == 1)
+        #expect(requests[0]["creationEvidence"] is [String: Any])
+        #expect(requests[0]["creationEvidenceInvalidated"] as? Bool == true)
+        #expect(requests[0]["jsonWasCommitted"] as? Bool == true)
+        let discard = try await coordinator.discardExportedConflict(review, receipt: receipt)
+        #expect(discard.discardedCount == 1)
+        #expect(discard.remainingFailure == nil)
+        #expect(MetadataSidecarService().loadSidecar(for: b.imageURL, in: root)?.metadata.title == "B")
+        #expect(try Data(contentsOf: image) == Data("external changed source".utf8))
+        #expect(!coordinator.hasPendingPersistence)
+    }
+
+    @Test("Lifecycle pending state includes admitted in-flight work without waiting for its I/O")
+    @MainActor
+    func inFlightPendingPublication() async throws {
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let queue = CaptionDraftPersistenceQueue(label: "review.in-flight")
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        queue.enqueue(operation: { started.signal(); release.wait() })
+        defer { release.signal() }
+        let didStart = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: started.wait(timeout: .now() + 5) == .success)
+            }
+        }
+        try #require(didStart)
+        #expect(coordinator.hasPendingPersistence)
+        release.signal()
+        try await coordinator.retryQueuedPersistence()
+        #expect(!coordinator.hasPendingPersistence)
+    }
+
+    @Test("Review requires first-source evidence while legacy Caption requests retain their compatible default")
+    func explicitProvenanceAndCompatibility() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("a.JPG")
+        #expect(throws: CaptionWorkspaceFlushError.self) {
+            _ = try MetadataReviewDraftCapture.capture(previous: .init(title: "A"), edited: .init(title: "B"),
+                baselineSidecar: nil, imageURL: image, folderURL: root)
+        }
+        let captured = try await creation(image)
+        let request = captured.request
+        let legacy = MetadataSidecarReplayRequest(sidecar: request.sidecar, baselineMetadata: request.baselineMetadata,
+            baselineHistory: request.baselineHistory, baselineRecordExisted: false, changes: request.changes,
+            imageURL: image, folderURL: root)
+        #expect(legacy.creationEvidence == nil)
+        #expect(await MetadataSidecarService().replayHistoryAndMirrorXMP(legacy).completed)
+    }
+}
