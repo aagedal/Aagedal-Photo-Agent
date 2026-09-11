@@ -26,7 +26,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Coordinator cycle 8: explicit label clear and Face verification](release/cycle-08-explicit-label-clear-2026-09-11.md). Source `b8e668a` passes 2,554 integrated tests and independent review. Native XMP-only clears retain source bytes and unrelated pending captions across relaunch; cycle-7 Face partial failure, retry and persistence now pass too. Orientation, Metadata Review, remaining writer completion and wider release gates remain open.
+**Latest improvement continuation:** [Coordinator cycle 9: durable rotation](release/cycle-09-durable-rotation-2026-09-11.md). Source `b5840e4` passes 2,569 integrated tests and independent review. History-only rotation now persists with field-only physical acknowledgement and an explicit apply command. Native launch/open succeeded, but host lock interrupted Settings setup before rotation testing; preference cleanup remains pending. Metadata Review, remaining writer completion and wider release gates stay open.
 
 ## Portfolio
 

@@ -1,14 +1,26 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — explicit XMP label clears pass automated and native verification. Remaining writer, feature and release gates stay open.
+**State:** IMPLEMENTING — durable rotation and field-only completion pass automated verification. Native rotation setup was interrupted by host lock; remaining writer, feature and release gates stay open.
 **Updated:** 2026-09-11
-**Latest implementation commit:** `b8e668a226293dee094e1f358c72dc238d7c232d` (2,554 tests / 285 suites and repository checks passed).
-**Latest native evidence:** `b8e668a` clear/write/relaunch and final-build reopen PASS; `34a7313` Face partial failure/retry/relaunch PASS in cycle 8.
-**Cycle baseline:** `d0af70b` on `main`; clean checkout at cycle 8 start.
+**Latest implementation commit:** `b5840e4304450dce9371b5c2329e230635adf351` (2,569 tests / 285 suites and repository checks passed).
+**Latest native evidence:** `b5840e4` launched/opened fixtures; host locked in Settings before rotation testing. Prior `b8e668a` clears and `34a7313` Face workflows pass cycle 8.
+**Cycle baseline:** `9d65002` on `main`; clean checkout at cycle 9 start.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 9](cycle-09-durable-rotation-2026-09-11.md) implements ordered Browser rotation, a durable
+technical JSON draft, per-destination retry baselines, same-target Write Pending Rotation, and
+thumbnail/full-screen pending orientation. Caption and null snapshots survive; complete-record
+writes/export/FTP admission require pending rotation to be applied first. Full checks pass 2,569
+tests / 285 suites and independent review passes. Two new fixture construction defects were
+corrected and documented; no product assertion was suppressed. The exact final build launched
+and opened the disposable folder, then the Mac locked on the Custom preset click. **Native
+rotation remains unrun and preference cleanup is pending:** inspect Settings before assuming the
+click applied; restore Professional and Custom Standard Images = Write to Image File after testing.
+All four original fixture artifacts remain byte-identical. The QA app was not confirmed stopped.
+
 
 
 [Cycle 8](cycle-08-explicit-label-clear-2026-09-11.md) implements standard empty XMP Label
@@ -81,12 +93,13 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Continue the [field-write design](field-write-completion-design.md): migrate Browser rotation
-   to verified per-field completion with an explicit technical orientation carrier; then retain
-   Metadata Review replay/recovery, batch XMP completion and non-displayed variable writes.
-   Those paths still have whole-record acknowledgement or untracked replay gaps. App-written
-   XMP-only label clears now work. The dependency's external empty element-form Label parsing
-   limitation remains an explicit interoperability follow-up; empty attributes are covered.
+1. Recheck native access and finish cycle-9 rotation testing and preference cleanup first when
+   available; use the exact build/fixtures and resume instructions in its dated report. Do not
+   block independent work on this host limitation. Continue the [field-write design](field-write-completion-design.md):
+   Metadata Review retained replay/recovery, then batch XMP completion and non-displayed variable
+   writes still have whole-record acknowledgement or untracked replay gaps. Rotation implementation
+   now passes tests; native history-only/retry/relaunch remains a gate. App-written XMP-only label
+   clears work; external empty element-form Label parsing remains an interoperability follow-up.
 2. Complete remaining Sony companion archive and source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Ingest, rename, Duplicate, Move, Reject and
    memo Trash now have implementation. Preserve explicit ownership through rendering/signing/
@@ -112,7 +125,7 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Archive/reassociation, transcription, reviewed variables and delivery; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 8 regression/repository checks passed | Packaging and exact-candidate release checks remain |
+| Automated regression and package | Cycle 9 regression/repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -123,6 +136,14 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | Signing/notarization/distribution | After applicable gates | Separate authorization and release-plan evidence |
 
 ## Blocker tracking
+
+Cycle 9 native launch/open succeeded. Settings showed Professional selected, then the Custom
+click returned locked-Mac; a later recheck remained locked. No rotation command ran. Original
+PNG/JSON fixture bytes are unchanged, but the preference click outcome and app shutdown remain
+unverified. On access return inspect Settings, finish the native case, restore Professional and
+the original Custom standard-image write setting, return General, and quit normally. This is
+one blocked verification path; implementation work remains and the automation stays active.
+
 
 Cycle 6's final recovery build could not launch while the Mac was locked. Access resumed at the
 first cycle-7 recheck, and native recovery passed with exact fixture hashes after relaunch. No
@@ -159,28 +180,24 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Source `b8e668a226293dee094e1f358c72dc238d7c232d` contains twelve reviewed source/test files. Focused v3, integrated
-and repository logs use `/private/tmp/aagedal-coordinator-cycle8-*.log`; exact counts and initial
-fixture-only failures are preserved in the dated report. No rerun is needed on unchanged source
-merely because a heartbeat fired.
+Source `b5840e4304450dce9371b5c2329e230635adf351` contains sixteen reviewed source/test files.
+The integrated suite passes 2,569 tests / 285 suites in 89.697 seconds; final Browser focused
+checks pass 15 tests, core checks pass after their fixture correction, and repository checks pass.
+Logs use `/private/tmp/aagedal-coordinator-cycle9-*.log`; exact initial failures and corrections
+are in the dated report. Do not rerun unchanged automated checks merely because a heartbeat fires.
 
-`build/qa-label-clear-cycle8/` contains known/null-snapshot clear cases and the absent-label control,
-plus pre/post-write/relaunch/final-build snapshots. All source PNG bytes remain unchanged and all
-eight original artifacts match across relaunch. Original Professional preset, Custom standard-image
-write setting and Settings General page were restored. The final Debug 3.0.0 (738) identity is in
-`final-binary-identity.json`; the pre-full native-write identity remains separately recorded because
-the full suite relinked the same source. Both builds were actually opened; final native inventory
-confirms the QA app stopped.
+`build/qa-rotation-cycle9/` is the new untouched known/null-snapshot native fixture set. Read its
+`tested-binary-identity.json` before native continuation. The app was left in Settings after the
+Custom click returned host-locked; neither click outcome nor shutdown is verified. Professional
+was selected immediately before that click. Original Custom Standard Images = Write to Image File,
+RAW/C2PA = XMP. Finish/restore through the UI when available; no unlock bypass or global reset.
+`before-native-snapshot.json` and `after-native-attempt-snapshot.json` match all four original
+artifacts. The inspector in `build/qa-rotation-cycle9-tools/inspect.py` now includes orientation
+carriers and pixel payload hashes. No native rotation/write result is claimed yet.
 
-`build/qa-field-write-cycle7-face/` now contains passing cycle-8 Face evidence. The intentional
-failed.xmp directory was removed only after recording the native partial failure; failed.png then
-received the requested person on retry. successful.png/XMP retained their own preexisting names
-and stayed byte-identical across retry. Both JSON records retain pending headline G and one history
-event. All tracked states match after relaunch. Do not describe this fixture as untouched or still
-blocked; it does not need an inference model for saved-group metadata actions.
-
-Earlier Browser and Caption recovery fixture locations, binary identities and intentional changes
-remain in their dated cycle reports. Native source identity is kept separate from broad release
-readiness. No production transfer, publication, private-photo change or final user acceptance
-occurred. Reconcile checkout/task ownership before the next bounded slice. Sixty current unchecked
-plan entries remain; no-progress count is zero and automation stays active.
+Cycle-8 label-clear and Face fixtures retain their passing evidence. Their binaries differ from
+the current build; do not describe the current app as the cycle-8 identity. Earlier Caption,
+Browser, Trash and recovery evidence remains in its dated reports. No production transfer,
+publication, private-photo change or final user acceptance occurred. The HTML remains unassigned
+to a final candidate, with 31 cases and human results unrun. Sixty unchecked authoritative plan
+entries remain; no-progress count is zero and the coordinator automation stays active.

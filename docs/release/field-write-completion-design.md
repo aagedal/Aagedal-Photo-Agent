@@ -1,12 +1,14 @@
 # Field-only write completion and Metadata Review continuation
 
-Source-backed cycle-6 audit of `7a503b3`, followed by [cycle 7](cycle-07-field-write-completion-2026-09-10.md)
-and [cycle 8](cycle-08-explicit-label-clear-2026-09-11.md). Browser rating/label and Face add-person
-completion are implemented and natively verified. Source `b8e668a` adds effective standard empty
-XMP Label clears through parsing, merge, JSON/XMP, Browser reload and export/FTP field mapping;
-2,554 integrated tests pass. The external empty element-form Label dependency limitation remains
-separate from app-written empty attributes. Orientation, Metadata Review, batch completion and
-non-displayed variables remain mandatory work. Original observations below are historical.
+Source-backed cycle-6 audit of `7a503b3`, followed by [cycle 7](cycle-07-field-write-completion-2026-09-10.md),
+[cycle 8](cycle-08-explicit-label-clear-2026-09-11.md) and [cycle 9](cycle-09-durable-rotation-2026-09-11.md).
+Browser rating/label and Face add-person completion are natively verified. Source `b5840e4` adds
+durable orientation drafts, expected→target field writes, destination-specific retry baselines,
+Write Pending Rotation, display precedence and whole-record/export admission guards. All 2,569
+integrated tests pass; native rotation setup stopped at a host lock before any rotation. Metadata
+Review, batch completion and non-displayed variables remain mandatory work. External empty
+element-form Label parsing remains separate from app-written empty attributes. Original
+observations below are historical; the old Browser field helper chain now has no entry caller.
 
 ## Original caller audit on 7a503b3
 
@@ -58,10 +60,10 @@ presence and retained receipt. Serialize each photo's retained request/result se
 mirror; remove bare untracked write tasks. A permanent conflict needs visible recovery, never
 silent replay or overwrite. This draft flow is distinct from field-only physical acknowledgement.
 
-Orientation needs explicit technical treatment because `IPTCMetadata` Codable omits it. Current
-history-only field saving loses orientation unless an XMP write happens. Establish a bounded
-technical draft carrier or correct supported route while preserving Camera Raw and both XMP
-orientation conventions; do not claim JSON persisted the omitted payload.
+Cycle 9 supplies the explicit technical treatment: `IPTCMetadata` Codable still omits orientation,
+while `MetadataSidecar.orientationDraft` durably carries the intent. Ordinary Caption saves preserve
+it; only verified field completion removes it. Whole-record writes and exports direct the user to
+apply the pending rotation first. Native verification remains open; see the cycle-9 report.
 
 ## Required tests and integration order
 

@@ -2,6 +2,10 @@
 
 > Project planning index: [README.md](README.md)
 
+Cycle-9 continuation: [durable rotation implementation and evidence](release/cycle-09-durable-rotation-2026-09-11.md)
+records `b5840e4`, 2,569 passing integrated tests, independent review, and the remaining native
+rotation gate. No broad acceptance criterion is closed by this bounded implementation.
+
 ## 2026-09-11 coordinator validation follow-up
 
 [Cycle 8](release/cycle-08-explicit-label-clear-2026-09-11.md) adds standard explicit XMP label
