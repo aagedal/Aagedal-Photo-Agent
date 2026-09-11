@@ -706,13 +706,16 @@ final class CaptionWorkspaceFlushCoordinator {
     private var persistenceCaptureHandler: (() throws -> CaptionDraftPersistence?)?
     private var persistenceFailureHandler: (@MainActor @Sendable (String) -> Void)?
     private let persistenceQueue: CaptionDraftPersistenceQueue
+    private let variableLifecycle: VariableDraftLifecycleCoordinator
 
     var hasRegisteredHandler: Bool { handler != nil }
-    var hasPendingPersistence: Bool { persistenceQueue.hasPendingWork }
+    var hasPendingPersistence: Bool { persistenceQueue.hasPendingWork || variableLifecycle.hasPendingWork }
     var currentQueueFailure: CaptionQueueFailure? { persistenceQueue.currentFailure }
 
-    init(persistenceQueue: CaptionDraftPersistenceQueue = CaptionDraftPersistenceQueue()) {
+    init(persistenceQueue: CaptionDraftPersistenceQueue = CaptionDraftPersistenceQueue(),
+         variableLifecycle: VariableDraftLifecycleCoordinator = .shared) {
         self.persistenceQueue = persistenceQueue
+        self.variableLifecycle = variableLifecycle
         persistenceQueue.observeFailure { [weak self] in self?.failure = $0 }
     }
 
@@ -764,6 +767,7 @@ final class CaptionWorkspaceFlushCoordinator {
 
     /// Drain already captured work when no editor handler is mounted (for example, after leaving Review).
     func flushQueuedPersistence() throws {
+        try requireVariableDraftsPersisted()
         try persistenceQueue.drain()
     }
 
@@ -796,6 +800,7 @@ final class CaptionWorkspaceFlushCoordinator {
     /// Durable flush used by explicit mutations and workspace exit. It crosses the in-memory text
     /// barrier, captures the current draft, and waits for all queued drafts in FIFO order.
     func flush() throws {
+        try requireVariableDraftsPersisted()
         try enqueueFlush()
         try persistenceQueue.drain()
     }
@@ -824,7 +829,12 @@ final class CaptionWorkspaceFlushCoordinator {
         return compositionStateHandler()
     }
 
+    fileprivate func requireVariableDraftsPersisted() throws {
+        try variableLifecycle.requirePersisted()
+    }
+
     fileprivate func drainQueuedPersistenceForTermination() async throws {
+        try requireVariableDraftsPersisted()
         try await persistenceQueue.drainAsync()
     }
 }
@@ -841,6 +851,7 @@ final class CaptionWorkspaceTerminationFlushOperation {
     }
 
     func flush() async throws {
+        try coordinator.requireVariableDraftsPersisted()
         if !didCaptureCurrentDraft {
             if coordinator.hasRegisteredHandler {
                 try coordinator.enqueueFlush()

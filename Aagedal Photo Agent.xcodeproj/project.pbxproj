@@ -7,11 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
+		2295BF0BEAFF48D09B6EB3E6 /* PendingMetadataWriteCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */; };
 		7EA0E1000000000000000002 /* TeamRosterExportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */; };
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
+		9E909BDC0B8A4B20BDBFB647 /* VariableMetadataCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 497AA160FD7F433CBFE4E452 /* VariableMetadataCallerTests.swift */; };
 		A02608260000000000000002 /* VoiceMemoCompanionRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */; };
 		A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */; };
 		A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */; };
@@ -136,8 +139,7 @@
 		F3A100000000000000000002 /* ImportMetadataScanServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */; };
 		F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */; };
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
-		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
-		2295BF0BEAFF48D09B6EB3E6 /* PendingMetadataWriteCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */; };
+		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -160,7 +162,9 @@
 /* Begin PBXFileReference section */
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageMemoryCoordinatorTests.swift; sourceTree = "<group>"; };
+		25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableMetadataWriteServiceTests.swift; sourceTree = "<group>"; };
 		38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataTests.swift; sourceTree = "<group>"; };
+		497AA160FD7F433CBFE4E452 /* VariableMetadataCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableMetadataCallerTests.swift; sourceTree = "<group>"; };
 		7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TeamRosterExportServiceTests.swift; sourceTree = "<group>"; };
 		8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Aagedal Photo Agent.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		8E0557412F29098D00BCFB49 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -235,6 +239,7 @@
 		AF5400000000000000000001 /* RenderExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenderExecutorTests.swift; sourceTree = "<group>"; };
 		B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserXMPSidecarLoadServiceTests.swift; sourceTree = "<group>"; };
 		B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListEditorPersistenceServiceTests.swift; sourceTree = "<group>"; };
+		B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteCallerTests.swift; sourceTree = "<group>"; };
 		BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameRecipeTests.swift; sourceTree = "<group>"; };
 		BA7C03010000000000000001 /* RenamePlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenamePlanningServiceTests.swift; sourceTree = "<group>"; };
 		BA7C03020000000000000001 /* BatchRenameSheetStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameSheetStateTests.swift; sourceTree = "<group>"; };
@@ -246,6 +251,7 @@
 		C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionAutocompleteServiceTests.swift; sourceTree = "<group>"; };
 		C4A710000000000000000001 /* CaptionSessionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionSessionTests.swift; sourceTree = "<group>"; };
 		C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionCopyPreviousServiceTests.swift; sourceTree = "<group>"; };
+		C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteServiceTests.swift; sourceTree = "<group>"; };
 		C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataFieldMutationWriteServiceTests.swift; sourceTree = "<group>"; };
 		C7F170000000000000000003 /* FieldMutationCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FieldMutationCallerTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -290,8 +296,6 @@
 		F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportMetadataScanServiceTests.swift; sourceTree = "<group>"; };
 		F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AdobeDNGDiscoveryTests.swift; sourceTree = "<group>"; };
 		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
-		C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteServiceTests.swift; sourceTree = "<group>"; };
-		B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteCallerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -444,6 +448,8 @@
 				C7F170000000000000000003 /* FieldMutationCallerTests.swift */,
 				B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */,
 				C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */,
+				497AA160FD7F433CBFE4E452 /* VariableMetadataCallerTests.swift */,
+				25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */,
 				A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */,
 				A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */,
 				A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */,
@@ -760,6 +766,8 @@
 				C7F170000000000000000004 /* FieldMutationCallerTests.swift in Sources */,
 				2295BF0BEAFF48D09B6EB3E6 /* PendingMetadataWriteCallerTests.swift in Sources */,
 				0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */,
+				9E909BDC0B8A4B20BDBFB647 /* VariableMetadataCallerTests.swift in Sources */,
+				FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */,
 				A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */,
 				A770F2000000000000000002 /* CaptionWorkspaceSpeedToolsTests.swift in Sources */,
 				A770F3000000000000000002 /* AccessibilityKeyboardAuditTests.swift in Sources */,

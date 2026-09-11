@@ -546,9 +546,57 @@ struct MetadataSidecarService: Sendable {
 
     /// A replay is an immutable editorial mutation, not permission to replace a whole record.
     /// Keep its receipt with the queued request across retries, including after a partial commit.
+    /// Finish a previously committed-but-unverified variable completion only when its exact
+    /// candidate and already-verified physical destinations remain unchanged. This does no writes.
+    @MetadataSidecarFilesystemActor
+    func verifyCompletedVariableRecord(_ expected: MetadataSidecar,
+        evidence: MetadataSidecarReplayCreationEvidence, for imageURL: URL, in folderURL: URL
+    ) async throws -> MetadataSidecar {
+        try Task.checkCancellation()
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
+            let tokens = try self.contentTokens(for: imageURL, in: folderURL)
+            guard !expected.pendingChanges,
+                  let current = try self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL),
+                  Self.samePersistedRecord(current, expected) else { throw self.ownershipChanged(imageURL) }
+            try await self.validateCompletionSource(evidence.sourceRevision, at: imageURL)
+            guard try self.xmpBytes(for: imageURL) == evidence.xmpData,
+                  try self.contentTokens(for: imageURL, in: folderURL) == tokens else {
+                throw self.ownershipChanged(imageURL)
+            }
+            return current
+        }
+    }
+
+    @MetadataSidecarFilesystemActor
+    func requirePreparedVariableRecord(_ expected: MetadataSidecar, for imageURL: URL, in folderURL: URL) async throws {
+        try Task.checkCancellation()
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
+            let current = try self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL)
+            guard Self.sameOptionalRecord(current, expected) else {
+                throw self.ownershipChanged(imageURL)
+            }
+        }
+    }
+
+    @MetadataSidecarFilesystemActor
+    func replayHistoryToJSON(_ request: MetadataSidecarReplayRequest,
+        expectedBaseline: MetadataSidecar? = nil, requiresExactBaseline: Bool = false,
+        allowsEmptyPreparation: Bool = false,
+        beforeJSONCommit: @escaping @Sendable () throws -> Void = {},
+        afterJSONCommit: @escaping @Sendable () throws -> Void = {}
+    ) async -> MetadataSidecarPersistenceResult {
+        await replayHistoryAndMirrorXMP(request, mirrorXMP: false,
+            expectedJSONBaseline: expectedBaseline, requiresExactJSONBaseline: requiresExactBaseline,
+            allowsEmptyJSONPreparation: allowsEmptyPreparation,
+            beforeJSONCommit: beforeJSONCommit, afterJSONCommit: afterJSONCommit)
+    }
+
     @MetadataSidecarFilesystemActor
     func replayHistoryAndMirrorXMP(
         _ request: MetadataSidecarReplayRequest,
+        mirrorXMP: Bool = true,
+        expectedJSONBaseline: MetadataSidecar? = nil, requiresExactJSONBaseline: Bool = false,
+        allowsEmptyJSONPreparation: Bool = false,
         beforeJSONCommit: @escaping @Sendable () throws -> Void = {},
         afterJSONCommit: @escaping @Sendable () throws -> Void = {},
         beforeXMPCommit: @escaping @Sendable () throws -> Void = {},
@@ -567,7 +615,29 @@ struct MetadataSidecarService: Sendable {
                 let tokens = try self.contentTokens(for: request.imageURL, in: request.folderURL)
                 let current = try self.loadOwnedSidecarForMutation(for: request.imageURL, in: request.folderURL)
                 guard !request.receipt.creationEvidenceInvalidated else { throw Self.replayConflict() }
-                let merged = try Self.replaying(request, onto: current)
+                if requiresExactJSONBaseline, !request.receipt.hasCommitted,
+                   !Self.sameOptionalRecord(current, expectedJSONBaseline) { throw Self.replayConflict() }
+
+                if !mirrorXMP, let expected = request.receipt.committedRecord,
+                   !Self.sameOptionalRecord(current, expected) { throw Self.replayConflict() }
+                let merged: MetadataSidecar
+                if allowsEmptyJSONPreparation {
+                    // A real interpolation may equal an already-saved target while the physical
+                    // photo still differs. Prepare that exact existing record without inventing
+                    // a history event or treating an empty replay as a generic overwrite.
+                    guard !mirrorXMP, requiresExactJSONBaseline, request.changes.isEmpty,
+                          request.baselineRecordExisted, request.sidecar.pendingChanges,
+                          let current,
+                          Self.persistedMetadataEqual(current.metadata, request.sidecar.metadata),
+                          Self.persistedMetadataEqual(request.baselineMetadata, request.sidecar.metadata),
+                          current.history.map(Self.eventPayload) == request.baselineHistory.map(Self.eventPayload),
+                          current.imageMetadataSnapshot == request.sidecar.imageMetadataSnapshot,
+                          current.orientationDraft == request.sidecar.orientationDraft else { throw Self.replayConflict() }
+                    var pending = current
+                    pending.pendingChanges = true
+                    merged = pending
+                } else { merged = try Self.replaying(request, onto: current) }
+
                 let creating = request.receipt.creationMirrorCompleted ? nil : request.creationEvidence
                 try beforeJSONCommit()
                 if let creating {
@@ -584,15 +654,22 @@ struct MetadataSidecarService: Sendable {
                 }
                 if let current, Self.samePersistedRecord(current, merged) {
                     installed = current
-                    request.receipt.markCommitted()
+                    request.receipt.markCommitted(mirrorXMP ? nil : current)
                 } else {
                     let saved = try self.saveSidecar(merged, for: request.imageURL, in: request.folderURL)
                     committed = true
-                    request.receipt.markCommitted()
+                    request.receipt.markCommitted(mirrorXMP ? nil : saved)
                     try afterJSONCommit()
                     guard let readBack = self.loadSidecar(for: request.imageURL, in: request.folderURL),
                           Self.samePersistedRecord(readBack, saved) else { throw CocoaError(.fileReadCorruptFile) }
                     installed = readBack
+                }
+                if !mirrorXMP {
+                    // This explicit JSON-only intent has no companion phase. Its owner retains
+                    // separate physical evidence if a later verified physical write is requested.
+                    request.receipt.markCreationMirrorCompleted()
+                    return .init(installedSidecar: installed, wroteXMPSidecar: false,
+                        wasCancelled: false, failure: nil, skippedXMPSidecar: true)
                 }
                 let authoritativeTokens = try self.contentTokens(for: request.imageURL, in: request.folderURL)
                 let xmp = XMPSidecarService()
@@ -797,14 +874,15 @@ struct MetadataSidecarService: Sendable {
                 installed = readBack
                 return .init(installedSidecar: installed, wroteXMPSidecar: wroteXMP,
                     wasCancelled: false, failure: nil, skippedXMPSidecar: skippedXMP,
-                    writtenXMPMetadata: self.metadataFromXMPReceipt(xmpReceipt, imageURL: snapshot.imageURL))
+                    writtenXMPMetadata: self.metadataFromXMPReceipt(xmpReceipt, imageURL: snapshot.imageURL),
+                    writtenXMPSnapshot: xmpReceipt.snapshot)
             } catch {
                 return .init(installedSidecar: installed, wroteXMPSidecar: wroteXMP || xmpReceipt.snapshot != nil,
                     wasCancelled: error is CancellationError,
                     failure: error is CancellationError ? nil : .init(stage: stage, message: error.localizedDescription),
                     committedButUnverifiedSidecarURL: committed && installed == nil
                         ? self.sidecarFileURL(for: snapshot.imageURL, in: snapshot.folderURL) : nil,
-                    skippedXMPSidecar: skippedXMP)
+                    skippedXMPSidecar: skippedXMP, writtenXMPSnapshot: xmpReceipt.snapshot)
             }
         }
     }
@@ -1520,6 +1598,8 @@ private nonisolated final class MetadataSidecarXMPCommitReceipt: @unchecked Send
 nonisolated final class MetadataSidecarReplayReceipt: @unchecked Sendable {
     private let lock = NSLock()
     private var committed = false
+    private var installedRecord: MetadataSidecar?
+    var committedRecord: MetadataSidecar? { lock.withLock { installedRecord } }
     private var invalidatedCreation = false
     private var completedCreationMirror = false
     private var installedCreationXMP: Data?
@@ -1530,7 +1610,9 @@ nonisolated final class MetadataSidecarReplayReceipt: @unchecked Sendable {
     var creationEvidenceInvalidated: Bool { lock.withLock { invalidatedCreation } }
     func markCreationEvidenceInvalidated() { lock.withLock { invalidatedCreation = true } }
     var hasCommitted: Bool { lock.withLock { committed } }
-    func markCommitted() { lock.withLock { committed = true } }
+    func markCommitted(_ record: MetadataSidecar? = nil) {
+        lock.withLock { committed = true; if let record { installedRecord = record } }
+    }
 }
 
 /// Physical and companion evidence captured before the first editorial JSON record exists.
@@ -1627,10 +1709,11 @@ nonisolated struct MetadataSidecarPersistenceResult: Sendable {
     let committedButUnverifiedSidecarURL: URL?
     let skippedXMPSidecar: Bool
     let writtenXMPMetadata: IPTCMetadata?
+    let writtenXMPSnapshot: XMPSidecarWriteSnapshot?
 
     init(installedSidecar: MetadataSidecar?, wroteXMPSidecar: Bool, wasCancelled: Bool,
          failure: Failure?, committedButUnverifiedSidecarURL: URL? = nil, skippedXMPSidecar: Bool = false,
-         writtenXMPMetadata: IPTCMetadata? = nil) {
+         writtenXMPMetadata: IPTCMetadata? = nil, writtenXMPSnapshot: XMPSidecarWriteSnapshot? = nil) {
         self.installedSidecar = installedSidecar
         self.wroteXMPSidecar = wroteXMPSidecar
         self.wasCancelled = wasCancelled
@@ -1638,6 +1721,7 @@ nonisolated struct MetadataSidecarPersistenceResult: Sendable {
         self.committedButUnverifiedSidecarURL = committedButUnverifiedSidecarURL
         self.skippedXMPSidecar = skippedXMPSidecar
         self.writtenXMPMetadata = writtenXMPMetadata
+        self.writtenXMPSnapshot = writtenXMPSnapshot
     }
 
     var completed: Bool {

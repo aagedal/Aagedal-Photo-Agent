@@ -160,6 +160,22 @@ final class MetadataViewModel {
         didSet { captionPersistenceFailureRequestID = nil }
     }
     @ObservationIgnored private var captionPersistenceFailureRequestID: UUID?
+    private(set) var variableBatchOutcome: VariableMetadataBatchOutcome?
+    private struct VariableAdmission {
+        let id: UUID
+        let imageURL: URL
+        let folderURL: URL
+        let editorCheckpoint: CaptionConflictEditorCheckpoint?
+        let requiresPersistence: Bool
+        let capture: @MainActor () async throws -> VariableMetadataWriteRequest?
+    }
+    private var retainedVariableAdmissions: [VariableAdmission] = []
+    private var retainedVariableWrites: [VariableMetadataWriteRequest] = []
+    @ObservationIgnored private let variableLifecycleOwnerID = UUID()
+    @ObservationIgnored private let variableLifecycleCoordinator: VariableDraftLifecycleCoordinator
+    @ObservationIgnored private var activeVariableBatchIDs: Set<UUID> = []
+    @ObservationIgnored private var retainedVariableEditorCheckpoints: [UUID: CaptionConflictEditorCheckpoint] = [:]
+    var hasRetainedVariableWrites: Bool { !retainedVariableWrites.isEmpty || !retainedVariableAdmissions.isEmpty }
     var variableProcessingStatus: String?
     var variableProcessingHadFailures = false
     var selectedHasC2PA = false
@@ -260,7 +276,7 @@ final class MetadataViewModel {
            let baseline = cleanupBaseline,
            baseline.imageURL == selectedURLs.first,
            baseline.folderURL == currentFolderURL,
-           let record = baseline.record, record.pendingChanges {
+           let record = baseline.record {
             return record.imageMetadataSnapshot
         }
         return originalImageMetadata
@@ -283,6 +299,10 @@ final class MetadataViewModel {
     @ObservationIgnored private var batchProcessGeneration = 0
     @ObservationIgnored private let pendingWriteDiscovery: @Sendable (URL) async -> PendingMetadataDiscoveryResult
     @ObservationIgnored private let pendingWriteExecutor: (@Sendable (PendingMetadataWriteRequest) async -> PendingMetadataWriteResult)?
+    @ObservationIgnored private let variableInputLoader: (@MainActor @Sendable (URL, URL) async throws -> VariableMetadataInputSnapshot)?
+    @ObservationIgnored private let variableWriteExecutor: (@Sendable (VariableMetadataWriteRequest) async -> VariableMetadataWriteResult)?
+    @ObservationIgnored private let variableOptions: @MainActor () -> VariableMetadataOptions
+    @ObservationIgnored private let variableResolver: @MainActor @Sendable (VariableMetadataResolutionInput) async throws -> IPTCMetadata
     @ObservationIgnored private var geocodingTask: Task<Void, Never>?
     @ObservationIgnored private var batchMetadataByURL: [URL: IPTCMetadata] = [:]
 
@@ -302,7 +322,14 @@ final class MetadataViewModel {
         pendingWriteDiscovery: @escaping @Sendable (URL) async -> PendingMetadataDiscoveryResult = {
             await MetadataSidecarService().discoverPendingSidecars(in: $0)
         },
-        pendingWriteExecutor: (@Sendable (PendingMetadataWriteRequest) async -> PendingMetadataWriteResult)? = nil
+        pendingWriteExecutor: (@Sendable (PendingMetadataWriteRequest) async -> PendingMetadataWriteResult)? = nil,
+        variableInputLoader: (@MainActor @Sendable (URL, URL) async throws -> VariableMetadataInputSnapshot)? = nil,
+        variableWriteExecutor: (@Sendable (VariableMetadataWriteRequest) async -> VariableMetadataWriteResult)? = nil,
+        variableLifecycleCoordinator: VariableDraftLifecycleCoordinator = .shared,
+        variableOptions: @escaping @MainActor () -> VariableMetadataOptions = { .capture() },
+        variableResolver: @escaping @MainActor @Sendable (VariableMetadataResolutionInput) async throws -> IPTCMetadata = {
+            try await VariableMetadataResolver.resolve($0)
+        }
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
@@ -313,6 +340,11 @@ final class MetadataViewModel {
         self.discardFolderSidecars = discardFolderSidecars
         self.pendingWriteDiscovery = pendingWriteDiscovery
         self.pendingWriteExecutor = pendingWriteExecutor
+        self.variableInputLoader = variableInputLoader
+        self.variableWriteExecutor = variableWriteExecutor
+        self.variableLifecycleCoordinator = variableLifecycleCoordinator
+        self.variableOptions = variableOptions
+        self.variableResolver = variableResolver
     }
 
     deinit {
@@ -790,6 +822,11 @@ final class MetadataViewModel {
               Set(selectedURLs) == selectionSnapshot else { return }
         selectedHavePendingSidecars = hasPendingSidecar
 
+        publishBatchMetadata(allMetadata, metadataByURL: metadataByURL, isReload: isReload)
+    }
+
+    private func publishBatchMetadata(_ allMetadata: [IPTCMetadata], metadataByURL: [URL: IPTCMetadata], isReload: Bool) {
+        guard !allMetadata.isEmpty else { return }
         // Compute common values and differing fields
         var common = IPTCMetadata()
         var differing = Set<String>()
@@ -2305,18 +2342,39 @@ final class MetadataViewModel {
     /// `images` is captured by the caller at apply time so a selection change during
     /// the async resolution doesn't redirect the writes to other images.
     ///
-    /// Per-image variables ({filename}, {seq}, …) can only be resolved against each
-    /// image individually. For a multi-image selection the shared editing buffer
-    /// can't express that, so the just-applied template literals are flushed to each
-    /// image's sidecar first, then the batch resolver reads them back and resolves
-    /// per image. For a single displayed image the batch resolver works directly off
-    /// the editing buffer, so no pre-save is needed there.
+    /// Template intent and editor inputs are captured before asynchronous work. Each photo's
+    /// local copy resolves its own {filename}/{seq} values, then awaited JSON preparation saves
+    /// that complete result. No separate literal save can race the variable operation.
     func applyTemplateFieldsAndProcessVariables(_ template: [String: String], to images: [ImageFile], append: Bool = false) {
         applyTemplateFields(template, append: append)
         guard !images.isEmpty else { return }
         if selectedCount > 1 {
-            saveToSidecar()
+            // An instant template names its repeatable fields explicitly. Capture that intent
+            // even when the selection has no common value; optional previousCommon inference
+            // must not drop a supplied organisation/controlled-vocabulary list.
+            let templateLists: [(String, MetadataFieldID)] = [
+                ("keywords", .keywords), ("personShown", .personShown), ("creator", .creator),
+                ("organisationShownName", .organisationShownName), ("organisationShownCode", .organisationShownCode),
+                ("sceneCode", .sceneCode), ("subjectCode", .subjectCode), ("mediaTopic", .mediaTopic), ("genre", .genre)
+            ]
+            for (key, field) in templateLists where template[key] != nil {
+                let values = Self.values(for: field, in: editingMetadata)
+                if append {
+                    switch batchFieldMutations[field] ?? .untouched {
+                    case .clear, .overwrite:
+                        // A prior removal/clear is represented as replacement intent. Appending
+                        // a template must extend that replacement, not resurrect original values.
+                        batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
+                    case .untouched, .append:
+                        if !values.isEmpty { batchFieldMutations[field] = .append(values) }
+                    }
+                } else {
+                    batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
+                }
+            }
         }
+        // Capture the batch mutation with the variable request. Awaited JSON preparation saves
+        // the complete per-photo result; no separate fire-and-forget literal write can race it.
         processVariablesForImages(images)
     }
 
@@ -2360,499 +2418,334 @@ final class MetadataViewModel {
 
     /// Resolves all variable placeholders in editingMetadata text fields in-place.
     func processVariables(filename: String = "", sequenceIndex: Int = 1) {
+        guard !isProcessingFolder else {
+            saveError = "Wait for the current folder operation before resolving this editor's variables."
+            return
+        }
+        guard let imageURL = selectedURLs.first, selectedCount == 1 else { return }
+        let original = editingMetadata
+        let selection = selectedURLs
+        let folder = currentFolderURL
+        let loadID = metadataLoadRequestID
+        let input = VariableMetadataResolutionInput(metadata: original, imageURL: imageURL,
+            filename: filename, sequenceIndex: sequenceIndex, options: variableOptions())
+        let generation = batchProcessGeneration + 1
         batchProcessTask?.cancel()
         batchProcessTask = Task {
-            await processVariablesInEditingBuffer(filename: filename, sequenceIndex: sequenceIndex)
-        }
-    }
-
-    private func sportsCaptionNumber(for imageURL: URL?) async -> String {
-        guard let imageURL else { return "" }
-        let folderURL = imageURL.deletingLastPathComponent()
-        let rosterResult = await MatchRosterService.shared.load(
-            for: folderURL,
-            requestID: UUID()
-        )
-        guard !Task.isCancelled,
-              case .loaded(let rosterSnapshot) = rosterResult else { return "" }
-        let faceDataResult = await FaceDataFolderLoadService.shared.loadDocument(
-            folderURL: folderURL
-        )
-        guard !Task.isCancelled,
-              case .complete(let faceSnapshot) = faceDataResult else { return "" }
-        return SportsCaptionNumberResolver.value(
-            for: imageURL,
-            faceData: faceSnapshot.faceData,
-            match: rosterSnapshot.roster
-        )
-    }
-
-    private func processVariablesInEditingBuffer(filename: String, sequenceIndex: Int) async {
-        let interpolator = PresetVariableInterpolator()
-        let initials = UserDefaults.standard.string(forKey: UserDefaultsKeys.creatorInitials) ?? ""
-        editingMetadata = await interpolator.resolvingGPSPlaceVariables(in: editingMetadata)
-        editingMetadata = interpolator.resolvingSportsNumberVariables(
-            in: editingMetadata,
-            number: await sportsCaptionNumber(for: selectedURLs.first)
-        )
-        // Use a snapshot of current editing state for field references
-        let snapshot = editingMetadata
-
-        editingMetadata.title = resolveIfPresent(editingMetadata.title, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.description = resolveIfPresent(editingMetadata.description, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.extendedDescription = resolveIfPresent(editingMetadata.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.creators = IPTCMetadata.normalizedCreators(editingMetadata.creators.compactMap {
-            resolveIfPresent($0, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        })
-        editingMetadata.creatorJobTitle = resolveIfPresent(editingMetadata.creatorJobTitle, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.descriptionWriter = resolveIfPresent(editingMetadata.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.credit = resolveIfPresent(editingMetadata.credit, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.copyright = resolveIfPresent(editingMetadata.copyright, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.rightsUsageTerms = resolveIfPresent(editingMetadata.rightsUsageTerms, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.webStatementOfRights = resolveIfPresent(editingMetadata.webStatementOfRights, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.digitalImageGUID = resolveIfPresent(editingMetadata.digitalImageGUID, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.imageSupplierImageID = resolveIfPresent(editingMetadata.imageSupplierImageID, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.jobId = resolveIfPresent(editingMetadata.jobId, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.dateCreated = resolveIfPresent(editingMetadata.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.city = resolveIfPresent(editingMetadata.city, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.sublocation = resolveIfPresent(editingMetadata.sublocation, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.provinceState = resolveIfPresent(editingMetadata.provinceState, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.country = resolveIfPresent(editingMetadata.country, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.event = resolveIfPresent(editingMetadata.event, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.instructions = resolveIfPresent(editingMetadata.instructions, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.source = resolveIfPresent(editingMetadata.source, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-
-        editingMetadata.keywords = resolveListField(editingMetadata.keywords, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials, validateField: .keywords)
-        editingMetadata.personShown = resolveListField(editingMetadata.personShown, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.organisationsShownNames = resolveListField(editingMetadata.organisationsShownNames, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.organisationsShownCodes = resolveListField(editingMetadata.organisationsShownCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
-        editingMetadata.sceneCodes = IPTCSceneCode.normalizedValues(resolveListField(editingMetadata.sceneCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials))
-        editingMetadata.subjectCodes = IPTCSubjectCode.normalizedValues(resolveListField(editingMetadata.subjectCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials))
-
-        // Add resolved Job ID to keywords if enabled (after all variables are resolved)
-        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
-           let jobId = editingMetadata.jobId, !jobId.isEmpty,
-           !editingMetadata.keywords.contains(jobId) {
-            editingMetadata.keywords.append(jobId)
-        }
-
-        hasChanges = true
-    }
-
-    private func resolveIfPresent(_ value: String?, interpolator: PresetVariableInterpolator, filename: String, ref: IPTCMetadata, sequenceIndex: Int = 1, initials: String = "") -> String? {
-        guard let value, !value.isEmpty else { return value }
-        let resolved = interpolator.resolve(value, filename: filename, existingMetadata: ref, sequenceIndex: sequenceIndex, initials: initials)
-        return resolved.isEmpty ? nil : resolved
-    }
-
-    private enum VariableWriteResult {
-        case writtenToFile
-        case writtenToXMPSidecar
-        case savedToHistory
-    }
-
-    /// Write resolved variable metadata for a single image, respecting the user's write mode settings.
-    private func writeResolvedVariables(
-        resolved: IPTCMetadata,
-        original: IPTCMetadata,
-        embedded: IPTCMetadata,
-        existingSidecar: MetadataSidecar?,
-        image: ImageFile,
-        url: URL
-    ) async throws -> VariableWriteResult {
-        let mode = MetadataWriteMode.current(forC2PA: image.hasC2PA, isRaw: SupportedImageFormats.isRaw(url: url))
-        guard let folder = self.currentFolderURL else {
-            throw NSError(domain: "MetadataViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "No folder URL"])
-        }
-
-        if mode != .historyOnly {
-            try await sidecarService.requireNoPendingOrientation(for: url, in: folder)
-        }
-
-        // Build changed-fields dictionary for file write paths
-        var fields: [MetadataFieldKey: String] = [:]
-        if resolved.title != original.title { fields[.headline] = resolved.title ?? "" }
-        if resolved.description != original.description { fields[.description] = resolved.description ?? "" }
-        if resolved.extendedDescription != original.extendedDescription {
-            fields[.extendedDescription] = resolved.extendedDescription ?? ""
-        }
-        if resolved.creators != original.creators {
-            fields[.creator] = resolved.creatorTransportValue ?? ""
-        }
-        if resolved.creatorJobTitle != original.creatorJobTitle { fields[.creatorJobTitle] = resolved.creatorJobTitle ?? "" }
-        if resolved.descriptionWriter != original.descriptionWriter { fields[.descriptionWriter] = resolved.descriptionWriter ?? "" }
-        if resolved.credit != original.credit { fields[.credit] = resolved.credit ?? "" }
-        if resolved.copyright != original.copyright { fields[.rights] = resolved.copyright ?? "" }
-        if resolved.rightsUsageTerms != original.rightsUsageTerms { fields[.rightsUsageTerms] = resolved.rightsUsageTerms ?? "" }
-        if resolved.webStatementOfRights != original.webStatementOfRights { fields[.webStatementOfRights] = resolved.webStatementOfRights ?? "" }
-        if resolved.digitalImageGUID != original.digitalImageGUID { fields[.digitalImageGUID] = resolved.digitalImageGUID ?? "" }
-        if resolved.imageSupplierImageID != original.imageSupplierImageID { fields[.imageSupplierImageID] = resolved.imageSupplierImageID ?? "" }
-        if resolved.jobId != original.jobId {
-            fields[.transmissionReference] = resolved.jobId ?? ""
-        }
-        if resolved.dateCreated != original.dateCreated { fields[.dateCreated] = resolved.dateCreated ?? "" }
-        if resolved.city != original.city { fields[.city] = resolved.city ?? "" }
-        if resolved.sublocation != original.sublocation { fields[.sublocation] = resolved.sublocation ?? "" }
-        if resolved.provinceState != original.provinceState { fields[.provinceState] = resolved.provinceState ?? "" }
-        if resolved.country != original.country { fields[.country] = resolved.country ?? "" }
-        if resolved.countryCode != original.countryCode { fields[.countryCode] = resolved.countryCode ?? "" }
-        if resolved.event != original.event { fields[.event] = resolved.event ?? "" }
-        if resolved.instructions != original.instructions { fields[.instructions] = resolved.instructions ?? "" }
-        if resolved.source != original.source { fields[.source] = resolved.source ?? "" }
-        if resolved.keywords != original.keywords {
-            fields[.subject] = resolved.keywords.joined(separator: ", ")
-        }
-        if resolved.personShown != original.personShown {
-            fields[.personInImage] = resolved.personShown.joined(separator: ", ")
-        }
-        if resolved.organisationsShownNames != original.organisationsShownNames {
-            fields[.organisationInImageName] = resolved.organisationsShownNames.joined(separator: ", ")
-        }
-        if resolved.organisationsShownCodes != original.organisationsShownCodes {
-            fields[.organisationInImageCode] = resolved.organisationsShownCodes.joined(separator: ", ")
-        }
-        if resolved.sceneCodes != original.sceneCodes {
-            fields[.scene] = resolved.sceneCodes.joined(separator: ", ")
-        }
-        if resolved.subjectCodes != original.subjectCodes {
-            fields[.subjectCode] = resolved.subjectCodes.joined(separator: ", ")
-        }
-        if resolved.mediaTopics != original.mediaTopics {
-            fields[.mediaTopic] = resolved.mediaTopics.map(\.termIdentifier).joined(separator: ", ")
-        }
-        if resolved.genres != original.genres {
-            fields[.genre] = resolved.genres.map(\.termIdentifier).joined(separator: ", ")
-        }
-
-        // Build JSON sidecar with history entry
-        func buildSidecar(pendingChanges: Bool, historyNote: String) -> MetadataSidecar {
-            let timestamp = Date()
-            var sidecar = MetadataSidecar(
-                sourceFile: url.lastPathComponent,
-                pendingChanges: pendingChanges,
-                metadata: resolved,
-                imageMetadataSnapshot: embedded
-            )
-            sidecar.history = existingSidecar?.history ?? []
-            // The serialized sidecar boundary replays new history entries onto the latest
-            // on-disk record. Record the actual variable substitutions as field deltas; the
-            // audit-only entry below deliberately carries no replayable metadata value.
-            sidecar.history.append(contentsOf: MetadataHistoryEntry.changes(
-                from: existingSidecar?.metadata ?? original,
-                to: resolved,
-                timestamp: timestamp
-            ))
-            sidecar.history.append(MetadataHistoryEntry(
-                timestamp: timestamp,
-                fieldName: "Variables processed",
-                oldValue: nil,
-                newValue: historyNote
-            ))
-            sidecar.history.trimToHistoryLimit()
-            return sidecar
-        }
-
-        switch mode {
-        case .historyOnly:
-            let sidecar = buildSidecar(pendingChanges: true, historyNote: "Saved to sidecar (history only)")
-            _ = try await sidecarService.saveSidecarMergingHistorySerialized(
-                sidecar,
-                for: url,
-                in: folder
-            )
-            return .savedToHistory
-
-        case .writeToXMPSidecar:
-            try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
-                metadata: resolved,
-                for: url
-            )
-            let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to XMP sidecar")
-            _ = try await sidecarService.saveSidecarMergingHistorySerialized(
-                sidecar,
-                for: url,
-                in: folder
-            )
-            return .writtenToXMPSidecar
-
-        case .writeToFile, .writeToFileAndXMPSidecar:
-            if !fields.isEmpty || resolved.hasDescriptiveContent {
-                try await writeEngine.writeFields(
-                    fields,
-                    to: [url],
-                    structuredData: StructuredWriteData(
-                        editorial: EditorialStructuredWriteData(metadata: resolved)
-                    )
-                )
+            do {
+                let resolved = try await variableResolver(input)
+                guard !Task.isCancelled, batchProcessGeneration == generation,
+                      metadataLoadRequestID == loadID, selectedURLs == selection,
+                      currentFolderURL == folder, editingMetadata == original else { return }
+                editingMetadata = resolved
+                if resolved != original { hasChanges = true }
+            } catch {
+                guard batchProcessGeneration == generation, metadataLoadRequestID == loadID,
+                      selectedURLs == selection, currentFolderURL == folder, editingMetadata == original else { return }
+                saveError = error.localizedDescription
             }
-            // Dual-write keeps a matching full .xmp record. In PM-style writeToFile
-            // mode any existing .xmp must mirror the file (full resolved record), or
-            // its stale values shadow the freshly embedded ones on read and export.
-            try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
-                metadata: resolved,
-                for: url,
-                onlyIfExisting: !mode.writesXMPSidecar
-            )
-            let note = mode.writesXMPSidecar ? "Written to image file + XMP sidecar" : "Written to image file"
-            let sidecar = buildSidecar(pendingChanges: false, historyNote: note)
-            _ = try await sidecarService.saveSidecarMergingHistorySerialized(
-                sidecar,
-                for: url,
-                in: folder
-            )
-            return .writtenToFile
         }
     }
 
-    /// Process variables for specific images: reads each image's metadata,
-    /// resolves any variable placeholders, and writes back.
+    /// Capture live template/editor inputs once. Multi-photo literals are folded into each
+    /// immutable local input and durably prepared together with the resolved substitutions.
     func processVariablesForImages(_ images: [ImageFile]) {
-        guard !images.isEmpty else { return }
-        flushPendingBatchEditsForVariableProcessing(targetURLs: Set(images.map(\.url)))
-        isProcessingFolder = true
-        folderProcessProgress = "0/\(images.count)"
-        saveError = nil
-        variableProcessingStatus = nil
-        batchProcessTask?.cancel()
-        batchProcessTask = Task { await processVariablesBatch(images) }
+        startVariableBatch(images: images)
     }
 
-    /// Process variables for all images in a folder: reads each image's metadata,
-    /// resolves any variable placeholders, and writes back.
     func processVariablesInFolder(images: [ImageFile]) {
-        guard !images.isEmpty else { return }
-        flushPendingBatchEditsForVariableProcessing(targetURLs: Set(images.map(\.url)))
+        startVariableBatch(images: images)
+    }
+
+    func retryVariableWrites() {
+        guard !isProcessingFolder, let folder = retainedVariableWrites.first?.folderURL ?? retainedVariableAdmissions.first?.folderURL else { return }
+        let folderKey = Self.variablePhotoKey(folder)
+        let requests = retainedVariableWrites.filter { Self.variablePhotoKey($0.folderURL) == folderKey }
+        let admissions = retainedVariableAdmissions.filter { Self.variablePhotoKey($0.folderURL) == folderKey }
+        startVariableBatch(images: [], retryRequests: requests, retryAdmissions: admissions, retryFolder: folder)
+    }
+
+    func waitForVariableProcessing() async { await batchProcessTask?.value }
+
+    func requireVariableDraftsPersisted() throws {
+        if !activeVariableBatchIDs.isEmpty {
+            throw CaptionWorkspaceFlushError.persistenceFailed(
+                "Variable processing is still running. Wait for its result before closing or changing this workspace.")
+        }
+        let unverified = retainedVariableWrites.filter { !$0.hasVerifiedPreparedRecord }
+        let riskyAdmissions = retainedVariableAdmissions.filter(\.requiresPersistence)
+        guard unverified.isEmpty && riskyAdmissions.isEmpty else {
+            throw CaptionWorkspaceFlushError.persistenceFailed(
+                "Variable edits have not been verified in saved metadata. Use Retry Variable Writes before closing. Retained photos: "
+                + (unverified.map { $0.imageURL.path } + riskyAdmissions.map { $0.imageURL.path }).joined(separator: ", "))
+        }
+    }
+
+    private func synchronizeVariableLifecycleRetention() {
+        if !activeVariableBatchIDs.isEmpty || retainedVariableAdmissions.contains(where: \.requiresPersistence) || retainedVariableWrites.contains(where: { !$0.hasVerifiedPreparedRecord }) {
+            variableLifecycleCoordinator.register(ownerID: variableLifecycleOwnerID) { [self] in
+                try requireVariableDraftsPersisted()
+            }
+        } else {
+            variableLifecycleCoordinator.unregister(ownerID: variableLifecycleOwnerID)
+        }
+    }
+
+    private static func variablePhotoKey(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private static func sameVariableRecord(_ first: MetadataSidecar?, _ second: MetadataSidecar?) throws -> Bool {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(first) == encoder.encode(second)
+    }
+
+    private func loadVariableInput(imageURL: URL, folderURL: URL) async throws -> VariableMetadataInputSnapshot {
+        if let variableInputLoader { return try await variableInputLoader(imageURL, folderURL) }
+        let before = try await SourceImageRevision.capture(at: imageURL)
+        let dictionaries = try await readService.readBatchBasicMetadata(urls: [imageURL])
+        guard dictionaries.count == 1, let dictionary = dictionaries.first,
+              let path = dictionary[MetadataDictKey.sourceFile] as? String,
+              Self.variablePhotoKey(URL(fileURLWithPath: path)) == Self.variablePhotoKey(imageURL) else {
+            throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey:
+                "Could not verify this photo's metadata and content-credential status."])
+        }
+        let embedded = iptcMetadataFromDict(dictionary)
+        let credentials = TechnicalMetadata.dictHasC2PA(dictionary)
+        let baseline = try await MetadataReviewDraftCapture.loadBaseline(for: imageURL, in: folderURL)
+        let xmp = try await PendingMetadataWriteService.strictXMP(for: imageURL)
+        let after = try await SourceImageRevision.capture(at: imageURL)
+        guard before.relationship(to: after) == .exactRevision else { throw MetadataFieldMutationConflict() }
+        return .init(baselineSidecar: baseline, embeddedMetadata: embedded, xmpMetadata: xmp.metadata,
+            hasC2PA: credentials, evidence: .init(sourceRevision: after, xmpData: xmp.snapshot.data))
+    }
+
+    private func startVariableBatch(images: [ImageFile],
+                                    retryRequests: [VariableMetadataWriteRequest] = [],
+                                    retryAdmissions: [VariableAdmission] = [], retryFolder: URL? = nil) {
+        guard let folder = retryFolder ?? currentFolderURL,
+              !images.isEmpty || !retryRequests.isEmpty || !retryAdmissions.isEmpty else { return }
+        let isRetry = retryFolder != nil
+        let urls = isRetry ? retryRequests.map(\.imageURL) + retryAdmissions.map(\.imageURL) : images.map(\.url)
+        let batchID = UUID()
+        let folderKey = Self.variablePhotoKey(folder)
+        guard urls.allSatisfy({ Self.variablePhotoKey($0.deletingLastPathComponent()) == folderKey }) else {
+            let message = "The selected photos no longer belong to the captured folder. Select them again before processing variables."
+            variableBatchOutcome = .init(requestID: batchID, folderURL: folder,
+                results: urls.map { .init(imageURL: $0, failure: message) }, unattemptedURLs: [], wasCancelled: false)
+            variableProcessingStatus = message; variableProcessingHadFailures = true
+            return
+        }
+        let options = variableOptions()
+        let selected = selectedURLs
+        let edited = editingMetadata
+        let previous = previousEditingMetadata
+        let selectedExpectedRecord = currentWriteExpectedRecord
+        let loadID = metadataLoadRequestID
+        let selectedSource = metadataReferenceSource
+        let hasEditorInput = hasChanges && !Set(selected).isDisjoint(with: Set(urls))
+        let hasUnsavedEditorInput = hasEditorInput && hasUnpersistedEditorChanges
+        let batchMutation = selectedCount > 1 && hasEditorInput ? capturedBatchMutation() : nil
+        let selectedBatchBaselines = batchMetadataByURL
+        let technicalDirty = hasEditorInput && (Self.developSettingsChanged(edited.cameraRaw, previous?.cameraRaw)
+            || edited.exifOrientation != previous?.exifOrientation)
+        let existingKeys = Set(retainedVariableWrites.map { Self.variablePhotoKey($0.imageURL) }
+            + retainedVariableAdmissions.map { Self.variablePhotoKey($0.imageURL) })
+        if !isRetry && (technicalDirty || urls.contains(where: { existingKeys.contains(Self.variablePhotoKey($0)) })) {
+            let message = technicalDirty
+                ? "Save the editor's Develop or rotation changes before processing variables. They remain in the editor."
+                : "An earlier variable request is retained for these photos. Use Retry Variable Writes before starting another transformation."
+            variableBatchOutcome = .init(requestID: batchID, folderURL: folder,
+                results: urls.map { .init(imageURL: $0, failure: message) }, unattemptedURLs: [], wasCancelled: false)
+            variableProcessingStatus = message; variableProcessingHadFailures = true
+            return
+        }
+        let admissions: [VariableAdmission]
+        if isRetry { admissions = retryAdmissions }
+        else {
+            admissions = urls.enumerated().map { index, url in
+                var capturedInput: VariableMetadataInputSnapshot?
+                return VariableAdmission(id: UUID(), imageURL: url, folderURL: folder,
+                    editorCheckpoint: selected == [url] ? .init(photoURL: url, folderURL: folder,
+                        loadID: loadID, metadata: edited) : nil,
+                    requiresPersistence: hasUnsavedEditorInput && selected.contains(url),
+                    capture: { [weak self] in
+                        guard let self else { throw CancellationError() }
+                        let input: VariableMetadataInputSnapshot
+                        if let capturedInput { input = capturedInput }
+                        else {
+                            input = try await loadVariableInput(imageURL: url, folderURL: folder)
+                            capturedInput = input
+                        }
+                        let isCapturedSelection = selected.count == 1 && selected.first == url && hasEditorInput
+                        let referenceSource: MetadataReferenceSource = isCapturedSelection
+                            ? selectedSource : (input.xmpMetadata == nil ? .embedded : .xmp)
+                        let physical = referenceMetadata(for: referenceSource, embedded: input.embeddedMetadata,
+                            xmp: input.xmpMetadata, imageURL: url) ?? input.embeddedMetadata
+                        var original = input.baselineSidecar?.pendingChanges == true
+                            ? input.baselineSidecar!.metadata : physical
+                        // JSON deliberately omits technical state. Carry the live physical
+                        // reference separately so unchanged Develop/orientation is not a draft.
+                        original.cameraRaw = physical.cameraRaw
+                        original.exifOrientation = physical.exifOrientation
+                        var local = original
+                        if isCapturedSelection {
+                            guard try Self.sameVariableRecord(selectedExpectedRecord, input.baselineSidecar) else {
+                                throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
+                                    "The saved metadata changed after this editor was loaded. Your editor values were retained; reload or reconcile before processing variables."])
+                            }
+                            if input.baselineSidecar?.pendingChanges != true {
+                                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                                guard let previous, try encoder.encode(previous) == encoder.encode(original) else {
+                                    throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
+                                        "The photo's physical metadata changed after this editor was loaded. Your editor values remain unchanged; reload or reconcile before processing variables."])
+                                }
+                            }
+                            // The loaded editor already proved its technical values unchanged.
+                            // Mask parse identities are not an editorial edit; physical writes
+                            // preserve the service's current technical record independently.
+                            original.cameraRaw = edited.cameraRaw
+                            original.exifOrientation = edited.exifOrientation
+                            local = edited
+                        } else if selected.contains(url), let batchMutation {
+                            if let captured = selectedBatchBaselines[url] {
+                                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                                guard try encoder.encode(captured) == encoder.encode(original) else {
+                                    throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
+                                        "The saved metadata changed after this batch editor was loaded. The template remains in the editor; reconcile before processing variables."])
+                                }
+                            }
+                            batchMutation(&local)
+                        }
+                        let resolved = try await variableResolver(.init(metadata: local, imageURL: url,
+                            filename: url.lastPathComponent, sequenceIndex: index + 1, options: options))
+                        try Task.checkCancellation()
+                        return try VariableMetadataWriteRequest.capture(original: original, resolved: resolved,
+                            baselineSidecar: input.baselineSidecar, imageURL: url, folderURL: folder,
+                            requestedMode: options.mode(hasC2PA: input.hasC2PA, imageURL: url), creationEvidence: input.evidence)
+                    })
+            }
+            retainedVariableAdmissions.append(contentsOf: admissions)
+        }
+        let generation = batchProcessGeneration + 1
+        let engine = writeEngine
+        let reader = readService
+        let executor = variableWriteExecutor
+        activeVariableBatchIDs.insert(batchID)
+        synchronizeVariableLifecycleRetention()
         isProcessingFolder = true
-        folderProcessProgress = "0/\(images.count)"
-        saveError = nil
+        folderProcessProgress = "0/\(urls.count)"
+        variableBatchOutcome = nil
         variableProcessingStatus = nil
+        variableProcessingHadFailures = false
         batchProcessTask?.cancel()
-        batchProcessTask = Task { await processVariablesBatch(images) }
-    }
-
-    /// Batch template edits live only in the shared editing buffer until saved.
-    /// If variables are processed immediately after applying a template, flush
-    /// those literals first so the async per-file resolver reads the same values
-    /// the panel is showing.
-    private func flushPendingBatchEditsForVariableProcessing(targetURLs: Set<URL>) {
-        guard selectedCount > 1,
-              hasChanges,
-              hasVariables,
-              !targetURLs.isDisjoint(with: Set(selectedURLs)) else { return }
-        saveToSidecar()
-    }
-
-    /// Shared implementation for batch variable processing.
-    /// Reads metadata in batches via readBatchFullMetadata (single batch read)
-    /// instead of one readFullMetadata call per image.
-    private func processVariablesBatch(_ images: [ImageFile]) async {
-        let interpolator = PresetVariableInterpolator()
-        let initials = UserDefaults.standard.string(forKey: UserDefaultsKeys.creatorInitials) ?? ""
-        let folderSnapshot = currentFolderURL
-        var processed = 0
-        var writtenToFile = 0
-        var writtenToXMP = 0
-        var savedToHistory = 0
-        var unchanged = 0
-        var failed = 0
-        var updatedURLs: Set<URL> = []
-
-        // Identify which images need a disk metadata read (skip the currently-displayed image
-        // with pending edits — that one is resolved in-memory)
-        let currentlyDisplayedURL: URL? = (selectedCount == 1 && hasChanges) ? selectedURLs.first : nil
-        let urlsToRead = images
-            .filter { $0.url != currentlyDisplayedURL }
-            .map(\.url)
-
-        // Batch-read embedded metadata in chunks of 50 to avoid memory pressure
-        var batchMetadata: [URL: IPTCMetadata] = [:]
-        batchMetadata.reserveCapacity(urlsToRead.count)
-        let chunkSize = 50
-        for chunkStart in stride(from: 0, to: urlsToRead.count, by: chunkSize) {
-            let chunkEnd = min(chunkStart + chunkSize, urlsToRead.count)
-            let chunk = Array(urlsToRead[chunkStart..<chunkEnd])
-            do {
-                let batch = try await readService.readBatchFullMetadata(urls: chunk)
-                batchMetadata.merge(batch) { _, new in new }
-            } catch {
-                // Count all images in this chunk as failed
-                failed += chunk.count
+        batchProcessTask = Task {
+            defer {
+                activeVariableBatchIDs.remove(batchID)
+                synchronizeVariableLifecycleRetention()
+                if batchProcessGeneration == generation { isProcessingFolder = false; folderProcessProgress = "" }
             }
-            self.folderProcessProgress = "Reading metadata: \(min(chunkEnd, urlsToRead.count))/\(urlsToRead.count)"
-        }
-
-        let sidecarRequestID = UUID()
-        let sidecarResult = await editorReadService.load(MetadataEditorReadRequest(
-            id: sidecarRequestID,
-            imageURLs: urlsToRead,
-            folderURL: folderSnapshot,
-            embeddedMetadataByImageURL: batchMetadata,
-            reconcilesSidecarTimestamps: false
-        ))
-        guard !Task.isCancelled,
-              currentFolderURL == folderSnapshot,
-              case .complete(let sidecarSnapshot) = sidecarResult,
-              sidecarSnapshot.request.id == sidecarRequestID else { return }
-
-        var sequenceNumber = 1
-        for image in images {
-            let url = image.url
-            let filename = image.filename
-
-            // If this is the currently displayed image with pending edits,
-            // resolve variables directly in the editing buffer
-            if url == currentlyDisplayedURL {
-                let before = self.editingMetadata
-                await self.processVariablesInEditingBuffer(filename: filename, sequenceIndex: sequenceNumber)
-                if self.editingMetadata != before {
-                    // Honor the Simple/Professional/Custom write-mode toggle for the
-                    // displayed image too, rather than forcing a history-only sidecar.
-                    // commitEdits writes the full editing buffer (all fields, incl.
-                    // digitalSourceType/GPS/cameraRaw) to the destination the mode
-                    // dictates and reconciles editing state itself, so this URL is
-                    // not added to updatedURLs / refreshed again below.
-                    let mode = MetadataWriteMode.current(forC2PA: image.hasC2PA, isRaw: SupportedImageFormats.isRaw(url: url))
-                    self.commitEdits(mode: mode)
-                    switch mode {
-                    case .writeToXMPSidecar:
-                        writtenToXMP += 1
-                    case .writeToFile, .writeToFileAndXMPSidecar:
-                        writtenToFile += 1
-                    case .historyOnly:
-                        savedToHistory += 1
-                    }
-                } else {
-                    unchanged += 1
+            let service = VariableMetadataWriteService(writeEngine: engine, readSourceFacts: { @MainActor url in
+                let dictionaries = try await reader.readBatchBasicMetadata(urls: [url])
+                guard dictionaries.count == 1, let dictionary = dictionaries.first,
+                      let path = dictionary[MetadataDictKey.sourceFile] as? String,
+                      Self.variablePhotoKey(URL(fileURLWithPath: path)) == Self.variablePhotoKey(url) else {
+                    throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey:
+                        "Could not verify this photo's metadata and content-credential status."])
                 }
-                processed += 1
-                sequenceNumber += 1
-                self.folderProcessProgress = "\(processed)/\(images.count)"
-                continue
+                return .init(metadata: iptcMetadataFromDict(dictionary), hasC2PA: TechnicalMetadata.dictHasC2PA(dictionary))
+            })
+            var results: [VariableMetadataPhotoOutcome] = []
+            var acknowledgedBatchMetadata = selectedBatchBaselines
+            var acknowledgedPending: [URL: Bool] = [:]
+            var cancelled = false
+            for url in urls {
+                if Task.isCancelled { cancelled = true; break }
+                var item = VariableMetadataPhotoOutcome(imageURL: url)
+                do {
+                    let key = Self.variablePhotoKey(url)
+                    let explicitRetry = retryRequests.first { Self.variablePhotoKey($0.imageURL) == key }
+                    let admission = admissions.first { Self.variablePhotoKey($0.imageURL) == key }
+                    let request: VariableMetadataWriteRequest? = if let explicitRetry { explicitRetry } else { try await admission?.capture() }
+                    if let admission { retainedVariableAdmissions.removeAll { $0.id == admission.id } }
+                    if let request {
+                        // Retain before the first possible commit. Even a JSON readback failure
+                        // must keep the identical operation/receipt available to the Retry action.
+                        if !retainedVariableWrites.contains(where: { $0.id == request.id }) {
+                            retainedVariableWrites.append(request)
+                            if let checkpoint = admission?.editorCheckpoint {
+                                retainedVariableEditorCheckpoints[request.id] = checkpoint
+                            }
+                        }
+                        let editorCheckpoint = retainedVariableEditorCheckpoints[request.id]
+                        let result = if let executor { await executor(request) } else { await service.execute(request) }
+                        item.writeResult = result
+                        item.wasCancelled = result.wasCancelled
+                        if result.completed {
+                            retainedVariableWrites.removeAll { $0.id == request.id }
+                            retainedVariableEditorCheckpoints.removeValue(forKey: request.id)
+                            if let record = result.physicalResult?.installedSidecar ?? result.preparedSidecar {
+                                acknowledgedBatchMetadata[url] = record.metadata
+                                acknowledgedPending[url] = record.pendingChanges
+                            }
+                        }
+                        if batchProcessGeneration == generation, let editorCheckpoint,
+                           metadataLoadRequestID == editorCheckpoint.loadID,
+                           currentFolderURL == editorCheckpoint.folderURL,
+                           selectedURLs == [editorCheckpoint.photoURL], editingMetadata == editorCheckpoint.metadata,
+                           let installed = result.preparedSidecar,
+                           result.completed {
+                            let record = result.physicalResult?.installedSidecar ?? installed
+                            var displayed = record.metadata
+                            displayed.cameraRaw = edited.cameraRaw
+                            displayed.exifOrientation = edited.exifOrientation
+                            editingMetadata = displayed
+                            previousEditingMetadata = displayed
+                            cleanupBaseline = (url, folder, record)
+                            capturedCaptionWriteExpectation = nil
+                            sidecarHistory = record.history
+                            hasChanges = record.pendingChanges
+                            selectedHavePendingSidecars = record.pendingChanges
+                            if result.physicalResult?.didWriteEmbedded == true { embeddedMetadata = displayed }
+                            if result.physicalResult?.didWriteXMP == true { xmpMetadata = displayed }
+                            let actualReference = referenceMetadata(for: metadataReferenceSource,
+                                embedded: embeddedMetadata, xmp: xmpMetadata, imageURL: url)
+                            metadata = actualReference
+                            originalImageMetadata = actualReference
+                            saveError = nil
+                        }
+                    } else { item.unchanged = true }
+                } catch {
+                    item.wasCancelled = error is CancellationError
+                    item.failure = item.wasCancelled ? nil : error.localizedDescription
+                }
+                results.append(item)
+                if batchProcessGeneration == generation { folderProcessProgress = "\(results.count)/\(urls.count)" }
+                if item.wasCancelled || Task.isCancelled { cancelled = true; break }
             }
-
-            guard let embedded = batchMetadata[url] else {
-                // Already counted as failed during batch read
-                processed += 1
-                sequenceNumber += 1
-                self.folderProcessProgress = "\(processed)/\(images.count)"
-                continue
+            guard batchProcessGeneration == generation else { return }
+            let outcome = VariableMetadataBatchOutcome(requestID: batchID, folderURL: folder,
+                results: results, unattemptedURLs: Array(urls.dropFirst(results.count)), wasCancelled: cancelled)
+            // A retry owns earlier per-photo values, not a newly edited batch buffer.
+            // Leave that buffer available for explicit reconciliation/reload.
+            if !isRetry, selected.count > 1, Set(selected).isSubset(of: Set(urls)),
+               selected.allSatisfy({ acknowledgedPending[$0] != nil }),
+               metadataLoadRequestID == loadID, currentFolderURL == folder,
+               selectedURLs == selected, editingMetadata == edited {
+                publishBatchMetadata(selected.compactMap { acknowledgedBatchMetadata[$0] },
+                    metadataByURL: acknowledgedBatchMetadata, isReload: false)
+                selectedHavePendingSidecars = acknowledgedPending.values.contains(true)
+                hasChanges = selectedHavePendingSidecars
+                batchFieldMutations = [:]
+                batchLocationsShownMutation = .untouched
+                batchImageSupplierMutation = .untouched
             }
-
-            do {
-                // Load XMP sidecar if policy allows, matching the normal
-                // metadata loading path that merges embedded + XMP
-                let sourceFacts = sidecarSnapshot.factsByImageURL[url]
-                let xmpMeta = sourceFacts?.xmpMetadata
-                let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
-                let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta, imageURL: url) ?? embedded
-
-                // For images with sidecar pending changes (C2PA or historyOnly mode),
-                // resolve variables from the sidecar metadata instead of embedded
-                let existingSidecar = sourceFacts?.appSidecar
-                let unresolvedMeta: IPTCMetadata
-                if let sidecar = existingSidecar, sidecar.pendingChanges {
-                    unresolvedMeta = sidecar.metadata
-                } else {
-                    unresolvedMeta = baseMeta
-                }
-                let gpsResolved = await interpolator.resolvingGPSPlaceVariables(in: unresolvedMeta)
-                let meta = interpolator.resolvingSportsNumberVariables(
-                    in: gpsResolved,
-                    number: await self.sportsCaptionNumber(for: url)
-                )
-                let snapshot = meta
-
-                var changed = meta != unresolvedMeta
-                var resolvedMeta = meta
-
-                resolvedMeta.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.creators = IPTCMetadata.normalizedCreators(meta.creators.map { value in
-                    resolveIfChanged(value, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials) ?? ""
-                })
-                resolvedMeta.creatorJobTitle = resolveIfChanged(meta.creatorJobTitle, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.descriptionWriter = resolveIfChanged(meta.descriptionWriter, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.rightsUsageTerms = resolveIfChanged(meta.rightsUsageTerms, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.webStatementOfRights = resolveIfChanged(meta.webStatementOfRights, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.digitalImageGUID = resolveIfChanged(meta.digitalImageGUID, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.imageSupplierImageID = resolveIfChanged(meta.imageSupplierImageID, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.sublocation = resolveIfChanged(meta.sublocation, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.provinceState = resolveIfChanged(meta.provinceState, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.instructions = resolveIfChanged(meta.instructions, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-                resolvedMeta.source = resolveIfChanged(meta.source, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
-
-                let newKeywords = resolveListField(meta.keywords, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials, validateField: .keywords)
-                if newKeywords != meta.keywords { resolvedMeta.keywords = newKeywords; changed = true }
-                let newPersons = resolveListField(meta.personShown, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials)
-                if newPersons != meta.personShown { resolvedMeta.personShown = newPersons; changed = true }
-                let newOrganisationNames = resolveListField(meta.organisationsShownNames, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials)
-                if newOrganisationNames != meta.organisationsShownNames { resolvedMeta.organisationsShownNames = newOrganisationNames; changed = true }
-                let newOrganisationCodes = resolveListField(meta.organisationsShownCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials)
-                if newOrganisationCodes != meta.organisationsShownCodes { resolvedMeta.organisationsShownCodes = newOrganisationCodes; changed = true }
-                let newSceneCodes = IPTCSceneCode.normalizedValues(resolveListField(meta.sceneCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials))
-                if newSceneCodes != meta.sceneCodes { resolvedMeta.sceneCodes = newSceneCodes; changed = true }
-                let newSubjectCodes = IPTCSubjectCode.normalizedValues(resolveListField(meta.subjectCodes, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials))
-                if newSubjectCodes != meta.subjectCodes { resolvedMeta.subjectCodes = newSubjectCodes; changed = true }
-
-                // Add resolved Job ID to keywords if enabled (after all variables are resolved)
-                if UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
-                   let jobId = resolvedMeta.jobId, !jobId.isEmpty,
-                   !resolvedMeta.keywords.contains(jobId) {
-                    resolvedMeta.keywords.append(jobId)
-                    changed = true
-                }
-
-                if changed {
-                    let result = try await writeResolvedVariables(
-                        resolved: resolvedMeta,
-                        original: meta,
-                        embedded: embedded,
-                        existingSidecar: existingSidecar,
-                        image: image,
-                        url: url
-                    )
-                    switch result {
-                    case .writtenToFile: writtenToFile += 1
-                    case .writtenToXMPSidecar: writtenToXMP += 1
-                    case .savedToHistory: savedToHistory += 1
-                    }
-                    updatedURLs.insert(url)
-                } else {
-                    unchanged += 1
-                }
-            } catch {
-                failed += 1
+            variableBatchOutcome = outcome
+            variableProcessingHadFailures = outcome.attention != nil
+            variableProcessingStatus = "Variable processing: \(results.filter { $0.writeResult?.physicalResult?.completed == true }.count) written, \(results.filter { $0.writeResult?.savedToHistory == true }.count) saved to history, \(results.filter(\.unchanged).count) unchanged, \(results.filter { !$0.completed }.count) incomplete."
+            if metadataLoadRequestID == loadID, selectedURLs == selected, currentFolderURL == folder, editingMetadata == edited {
+                saveError = outcome.attention?.message
             }
-
-            processed += 1
-            sequenceNumber += 1
-            self.folderProcessProgress = "\(processed)/\(images.count)"
-        }
-
-        // Refresh the metadata panel if the currently displayed image was processed
-        if !updatedURLs.isEmpty {
-            await self.refreshMetadataAfterProcessing(updatedURLs: updatedURLs, processedImages: images)
-        }
-
-        self.isProcessingFolder = false
-        self.folderProcessProgress = ""
-        var statusParts: [String] = []
-        if writtenToFile > 0 { statusParts.append("written to file: \(writtenToFile)") }
-        if writtenToXMP > 0 { statusParts.append("written to XMP: \(writtenToXMP)") }
-        if savedToHistory > 0 { statusParts.append("saved to sidecar: \(savedToHistory)") }
-        if unchanged > 0 { statusParts.append("unchanged: \(unchanged)") }
-        if failed > 0 { statusParts.append("failed: \(failed)") }
-        if !statusParts.isEmpty {
-            self.variableProcessingHadFailures = failed > 0
-            self.variableProcessingStatus = "Variable processing completed: \(statusParts.joined(separator: ", "))."
         }
     }
 
@@ -3697,7 +3590,10 @@ final class MetadataViewModel {
     // MARK: - Diff Helpers
 
     private var fieldComparisonMetadata: IPTCMetadata? {
-        pendingDraftImageMetadataSnapshot ?? originalImageMetadata
+        if currentHistoryRecord?.pendingChanges == true {
+            return pendingDraftImageMetadataSnapshot ?? originalImageMetadata
+        }
+        return originalImageMetadata
     }
 
     func fieldDiffers(_ keyPath: KeyPath<IPTCMetadata, String?>) -> Bool {

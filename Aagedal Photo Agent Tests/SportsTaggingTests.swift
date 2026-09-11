@@ -750,7 +750,15 @@ struct MatchRosterServiceTests {
         #expect(faceViewModel.contains("await matchRosterService.load(for: folderURL, requestID: requestID)"))
         #expect(faceViewModel.contains("matchRosterLoadRequestID == requestID"))
         #expect(faceViewModel.contains("await matchRosterService.save(roster, requestID: UUID())"))
-        #expect(metadataViewModel.contains("await MatchRosterService.shared.load("))
+        let variableResolver = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Models/VariableMetadataBatch.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(variableResolver.contains("await MatchRosterService.shared.load("))
+        #expect(variableResolver.contains("guard !Task.isCancelled, case .loaded(let rosterSnapshot) = roster"))
+        #expect(!variableResolver.contains("MatchRosterService().load(for:"))
         #expect(!metadataViewModel.contains("MatchRosterService().load(for:"))
     }
 }

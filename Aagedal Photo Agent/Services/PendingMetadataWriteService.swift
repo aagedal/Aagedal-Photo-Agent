@@ -19,10 +19,14 @@ nonisolated struct PendingMetadataWriteRequest: Sendable {
     let folderURL: URL
     let expectedSidecar: MetadataSidecar
     let skipC2PA: Bool
+    let requestedMode: MetadataWriteMode
+    let expectedPhysicalBaseline: MetadataSidecarReplayCreationEvidence?
     init(imageURL: URL, folderURL: URL, expectedSidecar: MetadataSidecar,
-         skipC2PA: Bool = true, id: UUID = UUID()) {
+         skipC2PA: Bool = true, id: UUID = UUID(), requestedMode: MetadataWriteMode = .writeToFile,
+         expectedPhysicalBaseline: MetadataSidecarReplayCreationEvidence? = nil) {
         self.id = id; self.imageURL = imageURL; self.folderURL = folderURL
         self.expectedSidecar = expectedSidecar; self.skipC2PA = skipC2PA
+        self.requestedMode = requestedMode; self.expectedPhysicalBaseline = expectedPhysicalBaseline
     }
 }
 nonisolated struct PendingMetadataWriteResult: Sendable {
@@ -36,6 +40,7 @@ nonisolated struct PendingMetadataWriteResult: Sendable {
     var wasSkipped = false
     var committedButUnverifiedSidecarURL: URL? = nil
     var failure: String? = nil
+    var resultingPhysicalBaseline: MetadataSidecarReplayCreationEvidence? = nil
     var completed: Bool {
         installedSidecar?.pendingChanges == false && !wasCancelled && !wasSkipped && failure == nil
     }
@@ -75,7 +80,7 @@ nonisolated struct PendingMetadataWriteService: Sendable {
         var result = PendingMetadataWriteResult(requestID: request.id, imageURL: request.imageURL)
         do {
             try Task.checkCancellation()
-            guard request.expectedSidecar.pendingChanges else { throw CocoaError(.fileWriteFileExists) }
+            guard request.requestedMode != .historyOnly, request.expectedSidecar.pendingChanges else { throw CocoaError(.fileWriteFileExists) }
             let service = MetadataSidecarService()
             try await service.requireNoPendingOrientation(for: request.imageURL, in: request.folderURL)
             let before = try await SourceImageRevision.capture(at: request.imageURL)
@@ -86,13 +91,20 @@ nonisolated struct PendingMetadataWriteService: Sendable {
             }
             if facts.hasC2PA && request.skipC2PA { result.wasSkipped = true; return result }
             let xmp = try await Self.strictXMP(for: request.imageURL)
+            if let expected = request.expectedPhysicalBaseline {
+                guard before.canonicalURL == expected.sourceRevision.canonicalURL,
+                      before.sha256 == expected.sourceRevision.sha256, xmp.snapshot.data == expected.xmpData else {
+                    throw MetadataFieldMutationConflict()
+                }
+            }
+            result.resultingPhysicalBaseline = .init(sourceRevision: after, xmpData: xmp.snapshot.data)
             let snapshot = try await service.captureWriteCompletionSnapshot(for: request.imageURL,
                 in: request.folderURL, expectedSidecar: request.expectedSidecar,
                 expectedTechnicalMetadata: xmp.metadata, expectedXMPSnapshot: xmp.snapshot)
             try await hooks.afterAdmission()
             try Task.checkCancellation()
             let target = DescriptiveMetadataWriteTargetResolver().resolve(sourceURL: request.imageURL,
-                requestedMode: .writeToFile)
+                requestedMode: request.requestedMode)
             var writtenRevision = after
             if target.writesEmbedded {
                 guard let engine = writeEngine as? any PendingMetadataWriting else {
@@ -105,6 +117,7 @@ nonisolated struct PendingMetadataWriteService: Sendable {
                     })
                 result.didWriteEmbedded = true
                 writtenRevision = receipt.sourceRevision
+                result.resultingPhysicalBaseline = .init(sourceRevision: writtenRevision, xmpData: xmp.snapshot.data)
                 try Self.verifyEditorial(receipt.metadata, expected: request.expectedSidecar.metadata)
                 try await hooks.afterEmbeddedWrite()
             }
@@ -118,6 +131,9 @@ nonisolated struct PendingMetadataWriteService: Sendable {
                 verifyWrittenMetadata: { try Self.verifyEditorial($0, expected: request.expectedSidecar.metadata) },
                 beforeXMPCommit: hooks.beforeXMPCommit, beforeJSONCommit: hooks.beforeJSONCommit,
                 afterJSONCommit: hooks.afterJSONCommit)
+            if let installedXMP = persisted.writtenXMPSnapshot {
+                result.resultingPhysicalBaseline = .init(sourceRevision: writtenRevision, xmpData: installedXMP.data)
+            }
             result.installedSidecar = persisted.installedSidecar
             result.didWriteXMP = persisted.wroteXMPSidecar
             result.wasCancelled = persisted.wasCancelled
@@ -135,7 +151,7 @@ nonisolated struct PendingMetadataWriteService: Sendable {
     }
 
     @MetadataSidecarFilesystemActor
-    private static func strictXMP(for imageURL: URL) async throws -> (metadata: IPTCMetadata?, snapshot: XMPSidecarWriteSnapshot) {
+    static func strictXMP(for imageURL: URL) async throws -> (metadata: IPTCMetadata?, snapshot: XMPSidecarWriteSnapshot) {
         try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             let service = XMPSidecarService()
             let url = service.sidecarURL(for: imageURL)

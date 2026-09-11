@@ -894,3 +894,36 @@ struct MetadataReviewPersistenceTests {
         #expect(await MetadataSidecarService().replayHistoryAndMirrorXMP(legacy).completed)
     }
 }
+
+
+@Suite("Variable draft lifecycle integration")
+struct VariableDraftLifecycleIntegrationTests {
+    @Test("Close and Quit block before capturing another editor until variable drafts are durable")
+    @MainActor
+    func unpersistedVariableDraftBlocksLifecycle() async throws {
+        let lifecycle = VariableDraftLifecycleCoordinator()
+        let coordinator = CaptionWorkspaceFlushCoordinator(variableLifecycle: lifecycle)
+        let owner = UUID()
+        var captures = 0
+        coordinator.register(owner: UUID(), handler: { captures += 1 })
+        lifecycle.register(ownerID: owner, requirePersisted: {
+            throw CaptionWorkspaceFlushError.persistenceFailed("Variable draft is not saved")
+        })
+        defer { lifecycle.unregister(ownerID: owner) }
+        #expect(coordinator.hasPendingPersistence)
+        #expect(throws: CaptionWorkspaceFlushError.self) { try coordinator.flush() }
+        #expect(throws: CaptionWorkspaceFlushError.self) { try coordinator.flushQueuedPersistence() }
+        let termination = CaptionWorkspaceTerminationFlushOperation(coordinator: coordinator)
+        do {
+            try await termination.flush()
+            Issue.record("Termination must retain the unpersisted variable draft")
+        } catch {
+            #expect(error.localizedDescription == "Variable draft is not saved")
+        }
+        #expect(captures == 0)
+        lifecycle.unregister(ownerID: owner)
+        try await termination.flush()
+        #expect(captures == 1)
+        #expect(!coordinator.hasPendingPersistence)
+    }
+}

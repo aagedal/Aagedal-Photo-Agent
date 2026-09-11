@@ -1818,7 +1818,7 @@ struct MetadataEditorReadServiceTests {
             sourceSlice(source, from: "func loadCaptionCopyPreviousMetadata(", to: "func loadMetadata("),
             sourceSlice(source, from: "func loadMetadata(", to: "func applyReferenceSource("),
             sourceSlice(source, from: "private func loadBatchMetadata(", to: "private func compareOptionalField"),
-            sourceSlice(source, from: "private func processVariablesBatch(", to: "private func refreshMetadataAfterProcessing("),
+            sourceSlice(source, from: "private func startVariableBatch(", to: "private func refreshMetadataAfterProcessing("),
             sourceSlice(source, from: "private func refreshMetadataAfterProcessing(", to: "private func resolveIfChanged")
         ]
         let passiveSource = ranges.joined(separator: "\n")

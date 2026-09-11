@@ -2076,6 +2076,32 @@ struct ContentView: View {
     /// instead of sharing one hosted item with an inferred group description.
     @ToolbarContentBuilder
     private var folderActionToolbarContent: some ToolbarContent {
+        if let attention = metadataViewModel.variableBatchOutcome?.attention {
+            ToolbarItem(id: "folder-variable-details", placement: .secondaryAction) {
+                Button {
+                    OperationIssueDetailsPresenter.present(title: attention.title, message: attention.message)
+                } label: {
+                    Label("Variable Processing Details", systemImage: "exclamationmark.triangle")
+                }
+                .accessibilityLabel(attention.title)
+                .accessibilityIdentifier("toolbar.processVariables.details")
+                .help("Review variable processing results and retained edits for the original folder.")
+            }
+        }
+        if metadataViewModel.hasRetainedVariableWrites {
+            ToolbarItem(id: "folder-variable-retry", placement: .secondaryAction) {
+                Button {
+                    // Retry owns an immutable request and must remain reachable when its
+                    // unpersisted draft is itself blocking ordinary lifecycle transitions.
+                    metadataViewModel.retryVariableWrites()
+                } label: {
+                    Label("Retry Variable Writes", systemImage: "arrow.clockwise")
+                }
+                .accessibilityIdentifier("toolbar.processVariables.retry")
+                .help("Retry captured variable work with its original inputs and write mode.")
+                .disabled(metadataViewModel.isProcessingFolder)
+            }
+        }
         if let attention = metadataViewModel.pendingWriteBatchOutcome?.attention {
             ToolbarItem(id: "folder-write-pending-details", placement: .secondaryAction) {
                 Button {
@@ -2121,7 +2147,7 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Process Variables in Folder")
                 .accessibilityIdentifier("toolbar.processVariables")
-                .help("Resolve all {variable} placeholders in metadata across every image in the folder")
+                .help("Resolve placeholders across this folder and save the resulting metadata using your configured write mode, including other pending editorial changes.")
                 .disabled(browserViewModel.images.isEmpty)
             }
 
@@ -4070,6 +4096,11 @@ struct ContentViewModifiers: ViewModifier {
                     )
                     metadataViewModel.currentFolderURL = folderURL
                 }
+            }
+            .onChange(of: metadataViewModel.variableBatchOutcome?.requestID) { _, requestID in
+                guard let attention = metadataViewModel.variableBatchOutcome?.attention,
+                      attention.id == requestID else { return }
+                OperationIssueDetailsPresenter.present(title: attention.title, message: attention.message)
             }
             .onChange(of: metadataViewModel.pendingWriteBatchOutcome?.requestID) { _, requestID in
                 guard let attention = metadataViewModel.pendingWriteBatchOutcome?.attention,
