@@ -13,6 +13,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Move and Reject now preserve proven voice-memo companions with verified staging, rollback and
   shared-memo handling. Destination metadata is protected from orphan-sidecar collisions, and
   toolbar actions have independent accessibility identities.
+- RAW archive now preserves a proven voice memo as an independent WAV plus relationship record
+  across JPEG XL, TIFF and DNG outputs. Rendering and optional C2PA signing complete in private
+  staging before the image, XMP and memo bundle is installed or rolled back together.
 - Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel
   inspection, photo/map annotations, measurement, timeline evidence, map context, offline
   solar-position directions, portable projects, and immutable PDF reports.

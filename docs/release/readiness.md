@@ -1,14 +1,22 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People interchange, identity, replacement, UI and explicit cloud reconciliation are committed and pass automated verification; native cloud and broader release gates remain.
+**State:** IMPLEMENTING — Known People interchange/cloud reconciliation and transactional RAW voice-memo archive preservation are committed and pass automated verification; source reassociation, native archive/cloud and broader release gates remain.
 **Updated:** 2026-09-12
-**Latest implementation commit:** `05f484a` (2,839 tests / 311 suites and repository checks passed; independent review not run for cycle 19).
+**Latest implementation commit:** `3a49c0e` (2,851 tests passed in the final serial run and repository checks passed; independent review and native archive validation not run for cycle 20).
 **Latest native evidence:** Cycle 18 imported, cancelled and replaced the cross-repository golden directory in a disposable root; exported byte-exact directory and valid STORED ZIP forms; confirmed same-library identity/count copy; retained rollback evidence; and quit cleanly. Earlier cycle 15 Primary/Develop recovery evidence remains valid.
-**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance the Known People interchange through core, first-time identity, service/controller, UI and explicit cloud reconciliation.
+**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange and cycle 20 adds transactional RAW voice-memo archive preservation.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 20 RAW voice-memo archive](cycle-20-voice-memo-raw-archive-2026-09-12.md) routes all six
+JPEG XL, TIFF and DNG archive commands through one utility-executor transaction. It freezes source
+image/XMP/relationship/memo evidence, stages under the final basename before optional C2PA signing,
+revalidates rendered bytes, and installs or rolls back the complete image/XMP/WAV/record bundle.
+The archive suite passes 12 tests; the exact integrated run passes 2,851 tests in 131.125 seconds,
+and repository validation passes. Real RAW/DNG Converter/C2PA, physical-volume crash recovery,
+archive playback after source loss and independent review remain open; reassociation is not implemented.
 
 [Known People companion interchange](known-people-companion-interchange-design.md)
 records the exact FTP Sync schema-2 projection, lossless Photo Agent extension,
@@ -216,10 +224,11 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    in-flight cancellation/selection, authentic RAW/C2PA and accessibility/performance. Cycle 12's
    physical/error/repair/History Only/relaunch cases pass on `fbe253f`; do not rerun unchanged full
    checks without a relevant change. Review lifetime/IME and Write All's broader cases remain separate.
-4. Complete remaining Sony companion archive and source reassociation using the source-backed
-   [archive design](voice-memo-archive-design.md). Ingest, rename, Duplicate, Move, Reject and
-   memo Trash now have implementation. Preserve explicit ownership through rendering/signing/
-   cleanup; schema-1 filename hints alone cannot establish historical reassociation identity.
+4. Complete Sony companion source reassociation using the source-backed
+   [archive design](voice-memo-archive-design.md). Cycle 20 implements shared transactional RAW
+   archive preservation with automated evidence. Exercise real JPEG XL/TIFF/DNG, DNG Converter,
+   C2PA and physical-volume interruption/playback cases; schema-1 filename hints alone cannot
+   establish historical reassociation identity.
 5. Implement cancellable local transcription with explicit language/model/offline state,
    review-before-apply and transcript provenance, following the [SDK-backed design](voice-memo-transcription-design.md).
    Integrate reviewed transcript variables and visible Deadline WAV delivery policy/receipt.
@@ -239,9 +248,9 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 | Gate | Current disposition | Required evidence |
 | --- | --- | --- |
-| Required features | Open | Archive/reassociation, transcription, reviewed variables and delivery; inventory dispositions |
+| Required features | Open | Source reassociation, transcription, reviewed variables and delivery; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 14: 2,666 tests and repository checks passed | Packaging and exact-candidate release checks remain |
+| Automated regression and package | Cycle 20: 2,851 tests and repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -372,7 +381,7 @@ unsupported-route limitation, not claimed as verified behavior.
 All four plans retain 60 open criteria (9/23/22/6). HTML has 35 cases with results and
 candidate unassigned; final interactive checklist validation remains pending. The
 no-progress counter is zero and the existing heartbeat remains active. Broader native,
-voice/transcription/delivery, external interoperability and release gates remain open.
+voice reassociation/transcription/delivery, native archive evidence, external interoperability and release gates remain open.
 
 ## Companion integration follow-up — 2026-09-12
 

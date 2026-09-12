@@ -746,8 +746,17 @@ checkbox stays open for archive, Trash, source reassociation and real camera end
 explicit JSON ownership, rollback/uncertain-outcome details and complete native error details.
 Move/Reject also preserve stem XMP and sibling-owned legacy JSON. See the separate implementation
 and verification status in [cycle 3 evidence](release/cycle-03-memo-trash-2026-09-10.md).
-Archive/reassociation are designed in [the lifecycle proposal](release/voice-memo-archive-design.md)
-but remain unimplemented. The broad lifecycle checkbox stays open.
+At that checkpoint, archive/reassociation were designed in
+[the lifecycle proposal](release/voice-memo-archive-design.md) but remained unimplemented. The
+broad lifecycle checkbox stayed open.
+
+**Coordinator cycle 20 — 2026-09-12:** All six RAW archive commands now share a private
+stage/sign/install transaction. A persisted association produces an independently verified WAV and
+rewritten relationship beside the JPEG XL, TIFF or DNG derivative; absent relationships never adopt
+adjacent WAVs. Complete collision reservation, final-basename signing, source/output revalidation,
+exclusive installation, owned rollback and exact cleanup residuals have automated coverage. See
+[cycle 20 evidence](release/cycle-20-voice-memo-raw-archive-2026-09-12.md). The lifecycle checkbox
+remains open for source reassociation and real RAW/DNG/C2PA/physical-volume evidence.
 
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text

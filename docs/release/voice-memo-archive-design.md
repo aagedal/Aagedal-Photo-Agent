@@ -1,11 +1,12 @@
 # Voice memo archive and source reassociation design
 
 Investigated 2026-09-10 against cycle-2 implementation `dfaf98e7` and its handoff.
-This is a proposal, not implemented behavior or passing release evidence. The broader
-[Sony lifecycle criterion](../journalistic-metadata-workflow-plan.md#sony-alpha-voice-memos--ingest-foundation-implemented-for-30)
-remains open. The coordinator owns subsequent integration and validation.
+The RAW archive portion is implemented at `3a49c0e` and recorded in
+[cycle 20](cycle-20-voice-memo-raw-archive-2026-09-12.md). Source reassociation below remains a
+proposal. The broader [Sony lifecycle criterion](../journalistic-metadata-workflow-plan.md#sony-alpha-voice-memos--ingest-foundation-implemented-for-30)
+therefore remains open.
 
-## Actual archive paths
+## Pre-cycle-20 archive paths
 
 - `ContentView.archiveSelectedRAW(as:)` chooses a destination, acquires configured
   security scopes, calls `EditExportPipeline.renderItem`, optionally signs the output
@@ -28,9 +29,9 @@ remains open. The coordinator owns subsequent integration and validation.
   of a RAW archive's new association. Generic rendered export and Deadline delivery need
   their separately specified audio policies rather than implicitly inheriting archive policy.
 
-## Proposed archive transaction
+## Implemented archive transaction
 
-Use one archive-specific orchestration service for all formats, with injectable renderer,
+Cycle 20 uses one archive-specific orchestration service for all formats, with injectable renderer,
 signer, companion preparation, filesystem installation and cleanup. Keep blocking storage
 work on a retained utility executor. Avoid further filesystem orchestration in the view.
 
