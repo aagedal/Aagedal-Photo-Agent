@@ -1,14 +1,23 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People interchange/cloud reconciliation and transactional RAW voice-memo archive preservation are committed and pass automated verification; source reassociation, native archive/cloud and broader release gates remain.
-**Updated:** 2026-09-12
-**Latest implementation commit:** `3a49c0e` (2,851 tests passed in the final serial run and repository checks passed; independent review and native archive validation not run for cycle 20).
+**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional RAW voice-memo archive preservation and verified adjacent memo recovery are committed and pass automated verification; general source discovery, native archive/cloud and broader release gates remain.
+**Updated:** 2026-09-13
+**Latest implementation commits:** `d876330`, `6b8100b`, `026d4f2` (2,859 tests passed in the final serial run and repository checks passed; independent review and native recovery/archive validation not run for cycle 21).
 **Latest native evidence:** Cycle 18 imported, cancelled and replaced the cross-repository golden directory in a disposable root; exported byte-exact directory and valid STORED ZIP forms; confirmed same-library identity/count copy; retained rollback evidence; and quit cleanly. Earlier cycle 15 Primary/Develop recovery evidence remains valid.
-**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange and cycle 20 adds transactional RAW voice-memo archive preservation.
+**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation and cycle 21 adds identity-bound adjacent memo recovery.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 21 voice-memo recovery](cycle-21-voice-memo-recovery-2026-09-13.md) adds compatible
+schema-2 photo/WAV identities and provenance, then lets Caption recover a persisted missing memo
+from an explicitly selected WAV. Exact bytes restore automatically; changed or legacy evidence
+requires explicit replacement and clears any approval tied to the prior audio hash. Copy/stage/hash/
+exclusive-install/read-back and rollback preserve the selected source and prior record on failure;
+stale navigation cannot publish or commit recovery. The affected 56-test roster, exact 2,859-test
+serial suite and repository validation pass. General relocated-photo/record discovery, native UI,
+real Sony/volume evidence and independent review remain open.
 
 [Cycle 20 RAW voice-memo archive](cycle-20-voice-memo-raw-archive-2026-09-12.md) routes all six
 JPEG XL, TIFF and DNG archive commands through one utility-executor transaction. It freezes source
@@ -16,7 +25,8 @@ image/XMP/relationship/memo evidence, stages under the final basename before opt
 revalidates rendered bytes, and installs or rolls back the complete image/XMP/WAV/record bundle.
 The archive suite passes 12 tests; the exact integrated run passes 2,851 tests in 131.125 seconds,
 and repository validation passes. Real RAW/DNG Converter/C2PA, physical-volume crash recovery,
-archive playback after source loss and independent review remain open; reassociation is not implemented.
+archive playback after source loss and independent review remain open; cycle 21 adds adjacent
+missing-memo recovery but not general relocated-photo/record discovery.
 
 [Known People companion interchange](known-people-companion-interchange-design.md)
 records the exact FTP Sync schema-2 projection, lossless Photo Agent extension,
@@ -224,11 +234,12 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    in-flight cancellation/selection, authentic RAW/C2PA and accessibility/performance. Cycle 12's
    physical/error/repair/History Only/relaunch cases pass on `fbe253f`; do not rerun unchanged full
    checks without a relevant change. Review lifetime/IME and Write All's broader cases remain separate.
-4. Complete Sony companion source reassociation using the source-backed
+4. Complete general Sony companion source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Cycle 20 implements shared transactional RAW
-   archive preservation with automated evidence. Exercise real JPEG XL/TIFF/DNG, DNG Converter,
-   C2PA and physical-volume interruption/playback cases; schema-1 filename hints alone cannot
-   establish historical reassociation identity.
+   archive preservation and cycle 21 implements identities plus adjacent missing-memo recovery.
+   Add user-scoped relocated-photo/record discovery with explicit ambiguous/changed states. Exercise
+   real JPEG XL/TIFF/DNG, DNG Converter, C2PA and physical-volume interruption/playback cases;
+   schema-1 filename hints alone cannot establish historical identity.
 5. Implement cancellable local transcription with explicit language/model/offline state,
    review-before-apply and transcript provenance, following the [SDK-backed design](voice-memo-transcription-design.md).
    Integrate reviewed transcript variables and visible Deadline WAV delivery policy/receipt.
@@ -248,9 +259,9 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 | Gate | Current disposition | Required evidence |
 | --- | --- | --- |
-| Required features | Open | Source reassociation, transcription, reviewed variables and delivery; inventory dispositions |
+| Required features | Open | General relocated-source discovery, transcription, reviewed variables and delivery; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 20: 2,851 tests and repository checks passed | Packaging and exact-candidate release checks remain |
+| Automated regression and package | Cycle 21: 2,859 tests and repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -380,8 +391,9 @@ unsupported-route limitation, not claimed as verified behavior.
 
 All four plans retain 60 open criteria (9/23/22/6). HTML has 35 cases with results and
 candidate unassigned; final interactive checklist validation remains pending. The
-no-progress counter is zero and the existing heartbeat remains active. Broader native,
-voice reassociation/transcription/delivery, native archive evidence, external interoperability and release gates remain open.
+no-progress counter is zero and the existing heartbeat remains active. Broader native, general
+voice source discovery/transcription/delivery, native archive evidence, external interoperability
+and release gates remain open.
 
 ## Companion integration follow-up — 2026-09-12
 

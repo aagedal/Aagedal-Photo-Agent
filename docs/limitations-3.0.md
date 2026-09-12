@@ -66,14 +66,17 @@ These are material product and evidence boundaries, not a list of unfinished int
   time-of-check/time-of-use interval remains before `curl` opens a verified staged file.
 - Persisted voice memos support explicit Caption playback and companion-preserving Duplicate,
   alongside ingest, transactional rename, companion-aware Move/Reject and recoverable memo Trash.
-  Restore the entire Trash folder to retain its hidden relationship and metadata. Archive/source
-  reassociation, transcription, reviewed transcript variables and delivery integration remain
-  incomplete. Move/Reject stage verified copies before retiring originals; this requires temporary
+  Restore the entire Trash folder to retain its hidden relationship and metadata. New relationships
+  retain photo/WAV hashes, and Caption can restore a missing adjacent WAV from an explicitly selected
+  exact copy or confirmed replacement. General discovery of a relocated photo/relationship,
+  transcription, reviewed transcript variables and delivery integration remain incomplete.
+  Move/Reject stage verified copies before retiring originals; this requires temporary
   disk space and is not a process-crash-atomic multi-file operation. Physical cross-volume/recovery
   and broader camera workflows remain unverified. General Move reports separate XMP/editorial
   failures as partial success, and retained source backups are explicit cleanup warnings.
-  Playback detects ordinary file-revision changes while loading and before starting; persisted
-  schema-1 relationships are filename based and are not cryptographic source provenance.
+  Playback detects ordinary file-revision changes while loading and before starting. Persisted
+  schema-1 relationships remain filename based; their selected WAVs cannot be called historical
+  matches and require replacement confirmation before a schema-2 identity is recorded.
   Validation does not cover every Sony camera/firmware layout.
 
 ## Optional model availability

@@ -543,9 +543,9 @@ Do not spend release time implementing excluded conditional analyzers.
   rollback, and source reassociation without presenting the WAV as a photo.
 ```
 
-**Current status:** Import and rename foundations now also include production Duplicate, independently copied shared memos, hash/record stability checks and rollback. General Move and Reject are added in [cycle 2](cycle-02-memo-moves-toolbar-2026-09-09.md). [Cycle 3](cycle-03-memo-trash-2026-09-10.md) adds recoverable memo Trash and sibling metadata preservation. [Cycle 20](cycle-20-voice-memo-raw-archive-2026-09-12.md) adds the shared JPEG XL/TIFF/DNG archive transaction with automated source/output identity, signing, collision, rollback and cleanup evidence. Source reassociation and authentic-media/native archive evidence remain incomplete.
+**Current status:** Import and rename foundations now also include production Duplicate, independently copied shared memos, hash/record stability checks and rollback. General Move and Reject are added in [cycle 2](cycle-02-memo-moves-toolbar-2026-09-09.md). [Cycle 3](cycle-03-memo-trash-2026-09-10.md) adds recoverable memo Trash and sibling metadata preservation. [Cycle 20](cycle-20-voice-memo-raw-archive-2026-09-12.md) adds the shared JPEG XL/TIFF/DNG archive transaction. [Cycle 21](cycle-21-voice-memo-recovery-2026-09-13.md) adds schema-2 photo/WAV identities and verified Caption recovery of a missing adjacent memo, with exact versus explicitly confirmed replacement provenance and approval invalidation. General relocated-photo/record discovery and authentic-media/native archive evidence remain incomplete.
 
-**Smallest next action/evidence:** Implement source reassociation using the remaining identity boundary in the [ownership design](voice-memo-archive-design.md), then exercise real RAW, DNG Converter, C2PA and physical-volume archive cases. Preserve explicit shared/missing states and rollback. Real-sample end-to-end validation remains.
+**Smallest next action/evidence:** Implement user-scoped discovery and transactional reassociation for a relocated photo/relationship, including exact, ambiguous, changed and missing outcomes, then exercise real Sony RAW, DNG Converter, C2PA and physical-volume cases. Preserve explicit shared/missing states and rollback. Real-sample end-to-end validation remains.
 
 ### J-VOICE-PLAYBACK
 

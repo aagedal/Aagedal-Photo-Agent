@@ -16,6 +16,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - RAW archive now preserves a proven voice memo as an independent WAV plus relationship record
   across JPEG XL, TIFF and DNG outputs. Rendering and optional C2PA signing complete in private
   staging before the image, XMP and memo bundle is installed or rolled back together.
+- Voice-memo relationships now retain photo and WAV content identity. Caption can recover a missing
+  adjacent memo from a user-selected WAV, automatically accepting exact bytes or requiring explicit
+  replacement confirmation when bytes changed or a legacy relationship has no historical proof.
 - Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel
   inspection, photo/map annotations, measurement, timeline evidence, map context, offline
   solar-position directions, portable projects, and immutable PDF reports.
@@ -72,8 +75,10 @@ upload the current image from Photo Agent.
   rejected if they predate capture or lack a matching image anchor on their own source.
 - Caption Workspace can explicitly play and pause a persisted WAV voice memo, displaying its
   filename, duration and missing/unavailable state. Navigation stops playback; no transcription
-  or metadata mutation occurs implicitly. Duplicate preserves a verified image/WAV relationship
-  in independent copies with collision protection and rollback on failure.
+  or metadata mutation occurs implicitly. A missing memo can be located from Caption; verified exact
+  bytes restore automatically, while changed or legacy candidates require an explicit destructive
+  replacement confirmation. Duplicate preserves a verified image/WAV relationship in independent
+  copies with collision protection and rollback on failure.
 - Import now creates the destination reveal folder before handing it to the browser, preventing a
   transient “Couldn’t Open Folder” error at the start of a memory-card import.
 - Replaced the thumbnail toolbar's bound sort picker with an explicitly titled sort menu so the

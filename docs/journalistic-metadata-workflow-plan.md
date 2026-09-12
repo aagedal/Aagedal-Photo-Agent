@@ -662,9 +662,10 @@ hands-on focus/IME/VoiceOver/visual checks remain explicit.
 
 ### Sony Alpha voice memos — ingest foundation implemented for 3.0
 
-**Status:** flexible one/two-source ILCE-1 v4.00 ingest implemented on 2026-08-24.
-Compatibility with other Sony bodies/firmware and companion persistence beyond ingest remain
-gated by additional samples and follow-up implementation.
+**Status:** flexible one/two-source ILCE-1 v4.00 ingest is implemented, with companion lifecycle
+slices through adjacent missing-memo recovery. Compatibility with other Sony bodies/firmware,
+general relocated-source discovery and later transcript/delivery stages remain gated by additional
+samples and follow-up implementation.
 
 - [x] Obtain private test samples from Sony ILCE-1 firmware v4.00. Document the on-card directory
   layout, WAV naming/association rules, audio
@@ -757,6 +758,17 @@ adjacent WAVs. Complete collision reservation, final-basename signing, source/ou
 exclusive installation, owned rollback and exact cleanup residuals have automated coverage. See
 [cycle 20 evidence](release/cycle-20-voice-memo-raw-archive-2026-09-12.md). The lifecycle checkbox
 remains open for source reassociation and real RAW/DNG/C2PA/physical-volume evidence.
+
+**Coordinator cycle 21 — 2026-09-13:** Versioned relationship records now retain byte-count and
+SHA-256 identity for the photo and WAV across new import/save/copy/move/archive associations, while
+schema-1 records remain readable and are not retroactively treated as proof. Caption exposes an
+explicit WAV picker when the persisted adjacent memo is missing. Exact photo+audio identity restores
+automatically; changed bytes or missing historical identity require a destructive replacement
+confirmation, record new provenance and revoke any approval bound to the prior audio hash. The
+selected source is copied, never moved, and verified staging/exclusive install/record rollback plus
+navigation cancellation have automated coverage. See
+[cycle 21 evidence](release/cycle-21-voice-memo-recovery-2026-09-13.md). The lifecycle checkbox
+remains open for general relocated-photo/record discovery and real Sony/native-volume evidence.
 
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
