@@ -85,6 +85,7 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     // on-demand distribution descriptor. Changing model bytes or preprocessing
     // requires a new value before either artifact can be published.
     let version = FaceRecognitionDefaults.embeddingVersion
+    let interchangeProvenance: FaceEmbeddingProvenance? = .current
 
     private static let inputSize = 112
     private static let inputName = "input"

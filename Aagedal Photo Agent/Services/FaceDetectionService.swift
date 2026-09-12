@@ -204,7 +204,7 @@ nonisolated struct FaceDetectionService: Sendable {
             }
 
             // Generate feature print from aligned crop (or fallback to bbox crop)
-            guard let featurePrintData = try await generateFeaturePrint(for: featurePrintImage) else { continue }
+            guard let generatedEmbedding = try await generateFeaturePrint(for: featurePrintImage) else { continue }
 
             // Thumbnail always from original bbox crop (preserves existing appearance)
             let thumbnailData = generateThumbnail(from: croppedImage, size: 120)
@@ -227,7 +227,8 @@ nonisolated struct FaceDetectionService: Sendable {
                 id: UUID(),
                 imageURL: imageURL,
                 faceRect: observation.boundingBox.asCGRect,
-                featurePrintData: featurePrintData,
+                featurePrintData: generatedEmbedding.data,
+                embeddingProvenance: generatedEmbedding.provenance,
                 groupID: nil,
                 detectedAt: Date(),
                 qualityScore: qualityScore,
@@ -975,9 +976,16 @@ nonisolated struct FaceDetectionService: Sendable {
 
     /// Generate the face-identity embedding for an aligned crop and encode it for storage.
     /// Backed by the bundled ArcFace CoreML model via `FaceEmbedder`.
-    private func generateFeaturePrint(for cgImage: CGImage) async throws -> Data? {
+    private func generateFeaturePrint(
+        for cgImage: CGImage
+    ) async throws -> (data: Data, provenance: FaceEmbeddingProvenance?)? {
         let vector = try await embedder.embed(cgImage)
-        return EmbeddingCodec.encode(vector)
+        let data = EmbeddingCodec.encode(vector)
+        if let provenance = embedder.interchangeProvenance {
+            _ = try FaceEmbeddingInterchangeCodec.validate(data)
+            return (data, provenance)
+        }
+        return (data, nil)
     }
 
     // MARK: - Image Processing

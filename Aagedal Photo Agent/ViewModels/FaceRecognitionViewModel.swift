@@ -1669,13 +1669,7 @@ final class FaceRecognitionViewModel {
             throw AddToKnownPeopleError.noFaces
         }
 
-        let embeddings = faces.map { face in
-            PersonEmbedding(
-                featurePrintData: face.featurePrintData,
-                sourceDescription: face.imageURL.lastPathComponent,
-                recognitionMode: face.embeddingMode
-            )
-        }
+        let embeddings = faces.map { PersonEmbedding(detectedFace: $0) }
 
         let expectedRevision = faceDataRevision
         let expectedFolder = displayedFolderURL

@@ -75,6 +75,33 @@ nonisolated struct KnownPerson: Codable, Identifiable, Sendable {
 
 // MARK: - Person Embedding
 
+/// Durable identity of the model space that produced one embedding sample.
+///
+/// A missing value is intentionally "unknown", including records imported from the
+/// legacy Known People ZIP format. FEM2 shape and the store-wide migration stamp do
+/// not prove that an imported sample came from this model and preprocessing pipeline.
+nonisolated struct FaceEmbeddingProvenance: Codable, Equatable, Sendable {
+    let embeddingSpaceVersion: Int
+    let componentID: String
+    let modelID: String
+    let preprocessingRevision: String
+    let vectorEncoding: String
+    let dimension: Int
+    let l2Normalized: Bool
+
+    static let current = FaceEmbeddingProvenance(
+        embeddingSpaceVersion: FaceRecognitionDefaults.embeddingVersion,
+        componentID: "auraface-r100-coreml",
+        modelID: CoreMLFaceEmbedder.modelVersion,
+        preprocessingRevision: "photo-agent-eyes112-rgb-v3",
+        vectorEncoding: "fem2-float32-le",
+        dimension: FaceEmbeddingInterchangeCodec.dimension,
+        l2Normalized: true
+    )
+
+    var isCurrentInterchangeCompatible: Bool { self == .current }
+}
+
 /// A face embedding sample stored for a known person.
 ///
 /// **Important:** `featurePrintData` always contains a face-only Vision feature print,
@@ -95,18 +122,34 @@ nonisolated struct PersonEmbedding: Codable, Identifiable, Sendable {
     /// This is metadata only - the stored `featurePrintData` is always face-only regardless.
     let recognitionMode: FaceRecognitionMode?
 
+    /// Model/preprocessing identity captured when Photo Agent created this sample.
+    /// Nil is an honest legacy/foreign state and must block trusted v2 interchange.
+    let provenance: FaceEmbeddingProvenance?
+
     init(
         id: UUID = UUID(),
         featurePrintData: Data,
         sourceDescription: String? = nil,
         addedAt: Date = Date(),
-        recognitionMode: FaceRecognitionMode? = nil
+        recognitionMode: FaceRecognitionMode? = nil,
+        provenance: FaceEmbeddingProvenance? = nil
     ) {
         self.id = id
         self.featurePrintData = featurePrintData
         self.sourceDescription = sourceDescription
         self.addedAt = addedAt
         self.recognitionMode = recognitionMode
+        self.provenance = provenance
+    }
+
+    init(detectedFace: DetectedFace, addedAt: Date = Date()) {
+        self.init(
+            featurePrintData: detectedFace.featurePrintData,
+            sourceDescription: detectedFace.imageURL.lastPathComponent,
+            addedAt: addedAt,
+            recognitionMode: detectedFace.embeddingMode,
+            provenance: detectedFace.embeddingProvenance
+        )
     }
 }
 

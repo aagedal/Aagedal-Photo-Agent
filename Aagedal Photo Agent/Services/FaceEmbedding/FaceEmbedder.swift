@@ -17,9 +17,18 @@ nonisolated protocol FaceEmbedder: Sendable {
     /// stored as `FolderFaceData.embeddingVersion` so a mismatch forces a full re-scan.
     var version: Int { get }
 
+    /// Exact portable identity declared by this embedder, when it can prove one.
+    /// Test, legacy and alternate embedders default to unknown rather than borrowing
+    /// the current production model's identity from matching dimensions/version numbers.
+    var interchangeProvenance: FaceEmbeddingProvenance? { get }
+
     /// Run the model on an aligned face crop and return an L2-normalized embedding.
     /// The crop should already be face-aligned (see the ArcFace alignment in
     /// `FaceDetectionService`); the embedder resizes/normalizes internally, so any
     /// upright face `CGImage` is accepted, but alignment quality affects accuracy.
     func embed(_ alignedFace: CGImage) async throws -> [Float]
+}
+
+nonisolated extension FaceEmbedder {
+    var interchangeProvenance: FaceEmbeddingProvenance? { nil }
 }
